@@ -134,6 +134,10 @@ describe('the commands the page writes', () => {
     const command = upsertCommand(SLOT, 'work/review-page', thread);
     expect(command.upsert_review_thread.project).toBe('forge');
     expect(command.upsert_review_thread.thread.id).toBe(thread.id);
+    // **The write names the seat whose words it sends** (#2283): the core
+    // takes a landed take's words away when a comment carries them, and the
+    // seat is what tells it which take.
+    expect(command.upsert_review_thread.origin).toEqual(SLOT);
   });
 
   it('appends a reply without disturbing what is already on the thread', () => {

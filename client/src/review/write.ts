@@ -283,7 +283,10 @@ export function withEditedTurn(
 }
 
 export function upsertCommand(slot: SessionSlot, branch: string, thread: ThreadPayload) {
-  return { upsert_review_thread: { project: slot.project, branch, thread } };
+  // **The seat the words came from** (#2283): a landed take's words are the
+  // seat's until a write carries them, and the origin is what tells the core
+  // which take a comment spends.
+  return { upsert_review_thread: { project: slot.project, branch, thread, origin: slot } };
 }
 
 /** The submit command sealing a round of the listed threads. */

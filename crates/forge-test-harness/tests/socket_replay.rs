@@ -464,6 +464,7 @@ fn the_review_commands_cross_as_their_names() {
         project: "proj".to_owned(),
         branch: "b".to_owned(),
         thread: thread.clone(),
+        origin: Some(slot.clone()),
         respond: None,
     })
     .expect("the variant encodes");

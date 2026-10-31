@@ -143,6 +143,13 @@ impl Live {
         self.attached.contains_key(slot)
     }
 
+    /// A write sent the seat's words down a path the update stream does not
+    /// carry; the composer's own rule decides whether they were its landed
+    /// take's (#2283).
+    pub fn composer_sent(&mut self, slot: &SessionSlot, words: &[String]) {
+        self.composer.sent(slot, words);
+    }
+
     /// Fold one update in: the marks it moves, and the composer's own record.
     ///
     /// The classification is what keeps a busy turn from mattering here for

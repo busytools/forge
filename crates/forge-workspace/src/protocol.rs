@@ -790,6 +790,12 @@ pub enum Command {
         project: String,
         branch: String,
         thread: ReviewThread,
+        /// The seat whose words this write sends: a landed take's words are
+        /// the seat's until a write carries them, and this is what tells the
+        /// composer which take the comment spends (#2283). `None` from a
+        /// client older than the field, and from a write no seat made.
+        #[serde(default)]
+        origin: Option<SessionSlot>,
         #[serde(skip)]
         respond: Option<oneshot::Sender<bool>>,
     },

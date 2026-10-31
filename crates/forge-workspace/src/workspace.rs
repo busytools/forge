@@ -6604,7 +6604,7 @@ impl Workspace {
                     let _enter = span.enter();
                     self.release_session_with_cascade(&session_key);
                 }
-                Command::UpsertReviewThread { project, branch, thread, respond } => {
+                Command::UpsertReviewThread { project, branch, thread, origin: _, respond } => {
                     let span = tracing::info_span!(
                         "upsert_review_thread",
                         project = %project,
@@ -15722,6 +15722,7 @@ provider = "anthropic"
                 project: "forge".to_owned(),
                 branch: "feat".to_owned(),
                 thread: thread.clone(),
+                origin: None,
                 respond: Some(respond_tx),
             })
             .expect("dispatch");

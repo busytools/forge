@@ -681,7 +681,7 @@
       box.dismissed = null;
       return;
     }
-    const words = box.landing.place(boxKey(slot), held);
+    const words = box.landing.place(boxKey(slot), held, composer.take?.generation ?? null);
     if (words === null) return;
     // **Where the words go is where the take began, checked against what is
     // still on screen.** A take the dock's own row never touched still belongs

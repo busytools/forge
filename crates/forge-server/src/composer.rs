@@ -128,6 +128,19 @@ impl Composer {
     pub fn landed(&self, slot: &SessionSlot) -> Option<&Landed> {
         self.landed.get(slot)
     }
+
+    /// A write sent the seat's words through a path this fold does not see -
+    /// a review or document comment - so the take they came from is spent.
+    ///
+    /// **Only the landed words take them.** A comment about something else
+    /// leaves the take's words in the seat: the reader has still not sent
+    /// them (#2283).
+    pub fn sent(&mut self, slot: &SessionSlot, words: &[String]) {
+        let Some(landed) = self.landed.get(slot) else { return };
+        if words.iter().any(|word| *word == landed.text) {
+            self.landed.remove(slot);
+        }
+    }
 }
 
 #[cfg(test)]

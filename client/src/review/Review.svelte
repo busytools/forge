@@ -645,7 +645,11 @@
    * to the composer.
    */
   $effect(() => {
-    const words = landing.place(boxKey(slot), composer.notice);
+    const words = landing.place(
+      boxKey(slot),
+      composer.notice,
+      composer.take?.generation ?? null,
+    );
     // The arm the notice spent (or left standing) is what the seal reads.
     landingArmed = landing.armed;
     if (words === null) return;
