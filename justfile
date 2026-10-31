@@ -307,13 +307,15 @@ client-test: client-deps
     npm --prefix client run test
 
 # The shell crate's clippy, warnings denied. The crate is a workspace root of
-# its own, so `just clippy`'s two invocations never reach it, and its findings
-# drifted unread.
+# its own, so `just clippy`'s two invocations never reach it; this step holds
+# it to the workspace's own set instead.
 #
-# **The default lint set, not the workspace's**: this crate carries no
-# `[lints]` table of its own, so nothing pedantic applies here and the denied
-# `unwrap`/`expect`/`panic`/`exit` do not either (#2321). One invocation,
-# with `--all-targets`: the crate's tests are targets of its own crate.
+# **The workspace set, mirrored**: `client/src-tauri/Cargo.toml` carries the
+# `[lints]` tables and their exemptions, and the `clippy.toml` beside it
+# repeats the root settings the crate would otherwise not inherit. The FFI
+# modules, the tauri command modules and the cfg-gated async carry scoped
+# `#![allow]`s with their reasons in those files. One invocation, with
+# `--all-targets`: the crate's tests are targets of its own crate.
 #
 # Lint the shell crate.
 client-tauri-clippy:
