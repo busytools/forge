@@ -318,8 +318,10 @@ describe('axe over the rendered pages', () => {
   /**
    * **The takeover's bar draws over the composer**, and the closed render
    * never reached it: a regression in the bar's own semantics was unpinned
-   * (#2571). The surface state is left as it was found, the way the store's
-   * other case in this file leaves it.
+   * (#2571). **The bar's own names are asserted**, and the role is held with
+   * a tab list so the arrows and the picker are in the audited markup too,
+   * not only the bar's empty state. The surface state is left as it was
+   * found, the way the store's other case in this file leaves it.
    */
   it('draws the open browser takeover with no violations', async () => {
     const was = {
@@ -327,11 +329,41 @@ describe('axe over the rendered pages', () => {
       profile: surface.profile,
       tab: surface.tab,
       seat: surface.seat,
+      viewer: surface.viewer,
+      controller: surface.controller,
+      nav: surface.nav,
+      tabs: surface.tabs,
     };
     surface.phase = 'live';
     surface.profile = 'Busytools/default';
     surface.tab = 2;
     surface.seat = SLOT;
+    surface.viewer = 7;
+    surface.controller = 7;
+    surface.nav = { can_back: true, can_forward: true };
+    surface.tabs = {
+      profile: 'Busytools/default',
+      id: 1,
+      up: true,
+      connected: true,
+      closing_at_ms: null,
+      rows: [
+        {
+          number: 2,
+          title: 'the sign-in page',
+          url: 'https://example.com/',
+          owner: SLOT,
+          state: 'held',
+        },
+        {
+          number: 3,
+          title: '',
+          url: 'https://example.org/',
+          owner: SLOT,
+          state: 'idle',
+        },
+      ],
+    };
     try {
       const html = `<main>${
         render(Composer, {
@@ -344,13 +376,35 @@ describe('axe over the rendered pages', () => {
           } satisfies ComposerProps,
         }).body
       }</main>`;
-      expect(html, 'the bar drew, so axe saw it').toContain('back to chat');
+      // **The server render is where the composer's own inert is proved**:
+      // the bar's mount walk covers it in a browser, so the mounted test
+      // cannot tell the attribute from the walk.
+      expect(html, 'the composer behind the picture is inert').toMatch(
+        /<div class="surf[^"]*"[^>]*\binert\b/,
+      );
+      for (const name of [
+        'aria-label="the browser takeover"',
+        'aria-label="back"',
+        'aria-label="forward"',
+        'aria-label="the tab to view"',
+        'back to chat',
+        'release control',
+        'Done',
+        'Not now',
+        "something's wrong\u{2026}",
+      ]) {
+        expect(html, `the bar draws ${name}`).toContain(name);
+      }
       expect(await idsOf(html)).toEqual([]);
     } finally {
       surface.phase = was.phase;
       surface.profile = was.profile;
       surface.tab = was.tab;
       surface.seat = was.seat;
+      surface.viewer = was.viewer;
+      surface.controller = was.controller;
+      surface.nav = was.nav;
+      surface.tabs = was.tabs;
     }
   });
 

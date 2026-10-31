@@ -1004,6 +1004,22 @@ describe('the box', () => {
   });
 
   /**
+   * **The box behind the picture is inert** (#2571): the bar owns the
+   * keyboard while the surface is up, so the composer's own markup must say
+   * so even before the bar's mount walk runs - the server render carries it.
+   */
+  it('marks the composer inert while the takeover is up', async () => {
+    await surfaceOn(SLOT, 2);
+    open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
+    flushSync();
+    const box = document.querySelector('.surf');
+    expect(box?.hasAttribute('inert'), 'the composer behind the picture is inert').toBe(true);
+    surface.phase = 'closed';
+    flushSync();
+    expect(box?.hasAttribute('inert'), 'and it is given back with the chat').toBe(false);
+  });
+
+  /**
    * **The box is the keyboard's** (Ved, 2026-10-15): the first printable key
    * with nothing focused lands in the composer, and Tab never walks the pane -
    * it comes to the box from outside and cycles the box's own controls once

@@ -165,10 +165,29 @@
     const bar = barEl;
     const had = document.activeElement;
     restoreTo = had instanceof HTMLElement && had !== document.body ? had : null;
-    bar?.addEventListener('keydown', trap);
+    // **Capture, because the feedback field stops its own keys**: the Field's
+    // handler ends the event before it bubbles to this bar, so a Tab pressed
+    // in the last stop would leave the surface.
+    bar?.addEventListener('keydown', trap, true);
     bar?.focus({ preventScroll: true });
+    // **Everything behind the bar is inert, and the bar is inside that page**:
+    // the walk marks each sibling on the bar's own path, so the chat, rail
+    // and composer stop being tabbable while the picture covers them.
+    const gated: HTMLElement[] = [];
+    let node: Element | null = bar;
+    while (node !== null && node.parentElement !== null) {
+      const parent = node.parentElement;
+      for (const sibling of parent.children) {
+        if (sibling === node || !(sibling instanceof HTMLElement)) continue;
+        if (sibling.hasAttribute('inert')) continue;
+        sibling.setAttribute('inert', '');
+        gated.push(sibling);
+      }
+      node = parent;
+    }
     return () => {
-      bar?.removeEventListener('keydown', trap);
+      bar?.removeEventListener('keydown', trap, true);
+      for (const behind of gated) behind.removeAttribute('inert');
       // **Only focus this bar still holds goes back**: a person who clicked
       // elsewhere has chosen their own place. A detached bar leaves focus on
       // the body, which is the same hand letting go.
