@@ -1371,9 +1371,10 @@ describe('one turn folded into the units a view draws', () => {
   });
 
   it('names a fired cron by its schedule when the delivery frame said which', () => {
-    // The prose carries the prompt and never the schedule, so the name can
-    // only come from the frame the delivery arrives with - joined here by the
-    // prompt's own id, which both carry.
+    // The prose carries the prompt and never the schedule, so the name comes
+    // from the pairing: the delivery frame while it lands, or the conversation
+    // read after a reload, which seeds the same store. Here the frame stands
+    // in, joined by the prompt's own id, which both carry.
     const fired = heard([text('[Cron]\n\nsummarise overnight CI')], { uuid: 'p-77aa' });
     cronNames.remember('p-77aa', 'Morning summary');
     const named = inboundsOf(fold([fired])[0])[0];
