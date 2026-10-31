@@ -2850,14 +2850,8 @@ fix the parser, then the client row.";
         let flat = SKILL.split_whitespace().collect::<Vec<_>>().join(" ");
         for (clause, why) in [
             ("## Step 1 - Memory first (REQUIRED, before any handoff text)", "his memory step"),
-            (
-                "## Where the handoff goes: lead or worker",
-                "the seat decides the destination",
-            ),
-            (
-                "workers/<label>.md` in the same memory directory",
-                "a worker writes its own file",
-            ),
+            ("## Where the handoff goes: lead or worker", "the seat decides the destination"),
+            ("workers/<label>.md` in the same memory directory", "a worker writes its own file"),
             ("A worker writes no index line", "a worker writes no index line"),
             ("update it in place and delete superseded narration", "in-place updates"),
             (
