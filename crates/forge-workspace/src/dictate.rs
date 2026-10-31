@@ -1111,7 +1111,8 @@ async fn run_recording(
     // capture holds channel receivers and is not Sync.
     let meter = capture.meter();
     let cap = capture.max_capture();
-    let submit = record_until_stopped(&key, &meter, &mut stop, &updates, cap, initiator).await;
+    let submit =
+        record_until_stopped(&key, &meter, &mut stop, &updates, cap, generation, initiator).await;
     if !submit {
         drop(capture);
         clear_recording_if_ours(&ws, &key, initiator);
@@ -1125,7 +1126,11 @@ async fn run_recording(
         return;
     }
 
-    let _ = updates.send(SessionUpdate::DictateTranscribing { key: key.clone(), initiator });
+    let _ = updates.send(SessionUpdate::DictateTranscribing {
+        key: key.clone(),
+        generation,
+        initiator,
+    });
     let Ok(ticket) = capture.finish_with(options) else {
         tracing::warn!(
             event_name = "dictate_submit_failed",
@@ -1267,6 +1272,7 @@ async fn record_until_stopped(
     stop: &mut tokio::sync::mpsc::Receiver<bool>,
     updates: &crate::update_fanout::UpdateFanout,
     cap: Duration,
+    generation: u64,
     initiator: Option<u64>,
 ) -> bool {
     let deadline = Instant::now() + cap;
@@ -1288,6 +1294,7 @@ async fn record_until_stopped(
                 let _ = updates.send(SessionUpdate::DictateLevel {
                     key: key.clone(),
                     peak_db,
+                    generation,
                     initiator,
                 });
             }

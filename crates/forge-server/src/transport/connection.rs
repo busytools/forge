@@ -4801,7 +4801,12 @@ mod tests {
         assert!(ours_to_hear(&mine, 7), "a connection hears the take it started");
         assert!(!ours_to_hear(&mine, 8), "and not one another connection started");
 
-        let terminal = SessionUpdate::DictateLevel { key: seat, peak_db: -20.0, initiator: None };
+        let terminal = SessionUpdate::DictateLevel {
+            key: seat,
+            peak_db: -20.0,
+            generation: 1,
+            initiator: None,
+        };
         assert!(
             !ours_to_hear(&terminal, 7),
             "the terminal's in-process take is nobody's on the socket"

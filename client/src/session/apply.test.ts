@@ -854,13 +854,17 @@ describe('applyUpdate', () => {
       });
       expect(started.composer.take).toMatchObject({ phase: 'recording', floor_db: -50 });
 
-      const heard = applyUpdate(started, { dictate_level: { key: SLOT, peak_db: -20 } });
+      const heard = applyUpdate(started, {
+        dictate_level: { key: SLOT, peak_db: -20, generation: 1 },
+      });
       // The meter draws fractions of the take's own range, computed where the
       // server computes them: the reading, its own floor, and the ceiling.
       expect(take(heard)['levels']).toEqual([0.6]);
       expect(take(heard)['peak_db']).toBe(-20);
 
-      const transcribing = applyUpdate(heard, { dictate_transcribing: { key: SLOT } });
+      const transcribing = applyUpdate(heard, {
+        dictate_transcribing: { key: SLOT, generation: 1 },
+      });
       expect(take(transcribing)['phase']).toBe('transcribing');
 
       const progress = applyUpdate(transcribing, {
@@ -892,6 +896,34 @@ describe('applyUpdate', () => {
     it('drops a reading that belongs to no take', () => {
       const held = empty();
       expect(applyUpdate(held, { dictate_level: { key: SLOT, peak_db: -20 } })).toBe(held);
+    });
+
+    /**
+     * **A take's readings and its transcribing are that take's.** The two
+     * frames carry the take's own generation like their siblings, so one
+     * that lands after a newer start cannot write its meter into the live
+     * take or move it to `transcribing` while the microphone still records
+     * (#839).
+     */
+    it('drops a superseded take\'s reading and transcribing', () => {
+      const first = applyUpdate(empty(), {
+        dictate_started: { key: SLOT, floor_db: -50, generation: 1 },
+      });
+      const second = applyUpdate(first, {
+        dictate_started: { key: SLOT, floor_db: -40, generation: 2 },
+      });
+
+      const stale = applyUpdate(second, {
+        dictate_level: { key: SLOT, peak_db: -20, generation: 1 },
+      });
+      expect(stale, 'the older take\'s reading is not the live meter').toBe(second);
+
+      const moved = applyUpdate(second, {
+        dictate_transcribing: { key: SLOT, generation: 1 },
+      });
+      expect(take(moved)['phase'], 'nor does it move the live take to transcribing').toBe(
+        'recording',
+      );
     });
 
     it('keeps a stalled take alive for its own generation only', () => {

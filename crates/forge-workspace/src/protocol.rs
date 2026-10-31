@@ -1979,6 +1979,10 @@ pub enum SessionUpdate {
         key: SessionSlot,
         #[serde(default, deserialize_with = "no_signal_reads_as_negative_infinity")]
         peak_db: f32,
+        /// The take's own, as [`SessionUpdate::DictateStarted`] announced it:
+        /// a reading that arrives after a newer take started is the older
+        /// one's and belongs in no live meter.
+        generation: u64,
         /// The take's own, as [`SessionUpdate::DictateStarted`] announced
         /// it.
         #[serde(skip)]
@@ -1987,6 +1991,10 @@ pub enum SessionUpdate {
     /// The take from `key` was submitted and a transcript is in flight.
     DictateTranscribing {
         key: SessionSlot,
+        /// The take's own, as [`SessionUpdate::DictateStarted`] announced it:
+        /// a stale one must not move a newer take to `transcribing` while its
+        /// microphone still records.
+        generation: u64,
         /// The take's own, as [`SessionUpdate::DictateStarted`] announced
         /// it.
         #[serde(skip)]
@@ -2897,6 +2905,7 @@ mod dictate_level_wire_tests {
         let silent = SessionUpdate::DictateLevel {
             key: key.clone(),
             peak_db: f32::NEG_INFINITY,
+            generation: 1,
             initiator: None,
         };
         let encoded = serde_json::to_value(&silent).expect("a level encodes");
@@ -2912,13 +2921,45 @@ mod dictate_level_wire_tests {
         assert_eq!(peak_db, f32::NEG_INFINITY, "null must read back as no signal");
 
         // And a reading that IS a signal is untouched by the tolerance.
-        let heard = SessionUpdate::DictateLevel { key, peak_db: -22.5, initiator: None };
+        let heard =
+            SessionUpdate::DictateLevel { key, peak_db: -22.5, generation: 1, initiator: None };
         let encoded = serde_json::to_value(&heard).expect("a level encodes");
         let back: SessionUpdate = serde_json::from_value(encoded).expect("a level decodes");
         let SessionUpdate::DictateLevel { peak_db, .. } = back else {
             panic!("the level decoded into another update")
         };
         assert_eq!(peak_db, -22.5);
+    }
+
+    /// **A reading and a transcribing name the take they belong to.** They
+    /// are the two frames a client uses to draw a live take, and a frame
+    /// that arrived after a newer start is the older take's: without the
+    /// number the client cannot tell, and writes it into the live meter
+    /// (#839).
+    #[test]
+    fn a_reading_and_a_transcribing_cross_with_their_generation() {
+        let key = SessionSlot::from_str_for_test("take-generation".to_owned());
+        let level = SessionUpdate::DictateLevel {
+            key: key.clone(),
+            peak_db: -20.0,
+            generation: 7,
+            initiator: None,
+        };
+        let encoded = serde_json::to_value(&level).expect("a level encodes");
+        assert_eq!(
+            encoded["dictate_level"]["generation"],
+            serde_json::json!(7),
+            "a reading carries its take's own number: {encoded}"
+        );
+
+        let transcribing =
+            SessionUpdate::DictateTranscribing { key, generation: 7, initiator: None };
+        let encoded = serde_json::to_value(&transcribing).expect("a transcribing encodes");
+        assert_eq!(
+            encoded["dictate_transcribing"]["generation"],
+            serde_json::json!(7),
+            "and so does the frame that says it is transcribing: {encoded}"
+        );
     }
 
     /// A take that heard nothing crosses the peak in its END the same way a
@@ -2986,8 +3027,17 @@ mod dictate_wire_ownership_tests {
                 generation: 1,
                 initiator: Some(7),
             },
-            SessionUpdate::DictateLevel { key: key.clone(), peak_db: -20.0, initiator: Some(7) },
-            SessionUpdate::DictateTranscribing { key: key.clone(), initiator: Some(7) },
+            SessionUpdate::DictateLevel {
+                key: key.clone(),
+                peak_db: -20.0,
+                generation: 1,
+                initiator: Some(7),
+            },
+            SessionUpdate::DictateTranscribing {
+                key: key.clone(),
+                generation: 1,
+                initiator: Some(7),
+            },
             SessionUpdate::DictateProgress {
                 key: key.clone(),
                 generation: 1,

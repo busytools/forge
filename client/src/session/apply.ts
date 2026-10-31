@@ -370,13 +370,13 @@ export const HANDLERS: Record<string, Apply> = {
   dictate_level: (held, payload) => {
     const take = heldTake(held.composer);
     const peak = number(payload['peak_db']);
-    if (take === null || peak === null) return held;
+    if (take === null || !ofThisTake(take, payload) || peak === null) return held;
     return withTake(held, push(take, peak), null);
   },
 
-  dictate_transcribing: (held) => {
+  dictate_transcribing: (held, payload) => {
     const take = heldTake(held.composer);
-    if (take === null) return held;
+    if (take === null || !ofThisTake(take, payload)) return held;
     return withTake(held, { ...take, phase: 'transcribing' }, null);
   },
 

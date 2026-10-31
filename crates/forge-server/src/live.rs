@@ -738,7 +738,12 @@ mod tests {
                 generation: 1,
                 initiator: None,
             },
-            SessionUpdate::DictateLevel { key: slot.clone(), peak_db: -20.0, initiator: None },
+            SessionUpdate::DictateLevel {
+                key: slot.clone(),
+                peak_db: -20.0,
+                generation: 1,
+                initiator: None,
+            },
         ] {
             assert!(!fleet_news(&update).any(), "{update:?} is not a row changing");
         }

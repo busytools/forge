@@ -894,7 +894,12 @@ async fn a_take_is_heard_by_its_own_connection_and_no_other() {
     // Then the two updates the OTHER connection must not hear either: the
     // in-process take on the same seat, whose update carries no
     // connection, and the marker that closes the read below.
-    fleet.emit(SessionUpdate::DictateLevel { key: lead_seat(), peak_db: -20.0, initiator: None });
+    fleet.emit(SessionUpdate::DictateLevel {
+        key: lead_seat(),
+        peak_db: -20.0,
+        generation: 1,
+        initiator: None,
+    });
     fleet.emit(SessionUpdate::TurnCancelled { key: lead_seat() });
 
     // The other connection's stream, read one message at a time up to the
