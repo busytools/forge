@@ -271,7 +271,10 @@
     padding: 8px 10px; border: 1px solid var(--line); border-radius: 11px;
     background: var(--s2); color: var(--dim); }
   .pop .dev .nm { font-size: var(--fs-base); color: var(--text); }
-  .pop .dev .chev { margin-left: auto; color: var(--dim); }
+  /* The shared arrow, shown on the door the way the row links show it, and
+     turned by the state the door announces. */
+  .pop .dev .arw { margin-left: auto; color: var(--dim); opacity: 1; }
+  .pop .dev.open .arw { transform: rotate(90deg); color: var(--accent); }
   .pop .ft { padding: 13px 15px 14px; }
   .pop .rst { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
 
@@ -394,6 +397,7 @@
 
 <svg width="0" height="0" style="position:absolute" aria-hidden="true">
   <symbol id="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></symbol>
+  <symbol id="i-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></symbol>
   <symbol id="i-x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></symbol>
   <symbol id="i-edit" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.8 2.8 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5z"/></symbol>
   <symbol id="i-dots" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M5 12h.01M12 12h.01M19 12h.01"/></symbol>
@@ -837,7 +841,7 @@ each is a row of chips rather than a list of rows.</p>
           </div>
           <div class="ax">
             <div class="lbl">TRANSCRIBING</div>
-            <div class="dev"><span class="nm">cohere-transcribe-03-2026-Q4_K_M.gguf</span><span class="chev">&#9656;</span></div>
+            <div class="dev"><span class="nm">cohere-transcribe-03-2026-Q4_K_M.gguf</span><svg class="ic arw"><use href="#i-chev"/></svg></div>
           </div>
           <div class="ax">
             <div class="lbl">CLEANUP <span class="src">&#183; from forge.toml</span></div>
@@ -848,7 +852,7 @@ each is a row of chips rather than a list of rows.</p>
           </div>
           <div class="ax">
             <div class="lbl">INPUT DEVICE</div>
-            <div class="dev"><svg class="ic"><use href="#i-mic"/></svg><span class="nm">Shure SM7B</span><span class="chev">&#9656;</span></div>
+            <div class="dev"><svg class="ic"><use href="#i-mic"/></svg><span class="nm">Shure SM7B</span><svg class="ic arw"><use href="#i-chev"/></svg></div>
           </div>
           <div class="ft"><span class="rst">Reset all to defaults</span></div>
         </div>
@@ -881,7 +885,7 @@ each is a row of chips rather than a list of rows.</p>
       <div class="pop">
         <div class="ax" style="padding-bottom:14px">
           <div class="lbl">TRANSCRIBING</div>
-          <div class="dev"><span class="nm">cohere-transcribe-03-2026-Q4_K_M.gguf</span><span class="chev">&#9656;</span></div>
+          <div class="dev open"><span class="nm">cohere-transcribe-03-2026-Q4_K_M.gguf</span><svg class="ic arw"><use href="#i-chev"/></svg></div>
           <div class="list">
             <div class="drow on"><span class="nm">cohere-transcribe-03-2026-Q4_K_M.gguf</span></div>
             <div class="drow"><span class="nm">granite-speech-5.0-470m-turboctc-nc-Q4_K_M.gguf</span></div>
@@ -896,7 +900,7 @@ each is a row of chips rather than a list of rows.</p>
       <div class="pop">
         <div class="ax" style="padding-bottom:14px">
           <div class="lbl">CLEANUP</div>
-          <div class="dev"><span class="nm">s1-mini-q4_k_m.gguf</span><span class="chev">&#9656;</span></div>
+          <div class="dev open"><span class="nm">s1-mini-q4_k_m.gguf</span><svg class="ic arw"><use href="#i-chev"/></svg></div>
           <div class="list">
             <div class="drow on"><span class="nm">s1-mini-q4_k_m.gguf</span></div>
             <div class="note">nothing else on this machine takes this role &#183; the models page installs more</div>
@@ -913,7 +917,7 @@ each is a row of chips rather than a list of rows.</p>
       <div class="pop">
         <div class="ax" style="padding-bottom:14px">
           <div class="lbl">INPUT DEVICE</div>
-          <div class="dev"><svg class="ic"><use href="#i-mic"/></svg><span class="nm">Shure SM7B</span><span class="chev">&#9656;</span></div>
+          <div class="dev open"><svg class="ic"><use href="#i-mic"/></svg><span class="nm">Shure SM7B</span><svg class="ic arw"><use href="#i-chev"/></svg></div>
           <div class="list">
             <div class="note bad">the inputs could not be listed &#183; try again</div>
           </div>
@@ -927,7 +931,7 @@ each is a row of chips rather than a list of rows.</p>
       <div class="pop">
         <div class="ax" style="padding-bottom:14px">
           <div class="lbl">INPUT DEVICE</div>
-          <div class="dev missing"><svg class="ic"><use href="#i-mic"/></svg><span class="nm">sm7b-unplugged</span><span class="tag">not present</span><span class="chev">&#9656;</span></div>
+          <div class="dev missing"><svg class="ic"><use href="#i-mic"/></svg><span class="nm">sm7b-unplugged</span><span class="tag">not present</span><svg class="ic arw"><use href="#i-chev"/></svg></div>
         </div>
       </div>
       <p class="note" style="margin:8px 0 0"><b>An input that is absent is named and marked</b>
