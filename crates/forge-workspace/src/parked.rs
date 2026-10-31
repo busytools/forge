@@ -54,6 +54,20 @@ impl crate::Workspace {
             .push(ParkedPeer { sender: sender.clone(), wrapped });
     }
 
+    /// Whether `slot`'s bucket still holds the peer prompt with `id`. The
+    /// wake path parks before it dispatches a spawn, so an entry the spawn's
+    /// own failure expired means the delivery was not accepted.
+    pub(crate) fn peer_prompt_is_parked(
+        &self,
+        slot: &SessionSlot,
+        id: &crate::mcp::peers::types::MessageId,
+    ) -> bool {
+        self.parked_by_slot
+            .lock()
+            .get(slot)
+            .is_some_and(|bucket| bucket.peer.iter().any(|parked| parked.wrapped.id == *id))
+    }
+
     /// Park a fired cron prompt for `slot`, missed-marked when it came
     /// due while the owner was asleep. The entry's identity rides along so
     /// the drained echo can name the schedule it came from.

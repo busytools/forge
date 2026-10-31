@@ -619,6 +619,19 @@ impl SessionTask {
                         }
                     }
                 } else {
+                    // **A git worker whose worktree is gone is failed BEFORE
+                    // it is kicked, announced or handed its parked prompts.**
+                    // Those are this branch's side effects, and doing them
+                    // first announced a dead worker live and dispatched
+                    // crons, Gotify, Slack and peer prompts into a session
+                    // the failure then released (#1593).
+                    if self
+                        .workspace
+                        .upgrade()
+                        .is_some_and(|workspace| workspace.fail_worker_without_worktree(&self.key))
+                    {
+                        return false;
+                    }
                     self.connected_once = true;
                     // When the connecting session is a project's lead and
                     // persists workers that are not live yet, dispatch
@@ -2483,6 +2496,13 @@ impl Drop for SessionTask {
                     });
                 }
             }
+            // **Every exit releases the pool, not only `run`'s tail.** A
+            // task that ends by panic, a dropped runtime or an early return
+            // never reaches that tail, and its pooled handle outlived it:
+            // every later spawn fast-pathed a seat with nothing behind it
+            // (#2683). The identity check keeps a superseded task from
+            // taking its successor's entry.
+            workspace.release_session_if_current(&self.key, &self.handle);
         }
     }
 }
@@ -3356,9 +3376,13 @@ fn hold_view_facts(domain: &mut DomainSession, event: &AgentEvent) {
         domain.cards_snapshot = domain.card_tracker.cards();
         // A monitor started before this process did is in the transcript
         // the connect carries, so the same fold runs over it: a view
-        // opening the session sees the monitor rather than nothing.
+        // opening the session sees the monitor rather than nothing. A
+        // sub-agent's Monitor call is the instance's, not the session's.
         if let Some(history) = history_updates {
             for msg in history {
+                if forge_primitives::messages::ran_under_a_dispatch(msg) {
+                    continue;
+                }
                 fold_monitor(domain, msg, MonitorOrigin::Transcript);
             }
             // A transcript's monitors are all settled, so the seed drains in
@@ -3988,6 +4012,43 @@ mod tests {
             teardown_done: None,
         };
         (task, cmds)
+    }
+
+    /// A task that ends any way but `run`'s own tail - a panic, or a
+    /// dropped runtime - takes its pool entry with it. The tail alone left
+    /// a handle pooled with nothing behind it, and every later spawn
+    /// fast-pathed the dead seat (#2683).
+    #[tokio::test]
+    async fn dropping_a_session_task_releases_its_pooled_handle() {
+        let (workspace, _updates) = crate::Workspace::testing_stub();
+        let key = SessionSlot::from_str_for_test("drop-task-key");
+        let (task, _update_rx) = review_task_for(&workspace, &key);
+        let handle = Arc::clone(&task.handle);
+        workspace.pool.lock().insert(
+            key.clone(),
+            crate::workspace::PooledAgent {
+                handle: Arc::clone(&handle),
+                account: forge_gateway::AccountKey("acct-a".to_owned()),
+                permission_mode: None,
+                registration: None,
+                session_id: "drop-task".to_owned(),
+            },
+        );
+        let (cmd_tx, _cmd_rx) = mpsc::unbounded_channel();
+        workspace.command_senders.lock().insert(key.clone(), cmd_tx);
+        workspace.register_domain_session(key.clone(), Some(Arc::clone(&handle)));
+
+        drop(task);
+
+        assert!(!workspace.pool.lock().contains_key(&key), "the pool entry goes with its task");
+        assert!(
+            !workspace.command_senders.lock().contains_key(&key),
+            "and the command sender the seat was addressed by",
+        );
+        assert!(
+            !workspace.domain_handles.lock().contains_key(&key),
+            "and the domain handle that pointed at it",
+        );
     }
 
     /// A handoff swaps under the id its row names, leaves the brief where
@@ -9636,6 +9697,191 @@ provider = "anthropic"
         }
     }
 
+    /// A resumed conversation carries its sub-agent frames to the page: they
+    /// are the dispatch row's expansion, and the card fold must open a card
+    /// for an instance whose sidecar settled every call even though its only
+    /// dispatch answer is the launch acknowledgement (#1763).
+    #[tokio::test]
+    async fn subagent_frames_ride_the_connected_history() {
+        let (workspace, mut update_rx) = crate::Workspace::testing_stub();
+        let session_key = SessionSlot::from_str_for_test("sidecar-chat-uuid");
+        let domain =
+            Arc::new(parking_lot::Mutex::new(DomainSession::new(session_key.clone(), None)));
+        let (handle, _agent_cmd_rx) = Agent::testing_stub();
+        let (_cmd_tx, command_rx) =
+            tokio::sync::mpsc::unbounded_channel::<crate::protocol::Command>();
+        let mut task = SessionTask {
+            key: session_key.clone(),
+            handle: Arc::new(handle),
+            command_rx,
+            domain: Arc::clone(&domain),
+            update_tx: workspace.update_sender(),
+            connected_once: false,
+            workspace: Arc::downgrade(&workspace),
+            compaction_count: 0,
+            successor: None,
+            teardown_done: None,
+        };
+        let dispatch = serde_json::from_value(serde_json::json!({
+            "type": "assistant",
+            "message": {"id": "msg_1", "type": "message", "role": "assistant",
+                "model": "claude-sonnet-5", "content": [
+                {"type": "tool_use", "id": "toolu_a", "name": "Agent",
+                 "input": {"prompt": "explore"}}
+            ]},
+            "session_id": "sidecar-chat",
+            "uuid": "a1",
+        }))
+        .expect("the dispatch decodes");
+        let child = serde_json::from_value(serde_json::json!({
+            "type": "assistant",
+            "message": {"id": "msg_2", "type": "message", "role": "assistant",
+                "model": "claude-sonnet-5", "content": [
+                {"type": "tool_use", "id": "toolu_child", "name": "Bash",
+                 "input": {"command": "ls"}}
+            ]},
+            "parent_tool_use_id": "toolu_a",
+            "session_id": "sidecar-chat",
+            "uuid": "c1",
+        }))
+        .expect("the sub-agent frame decodes");
+        let dispatch_ack = serde_json::from_value(serde_json::json!({
+            "type": "user",
+            "message": {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "toolu_a",
+                 "content": "Async agent launched successfully"}
+            ]},
+            "session_id": "sidecar-chat",
+            "uuid": "u1",
+        }))
+        .expect("the dispatch ack decodes");
+        let child_result = serde_json::from_value(serde_json::json!({
+            "type": "user",
+            "message": {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "toolu_child", "content": "total 0"}
+            ]},
+            "session_id": "sidecar-chat",
+            "uuid": "u2",
+        }))
+        .expect("the child result decodes");
+        let mut event = connected_event("sidecar-chat", "/tmp/sidecar");
+        if let AgentEvent::Connected { history_updates, .. } = &mut event {
+            *history_updates = Some(vec![dispatch, dispatch_ack, child, child_result]);
+        }
+
+        task.translate_event(event);
+
+        let mut history_len = None;
+        while let Ok(frame) = update_rx.try_recv() {
+            if let SessionUpdate::Connected { history, .. } = &*frame.update {
+                history_len = Some(history.len());
+            }
+        }
+        assert_eq!(history_len, Some(4), "the sub-agent frames ride the page as the row expansion");
+        let cards = domain.lock().cards_snapshot.clone();
+        assert_eq!(cards.len(), 1, "the folded instance gets its card");
+        assert_eq!(cards[0].calls, 1, "and its call is the card's");
+        assert!(
+            !cards[0].running,
+            "every sidecar call settled means the instance is settled, not hidden",
+        );
+    }
+
+    /// **The worktree check runs before the first connect's side effects.**
+    /// A git worker whose worktree is gone must not be announced live,
+    /// kicked, or handed its parked prompts, because the failure then
+    /// releases the session those prompts were dispatched into (#1593).
+    ///
+    /// **The path composes from the row's root, never the connect cwd.** A
+    /// resumed worker connects with its worktree as cwd, so composing from
+    /// that asked about `<worktree>/.claude/worktrees/<label>` and named the
+    /// doubled path in the reason.
+    #[tokio::test]
+    async fn a_git_worker_without_a_worktree_is_failed_before_the_first_connect_effects() {
+        let (workspace, mut update_rx) = crate::Workspace::testing_stub();
+        let session_key = SessionSlot::worker("TestOrg", "proj-x", "builder");
+        let project_key = crate::ProjectKey::new("proj-x");
+        let root = tempfile::tempdir().expect("root");
+        let worktree = root.path().join(".claude/worktrees/builder");
+        workspace.insert_live_worker(
+            &project_key,
+            crate::mcp::workers::types::WorkerEntry {
+                label: "builder".to_owned(),
+                charter: "charter".to_owned(),
+                slot: session_key.clone(),
+                session_id: Some(forge_primitives::SessionId::new("builder-session")),
+                status: forge_primitives::WorkerLiveness::Spawning,
+                spawned_at: std::time::SystemTime::UNIX_EPOCH,
+                spawned_by: SessionSlot::lead("TestOrg", "proj-x"),
+                needs_tag: true,
+                is_git_repo_at_spawn: true,
+                cwd: Some(root.path().to_path_buf()),
+                diagnostic: None,
+                kick: None,
+            },
+        );
+        let (handle, _commands) = Agent::testing_stub();
+        let handle = Arc::new(handle);
+        workspace.pool.lock().insert(
+            session_key.clone(),
+            crate::workspace::PooledAgent {
+                handle: Arc::clone(&handle),
+                account: forge_gateway::AccountKey("acct-a".to_owned()),
+                permission_mode: None,
+                registration: None,
+                session_id: "builder-session".to_owned(),
+            },
+        );
+        let (commands, mut routed) = tokio::sync::mpsc::unbounded_channel();
+        workspace.command_senders.lock().insert(session_key.clone(), commands);
+        let (_task_tx, task_rx) =
+            tokio::sync::mpsc::unbounded_channel::<crate::protocol::Command>();
+        let domain =
+            Arc::new(parking_lot::Mutex::new(DomainSession::new(session_key.clone(), None)));
+        let mut task = SessionTask {
+            key: session_key.clone(),
+            handle,
+            command_rx: task_rx,
+            domain: Arc::clone(&domain),
+            update_tx: workspace.update_sender(),
+            connected_once: false,
+            workspace: Arc::downgrade(&workspace),
+            compaction_count: 0,
+            successor: None,
+            teardown_done: None,
+        };
+        // A resumed worker's connect cwd is already its worktree.
+        let alive =
+            task.translate_event(connected_event("builder-session", &worktree.to_string_lossy()));
+
+        assert!(!alive, "the task stops rather than continue on a failed worker");
+        let mut connected = false;
+        while let Ok(frame) = update_rx.try_recv() {
+            if matches!(&*frame.update, SessionUpdate::Connected { .. }) {
+                connected = true;
+            }
+        }
+        assert!(!connected, "the dead worker is never announced live");
+        assert!(routed.try_recv().is_err(), "and nothing is dispatched into its session");
+        let entry = workspace
+            .list_live_workers(&project_key)
+            .into_iter()
+            .find(|entry| entry.label == "builder")
+            .expect("the row stays as the visible failure");
+        assert_eq!(entry.status, forge_primitives::WorkerLiveness::Failed);
+        let reason = entry.diagnostic.expect("the row names the missing worktree");
+        let worktree = worktree.display().to_string();
+        assert!(reason.contains(&worktree), "the row names the worktree: {reason}");
+        assert!(
+            !reason.contains("builder/.claude/worktrees/builder"),
+            "the reason is not the connect cwd composed a second time: {reason}",
+        );
+        assert!(
+            !workspace.session_is_pooled(&session_key),
+            "and the session is released with the failure",
+        );
+    }
+
     /// A compaction boundary moves the task's count, which is the handoff
     /// policy's `after_compactions` backstop.
     ///
@@ -10540,6 +10786,26 @@ provider = "anthropic"
             domain.monitors[0].task_id, None,
             "with no task id, which is why nothing could ever settle it",
         );
+    }
+
+    /// **A sub-agent's Monitor call is not the session's.** The connect-time
+    /// fold that seeds monitors skips a parented frame, so a resumed
+    /// conversation does not grow a monitor row from work an instance ran.
+    #[test]
+    fn a_subagents_monitor_call_is_not_seeded() {
+        let mut domain = empty_domain();
+        let mut framed = monitor_tool_use("tu-mon", "ci-watch");
+        if let forge_primitives::Message::Assistant { parent_tool_use_id, .. } = &mut framed {
+            *parent_tool_use_id = Some("toolu_dispatch".to_owned());
+        }
+        let mut event = connected_event("s-mon", "/tmp/mon");
+        if let AgentEvent::Connected { history_updates, .. } = &mut event {
+            *history_updates = Some(vec![framed]);
+        }
+
+        apply_event_to_domain(&mut domain, &event);
+
+        assert!(domain.monitors.is_empty(), "the instance's monitor is not the session's");
     }
 
     /// A live tool call is not settled: its task is running and the

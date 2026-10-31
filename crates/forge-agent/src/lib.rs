@@ -63,6 +63,18 @@ pub fn session_history(
     forge_sdk_worker::load_history_messages(config_dir, session_id, cwd, session_id)
 }
 
+/// [`session_history`] over the session's own rows only: sub-agent sidecars
+/// are not opened or folded. The handoff brief takes this one, so it pays for
+/// neither the frames nor the parse. A page read does not: a dispatch row
+/// draws its sidecar frames (#1763).
+pub fn session_history_main_thread(
+    config_dir: &std::path::Path,
+    session_id: &str,
+    cwd: &str,
+) -> forge_primitives::ConversationHistory {
+    forge_sdk_worker::load_history_messages_main_thread(config_dir, session_id, cwd, session_id)
+}
+
 /// Whether a transcript row carries a frame, which is what tells a copy's
 /// numbering from the file's when the frames the CLI never wrote are in it.
 pub use userdata::catalog::scan::has_a_transcript_row;

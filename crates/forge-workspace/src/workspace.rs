@@ -3263,15 +3263,28 @@ impl Workspace {
         // gone along with the field that carried it.
         let account_dir = self.config_dir.clone();
 
-        // Fast path: cache hit. A wake that resolved to a session already
-        // in the pool hands back its handle; parked payloads are not a
-        // concern here, because they are addressed to a slot rather than
-        // to a key and this path never moved one.
-        {
+        // Fast path: cache hit, but only while a session task still
+        // consumes the slot. A pooled handle a task has left behind
+        // answers nothing - the seat takes no prompt and no child starts -
+        // and handing it back made every later spawn fast-path a seat that
+        // could never start again (#2683).
+        let pooled = {
             let pool = self.pool.lock();
-            if let Some(existing) = pool.get(&session_slot) {
-                return Ok(Arc::clone(&existing.handle));
+            pool.get(&session_slot)
+                .map(|existing| (Arc::clone(&existing.handle), existing.session_id.clone()))
+        };
+        if let Some((existing, session_id)) = pooled {
+            if self.pooled_handle_has_task(&session_slot) {
+                return Ok(existing);
             }
+            tracing::info!(
+                target: "forge_workspace::workspace",
+                event_name = "pooled_handle_without_task",
+                slot = %session_slot.display(),
+                occupant = %session_id,
+                "a pooled handle has no session task behind it; rebuilding the session",
+            );
+            self.release_session_if_current(&session_slot, &existing);
         }
 
         // Resolve which account this spawn lands under: the walk over
@@ -3587,11 +3600,11 @@ impl Workspace {
         // SessionTask to drain on Connected.
         let arc = Arc::new(handle);
 
-        // Insert: race-safe via "if absent" semantics. If a concurrent
-        // caller raced us to the spawn, theirs wins the pool slot and
-        // ours drops at end-of-scope (subprocess killed via Client's
-        // existing Drop). Single-user scope makes the race effectively
-        // impossible.
+        // Insert: a concurrent caller's live session wins the slot and hands
+        // its handle back (ours drops at end-of-scope); an entry whose task
+        // is gone is stale and this spawn replaces it. Single-user scope
+        // makes the race effectively impossible, so the check is about the
+        // stale entry a crashed task left, not about two live spawns.
         //
         // **A session may not bind to a project the config no longer
         // holds.** A save's identity diff and this bind are serialized on
@@ -3600,7 +3613,7 @@ impl Workspace {
         // pooled first (the save's guard sees it and refuses). Without
         // that, a spawn resolving mid-save leaves a session running but
         // off every roster.
-        {
+        let (cmd_rx, teardown_done, replaced_sender) = {
             let _settings = self.settings_write.lock();
             let held = self.config_arc();
             // **A save that has landed but that the watcher has not reloaded
@@ -3636,9 +3649,37 @@ impl Workspace {
             }
             let mut pool = self.pool.lock();
             if let Some(existing) = pool.get(&session_slot) {
-                rollback.armed = false;
-                return Ok(Arc::clone(&existing.handle));
+                // A concurrent spawn won the slot: its handle is the one to
+                // hand back, but only while a task consumes it. A handle
+                // whose task is gone is this spawn's to replace, the same
+                // stale entry the fast path refuses above. **Race-only**: the
+                // fast path reads the same state, so no single-threaded test
+                // can reach this branch without a seam; it exists for the
+                // entry another spawn inserted while this one built a handle.
+                if self.pooled_handle_has_task(&session_slot) {
+                    rollback.armed = false;
+                    return Ok(Arc::clone(&existing.handle));
+                }
             }
+            // **Registered before the entry is visible, so a pooled handle
+            // never exists without a task behind it.** The teardown signal
+            // and the command sender are what a later spawn reads as "a task
+            // consumes this slot"; inserting the pool entry first left a
+            // window where a concurrent spawn released the winner and both
+            // tasks ran (#2683). The order is the invariant and no test can
+            // observe its violation: the entry goes in last, under the lock
+            // the readers take. A shutdown here starts no session, and the
+            // child this spawn already started goes with it.
+            let Some(teardown_done) = self.mint_session_teardown(&session_slot) else {
+                arc.kill_process_group();
+                return Err(forge_sdk::Error::Connection {
+                    reason: "forge is shutting down; the session was not started".to_owned(),
+                }
+                .into());
+            };
+            let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<Command>();
+            let replaced_sender =
+                self.command_senders.lock().insert(session_slot.clone(), cmd_tx).is_some();
             pool.insert(
                 session_slot.clone(),
                 PooledAgent {
@@ -3651,24 +3692,17 @@ impl Workspace {
             );
             // The session is pooled: its id and domain are its own now.
             rollback.armed = false;
-        }
-
-        // Spawn the per-session `SessionTask` actor. Idempotent -
-        // a second `get_agent_handle` call for the same key reuses
-        // the existing task. The command channel is created only
-        // on the cold path (no existing sender), held by the
-        // workspace until the task takes its receiver.
-        let cmd_rx = {
-            let mut senders = self.command_senders.lock();
-            if senders.contains_key(&session_slot) {
-                None
-            } else {
-                let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<Command>();
-                senders.insert(session_slot.clone(), cmd_tx);
-                Some(cmd_rx)
-            }
+            (cmd_rx, teardown_done, replaced_sender)
         };
-        if let Some(cmd_rx) = cmd_rx {
+        if replaced_sender {
+            tracing::info!(
+                target: "forge_workspace::workspace",
+                event_name = "orphaned_command_sender_replaced",
+                slot = %session_slot.display(),
+                "a command sender had no live task behind it; the rebuilt session takes the slot",
+            );
+        }
+        {
             // `domain_arc` was hoisted above the spawn. Stamp the live
             // `Arc<AgentHandle>` onto its `conn` slot
             // now that the handle exists. Whoever holds the
@@ -3677,25 +3711,6 @@ impl Workspace {
             // round-trip after the spawn lands.
             domain_arc.lock().conn = Some(Arc::clone(&arc));
             let domain = Arc::clone(&domain_arc);
-            // Minted beside the command channel, on the same cold path:
-            // the despawn waits on the receiver before it removes the
-            // worker's worktree, so the removal comes after the child the
-            // task's exit path reaps (#1767). `None` means a shutdown began
-            // between the gate above and here: the child this spawn just
-            // started is released rather than left outside the awaited set.
-            let Some(teardown_done) = self.mint_session_teardown(&session_slot) else {
-                drop(cmd_rx);
-                self.release_session_if_current(&session_slot, &arc);
-                // No task will run this session's exit path, so its group
-                // is taken down here: dropping the handle alone kills the
-                // direct child and leaves the tools the CLI already started
-                // behind.
-                arc.kill_process_group();
-                return Err(forge_sdk::Error::Connection {
-                    reason: "forge is shutting down; the session was not started".to_owned(),
-                }
-                .into());
-            };
             let task = SessionTask {
                 key: session_slot,
                 handle: Arc::clone(&arc),
@@ -5009,6 +5024,14 @@ impl Workspace {
     /// Whether an agent is currently pooled for `slot`.
     pub(crate) fn session_is_pooled(&self, slot: &SessionSlot) -> bool {
         self.pool.lock().contains_key(slot)
+    }
+
+    /// Whether the slot's pooled handle still has a session task consuming
+    /// its commands. The teardown signal is the task's own record of itself:
+    /// unanswered while it runs, answered as it drops. A pooled handle with
+    /// no such task is one no spawn may hand back (#2683).
+    fn pooled_handle_has_task(&self, slot: &SessionSlot) -> bool {
+        self.session_teardown(slot).is_some()
     }
 
     /// When the transcript of the session at `slot` was last written,
@@ -6526,14 +6549,21 @@ impl Workspace {
                     let _enter = span.enter();
                     spawn::handle_spawn_project(self, &project_name, launch_settings);
                 }
-                Command::DeliverPeerPrompt { caller, target_project, wrapped } => {
+                Command::DeliverPeerPrompt { caller, target_project, wrapped, respond } => {
                     let span = tracing::info_span!(
                         "deliver_peer_prompt",
                         target = %target_project,
                         message_id = %wrapped.id,
                     );
                     let _enter = span.enter();
-                    spawn::handle_deliver_peer_prompt(self, &caller, target_project, wrapped);
+                    let outcome =
+                        spawn::handle_deliver_peer_prompt(self, &caller, target_project, wrapped);
+                    // The answer is the handler's own, handed back to
+                    // whoever awaited the dispatch: a caller that got no
+                    // answer must not read one into the silence.
+                    if let Some(respond) = respond {
+                        let _ = respond.send(outcome);
+                    }
                 }
                 Command::SpawnWorker {
                     project_key,
@@ -8684,7 +8714,8 @@ impl Workspace {
 
     /// Every persisted worker label the launchpad still offers, keyed by
     /// the project key it holds. A row the boot wave would not start is
-    /// not among them.
+    /// not among them, unless a live worker holds it as Failed: that row
+    /// is the failure's own record, and its reason has to be drawable.
     ///
     /// The launchpad's worker rows read this once per frame, which is
     /// what the shape is for: one read transaction answers every project
@@ -8716,13 +8747,25 @@ impl Workspace {
             if row.label == forge_primitives::LEAD_LABEL {
                 continue;
             }
-            // A row the wave would not start is not a worker the
-            // launchpad can offer either - the same question, so the
-            // pane and the wave answer it with one call. The tree it
-            // asks about is the ROW's own: a worker pointed at another
-            // directory is offered on that directory, not the project's.
-            if let Some(view) = views.iter().find(|v| v.org == row.org && v.name == row.project)
-                && crate::mcp::workers::types::worker_row_can_start(
+            let Some(view) = views.iter().find(|v| v.org == row.org && v.name == row.project)
+            else {
+                continue;
+            };
+            // A live Failed row is the failure's own record: the start probe
+            // would drop it with the reason it exists to show (#1593). Any
+            // other row the wave would not start is not a worker the
+            // launchpad can offer either - the same question, so the pane
+            // and the wave answer it with one call. The tree it asks about is
+            // the ROW's own: a worker pointed at another directory is offered
+            // on that directory, not the project's.
+            let failed_live = self.live_workers.lock().get(&view.key).is_some_and(|entries| {
+                entries.iter().any(|entry| {
+                    entry.label == row.label
+                        && entry.status == forge_primitives::WorkerLiveness::Failed
+                })
+            });
+            if failed_live
+                || crate::mcp::workers::types::worker_row_can_start(
                     row.cwd.as_deref().map_or(view.path.as_path(), std::path::Path::new),
                     &row.label,
                     row.is_git_repo,
@@ -9923,6 +9966,46 @@ impl Workspace {
         true
     }
 
+    /// Mark a git worker Failed and release its session when the worktree its
+    /// connect is about to run in is gone or unusable. Answers whether it
+    /// did, so the first-connect branch can stop before it kicks the worker,
+    /// announces it live or hands it parked prompts (#1593).
+    ///
+    /// The path composes from the row's own root, never the connect cwd: a
+    /// resumed worker connects with its worktree as cwd, and composing from
+    /// that doubled the path in the reason.
+    pub(crate) fn fail_worker_without_worktree(self: &Arc<Self>, slot: &SessionSlot) -> bool {
+        let Some((project_key, label, is_git, _, root)) = self.worker_lookup_for_session(slot)
+        else {
+            return false;
+        };
+        if !is_git {
+            return false;
+        }
+        let Some(root) = self.live_worker_root(&project_key, root.as_deref()) else {
+            return false;
+        };
+        let path = crate::mcp::workers::types::worker_tag_dir(&root, &label, true);
+        let Some(reason) = forge_agent::env::worktree::worktree_missing_reason(&path) else {
+            return false;
+        };
+        tracing::warn!(
+            target: "forge_workspace::workspace",
+            event_name = "worker_worktree_gone_at_connect",
+            slot = %slot.display(),
+            label = %label,
+            worktree = %path.display(),
+            "the worker's worktree is not usable at connect; the worker is marked failed",
+        );
+        transition_worker_to_failed(self, &project_key, slot, Some(reason));
+        // A Failed row means nothing is running: every other Failed
+        // transition releases the session, and a pooled handle here would let
+        // a later re-spawn fast-path a child under an id the row no longer
+        // means.
+        self.release_session(slot);
+        true
+    }
+
     /// Tag a worker session's JSONL with `forge:worker:<label>` and
     /// transition its `WorkerEntry` from `Spawning` to `Running`.
     /// Called from `SessionTask::translate_event` on the worker's first
@@ -10024,14 +10107,18 @@ impl Workspace {
             label,
             is_git_repo_at_spawn,
         );
+        // **The spawn checked the path before claude created it; nothing
+        // read it again.** A worktree removed before the session connected
+        // otherwise left the worker reading live with nowhere to work
+        // (#1593). That read is `fail_worker_without_worktree`'s, on the
+        // first-connect path before this tag write runs.
         self.apply_worker_tag_or_rollback_with_budget(
             session_key,
             session_id,
             project_key,
             label,
             &effective_cwd,
-            needs_tag,
-            minted_row,
+            WorkerTagFacts { needs_tag, minted_row },
             config_dir,
             WorkerTagRetryBudget {
                 max_attempts: WORKER_TAG_RETRY_ATTEMPTS,
@@ -10051,12 +10138,12 @@ impl Workspace {
         project_key: &ProjectKey,
         label: &str,
         effective_cwd: &std::path::Path,
-        needs_tag: bool,
-        minted_row: bool,
+        facts: WorkerTagFacts,
         config_dir: &std::path::Path,
         budget: WorkerTagRetryBudget,
     ) {
         use tracing::Instrument;
+        let WorkerTagFacts { needs_tag, minted_row } = facts;
         let workspace = Arc::clone(self);
         let project_key = project_key.clone();
         let session_key = session_key.clone();
@@ -10605,6 +10692,15 @@ impl Workspace {
 pub(crate) struct WorkerTagRetryBudget {
     max_attempts: u32,
     delay: Duration,
+}
+
+/// The two facts the connect-time tag path decides on: whether the JSONL
+/// still needs its tag, and whether this spawn minted the row a rollback
+/// would delete.
+#[derive(Clone, Copy)]
+pub(crate) struct WorkerTagFacts {
+    needs_tag: bool,
+    minted_row: bool,
 }
 
 /// Discriminator for how a successful `apply_worker_tag_or_rollback`
@@ -18139,6 +18235,33 @@ mod tag_retry_tests {
         project_dir.join(format!("{session_id}.jsonl"))
     }
 
+    /// Init a repo at `root` and add the worker's worktree at
+    /// `<root>/.claude/worktrees/<label>`, so the connected-time worktree
+    /// check reads a tree git can reuse. The caller names the worktree path
+    /// itself, as the spawn does.
+    fn init_worker_worktree(root: &std::path::Path, label: &str) {
+        let git = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .args(args)
+                .current_dir(root)
+                .status()
+                .expect("spawn git");
+            assert!(status.success(), "git {args:?} failed in {root:?}");
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.email", "t@example.com"]);
+        git(&["config", "user.name", "Test"]);
+        git(&["config", "commit.gpgsign", "false"]);
+        fs::write(root.join("README.md"), "seed").expect("write seed");
+        git(&["add", "."]);
+        git(&["commit", "-q", "-m", "init"]);
+        let worktree = root.join(".claude").join("worktrees").join(label);
+        fs::create_dir_all(worktree.parent().expect("worktrees dir")).expect("mkdir worktrees");
+        let branch = format!("worktree-{label}");
+        let path = worktree.to_string_lossy().into_owned();
+        git(&["worktree", "add", "-q", "-b", &branch, &path]);
+    }
+
     /// JSONL exists from the start: tag_session_with_retry succeeds on
     /// the first attempt and appends a tag row.
     #[tokio::test]
@@ -18330,8 +18453,7 @@ mod tag_retry_tests {
             &project_key,
             "idle",
             cwd.path(),
-            true,
-            true,
+            WorkerTagFacts { needs_tag: true, minted_row: true },
             cfg.path(),
             retry_budget,
         );
@@ -18377,6 +18499,165 @@ mod tag_retry_tests {
             !workspace.worker_rows_for_project(&project_key).is_empty(),
             "the durable row stays: nothing was rolled back, and the row is what re-spawns this \
              worker after a restart",
+        );
+    }
+
+    /// Drive the connect-time worktree check for a worker whose session is
+    /// pooled behind the row, and answer the row's status, its reason, and
+    /// whether the pool, sender and domain were released with the failure.
+    fn connect_worktree_check(
+        cwd: &std::path::Path,
+    ) -> (forge_primitives::WorkerLiveness, Option<String>, bool) {
+        let (workspace, _updates) = Workspace::testing_stub();
+        workspace.seed_test_project("proj-x", "/tmp/proj-x");
+        let project_key = ProjectKey::new(
+            forge_agent::userdata::catalog::scan::project_key_for_directory(Some("/tmp/proj-x")),
+        );
+        let session_key = SessionSlot::worker("TestOrg", "proj-x", "builder");
+        workspace.insert_live_worker(
+            &project_key,
+            crate::mcp::workers::types::WorkerEntry {
+                label: "builder".to_owned(),
+                charter: "charter".to_owned(),
+                slot: session_key.clone(),
+                session_id: None,
+                status: forge_primitives::WorkerLiveness::Spawning,
+                spawned_at: std::time::SystemTime::UNIX_EPOCH,
+                spawned_by: SessionSlot::lead("TestOrg", "proj-x"),
+                needs_tag: true,
+                is_git_repo_at_spawn: true,
+                cwd: Some(cwd.to_path_buf()),
+                diagnostic: None,
+                kick: None,
+            },
+        );
+        // The session the row is about, so the release the failure owes can
+        // be seen: a Failed row must leave none behind.
+        let (handle, _commands) = Workspace::testing_stub_handle();
+        let handle = Arc::new(handle);
+        workspace.pool.lock().insert(
+            session_key.clone(),
+            crate::workspace::PooledAgent {
+                handle: Arc::clone(&handle),
+                account: forge_gateway::AccountKey("acct-a".to_owned()),
+                permission_mode: None,
+                registration: None,
+                session_id: "builder-session".to_owned(),
+            },
+        );
+        let (cmd_tx, _cmd_rx) = tokio::sync::mpsc::unbounded_channel();
+        workspace.command_senders.lock().insert(session_key.clone(), cmd_tx);
+        workspace.register_domain_session(session_key.clone(), Some(Arc::clone(&handle)));
+
+        let failed = workspace.fail_worker_without_worktree(&session_key);
+        assert!(failed, "the connect check refuses a git worker without a usable worktree");
+        let entry = workspace
+            .list_live_workers(&project_key)
+            .into_iter()
+            .find(|entry| entry.label == "builder")
+            .expect("the entry stays as the visible failure");
+        let released = !workspace.session_is_pooled(&session_key)
+            && !workspace.command_senders.lock().contains_key(&session_key)
+            && !workspace.domain_handles.lock().contains_key(&session_key);
+        (entry.status, entry.diagnostic, released)
+    }
+
+    /// A worker whose worktree went missing between its creation and its
+    /// first connect reads Failed with the reason, not Running, and the
+    /// session behind it is released (#1593).
+    #[test]
+    fn a_worker_whose_worktree_is_gone_by_connect_reads_failed() {
+        let cwd = tempdir().expect("cwd");
+        let (status, diagnostic, released) = connect_worktree_check(cwd.path());
+
+        assert_eq!(
+            status,
+            forge_primitives::WorkerLiveness::Failed,
+            "a worker with no worktree must not read live",
+        );
+        let diagnostic = diagnostic.expect("the row carries the reason");
+        assert!(
+            diagnostic.contains("worktree") && diagnostic.contains("gone"),
+            "the reason names what went missing: {diagnostic}",
+        );
+        assert!(released, "a Failed row leaves no pooled session behind");
+    }
+
+    /// The same check for a tree that is there but is not a git worktree git
+    /// can reuse: the branch the tag-write also reads, and the reason says
+    /// so rather than that the directory is gone (#1593).
+    #[test]
+    fn a_worker_whose_worktree_is_not_a_git_worktree_reads_failed() {
+        let cwd = tempdir().expect("cwd");
+        let worktree = cwd.path().join(".claude/worktrees/builder");
+        fs::create_dir_all(&worktree).expect("the worktree dir stands");
+        let (status, diagnostic, released) = connect_worktree_check(cwd.path());
+
+        assert_eq!(status, forge_primitives::WorkerLiveness::Failed);
+        let diagnostic = diagnostic.expect("the row carries the reason");
+        assert!(
+            diagnostic.contains("not a git worktree"),
+            "the reason names the unusable tree: {diagnostic}",
+        );
+        assert!(released, "a Failed row leaves no pooled session behind");
+    }
+
+    /// **A failed worker stays in the persisted-row listing.** The agents
+    /// surface draws its worker rows from these labels; a gone worktree
+    /// fails the start probe, and dropping the row there would hide both
+    /// the failure and its reason (#1593).
+    #[test]
+    fn a_failed_worker_with_a_gone_worktree_stays_in_the_listing() {
+        let (workspace, _updates) = Workspace::testing_stub();
+        let root = tempdir().expect("root");
+        let path = root.path().to_string_lossy().into_owned();
+        workspace.seed_test_project("proj-x", &path);
+        let project_key = ProjectKey::new(
+            forge_agent::userdata::catalog::scan::project_key_for_directory(Some(&path)),
+        );
+        let db_dir = tempdir().expect("db tempdir");
+        workspace.install_db_for_test(
+            crate::store::Db::open(&db_dir.path().join("db.redb")).expect("open db"),
+        );
+        workspace
+            .record_worker_row(
+                &project_key,
+                "builder",
+                "builder-session",
+                "charter",
+                None,
+                None,
+                false,
+                crate::mcp::workers::types::WorkerTree { is_git_repo: true, cwd: None },
+                None,
+            )
+            .expect("seed the worker's row");
+        let session_key = SessionSlot::worker("TestOrg", "proj-x", "builder");
+        workspace.insert_live_worker(
+            &project_key,
+            crate::mcp::workers::types::WorkerEntry {
+                label: "builder".to_owned(),
+                charter: "charter".to_owned(),
+                slot: session_key.clone(),
+                session_id: Some(forge_primitives::SessionId::new("builder-session")),
+                status: forge_primitives::WorkerLiveness::Spawning,
+                spawned_at: std::time::SystemTime::UNIX_EPOCH,
+                spawned_by: SessionSlot::lead("TestOrg", "proj-x"),
+                needs_tag: true,
+                is_git_repo_at_spawn: true,
+                cwd: Some(root.path().to_path_buf()),
+                diagnostic: None,
+                kick: None,
+            },
+        );
+
+        assert!(workspace.fail_worker_without_worktree(&session_key));
+        assert!(
+            workspace
+                .worker_labels_by_project()
+                .get(&project_key)
+                .is_some_and(|labels| labels.iter().any(|label| label == "builder")),
+            "the failed row stays listed, so its reason is drawable",
         );
     }
 
@@ -18756,6 +19037,7 @@ mod tag_retry_tests {
 
         let cfg = tempdir().expect("cfg");
         let repo_root = tempdir().expect("repo");
+        init_worker_worktree(repo_root.path(), "debugger");
         // JSONL lives at the WORKTREE path (matches claude's behaviour
         // under --worktree): <repo>/.claude/worktrees/<label>/.
         let worktree_path = repo_root.path().join(".claude/worktrees/debugger");
