@@ -185,10 +185,14 @@ describe('the markdown a message carries, as the sheet draws it', () => {
 
   it('stacks a table only inside a container-width guard, and keeps a header-only one', () => {
     const rules = rulesOf(SHEET.replace(/\/\*[\s\S]*?\*\//g, ''));
+    // **Any table part set to a block**, not just the selector this change
+    // wrote: a bare `table { display: block }` outside the guard would stack
+    // a table at every width and pass a filter keyed on this branch's own
+    // spelling.
     const stacking = rules.filter(
       (rule) =>
         /display:\s*block/.test(rule.body) &&
-        /:is\(\.prose, \.doc-block\) table/.test(rule.selector),
+        /\b(table|thead|tbody|tr|th|td)\b/.test(rule.selector),
     );
     expect(stacking.length, 'the sheet stacks a table at all').toBeGreaterThan(0);
     for (const rule of stacking) {
@@ -227,6 +231,16 @@ describe('the markdown a message carries, as the sheet draws it', () => {
       '<td data-label="Elapsed time">1m</td>',
     );
     expect(html, 'every data cell carries one').toContain('<td data-label="Exit code">1</td>');
+
+    // **The prompt renderer is the surface a pasted table draws on**
+    // (`Turn.svelte` renders the reader's own message through
+    // `preserveLines`), so its labels are pinned separately - dropping the
+    // rule from `PROMPT` would leave a user's table unstyled at narrow
+    // widths with every reader-side test green.
+    expect(
+      renderProse(table, true),
+      'a table pasted into a prompt carries its headings too',
+    ).toContain('<td data-label="Exit code">0</td>');
   });
 
   it("gives each remaining unit a mark, on a token rather than the browser's", () => {
