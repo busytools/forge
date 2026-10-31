@@ -1200,6 +1200,18 @@ function createSeat(
           return;
         }
         if (seq > seat.lastSeq + 1) {
+          if (seat.repair?.seeks_answer === true) {
+            // **A held answer's stretch is still owed, and opening a second
+            // ask here would orphan one of the two answers** (#2719). Only
+            // reachable when the hold overflowed; the whole read is the old,
+            // correct recovery.
+            seat.repairHeld.length = 0;
+            closeRepair();
+            seat.outrunFloor = null;
+            seat.asking = false;
+            reread();
+            return;
+          }
           const from = seat.lastSeq + 1;
           seat.repairHeld.push({ seq, span, update: frame.update });
           if (!openRepair(from, seq - 1, false)) {

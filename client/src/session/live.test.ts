@@ -3976,6 +3976,36 @@ describe('the seat sequence', () => {
   });
 
   /**
+   * **A gap after a held stretch overflowed falls back to a whole read**
+   * (#2719). The overflow stops holding but the stretch answer is still
+   * owed; opening a hole ask now would orphan one of the two answers, and
+   * the whole read is the old, correct recovery.
+   */
+  it('falls back to a whole read when a gap lands after a held stretch overflowed', () => {
+    const connection = drivable();
+    const page = watch(connection);
+    page.land(snapshotOf(LEAD, { conversation: { turns: [], compaction_count: 0 } }, { seq: 1 }));
+    page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke('one', 'u1') } }, 1));
+    rereadSeat(connection, LEAD);
+    const asked = page.reads();
+    page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke('two', 'u2') } }, 2));
+    page.land(snapshotOf(LEAD, { conversation: { turns: [], compaction_count: 0 } }, { seq: 2 }));
+    expect(connection.ranges, 'precondition: the stretch ask went').toEqual([
+      { slot: LEAD, epoch: null, from: 2, to: 2 },
+    ]);
+
+    // The hold overflows, and a later frame opens a gap of its own.
+    for (let at = 3; at <= 260; at += 1) {
+      page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke(`row ${at}`, `u${at}`) } }, at));
+    }
+    page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke('far', 'u500') } }, 500));
+
+    expect(page.reads(), 'the orphaned stretch was not resolved with a whole read').toBe(asked + 1);
+    expect(connection.ranges, 'a second ask was opened over the held answer').toHaveLength(1);
+    page.stop();
+  });
+
+  /**
    * **A frame the record already has is not a hole.** A repeat, a replay or a
    * reorder that lands behind the newest number is a frame already drawn -
    * asking for it would be a range ask for frames nobody missed, which is a
