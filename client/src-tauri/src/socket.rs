@@ -646,16 +646,12 @@ impl Socket {
                 sent_rx.await.map_err(|_| "the socket is closed".to_owned())??;
                 rx.await.map_err(|_| "the socket dropped before answering".to_owned())?
             };
-            return match bound {
-                Some(bound) => match tokio::time::timeout(bound, answer).await {
-                    Ok(received) => received.map(Some),
-                    Err(_) => {
-                        let _ = self.tx.send(Outbound::ForgetReply { id });
-                        Err(NO_REPLY.to_owned())
-                    }
-                },
-                None => answer.await.map(Some),
-            };
+            let Some(bound) = bound else { return answer.await.map(Some) };
+            if let Ok(received) = tokio::time::timeout(bound, answer).await {
+                return received.map(Some);
+            }
+            let _ = self.tx.send(Outbound::ForgetReply { id });
+            return Err(NO_REPLY.to_owned());
         }
         // **Unbounded on purpose.** A bound can say no answer came; it cannot
         // say the frame did not cross, and the crossing is this path's whole
@@ -812,9 +808,6 @@ fn apply_offline(next: Outbound, held: &mut Vec<Held>, awaiting: &mut Vec<String
             hold(held, what, answering, review);
             false
         }
-        // The page re-sends its showing on the reconnect, so a frame taken
-        // while down is dropped rather than queued.
-        Outbound::Showing { .. } => false,
         // The entry is already held; only its declaration rises, and no
         // reader is counted - the reconnect then asks exactly what was held.
         Outbound::Relist { what, answering, review } => {
@@ -852,7 +845,11 @@ fn apply_offline(next: Outbound, held: &mut Vec<Held>, awaiting: &mut Vec<String
             let _ = replied.send(Err("the socket is not open".to_owned()));
             false
         }
-        Outbound::SettingsEdit { .. }
+        // The page re-sends its showing on the reconnect, so a frame taken
+        // while down is dropped rather than queued; the rest below has
+        // nowhere to go either.
+        Outbound::Showing { .. }
+        | Outbound::SettingsEdit { .. }
         | Outbound::More { .. }
         | Outbound::CommitDiff { .. }
         | Outbound::FileContent { .. }
@@ -1422,37 +1419,33 @@ async fn run(
                         // quiet's, not this deadline's.
                         continue;
                     }
-                    match probe {
-                        Some(sent) => {
-                            tauri_plugin_log::log::debug!(
-                                "socket_liveness_dead: no byte answered a probe in {}ms",
-                                sent.elapsed().as_millis(),
-                            );
-                            break;
-                        }
-                        None => {
-                            // **A pre-liveness server is not asked.** Its
-                            // refusal would be booked on a subscribe; the
-                            // quiet re-arms from now so the beat cannot spin.
-                            if !speaks_liveness {
-                                heard_at = tokio::time::Instant::now();
-                                continue;
-                            }
-                            // **The deadline is stamped only once the send
-                            // has answered**: a probe queued behind a busy
-                            // write owes nothing until it reaches the peer.
-                            //
-                            // **The send itself is unbounded**, like every
-                            // write on this half: a peer that stopped reading
-                            // can hold it open, and the beat is then as stuck
-                            // as the link. Binding it is the server's
-                            // `write_within` shape and its own change.
-                            if writer.send(ping_frame()).await.is_err() {
-                                break;
-                            }
-                            probe = Some(tokio::time::Instant::now());
-                        }
+                    if let Some(sent) = probe {
+                        tauri_plugin_log::log::debug!(
+                            "socket_liveness_dead: no byte answered a probe in {}ms",
+                            sent.elapsed().as_millis(),
+                        );
+                        break;
                     }
+                    // **A pre-liveness server is not asked.** Its refusal
+                    // would be booked on a subscribe; the quiet re-arms from
+                    // now so the beat cannot spin.
+                    if !speaks_liveness {
+                        heard_at = tokio::time::Instant::now();
+                        continue;
+                    }
+                    // **The deadline is stamped only once the send has
+                    // answered**: a probe queued behind a busy write owes
+                    // nothing until it reaches the peer.
+                    //
+                    // **The send itself is unbounded**, like every write on
+                    // this half: a peer that stopped reading can hold it
+                    // open, and the beat is then as stuck as the link.
+                    // Binding it is the server's `write_within` shape and its
+                    // own change.
+                    if writer.send(ping_frame()).await.is_err() {
+                        break;
+                    }
+                    probe = Some(tokio::time::Instant::now());
                 }
             }
         }

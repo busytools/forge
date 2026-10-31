@@ -7,6 +7,16 @@
 //! gestures the server injects. The page under it reports that area
 //! ([`Rect`]) and keeps drawing its state lines until the first frame lands.
 
+#![allow(
+    unsafe_code,
+    clippy::ref_as_ptr,
+    clippy::borrow_as_ptr,
+    clippy::cast_possible_truncation,
+    clippy::fn_params_excessive_bools,
+    reason = "AppKit and CEF calls are the module's whole job: every message is an unsafe FFI \
+              call, the pointers are CEF's own, and the casts are the C API's widths"
+)]
+
 use std::sync::{Arc, Mutex};
 
 use forge_primitives::browser::{BrowserInputEvent, MouseAction};
@@ -94,6 +104,12 @@ struct Overlay {
 }
 
 static OVERLAY: Mutex<Option<Overlay>> = Mutex::new(None);
+
+/// The overlay slot, taken even from a poisoned lock: it holds an `Option`
+/// and nothing it stores can be left half-written.
+fn overlay_slot() -> std::sync::MutexGuard<'static, Option<Overlay>> {
+    OVERLAY.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
 
 /// **The look driver's window onto the overlay.** The overlay's view address,
 /// its frame in the window's content view, the content view's own size and
@@ -827,7 +843,7 @@ pub fn attach(app: &tauri::AppHandle, rect: Rect, viewport: super::super::Viewpo
                         // over the bar.
                         let back = webview.convertRect_fromView(placed, Some(&superview));
                         let window = webview.window();
-                        let window_frame = window.as_deref().map(|window| window.frame());
+                        let window_frame = window.as_deref().map(objc2_app_kit::NSWindow::frame);
                         let screen = |rect: NSRect| -> String {
                             let Some(window) = window.as_deref() else { return "none".to_owned() };
                             let in_window = superview.convertRect_toView(rect, None);
@@ -896,7 +912,7 @@ pub fn attach(app: &tauri::AppHandle, rect: Rect, viewport: super::super::Viewpo
                             // A view from a window that is gone: take it down
                             // rather than leave it drawing nowhere.
                             view.removeFromSuperview();
-                            *OVERLAY.lock().expect("the overlay slot") = None;
+                            *overlay_slot() = None;
                         }
                         let overlay =
                             OverlayView::new_with_frame(mtm.alloc::<OverlayView>(), placed);
@@ -936,7 +952,7 @@ pub fn attach(app: &tauri::AppHandle, rect: Rect, viewport: super::super::Viewpo
                             window.makeFirstResponder(Some(responder));
                         }
                         let view = &*overlay as *const OverlayView as usize;
-                        *OVERLAY.lock().expect("the overlay slot") = Some(Overlay {
+                        *overlay_slot() = Some(Overlay {
                             view,
                             viewport: NSSize::new(viewport.width, viewport.height),
                         });
@@ -964,7 +980,7 @@ pub fn attach(app: &tauri::AppHandle, rect: Rect, viewport: super::super::Viewpo
 pub fn draw(app: &tauri::AppHandle, frame: &Arc<Frame>) {
     let frame = Arc::clone(frame);
     let _ = app.run_on_main_thread(move || {
-        let slot = OVERLAY.lock().expect("the overlay slot");
+        let slot = overlay_slot();
         let Some(overlay) = slot.as_ref() else { return };
         // SAFETY: the view lives while the slot holds it, both on the main
         // thread.
@@ -996,7 +1012,7 @@ pub fn detach(app: &tauri::AppHandle) {
             // **And the keyboard goes back to the page.** The overlay held
             // first responder; without this the composer keeps none either.
             if let (Some(window), Some(parent)) = (window, parent) {
-                for sibling in parent.subviews().iter() {
+                for sibling in &parent.subviews() {
                     let pointer = (&*sibling as *const NSView) as usize;
                     if pointer != view as *const OverlayView as usize {
                         let _ = window.makeFirstResponder(Some(&*sibling));
