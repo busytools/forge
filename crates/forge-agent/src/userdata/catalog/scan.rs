@@ -740,9 +740,12 @@ pub async fn list_sessions(
         // `None` is a tag this cache cannot vouch for, and that file is read.
         candidates.retain(|path| cache.carries_tag(path, &wanted).unwrap_or(true));
         if before > candidates.len() {
+            // **No explicit target: the shipped directive names this module's
+            // own path**, and a record under another target is filtered out
+            // before it ever reaches `forge.log` (#2567).
             tracing::debug!(
-                target: "forge_agent::catalog::scan",
                 event_name = "session_scan_narrowed",
+                dir = directory.unwrap_or("<every project>"),
                 label = %label,
                 skipped = before - candidates.len(),
                 to_read = candidates.len(),
@@ -824,8 +827,8 @@ pub async fn list_sessions(
     }
     if let Some(wanted) = wanted_rows {
         tracing::debug!(
-            target: "forge_agent::catalog::scan",
             event_name = "session_scan_read",
+            dir = directory.unwrap_or("<every project>"),
             read = entries.len(),
             wanted,
             "the listing read the rows its cap serves, newest first",
