@@ -214,6 +214,20 @@ let generation = 0;
  */
 let openingFailure: { id: number; tab: number; why: string } | null = null;
 
+/**
+ * Whether a tab pick is in flight: **a pick is a surface move**, so a failure
+ * for the tab being picked is held until its landing names the pair, the
+ * same window an open has (#2575).
+ */
+let picking = false;
+
+/**
+ * The reason a held failure was settled with while its move was still in
+ * flight, so the landing answers with it instead of going live over a page
+ * the store has already failed (#2575).
+ */
+let settledFailure: string | null = null;
+
 /** The newest mount token. **A mount claims one**, so only a newer mount
  *  makes an older instance's teardown stale; a retry or a tab pick is not a
  *  new mount and must not. */
@@ -247,6 +261,7 @@ export async function openSurface(
   if (!canAttach()) return 'this page is not the client';
   const mine = ++generation;
   openingFailure = null;
+  settledFailure = null;
   const here = drawsSurface();
   if (here) {
     surface.phase = 'opening';
@@ -292,8 +307,13 @@ export async function openSurface(
   surface.tab = answer.tab;
   const lost = failureOnLanding();
   if (lost !== null) return lost;
-  // **An already-failed phase stays failed**: the view push can settle a
-  // remembered failure while this answer is still in flight.
+  // **The push settled it first**: the caller is owed the sentence the bar
+  // is drawing, not the silence of an open that went live behind it.
+  if (settledFailure !== null) {
+    const why = settledFailure;
+    settledFailure = null;
+    return why;
+  }
   if (surface.phase === 'opening') {
     surface.phase = 'live';
     surface.reason = null;
@@ -323,7 +343,14 @@ export async function selectTab(tab: number | null): Promise<string | null> {
   // this call's to apply.
   const mine = ++generation;
   openingFailure = null;
-  const answer = await showBrowser(surface.profile, surface.seat, tab);
+  settledFailure = null;
+  picking = true;
+  let answer: Awaited<ReturnType<typeof showBrowser>>;
+  try {
+    answer = await showBrowser(surface.profile, surface.seat, tab);
+  } finally {
+    picking = false;
+  }
   if (typeof answer === 'string') {
     // A superseded refusal is not the current surface's to fail.
     if (mine !== generation) return answer;
@@ -340,6 +367,21 @@ export async function selectTab(tab: number | null): Promise<string | null> {
   if (mine !== generation) return null;
   surface.profile = answer.profile;
   surface.tab = answer.tab;
+  const lost = failureOnLanding();
+  if (lost !== null) {
+    surface.viewer = null;
+    surface.controller = null;
+    return lost;
+  }
+  if (settledFailure !== null) {
+    // The push named the pair while the pick was in flight: the landing is
+    // still this call's answer, and the bar is already drawing its sentence.
+    const why = settledFailure;
+    settledFailure = null;
+    surface.viewer = null;
+    surface.controller = null;
+    return why;
+  }
   // **A successful pick is a live surface again.** Attaching from the failed
   // state used to leave the phase (and the reason) behind, so the phone never
   // painted and the desktop controlled an overlay its bar called failed.
@@ -385,6 +427,7 @@ export async function closeSurface(
 ): Promise<string | null> {
   const mine = ++generation;
   openingFailure = null;
+  settledFailure = null;
   const answer = await hideBrowser(profile, seat);
   // **A lower superseded by a newer open is not this surface's to close.**
   if (mine !== generation) return null;
@@ -583,7 +626,9 @@ function settleOpeningFailure(): void {
   const held = openingFailure;
   if (held === null || surface.id === null || surface.tab === null) return;
   openingFailure = null;
-  if (held.id === surface.id && held.tab === surface.tab) markFailed(held.why);
+  if (held.id !== surface.id || held.tab !== surface.tab) return;
+  if (surface.phase === 'opening' || picking) settledFailure = held.why;
+  markFailed(held.why);
 }
 
 /** **A failure after the surface closed is nobody's.** It must not re-mount
@@ -604,10 +649,11 @@ function failed(payload: unknown): void {
     }
   }
   if (named !== null) {
-    // **An open in flight cannot say whose pair this is**: the answer and the
-    // view push are what name the surface this page lands on, so the failure
-    // is held for them rather than failing a page that may already be gone.
-    if (surface.phase === 'opening') {
+    // **A surface move in flight cannot say whose pair this is**: the answer
+    // and the view push are what name the surface this page lands on, so the
+    // failure is held for them rather than failing a page that may already
+    // be gone.
+    if (surface.phase === 'opening' || picking) {
       openingFailure = { ...named, why };
       return;
     }
@@ -620,11 +666,11 @@ function failed(payload: unknown): void {
       // frame for a superseded attach must not fail the tab now up.
       return;
     }
-  } else if (surface.phase === 'opening') {
-    // **A nameless failure during an open belongs to the attach that sent
-    // it**, which this open may have superseded: the answer settles whether
-    // this page came up, and applying it here would lower the shell's page
-    // under an open that then lands live.
+  } else if (surface.phase === 'opening' || picking) {
+    // **A nameless failure during a surface move belongs to the attach that
+    // sent it**, which this move may have superseded: the answer settles
+    // whether this page came up, and applying it here would lower the shell's
+    // page under an open that then lands live.
     return;
   }
   markFailed(why);
