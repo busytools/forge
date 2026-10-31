@@ -545,7 +545,7 @@ pub async fn serve_socket(workspace: &Arc<Workspace>) -> anyhow::Result<SocketSe
 /// port someone else holds is the case - would otherwise make
 /// `all_accounts_loaded` false forever and turn the wave into a spawn that
 /// never fires, silently.
-const BOOT_WAVE_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
+pub const BOOT_WAVE_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Hold until the accounts and the listener are ready, or `timeout` passes.
 ///

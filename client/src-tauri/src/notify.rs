@@ -240,7 +240,7 @@ impl<P: Platform> Worker<P> {
             // latches and the next review may ask again.
             Ok(_) => {}
             Err(why) => {
-                tauri_plugin_log::log::warn!("the notification permission was not asked: {why}")
+                tauri_plugin_log::log::warn!("the notification permission was not asked: {why}");
             }
         }
     }

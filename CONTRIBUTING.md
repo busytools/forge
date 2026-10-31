@@ -120,10 +120,13 @@ automatically. Tests run through `cargo nextest`, not `cargo test`.
 
 **Lints.** Clippy runs at `pedantic`, denied. On top of that,
 `unwrap`, `expect`, `panic`, `exit`, `todo` and `unimplemented` are
-denied, and `unsafe_code` is forbidden workspace-wide. `clippy.toml`
+denied, and `unsafe_code` is forbidden workspace-wide. The client
+shell crate, a workspace root of its own, mirrors that table and denies
+`unsafe_code` with scoped allows in the three FFI modules that call
+AppKit, CEF and AVFoundation. `clippy.toml`
 relaxes `unwrap`, `expect` and `panic` in tests; `exit`, `todo` and
 `unimplemented` stay denied everywhere. Reach for `Result` rather than
-an `#[allow(...)]`; an allow on production code is treated as debt
+an allow; an allow on production code is treated as debt
 rather than a fix.
 
 **No `mod.rs`.** A module file sits next to its directory:
