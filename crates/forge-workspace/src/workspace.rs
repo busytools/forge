@@ -17816,6 +17816,33 @@ mod tag_retry_tests {
         project_dir.join(format!("{session_id}.jsonl"))
     }
 
+    /// Init a repo at `root` and add the worker's worktree at
+    /// `<root>/.claude/worktrees/<label>`, so the connected-time worktree
+    /// check reads a tree git can reuse. The caller names the worktree path
+    /// itself, as the spawn does.
+    fn init_worker_worktree(root: &std::path::Path, label: &str) {
+        let git = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .args(args)
+                .current_dir(root)
+                .status()
+                .expect("spawn git");
+            assert!(status.success(), "git {args:?} failed in {root:?}");
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.email", "t@example.com"]);
+        git(&["config", "user.name", "Test"]);
+        git(&["config", "commit.gpgsign", "false"]);
+        fs::write(root.join("README.md"), "seed").expect("write seed");
+        git(&["add", "."]);
+        git(&["commit", "-q", "-m", "init"]);
+        let worktree = root.join(".claude").join("worktrees").join(label);
+        fs::create_dir_all(worktree.parent().expect("worktrees dir")).expect("mkdir worktrees");
+        let branch = format!("worktree-{label}");
+        let path = worktree.to_string_lossy().into_owned();
+        git(&["worktree", "add", "-q", "-b", &branch, &path]);
+    }
+
     /// JSONL exists from the start: tag_session_with_retry succeeds on
     /// the first attempt and appends a tag row.
     #[tokio::test]
@@ -18495,6 +18522,7 @@ mod tag_retry_tests {
 
         let cfg = tempdir().expect("cfg");
         let repo_root = tempdir().expect("repo");
+        init_worker_worktree(repo_root.path(), "debugger");
         // JSONL lives at the WORKTREE path (matches claude's behaviour
         // under --worktree): <repo>/.claude/worktrees/<label>/.
         let worktree_path = repo_root.path().join(".claude/worktrees/debugger");
