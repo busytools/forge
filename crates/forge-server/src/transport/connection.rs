@@ -4546,11 +4546,17 @@ mod tests {
         let kept = kept.clone();
         let address = kept.as_str().as_ptr();
         futures_util::SinkExt::send(&mut socket, frame).await.expect("the frame goes");
-        let held = recorded.lock().expect("the frame log");
-        let Some(Message::Text(sent)) = held.first() else {
-            panic!("a non-declaring client's frame was not text: {:?}", held.first())
-        };
-        assert_eq!(sent.as_str().as_ptr(), address, "a non-declaring client's frame was rebuilt");
+        {
+            let held = recorded.lock().expect("the frame log");
+            let Some(Message::Text(sent)) = held.first() else {
+                panic!("a non-declaring client's frame was not text: {:?}", held.first())
+            };
+            assert_eq!(
+                sent.as_str().as_ptr(),
+                address,
+                "a non-declaring client's frame was rebuilt"
+            );
+        }
 
         // **The threshold is inclusive**: a frame of exactly the minimum
         // compresses for a client that declared the capability.
