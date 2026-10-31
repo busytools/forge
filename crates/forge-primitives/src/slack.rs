@@ -323,9 +323,10 @@ pub struct SlackThreadOwner {
 ///
 /// The cursor is usually the string Slack sent, but not always: a thread
 /// forge starts tracking seeds it one microsecond below the reply that
-/// brought the thread in, since the cursor is exclusive. Nothing sends it to
-/// Slack - both thread reads pass no lower bound - so it is only ever
-/// compared, and only as a string.
+/// brought the thread in, since the cursor is exclusive. The per-tick read
+/// sends one microsecond below the cursor as the walk's lower bound, so a
+/// reply at the cursor is re-read for an edit; the periodic whole read passes
+/// none. It is compared as a string throughout.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SlackThreadRecord {
     pub cursor: String,
