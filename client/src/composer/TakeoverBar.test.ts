@@ -416,6 +416,188 @@ describe("the takeover bar's feedback controls", () => {
   });
 });
 
+/**
+ * **The bar is the only thing on screen while it is up**, so it owns the
+ * keyboard: it takes focus when it opens, Tab cannot walk out of it into the
+ * chat the native layer is covering, and closing it gives focus back.
+ */
+describe("the takeover bar's keyboard", () => {
+  /** A bar with every action a parked hand-off draws, so Tab has more than one stop. */
+  async function full(): Promise<HTMLElement> {
+    await stop();
+    surface.viewer = 1;
+    surface.controller = 1;
+    const target = document.createElement('div');
+    document.body.appendChild(target);
+    shown = mount(TakeoverBar, {
+      target,
+      props: {
+        title: 'browser hand-off',
+        onback: () => {},
+        ondone: () => {},
+        onnotnow: () => {},
+        onfeedback: () => {},
+      },
+    });
+    flushSync();
+    return target;
+  }
+
+  function pressTab(element: Element, shift = false): void {
+    element.dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key: 'Tab',
+        shiftKey: shift,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    flushSync();
+  }
+
+  function controls(target: HTMLElement): HTMLButtonElement[] {
+    const all = [...target.querySelectorAll<HTMLButtonElement>('.takeover-bar button')];
+    return all.filter((button) => !button.disabled);
+  }
+
+  it('takes the keyboard into the bar when it opens', async () => {
+    const target = await full();
+    expect(
+      document.activeElement,
+      'the bar holds focus, so a key cannot land in the chat behind the page',
+    ).toBe(target.querySelector('.takeover-bar'));
+  });
+
+  it('wraps Tab at both ends, so the keyboard cannot leave the bar', async () => {
+    const target = await full();
+    const stops = controls(target);
+    expect(stops.length, 'the bar draws more than one stop').toBeGreaterThan(1);
+    const first = stops[0];
+    const last = stops[stops.length - 1];
+    if (first === undefined || last === undefined) throw new Error('the bar lost its controls');
+
+    last.focus();
+    pressTab(last);
+    expect(document.activeElement, 'Tab from the last stop wraps to the first').toBe(first);
+
+    first.focus();
+    pressTab(first, true);
+    expect(document.activeElement, 'Shift+Tab from the first wraps to the last').toBe(last);
+  });
+
+  it('gives the keyboard back to whatever had it when the bar closes', async () => {
+    const behind = document.createElement('button');
+    behind.textContent = 'the chat';
+    document.body.appendChild(behind);
+    behind.focus();
+    const target = document.createElement('div');
+    document.body.appendChild(target);
+    const mounted = mount(TakeoverBar, {
+      target,
+      props: { title: 'browser hand-off', onback: () => {} },
+    });
+    flushSync();
+    expect(document.activeElement, 'the bar took the keyboard on open').not.toBe(behind);
+    await unmount(mounted);
+    expect(document.activeElement, 'and hands it back on close').toBe(behind);
+    document.body.innerHTML = '';
+  });
+
+  /**
+   * **The feedback field stops its own keys**, so the bar has to trap them
+   * before that: the field is the last stop, and a Tab from it used to leave
+   * the takeover (#2571).
+   */
+  it('wraps Tab from the feedback field, whose keys stop inside it', async () => {
+    const target = await full();
+    const wrong = [...target.querySelectorAll('button')].find((button) =>
+      button.textContent.includes('wrong'),
+    );
+    if (wrong === undefined) throw new Error('the bar draws no feedback door');
+    wrong.click();
+    flushSync();
+    const field = target.querySelector('.tb-feedback textarea');
+    if (!(field instanceof HTMLTextAreaElement)) throw new Error('the bar drew no feedback field');
+    // **The field's own handler ends the event for its ancestors**, so the
+    // bar only sees a Tab pressed there from the capture phase.
+    field.addEventListener('keydown', (event) => event.stopPropagation());
+    field.focus();
+    pressTab(field);
+    expect(
+      document.activeElement,
+      'Tab from the last stop wraps to the first, not into the chat',
+    ).toBe(controls(target)[0]);
+  });
+
+  /// **Shift+Tab from the bar's own focus is the other end**: the browser
+  /// would walk backwards out of the bar, so the trap takes it to the last stop.
+  it('wraps Shift+Tab from the bar itself to its last control', async () => {
+    const target = await full();
+    const bar = target.querySelector('.takeover-bar');
+    if (!(bar instanceof HTMLElement)) throw new Error('the bar was not drawn');
+    const stops = controls(target);
+    bar.focus();
+    pressTab(bar, true);
+    expect(document.activeElement, 'Shift+Tab from the bar wraps to its last stop').toBe(
+      stops[stops.length - 1],
+    );
+  });
+
+  /// **Focus the bar no longer holds is not its to move**: a person who put
+  /// the keyboard somewhere else while the takeover was up keeps it there.
+  it('gives the keyboard back only when the bar still holds it', async () => {
+    const before = document.createElement('button');
+    before.textContent = 'before';
+    const elsewhere = document.createElement('button');
+    elsewhere.textContent = 'elsewhere';
+    const page = document.createElement('div');
+    page.append(before, elsewhere);
+    document.body.append(page);
+    before.focus();
+    const target = document.createElement('div');
+    document.body.append(target);
+    const mounted = mount(TakeoverBar, {
+      target,
+      props: { title: 'browser hand-off', onback: () => {} },
+    });
+    flushSync();
+    elsewhere.focus();
+    await unmount(mounted);
+    expect(document.activeElement, 'a focus the bar let go is not taken back').toBe(elsewhere);
+    document.body.innerHTML = '';
+  });
+
+  /**
+   * **Everything behind the bar is inert, and the bar is inside that page**
+   * (#2571): the walk gates each sibling on the bar's own path, so the chat,
+   * rail and composer stop being tabbable while the picture covers them, and
+   * the attributes are given back when it lowers.
+   */
+  it('gates the page behind the bar inert, and gives it back on close', async () => {
+    const page = document.createElement('div');
+    const rail = document.createElement('div');
+    const picture = document.createElement('div');
+    picture.className = 'takeover';
+    const host = document.createElement('div');
+    page.append(rail, picture, host);
+    document.body.append(page);
+    const mounted = mount(TakeoverBar, {
+      target: host,
+      props: { title: 'browser hand-off', onback: () => {} },
+    });
+    flushSync();
+    expect(rail.hasAttribute('inert'), 'the page behind is inert').toBe(true);
+    expect(
+      picture.hasAttribute('inert'),
+      'the picture is kept live: its canvas and keyboard field are in there',
+    ).toBe(false);
+    expect(page.hasAttribute('inert'), "the bar's own path stays live").toBe(false);
+    await unmount(mounted);
+    expect(rail.hasAttribute('inert'), 'and the page behind is given back').toBe(false);
+    document.body.innerHTML = '';
+  });
+});
+
 /** **An ask with no words draws no row**: a blank reason would otherwise be an
  *  empty bordered strip that says nothing and takes the page's room. */
 describe("the bar's ask", () => {

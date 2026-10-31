@@ -141,6 +141,13 @@ impl ViewSurface {
         cap_bytes(self.workspace.server_config().first_frame_cap_kb)
     }
 
+    /// The conversation bytes a `more` page may carry:
+    /// `[server] more_page_cap_kb`, with `0` meaning the turn count alone
+    /// decides the page.
+    pub fn more_page_cap_bytes(&self) -> usize {
+        cap_bytes(self.workspace.server_config().more_page_cap_kb)
+    }
+
     /// Dispatch one command to the core, which is how a view acts rather
     /// than only reads.
     ///
@@ -939,8 +946,9 @@ provider = \"anthropic\"
         let app_support = dir.path().join("app-support");
         std::fs::create_dir_all(&app_support).expect("app-support/");
         {
-            let db =
-                forge_workspace::store::Db::open(&app_support.join("db.redb")).expect("open db");
+            let db_path = forge_workspace::store::path_for(&app_support, dir.path());
+            std::fs::create_dir_all(db_path.parent().expect("stores/")).expect("stores/");
+            let db = forge_workspace::store::Db::open(&db_path).expect("open db");
             forge_workspace::store::pricing::store(
                 &db,
                 &forge_workspace::store::pricing::CachedPricing {
@@ -967,8 +975,9 @@ provider = \"anthropic\"
         {
             // `new_for_test` opens this exact path and loads both sets at
             // construction, so the rows have to be there first.
-            let db =
-                forge_workspace::store::Db::open(&app_support.join("db.redb")).expect("open db");
+            let db_path = forge_workspace::store::path_for(&app_support, dir.path());
+            std::fs::create_dir_all(db_path.parent().expect("stores/")).expect("stores/");
+            let db = forge_workspace::store::Db::open(&db_path).expect("open db");
             forge_workspace::store::gotify::insert(&db, &gotify_sub("forge"))
                 .expect("insert gotify sub");
             forge_workspace::store::slack::insert(&db, &slack_sub("forge"))

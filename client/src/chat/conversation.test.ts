@@ -22,6 +22,7 @@ import type { ToolLeaf } from './leaves';
 import { cronNames } from './cron-names.svelte';
 import { echoes } from './echoes.svelte';
 import { outputs } from './outputs.svelte';
+import { markReturn, takeReturn } from '../session/returns';
 import { refused } from '../refusals';
 
 // Every record the class publishes is frozen, so an in-place edit where a
@@ -4858,6 +4859,96 @@ describe('the conversation the chat draws', () => {
     ).toBe(1);
   });
 
+  /**
+   * **Two identical deliveries are told apart by which is newer.** A delivery
+   * opens its own turn and a turn the frames built stays live for good, so a
+   * repeat of the same words leaves two live candidates that both match the
+   * page row by prose - and the oldest-first walk took the one already
+   * answered, leaving the repeat's own live turn drawn beside it (#1443).
+   */
+  it('gives the page row of a repeat the newest of two identical deliveries', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(record([]));
+
+    // The first delivery, answered and over.
+    server.update({ chat_appended: { key: LEAD, msg: forged('check the build') } });
+    server.update({ chat_appended: { key: LEAD, msg: said('answered the old one') } });
+    server.update({ chat_appended: { key: LEAD, msg: ended() } });
+    // The repeat, still live.
+    server.update({ chat_appended: { key: LEAD, msg: forged('check the build') } });
+    server.update({ chat_appended: { key: LEAD, msg: said('answered the new one') } });
+
+    // The page's own row for the repeat, drawn before its result exists.
+    server.send(
+      page(
+        [{ key: null, messages: [forged('check the build'), said('answered the new one')] }],
+        null,
+      ),
+    );
+
+    const after = get(chat.value).turns;
+    expect(
+      after.filter((row) => JSON.stringify(row.messages).includes('answered the new one')).length,
+      'the repeat keeps the answer it was given',
+    ).toBe(1);
+    expect(
+      after.filter((row) => JSON.stringify(row.messages).includes('answered the old one')).length,
+      'and the older exchange keeps its own',
+    ).toBe(1);
+    expect(
+      after.filter((row) => {
+        const text = JSON.stringify(row.messages);
+        return text.includes('answered the old one') && text.includes('answered the new one');
+      }),
+      'no row carries both answers: the page row is the repeat, not the copy it replaced',
+    ).toHaveLength(0);
+  });
+
+  /**
+   * **The newest settled copy is the one a page row extends when no live turn
+   * matches.** Two settled exchanges share a frame, and a page row carrying
+   * that frame plus a new row is one exchange: the fallback's second arm must
+   * search from the newest end too, or the row grows into the older exchange
+   * (#1443).
+   */
+  it('gives a page row the newest settled exchange when no live turn matches', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(
+      page(
+        [
+          {
+            key: 'a',
+            messages: [minted('the first ask'), said('same answer'), ended()],
+          },
+          {
+            key: 'b',
+            messages: [minted('the second ask'), said('same answer'), ended()],
+          },
+        ],
+        null,
+      ),
+    );
+
+    // A page row carrying the shared frame (by id) plus a new row.
+    server.send(page([{ key: null, messages: [said('same answer'), said('a new answer')] }], null));
+
+    const grown = get(chat.value).turns.find((row) =>
+      JSON.stringify(row.messages).includes('a new answer'),
+    );
+    expect(
+      grown === undefined ? '' : JSON.stringify(grown.messages),
+      'the row grows into the newest settled exchange, not the older one',
+    ).toContain('the second ask');
+    expect(
+      grown === undefined ? '' : JSON.stringify(grown.messages),
+      'and never into the exchange before it',
+    ).not.toContain('the first ask');
+  });
+
   it('does not add an id-less frame a repeated row already carries', () => {
     const server = fakeConnection();
     const chat = new Chat(server.connection, LEAD);
@@ -5259,6 +5350,37 @@ describe('the conversation the chat draws', () => {
     );
 
     expect(server.more(), 'a seeded seat asks for no page above it').toEqual([]);
+    stop();
+  });
+
+  /**
+   * **A newest page with no rows at all cannot say what it ran past.** With no
+   * page stamp there is no overtaken routing, and the in-play judgment turn
+   * fell to `loose` - drawn after every held row - which put the handoff row
+   * above the turn that ends at it (#2643). The held order is the only order
+   * such a page leaves standing, so the seam keeps it.
+   */
+  it('keeps the judgment turn above its row when the landing page carries no rows', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(record([turn('t0', 'the work so far'), turn('t0b', 'and more')], 'c0'));
+    for (const msg of judgmentTurn()) {
+      server.update({ chat_appended: { key: LEAD, msg: stamped(msg, '2026-10-27T10:00:00Z') } });
+    }
+    // The live swap's record carries no judgment turn: the frames above are
+    // its only carrier, so the turn stays in play while its row is added.
+    server.update({ handoff: { key: LEAD, handoff: handoffRecord('old', 'new') } });
+    server.update({ session_replaced: { key: LEAD, session_id: 'new' } });
+
+    server.send(page([], 'c1'));
+
+    const keys = get(chat.value).turns.map((held) => held.key);
+    const procedure = keys.findIndex((key) => key.startsWith('live:forge_nudge_handoff_'));
+    const row = keys.indexOf('handoff:old:new');
+    expect(procedure, 'the procedure is still held').toBeGreaterThanOrEqual(0);
+    expect(row, 'and its row too').toBeGreaterThanOrEqual(0);
+    expect(procedure, 'the turn stays above the row it ends').toBeLessThan(row);
     stop();
   });
 
@@ -7071,6 +7193,195 @@ describe('the chat holds a queued prompt until the CLI takes it', () => {
     server.update({ prompt_lifecycle: { key: LEAD, uuid: 'p1', state: 'started' } });
     expect(words(chat).split('fresh words').length - 1, 'the drain draws it once').toBe(1);
     expect(words(chat), 'with the wait on it').toContain('"forge_note":"sent"');
+  });
+
+  /**
+   * **The first snapshot after a return is the returner's only word.** A
+   * returning page re-reads its seat, and a prompt another client queued while
+   * the reader was away can reach it no other way - so that snapshot's queue
+   * must arm the hold even though the conversation has landed and the socket
+   * never dropped. The guard stays for the ordinary mid-stream snapshots,
+   * which can be older than the frames they meet.
+   */
+  it('arms from the queue listing of the snapshot a return read answers', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    chat.showing();
+    // The subscribe's own answer, which is the first snapshot any client gets.
+    server.send({
+      kind: 'snapshot',
+      subject: { session: LEAD },
+      data: { header: { turn_in_flight: false }, state: { queue: [] } },
+    });
+    server.send(page([turn('t1', 'first')], null));
+
+    // The return's read, marked where `resync` asks it; the socket never
+    // drops, and no route change touches this column.
+    markReturn(server.connection, LEAD);
+
+    server.send({
+      kind: 'snapshot',
+      subject: { session: LEAD },
+      data: {
+        header: { turn_in_flight: true },
+        state: { queue: [{ uuid: 'p1', source: 'you', text: 'returned words' }] },
+      },
+    });
+    server.send(
+      page(
+        [
+          turn('t1', 'first'),
+          { key: 't2', messages: [forgedUnder('returned words', 'p1'), said('answer')] },
+        ],
+        null,
+      ),
+    );
+    expect(words(chat), 'the return read the queue, and the row is held').not.toContain(
+      'returned words',
+    );
+
+    server.update({ prompt_lifecycle: { key: LEAD, uuid: 'p1', state: 'started' } });
+    expect(words(chat).split('returned words').length - 1, 'the drain draws it once').toBe(1);
+  });
+
+  /**
+   * **A mark is spent even when the snapshot was already fresh.** A chat
+   * column mounting around a return takes its first snapshot fresh by
+   * `!landed`; if the spend short-circuits there, the mark arms a later
+   * ordinary snapshot and that listing is trusted - the probe's row is
+   * retracted and its words disappear.
+   */
+  it('spends a return mark on a snapshot fresh for another reason', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    markReturn(server.connection, LEAD);
+
+    // The first snapshot: fresh because nothing has landed yet, and the
+    // return's own read.
+    server.send({
+      kind: 'snapshot',
+      subject: { session: LEAD },
+      data: { header: { turn_in_flight: false }, state: { queue: [] } },
+    });
+    // A later ordinary snapshot listing a new prompt: the guard is back on.
+    server.send({
+      kind: 'snapshot',
+      subject: { session: LEAD },
+      data: {
+        header: { turn_in_flight: true },
+        state: { queue: [{ uuid: 'p2', source: 'you', text: 'later words' }] },
+      },
+    });
+    server.send(
+      page(
+        [
+          turn('t1', 'first'),
+          { key: 't2', messages: [forgedUnder('later words', 'p2'), said('answer')] },
+        ],
+        null,
+      ),
+    );
+    expect(words(chat), 'the spent mark must not arm a later ordinary snapshot').toContain(
+      'later words',
+    );
+  });
+
+  /**
+   * **The reconnect's snapshot spends a return mark.** It is already the
+   * first word after the gap, and the spend happens whatever made the
+   * snapshot authoritative, so a later ordinary listing is not armed by a
+   * mark that outlived its read.
+   */
+  it("spends a return mark on the reconnect's own snapshot", () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send({
+      kind: 'snapshot',
+      subject: { session: LEAD },
+      data: { header: { turn_in_flight: false }, state: { queue: [] } },
+    });
+    server.send(page([turn('t1', 'first')], null));
+
+    markReturn(server.connection, LEAD);
+    server.reach('closed');
+    server.reach('open');
+    // The reconnect's own snapshot, fresh by the drop, spends the mark.
+    server.send({
+      kind: 'snapshot',
+      subject: { session: LEAD },
+      data: { header: { turn_in_flight: false }, state: { queue: [] } },
+    });
+    expect(takeReturn(server.connection, LEAD), 'the reconnect answer spent the mark').toBe(false);
+    // An ordinary snapshot listing a new prompt afterwards.
+    server.send({
+      kind: 'snapshot',
+      subject: { session: LEAD },
+      data: {
+        header: { turn_in_flight: true },
+        state: { queue: [{ uuid: 'p2', source: 'you', text: 'later words' }] },
+      },
+    });
+    server.send(
+      page(
+        [
+          turn('t1', 'first'),
+          { key: 't2', messages: [forgedUnder('later words', 'p2'), said('answer')] },
+        ],
+        null,
+      ),
+    );
+    expect(words(chat), 'a mark dropped with the socket must not arm a later listing').toContain(
+      'later words',
+    );
+  });
+
+  /**
+   * **A return's mark names ONE snapshot.** It is spent by the answer that
+   * lands, and every later mid-stream snapshot is refused by the guard again
+   * - the read a return asked is the only one whose listing is trusted.
+   */
+  it('spends a return mark on one snapshot and refuses the next', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send({
+      kind: 'snapshot',
+      subject: { session: LEAD },
+      data: { header: { turn_in_flight: false }, state: { queue: [] } },
+    });
+    server.send(page([turn('t1', 'first')], null));
+
+    markReturn(server.connection, LEAD);
+    // The return's answer, with nothing queued: it spends the mark.
+    server.send({
+      kind: 'snapshot',
+      subject: { session: LEAD },
+      data: { header: { turn_in_flight: true }, state: { queue: [] } },
+    });
+
+    // An ordinary mid-stream snapshot listing a new prompt: the guard is back
+    // on, so its listing arms nothing.
+    server.send({
+      kind: 'snapshot',
+      subject: { session: LEAD },
+      data: {
+        header: { turn_in_flight: true },
+        state: { queue: [{ uuid: 'p2', source: 'you', text: 'later words' }] },
+      },
+    });
+    server.send(
+      page(
+        [
+          turn('t1', 'first'),
+          { key: 't2', messages: [forgedUnder('later words', 'p2'), said('answer')] },
+        ],
+        null,
+      ),
+    );
+    expect(words(chat), 'a spent mark must not arm the next snapshot').toContain('later words');
   });
 
   it('a read asked before the send answers after it, and the hold stays', () => {

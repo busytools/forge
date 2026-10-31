@@ -281,6 +281,18 @@ pub enum Command {
         /// (#1583). `None` from a view that minted none.
         #[serde(default)]
         dispatch_id: Option<u64>,
+        /// Who submitted the words, for the frame the SESSION TASK draws
+        /// before it hands the prompt to the CLI.
+        ///
+        /// Stamped by [`crate::Workspace::dispatch`] /
+        /// [`crate::Workspace::dispatch_from_view`], which overwrite whatever
+        /// a view sent: the frame's ordering against the task's own
+        /// `TurnError` is only structural if the task emits it, and the
+        /// origin is what tells a view it already drew the words. `None` for
+        /// every delivery forge's machinery routes, which draws its own
+        /// envelope turn instead.
+        #[serde(default)]
+        origin: Option<PromptOrigin>,
     },
     Cancel {
         key: SessionSlot,

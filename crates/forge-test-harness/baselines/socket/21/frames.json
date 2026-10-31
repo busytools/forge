@@ -1319,6 +1319,7 @@
         "attachments",
         "dispatch_id",
         "key",
+        "origin",
         "source",
         "text",
         "uuid"

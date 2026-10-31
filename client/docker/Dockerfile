@@ -27,6 +27,12 @@ RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/poller.sh
 # The build that ships inside the image: an empty volume is seeded from it,
 # so a fresh container serves before it has ever reached the manifest.
 COPY dist /usr/share/forge-web
+# The release this image was built at. The entrypoint names the seed
+# `dist-<version>` with it, which is what lets the poller's same-version skip
+# match on first boot. A pull-request build passes none: nothing there is
+# published, and the unversioned seed polls once.
+ARG FORGE_VERSION=""
+RUN printf '%s' "$FORGE_VERSION" > /usr/share/forge-web-version
 
 RUN mkdir -p /srv/forge-web && chown -R 101:101 /srv/forge-web
 

@@ -1716,6 +1716,7 @@ fn command_sampled(seat: &SessionSlot) -> BTreeMap<String, BTreeMap<String, Valu
             uuid: "u1".to_owned(),
             source: forge_workspace::PromptSource::You,
             dispatch_id: Some(1),
+            origin: None,
         }),
     );
     sampled.insert(

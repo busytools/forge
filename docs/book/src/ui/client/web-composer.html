@@ -37,15 +37,15 @@
   .dim { color: var(--dim); }
 
   header { display: flex; align-items: center; gap: 12px; margin-bottom: 6px; }
-  header .mark { font-size: 20px; font-weight: 700; }
+  header .mark { font-size: 20px; font-weight: 500; }
   header .sub { color: var(--dim); font-family: var(--mono); font-size: var(--fs-data); }
   .lede { color: var(--muted); max-width: 76ch; margin-bottom: 26px; }
 
-  h2 { font-size: var(--fs-label); font-weight: 700; letter-spacing: .13em;
+  h2 { font-size: var(--fs-label); font-weight: 500; letter-spacing: .13em;
     text-transform: uppercase; color: var(--accent); margin: 30px 0 4px; }
   h2:first-of-type { margin-top: 10px; }
   .note { color: var(--dim); font-size: var(--fs-base); max-width: 78ch; margin-bottom: 12px; }
-  .note b { color: var(--muted); font-weight: 600; }
+  .note b { color: var(--muted); font-weight: 500; }
 
   .stage { border: 1px solid var(--line); border-radius: 14px; padding: 20px 22px;
     background: linear-gradient(180deg, rgba(20,25,38,.45), rgba(9,12,20,.55));
@@ -234,7 +234,7 @@
   .pop { background: var(--s1); border: 1px solid var(--line); border-radius: 14px;
     box-shadow: 0 20px 48px rgba(0,0,0,.55); overflow: hidden; }
   .pop .hd { padding: 12px 15px 0; display: flex; align-items: center; gap: 9px; }
-  .pop .hd .t { margin-right: auto; font-size: var(--fs-data); font-weight: 600; color: var(--text); }
+  .pop .hd .t { margin-right: auto; font-size: var(--fs-data); font-weight: 500; color: var(--text); }
   .pop .hd .k { font-family: var(--mono); font-size: var(--fs-label);
     color: var(--dim); }
   .pop .hd .x { width: 22px; height: 22px; border-radius: 7px; display: grid;
@@ -303,9 +303,9 @@
   .dock { padding: 13px 15px; display: flex; flex-direction: column; gap: 10px; }
   .dock .queue { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); }
   .dock .d-head { display: flex; align-items: baseline; gap: 9px; font-size: var(--fs-base); }
-  .dock .d-head .qm { color: var(--accent); font-weight: 700; flex: none; }
+  .dock .d-head .qm { color: var(--accent); font-weight: 500; flex: none; }
   .dock .d-head .q { color: var(--dim); font-family: var(--mono); font-size: var(--fs-data); }
-  .dock .d-q { font-size: 16px; font-weight: 600; color: var(--text); }
+  .dock .d-q { font-size: 16px; font-weight: 500; color: var(--text); }
   .dock .headend { margin-left: auto; display: flex; align-items: center; gap: 5px; }
   .dock .segs { display: flex; align-items: center; gap: 5px; }
   .dock .segs i { width: 14px; height: 3px; border-radius: 999px; background: var(--s3); }
@@ -332,7 +332,7 @@
   .opt .why { display: block; color: var(--dim); font-size: var(--fs-label);
     margin-top: 1px; }
   .opt.sel { background: var(--sel); }
-  .opt.sel .lbl { color: var(--text); font-weight: 600; }
+  .opt.sel .lbl { color: var(--text); font-weight: 500; }
   .opt.sel .why { color: var(--muted); }
   .opt .box2 { width: 15px; height: 15px; flex: 0 0 15px; border-radius: 4px;
     border: 1.5px solid var(--ctl); display: grid; place-items: center; }
@@ -371,8 +371,8 @@
      A click, Enter or Space unfolds. */
   .dock .qbar { display: flex; align-items: center; gap: 9px; padding: 12px 14px;
     font-size: var(--fs-base); cursor: pointer; }
-  .dock .qbar .qm { color: var(--accent); font-weight: 700; flex: none; }
-  .dock .qbar .t { color: var(--text); font-weight: 600; }
+  .dock .qbar .qm { color: var(--accent); font-weight: 500; flex: none; }
+  .dock .qbar .t { color: var(--text); font-weight: 500; }
   .dock .qbar .cnt { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
   .dock .qbar .chevc { margin-left: auto; color: var(--dim); font-size: 13px; }
   /* A permission's actions and a post's verbs: buttons, the approving one

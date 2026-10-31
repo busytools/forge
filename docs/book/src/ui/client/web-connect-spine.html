@@ -41,7 +41,7 @@
   .brand { display: flex; align-items: center; gap: 10px; }
   .brand .mark { width: 26px; height: 26px; flex: 0 0 26px; color: var(--accent); }
   .brand .mark svg { display: block; width: 100%; height: 100%; }
-  .brand .word { font-size: 18px; font-weight: 650; letter-spacing: -.02em; }
+  .brand .word { font-size: 18px; font-weight: 500; letter-spacing: -.02em; }
 
   /* The block's shape is the design: three rows, the same three in every
      state, so the only thing that changes is what each one is true of. */
@@ -80,7 +80,7 @@
      and did not, which is why these were muted when the page was drawn. */
   .steps .k {
     font-size: var(--fs-label); letter-spacing: .08em; text-transform: uppercase;
-    color: var(--muted); font-weight: 600;
+    color: var(--muted); font-weight: 500;
   }
   .steps .v { margin-top: 2px; }
   .steps .v.addr { font-family: var(--mono); font-size: var(--fs-title); font-weight: 500; letter-spacing: -.01em; }
@@ -106,7 +106,7 @@
   .act button {
     background: var(--s2); border: 1px solid var(--line); border-radius: var(--r);
     padding: 11px 20px; color: var(--text);
-    font-family: var(--ui); font-size: var(--fs-base); font-weight: 600; cursor: pointer;
+    font-family: var(--ui); font-size: var(--fs-base); font-weight: 500; cursor: pointer;
   }
   .act button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
   .act button:disabled { color: var(--dim); cursor: default; }
@@ -118,7 +118,7 @@
   .demo-panel { display: none; margin-top: 34px; border-top: 1px solid var(--line); padding-top: 22px; }
   #demo:checked ~ .wrap .demo-panel { display: block; }
   .cat { margin-top: 26px; }
-  .cat h4 { font-size: var(--fs-label); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+  .cat h4 { font-size: var(--fs-label); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); font-weight: 500; }
   .cat .why { font-weight: 400; letter-spacing: 0; text-transform: none; color: var(--dim); margin-left: 8px; }
   .stage { max-width: 32rem; margin-top: 16px; }
   .stage .door { margin: 0; }

@@ -67,11 +67,15 @@ web_block() {
     printf ',\n  "web": {\n    "version": "%s",\n    "url": "http://127.0.0.1:%s/web.tar.gz",\n    "sha256": "%s"\n  }' "$1" "$port" "$2"
 }
 
-poll() {
-    FORGE_SERVED="$served" \
-        FORGE_LATEST_URL="$1" \
+poll_served() {
+    FORGE_SERVED="$1" \
+        FORGE_LATEST_URL="$2" \
         FORGE_POLL_ONCE=1 \
         sh "$here/poller.sh"
+}
+
+poll() {
+    poll_served "$served" "$1"
 }
 
 manifest "9.9.9" "$sum" "$(web_block 9.9.9 "$sum")"
@@ -105,6 +109,20 @@ poll "$url" > /dev/null 2>&1 || fail "the same-version poll failed"
 [ "$(served_of)" = "dist-9.9.9" ] || fail "the same-version poll moved the build"
 echo "[OK] a poll that names the served version fetches nothing"
 
+# The seed an image bakes is named for the release it was built at - the
+# entrypoint reads the version the image carries - so a fresh container whose
+# seed IS the release skips its very first poll instead of fetching a build
+# it already serves.
+mkdir -p "$scratch/fresh/dist-9.9.9"
+printf 'the web build, served\n' > "$scratch/fresh/dist-9.9.9/index.html"
+ln -sfn dist-9.9.9 "$scratch/fresh/current"
+before=$(fetches)
+poll_served "$scratch/fresh" "$url" > /dev/null 2>&1 || fail "the seeded poll failed"
+[ "$(fetches)" = "$before" ] || fail "a seed named for the release fetched the archive again"
+[ "$(basename "$(readlink "$scratch/fresh/current")")" = "dist-9.9.9" ] \
+    || fail "the seeded poll moved the build"
+echo "[OK] a seed named for the release skips the first poll"
+
 # A manifest with no web block is not an update: the poll answers and does
 # nothing, which is what a desktop-only release looks like.
 manifest "9.9.10" "$sum" ""
@@ -122,6 +140,17 @@ fi
 [ "$(served_of)" = "dist-9.9.9" ] || fail "a refused release still moved the build"
 [ ! -e "$served/dist-9.9.10" ] || fail "a refused release was extracted"
 echo "[OK] a mismatched sha256 refuses the release and keeps the served build"
+
+# A hash-valid archive that holds no index is not servable. Flipping it in
+# would 404 the site and prune the build that worked in the same pass.
+mkdir -p "$scratch/empty/dist"
+tar -C "$scratch/empty/dist" -czf "$release/web.tar.gz" .
+empty_sum=$(sha_of "$release/web.tar.gz")
+manifest "9.9.11" "$empty_sum" "$(web_block 9.9.11 "$empty_sum")"
+poll "$url" > /dev/null 2>&1 || fail "an unservable release was treated as fatal"
+[ "$(served_of)" = "dist-9.9.9" ] || fail "an unservable release moved the build"
+[ ! -e "$served/dist-9.9.11" ] || fail "an unservable release was installed"
+echo "[OK] an archive with no index.html is refused and the served build kept"
 
 # Nothing answering is not fatal: the container keeps serving what it has.
 if ! poll "http://127.0.0.1:1/latest.json" > /dev/null 2>&1; then

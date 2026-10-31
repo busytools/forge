@@ -30,6 +30,19 @@ pub(crate) enum CronCreateError {
     NoUpcomingOccurrence,
 }
 
+/// Why `cron__list` failed: the one condition that is not an empty registry,
+/// so an empty answer names exactly one state.
+///
+/// The same unresolvable caller is what `delete_cron` answers with its own
+/// [`CronDeleteError::UnknownCallerProject`]; the variants stay per-verb
+/// because a list cannot have "no such cron" or "not yours".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CronListError {
+    /// The caller couldn't be mapped to a project (transient race, or the
+    /// session ended). Shouldn't happen for a live session.
+    UnknownCallerProject,
+}
+
 /// Why `cron__delete` failed. The last two are the two cases a refusal
 /// keeps apart: an id the project holds under another session reads
 /// differently from one the project never had.
@@ -60,8 +73,10 @@ pub(crate) trait CronFacade: Send + Sync {
         wake: bool,
     ) -> Result<CronEntry, CronCreateError>;
 
-    /// The crons the caller registered, within its project.
-    fn list_crons(&self, caller: &SessionSlot) -> Vec<CronEntry>;
+    /// The crons the caller registered, within its project. An empty answer
+    /// means the caller has none; a caller that cannot be resolved is an
+    /// error, not an empty set.
+    fn list_crons(&self, caller: &SessionSlot) -> Result<Vec<CronEntry>, CronListError>;
 
     /// Delete the caller's own cron by id, within its project, and return
     /// the entry as it stood. A refusal says which case it is:
@@ -118,15 +133,16 @@ impl CronFacade for ProdCronFacade {
         Ok(entry)
     }
 
-    fn list_crons(&self, caller: &SessionSlot) -> Vec<CronEntry> {
-        let Some(ws) = self.workspace.upgrade() else { return Vec::new() };
-        let Some(cx) = caller_context(&ws, caller) else { return Vec::new() };
+    fn list_crons(&self, caller: &SessionSlot) -> Result<Vec<CronEntry>, CronListError> {
+        let ws = self.workspace.upgrade().ok_or(CronListError::UnknownCallerProject)?;
+        let cx = caller_context(&ws, caller).ok_or(CronListError::UnknownCallerProject)?;
         // Symmetric: every caller sees only its own crons - a lead
         // (`worker_label == None`) the lead crons, a worker its own.
-        ws.crons_for_project(&cx.project_name)
+        Ok(ws
+            .crons_for_project(&cx.project_name)
             .into_iter()
             .filter(|c| c.team_role == cx.worker_label)
-            .collect()
+            .collect())
     }
 
     fn delete_cron(&self, caller: &SessionSlot, id: &CronId) -> Result<CronEntry, CronDeleteError> {
@@ -159,6 +175,7 @@ type CreateCall = (SessionSlot, CronKind, String, Option<String>, bool);
 #[derive(Default)]
 pub(crate) struct MockCronFacade {
     pub crons: parking_lot::Mutex<Vec<CronEntry>>,
+    pub list_result: parking_lot::Mutex<Option<Result<Vec<CronEntry>, CronListError>>>,
     pub create_calls: parking_lot::Mutex<Vec<CreateCall>>,
     pub create_result: parking_lot::Mutex<Option<Result<CronEntry, CronCreateError>>>,
     pub delete_calls: parking_lot::Mutex<Vec<(SessionSlot, CronId)>>,
@@ -209,8 +226,8 @@ impl CronFacade for MockCronFacade {
         })
     }
 
-    fn list_crons(&self, _caller: &SessionSlot) -> Vec<CronEntry> {
-        self.crons.lock().clone()
+    fn list_crons(&self, _caller: &SessionSlot) -> Result<Vec<CronEntry>, CronListError> {
+        self.list_result.lock().clone().unwrap_or_else(|| Ok(self.crons.lock().clone()))
     }
 
     fn delete_cron(&self, caller: &SessionSlot, id: &CronId) -> Result<CronEntry, CronDeleteError> {
@@ -301,10 +318,10 @@ mod prod_facade_tests {
             "a worker cron is stamped with its label",
         );
 
-        let worker_list = facade.list_crons(&worker);
+        let worker_list = facade.list_crons(&worker).expect("list");
         assert_eq!(worker_list.len(), 1, "the worker sees only its own cron");
         assert_eq!(worker_list[0].id, worker_cron.id);
-        let lead_list = facade.list_crons(&lead);
+        let lead_list = facade.list_crons(&lead).expect("list");
         assert_eq!(lead_list.len(), 1, "the lead sees only lead crons");
         assert_eq!(lead_list[0].id, lead_cron.id);
 
@@ -351,9 +368,22 @@ mod prod_facade_tests {
             "carrying the schedule it was registered under: {:?}",
             removed.kind,
         );
-        let left = facade.list_crons(&lead);
+        let left = facade.list_crons(&lead).expect("list");
         assert_eq!(left.len(), 1, "only the neighbour survives");
         assert_eq!(left[0].id, neighbour.id, "and it is the neighbour that survives");
+    }
+
+    /// **An unresolvable caller is a refusal from the real facade**, not an
+    /// empty registry: the production arm is what the tool's error renders.
+    #[test]
+    fn list_refuses_a_caller_that_maps_to_no_project() {
+        let (_ws, facade, _lead, _worker) = fixture();
+
+        assert_eq!(
+            facade.list_crons(&SessionSlot::lead("TestOrg", "no-such-project")),
+            Err(CronListError::UnknownCallerProject),
+            "a caller outside every project must not read as a caller with no crons",
+        );
     }
 
     /// The other half of the refusal: an id the project never had is a

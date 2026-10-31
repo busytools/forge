@@ -46,6 +46,8 @@
 //!   successor is given, and the numbers kept for tuning the trigger.
 //! - [`settings`] - the effective-config document a server pushes: the
 //!   areas, every key's value, and when an edit to it takes effect.
+//! - [`wire`] - the socket's binary frame tags shared by the server and the
+//!   shell.
 //!
 //! Add a type here when 2+ forge crates need it. Never reach for
 //! cross-crate `pub use` chains as a substitute.
@@ -91,6 +93,7 @@ pub mod tasks;
 pub mod token_usage;
 pub mod turn_error;
 pub mod usage;
+pub mod wire;
 pub mod workers;
 
 pub use call_output::CallOutput;

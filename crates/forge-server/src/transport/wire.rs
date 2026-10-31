@@ -1502,17 +1502,20 @@ pub fn page(
     before: Option<&str>,
     turns: u32,
 ) -> Page {
-    page_within(messages, rendered, dropped, before, turns, usize::MAX, None)
+    page_within(messages, rendered, dropped, before, turns, usize::MAX, "page", None)
 }
 
 /// [`page`], with the whole turns it carries held to `budget` bytes.
 ///
 /// **A page of twenty turns is unbounded in bytes**, and the first page is
 /// what a seat switch waits on: a few large turns made one 5 MB, which is
-/// seconds over a network and milliseconds locally. So the newest page is cut
-/// where the budget runs out, at a turn boundary - a client draws turns, and
-/// a turn cut in half is one it cannot place. The handle it carries is the
-/// first kept turn's, so `more` walks the history above it as it always did.
+/// seconds over a network and milliseconds locally. A `more` answer is held
+/// the same way (`[server] more_page_cap_kb`): its page contract is whole
+/// turns too, so one large turn crossed whole and a single page could be tens
+/// of megabytes. So the newest page is cut where the budget runs out, at a
+/// turn boundary - a client draws turns, and a turn cut in half is one it
+/// cannot place. The handle it carries is the first kept turn's, so `more`
+/// walks the history above it as it always did.
 ///
 /// **The bytes counted are the bytes SERVED**: each candidate is bounded by
 /// `cap` first, exactly as the page would have been after the cut. Measuring
@@ -1523,6 +1526,10 @@ pub fn page(
 /// **The newest turn is served even when it alone is over the budget**: a
 /// budget that answered with no page would draw the seat empty, and one that
 /// split the turn would hand a client half of it. `usize::MAX` is no budget.
+///
+/// `budget_key` is the `forge.toml` key the budget came from, named on a cut:
+/// two caps share the default, and a line that did not say which one moved
+/// would mislead.
 pub fn page_within(
     messages: &[Message],
     rendered: &Rendered,
@@ -1530,6 +1537,7 @@ pub fn page_within(
     before: Option<&str>,
     turns: u32,
     budget: usize,
+    budget_key: &'static str,
     cap: Option<(usize, &SessionSlot)>,
 ) -> Page {
     // A page of no turns ends where it began: its cursor would name the turn it
@@ -1595,6 +1603,21 @@ pub fn page_within(
             total = total.saturating_add(bytes);
             kept.push(turn);
             first -= 1;
+        }
+        // **The cut is named where it happens.** A page that stopped at its
+        // budget is not a page that ran out of history: its cursor is what
+        // says the turns above it are still askable, and a reader of the log
+        // should not have to tell a short page from a finished walk.
+        if let Some((_, seat)) = cap.filter(|_| first > window_first) {
+            tracing::debug!(
+                event_name = "page_cut_by_budget",
+                slot = %seat.display(),
+                budget_key,
+                budget,
+                turns_kept = kept.len(),
+                turns_available = ends_at - window_first,
+                "the page stopped at its byte budget; its cursor names the turns above it",
+            );
         }
         kept.reverse();
         (first, kept)
@@ -1814,9 +1837,10 @@ pub const SUBSCRIBE_TURNS: u32 = 20;
 /// in the order the path runs them, so their sum against `open_ms` is the
 /// work that did not name itself; the seed is the transcript read only a
 /// cold seat pays, and the conversation total excludes it. The frame's own
-/// record, `frame_write`, carries `prep_ms` (the record serialised into the
-/// bytes) and `write_ms` (the socket's share) - both inside `open_ms`, and
-/// split out of what the record's own reads would otherwise have to explain.
+/// record, `frame_write`, carries `prep_ms` (the record serialised and
+/// compressed into the bytes) and `write_ms` (the socket's share) - both
+/// inside `open_ms`, and split out of what the record's own reads would
+/// otherwise have to explain.
 #[derive(Debug, Default)]
 pub struct OpenTimings {
     pub seed_ms: f64,
@@ -2356,6 +2380,7 @@ async fn session(
                         None,
                         SUBSCRIBE_TURNS,
                         first_frame,
+                        "first_frame_cap_kb",
                         Some((cap, &capped)),
                     );
                     floor_cursor(&mut page, held.dropped());
@@ -2683,7 +2708,10 @@ mod tests {
         let support = dir.path().join("app-support");
         std::fs::create_dir_all(&support).expect("app-support");
         {
-            let db = forge_workspace::store::Db::open(&support.join("db.redb")).expect("open db");
+            // The fleet opens this config dir's own store; seed the same path.
+            let db_path = forge_workspace::store::path_for(&support, dir.path());
+            std::fs::create_dir_all(db_path.parent().expect("stores/")).expect("stores/");
+            let db = forge_workspace::store::Db::open(&db_path).expect("open db");
             forge_workspace::store::cron_names::put(
                 &db,
                 "p-reload",
@@ -2996,7 +3024,8 @@ mod tests {
         let newest_two = &every.turns[every.turns.len() - 2..];
         let budget = wire_bytes(newest_two);
 
-        let bounded = page_within(&messages, &rendered, 0, None, SUBSCRIBE_TURNS, budget, None);
+        let bounded =
+            page_within(&messages, &rendered, 0, None, SUBSCRIBE_TURNS, budget, "test", None);
 
         assert_eq!(
             bounded.turns.iter().map(opened_on).collect::<Vec<_>>(),
@@ -3021,7 +3050,7 @@ mod tests {
         let (messages, rendered) = a_conversation(&borrowed);
         let every = every_turn(&messages, &rendered);
 
-        let bounded = page_within(&messages, &rendered, 0, None, SUBSCRIBE_TURNS, 1, None);
+        let bounded = page_within(&messages, &rendered, 0, None, SUBSCRIBE_TURNS, 1, "test", None);
 
         assert_eq!(bounded.turns.len(), 1, "a budget under one turn still answers with one");
         assert_eq!(opened_on(&bounded.turns[0]), every[every.len() - 1], "and it is the newest");
@@ -3038,7 +3067,8 @@ mod tests {
         let counted = page(&messages, &rendered, 0, None, SUBSCRIBE_TURNS);
         let budget = wire_bytes(&counted.turns);
 
-        let bounded = page_within(&messages, &rendered, 0, None, SUBSCRIBE_TURNS, budget, None);
+        let bounded =
+            page_within(&messages, &rendered, 0, None, SUBSCRIBE_TURNS, budget, "test", None);
 
         assert_eq!(
             bounded.turns.len(),
@@ -3284,7 +3314,8 @@ mod tests {
         };
         let newest_two: usize = ranges[ranges.len() - 2..].iter().map(raw_turn).sum();
 
-        let bounded = page_within(&messages, &rendered, 0, None, SUBSCRIBE_TURNS, newest_two, None);
+        let bounded =
+            page_within(&messages, &rendered, 0, None, SUBSCRIBE_TURNS, newest_two, "test", None);
 
         assert_eq!(bounded.turns.len(), 2, "the same two turns the raw budget kept");
         assert!(
@@ -3316,7 +3347,7 @@ mod tests {
         let (messages, rendered) = a_conversation(&borrowed);
         let seat = fixture_seat();
 
-        let raw = page_within(&messages, &rendered, 0, None, SUBSCRIBE_TURNS, 2_048, None);
+        let raw = page_within(&messages, &rendered, 0, None, SUBSCRIBE_TURNS, 2_048, "test", None);
         assert_eq!(raw.turns.len(), 1, "a raw record of 20 KB leaves one turn in 2 KB");
 
         let capped = page_within(
@@ -3326,6 +3357,7 @@ mod tests {
             None,
             SUBSCRIBE_TURNS,
             2_048,
+            "test",
             Some((1_024, &seat)),
         );
         assert!(

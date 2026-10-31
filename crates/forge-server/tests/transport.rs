@@ -4078,6 +4078,7 @@ async fn the_configured_record_cap_reaches_the_served_page() {
 /// conversation. Nothing is dropped and the order does not move.
 #[tokio::test]
 async fn the_configured_first_frame_budget_is_completed_by_the_walk_above_it() {
+    install_capture();
     let dir = tempfile::tempdir().expect("tempdir");
     let fleet = Fleet::in_dir_with_server(
         dir.path(),
@@ -4112,6 +4113,13 @@ async fn the_configured_first_frame_budget_is_completed_by_the_walk_above_it() {
     assert!(
         first.windows(2).all(|pair| turn_number(&pair[0]) < turn_number(&pair[1])),
         "and it keeps the conversation's order: {first:?}",
+    );
+    assert!(
+        captured()
+            .lines()
+            .any(|line| line.contains("page_cut_by_budget") && line.contains("first_frame_cap_kb")),
+        "a cut first frame is logged with the key that cut it: {}",
+        captured(),
     );
 
     let mut cursor = data["conversation"]["cursor"].as_str().map(str::to_owned);
@@ -4193,18 +4201,201 @@ async fn a_newest_turn_over_the_budget_is_served_whole() {
 }
 
 /// **`first_frame_cap_kb = 0` serves the count's page.** The opt-out is the
-/// twenty turns a budget would cut, not the one turn its floor keeps.
+/// twenty turns a budget would cut, not the one turn its floor keeps. **A 0
+/// budget still caps the records it serves** (#2374): the uncut page is what
+/// reaches `cap_tool_records`, and a page the budget never cut is not logged
+/// as cut.
 #[tokio::test]
 async fn a_zero_first_frame_cap_serves_the_twenty_turn_page() {
+    install_capture();
+    let dir = tempfile::tempdir().expect("tempdir");
+    // A project of its own, so the no-cut assertion reads only this page.
+    let fleet = Fleet::in_dir_with_server(
+        dir.path(),
+        &[("TestOrg", &["zero"])],
+        "[server]\nfirst_frame_cap_kb = 0\ntool_record_cap_kb = 1\n",
+    )
+    .expect("the fleet builds");
+    let (url, state) = serve_fleet(&fleet, Heartbeat::default()).await;
+    let mut rows: Vec<String> = (0..19).map(a_turns_rows).collect();
+    rows.push(a_big_result_rows(19, 20_000));
+    let borrowed: Vec<&str> = rows.iter().map(String::as_str).collect();
+    fleet.seed_transcript("TestOrg", "zero", "lead", &borrowed).expect("the transcript seeds");
+    fleet
+        .hold_conversation(&state, "TestOrg", "zero", "lead")
+        .expect("the seat's conversation is held");
+    let seat = SessionSlot::lead("TestOrg", "zero");
+
+    let mut socket = connect(&url).await;
+    send(
+        &mut socket,
+        ClientMessage::Subscribe { what: Subject::Session(seat), answering: false, review: false },
+    )
+    .await;
+    let ServerMessage::Snapshot { data, .. } = next_server(&mut socket).await else {
+        panic!("a snapshot is the answer to a subscribe")
+    };
+    let turns = data["conversation"]["turns"].as_array().expect("the page carries turns");
+    assert_eq!(turns.len(), 20, "a 0 cap serves every turn the count asks for");
+    let record = turns
+        .iter()
+        .flat_map(|turn| turn["messages"].as_array().into_iter().flatten())
+        .find(|frame| frame["uuid"] == "t19")
+        .expect("the big record's frame is in the page");
+    assert_eq!(
+        record["tool_use_result"]["omitted"], true,
+        "a 0 page budget still caps the record: {record}",
+    );
+}
+
+/// **A first frame that fits its budget is not logged as cut.** The cut line
+/// is what tells a short page from a finished walk; one written for a page
+/// the budget never touched says the opposite and is just as wrong.
+#[tokio::test]
+async fn a_fitting_first_frame_is_not_logged_as_cut() {
+    install_capture();
+    let dir = tempfile::tempdir().expect("tempdir");
+    // A project of its own, so the assertion reads only this page.
+    let fleet = Fleet::in_dir_with_server(
+        dir.path(),
+        &[("TestOrg", &["fit"])],
+        "[server]\nfirst_frame_cap_kb = 64\n",
+    )
+    .expect("the fleet builds");
+    let (url, state) = serve_fleet(&fleet, Heartbeat::default()).await;
+    let rows: Vec<String> = (0..5).map(a_turns_rows).collect();
+    let borrowed: Vec<&str> = rows.iter().map(String::as_str).collect();
+    fleet.seed_transcript("TestOrg", "fit", "lead", &borrowed).expect("the transcript seeds");
+    fleet
+        .hold_conversation(&state, "TestOrg", "fit", "lead")
+        .expect("the seat's conversation is held");
+    let seat = SessionSlot::lead("TestOrg", "fit");
+
+    let mut socket = connect(&url).await;
+    send(
+        &mut socket,
+        ClientMessage::Subscribe { what: Subject::Session(seat), answering: false, review: false },
+    )
+    .await;
+    let ServerMessage::Snapshot { data, .. } = next_server(&mut socket).await else {
+        panic!("a snapshot is the answer to a subscribe")
+    };
+    assert_eq!(
+        data["conversation"]["turns"].as_array().map(Vec::len),
+        Some(5),
+        "precondition: the page fits its budget",
+    );
+    assert!(
+        !captured()
+            .lines()
+            .any(|line| line.contains("page_cut_by_budget") && line.contains("TestOrg/fit/lead")),
+        "a page the budget never cut was logged as cut: {}",
+        captured(),
+    );
+}
+
+/// **A `more` page is held to a byte budget too.** The first frame has had
+/// one since #2493; a `more` answer was still cut by its turn count alone, so
+/// one large turn crossed whole and a page could be tens of MB. The budget
+/// keeps whole turns while they fit, the newest rides even when it alone is
+/// over, and the cursor still names the history above the page.
+#[tokio::test]
+async fn a_more_page_is_held_to_the_more_page_budget() {
+    install_capture();
+    let dir = tempfile::tempdir().expect("tempdir");
+    // The shipped default is what a page inherits when the key is absent. The
+    // project is its own so the log assertion below never reads a case
+    // running beside it.
+    let fleet = Fleet::in_dir_with_server(dir.path(), &[("TestOrg", &["morecap"])], "")
+        .expect("the fleet builds");
+    let (url, state) = serve_fleet(&fleet, Heartbeat::default()).await;
+    let seat = SessionSlot::lead("TestOrg", "morecap");
+    let rows: Vec<String> = (0..8).map(|turn| a_turns_rows_padded(turn, 250_000)).collect();
+    let borrowed: Vec<&str> = rows.iter().map(String::as_str).collect();
+    fleet.seed_transcript("TestOrg", "morecap", "lead", &borrowed).expect("the transcript seeds");
+    fleet
+        .hold_conversation(&state, "TestOrg", "morecap", "lead")
+        .expect("the seat's conversation is held");
+
+    let mut socket = connect(&url).await;
+    send(&mut socket, ClientMessage::More { conversation: seat.clone(), before: None, turns: 8 })
+        .await;
+    let ServerMessage::Page { turns, cursor, .. } = next_server(&mut socket).await else {
+        panic!("a page is the answer to a request for more")
+    };
+    let kept = page_words(&turns);
+    assert_eq!(
+        kept.len(),
+        2,
+        "two 250 KB turns fit the 512 KB budget and the third does not: {kept:?}",
+    );
+    assert_eq!(
+        kept.last().map(String::as_str),
+        Some("turn 7"),
+        "the newest turn is served even when the budget is under the page",
+    );
+    assert!(cursor.is_some(), "and the handle above the page is carried");
+
+    // The walk above the handed-back cursor reaches every turn the budget cut.
+    let mut reached = kept;
+    let mut asked = cursor;
+    let mut walks = 0;
+    while let Some(before) = asked.take() {
+        walks += 1;
+        assert!(walks < 10, "the walk terminates rather than cycling");
+        send(
+            &mut socket,
+            ClientMessage::More { conversation: seat.clone(), before: Some(before), turns: 8 },
+        )
+        .await;
+        let ServerMessage::Page { turns, cursor, .. } = next_server(&mut socket).await else {
+            panic!("the page above is answered too")
+        };
+        reached.extend(page_words(&turns));
+        asked = cursor;
+    }
+    reached.sort_by_key(|word| turn_number(word));
+    let mut every: Vec<String> = (0..8).map(|turn| format!("turn {turn}")).collect();
+    every.sort_by_key(|word| turn_number(word));
+    assert_eq!(reached, every, "nothing the budget cut is lost to the walk");
+
+    // **The cut names itself**, the way a capped record does: the seat, the
+    // budget and what it kept. A page that stopped short of the asked count
+    // with no line is a page a reader has to guess about.
+    let cut = captured()
+        .lines()
+        .filter(|line| {
+            line.contains("page_cut_by_budget")
+                && line.contains("TestOrg/morecap/lead")
+                && line.contains("more_page_cap_kb")
+        })
+        .count();
+    assert!(
+        cut >= 1,
+        "the budget's cut names the key it came from, not just that it happened: {}",
+        captured(),
+    );
+}
+
+/// **`more_page_cap_kb = 0` serves the turns the client asked for.** The
+/// opt-out is the count's page rather than the one the budget's floor keeps.
+/// **A 0 budget still caps the records it serves** (#2374): the uncut page is
+/// what reaches `cap_tool_records`.
+#[tokio::test]
+async fn a_zero_more_page_cap_serves_the_asked_turns() {
     let dir = tempfile::tempdir().expect("tempdir");
     let fleet = Fleet::in_dir_with_server(
         dir.path(),
         &[("TestOrg", &["proj"])],
-        "[server]\nfirst_frame_cap_kb = 0\n",
+        "[server]\nmore_page_cap_kb = 0\ntool_record_cap_kb = 1\n",
     )
     .expect("the fleet builds");
     let (url, state) = serve_fleet(&fleet, Heartbeat::default()).await;
-    let rows: Vec<String> = (0..20).map(a_turns_rows).collect();
+    // **Over the default budget on purpose**: 8 x 250 KB is 2 MB, so only a
+    // genuinely unbounded budget serves all eight - a cap near the default
+    // would serve two and this test could not tell the opt-out from the cap.
+    let mut rows: Vec<String> = (0..8).map(|turn| a_turns_rows_padded(turn, 250_000)).collect();
+    rows.push(a_big_result_rows(8, 20_000));
     let borrowed: Vec<&str> = rows.iter().map(String::as_str).collect();
     fleet.seed_transcript("TestOrg", "proj", "lead", &borrowed).expect("the transcript seeds");
     fleet
@@ -4212,20 +4403,152 @@ async fn a_zero_first_frame_cap_serves_the_twenty_turn_page() {
         .expect("the seat's conversation is held");
 
     let mut socket = connect(&url).await;
+    send(&mut socket, ClientMessage::More { conversation: lead_seat(), before: None, turns: 9 })
+        .await;
+    let ServerMessage::Page { turns, .. } = next_server(&mut socket).await else {
+        panic!("a page is the answer to a request for more")
+    };
+    assert_eq!(turns.len(), 9, "a 0 cap serves every turn the client asked for");
+    let record = turns
+        .iter()
+        .flat_map(|turn| turn.messages.iter())
+        .find(|frame| frame["uuid"] == "t8")
+        .expect("the big record's frame is in the page");
+    assert_eq!(
+        record["tool_use_result"]["omitted"], true,
+        "a 0 page budget still caps the record: {record}",
+    );
+}
+
+/// The next JSON frame, inflated when it crossed compressed.
+///
+/// The shape is reported beside it, because "a declaring client is served a
+/// compressed frame and a plain one is not" is a claim about the frame, not
+/// about its content.
+async fn next_json_frame(socket: &mut Client) -> (ServerMessage, bool) {
+    loop {
+        let msg = tokio::time::timeout(Duration::from_secs(5), socket.next())
+            .await
+            .expect("the server answered rather than leaving the client waiting")
+            .expect("a message")
+            .expect("no error");
+        match msg {
+            Message::Text(text) => {
+                return (serde_json::from_str(&text).expect("decode"), false);
+            }
+            Message::Binary(bytes) if bytes.first() == Some(&3) => {
+                use std::io::Read as _;
+                let mut text = String::new();
+                flate2::read::GzDecoder::new(&bytes[1..])
+                    .read_to_string(&mut text)
+                    .expect("a compressed frame inflates");
+                return (serde_json::from_str(&text).expect("decode"), true);
+            }
+            // A browser frame or its audio: not this test's to read.
+            _ => {}
+        }
+    }
+}
+
+/// **A frame over the threshold crosses compressed only for a client that
+/// declared it** (#2560).
+///
+/// The declaration is a `deflate=1` query on the dial: a server that predates
+/// it ignores the query, and a client that does not send it is served the
+/// text frames it has always parsed. Both directions are pinned here, on the
+/// same seat and the same page.
+#[tokio::test]
+async fn a_large_frame_crosses_compressed_only_for_a_declaring_client() {
+    let (url, fleet, state) = a_server_with_state().await;
+    let rows: Vec<String> = (0..8).map(|turn| a_turns_rows_padded(turn, 100_000)).collect();
+    let borrowed: Vec<&str> = rows.iter().map(String::as_str).collect();
+    fleet.seed_transcript("TestOrg", "proj", "lead", &borrowed).expect("the transcript seeds");
+    fleet
+        .hold_conversation(&state, "TestOrg", "proj", "lead")
+        .expect("the seat's conversation is held");
+    let seat = lead_seat();
+
+    // A declaring client: the answer is a binary kind-3 frame, and inflating
+    // it gives back the same answer a text frame would have carried.
+    let mut declaring = connect(&format!("{url}?deflate=1")).await;
     send(
-        &mut socket,
+        &mut declaring,
         ClientMessage::Subscribe {
-            what: Subject::Session(lead_seat()),
+            what: Subject::Session(seat.clone()),
             answering: false,
             review: false,
         },
     )
     .await;
-    let ServerMessage::Snapshot { data, .. } = next_server(&mut socket).await else {
-        panic!("a snapshot is the answer to a subscribe")
+    let (snapshot, compressed) = loop {
+        let (message, compressed) = next_json_frame(&mut declaring).await;
+        if matches!(message, ServerMessage::Snapshot { .. }) {
+            break (message, compressed);
+        }
     };
-    let first = said_words(&data["conversation"]["turns"]);
-    assert_eq!(first.len(), 20, "a 0 cap serves every turn the count asks for: {first:?}");
+    assert!(compressed, "a page over the threshold crossed as text to a declaring client");
+    let ServerMessage::Snapshot { data: declaring_data, .. } = &snapshot else {
+        unreachable!("the loop broke on a snapshot")
+    };
+    let turns = declaring_data["conversation"]["turns"].as_array().map_or(0, Vec::len);
+    assert!(turns > 0, "the inflated answer carries the page: {declaring_data}");
+    let page = serde_json::to_string(declaring_data).expect("the answer encodes");
+    assert!(
+        page.len() > 64 * 1024,
+        "precondition: the page is over the compression threshold: {} bytes",
+        page.len(),
+    );
+
+    // A client that declared nothing: the same seat and page, as text.
+    let mut plain = connect(&url).await;
+    send(
+        &mut plain,
+        ClientMessage::Subscribe {
+            what: Subject::Session(seat.clone()),
+            answering: false,
+            review: false,
+        },
+    )
+    .await;
+    let (snapshot, compressed) = loop {
+        let (message, compressed) = next_json_frame(&mut plain).await;
+        if matches!(message, ServerMessage::Snapshot { .. }) {
+            break (message, compressed);
+        }
+    };
+    assert!(!compressed, "a frame reached a client that never declared the capability compressed");
+    let ServerMessage::Snapshot { data, .. } = &snapshot else {
+        unreachable!("the loop broke on a snapshot")
+    };
+    assert!(
+        data["conversation"]["turns"].as_array().is_some_and(|turns| !turns.is_empty()),
+        "and the plain client's answer carries the same page",
+    );
+    // **The non-declaring path is byte-identical, not merely readable**: the
+    // page the plain client got as text is the page the declaring client
+    // got inflated. Only the conversation is compared - the record's live
+    // slices (processes, an index walk) are read per answer and are not the
+    // page's own bytes.
+    assert_eq!(
+        &data["conversation"], &declaring_data["conversation"],
+        "the inflated page and the plain one are different records",
+    );
+
+    // **An unrelated query is not a declaration.** A URL the client did not
+    // use to declare compression must keep the text path.
+    let mut queried = connect(&format!("{url}?session=1")).await;
+    send(
+        &mut queried,
+        ClientMessage::Subscribe { what: Subject::Session(seat), answering: false, review: false },
+    )
+    .await;
+    let (_, compressed) = loop {
+        let (message, compressed) = next_json_frame(&mut queried).await;
+        if matches!(message, ServerMessage::Snapshot { .. }) {
+            break (message, compressed);
+        }
+    };
+    assert!(!compressed, "an unrelated query was read as a compression declaration");
 }
 
 /// `turn N` as `N`, so an order check compares the numbers rather than the
@@ -10620,7 +10943,7 @@ async fn a_chooser_and_a_download_for_another_tab_are_not_delivered() {
     assert_eq!((id, tab), (9, 1));
 
     let download = |tab, name: &str| forge_primitives::browser::BrowserDownload {
-        tab,
+        tab: Some(tab),
         name: name.to_owned(),
         bytes: b"x".to_vec(),
         error: None,
@@ -10635,8 +10958,25 @@ async fn a_chooser_and_a_download_for_another_tab_are_not_delivered() {
     let ServerMessage::BrowserDownload { tab, name, dropped, .. } = saved else {
         panic!("this tab's save is sent, got {saved:?}")
     };
-    assert_eq!((tab, name.as_str()), (1, "mine.txt"));
+    assert_eq!((tab, name.as_str()), (Some(1), "mine.txt"));
     assert!(!dropped, "a delivered save is not a dropped offer");
+
+    // **A notice that names no tab is the profile's**, so it is this
+    // viewer's to read rather than another tab's to filter out.
+    let _ = stub.downloads.send(forge_primitives::browser::BrowserDownload {
+        tab: None,
+        name: "download".to_owned(),
+        bytes: Vec::new(),
+        error: Some("a finished download was dropped".to_owned()),
+    });
+    let notice = next_server_within(&mut socket, 2000)
+        .await
+        .expect("a profile-level notice reaches the controller");
+    let ServerMessage::BrowserDownload { tab, name, .. } = notice else {
+        panic!("a profile-level notice is sent to the controller, got {notice:?}")
+    };
+    assert_eq!(tab, None, "the notice names no tab");
+    assert_eq!(name, "download");
 }
 
 /// **Only the controller can answer, and only the outstanding ask.** An

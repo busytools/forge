@@ -114,8 +114,11 @@ if ! codesign --verify --deep --strict "$APP" >/dev/null 2>&1; then
     exit 3
 fi
 
-mkdir -p "$INSTALL_DIR"
-BUNDLE="$INSTALL_DIR/$MAIN.app"
+# **Keyed by version, so an install never replaces the bundle a live server
+# is using.** The server resolves its own version's directory; the old ones
+# are pruned by the next server boot, not here.
+mkdir -p "$INSTALL_DIR/$VERSION"
+BUNDLE="$INSTALL_DIR/$VERSION/$MAIN.app"
 rm -rf "$BUNDLE"
 cp -R "$APP" "$BUNDLE"
 

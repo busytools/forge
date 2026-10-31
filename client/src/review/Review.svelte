@@ -1760,7 +1760,7 @@
   h1 {
     margin: 0;
     font-size: var(--fs-title);
-    font-weight: 650;
+    font-weight: 500;
     letter-spacing: -0.01em;
   }
   .facts {
@@ -1800,7 +1800,7 @@
     align-items: baseline;
     margin: 0 0 6px;
     font-size: var(--fs-label);
-    font-weight: 700;
+    font-weight: 500;
     letter-spacing: 0.12em;
     text-transform: uppercase;
     color: var(--dim);

@@ -63,6 +63,34 @@ pub(crate) struct SessionTask {
     pub(crate) teardown_done: Option<tokio::sync::watch::Sender<bool>>,
 }
 
+/// Emit the user turn a routed prompt draws, for the origin its dispatch entry
+/// stamped. A prompt with no origin is a machinery delivery, which draws its
+/// own envelope turn instead, so nothing is emitted for it.
+///
+/// **The session task calls this before it hands the prompt off**, which is
+/// what orders the frame against everything the task emits for the same
+/// prompt. The test dispatch intercept calls it in the task's place, so a
+/// fixture fleet observes the same frame a real task would draw.
+pub(crate) fn emit_prompt_frame(update_tx: &UpdateFanout, key: &SessionSlot, cmd: &Command) {
+    let Command::PromptUnder { text, attachments, uuid, source, origin: Some(origin), .. } = cmd
+    else {
+        return;
+    };
+    let images = forge_primitives::display_blocks(attachments);
+    let mut framed = forge_primitives::Message::display_only_user_with_blocks(
+        text.clone(),
+        images,
+        uuid.clone(),
+    );
+    framed.stamp_if_absent(&crate::install::rfc3339_now());
+    let _ = update_tx.send(SessionUpdate::ChatAppended {
+        key: key.clone(),
+        msg: framed,
+        origin: Some(*origin),
+        source: Some(*source),
+    });
+}
+
 impl SessionTask {
     pub(crate) async fn run(mut self) {
         tracing::debug!(
@@ -552,14 +580,19 @@ impl SessionTask {
                             // share it, and a cron's pairing is stored under
                             // it - a new id here would orphan the row's
                             // schedule (#1815).
+                            //
+                            // `route`, not `dispatch`: the prompt was already
+                            // drawn when it was held, and the dispatch entry
+                            // would stamp an origin that draws it a second time.
                             let uuid = prompt.uuid;
-                            if let Err(error) = workspace.dispatch(Command::PromptUnder {
+                            if let Err(error) = workspace.route(Command::PromptUnder {
                                 key: key.clone(),
                                 text: prompt.text,
                                 attachments: prompt.attachments,
                                 uuid,
                                 source: prompt.source,
                                 dispatch_id: None,
+                                origin: None,
                             }) {
                                 tracing::warn!(
                                     target: "forge_workspace::session_task",
@@ -1193,6 +1226,17 @@ impl SessionTask {
     }
 
     fn execute_command(&mut self, cmd: Command) {
+        // **A person's prompt draws its turn HERE**, in the task that hands
+        // it to the CLI, so the frame is ordered against every frame this
+        // task emits for the same prompt - the `TurnError` a failed hand-off
+        // raises included. Emitted from the dispatcher after `route`
+        // returned, it was a margin rather than an order: a synchronous
+        // failure could land first and the late frame then re-opened the turn
+        // the error had closed.
+        //
+        // Before the swap hold, so a prompt held for a successor still draws
+        // while it waits.
+        emit_prompt_frame(&self.update_tx, &self.key, &cmd);
         // **The judgment prompt is the one the swap's gate lets through.**
         // Recognised by the id the handoff recorded for it, so nothing else
         // can pass on its word.
@@ -1223,9 +1267,10 @@ impl SessionTask {
                     uuid,
                     source: PromptSource::You,
                     dispatch_id: None,
+                    origin: None,
                 }
             }
-            Command::PromptUnder { key, text, attachments, uuid, source, dispatch_id } => {
+            Command::PromptUnder { key, text, attachments, uuid, source, dispatch_id, origin } => {
                 // The continuation speaks for the occupant that failed. A
                 // `/new` or `/resume` the queue drains ahead of it leaves a
                 // replacement under the words, which point at a history the
@@ -1245,7 +1290,7 @@ impl SessionTask {
                     return;
                 }
                 self.record_queued(&uuid, source, &text);
-                Command::PromptUnder { key, text, attachments, uuid, source, dispatch_id }
+                Command::PromptUnder { key, text, attachments, uuid, source, dispatch_id, origin }
             }
             other => other,
         };
@@ -1947,13 +1992,17 @@ impl SessionTask {
             let sender = prompt.sender.clone();
             let first = prompt.text.lines().next().unwrap_or_default().to_owned();
             let uuid = forge_sdk::request_id::next_forged_prompt_id();
-            if let Err(error) = workspace.dispatch(Command::PromptUnder {
+            // `route`, not `dispatch`: the prompt was already drawn when it
+            // was held, and the dispatch entry would stamp an origin that
+            // draws it a second time.
+            if let Err(error) = workspace.route(Command::PromptUnder {
                 key: key.clone(),
                 text: prompt.text,
                 attachments: prompt.attachments,
                 uuid,
                 source: prompt.source,
                 dispatch_id: None,
+                origin: None,
             }) {
                 tracing::warn!(
                     target: "forge_workspace::session_task",
@@ -2580,7 +2629,15 @@ pub(crate) fn execute_command_via_handle(
             let uuid = forge_sdk::request_id::next_prompt_id();
             handle.prompt_with_images(sid.to_owned(), text, attachments, uuid)
         }
-        Command::PromptUnder { key: _, text, attachments, uuid, source: _, dispatch_id: _ } => {
+        Command::PromptUnder {
+            key: _,
+            text,
+            attachments,
+            uuid,
+            source: _,
+            dispatch_id: _,
+            origin: _,
+        } => {
             let Some(sid) = session_id else {
                 return Err(warn_no_session(key, "PromptUnder"));
             };
@@ -4326,9 +4383,10 @@ mod tests {
         assert!(
             dispatched.iter().any(|command| matches!(
                 command,
-                Command::PromptUnder { text, .. } if text == "sent during the swap"
+                Command::PromptUnder { text, origin: None, .. } if text == "sent during the swap"
             )),
-            "the held prompt goes back to the session that continues: {dispatched:?}",
+            "the held prompt goes back to the session that continues, drawn once already - a \
+             stamped origin would draw it a second time: {dispatched:?}",
         );
     }
 
@@ -4455,9 +4513,10 @@ mod tests {
         assert!(
             dispatched.iter().any(|command| matches!(
                 command,
-                Command::PromptUnder { text, .. } if text == "sent during the swap"
+                Command::PromptUnder { text, origin: None, .. } if text == "sent during the swap"
             )),
-            "the held prompt goes back to the session that continues: {dispatched:?}",
+            "the held prompt goes back to the session that continues, drawn once already - a \
+             stamped origin would draw it a second time: {dispatched:?}",
         );
     }
 
@@ -4621,16 +4680,20 @@ mod tests {
         let held = dispatched
             .iter()
             .find_map(|command| match command {
-                Command::PromptUnder { text, uuid, .. } if text == "sent during the swap" => {
-                    Some(uuid.clone())
+                Command::PromptUnder { text, uuid, origin, .. }
+                    if text == "sent during the swap" =>
+                {
+                    Some((uuid.clone(), *origin))
                 }
                 _ => None,
             })
             .expect("what the swap held goes to the occupant that is here");
         assert_eq!(
-            held, "held-swap",
-            "the drain keeps the id the hold carried: a fresh one would orphan a cron row's \
-             schedule pairing (#1815)",
+            held,
+            ("held-swap".to_owned(), None),
+            "the drain keeps the id the hold carried, and draws no second turn: a fresh id \
+             would orphan a cron row's schedule pairing (#1815), and a stamped origin would \
+             draw the words again",
         );
     }
 
@@ -4846,11 +4909,129 @@ mod tests {
             uuid: forge_sdk::request_id::next_forged_prompt_id(),
             source: crate::protocol::PromptSource::Forge,
             dispatch_id: None,
+            origin: None,
         });
         assert_eq!(
             task.successor.as_ref().map(|watch| watch.turns),
             Some(1),
             "forge's own delivery is not one of them",
+        );
+    }
+
+    /// The prompt's own turn and any `TurnError` for it come from ONE task,
+    /// so their order is structural rather than a race between the
+    /// dispatcher and the task: the frame first, the failure behind it. A
+    /// hand-off that fails because no wire session exists yet must not leave
+    /// the frame to arrive afterwards and re-open the turn the error closed.
+    #[tokio::test]
+    async fn a_prompt_frame_is_emitted_before_the_turn_error_for_the_same_prompt() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (workspace, _rx) =
+            crate::Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
+        let slot = SessionSlot::worker("TestOrg", "forge", "frame-order");
+        let (mut task, mut update_rx, _agent_rx) = nudge_task_for(&workspace, &slot);
+        assert!(task.domain.lock().session_id.is_none(), "premise: no wire session id to hand off");
+
+        let before = time::OffsetDateTime::now_utc();
+        task.execute_command(Command::PromptUnder {
+            key: slot.clone(),
+            text: "the words".to_owned(),
+            attachments: Vec::new(),
+            uuid: "frame-order-uuid".to_owned(),
+            source: crate::protocol::PromptSource::You,
+            dispatch_id: None,
+            origin: Some(crate::protocol::PromptOrigin::View),
+        });
+        let after = time::OffsetDateTime::now_utc();
+
+        let mut seen = Vec::new();
+        let mut stamp = None;
+        while let Ok(frame) = update_rx.try_recv() {
+            match &*frame.update {
+                SessionUpdate::ChatAppended { msg, origin, source, .. } => {
+                    let uuid = match msg {
+                        forge_primitives::Message::User { uuid, .. } => uuid.clone(),
+                        other => panic!("the prompt frame is a user turn, got {other:?}"),
+                    };
+                    assert_eq!(
+                        *origin,
+                        Some(crate::protocol::PromptOrigin::View),
+                        "the frame carries the origin the dispatch entry stamped",
+                    );
+                    assert_eq!(
+                        *source,
+                        Some(crate::protocol::PromptSource::You),
+                        "and the source a reader's follow arms on survives the task's own emit",
+                    );
+                    stamp = serde_json::to_value(msg).expect("encode")["timestamp"]
+                        .as_str()
+                        .map(str::to_owned);
+                    seen.push(format!("frame:{}", uuid.unwrap_or_default()));
+                }
+                SessionUpdate::TurnError { message, .. } => seen.push(format!("error:{message}")),
+                _ => {}
+            }
+        }
+        assert_eq!(seen.len(), 2, "the frame and the refusal both land: {seen:?}");
+        assert_eq!(seen[0], "frame:frame-order-uuid", "the frame is emitted first: {seen:?}");
+        assert!(seen[1].starts_with("error:"), "and the refusal follows it: {seen:?}");
+
+        // The row opens a turn, so it carries the clock a page reads: the
+        // forge's own, landing where the two `now_utc`s bracket the dispatch.
+        let stamp = stamp.expect("the prompt row carries a stamp");
+        let at =
+            time::OffsetDateTime::parse(&stamp, &time::format_description::well_known::Rfc3339)
+                .unwrap_or_else(|error| panic!("a client cannot read the stamp {stamp}: {error}"));
+        assert!(
+            at >= before - time::Duration::seconds(5) && at <= after + time::Duration::seconds(5),
+            "the row carries the task's own clock, not a constant: {stamp} sits outside \
+             {before}..{after}",
+        );
+    }
+
+    /// **A prompt held by a swap still draws its words, once.** The frame is
+    /// emitted before the hold, so the views have the words while the prompt
+    /// waits; moving the emit below the hold loses them outright - the
+    /// re-delivery carries no origin, so neither path would draw it.
+    #[tokio::test]
+    async fn a_prompt_held_by_a_swap_still_draws_its_words_once() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (workspace, _rx) =
+            crate::Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
+        let slot = SessionSlot::worker("TestOrg", "forge", "held-frame");
+        let (mut task, mut update_rx, mut agent_rx) = nudge_task_for(&workspace, &slot);
+        workspace.begin_swap(&slot);
+        assert!(workspace.swap_in_progress(&slot), "premise: the swap gate holds prompts");
+
+        task.execute_command(Command::PromptUnder {
+            key: slot.clone(),
+            text: "held words".to_owned(),
+            attachments: Vec::new(),
+            uuid: "held-frame-uuid".to_owned(),
+            source: crate::protocol::PromptSource::You,
+            dispatch_id: None,
+            origin: Some(crate::protocol::PromptOrigin::View),
+        });
+
+        let mut drawn = Vec::new();
+        while let Ok(frame) = update_rx.try_recv() {
+            if let SessionUpdate::ChatAppended {
+                msg: forge_primitives::Message::User { uuid, .. },
+                origin: Some(origin),
+                ..
+            } = &*frame.update
+            {
+                drawn.push((uuid.clone(), *origin));
+            }
+        }
+        assert_eq!(
+            drawn,
+            vec![(Some("held-frame-uuid".to_owned()), crate::protocol::PromptOrigin::View)],
+            "the held prompt draws exactly one frame, and it is the dispatched one",
+        );
+        assert!(
+            agent_rx.try_recv().is_err(),
+            "and nothing was handed to the agent: the swap is holding it",
         );
     }
 
@@ -6858,6 +7039,7 @@ mod tests {
             uuid: uuid.clone(),
             source: crate::protocol::PromptSource::Forge,
             dispatch_id: None,
+            origin: None,
         });
         // **The continuation is the command under test, not whatever arrives
         // next.** The turn boundary also asks the CLI for a fill reading, so

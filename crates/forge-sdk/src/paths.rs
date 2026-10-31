@@ -16,6 +16,8 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 
+use sha2::{Digest, Sha256};
+
 use crate::Error;
 
 /// Resolve forge's machine-local application-support directory
@@ -57,6 +59,21 @@ pub fn config_dir_hash(config_dir: &Path) -> String {
     format!("{:016x}", hasher.finish())
 }
 
+/// Stable hex key for a config dir's durable store, independent of the Rust
+/// release.
+///
+/// [`config_dir_hash`] hashes through `DefaultHasher`, whose algorithm std
+/// does not promise across releases; a nightly bump would silently open a new
+/// empty store and orphan every cron and subscription. The durable store
+/// therefore keys on a SHA-256 of the canonicalised path. **The lock keeps
+/// `config_dir_hash` on purpose**: a changed digest there would let a new
+/// binary miss a running old process's lock.
+pub fn config_dir_store_key(config_dir: &Path) -> String {
+    let canonical = config_dir.canonicalize().unwrap_or_else(|_| config_dir.to_path_buf());
+    let digest = Sha256::digest(canonical.as_os_str().as_encoded_bytes());
+    hex::encode(&digest[..8])
+}
+
 /// Path to a config_dir's `projects/` subdirectory. Caller passes
 /// the resolved `config_dir` explicitly; this helper just performs
 /// the join so the layout convention lives in one place.
@@ -94,6 +111,28 @@ mod tests {
         assert_ne!(
             config_dir_hash(Path::new("/tmp/forge-config-dir-hash-a")),
             config_dir_hash(Path::new("/tmp/forge-config-dir-hash-b")),
+        );
+    }
+
+    /// The store key is stable across a Rust release, so it is a digest of the
+    /// path rather than a `DefaultHasher` value: the same bytes every time,
+    /// fixed width, and a different key per config dir.
+    #[test]
+    fn the_store_key_is_a_stable_hex_digest_of_the_path() {
+        let one = Path::new("/tmp/forge-store-key-a");
+        let two = Path::new("/tmp/forge-store-key-b");
+        assert_eq!(config_dir_store_key(one), config_dir_store_key(one), "same dir, same key");
+        assert_ne!(config_dir_store_key(one), config_dir_store_key(two), "a key per config dir");
+        let key = config_dir_store_key(one);
+        assert_eq!(key.len(), 16, "16 hex chars, the width the lock uses: {key}");
+        assert!(key.chars().all(|c| c.is_ascii_hexdigit()), "the key is hex: {key}");
+        // **Not the lock's digest.** Swapping the store key back to
+        // `config_dir_hash` is the regression that orphans every row on a
+        // Rust release, and it is invisible unless the two are compared.
+        assert_ne!(
+            key,
+            config_dir_hash(one),
+            "the store key is its own digest, not the lock's DefaultHasher value",
         );
     }
 }

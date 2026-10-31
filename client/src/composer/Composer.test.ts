@@ -992,27 +992,44 @@ describe('the box', () => {
   });
 
   /**
-   * **The browser takeover owns the keyboard while it is up.** Its hidden
-   * field is what types into the page; the composer's own reclaim ran on the
-   * keyboard's resize and pulled the focus back, so the phone's typing never
-   * reached the page and the words landed in the chat behind the picture
+   * **The browser takeover owns the keyboard while it is up.** Its bar takes
+   * it on open (#2571), and the composer's own reclaim must not pull it back
+   * - the phone's typing once landed in the chat behind the picture
    * (measured on the dev stack).
    */
   it('leaves the keyboard to the browser takeover while it is up', () => {
     open({});
     expect(document.activeElement, 'the box owns it while no takeover').toBe(field());
 
-    const page = document.createElement('input');
-    document.body.append(page);
     surface.phase = 'live';
-    page.focus();
     flushSync();
-    expect(document.activeElement, 'the takeover keeps the keyboard').toBe(page);
+    const active = document.activeElement;
+    expect(
+      active instanceof HTMLElement &&
+        document.querySelector('.takeover-bar')?.contains(active) === true,
+      'the takeover owns the keyboard while it is up',
+    ).toBe(true);
+    expect(document.activeElement, 'and the box behind it does not').not.toBe(field());
 
     surface.phase = 'closed';
     flushSync();
     expect(document.activeElement, 'and the box takes it back when it lowers').toBe(field());
-    page.remove();
+  });
+
+  /**
+   * **The box behind the picture is inert** (#2571): the bar owns the
+   * keyboard while the surface is up, so the composer's own markup must say
+   * so even before the bar's mount walk runs - the server render carries it.
+   */
+  it('marks the composer inert while the takeover is up', async () => {
+    await surfaceOn(SLOT, 2);
+    open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
+    flushSync();
+    const box = document.querySelector('.surf');
+    expect(box?.hasAttribute('inert'), 'the composer behind the picture is inert').toBe(true);
+    surface.phase = 'closed';
+    flushSync();
+    expect(box?.hasAttribute('inert'), 'and it is given back with the chat').toBe(false);
   });
 
   /**
@@ -8350,7 +8367,10 @@ describe("the takeover bar's feedback line", () => {
       document.querySelector('.takeover-bar textarea'),
       'the card still holds the line while the record transcribes',
     ).toBeNull();
-    expect(document.activeElement, 'and the keyboard sits on the page').toBe(document.body);
+    expect(
+      document.activeElement,
+      'and the keyboard is in the bar the takeover owns, not the field the card replaced',
+    ).toBe(document.querySelector('.takeover-bar'));
 
     // The record clears a flush later: the field returns with the words.
     harness.page.record = record({

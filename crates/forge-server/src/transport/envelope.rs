@@ -609,7 +609,11 @@ pub enum ServerMessage {
     /// door and writes the bytes, or says `error` and writes nothing. `tab`
     /// is the tab it started from.
     BrowserDownload {
-        tab: u16,
+        /// The tab the download started from. **Absent on a profile-level
+        /// notice**: the backlog carries every tab's offers, so the ones it
+        /// dropped may belong to any tab of the profile.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tab: Option<u16>,
         name: String,
         /// The file's bytes, base64; absent when `error` says why not.
         data: Option<String>,
@@ -620,6 +624,11 @@ pub enum ServerMessage {
         /// refusal it already draws.
         #[serde(default)]
         dropped: bool,
+        /// How many offers the backlog dropped. **The title says one loss or
+        /// many from it**, so it agrees with the count in the body. Additive
+        /// and absent on a save.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lost: Option<u64>,
     },
     Error {
         what: String,
@@ -813,31 +822,34 @@ mod tests {
 
         // **A download carries either bytes or its refusal, never both.**
         let saved = ServerMessage::BrowserDownload {
-            tab: 2,
+            tab: Some(2),
             name: "report.pdf".to_owned(),
             data: Some("AAEC".to_owned()),
             error: None,
             dropped: false,
+            lost: None,
         };
         let json = serde_json::to_string(&saved).expect("encode");
         assert!(json.contains("\"kind\":\"browser_download\""), "{json}");
-        let ServerMessage::BrowserDownload { tab, name, data, error, dropped } =
+        let ServerMessage::BrowserDownload { tab, name, data, error, dropped, lost } =
             serde_json::from_str(&json).expect("decode")
         else {
             panic!("{json} decoded into another message")
         };
-        assert_eq!(tab, 2, "the save names the tab it started from");
+        assert_eq!(tab, Some(2), "the save names the tab it started from");
         assert_eq!(name, "report.pdf");
         assert_eq!(data.as_deref(), Some("AAEC"));
         assert!(error.is_none());
         assert!(!dropped, "a save the person can take is not a dropped offer");
+        assert!(lost.is_none(), "and a save carries no loss count");
 
         let refused = ServerMessage::BrowserDownload {
-            tab: 2,
+            tab: Some(2),
             name: "huge.bin".to_owned(),
             data: None,
             error: Some("this file is larger than 32 MiB".to_owned()),
             dropped: false,
+            lost: None,
         };
         let json = serde_json::to_string(&refused).expect("encode");
         let ServerMessage::BrowserDownload { data, error, dropped, .. } =
@@ -851,22 +863,29 @@ mod tests {
 
         // **A drop carries the flag the shell reads**, under that key: the
         // two samples above both say false, and a rename or a skip would
-        // leave the shell's title silently wrong.
-        let lost = ServerMessage::BrowserDownload {
-            tab: 2,
+        // leave the shell's title silently wrong. **It names no tab and
+        // carries its count**: the loss is the profile's, and the title is
+        // pluralized from `lost`.
+        let dropped = ServerMessage::BrowserDownload {
+            tab: None,
             name: "download".to_owned(),
             data: None,
-            error: Some("2 finished download(s) were dropped".to_owned()),
+            error: Some("2 finished downloads were dropped".to_owned()),
             dropped: true,
+            lost: Some(2),
         };
-        let json = serde_json::to_string(&lost).expect("encode");
+        let json = serde_json::to_string(&dropped).expect("encode");
         assert!(json.contains("\"dropped\":true"), "the wire key the shell reads: {json}");
-        let ServerMessage::BrowserDownload { dropped, .. } =
+        assert!(json.contains("\"lost\":2"), "and the count the title is read from: {json}");
+        assert!(!json.contains("\"tab\""), "a profile-level loss names no tab: {json}");
+        let ServerMessage::BrowserDownload { dropped, lost, tab, .. } =
             serde_json::from_str(&json).expect("decode")
         else {
             panic!("{json} decoded into another message")
         };
         assert!(dropped, "and it round-trips as a drop");
+        assert_eq!(lost, Some(2), "with its count");
+        assert_eq!(tab, None, "and no tab");
     }
 
     /// **A viewer's attach, its state, and the input it sends.**

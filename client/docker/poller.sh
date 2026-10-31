@@ -61,6 +61,14 @@ poll_once() {
     fi
     mkdir -p "$staging/dist"
     tar -xzf "$staging/web.tar.gz" -C "$staging/dist"
+    # The sha256 proves the archive is the one the manifest named, not that it
+    # holds a servable build: a release cut without an index would be flipped
+    # in and the working build pruned in the same pass.
+    if [ ! -f "$staging/dist/index.html" ]; then
+        echo "[..] the archive carries no index.html; keeping what is served and trying again"
+        rm -rf "$staging"
+        return 0
+    fi
     rm -rf "${served:?}/dist-$version"
     mv "$staging/dist" "$served/dist-$version"
     # The flip, as one rename: a plain `ln -sf` unlinks first, and a request

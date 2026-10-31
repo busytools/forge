@@ -42,6 +42,17 @@ vi.mock('./link', () => ({
   usesPageHistory: vi.fn(() => false),
 }));
 
+/**
+ * The perf marks a gesture and a painted frame leave (#2645), captured
+ * instead of written: the probe's file sink is not this test's subject, and
+ * the record's shape is `perf.test.ts`'s.
+ */
+const perf = vi.hoisted(() => ({ input: vi.fn(), paint: vi.fn() }));
+vi.mock('../perf', () => ({
+  noteBrowserInput: perf.input,
+  noteBrowserPaint: perf.paint,
+}));
+
 import BrowserSurface from './BrowserSurface.svelte';
 import { keptFrame } from './link';
 import { selectTab, setRegion, surface } from './surface.svelte';
@@ -49,7 +60,7 @@ import type { BrowserFrame, Connection } from '../socket';
 import type { BrowserInputEvent } from '../protocol';
 
 /** The frames and gestures a stubbed connection carried. */
-function stubConnection() {
+function stubConnection(takes = true) {
   const listeners = new Set<(frame: BrowserFrame) => void>();
   const events: BrowserInputEvent[] = [];
   const connection = {
@@ -58,7 +69,9 @@ function stubConnection() {
       return () => listeners.delete(fn);
     },
     browserInput: (event: BrowserInputEvent) => {
+      if (!takes) return false;
       events.push(event);
+      return true;
     },
   } as unknown as Connection;
   return { connection, listeners, events };
@@ -99,6 +112,10 @@ beforeEach(() => {
   surface.tab = null;
   surface.viewer = null;
   surface.controller = null;
+  surface.attachedProfile = null;
+  surface.profile = null;
+  perf.input.mockClear();
+  perf.paint.mockClear();
   vi.mocked(keptFrame).mockReset();
   vi.mocked(keptFrame).mockResolvedValue(null);
   // jsdom has no 2d context and prints a notice per paint; the frame's SIZE
@@ -502,6 +519,112 @@ describe('the canvas viewer', () => {
     canvas.dispatchEvent(new MouseEvent('pointerdown', { clientX: 4, clientY: 6, bubbles: true }));
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({ kind: 'mouse', action: 'press', button: 0 });
+  });
+
+  /**
+   * **The round trip is what the perf log has to show** (#2645): a gesture
+   * as it leaves, and the frame it draws. A pointer move is a stream, so it
+   * is not a mark of its own.
+   */
+  it('marks a gesture and the frame it answered', async () => {
+    vi.stubGlobal('createImageBitmap', () =>
+      Promise.resolve({ width: 100, height: 50, close: () => {} }),
+    );
+    const { connection, listeners } = stubConnection();
+    const target = open(connection);
+    const canvas = target.querySelector('canvas');
+    if (canvas === null) throw new Error('no canvas');
+    surface.id = 1;
+    surface.profile = 'Busytools/default';
+    surface.viewer = 7;
+    surface.controller = 7;
+    flushSync();
+
+    canvas.dispatchEvent(new MouseEvent('pointermove', { clientX: 3, clientY: 4, bubbles: true }));
+    expect(perf.input, 'a pointer move is a stream, not a step').not.toHaveBeenCalled();
+
+    canvas.dispatchEvent(new MouseEvent('pointerdown', { clientX: 3, clientY: 4, bubbles: true }));
+    expect(perf.input, 'the press is marked where it leaves').toHaveBeenCalledWith(
+      'mouse:press',
+      2,
+      'Busytools/default',
+    );
+
+    for (const listener of listeners) listener(frame(4));
+    await vi.waitFor(() => expect(canvas.width).toBe(100));
+    expect(perf.paint, 'and the frame it drew, with its own sequence').toHaveBeenCalledWith(
+      4,
+      2,
+      'Busytools/default',
+    );
+  });
+
+  /// **A key is marked once, at the press**: the release is part of the same
+  /// gesture and would pair the frame with the wrong end of the keystroke.
+  it('marks a key at its press, not at its release', () => {
+    const { connection } = stubConnection();
+    const target = open(connection);
+    surface.id = 1;
+    surface.viewer = 7;
+    surface.controller = 7;
+    flushSync();
+    const ime = target.querySelector('.surface-ime');
+    if (!(ime instanceof HTMLInputElement)) throw new Error('the page has no keyboard field');
+    ime.dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key: 'Enter',
+        code: 'Enter',
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    expect(perf.input, 'one gesture, one mark').toHaveBeenCalledTimes(1);
+    expect(perf.input).toHaveBeenCalledWith('key', 2, null);
+  });
+
+  /// **The rest of the gesture vocabulary is marked too**: a release, inserted
+  /// text and a wheel each leave their own step.
+  it('marks a release, inserted text and a wheel', () => {
+    const { connection, events } = stubConnection();
+    const target = open(connection);
+    const canvas = target.querySelector('canvas');
+    const ime = target.querySelector('.surface-ime');
+    if (canvas === null || !(ime instanceof HTMLInputElement)) {
+      throw new Error('the page area or its keyboard field is missing');
+    }
+    surface.id = 1;
+    surface.viewer = 7;
+    surface.controller = 7;
+    flushSync();
+
+    canvas.dispatchEvent(new MouseEvent('pointerup', { bubbles: true }));
+    canvas.dispatchEvent(new WheelEvent('wheel', { deltaY: 40, bubbles: true, cancelable: true }));
+    ime.value = 'x';
+    ime.dispatchEvent(new InputEvent('input', { bubbles: true }));
+
+    expect(perf.input, 'the release is a step of its own').toHaveBeenCalledWith(
+      'mouse:release',
+      2,
+      null,
+    );
+    expect(perf.input, 'and the wheel').toHaveBeenCalledWith('wheel', 2, null);
+    expect(perf.input, 'and inserted text').toHaveBeenCalledWith('text', 2, null);
+    expect(events, 'one gesture each, all sent').toHaveLength(3);
+  });
+
+  /// **A gesture the socket refused never left**, so it leaves no mark: the
+  /// log would pair it with a frame it never asked for.
+  it('marks nothing for a gesture the socket refused', () => {
+    const { connection, events } = stubConnection(false);
+    const target = open(connection);
+    const canvas = target.querySelector('canvas');
+    if (canvas === null) throw new Error('no canvas');
+    surface.viewer = 7;
+    surface.controller = 7;
+    flushSync();
+    canvas.dispatchEvent(new MouseEvent('pointerdown', { clientX: 4, clientY: 6, bubbles: true }));
+    expect(events, 'the socket took nothing').toHaveLength(0);
+    expect(perf.input, 'and the mark goes with it').not.toHaveBeenCalled();
   });
 
   /// **A mouse's press keeps the keyboard on the page.** The click moves

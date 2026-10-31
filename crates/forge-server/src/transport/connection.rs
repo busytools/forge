@@ -19,6 +19,7 @@ use forge_primitives::browser::{
     BrowserFrame, BrowserInputEvent, BrowserTabList, BrowserViewState, MouseAction,
 };
 use forge_primitives::document::DocumentRead;
+use forge_primitives::wire::COMPRESSED_JSON_TAG;
 use forge_workspace::browser::BrowserAttachment;
 use serde_json::json;
 
@@ -30,7 +31,7 @@ use super::frame::FrameTransport as _;
 use super::origin as origin_gate;
 use super::wire::{
     FileContentWire, OpenTimings, cap_message_record, cap_tool_records, conversation_for,
-    encode_subject, encode_subject_timed, floor_cursor, page,
+    encode_subject, encode_subject_timed, floor_cursor, page_within,
 };
 use super::{PROTOCOL_VERSION, TransportState, WRITE_BOUND, WriteStalled, write_within};
 use crate::live::Live;
@@ -267,9 +268,21 @@ enum ViewEvent {
         /// The offer was dropped before a viewer read it, so its words name a
         /// loss rather than a save that failed.
         dropped: bool,
+        /// How many offers the backlog dropped: the shell's title says one
+        /// loss or many from it.
+        lost: Option<u64>,
     },
     Audio(forge_primitives::browser::BrowserAudio),
 }
+
+/// **The drop notice says "four" in words**, and the backlog that decides it
+/// lives in forge-primitives so every platform compiles the coupling: a
+/// change there must change the words, and the mismatch is a compile error
+/// rather than a notice that lies.
+const _: () = assert!(
+    forge_primitives::browser::DOWNLOAD_BACKLOG == 4,
+    "the drop notice says 'four' finished downloads; change the words with the backlog"
+);
 
 /// The next thing this connection's viewer has for the loop.
 ///
@@ -291,7 +304,9 @@ async fn next_view_event(viewing: &mut Option<Viewing>) -> ViewEvent {
             changed = viewing.nav.changed() => changed.map(|()| 3_u8).map_err(|_| 13_u8),
             changed = viewing.files.changed() => changed.map(|()| 4_u8).map_err(|_| 14_u8),
             download = viewing.downloads.recv() => match download {
-                Ok(download) => return ViewEvent::Download { download, dropped: false },
+                Ok(download) => {
+                    return ViewEvent::Download { download, dropped: false, lost: None };
+                }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(lost)) => {
                     tracing::warn!(
                         event_name = "browser_download_lagged",
@@ -308,17 +323,31 @@ async fn next_view_event(viewing: &mut Option<Viewing>) -> ViewEvent {
                     // case is machinery this cut does not add. `dropped`
                     // tells the shell to title it as a loss rather than as a
                     // save that failed.
+                    //
+                    // **The loss is the profile's, not the viewer's tab's**:
+                    // the broadcast carries every tab's offers, so the words
+                    // name the backlog and never a tab, and `tab: None` is
+                    // what says so on the wire.
+                    let why = if lost == 1 {
+                        "a finished download was dropped before this viewer read it: the \
+                         profile's backlog holds at most four finished downloads at a time"
+                            .to_owned()
+                    } else {
+                        format!(
+                            "{lost} finished downloads were dropped before this viewer read \
+                             them: the profile's backlog holds at most four finished downloads \
+                             at a time"
+                        )
+                    };
                     return ViewEvent::Download {
                         download: forge_primitives::browser::BrowserDownload {
-                            tab: viewing.tab,
+                            tab: None,
                             name: "download".to_owned(),
                             bytes: Vec::new(),
-                            error: Some(format!(
-                                "{lost} finished download(s) were dropped before this viewer \
-                                 read them: the browser held at most the profile's backlog"
-                            )),
+                            error: Some(why),
                         },
                         dropped: true,
+                        lost: Some(lost),
                     };
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => {
@@ -431,6 +460,7 @@ pub async fn upgrade(
     State(state): State<Arc<TransportState>>,
     ConnectInfo(peer): ConnectInfo<std::net::SocketAddr>,
     headers: HeaderMap,
+    uri: axum::http::Uri,
 ) -> Response {
     // A browser always sends one Origin; a second header, or one that is not
     // text, is nothing a client forge ships produces.
@@ -452,10 +482,16 @@ pub async fn upgrade(
         );
         return (StatusCode::FORBIDDEN, "origin refused").into_response();
     }
+    // **The compression capability is declared at the dial, not claimed
+    // mid-stream.** A `deflate=1` query on the socket URL is ignored by every
+    // server that predates it, so a new client reaching an old one keeps the
+    // text frames it knows, and a client that says nothing (every installed
+    // build before this one) never receives a frame it cannot read.
+    let deflate = uri.query().is_some_and(|query| query.split('&').any(|pair| pair == "deflate=1"));
     let limit = MAX_CLIENT_MESSAGE_BYTES;
     ws.max_frame_size(limit)
         .max_message_size(limit)
-        .on_upgrade(move |socket| greet(socket, state, peer))
+        .on_upgrade(move |socket| greet(socket, state, peer, deflate))
 }
 
 /// The frame that tells a client it is speaking to a forge and carries the
@@ -493,13 +529,14 @@ struct Arrival {
 /// than to whatever else holds the port, and it carries the settings the
 /// client draws with - so the client is configured before it draws anything
 /// rather than discovering a theme later.
-async fn greet<S>(mut socket: S, state: Arc<TransportState>, peer: std::net::SocketAddr)
+async fn greet<S>(socket: S, state: Arc<TransportState>, peer: std::net::SocketAddr, deflate: bool)
 where
     S: futures_util::Stream<Item = Result<Message, axum::Error>>
         + futures_util::Sink<Message, Error = axum::Error>
         + Unpin
         + Send,
 {
+    let mut socket = ClientSocket::new(socket, deflate);
     let client = state.surface.client_config();
     let greeting = greeting_for(&client, &state);
     let Ok(text) = serde_json::to_string(&greeting) else {
@@ -548,7 +585,7 @@ where
 /// `Unsubscribe`, `BrowserDetach` and `BrowserResize` are statements the
 /// server books, not requests.
 async fn drive<S>(
-    socket: &mut S,
+    socket: &mut ClientSocket<S>,
     state: &Arc<TransportState>,
     peer: std::net::SocketAddr,
     settings: tokio::sync::watch::Receiver<Option<Arc<str>>>,
@@ -902,7 +939,7 @@ struct SettingsPush {
 }
 
 async fn run_connection<S>(
-    socket: &mut S,
+    socket: &mut ClientSocket<S>,
     state: &Arc<TransportState>,
     watching: &mut Watching,
     holds: &mut Holds<'_>,
@@ -1220,11 +1257,13 @@ where
                     // **A finished download goes to the person driving.** A
                     // watcher's connection receives the broadcast and drops
                     // it; the save door is the controller's.
-                    ViewEvent::Download { download, dropped } => {
+                    ViewEvent::Download { download, dropped, lost } => {
                         let Some(viewing) = browser.viewing.as_ref() else { continue };
                         // **A save is the tab's too**: a controller watching
-                        // another tab is not offered this file.
-                        if download.tab != viewing.tab {
+                        // another tab is not offered this file. A notice
+                        // that names no tab is the profile's, and it is this
+                        // viewer's to read.
+                        if download.tab.is_some_and(|tab| tab != viewing.tab) {
                             continue;
                         }
                         if viewing.view.borrow().controller != Some(me) {
@@ -1241,6 +1280,7 @@ where
                                 data,
                                 error: download.error,
                                 dropped,
+                                lost,
                             },
                         )
                         .await?;
@@ -1437,7 +1477,7 @@ struct OpenReport {
 /// client hears and what the trace records must not depend on which side the
 /// record was built.
 async fn write_snapshot<S>(
-    socket: &mut S,
+    socket: &mut ClientSocket<S>,
     state: &Arc<TransportState>,
     watching: &mut Watching,
     subject: Subject,
@@ -1487,11 +1527,11 @@ fn log_open(report: &OpenReport, write: &FrameWrite) {
         prep_ms = write.prep_ms,
         write_ms = write.write_ms,
         waited = write.waited,
-        "the snapshot's write: prep is the record serialised into the \
-         bytes the socket takes, write_ms is the socket's share after \
-         that, and waited says the write yielded at least once before it \
-         was done (a prior frame's flush, kernel send-buffer pressure or \
-         a slow reader)",
+        "the snapshot's write: prep is the record serialised and \
+         compressed into the bytes the socket takes, write_ms is the \
+         socket's share after that, and waited says the write yielded at \
+         least once before it was done (a prior frame's flush, kernel \
+         send-buffer pressure or a slow reader)",
     );
     // The session's open, in its own slices: the numbers a reader places a
     // slow switch with, beside the client's own marks and the client it
@@ -1552,7 +1592,7 @@ fn log_open(report: &OpenReport, write: &FrameWrite) {
 /// Answer a subscribe read that ran off the loop: its record, its refusal, or
 /// nothing when the client let the seat go while it ran.
 async fn finish_read<S>(
-    socket: &mut S,
+    socket: &mut ClientSocket<S>,
     state: &Arc<TransportState>,
     watching: &mut Watching,
     holds: &mut Holds<'_>,
@@ -1616,7 +1656,7 @@ where
 
 /// Answer one client message.
 async fn handle_client<S>(
-    socket: &mut S,
+    socket: &mut ClientSocket<S>,
     state: &Arc<TransportState>,
     watching: &mut Watching,
     holds: &mut Holds<'_>,
@@ -1685,7 +1725,7 @@ where
 /// [`handle_client`] with the message already read, so a subscribe that
 /// queued behind a read off the loop takes the same path the socket's own did.
 async fn handle_message<S>(
-    socket: &mut S,
+    socket: &mut ClientSocket<S>,
     state: &Arc<TransportState>,
     watching: &mut Watching,
     holds: &mut Holds<'_>,
@@ -2151,20 +2191,28 @@ where
             let opening = before.clone();
             let floor = held.lock().dropped();
             let capped = seat.clone();
+            let budget = state.surface.more_page_cap_bytes();
             let folded = tokio::task::spawn_blocking(move || {
                 let mut page = held.read(|held| {
-                    page(
+                    page_within(
                         held.messages(),
                         held.rendered(),
                         held.dropped(),
                         opening.as_deref(),
                         turns,
+                        budget,
+                        "more_page_cap_kb",
+                        Some((cap, &capped)),
                     )
                 });
                 // The bound runs in the same blocking task as the fold: a page
                 // is what a client is served, and the cap is part of building
-                // it rather than a pass over the socket's thread (#2374).
-                cap_tool_records(&mut page.turns, cap, &capped);
+                // it rather than a pass over the socket's thread (#2374). A
+                // page cut to a byte budget was capped as it was measured, so
+                // only an uncut page still needs the pass - the seed's rule.
+                if budget == usize::MAX {
+                    cap_tool_records(&mut page.turns, cap, &capped);
+                }
                 page
             })
             .await;
@@ -2848,7 +2896,7 @@ fn released_subscribe(what: &Subject) -> ServerMessage {
 /// answer is whether anything was spent, which is what the home it holds is
 /// owed a re-encode for.
 async fn set_showing<S>(
-    socket: &mut S,
+    socket: &mut ClientSocket<S>,
     state: &Arc<TransportState>,
     watching: &mut Watching,
     seat: Option<SessionSlot>,
@@ -2890,7 +2938,7 @@ where
 ///
 /// **Called once per showing, from whichever half completes the pair.**
 async fn spend_showing<S>(
-    socket: &mut S,
+    socket: &mut ClientSocket<S>,
     state: &Arc<TransportState>,
     watching: &mut Watching,
     slot: &SessionSlot,
@@ -3198,7 +3246,139 @@ fn take_frame(surface: &ViewSurface, dictate: &Streaming, me: u64, route: FrameR
     }
 }
 
-async fn send<S>(socket: &mut S, message: ServerMessage) -> anyhow::Result<()>
+/// The JSON bytes at which a frame crosses compressed, for a connection that
+/// declared the capability.
+///
+/// **A frame under it is byte-identical to what the socket has always
+/// carried.** The threshold is where the write stops being cheap: a 2 KB
+/// frame gains nothing from a gzip header, and a multi-MB snapshot is the
+/// case this exists for.
+const COMPRESSED_MIN_BYTES: usize = 64 * 1024;
+
+/// This connection's socket, with the one fact the write path needs from the
+/// upgrade: whether the client declared it can inflate a compressed frame.
+///
+/// **The declaration is made at the dial**, as a `deflate=1` query on the
+/// socket URL: an older server ignores a query it does not read, and a
+/// client that says nothing keeps every frame as text. The flag rides the
+/// Sink so every frame to a client goes through one encoder rather than the
+/// answer paths each deciding.
+struct ClientSocket<S> {
+    inner: S,
+    deflate: bool,
+}
+
+impl<S> ClientSocket<S> {
+    fn new(inner: S, deflate: bool) -> Self {
+        Self { inner, deflate }
+    }
+}
+
+impl<S> futures_util::Stream for ClientSocket<S>
+where
+    S: futures_util::Stream<Item = Result<Message, axum::Error>> + Unpin,
+{
+    type Item = Result<Message, axum::Error>;
+
+    fn poll_next(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        std::pin::Pin::new(&mut self.inner).poll_next(cx)
+    }
+}
+
+impl<S> futures_util::Sink<Message> for ClientSocket<S>
+where
+    S: futures_util::Sink<Message, Error = axum::Error> + Unpin,
+{
+    type Error = axum::Error;
+
+    fn poll_ready(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), axum::Error>> {
+        std::pin::Pin::new(&mut self.inner).poll_ready(cx)
+    }
+
+    fn start_send(mut self: std::pin::Pin<&mut Self>, item: Message) -> Result<(), axum::Error> {
+        // **Every text frame crosses the encoder, whatever path built it.**
+        // The batched stream and a subscribe's queued backlog write Text
+        // frames of their own, straight through `feed`, so an encoder that
+        // lived only in the answer paths would leave them uncompressed for a
+        // client that declared the capability. A frame already encoded - the
+        // Binary kind, a control frame - passes through untouched.
+        let deflate = self.deflate;
+        let item = match item {
+            // **A frame the encoder leaves alone keeps the bytes it already
+            // owns.** The batched path and a subscribe's queued backlog write
+            // text frames of their own, and rebuilding each of them here
+            // would copy the hottest writes on the socket. Only a frame that
+            // will actually compress is re-encoded.
+            Message::Text(text) if deflate && text.len() >= COMPRESSED_MIN_BYTES => {
+                frame_for_flag(deflate, text.as_str())
+            }
+            other => other,
+        };
+        std::pin::Pin::new(&mut self.inner).start_send(item)
+    }
+
+    fn poll_flush(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), axum::Error>> {
+        std::pin::Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_close(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), axum::Error>> {
+        std::pin::Pin::new(&mut self.inner).poll_close(cx)
+    }
+}
+
+/// The bytes a frame carries, which is what the write's own record reports.
+fn frame_bytes(frame: &Message) -> usize {
+    match frame {
+        Message::Text(text) => text.len(),
+        Message::Binary(bytes) => bytes.len(),
+        _ => 0,
+    }
+}
+
+/// One message as the frame this connection sends: text as it always was, or
+/// a gzipped body behind [`COMPRESSED_JSON_TAG`] when the client declared the
+/// capability and the body is over the threshold.
+fn frame_for<S>(socket: &ClientSocket<S>, text: &str) -> Message {
+    frame_for_flag(socket.deflate, text)
+}
+
+fn frame_for_flag(deflate: bool, text: &str) -> Message {
+    if !deflate || text.len() < COMPRESSED_MIN_BYTES {
+        return Message::Text(text.to_owned().into());
+    }
+    match gzipped(text.as_bytes()) {
+        Ok(body) => {
+            let mut frame = Vec::with_capacity(body.len() + 1);
+            frame.push(COMPRESSED_JSON_TAG);
+            frame.extend_from_slice(&body);
+            Message::Binary(frame.into())
+        }
+        // A body that cannot be compressed still crosses as the text frame
+        // the client knows; a failed gzip is no reason to drop an answer.
+        Err(_) => Message::Text(text.to_owned().into()),
+    }
+}
+
+fn gzipped(bytes: &[u8]) -> std::io::Result<Vec<u8>> {
+    use std::io::Write as _;
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+    encoder.write_all(bytes)?;
+    encoder.finish()
+}
+
+async fn send<S>(socket: &mut ClientSocket<S>, message: ServerMessage) -> anyhow::Result<()>
 where
     S: futures_util::Sink<Message, Error = axum::Error> + Unpin,
 {
@@ -3208,20 +3388,18 @@ where
 /// Write an already-encoded frame. The settings document is encoded once per
 /// reload and shared, so a connection writes its bytes rather than building
 /// the frame again.
-async fn send_text<S>(socket: &mut S, text: &str) -> anyhow::Result<()>
+async fn send_text<S>(socket: &mut ClientSocket<S>, text: &str) -> anyhow::Result<()>
 where
     S: futures_util::Sink<Message, Error = axum::Error> + Unpin,
 {
-    write_within(WRITE_BOUND, async {
-        socket.send(Message::Text(text.into())).await.map_err(anyhow::Error::from)
-    })
-    .await
+    let frame = frame_for(socket, text);
+    write_within(WRITE_BOUND, async { socket.send(frame).await.map_err(anyhow::Error::from) }).await
 }
 
 /// Answer one strip ask: through the reply it carried, or as the error frame
 /// when it carried none.
 async fn answer_ask<S>(
-    socket: &mut S,
+    socket: &mut ClientSocket<S>,
     reply_to: Option<u64>,
     what: &str,
     outcome: Result<serde_json::Value, String>,
@@ -3257,7 +3435,7 @@ where
 /// Answer a refused attach: through the client's reply when it sent one, and
 /// as the protocol's error frame otherwise.
 async fn refuse_attach<S>(
-    socket: &mut S,
+    socket: &mut ClientSocket<S>,
     reply_to: Option<u64>,
     why: &str,
     seat: SessionSlot,
@@ -3293,16 +3471,18 @@ where
 /// **Only the open path reports a size** (#2374), and a return every other
 /// caller would drop is noise in thirty of them - so the size is answered
 /// here and the plain write wraps it.
-async fn send_frame<S>(socket: &mut S, message: ServerMessage) -> anyhow::Result<usize>
+async fn send_frame<S>(
+    socket: &mut ClientSocket<S>,
+    message: ServerMessage,
+) -> anyhow::Result<usize>
 where
     S: futures_util::Sink<Message, Error = axum::Error> + Unpin,
 {
     let text = serde_json::to_string(&message)?;
-    let bytes = text.len();
-    write_within(WRITE_BOUND, async {
-        socket.send(Message::Text(text.into())).await.map_err(anyhow::Error::from)
-    })
-    .await?;
+    let frame = frame_for(socket, &text);
+    let bytes = frame_bytes(&frame);
+    write_within(WRITE_BOUND, async { socket.send(frame).await.map_err(anyhow::Error::from) })
+        .await?;
     Ok(bytes)
 }
 
@@ -3310,8 +3490,8 @@ where
 /// whether the write yielded at least once before it was done.
 struct FrameWrite {
     bytes: usize,
-    /// The message's serialisation into the bytes the socket takes, on the
-    /// process's own clock.
+    /// The message's serialisation and compression into the bytes the socket
+    /// takes, on the process's own clock.
     prep_ms: f64,
     write_ms: f64,
     waited: bool,
@@ -3323,7 +3503,7 @@ struct FrameWrite {
 /// it, and the test's fake records its length - which is what proves the read
 /// happens after the message is serialised (#2506).
 trait WriteClock {
-    fn start(&self, frame: &str) -> Instant;
+    fn start(&self, frame: &Message) -> Instant;
 
     fn end(&self) -> Instant;
 }
@@ -3332,7 +3512,7 @@ trait WriteClock {
 struct SystemClock;
 
 impl WriteClock for SystemClock {
-    fn start(&self, _frame: &str) -> Instant {
+    fn start(&self, _frame: &Message) -> Instant {
         Instant::now()
     }
 
@@ -3348,7 +3528,7 @@ impl WriteClock for SystemClock {
 /// and a write that yielded is otherwise indistinguishable from the fold, the
 /// record's reads and the serialisation before it.
 async fn send_frame_timed<S, C>(
-    socket: &mut S,
+    socket: &mut ClientSocket<S>,
     message: ServerMessage,
     clock: &C,
 ) -> anyhow::Result<FrameWrite>
@@ -3358,13 +3538,15 @@ where
 {
     let prep_at = Instant::now();
     let text = serde_json::to_string(&message)?;
+    // **The prep slice covers the compression too**, and `bytes` is what the
+    // socket is actually handed: a compressed frame's win has to be readable
+    // off the line that reports it.
+    let frame = frame_for(socket, &text);
     let prep_ms = prep_at.elapsed().as_secs_f64() * 1000.0;
-    let bytes = text.len();
+    let bytes = frame_bytes(&frame);
     let waited = AtomicBool::new(false);
-    let at = clock.start(&text);
-    let mut write = std::pin::pin!(async {
-        socket.send(Message::Text(text.into())).await.map_err(anyhow::Error::from)
-    });
+    let at = clock.start(&frame);
+    let mut write = std::pin::pin!(async { socket.send(frame).await.map_err(anyhow::Error::from) });
     write_within(WRITE_BOUND, async {
         std::future::poll_fn(|cx| {
             let poll = std::future::Future::poll(write.as_mut(), cx);
@@ -3555,7 +3737,7 @@ enum BelowFloor {
 /// stopped at and answers the rows strictly older than it, so the walk crosses
 /// a window whose front is a cut inside a running turn - where the frame
 /// numbering is unusable - exactly as it crosses one that ends on a turn. The
-/// page is cut, rendered and cursor-written by the same [`page`] the held
+/// page is cut, rendered and cursor-written by the same [`page_within`] the held
 /// window's pages are, and the cursor it hands back names its own oldest row,
 /// so the page below it seeks.
 ///
@@ -3596,10 +3778,15 @@ async fn rows_below_floor(
     // travels with the read.
     let live = state.conversations.live_of(seat);
     let cap = state.surface.tool_record_cap_bytes();
+    let budget = state.surface.more_page_cap_bytes();
     let capped = seat.clone();
     let folded = tokio::task::spawn_blocking(move || {
-        let mut page = page_of_span(&span, turns, live);
-        cap_tool_records(&mut page.turns, cap, &capped);
+        let mut page = page_of_span(&span, turns, live, budget, Some((cap, &capped)));
+        // A page cut to a byte budget was capped as it was measured; only an
+        // uncut page still needs the pass, as the held window's does.
+        if budget == usize::MAX {
+            cap_tool_records(&mut page.turns, cap, &capped);
+        }
         page
     })
     .await;
@@ -3618,7 +3805,7 @@ async fn rows_below_floor(
 
 /// The page a span of transcript rows answers with, cursors and all.
 ///
-/// **The same [`page`] the held window is cut by**, so a page below the seam
+/// **The same [`page_within`] the held window is cut by**, so a page below the seam
 /// is the same kind of page as one above it: whole turns where the span holds
 /// them, and within a running turn the run itself. **The cursor is the byte of
 /// the page's own oldest row**, so the page below it seeks rather than
@@ -3628,9 +3815,12 @@ fn page_of_span(
     span: &forge_primitives::TranscriptSpan,
     turns: u32,
     live: bool,
+    budget: usize,
+    cap: Option<(usize, &SessionSlot)>,
 ) -> crate::transport::wire::Page {
     let rendered = crate::transcript::render(&span.messages, live);
-    let mut page = page(&span.messages, &rendered, 0, None, turns);
+    let mut page =
+        page_within(&span.messages, &rendered, 0, None, turns, budget, "more_page_cap_kb", cap);
     // The page's oldest row, out of the frames it served: the first one whose
     // id names a row of the span. A frame with no id - a forged ending, an
     // attachment's hoist - is stepped over, which errs toward serving a row
@@ -4514,6 +4704,128 @@ mod tests {
         }
     }
 
+    /// A sink that keeps every message it is handed, so a test can read the
+    /// frame a path actually wrote.
+    struct Recorded(Arc<Mutex<Vec<Message>>>);
+
+    impl futures_util::Sink<Message> for Recorded {
+        type Error = axum::Error;
+
+        fn poll_ready(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+        fn start_send(self: std::pin::Pin<&mut Self>, item: Message) -> Result<(), Self::Error> {
+            if let Ok(mut held) = self.0.lock() {
+                held.push(item);
+            }
+            Ok(())
+        }
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+        fn poll_close(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    /// **A text frame written by a path that never calls `frame_for` is
+    /// compressed too** (#2560): the batched stream and a subscribe's queued
+    /// backlog write through `feed`, and the encoder rides the socket so they
+    /// cannot bypass it.
+    #[tokio::test]
+    async fn a_batched_text_frame_crosses_the_encoder() {
+        let recorded = Arc::new(Mutex::new(Vec::new()));
+        let mut socket = ClientSocket::new(Recorded(Arc::clone(&recorded)), true);
+        let text =
+            format!("{{\"kind\":\"update\",\"pad\":\"{}\"}}", "x".repeat(COMPRESSED_MIN_BYTES));
+        futures_util::SinkExt::send(&mut socket, Message::Text(text.clone().into()))
+            .await
+            .expect("the frame goes");
+        let held = recorded.lock().expect("the frame log");
+        let Some(Message::Binary(bytes)) = held.first() else {
+            panic!("a text frame over the threshold crossed as text: {:?}", held.first())
+        };
+        assert_eq!(bytes.first().copied(), Some(COMPRESSED_JSON_TAG), "the compressed kind tag");
+        let mut body = String::new();
+        std::io::Read::read_to_string(&mut flate2::read::GzDecoder::new(&bytes[1..]), &mut body)
+            .expect("the body inflates");
+        assert_eq!(body, text, "the body is the frame it stood for");
+    }
+
+    /// **A text frame the encoder leaves alone is handed on as itself**
+    /// (#2560): a frame under the threshold, or one for a client that never
+    /// declared the capability, is the frame the caller built. Rebuilding it
+    /// would copy every frame the batched stream and the subscribe backlog
+    /// write, which are the hottest writes on the socket.
+    #[tokio::test]
+    async fn a_text_frame_the_encoder_leaves_alone_is_not_rebuilt() {
+        let recorded = Arc::new(Mutex::new(Vec::new()));
+        let mut socket = ClientSocket::new(Recorded(Arc::clone(&recorded)), true);
+        let frame = Message::Text("{\"kind\":\"update\"}".into());
+        let Message::Text(kept) = &frame else { panic!("a text frame") };
+        // Kept alive across the send: a rebuilt string could otherwise land
+        // on the address the original freed and pass by accident.
+        let kept = kept.clone();
+        let address = kept.as_str().as_ptr();
+        futures_util::SinkExt::send(&mut socket, frame).await.expect("the frame goes");
+        {
+            let held = recorded.lock().expect("the frame log");
+            let Some(Message::Text(sent)) = held.first() else {
+                panic!("an under-threshold frame was not text: {:?}", held.first())
+            };
+            assert_eq!(
+                sent.as_str().as_ptr(),
+                address,
+                "the encoder rebuilt a text frame it should have passed through"
+            );
+        }
+
+        // The control: a client that never declared the capability gets its
+        // large frame passed through too, whatever its size.
+        let recorded = Arc::new(Mutex::new(Vec::new()));
+        let mut socket = ClientSocket::new(Recorded(Arc::clone(&recorded)), false);
+        let frame = Message::Text("x".repeat(COMPRESSED_MIN_BYTES).into());
+        let Message::Text(kept) = &frame else { panic!("a text frame") };
+        let kept = kept.clone();
+        let address = kept.as_str().as_ptr();
+        futures_util::SinkExt::send(&mut socket, frame).await.expect("the frame goes");
+        {
+            let held = recorded.lock().expect("the frame log");
+            let Some(Message::Text(sent)) = held.first() else {
+                panic!("a non-declaring client's frame was not text: {:?}", held.first())
+            };
+            assert_eq!(
+                sent.as_str().as_ptr(),
+                address,
+                "a non-declaring client's frame was rebuilt"
+            );
+        }
+
+        // **The threshold is inclusive**: a frame of exactly the minimum
+        // compresses for a client that declared the capability.
+        let recorded = Arc::new(Mutex::new(Vec::new()));
+        let mut socket = ClientSocket::new(Recorded(Arc::clone(&recorded)), true);
+        let frame = Message::Text("x".repeat(COMPRESSED_MIN_BYTES).into());
+        futures_util::SinkExt::send(&mut socket, frame).await.expect("the frame goes");
+        let held = recorded.lock().expect("the frame log");
+        assert!(
+            matches!(
+                held.first(),
+                Some(Message::Binary(bytes)) if bytes.first().copied() == Some(COMPRESSED_JSON_TAG)
+            ),
+            "a frame at the threshold must cross compressed",
+        );
+    }
+
     /// The clock a measured write reads, recording the frame each start was
     /// handed and answering a fixed second. **Deterministic**: the test never
     /// waits, and a start read taken before the frame exists records nothing.
@@ -4523,8 +4835,8 @@ mod tests {
     }
 
     impl WriteClock for FakeClock {
-        fn start(&self, frame: &str) -> Instant {
-            self.starts.borrow_mut().push(frame.len());
+        fn start(&self, frame: &Message) -> Instant {
+            self.starts.borrow_mut().push(frame_bytes(frame));
             self.base
         }
 
@@ -4680,7 +4992,8 @@ mod tests {
 
         let (inbound, peer_in) = mpsc::unbounded_channel();
         let (writing, stuck) = oneshot::channel();
-        let mut peer = StoppedReading { inbound: peer_in, writing: Some(writing) };
+        let mut peer =
+            ClientSocket::new(StoppedReading { inbound: peer_in, writing: Some(writing) }, false);
         let settings = crate::transport::settings_channel();
         let driven = tokio::spawn({
             let state = Arc::clone(&state);
@@ -4761,9 +5074,12 @@ mod tests {
         let (_keep, inbound) = mpsc::unbounded_channel();
         let mut peer = StoppedReading { inbound, writing: None };
 
-        tokio::time::timeout(WRITE_BOUND * 2, greet(&mut peer, state, attached_from()))
-            .await
-            .expect("the greeting ends at the write bound rather than never");
+        tokio::time::timeout(
+            WRITE_BOUND * 2,
+            greet(ClientSocket::new(&mut peer, false), state, attached_from(), false),
+        )
+        .await
+        .expect("the greeting ends at the write bound rather than never");
     }
 
     /// A frame for the write tests, whose encoded length is what the record
@@ -4786,8 +5102,9 @@ mod tests {
         let bytes = serde_json::to_string(&a_frame()).expect("the frame encodes").len();
         let clock = FakeClock { starts: std::cell::RefCell::new(Vec::new()), base: Instant::now() };
 
-        let write =
-            send_frame_timed(&mut NullSink, a_frame(), &clock).await.expect("the write lands");
+        let write = send_frame_timed(&mut ClientSocket::new(NullSink, false), a_frame(), &clock)
+            .await
+            .expect("the write lands");
         assert!(!write.waited, "a sink that never yields is reported as not waiting");
         assert_eq!(write.bytes, bytes, "the record carries the frame's own size");
         assert_eq!(write.write_ms, 1000.0, "the record's elapsed is the clock's, exactly");
@@ -4798,6 +5115,74 @@ mod tests {
         );
     }
 
+    /// **The write's record reports the bytes the socket was handed (#2560).**
+    /// A frame over the threshold to a declaring connection crosses
+    /// compressed, and the line that exists to make the win measurable must
+    /// carry the compressed size; under the threshold the same connection
+    /// still writes the text frame it always did.
+    #[tokio::test]
+    async fn a_compressed_write_reports_the_bytes_it_wrote() {
+        let large = ServerMessage::Snapshot {
+            subject: Subject::Home,
+            data: json!({ "padding": "x".repeat(100_000) }),
+        };
+        let text = serde_json::to_string(&large).expect("the frame encodes").len();
+        let clock = FakeClock { starts: std::cell::RefCell::new(Vec::new()), base: Instant::now() };
+        let mut socket = ClientSocket::new(NullSink, true);
+
+        let write = send_frame_timed(&mut socket, large, &clock).await.expect("the write lands");
+        assert!(
+            write.bytes < text / 4,
+            "the record carries the compressed size, not the text's: {} of {text}",
+            write.bytes,
+        );
+        assert_eq!(
+            clock.starts.borrow().as_slice(),
+            &[write.bytes],
+            "the clock is handed the frame actually written",
+        );
+
+        let small = serde_json::to_string(&a_frame()).expect("the frame encodes").len();
+        let write =
+            send_frame_timed(&mut socket, a_frame(), &clock).await.expect("the write lands");
+        assert_eq!(write.bytes, small, "a frame under the threshold stays the text frame it was");
+    }
+
+    /// **The threshold is exact** (#2560): a body of exactly the budget
+    /// crosses compressed, and one byte under stays the text frame it was -
+    /// the boundary a reader computes from this code is the boundary that
+    /// runs.
+    #[test]
+    fn the_compression_threshold_is_exact() {
+        let at_len = |len: usize| {
+            let base = serde_json::to_string(&ServerMessage::Snapshot {
+                subject: Subject::Home,
+                data: json!({ "pad": "" }),
+            })
+            .expect("the frame encodes")
+            .len();
+            let pad = "x".repeat(len - base);
+            let text = serde_json::to_string(&ServerMessage::Snapshot {
+                subject: Subject::Home,
+                data: json!({ "pad": pad }),
+            })
+            .expect("the frame encodes");
+            assert_eq!(text.len(), len, "precondition: the frame is exactly {len} bytes");
+            text
+        };
+
+        let under = at_len(COMPRESSED_MIN_BYTES - 1);
+        assert!(
+            matches!(frame_for_flag(true, &under), Message::Text(_)),
+            "a byte under the threshold stayed not-text",
+        );
+        let at = at_len(COMPRESSED_MIN_BYTES);
+        assert!(
+            matches!(frame_for_flag(true, &at), Message::Binary(_)),
+            "a frame at exactly the threshold crossed as text",
+        );
+    }
+
     /// **`waited` is not a constant (#2506).** A write that yields says so;
     /// the false case is pinned beside it.
     #[tokio::test]
@@ -4805,7 +5190,7 @@ mod tests {
         let bytes = serde_json::to_string(&a_frame()).expect("the frame encodes").len();
         let clock = FakeClock { starts: std::cell::RefCell::new(Vec::new()), base: Instant::now() };
 
-        let mut yielding = YieldsOnce { yielded: false };
+        let mut yielding = ClientSocket::new(YieldsOnce { yielded: false }, false);
         let write =
             send_frame_timed(&mut yielding, a_frame(), &clock).await.expect("the write lands");
         assert!(write.waited, "a flush that yielded once is reported as having waited");
@@ -5495,7 +5880,7 @@ mod tests {
             offsets: (from as u64..160).map(|at| at * 100).collect(),
             exhausted: false,
         };
-        let page = page_of_span(&span, 4, false);
+        let page = page_of_span(&span, 4, false, usize::MAX, None);
 
         assert_eq!(
             turn_texts(&page),
@@ -5517,7 +5902,7 @@ mod tests {
             offsets: (100_u64..106).map(|at| at * 100).collect(),
             exhausted: false,
         };
-        let short_page = page_of_span(&short, 8, false);
+        let short_page = page_of_span(&short, 8, false, usize::MAX, None);
         assert_eq!(short_page.turns.len(), 6, "precondition: the span holds six turns");
         assert_eq!(
             short_page.cursor.as_deref(),
@@ -5526,8 +5911,39 @@ mod tests {
         );
         let ended = forge_primitives::TranscriptSpan { exhausted: true, ..short };
         assert!(
-            page_of_span(&ended, 8, false).cursor.is_none(),
+            page_of_span(&ended, 8, false, usize::MAX, None).cursor.is_none(),
             "and only a page reaching the transcript's first row ends the walk",
+        );
+    }
+
+    /// **A page below the floor is held to the `more` byte budget too.** The
+    /// transcript path answers through the same cut the held window does, so
+    /// one large turn below the floor cannot cross whole either.
+    #[test]
+    fn a_transcript_page_is_held_to_the_byte_budget() {
+        let transcript = transcript_frames(8);
+        let span = forge_primitives::TranscriptSpan {
+            messages: transcript,
+            offsets: (0u64..8).map(|at| at * 100).collect(),
+            exhausted: true,
+        };
+        let unbounded = page_of_span(&span, 8, false, usize::MAX, None);
+        assert_eq!(unbounded.turns.len(), 8, "precondition: the span holds eight turns");
+
+        let bounded = page_of_span(&span, 8, false, 1, None);
+        assert!(
+            !bounded.turns.is_empty() && bounded.turns.len() < 8,
+            "a 1-byte budget keeps some of eight turns and not all: {}",
+            bounded.turns.len(),
+        );
+        assert_eq!(
+            turn_texts(&bounded).last().map(String::as_str),
+            Some("turn 7"),
+            "the newest turn is served even when it alone is over the budget",
+        );
+        assert!(
+            bounded.cursor.is_some(),
+            "and the row it stopped at is what the walk above continues from",
         );
     }
 
@@ -5615,6 +6031,149 @@ mod tests {
         assert!(
             matches!(rows_below_floor(&state, &seat, &cwd, None, 4).await, BelowFloor::Empty),
             "a session whose file is gone is the empty page too",
+        );
+    }
+
+    /// **The transcript path is held to `more_page_cap_kb` too** (#2538).
+    /// Without the budget wired here, a page below the floor is cut by its
+    /// turn count alone and eight large turns cross whole.
+    #[tokio::test]
+    async fn a_page_below_the_floor_is_held_to_the_more_page_budget() {
+        let dir = tempfile::tempdir().expect("a config dir of its own");
+        let fleet = crate::testing::Fleet::in_dir_with_server(
+            dir.path(),
+            &[("TestOrg", &["proj"])],
+            "[server]\nmore_page_cap_kb = 1\n",
+        )
+        .expect("a fleet");
+        fleet.start("TestOrg", "proj").expect("a live lead session");
+        let rows: Vec<String> = (0..12)
+            .map(|at| {
+                format!(
+                    "{{\"type\":\"user\",\"uuid\":\"u{at}\",\"session_id\":\"s1\",\
+                     \"message\":{{\"role\":\"user\",\"content\":\"turn {at} {}\"}}}}",
+                    "x".repeat(2_000),
+                )
+            })
+            .collect();
+        fleet
+            .seed_transcript(
+                "TestOrg",
+                "proj",
+                "lead",
+                &rows.iter().map(String::as_str).collect::<Vec<_>>(),
+            )
+            .expect("the session's transcript");
+        let state = TransportState {
+            surface: fleet.surface(),
+            work: Arc::new(WorkCache::new()),
+            conversations: Arc::new(crate::transport::conversation::Conversations::new()),
+            live: Mutex::new(crate::live::Live::new()),
+            settings: crate::transport::settings_channel(),
+            browser_host: None,
+            heartbeat: Heartbeat::default(),
+        };
+        let seat = SessionSlot::lead("TestOrg", "proj");
+        let cwd = state.surface.roster().cwd_for(&seat).expect("the seat's own directory");
+        let below = forge_primitives::TranscriptAnchor { row: "u8".to_owned(), offset: None };
+        let BelowFloor::Page(page) = rows_below_floor(&state, &seat, &cwd, Some(below), 8).await
+        else {
+            panic!("the transcript answers a page below the floor")
+        };
+        let texts = turn_texts(&page);
+        assert_eq!(
+            texts.len(),
+            1,
+            "a 1 KB budget keeps the newest turn of eight large ones and not the rest: {texts:?}",
+        );
+        assert!(
+            texts[0].starts_with("turn 7"),
+            "and it is the newest row below the anchor: {:?}",
+            texts[0],
+        );
+        assert!(
+            page.cursor.is_some(),
+            "and the walk above it continues from the row it stopped at",
+        );
+    }
+
+    /// **A 0 `more` budget still caps the records the transcript serves**
+    /// (#2374): the below-floor path is one of the three places an uncut page
+    /// reaches the record cap, and without this the cap could be deleted here
+    /// with the suite green.
+    #[tokio::test]
+    async fn a_zero_more_page_cap_caps_the_records_below_the_floor() {
+        let dir = tempfile::tempdir().expect("a config dir of its own");
+        let fleet = crate::testing::Fleet::in_dir_with_server(
+            dir.path(),
+            &[("TestOrg", &["proj"])],
+            "[server]\nmore_page_cap_kb = 0\ntool_record_cap_kb = 1\n",
+        )
+        .expect("a fleet");
+        fleet.start("TestOrg", "proj").expect("a live lead session");
+        let mut rows = transcript_rows(80);
+        // Turn 23 carries a record past the 1 KB cap, inside the page below
+        // the anchor.
+        let big = [
+            "{\"type\":\"user\",\"uuid\":\"u23\",\"session_id\":\"s1\",\
+             \"message\":{\"role\":\"user\",\"content\":\"turn 23\"}}"
+                .to_owned(),
+            "{\"type\":\"assistant\",\"uuid\":\"a23\",\
+             \"message\":{\"id\":\"m23\",\"role\":\"assistant\",\
+             \"model\":\"claude-opus-5\",\
+             \"content\":[{\"type\":\"text\",\"text\":\"reply 23\"}]}}"
+                .to_owned(),
+            format!(
+                "{{\"type\":\"user\",\"uuid\":\"t23\",\"session_id\":\"s1\",\
+                 \"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"tool_result\",\
+                 \"tool_use_id\":\"call-23\",\"content\":\"ok\"}}]}},\
+                 \"toolUseResult\":{{\"payload\":\"{}\"}}}}",
+                "x".repeat(20_000),
+            ),
+            "{\"type\":\"result\",\"uuid\":\"r23\",\"subtype\":\"success\",\
+             \"duration_ms\":1,\"duration_api_ms\":1,\"is_error\":false,\
+             \"num_turns\":1,\"session_id\":\"s1\"}"
+                .to_owned(),
+        ];
+        rows.splice(23..24, big);
+        fleet
+            .seed_transcript(
+                "TestOrg",
+                "proj",
+                "lead",
+                &rows.iter().map(String::as_str).collect::<Vec<_>>(),
+            )
+            .expect("the session's transcript");
+        let state = TransportState {
+            surface: fleet.surface(),
+            work: Arc::new(WorkCache::new()),
+            conversations: Arc::new(crate::transport::conversation::Conversations::new()),
+            live: Mutex::new(crate::live::Live::new()),
+            settings: crate::transport::settings_channel(),
+            browser_host: None,
+            heartbeat: Heartbeat::default(),
+        };
+        let seat = SessionSlot::lead("TestOrg", "proj");
+        let cwd = state.surface.roster().cwd_for(&seat).expect("the seat's own directory");
+        let below = forge_primitives::TranscriptAnchor { row: "u25".to_owned(), offset: None };
+        let BelowFloor::Page(page) = rows_below_floor(&state, &seat, &cwd, Some(below), 4).await
+        else {
+            panic!("the transcript answers a page below the floor")
+        };
+        assert_eq!(
+            turn_texts(&page),
+            vec!["turn 21", "turn 22", "turn 23", "turn 24"],
+            "the newest turns below the anchor",
+        );
+        let record = page
+            .turns
+            .iter()
+            .flat_map(|turn| turn.messages.iter())
+            .find(|frame| frame["uuid"] == "t23")
+            .expect("the record's frame is in the page");
+        assert_eq!(
+            record["tool_use_result"]["omitted"], true,
+            "the record is capped below the floor: {record}",
         );
     }
 
@@ -6226,7 +6785,7 @@ mod tests {
     fn connection(state: &Arc<TransportState>) -> Driven {
         let (to_server, inbound) = mpsc::unbounded_channel();
         let (outbound, mut from_server) = mpsc::unbounded_channel();
-        let mut peer = Peer { inbound, outbound };
+        let mut peer = ClientSocket::new(Peer { inbound, outbound }, false);
         let written = Arc::new(Mutex::new(Vec::new()));
         let seen = Arc::clone(&written);
         // The frames are recorded rather than dropped, so a test can wait on
@@ -6385,10 +6944,13 @@ mod tests {
         let dir = tempfile::tempdir().expect("a config dir of its own");
         // The pairing is written before the fleet opens the store, as a fire
         // would have left it while this seat ran.
-        std::fs::create_dir_all(dir.path().join("app-support")).expect("app-support");
+        let app_support = dir.path().join("app-support");
+        std::fs::create_dir_all(&app_support).expect("app-support");
         {
-            let db = forge_workspace::store::Db::open(&dir.path().join("app-support/db.redb"))
-                .expect("open db");
+            // The fleet opens this config dir's own store; seed the same path.
+            let db_path = forge_workspace::store::path_for(&app_support, dir.path());
+            std::fs::create_dir_all(db_path.parent().expect("stores/")).expect("stores/");
+            let db = forge_workspace::store::Db::open(&db_path).expect("open db");
             forge_workspace::store::cron_names::put(
                 &db,
                 "p-cron",
@@ -6885,8 +7447,9 @@ mod tests {
     /// **A viewer that fell behind the download backlog is told why.**
     ///
     /// The offer is gone, so the save door hears a download whose own error
-    /// names the loss rather than a write failure; the tab is the viewer's,
-    /// so the notice stays on the tab it belongs to. This is the one branch
+    /// names the loss rather than a write failure. **The loss is the
+    /// profile's**: the broadcast carries every tab's offers, so the notice
+    /// names no tab and carries the count. This is the one branch
     /// the browser retention drops a person can feel, and it is driven here
     /// rather than left to the constants' own tests.
     #[tokio::test]
@@ -6925,7 +7488,7 @@ mod tests {
         // Two offers land while the viewer reads none: the first is evicted.
         for n in 0..2 {
             let offer = BrowserDownload {
-                tab: 3,
+                tab: Some(3),
                 name: format!("file-{n}"),
                 bytes: Vec::new(),
                 error: None,
@@ -6934,18 +7497,86 @@ mod tests {
         }
 
         match next_view_event(&mut viewing).await {
-            ViewEvent::Download { download, dropped } => {
+            ViewEvent::Download { download, dropped, lost } => {
                 assert!(
                     dropped,
                     "the shell is told this is a dropped offer, so it can title it as a loss",
                 );
-                assert_eq!(download.tab, 3, "the notice stays on the viewer's own tab");
+                assert_eq!(
+                    download.tab, None,
+                    "the loss is the profile's, so the notice names no tab",
+                );
+                assert_eq!(lost, Some(1), "and the count the title is read from");
                 let why = download.error.expect("a lag is answered with its own reason");
-                assert!(
-                    why.contains("dropped") && why.contains("backlog"),
-                    "the words name the loss rather than a failed write: {why}",
+                assert_eq!(
+                    why,
+                    "a finished download was dropped before this viewer read it: the profile's \
+                     backlog holds at most four finished downloads at a time",
+                    "the words name one profile-level loss in plain words",
                 );
                 assert!(download.bytes.is_empty(), "there are no bytes to save");
+            }
+            _ => panic!("a lagged download is answered as a download with a reason"),
+        }
+    }
+
+    /// **A viewer further behind hears the count in words**: the title the
+    /// shell draws is pluralized from it, so the body has to say the same
+    /// number, and the backlog sentence has to name the real ceiling.
+    #[tokio::test]
+    async fn a_viewer_two_offers_behind_hears_the_count() {
+        use forge_primitives::browser::{BrowserDownload, BrowserTabList, BrowserViewState};
+
+        let (downloads, downloads_rx) = tokio::sync::broadcast::channel(1);
+        let (_frames, frames_rx) = tokio::sync::watch::channel(None);
+        let (_view, view_rx) = tokio::sync::watch::channel(BrowserViewState::default());
+        let (_nav, nav_rx) = tokio::sync::watch::channel(None);
+        let (_failures, failures_rx) = tokio::sync::watch::channel(None::<String>);
+        let (_files, files_rx) = tokio::sync::watch::channel(None);
+        let (_audio, audio_rx) = tokio::sync::broadcast::channel(4);
+        let (_tabs, tabs_rx) = tokio::sync::watch::channel(BrowserTabList {
+            profile: "O/default".to_owned(),
+            id: 1,
+            up: true,
+            connected: true,
+            closing_at_ms: None,
+            rows: Vec::new(),
+        });
+        let attachment = forge_workspace::browser::BrowserAttachment {
+            key: "O/default".to_owned(),
+            id: 1,
+            tab: 3,
+            frames: frames_rx,
+            view: view_rx,
+            tabs: tabs_rx,
+            nav: nav_rx,
+            failures: failures_rx,
+            files: files_rx,
+            downloads: downloads_rx,
+            audio: audio_rx,
+        };
+        let mut viewing = Some(Viewing::new(attachment));
+        for n in 0..3 {
+            let offer = BrowserDownload {
+                tab: Some(3),
+                name: format!("file-{n}"),
+                bytes: Vec::new(),
+                error: None,
+            };
+            downloads.send(offer).expect("the viewer is attached");
+        }
+
+        match next_view_event(&mut viewing).await {
+            ViewEvent::Download { download, lost, .. } => {
+                assert_eq!(lost, Some(2), "two offers went before the viewer read one");
+                assert_eq!(
+                    download.error.as_deref(),
+                    Some(
+                        "2 finished downloads were dropped before this viewer read them: the \
+                         profile's backlog holds at most four finished downloads at a time"
+                    ),
+                    "the counted body says the same number and the same ceiling",
+                );
             }
             _ => panic!("a lagged download is answered as a download with a reason"),
         }
