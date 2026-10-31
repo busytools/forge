@@ -5677,6 +5677,7 @@ impl Workspace {
                     launch_settings,
                 }
             }
+            ForgePrompt::ShowMode => return self.show_mode(key),
             ForgePrompt::SetMode { mode } => {
                 let Some(mode) = forge_primitives::permission::PermissionMode::from_wire(mode)
                 else {
@@ -5687,9 +5688,46 @@ impl Workspace {
             ForgePrompt::SetModel { model } => {
                 Command::SetModel { key: key.clone(), model: model.clone() }
             }
+            ForgePrompt::ShowEffort => return self.show_effort(key),
             ForgePrompt::SetEffort { level } => return self.set_effort(key, level),
         };
         (self.route(command), None)
+    }
+
+    /// **A bare `/mode` answers what the session is on**, not what the
+    /// command's usage is (#1626). The hook's observation outranks the
+    /// launch's own setting - the precedence the inspector draws - because
+    /// the CLI can change mode without re-emitting status. A session that
+    /// has reported neither is answered with the usage line it answered
+    /// before.
+    fn show_mode(&self, key: &SessionSlot) -> (Result<(), DispatchError>, Option<ForgeAnswer>) {
+        let mode = self.domain_session_for(key).and_then(|domain| {
+            let domain = domain.lock();
+            domain.observed_permission_mode.or(domain.configured_permission_mode)
+        });
+        (
+            Ok(()),
+            Some(match mode {
+                Some(mode) => (NoticeSeverity::Info, format!("Mode: {}", mode.as_wire())),
+                None => forge_misuse("Usage: /mode <id>"),
+            }),
+        )
+    }
+
+    /// **A bare `/effort` answers the level in force**, on `show_mode`'s
+    /// terms: the observed level, else the one the launch asked for (#1626).
+    fn show_effort(&self, key: &SessionSlot) -> (Result<(), DispatchError>, Option<ForgeAnswer>) {
+        let level = self.domain_session_for(key).map(|domain| {
+            let domain = domain.lock();
+            domain.observed_effort.unwrap_or(domain.configured_effort)
+        });
+        (
+            Ok(()),
+            Some(match level {
+                Some(level) => (NoticeSeverity::Info, format!("Effort: {}", level.as_stored())),
+                None => forge_misuse("Usage: /effort <level>"),
+            }),
+        )
     }
 
     /// Tell the fleet a `/new` or `/resume` kept the slot and swapped the
@@ -24995,6 +25033,47 @@ mod prompt_frame_origin_tests {
         );
         let commands = ws.drain_test_dispatch_buffer();
         assert!(commands.is_empty(), "and nothing is dispatched: {commands:?}");
+    }
+
+    /// **A bare `/mode` and `/effort` answer the value in force.** The core
+    /// holds what the session reported, so the reader is told it rather than
+    /// handed the usage line (#1626).
+    #[test]
+    fn a_bare_mode_and_effort_answer_the_value_in_force() {
+        let (ws, mut rx, seat) = a_fleet();
+        let domain = ws.register_domain_session(seat.clone(), None);
+        {
+            let mut domain = domain.lock();
+            domain.observed_permission_mode =
+                Some(forge_primitives::permission::PermissionMode::Plan);
+            domain.observed_effort = Some(forge_primitives::EffortLevel::High);
+        }
+
+        for text in ["/mode", "/effort"] {
+            let dispatched = ws.dispatch_from_view(Command::Prompt {
+                key: seat.clone(),
+                text: text.to_owned(),
+                attachments: Vec::new(),
+            });
+            assert!(dispatched.is_ok(), "the core takes {text}: {dispatched:?}");
+        }
+
+        let notices: Vec<(NoticeSeverity, String)> = std::iter::from_fn(|| rx.try_recv().ok())
+            .filter_map(|frame| match std::sync::Arc::unwrap_or_clone(frame.update) {
+                SessionUpdate::Notice { severity, text, .. } => Some((severity, text)),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            matches!(
+                notices.as_slice(),
+                [(NoticeSeverity::Info, mode), (NoticeSeverity::Info, effort)]
+                    if mode == "Mode: plan" && effort == "Effort: high"
+            ),
+            "the reader is told what the session is running: {notices:?}",
+        );
+        let commands = ws.drain_test_dispatch_buffer();
+        assert!(commands.is_empty(), "and neither reads dispatches anything: {commands:?}");
     }
 
     /// Slash text this session cannot run is answered where it is typed,

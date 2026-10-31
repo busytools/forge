@@ -20,6 +20,12 @@ pub enum ForgePrompt {
     Handoff,
     /// `/mode <id>`: switch the session's permission mode.
     SetMode { mode: String },
+    /// `/mode`: what permission mode the session is on, as the core observed
+    /// it.
+    ShowMode,
+    /// `/effort`: what thinking effort the session is running at, as the core
+    /// observed it.
+    ShowEffort,
     /// `/model <id>`: switch the model the session runs on.
     SetModel { model: String },
     /// `/effort <level>`: set the thinking effort the next launch carries.
@@ -103,8 +109,10 @@ pub fn forge_invocation(text: &str) -> Option<Invocation> {
         ("/new", []) => Some(ForgePrompt::NewSession),
         ("/resume", [arg]) => Some(ForgePrompt::ResumeSession { session_id: (*arg).to_owned() }),
         ("/handoff", []) => Some(ForgePrompt::Handoff),
+        ("/mode", []) => Some(ForgePrompt::ShowMode),
         ("/mode", [arg]) => Some(ForgePrompt::SetMode { mode: (*arg).to_owned() }),
         ("/model", [arg]) => Some(ForgePrompt::SetModel { model: (*arg).to_owned() }),
+        ("/effort", []) => Some(ForgePrompt::ShowEffort),
         ("/effort", [arg]) => Some(ForgePrompt::SetEffort { level: (*arg).to_owned() }),
         _ => None,
     };
@@ -176,6 +184,28 @@ mod tests {
             forge_invocation("/new\nsecond line"),
             Some(Invocation::Misuse("Usage: /new")),
             "a command with words after it is answered, not read as prose",
+        );
+    }
+
+    /// **A bare `/mode` or `/effort` asks what the value is**, rather than
+    /// being a worded invocation: the core holds the observed value, so it
+    /// answers with that instead of reciting the usage line (#1626).
+    #[test]
+    fn a_bare_mode_or_effort_asks_for_the_value_in_force() {
+        assert_eq!(forge_invocation("/mode"), Some(Invocation::Command(ForgePrompt::ShowMode)));
+        assert_eq!(
+            forge_invocation("  /effort  "),
+            Some(Invocation::Command(ForgePrompt::ShowEffort)),
+        );
+        // The setters still carry their argument, and a second word is still a
+        // misuse: only the bare form changed meaning.
+        assert_eq!(
+            forge_invocation("/mode plan"),
+            Some(Invocation::Command(ForgePrompt::SetMode { mode: "plan".to_owned() })),
+        );
+        assert_eq!(
+            forge_invocation("/effort high low"),
+            Some(Invocation::Misuse("Usage: /effort <level>")),
         );
     }
 

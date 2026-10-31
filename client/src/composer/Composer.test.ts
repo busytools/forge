@@ -7933,7 +7933,7 @@ describe('the autocomplete', () => {
     expect(
       [...document.querySelectorAll('.ac .it')].map((row) => row.textContent?.trim()),
       "forge's table is what it offers, matched on the description too",
-    ).toEqual(['/mode Set session mode', '/model Show / set session model']);
+    ).toEqual(['/mode Show / set session mode', '/model Show / set session model']);
     expect(document.querySelector('.ac .h .n')?.textContent, 'the header counts the matches').toBe(
       '2',
     );
