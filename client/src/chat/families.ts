@@ -112,7 +112,14 @@ export function browserVerb(name: string): string {
 /** A call's status, as the wire writes it. */
 export type CallStatus = 'pending' | 'in_progress' | 'completed' | 'failed' | 'killed';
 
-/** The four tools the fold draws as one `edit` row. */
+/**
+ * The four tools the fold draws as one `edit` row.
+ *
+ * **A mutation, as this predicate means it, edits a body the fold shows** -
+ * its diff, its opened-by-default body, its mark. `Move` belongs in the same
+ * ROW without being one: it carries a source and a destination, no diff and
+ * no body, so it is named in `familyOf` instead (#1188).
+ */
 const MUTATIONS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
 
 /** Whether a call is a mutation. */
@@ -168,7 +175,9 @@ export function familyOf(name: string): Family {
     ExitPlanMode: 'config',
     EnterPlanMode: 'config',
     Config: 'config',
-    Move: 'worktree',
+    // Named rather than a mutation: one row and glyph with the edits, and no
+    // diff or body for `isEdit` to claim (#1188).
+    Move: 'edit',
     EnterWorktree: 'worktree',
     ExitWorktree: 'worktree',
     AskUserQuestion: 'question',

@@ -19,6 +19,7 @@
    * honour a click with: it is `forge.toml`'s, and a mode chip would be a
    * control nothing reads.
    */
+  import Chevron from '../components/Chevron.svelte';
   import Icon from '../components/Icon.svelte';
   import { watchModels } from '../models/live';
   import { roleModels, roleWord } from '../models/view';
@@ -429,7 +430,7 @@
               onclick={() => (modelsOpen = modelsOpen === role ? null : role)}
             >
               <span class="nm">{held.current.file}</span>
-              <span class="chev">&#9656;</span>
+              <Chevron />
             </button>
             {#if modelsOpen === role}
               <div class="list" aria-label="{roleWord(role)} model">
@@ -479,7 +480,7 @@
       {#if missingPick}
         <span class="tag">not present</span>
       {/if}
-      <span class="chev">&#9656;</span>
+      <Chevron />
     </button>
     {#if listOpen}
       <div class="list" aria-label="Input device">

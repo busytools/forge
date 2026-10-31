@@ -127,7 +127,7 @@ export class Landing {
    * under the dock puts its words in the dock, and the draft's cut row is not
    * about them (`placed`).
    */
-  place(seat: string, notice: Notice | null): string | null {
+  place(seat: string, notice: Notice | null, inFlight: number | null = null): string | null {
     if (seat !== this.#seat) {
       this.#seat = seat;
       this.#placed = null;
@@ -153,7 +153,21 @@ export class Landing {
     // re-handing them mid-take must not place them over the landing that is
     // coming - nor spend the arm on them, whatever identity the arm was set
     // under (an intervening failed take moves `under` off them).
-    if (this.#armed !== null && notice.kind === 'landed' && notice.carried === true) return null;
+    //
+    // **Unless it is that take's own landing.** A record read can be taken
+    // after the landing frame and carry the words back as `carried`, with the
+    // frame itself never arriving - and the take's generation, which the page
+    // holds while its take is drawn, is what tells its own words from an
+    // older re-hand (#2283). Without it the arm stands for ever and the words
+    // arrive late or not at all.
+    if (
+      this.#armed !== null &&
+      notice.kind === 'landed' &&
+      notice.carried === true &&
+      (inFlight === null || notice.generation !== inFlight)
+    ) {
+      return null;
+    }
     const armed = this.#armed !== null && this.#armed.seat === seat;
     if (armed) this.#armed = null;
     if (notice.kind !== 'landed' || identity === this.#placed) return null;

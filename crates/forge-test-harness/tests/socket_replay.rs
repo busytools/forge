@@ -464,6 +464,8 @@ fn the_review_commands_cross_as_their_names() {
         project: "proj".to_owned(),
         branch: "b".to_owned(),
         thread: thread.clone(),
+        origin: Some(slot.clone()),
+        sent_words: Some("why this?".to_owned()),
         respond: None,
     })
     .expect("the variant encodes");
@@ -991,6 +993,18 @@ fn frames_record() -> Value {
 
     let mut payload_sampled: BTreeMap<String, BTreeMap<String, Value>> = BTreeMap::new();
     payload_sampled.insert("ChatAppended".to_owned(), shape_of(&an_update(update_sample)));
+    // **The refusal's own id** (#1583): the page reads `dispatch_id` by hand
+    // to mark the press a refusal names, so a rename would leave every refusal
+    // unattributed with both sides' suites green.
+    payload_sampled.insert(
+        "Error".to_owned(),
+        shape_of(&ServerMessage::Error {
+            what: "dispatch".to_owned(),
+            why: "the session is not running".to_owned(),
+            seat: None,
+            dispatch_id: Some(1),
+        }),
+    );
     // **The settings document's own field names.** The page parses this
     // payload by hand with no compile link, so a rename of `document`,
     // `totals`, `areas`, `keys`, `path`, `kind`, `value` or `class` would
@@ -1606,6 +1620,28 @@ fn frames_record() -> Value {
 
 /// The commands a client writes by hand, and the fields it writes them with.
 ///
+/// One review thread, for the command sample that names the write's fields.
+fn a_review_thread_for_sample() -> forge_primitives::review::ReviewThread {
+    forge_primitives::review::ReviewThread {
+        id: "t1".to_owned(),
+        anchor: forge_primitives::review::ReviewAnchor {
+            path: "src/a.rs".to_owned(),
+            side: forge_primitives::review::ReviewSide::New,
+            line: 1,
+            content_hash: 1,
+            context: Vec::new(),
+            base_ref: "main".to_owned(),
+        },
+        comments: Vec::new(),
+        status: forge_primitives::review::ReviewStatus::Open,
+        created_at: String::new(),
+        updated_at: String::new(),
+        commit: None,
+    }
+}
+
+/// The commands a client writes by hand, and the fields it writes them with.
+///
 /// A `Command` rides INSIDE a `client_message`, so the census above pins only
 /// its name - a field renamed on the server would leave a client's own literal
 /// writing a key nothing reads, with every suite green on both sides.
@@ -1665,6 +1701,32 @@ fn command_sampled(seat: &SessionSlot) -> BTreeMap<String, BTreeMap<String, Valu
             project: "proj".to_owned(),
             id: "t-1".to_owned(),
             reserved: true,
+        }),
+    );
+    // **The prompt's own press id, and the review write's seat and words**
+    // (#1583, #2283): the page writes all three by hand, so a rename here
+    // would leave its literal writing a key nothing reads, with both sides'
+    // suites green.
+    sampled.insert(
+        "PromptUnder".to_owned(),
+        sample(Command::PromptUnder {
+            key: seat.clone(),
+            text: "hello".to_owned(),
+            attachments: Vec::new(),
+            uuid: "u1".to_owned(),
+            source: forge_workspace::PromptSource::You,
+            dispatch_id: Some(1),
+        }),
+    );
+    sampled.insert(
+        "UpsertReviewThread".to_owned(),
+        sample(Command::UpsertReviewThread {
+            project: "proj".to_owned(),
+            branch: "b".to_owned(),
+            thread: a_review_thread_for_sample(),
+            origin: Some(seat.clone()),
+            sent_words: Some("why this?".to_owned()),
+            respond: None,
         }),
     );
     sampled

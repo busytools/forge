@@ -29,6 +29,11 @@ export interface Take {
   elapsedMs: number;
   /** The floor of this take's meter, which its readings are measured against. */
   floorDb: number;
+  /**
+   * The take's own number, which tells a landing the record re-handing from
+   * a newer take's. Absent from a server older than the field.
+   */
+  generation?: number;
 }
 
 /**
@@ -229,6 +234,7 @@ function takeFrom(value: unknown): Take | null {
   if (value === null || value === undefined) return null;
   const held = record(value);
   const progress = Array.isArray(held['progress']) ? held['progress'] : [];
+  const generation = number(held['generation']);
   return {
     phase: narrow(held['phase'], PHASES, 'recording'),
     levels: Array.isArray(held['levels'])
@@ -238,6 +244,7 @@ function takeFrom(value: unknown): Take | null {
     progress: { done: number(progress[0]) ?? 0, total: number(progress[1]) },
     elapsedMs: number(held['elapsed_ms']) ?? 0,
     floorDb: number(held['floor_db']) ?? FALLBACK_FLOOR_DB,
+    ...(generation === null ? {} : { generation }),
   };
 }
 

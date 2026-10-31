@@ -25,9 +25,9 @@ pub struct ForgeCommand {
 /// order a dropdown draws them in.
 pub const FORGE_COMMANDS: &[ForgeCommand] = &[
     ForgeCommand { name: "/compact", description: "Compact session context" },
-    ForgeCommand { name: "/effort", description: "Set thinking effort" },
+    ForgeCommand { name: "/effort", description: "Show / set thinking effort" },
     ForgeCommand { name: "/handoff", description: "Hand off to a fresh session" },
-    ForgeCommand { name: "/mode", description: "Set session mode" },
+    ForgeCommand { name: "/mode", description: "Show / set session mode" },
     ForgeCommand { name: "/model", description: "Show / set session model" },
     ForgeCommand { name: "/new", description: "Start a fresh session" },
     ForgeCommand { name: "/resume", description: "Resume a session by ID" },

@@ -559,6 +559,7 @@ impl SessionTask {
                                 attachments: prompt.attachments,
                                 uuid,
                                 source: prompt.source,
+                                dispatch_id: None,
                             }) {
                                 tracing::warn!(
                                     target: "forge_workspace::session_task",
@@ -1215,9 +1216,16 @@ impl SessionTask {
             Command::Prompt { key, text, attachments } => {
                 let uuid = forge_sdk::request_id::next_prompt_id();
                 self.record_queued(&uuid, PromptSource::You, &text);
-                Command::PromptUnder { key, text, attachments, uuid, source: PromptSource::You }
+                Command::PromptUnder {
+                    key,
+                    text,
+                    attachments,
+                    uuid,
+                    source: PromptSource::You,
+                    dispatch_id: None,
+                }
             }
-            Command::PromptUnder { key, text, attachments, uuid, source } => {
+            Command::PromptUnder { key, text, attachments, uuid, source, dispatch_id } => {
                 // The continuation speaks for the occupant that failed. A
                 // `/new` or `/resume` the queue drains ahead of it leaves a
                 // replacement under the words, which point at a history the
@@ -1237,7 +1245,7 @@ impl SessionTask {
                     return;
                 }
                 self.record_queued(&uuid, source, &text);
-                Command::PromptUnder { key, text, attachments, uuid, source }
+                Command::PromptUnder { key, text, attachments, uuid, source, dispatch_id }
             }
             other => other,
         };
@@ -1945,6 +1953,7 @@ impl SessionTask {
                 attachments: prompt.attachments,
                 uuid,
                 source: prompt.source,
+                dispatch_id: None,
             }) {
                 tracing::warn!(
                     target: "forge_workspace::session_task",
@@ -2571,7 +2580,7 @@ pub(crate) fn execute_command_via_handle(
             let uuid = forge_sdk::request_id::next_prompt_id();
             handle.prompt_with_images(sid.to_owned(), text, attachments, uuid)
         }
-        Command::PromptUnder { key: _, text, attachments, uuid, source: _ } => {
+        Command::PromptUnder { key: _, text, attachments, uuid, source: _, dispatch_id: _ } => {
             let Some(sid) = session_id else {
                 return Err(warn_no_session(key, "PromptUnder"));
             };
@@ -4836,6 +4845,7 @@ mod tests {
             attachments: Vec::new(),
             uuid: forge_sdk::request_id::next_forged_prompt_id(),
             source: crate::protocol::PromptSource::Forge,
+            dispatch_id: None,
         });
         assert_eq!(
             task.successor.as_ref().map(|watch| watch.turns),
@@ -6847,6 +6857,7 @@ mod tests {
             attachments: Vec::new(),
             uuid: uuid.clone(),
             source: crate::protocol::PromptSource::Forge,
+            dispatch_id: None,
         });
         // **The continuation is the command under test, not whatever arrives
         // next.** The turn boundary also asks the CLI for a fill reading, so

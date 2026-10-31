@@ -4462,6 +4462,131 @@ describe('the conversation the chat draws', () => {
   });
 
   /**
+   * **An unmatched mid-turn copy keeps the page's position, not the row's
+   * end.** The live echo of the reader's mid-turn prompt never arrived, so
+   * the page's copy has nothing to pair with - and appending it put it below
+   * the frames the row already held, which the page says came after it
+   * (#1584).
+   */
+  it('places an unmatched mid-turn copy where the page had it', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    try {
+      server.send(page([turn('t0', 'earlier')], null));
+      for (const frame of [typed('open'), said('call one'), said('call two')]) {
+        server.update({ chat_appended: { key: LEAD, msg: frame } });
+      }
+      const queued = {
+        type: 'user',
+        uuid: 'cli-queued-1',
+        message: {
+          role: 'user',
+          content: [
+            {
+              type: 'queued_command',
+              commandMode: 'prompt',
+              prompt: 'the words that never echoed',
+              source_uuid: 'forge_mid_1',
+            },
+          ],
+        },
+      };
+
+      // The page's cut at the mid-turn prompt: the turn's own row first, then
+      // the prompt's row carrying the frames that followed it.
+      server.send(
+        page(
+          [
+            { key: null, messages: [typed('open'), said('call one'), said('call two')] },
+            { key: null, messages: [queued, said('call two'), said('missed')] },
+          ],
+          null,
+        ),
+      );
+
+      const carriers = get(chat.value).turns.filter((row) =>
+        JSON.stringify(row.messages).includes('the words that never echoed'),
+      );
+      expect(carriers, 'the copy draws in one row, not a second one').toHaveLength(1);
+      const order = (carriers[0]?.messages ?? []).map((message) => JSON.stringify(message));
+      const at = (needle: string): number => order.findIndex((held) => held.includes(needle));
+      expect(
+        at('call one'),
+        'precondition: the frame the prompt followed is drawn',
+      ).toBeGreaterThan(-1);
+      expect(
+        at('the words that never echoed'),
+        'the copy sits after the frame it followed on the page',
+      ).toBeGreaterThan(at('call one'));
+      expect(
+        at('the words that never echoed'),
+        'and above the frame the page says came after it',
+      ).toBeLessThan(at('call two'));
+    } finally {
+      stop();
+    }
+  });
+
+  /**
+   * **A settled row takes the unmatched copy the same way.** The issue's
+   * second half: when the row it would join has already settled (a `result`
+   * in it), the copy still keeps the page's position rather than landing
+   * below frames the row already held (#1584).
+   */
+  it('places an unmatched mid-turn copy in a settled row by its page position', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    try {
+      server.send(page([turn('t0', 'earlier')], null));
+      for (const frame of [typed('open'), said('call one'), said('call two')]) {
+        server.update({ chat_appended: { key: LEAD, msg: frame } });
+      }
+      const queued = {
+        type: 'user',
+        uuid: 'cli-queued-2',
+        message: {
+          role: 'user',
+          content: [
+            {
+              type: 'queued_command',
+              commandMode: 'prompt',
+              prompt: 'the words that never echoed',
+              source_uuid: 'forge_mid_2',
+            },
+          ],
+        },
+      };
+
+      // The page's cut, settled: its row carries the exchange's own result.
+      server.send(
+        page(
+          [
+            { key: null, messages: [typed('open'), said('call one'), said('call two')] },
+            { key: null, messages: [queued, said('call two'), ended()] },
+          ],
+          null,
+        ),
+      );
+
+      const carriers = get(chat.value).turns.filter((row) =>
+        JSON.stringify(row.messages).includes('the words that never echoed'),
+      );
+      expect(carriers, 'the copy draws in one row, not a second one').toHaveLength(1);
+      const order = (carriers[0]?.messages ?? []).map((message) => JSON.stringify(message));
+      const at = (needle: string): number => order.findIndex((held) => held.includes(needle));
+      expect(
+        at('the words that never echoed'),
+        'the settled row still places the copy where the page had it',
+      ).toBeLessThan(at('call two'));
+      expect(at('the words that never echoed')).toBeGreaterThan(at('call one'));
+    } finally {
+      stop();
+    }
+  });
+
+  /**
    * **A live frame that landed after the page was read sits at the row's end,
    * and the page's frames never go below it.**
    *
@@ -6838,7 +6963,7 @@ describe('the chat holds a queued prompt until the CLI takes it', () => {
     chat.start();
     server.send(page([turn('t1', 'first')], null));
 
-    echoes.post(seatKey, 'queue words', true, 'p9');
+    echoes.post(seatKey, 'queue words', true, 'p9', echoes.mint());
     server.update({ prompt_queued: { key: LEAD, uuid: 'p-other', source: 'you', text: 'x' } });
     expect(echoes.of(seatKey)?.id, "another prompt's queueing is not this send's to settle").toBe(
       'p9',
@@ -6863,7 +6988,7 @@ describe('the chat holds a queued prompt until the CLI takes it', () => {
     chat.start();
     server.send(page([turn('t1', 'first')], null));
 
-    echoes.post(seatKey, 'same words', true, 'e-other');
+    echoes.post(seatKey, 'same words', true, 'e-other', echoes.mint());
     server.update({ prompt_queued: { key: LEAD, uuid: 'p1', source: 'you', text: 'same words' } });
     server.update({ chat_appended: { key: LEAD, msg: forgedUnder('same words', 'p1') } });
     server.update({ prompt_lifecycle: { key: LEAD, uuid: 'p1', state: 'cancelled' } });
@@ -6872,7 +6997,7 @@ describe('the chat holds a queued prompt until the CLI takes it', () => {
       "a second send of the same words is not this cancel's to settle",
     ).toBe('e-other');
 
-    echoes.post(seatKey, 'other words', true, 'p2');
+    echoes.post(seatKey, 'other words', true, 'p2', echoes.mint());
     server.update({ prompt_queued: { key: LEAD, uuid: 'p2', source: 'you', text: 'other words' } });
     server.update({ chat_appended: { key: LEAD, msg: forgedUnder('other words', 'p2') } });
     server.update({ prompt_lifecycle: { key: LEAD, uuid: 'p2', state: 'cancelled' } });
@@ -7067,7 +7192,7 @@ describe('the chat holds a queued prompt until the CLI takes it', () => {
     chat.start();
     server.send(page([turn('t1', 'first')], null));
 
-    echoes.post(seatKey, 'orphan words', true, 'p1');
+    echoes.post(seatKey, 'orphan words', true, 'p1', echoes.mint());
     server.update({
       prompt_queued: { key: LEAD, uuid: 'p1', source: 'you', text: 'orphan words' },
     });
