@@ -4046,15 +4046,15 @@ mod tests {
         Live::lock(&transport.live).snapshot().composer.landed(seat).is_some()
     }
 
-    /// One upsert through the transport's reply path, sending `sent`'s words.
-    fn upsert(transport: &TransportState, seat: &SessionSlot, sent: &str) {
+    /// One upsert through the transport's reply path, sending `words`.
+    fn upsert(transport: &TransportState, seat: &SessionSlot, words: &str) {
         let (tx, rx) = oneshot::channel();
         let command = Command::UpsertReviewThread {
             project: "proj".to_owned(),
             branch: "b".to_owned(),
-            thread: a_review_thread(sent),
+            thread: a_review_thread(words),
             origin: Some(seat.clone()),
-            sent_words: Some(sent.to_owned()),
+            sent_words: Some(words.to_owned()),
             respond: Some(tx),
         };
         let (reply_tx, replies) = mpsc::unbounded_channel();
@@ -4082,7 +4082,7 @@ mod tests {
         );
 
         upsert(&transport, &seat, "spoken words");
-        assert!(!still_landed(&transport, &seat), "and the write that sent them spends them",);
+        assert!(!still_landed(&transport, &seat), "and the write that sent them spends them");
     }
 
     /// **A closed store is not a send.** The write's own reply says the store
@@ -4136,7 +4136,7 @@ mod tests {
         assert!(still_landed(&transport, &seat), "a summary that is not the words leaves them");
 
         submit("spoken words");
-        assert!(!still_landed(&transport, &seat), "and the summary that is them spends them",);
+        assert!(!still_landed(&transport, &seat), "and the summary that is them spends them");
     }
 
     /// The transport answers a call's output read from its own held copy: the

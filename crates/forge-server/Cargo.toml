@@ -46,8 +46,6 @@ clap_complete = { workspace = true }
 # diagnostics path beside it.
 dirs = { workspace = true }
 forge-primitives = { workspace = true }
-# The browser fleet the boot installs: hosts, drivers and the frame channel.
-forge-browser = { workspace = true }
 # The fleet reaches the workspace's tool surface through an async port.
 async-trait = { workspace = true }
 forge-workspace = { workspace = true }
@@ -81,6 +79,13 @@ rlimit = { workspace = true }
 # The fleet fixture's own directory, which the fixture holds and removes
 # with itself. Gated with `testing`, so no production build links it.
 tempfile = { workspace = true, optional = true }
+
+# The browser fleet the boot installs: hosts, drivers and the frame channel.
+# **macOS only**, because that is the only platform the install and its port
+# compile on - any other target names no `forge_browser` path, and Cargo says
+# so as an unused dependency.
+[target.'cfg(target_os = "macos")'.dependencies]
+forge-browser = { workspace = true }
 
 [dev-dependencies]
 # This crate's own tests drive the fleet fixture `testing` gates, so a
