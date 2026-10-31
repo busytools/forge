@@ -389,9 +389,7 @@ pub(crate) fn handle_deliver_peer_prompt(
                 "DeliverPeerPrompt dispatch to running target failed"
             );
             send_dispatch_turn_error(workspace, target_key, &err);
-            return Err(format!(
-                "the target's running session did not take the message ({err})"
-            ));
+            return Err(format!("the target's running session did not take the message ({err})"));
         }
         return Ok(());
     }
@@ -3351,12 +3349,8 @@ provider = "anthropic"
         // builds a task: the entry is written and then the handle
         // construction refuses.
         workspace.seed_test_gateway_ready(false);
-        let project = workspace
-            .list_projects()
-            .into_iter()
-            .next()
-            .expect("fixture project present")
-            .key;
+        let project =
+            workspace.list_projects().into_iter().next().expect("fixture project present").key;
         let mut rx = workspace.subscribe_answerer();
         let (tx, reply) = tokio::sync::oneshot::channel();
 

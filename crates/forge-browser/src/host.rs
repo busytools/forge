@@ -212,10 +212,7 @@ fn parent_watch_pipe() -> (std::os::fd::OwnedFd, std::os::fd::OwnedFd) {
     assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0, "the test's pipe opens");
     // SAFETY: both fds are fresh and owned by the caller from here on.
     unsafe {
-        (
-            std::os::fd::FromRawFd::from_raw_fd(fds[0]),
-            std::os::fd::FromRawFd::from_raw_fd(fds[1]),
-        )
+        (std::os::fd::FromRawFd::from_raw_fd(fds[0]), std::os::fd::FromRawFd::from_raw_fd(fds[1]))
     }
 }
 
@@ -269,8 +266,7 @@ impl ParentWatch {
         self.last = now;
         let mut byte = [0_u8; 1];
         // SAFETY: reading one byte from a live fd into a one-byte buffer.
-        let read =
-            unsafe { libc::read(parent.as_raw_fd(), byte.as_mut_ptr().cast(), byte.len()) };
+        let read = unsafe { libc::read(parent.as_raw_fd(), byte.as_mut_ptr().cast(), byte.len()) };
         match read {
             0 => true,
             -1 => std::io::Error::last_os_error().raw_os_error() != Some(libc::EAGAIN),
@@ -2132,8 +2128,14 @@ mod tests {
         let piped = super::parse(args(&["--parent-pipe", &read.into_raw_fd().to_string()]))
             .expect("parses");
         assert!(piped.parent.is_some(), "the fd is the watch");
-        assert!(super::parse(args(&["--parent-pipe", "2"])).is_none(), "a standard stream is refused");
-        assert!(super::parse(args(&["--parent-pipe"])).is_none(), "a flag with no value is refused");
+        assert!(
+            super::parse(args(&["--parent-pipe", "2"])).is_none(),
+            "a standard stream is refused"
+        );
+        assert!(
+            super::parse(args(&["--parent-pipe"])).is_none(),
+            "a flag with no value is refused"
+        );
     }
 
     /// **The loop stops on a signal or on EOF of the pipe**, and the

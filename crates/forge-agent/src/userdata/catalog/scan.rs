@@ -856,10 +856,8 @@ fn subagent_sidecar_rows(session_id: &str, transcript: &Path) -> Vec<SessionMess
     for meta in metas {
         let Ok(body) = fs::read(&meta) else { continue };
         let Ok(value) = serde_json::from_slice::<Value>(&body) else { continue };
-        let Some(dispatch) = value
-            .get("toolUseId")
-            .and_then(Value::as_str)
-            .filter(|id| !id.trim().is_empty())
+        let Some(dispatch) =
+            value.get("toolUseId").and_then(Value::as_str).filter(|id| !id.trim().is_empty())
         else {
             continue;
         };
@@ -3071,7 +3069,8 @@ mod tests {
         )
         .unwrap();
 
-        let messages = get_session_messages(config_dir.path(), session_id, Some(directory)).messages;
+        let messages =
+            get_session_messages(config_dir.path(), session_id, Some(directory)).messages;
 
         assert_eq!(messages.len(), 4, "the transcript's two rows plus the sidecar's two");
         let folded: Vec<_> = messages

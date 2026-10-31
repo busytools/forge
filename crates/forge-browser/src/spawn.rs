@@ -67,10 +67,8 @@ fn open_parent_watch() -> Result<(std::os::fd::OwnedFd, std::os::fd::OwnedFd), S
         ));
     }
     // SAFETY: both fds are fresh, and this function owns them from here on.
-    let read: std::os::fd::OwnedFd =
-        unsafe { std::os::fd::FromRawFd::from_raw_fd(fds[0]) };
-    let write: std::os::fd::OwnedFd =
-        unsafe { std::os::fd::FromRawFd::from_raw_fd(fds[1]) };
+    let read: std::os::fd::OwnedFd = unsafe { std::os::fd::FromRawFd::from_raw_fd(fds[0]) };
+    let write: std::os::fd::OwnedFd = unsafe { std::os::fd::FromRawFd::from_raw_fd(fds[1]) };
     for fd in [&read, &write] {
         // SAFETY: fcntl on a live fd this function owns.
         let flags = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFD) };

@@ -208,10 +208,7 @@ fn parent_watch_pipe() -> (std::os::fd::OwnedFd, std::os::fd::OwnedFd) {
     assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0, "the test's pipe opens");
     // SAFETY: both fds are fresh and owned by the caller from here on.
     unsafe {
-        (
-            std::os::fd::FromRawFd::from_raw_fd(fds[0]),
-            std::os::fd::FromRawFd::from_raw_fd(fds[1]),
-        )
+        (std::os::fd::FromRawFd::from_raw_fd(fds[0]), std::os::fd::FromRawFd::from_raw_fd(fds[1]))
     }
 }
 
