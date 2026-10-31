@@ -432,6 +432,7 @@
     // `offered` already asks for a drawn box, so a take can never land in a
     // hidden one here.
     machine: () => false,
+    barLine: () => false,
     onBegin: () => {
       const at = pttBox();
       if (at === null) return;
