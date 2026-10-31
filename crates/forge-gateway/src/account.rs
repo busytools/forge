@@ -465,11 +465,12 @@ impl AccountStateMap {
     /// `LoadingState` (`Ready` or `Bailed`). The boot wave and the cron
     /// spawn path gate on this. Empty maps return `true` (vacuous; no
     /// accounts means no work to wait on - relevant in the testing-stub
-    /// path).
+    /// path). A retired account counts as settled: the edit removed it, so
+    /// nothing will ever load it.
     pub fn all_loaded(&self) -> bool {
         self.by_key
             .values()
-            .all(|s| matches!(s.loading, LoadingState::Ready | LoadingState::Bailed))
+            .all(|s| s.retired || matches!(s.loading, LoadingState::Ready | LoadingState::Bailed))
     }
 
     /// True when `key`'s loaded usage snapshot shows it at-or-beyond

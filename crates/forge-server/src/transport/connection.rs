@@ -6687,10 +6687,13 @@ mod tests {
         let dir = tempfile::tempdir().expect("a config dir of its own");
         // The pairing is written before the fleet opens the store, as a fire
         // would have left it while this seat ran.
-        std::fs::create_dir_all(dir.path().join("app-support")).expect("app-support");
+        let app_support = dir.path().join("app-support");
+        std::fs::create_dir_all(&app_support).expect("app-support");
         {
-            let db = forge_workspace::store::Db::open(&dir.path().join("app-support/db.redb"))
-                .expect("open db");
+            // The fleet opens this config dir's own store; seed the same path.
+            let db_path = forge_workspace::store::path_for(&app_support, dir.path());
+            std::fs::create_dir_all(db_path.parent().expect("stores/")).expect("stores/");
+            let db = forge_workspace::store::Db::open(&db_path).expect("open db");
             forge_workspace::store::cron_names::put(
                 &db,
                 "p-cron",

@@ -462,6 +462,7 @@ impl Workspace {
             review_origin: Mutex::new(HashMap::new()),
             review_activity: Mutex::new(HashMap::new()),
             usage_poller_started: std::sync::atomic::AtomicBool::new(false),
+            rotation_announcer_started: std::sync::atomic::AtomicBool::new(false),
             dictate_preflight_started: std::sync::atomic::AtomicBool::new(false),
             cron_scheduler_started: std::sync::atomic::AtomicBool::new(false),
             chase_sweep_started: std::sync::atomic::AtomicBool::new(false),
@@ -599,6 +600,12 @@ impl Workspace {
         if intercept.is_none() {
             *intercept = Some(Vec::new());
         }
+    }
+
+    /// Whether the rotation announcer was started, so a test pins that the
+    /// boot call actually reaches the one watcher.
+    pub fn test_rotation_announcer_started(&self) -> bool {
+        self.rotation_announcer_started.load(std::sync::atomic::Ordering::Acquire)
     }
 
     /// Drain every app-level `Command` captured since the last call.

@@ -109,6 +109,12 @@ impl RotationState {
         self.cooldowns.lock().get(key).copied()
     }
 
+    /// The soonest cooldown still live at `now`, across every account. A
+    /// reader sleeps until it to announce the thaw the clock alone decides.
+    pub fn soonest_cooldown_end(&self, now: SystemTime) -> Option<SystemTime> {
+        self.cooldowns.lock().values().copied().filter(|until| *until > now).min()
+    }
+
     /// The soonest a cooling account among `keys` recovers, for the
     /// failure message. `None` when none of them is cooling.
     pub fn soonest_reset_among(&self, keys: &[AccountKey], now: SystemTime) -> Option<SystemTime> {
@@ -199,6 +205,25 @@ mod tests {
             state
                 .soonest_reset_among(&[AccountKey("B".to_owned())], now + Duration::from_secs(120)),
             None
+        );
+    }
+
+    /// **The end a reader sleeps to is a live one.** An expired cooldown is
+    /// not a wake, so the filter drops it; the soonest of the rest is the
+    /// answer.
+    #[test]
+    fn the_soonest_cooldown_end_ignores_expired_cooldowns() {
+        let state = RotationState::new();
+        let now = SystemTime::now();
+        state.cool_down(&AccountKey("Expired".to_owned()), now - Duration::from_secs(1));
+        assert_eq!(state.soonest_cooldown_end(now), None, "an expired cooldown is no wake");
+
+        state.cool_down(&AccountKey("Later".to_owned()), now + Duration::from_secs(90));
+        state.cool_down(&AccountKey("Sooner".to_owned()), now + Duration::from_secs(30));
+        assert_eq!(
+            state.soonest_cooldown_end(now),
+            Some(now + Duration::from_secs(30)),
+            "the soonest live cooldown is what a reader sleeps to",
         );
     }
 

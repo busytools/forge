@@ -83,6 +83,10 @@ pub struct Gateway {
     /// streak maps are the running state and are not replaced by a reload
     /// that leaves the numbers alone.
     rotation: parking_lot::Mutex<RotationState>,
+    /// Bumped by every cooldown write that can change what [`Self::select_for`]
+    /// answers, so a reader outside this crate can announce the change
+    /// instead of holding a roster snapshot the clock has moved past.
+    rotation_generation: tokio::sync::watch::Sender<u64>,
 }
 
 impl Gateway {
@@ -97,7 +101,26 @@ impl Gateway {
             client,
             org_pins: parking_lot::Mutex::new(HashMap::new()),
             rotation: parking_lot::Mutex::new(RotationState::new()),
+            rotation_generation: tokio::sync::watch::channel(0).0,
         }
+    }
+
+    /// Subscribe to the rotation's write notifications: every cooldown that
+    /// starts (or is replaced) bumps the generation, so a reader wakes and
+    /// re-reads what selection would answer.
+    pub fn rotation_watch(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.rotation_generation.subscribe()
+    }
+
+    /// The soonest live cooldown's end, or `None` when nothing is cooling.
+    /// A reader sleeps until it to announce the thaw, which the gateway
+    /// cannot publish - the clock drives it, not a write.
+    pub fn soonest_cooldown_end(&self, now: SystemTime) -> Option<SystemTime> {
+        self.rotation.lock().soonest_cooldown_end(now)
+    }
+
+    fn note_rotation_changed(&self) {
+        self.rotation_generation.send_modify(|generation| *generation += 1);
     }
 
     /// The rotation numbers from `[gateway]`: the 429 streak count and
@@ -105,6 +128,7 @@ impl Gateway {
     /// boot and again by a config reload that moved them.
     pub fn set_rotation_numbers(&self, numbers: crate::rotation::RotationNumbers) {
         *self.rotation.lock() = RotationState::with_numbers(numbers);
+        self.note_rotation_changed();
     }
 
     /// Publish each org's walk order (primary pin then fallbacks).
@@ -334,6 +358,7 @@ impl Gateway {
     ) {
         self.rotation.lock().cool_down(account, until);
         self.bindings.unbind(org, project, session);
+        self.note_rotation_changed();
     }
 
     /// The workspace's `rate_limit_event` report: the CLI told us the
@@ -359,6 +384,7 @@ impl Gateway {
             .filter(|secs| *secs > 0)
             .map_or(now + self.rotation.lock().no_reset_cooldown(), crate::rotation::reset_instant);
         self.rotation.lock().cool_down(&account, until);
+        self.note_rotation_changed();
     }
 
     /// Whether the rotation is holding `account` out of selection right now -
@@ -381,6 +407,7 @@ impl Gateway {
             .map_or(now + self.rotation.lock().no_reset_cooldown(), crate::rotation::reset_instant);
         self.rotation.lock().cool_down(account, until);
         self.bindings.unbind_for_account(account);
+        self.note_rotation_changed();
     }
 }
 
@@ -1944,6 +1971,35 @@ mod tests {
             pins[1].1.fallback_accounts,
             vec!["O".to_owned(), "P".to_owned()],
             "a fallback list survives in order",
+        );
+    }
+
+    /// **A cooldown write is published, with the end a reader sleeps to.** A
+    /// project row's bindable answer changes on the cool and again on the
+    /// clock-driven thaw; the gateway owns both moments and the reader
+    /// outside this crate can only learn the first from a write.
+    #[tokio::test]
+    async fn a_cooldown_write_is_published_with_its_end() {
+        let pool = Arc::new(crate::AccountPool::empty_for_test());
+        let gateway = Gateway::new(pool, reqwest::Client::new());
+        let watch = gateway.rotation_watch();
+        let key = AccountKey("Cooling".to_owned());
+        let now = SystemTime::now();
+        assert_eq!(gateway.soonest_cooldown_end(now), None, "nothing is cooling yet");
+        assert!(!watch.has_changed().expect("this test holds the watch"), "nothing published yet");
+
+        let reset_at =
+            now.duration_since(std::time::UNIX_EPOCH).expect("after the epoch").as_secs() + 60;
+        gateway.report_probe_limit(&key, Some(reset_at));
+
+        assert!(
+            watch.has_changed().expect("this test holds the watch"),
+            "the cooldown write is published, or the roster never learns of it",
+        );
+        assert_eq!(
+            gateway.soonest_cooldown_end(SystemTime::now()),
+            Some(crate::rotation::reset_instant(reset_at)),
+            "the published end is the one the reader sleeps to",
         );
     }
 }

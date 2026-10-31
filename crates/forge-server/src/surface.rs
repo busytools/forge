@@ -946,8 +946,9 @@ provider = \"anthropic\"
         let app_support = dir.path().join("app-support");
         std::fs::create_dir_all(&app_support).expect("app-support/");
         {
-            let db =
-                forge_workspace::store::Db::open(&app_support.join("db.redb")).expect("open db");
+            let db_path = forge_workspace::store::path_for(&app_support, dir.path());
+            std::fs::create_dir_all(db_path.parent().expect("stores/")).expect("stores/");
+            let db = forge_workspace::store::Db::open(&db_path).expect("open db");
             forge_workspace::store::pricing::store(
                 &db,
                 &forge_workspace::store::pricing::CachedPricing {
@@ -974,8 +975,9 @@ provider = \"anthropic\"
         {
             // `new_for_test` opens this exact path and loads both sets at
             // construction, so the rows have to be there first.
-            let db =
-                forge_workspace::store::Db::open(&app_support.join("db.redb")).expect("open db");
+            let db_path = forge_workspace::store::path_for(&app_support, dir.path());
+            std::fs::create_dir_all(db_path.parent().expect("stores/")).expect("stores/");
+            let db = forge_workspace::store::Db::open(&db_path).expect("open db");
             forge_workspace::store::gotify::insert(&db, &gotify_sub("forge"))
                 .expect("insert gotify sub");
             forge_workspace::store::slack::insert(&db, &slack_sub("forge"))

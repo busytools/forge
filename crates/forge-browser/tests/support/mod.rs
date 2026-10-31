@@ -100,7 +100,10 @@ fn stage_bundle(scratch: &Path) -> PathBuf {
         "the staging script failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    scratch.join("Forge Browser.app/Contents/MacOS/Forge Browser")
+    // The script stages the bundle under the version it built, so more than
+    // one version can sit in the install dir without an install replacing a
+    // running server's.
+    scratch.join(env!("CARGO_PKG_VERSION")).join("Forge Browser.app/Contents/MacOS/Forge Browser")
 }
 
 /// A port nothing holds, chosen now and handed to the host.

@@ -201,7 +201,7 @@ just client-tauri-clippy   # the shell crate's lints
 just client-tauri-test     # the shell crate's tests
 just client-tauri-check    # the client shell, in the shipping configuration
 just client-android-check  # the Kotlin half and its unit tests
-just web-image-check       # the web image's poller and serving tests
+just web-image-check       # the web image's poller, entrypoint and serving tests
 ```
 
 `just check-delta <crate>...` is the fast slice for a review round: each
