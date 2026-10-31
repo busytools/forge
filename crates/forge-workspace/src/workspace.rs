@@ -5402,6 +5402,7 @@ impl Workspace {
             attachments: Vec::new(),
             uuid,
             source,
+            origin: None,
         })
     }
 
@@ -5497,6 +5498,7 @@ impl Workspace {
             attachments: Vec::new(),
             uuid,
             source: crate::protocol::PromptSource::Forge,
+            origin: None,
         })
     }
 
@@ -5541,6 +5543,7 @@ impl Workspace {
                 attachments: Vec::new(),
                 uuid,
                 source,
+                origin: None,
             })
         };
         if result.is_ok() {
@@ -5638,10 +5641,14 @@ impl Workspace {
         origin: PromptOrigin,
     ) -> Result<(), DispatchError> {
         // The id is minted HERE, before the prose is taken, so the prompt, its
-        // lifecycle frames and the user turn below all carry one thing by id:
-        // a plain `Prompt` becomes the `PromptUnder` the rest of the tree
+        // lifecycle frames and the user turn it draws all carry one thing by
+        // id: a plain `Prompt` becomes the `PromptUnder` the rest of the tree
         // already treats identically, keeping the mint on one path instead of
         // two.
+        //
+        // **The origin is stamped here, never taken from the caller.** A view
+        // that could name its own origin could claim to be the process's own
+        // input handler, and every other view would skip a turn it never drew.
         let cmd = match cmd {
             Command::Prompt { key, text, attachments } => Command::PromptUnder {
                 key,
@@ -5649,19 +5656,18 @@ impl Workspace {
                 attachments,
                 uuid: forge_sdk::request_id::next_prompt_id(),
                 source: crate::protocol::PromptSource::You,
+                origin: Some(origin),
             },
+            Command::PromptUnder { key, text, attachments, uuid, source, .. } => {
+                Command::PromptUnder { key, text, attachments, uuid, source, origin: Some(origin) }
+            }
             other => other,
         };
-        // The prose is taken before the move and emitted only once the command
-        // reached a session. A refused prompt never reached a model, so no view
-        // draws it as a turn - and the frame for one would open a live turn in
-        // every view but the sender, with nothing left to close it: the refusal
-        // is written to the asking socket alone.
-        //
-        // The source rides along the words, because the frame below is the
-        // same one forge's machinery forges prose on and a view arms its
-        // follow off what it says (#2198): taking it from the command keeps
-        // the frame and the queued row's label one fact.
+        // The prose is taken before the move. The source rides along the
+        // words, because the frame is the same one forge's machinery forges
+        // prose on and a view arms its follow off what it says (#2198):
+        // taking it from the command keeps the frame and the queued row's
+        // label one fact.
         let prompt = match &cmd {
             Command::PromptUnder { key, text, uuid, source, .. } => {
                 Some((key.clone(), text.clone(), uuid.clone(), *source))
@@ -5679,40 +5685,45 @@ impl Workspace {
         // being emitted where it is decided: it has to land after the echo
         // below, because a client draws this stream in arrival order and one
         // sent first drew the answer above the prompt it answers.
-        let (outcome, answer, images) = match &cmd {
-            Command::PromptUnder { key, text, attachments, .. } => {
-                match crate::prompt::forge_invocation(text) {
-                    Some(crate::prompt::Invocation::Command(prompt)) => {
-                        let (outcome, answer) = self.run_forge_prompt(key, &prompt);
-                        (outcome, answer, Vec::new())
-                    }
-                    Some(crate::prompt::Invocation::Misuse(usage)) => {
-                        (Ok(()), Some(forge_misuse(usage)), Vec::new())
-                    }
-                    None => {
-                        if let Some(refusal) = self.unrunnable_slash_name(key, text) {
-                            (Ok(()), Some(forge_misuse(&refusal)), Vec::new())
-                        } else {
-                            // Built here, only where the prompt is handed to
-                            // the CLI: the arms above never send the
-                            // attachments, so nothing is validated or carried
-                            // for them.
-                            let images = forge_primitives::display_blocks(attachments);
-                            (self.route(cmd), None, images)
-                        }
+        //
+        // **Who draws the prompt's turn.** A prompt the session task
+        // receives draws it there, ordered against everything the task does
+        // with the same prompt; only the prompts answered HERE - a forge
+        // command, a misuse, a slash name with no door - are framed from the
+        // dispatcher, because the task never sees them.
+        let (outcome, answer, framed_here) = match &cmd {
+            Command::PromptUnder { key, text, .. } => match crate::prompt::forge_invocation(text) {
+                Some(crate::prompt::Invocation::Command(prompt)) => {
+                    let (outcome, answer) = self.run_forge_prompt(key, &prompt);
+                    (outcome, answer, true)
+                }
+                Some(crate::prompt::Invocation::Misuse(usage)) => {
+                    (Ok(()), Some(forge_misuse(usage)), true)
+                }
+                None => {
+                    if let Some(refusal) = self.unrunnable_slash_name(key, text) {
+                        (Ok(()), Some(forge_misuse(&refusal)), true)
+                    } else {
+                        (self.route(cmd), None, false)
                     }
                 }
-            }
-            _ => (self.route(cmd), None, Vec::new()),
+            },
+            _ => (self.route(cmd), None, false),
         };
-        if outcome.is_ok()
+        // A refused prompt never reached a model, so no view draws it as a
+        // turn - and the frame for one would open a live turn in every view
+        // but the sender, with nothing left to close it: the refusal is
+        // written to the asking socket alone. The task draws its own only
+        // once it has the prompt, so a route refusal never reaches it.
+        if framed_here
+            && outcome.is_ok()
             && let Some((key, text, uuid, source)) = prompt
         {
             // Stamped at the forge, like the machinery's own: the CLI never
             // echoes a prompt, so this row is the one that opens every turn a
             // person starts, and a page attaching mid-turn reads its clock
             // from the first row that carries a stamp.
-            let mut framed = Message::display_only_user_with_blocks(text, images, uuid);
+            let mut framed = Message::display_only_user_with_blocks(text, Vec::new(), uuid);
             framed.stamp_if_absent(&crate::install::rfc3339_now());
             let _ = self.update_sender().send(SessionUpdate::ChatAppended {
                 key: key.clone(),
@@ -6061,6 +6072,12 @@ impl Workspace {
         {
             let mut intercept = self.command_intercept.lock();
             if let Some(buffer) = intercept.as_mut() {
+                // **The intercept stands in for the session task's receipt**,
+                // so a prompt that draws its own turn still draws it: the
+                // frame comes from the same function the task runs.
+                if let Some(key) = cmd.key() {
+                    crate::session_task::emit_prompt_frame(&self.update_tx, key, &cmd);
+                }
                 buffer.push(cmd);
                 return Ok(());
             }
@@ -13197,11 +13214,12 @@ provider = "anthropic"
         assert_eq!(announced, 2, "one frame for the cool and one for the thaw");
     }
 
-    /// **Both rows that open a turn carry the stamp a clock is read from**:
-    /// the one a view's own send forges, and the one forge's machinery forges.
-    /// The CLI never echoes a prompt, so these rows are the only opening rows
-    /// a turn has - and a page attaching mid-turn anchors its running clock on
-    /// the first row carrying a stamp.
+    /// **The row forge's machinery forges carries the stamp a clock is read
+    /// from.** The CLI never echoes a prompt, so these rows are the only
+    /// opening rows a turn has, and a page attaching mid-turn anchors its
+    /// running clock on the first row carrying a stamp. A view's own send is
+    /// stamped by the session task that draws it now; that half is pinned
+    /// beside the frame-order test in `session_task`.
     #[test]
     fn a_forged_prompt_row_carries_the_stamp_a_clock_starts_from() {
         let dir = tempdir().expect("tempdir");
@@ -13225,12 +13243,6 @@ provider = "anthropic"
         ws.enable_test_dispatch_intercept();
 
         let before = time::OffsetDateTime::now_utc();
-        ws.dispatch(Command::Prompt {
-            key: key.clone(),
-            text: "go".to_owned(),
-            attachments: Vec::new(),
-        })
-        .expect("view dispatch");
         ws.dispatch_forged_prompt(&key, "get on with it".to_owned()).expect("forged dispatch");
         let after = time::OffsetDateTime::now_utc();
 
@@ -13244,27 +13256,25 @@ provider = "anthropic"
                 serde_json::to_value(&msg).expect("encode")["timestamp"].as_str().map(str::to_owned)
             })
             .collect();
-        assert_eq!(stamps.len(), 2, "both prompt paths forge a row: {stamps:?}");
-        let view = stamps[0].as_deref().expect("the row a view's send forges carries a stamp");
-        let forged = stamps[1].as_deref().expect("and the row forge's machinery forges does too");
+        assert_eq!(stamps.len(), 1, "the machinery's prompt forges a row: {stamps:?}");
+        let forged =
+            stamps[0].as_deref().expect("the row forge's machinery forges carries a stamp");
 
         // **The code's own clock, not merely a parseable string.** A constant
         // stamp would draw every forged row a clock years old while a
-        // parse-only pin stayed green, so each has to land where the two
-        // `now_utc`s bracket the dispatches.
+        // parse-only pin stayed green, so it has to land where the two
+        // `now_utc`s bracket the dispatch.
         let slack = time::Duration::seconds(5);
-        for (stamp, path) in [(view, "the view's send"), (forged, "the machinery's")] {
-            let at =
-                time::OffsetDateTime::parse(stamp, &time::format_description::well_known::Rfc3339)
-                    .unwrap_or_else(|error| {
-                        panic!("{path} stamped a time no client can read: {stamp} ({error})")
-                    });
-            assert!(
-                at >= before - slack && at <= after + slack,
-                "the row {path} forges carries the forge's own clock, not a constant: {stamp} \
-                 sits outside {before}..{after}",
-            );
-        }
+        let at =
+            time::OffsetDateTime::parse(forged, &time::format_description::well_known::Rfc3339)
+                .unwrap_or_else(|error| {
+                    panic!("the machinery stamped a time no client can read: {forged} ({error})")
+                });
+        assert!(
+            at >= before - slack && at <= after + slack,
+            "the row the machinery forges carries the forge's own clock, not a constant: \
+             {forged} sits outside {before}..{after}",
+        );
     }
 
     /// A forged prompt that never landed draws nothing: the words did not
@@ -13309,6 +13319,7 @@ provider = "anthropic"
             attachments: Vec::new(),
             uuid: uuid.to_owned(),
             source,
+            origin: None,
         };
 
         ws.dispatch(prompt("cron-1", crate::protocol::PromptSource::Cron)).expect("routed");
@@ -24814,33 +24825,35 @@ mod prompt_frame_origin_tests {
         (ws, rx, seat)
     }
 
-    /// The UI's own entry.
+    /// The UI's own entry. The origin is stamped on the COMMAND: the frame
+    /// itself is drawn by the session task, so the command is what this layer
+    /// answers for.
     #[test]
-    fn the_uis_own_entry_marks_the_frame_as_the_uis() {
-        let (ws, mut rx, seat) = a_fleet();
+    fn the_uis_own_entry_stamps_the_prompt_as_the_uis() {
+        let (ws, _rx, seat) = a_fleet();
 
         let dispatched = ws.dispatch(a_prompt(&seat));
 
         assert!(dispatched.is_ok(), "precondition: the core took the prompt: {dispatched:?}");
+        let commands = ws.drain_test_dispatch_buffer();
         assert!(
             matches!(
-                rx.try_recv(),
-                Ok(frame)
-                    if matches!(&*frame.update, SessionUpdate::ChatAppended {
-                        origin: Some(PromptOrigin::Ui),
-                        source: Some(PromptSource::You),
-                        key,
-                        ..
-                    } if key == &seat)
+                commands.as_slice(),
+                [Command::PromptUnder {
+                    origin: Some(PromptOrigin::Ui),
+                    source: PromptSource::You,
+                    key,
+                    ..
+                }] if key == &seat
             ),
-            "the words the terminal drew at submit are marked as its own, or it draws them \
+            "the words the terminal drew at submit must be marked as its own, or it draws them \
              twice - and as a person's send, which is the only thing a reader's follow arms \
-             on (#2198)",
+             on (#2198): {commands:?}",
         );
     }
 
-    /// The frame a typed dispatch forges carries the SAME id the wired prompt
-    /// runs under.
+    /// The prompt, and therefore the frame the task draws from it, runs under
+    /// ONE id.
     ///
     /// The lifecycle frames name only the id, so a frame minted apart from the
     /// wire would hold a row nothing can ever settle - the pile dead for that
@@ -24849,32 +24862,20 @@ mod prompt_frame_origin_tests {
     /// row already held.
     #[test]
     fn a_prompt_frames_uuid_is_the_uuid_it_runs_under() {
-        let (ws, mut rx, seat) = a_fleet();
+        let (ws, _rx, seat) = a_fleet();
 
         let dispatched = ws.dispatch_from_view(a_prompt(&seat));
         assert!(dispatched.is_ok(), "precondition: the core took the prompt: {dispatched:?}");
 
         let wired = ws.drain_test_dispatch_buffer();
-        let wired_id = match wired.as_slice() {
-            [Command::PromptUnder { uuid, .. }] => uuid.clone(),
-            other => panic!("a typed dispatch wires the prompt under a minted id: {other:?}"),
+        let [Command::PromptUnder { uuid, origin, .. }] = wired.as_slice() else {
+            panic!("a typed dispatch wires the prompt under a minted id: {wired:?}");
         };
-        assert!(!wired_id.is_empty(), "and a real one, not a blank");
-
-        let mut frame_id: Option<String> = None;
-        while let Ok(frame) = rx.try_recv() {
-            if let SessionUpdate::ChatAppended {
-                msg: forge_primitives::Message::User { uuid, .. },
-                ..
-            } = std::sync::Arc::unwrap_or_clone(frame.update)
-            {
-                frame_id = uuid;
-            }
-        }
+        assert!(!uuid.is_empty(), "and a real one, not a blank");
         assert_eq!(
-            frame_id.as_deref(),
-            Some(wired_id.as_str()),
-            "the forged frame and the wired prompt are one thing by id",
+            *origin,
+            Some(PromptOrigin::View),
+            "and the socket's entry, not the UI's - the frame is drawn from that same command",
         );
     }
 
@@ -25454,26 +25455,26 @@ mod prompt_frame_origin_tests {
 
     /// The socket's entry, which is what `ViewSurface::dispatch` takes.
     #[test]
-    fn a_views_entry_marks_the_frame_as_a_views() {
-        let (ws, mut rx, seat) = a_fleet();
+    fn a_views_entry_stamps_the_prompt_as_a_views() {
+        let (ws, _rx, seat) = a_fleet();
 
         let dispatched = ws.dispatch_from_view(a_prompt(&seat));
 
         assert!(dispatched.is_ok(), "precondition: the core took the prompt: {dispatched:?}");
+        let commands = ws.drain_test_dispatch_buffer();
         assert!(
             matches!(
-                rx.try_recv(),
-                Ok(frame)
-                    if matches!(&*frame.update, SessionUpdate::ChatAppended {
-                        origin: Some(PromptOrigin::View),
-                        source: Some(PromptSource::You),
-                        key,
-                        ..
-                    } if key == &seat)
+                commands.as_slice(),
+                [Command::PromptUnder {
+                    origin: Some(PromptOrigin::View),
+                    source: PromptSource::You,
+                    key,
+                    ..
+                }] if key == &seat
             ),
             "no view has drawn a send made over the socket, so every view has to - and the \
-             frame says it is a person's send, the one source a reader's follow arms on \
-             (#2198)",
+             command says it is a person's send, the one source a reader's follow arms on \
+             (#2198): {commands:?}",
         );
     }
 

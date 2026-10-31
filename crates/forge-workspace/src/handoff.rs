@@ -1294,6 +1294,7 @@ impl crate::Workspace {
             attachments: Vec::new(),
             uuid,
             source: crate::protocol::PromptSource::Peer,
+            origin: None,
         })
     }
 
