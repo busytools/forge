@@ -124,12 +124,23 @@ fn declaring_compression(url: &str) -> String {
 /// **Synchronous on purpose**: the loop is the order this connection has
 /// always had, and a decompression spawned beside it would let the frames
 /// after it overtake it.
-fn inflate(bytes: &[u8]) -> Result<String, String> {
+///
+/// **Bounded by the frame bound the socket documents.** `max_message_size`
+/// bounds the COMPRESSED bytes, and a gzip body can inflate far past them -
+/// so the decoder stops one byte past `limit` and a body that reaches it is
+/// refused by name rather than grown without bound.
+fn inflate(bytes: &[u8], limit: usize) -> Result<String, String> {
     use std::io::Read as _;
     let mut text = String::new();
     flate2::read::GzDecoder::new(bytes)
+        .take(u64::try_from(limit).unwrap_or(u64::MAX).saturating_add(1))
         .read_to_string(&mut text)
         .map_err(|why| format!("a compressed frame did not inflate: {why}"))?;
+    if text.len() > limit {
+        return Err(format!(
+            "a compressed frame inflated past the {limit} byte bound this socket documents"
+        ));
+    }
     Ok(text)
 }
 
@@ -256,8 +267,10 @@ pub enum SocketEvent {
     Status(Status),
     /// A server frame, verbatim: the greeting, snapshots, updates, pages,
     /// browser state and errors alike. The receiver reads `kind`. `bytes` is
-    /// the raw frame's length and `parse_ms` how long this half's parse took -
-    /// the page's perf log carries both for a snapshot (#2513).
+    /// the JSON length this side walked - a compressed frame reports its
+    /// inflated length, not the smaller bytes it crossed as - and `parse_ms`
+    /// is the JSON parse alone; inflation is outside it, so #2513's metric
+    /// stays the parse wherever the frame came from.
     Message { value: Value, bytes: usize, parse_ms: f64 },
     /// A subscribe frame finished its write, with how long it waited in this
     /// half (the queue plus the write) - the page's perf log times the switch
@@ -1109,22 +1122,30 @@ async fn run(
                                 // client that declared it can inflate one.**
                                 // Inflated here, in the read loop, so the
                                 // frames after it are delivered after it.
-                                let at = tokio::time::Instant::now();
-                                match inflate(&bytes[1..]) {
-                                    Ok(text) => match serde_json::from_str::<Value>(&text) {
-                                        Ok(value) => receive(
-                                            &value,
-                                            text.len(),
-                                            at.elapsed().as_secs_f64() * 1000.0,
-                                            &mut pending,
-                                            &mut attaches,
-                                            &mut awaiting,
-                                            &events,
-                                        ),
-                                        Err(why) => {
-                                            say(&events, SocketEvent::Malformed(why.to_string()))
+                                match inflate(&bytes[1..], MAX_FRAME_BYTES) {
+                                    Ok(text) => {
+                                        // **The parse's own clock starts after
+                                        // the inflate** (#2513): `parse_ms` is
+                                        // the cost of the JSON walk, and the
+                                        // big frames it exists to measure are
+                                        // exactly the ones inflated here.
+                                        let at = tokio::time::Instant::now();
+                                        match serde_json::from_str::<Value>(&text) {
+                                            Ok(value) => receive(
+                                                &value,
+                                                text.len(),
+                                                at.elapsed().as_secs_f64() * 1000.0,
+                                                &mut pending,
+                                                &mut attaches,
+                                                &mut awaiting,
+                                                &events,
+                                            ),
+                                            Err(why) => say(
+                                                &events,
+                                                SocketEvent::Malformed(why.to_string()),
+                                            ),
                                         }
-                                    },
+                                    }
                                     Err(why) => say(&events, SocketEvent::Malformed(why)),
                                 }
                             }
@@ -1712,6 +1733,42 @@ pub(crate) mod tests {
         assert!(waited_ms.is_finite(), "the wait is measured, not a placeholder");
     }
 
+    /// **The desktop declares compression on the address it dials** (#2560):
+    /// the declaration is what makes the server compress at all, so a dial
+    /// that lost it would silently keep every frame as text.
+    #[tokio::test]
+    async fn the_dial_declares_compression() {
+        let stub = stub().await;
+        let (_socket, _rx) = connected(&stub).await;
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            let held = stub.uris.lock().expect("the uri log").clone();
+            if !held.is_empty() {
+                assert!(
+                    held[0].contains("deflate=1"),
+                    "the dial did not declare compression: {held:?}",
+                );
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "no dial was recorded");
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    }
+
+    /// **The inflate is bounded by the frame bound the socket documents**
+    /// (#2560): a gzip body can inflate past its compressed size, so an
+    /// unbounded read is how a documented frame bound stops bounding.
+    #[test]
+    fn a_compressed_body_past_the_bound_is_refused() {
+        let body = gzipped(b"0123456789");
+        assert_eq!(inflate(&body, 10).expect("ten bytes fit a ten byte bound"), "0123456789");
+        let refused = inflate(&body, 9).expect_err("an eleventh byte is past the bound");
+        assert!(
+            refused.contains("past the 9 byte bound"),
+            "the refusal names the bound: {refused}",
+        );
+    }
+
     /// **A compressed frame is decoded by this half, in the socket's order**
     /// (#2560). A text frame, a gzip body behind the compressed kind, then
     /// another text frame: the page's events carry all three in the order
@@ -1789,6 +1846,9 @@ pub(crate) mod tests {
         _kill_keep: tokio::sync::broadcast::Receiver<()>,
         /// And for the spoken channel, for the same reason.
         _spoken_keep: tokio::sync::broadcast::Receiver<Value>,
+        /// Every dial's request URI, in arrival order: what the client
+        /// declared on the address it asked for.
+        pub(crate) uris: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
     }
 
     pub(crate) async fn stub() -> Stub {
@@ -1812,6 +1872,8 @@ pub(crate) mod tests {
         let say_for_task = say.clone();
         let kill_for_task = kill.clone();
         let spoken_for_task = spoken.clone();
+        let uris = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let uris_for_task = std::sync::Arc::clone(&uris);
         tokio::spawn(async move {
             loop {
                 let Ok((stream, _)) = listener.accept().await else { return };
@@ -1823,10 +1885,22 @@ pub(crate) mod tests {
                 }
                 let heard_tx = heard_tx.clone();
                 let spoken = spoken_for_task.clone();
+                let uris = std::sync::Arc::clone(&uris_for_task);
                 let mut said = say_for_task.subscribe();
                 let mut killed = kill_for_task.subscribe();
                 tokio::spawn(async move {
-                    let Ok(ws) = tokio_tungstenite::accept_async(stream).await else { return };
+                    // **The hook is the handshake's own request**: what a
+                    // client declared lives on the URI it dialled, and a test
+                    // that does not read it cannot see the declaration.
+                    let recorded = move |request: &tokio_tungstenite::tungstenite::handshake::server::Request, response| {
+                        if let Ok(mut held) = uris.lock() {
+                            held.push(request.uri().to_string());
+                        }
+                        Ok(response)
+                    };
+                    let Ok(ws) = tokio_tungstenite::accept_hdr_async(stream, recorded).await else {
+                        return;
+                    };
                     let (mut writer, mut reader) = ws.split();
                     loop {
                         tokio::select! {
@@ -1866,6 +1940,7 @@ pub(crate) mod tests {
             _keep: keep,
             _kill_keep: kill_keep,
             _spoken_keep: spoken_keep,
+            uris,
         }
     }
 

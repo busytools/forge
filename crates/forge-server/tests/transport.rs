@@ -4404,12 +4404,12 @@ async fn a_large_frame_crosses_compressed_only_for_a_declaring_client() {
         }
     };
     assert!(compressed, "a page over the threshold crossed as text to a declaring client");
-    let ServerMessage::Snapshot { data, .. } = &snapshot else {
+    let ServerMessage::Snapshot { data: declaring_data, .. } = &snapshot else {
         unreachable!("the loop broke on a snapshot")
     };
-    let turns = data["conversation"]["turns"].as_array().map_or(0, Vec::len);
-    assert!(turns > 0, "the inflated answer carries the page: {data}");
-    let page = serde_json::to_string(data).expect("the answer encodes");
+    let turns = declaring_data["conversation"]["turns"].as_array().map_or(0, Vec::len);
+    assert!(turns > 0, "the inflated answer carries the page: {declaring_data}");
+    let page = serde_json::to_string(declaring_data).expect("the answer encodes");
     assert!(
         page.len() > 64 * 1024,
         "precondition: the page is over the compression threshold: {} bytes",
@@ -4420,7 +4420,11 @@ async fn a_large_frame_crosses_compressed_only_for_a_declaring_client() {
     let mut plain = connect(&url).await;
     send(
         &mut plain,
-        ClientMessage::Subscribe { what: Subject::Session(seat), answering: false, review: false },
+        ClientMessage::Subscribe {
+            what: Subject::Session(seat.clone()),
+            answering: false,
+            review: false,
+        },
     )
     .await;
     let (snapshot, compressed) = loop {
@@ -4437,6 +4441,31 @@ async fn a_large_frame_crosses_compressed_only_for_a_declaring_client() {
         data["conversation"]["turns"].as_array().is_some_and(|turns| !turns.is_empty()),
         "and the plain client's answer carries the same page",
     );
+    // **The non-declaring path is byte-identical, not merely readable**: the
+    // page the plain client got as text is the page the declaring client
+    // got inflated. Only the conversation is compared - the record's live
+    // slices (processes, an index walk) are read per answer and are not the
+    // page's own bytes.
+    assert_eq!(
+        &data["conversation"], &declaring_data["conversation"],
+        "the inflated page and the plain one are different records",
+    );
+
+    // **An unrelated query is not a declaration.** A URL the client did not
+    // use to declare compression must keep the text path.
+    let mut queried = connect(&format!("{url}?session=1")).await;
+    send(
+        &mut queried,
+        ClientMessage::Subscribe { what: Subject::Session(seat), answering: false, review: false },
+    )
+    .await;
+    let (_, compressed) = loop {
+        let (message, compressed) = next_json_frame(&mut queried).await;
+        if matches!(message, ServerMessage::Snapshot { .. }) {
+            break (message, compressed);
+        }
+    };
+    assert!(!compressed, "an unrelated query was read as a compression declaration");
 }
 
 /// `turn N` as `N`, so an order check compares the numbers rather than the

@@ -3264,6 +3264,17 @@ where
     }
 
     fn start_send(mut self: std::pin::Pin<&mut Self>, item: Message) -> Result<(), axum::Error> {
+        // **Every text frame crosses the encoder, whatever path built it.**
+        // The batched stream and a subscribe's queued backlog write Text
+        // frames of their own, straight through `feed`, so an encoder that
+        // lived only in the answer paths would leave them uncompressed for a
+        // client that declared the capability. A frame already encoded - the
+        // Binary kind, a control frame - passes through untouched.
+        let deflate = self.deflate;
+        let item = match item {
+            Message::Text(text) => frame_for_flag(deflate, text.as_str()),
+            other => other,
+        };
         std::pin::Pin::new(&mut self.inner).start_send(item)
     }
 
@@ -3295,7 +3306,11 @@ fn frame_bytes(frame: &Message) -> usize {
 /// a gzipped body behind [`COMPRESSED_JSON_TAG`] when the client declared the
 /// capability and the body is over the threshold.
 fn frame_for<S>(socket: &ClientSocket<S>, text: &str) -> Message {
-    if !socket.deflate || text.len() < COMPRESSED_MIN_BYTES {
+    frame_for_flag(socket.deflate, text)
+}
+
+fn frame_for_flag(deflate: bool, text: &str) -> Message {
+    if !deflate || text.len() < COMPRESSED_MIN_BYTES {
         return Message::Text(text.to_owned().into());
     }
     match gzipped(text.as_bytes()) {
@@ -4394,6 +4409,63 @@ mod tests {
         }
     }
 
+    /// A sink that keeps every message it is handed, so a test can read the
+    /// frame a path actually wrote.
+    struct Recorded(Arc<Mutex<Vec<Message>>>);
+
+    impl futures_util::Sink<Message> for Recorded {
+        type Error = axum::Error;
+
+        fn poll_ready(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+        fn start_send(self: std::pin::Pin<&mut Self>, item: Message) -> Result<(), Self::Error> {
+            if let Ok(mut held) = self.0.lock() {
+                held.push(item);
+            }
+            Ok(())
+        }
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+        fn poll_close(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    /// **A text frame written by a path that never calls `frame_for` is
+    /// compressed too** (#2560): the batched stream and a subscribe's queued
+    /// backlog write through `feed`, and the encoder rides the socket so they
+    /// cannot bypass it.
+    #[tokio::test]
+    async fn a_batched_text_frame_crosses_the_encoder() {
+        let recorded = Arc::new(Mutex::new(Vec::new()));
+        let mut socket = ClientSocket::new(Recorded(Arc::clone(&recorded)), true);
+        let text =
+            format!("{{\"kind\":\"update\",\"pad\":\"{}\"}}", "x".repeat(COMPRESSED_MIN_BYTES));
+        futures_util::SinkExt::send(&mut socket, Message::Text(text.clone().into()))
+            .await
+            .expect("the frame goes");
+        let held = recorded.lock().expect("the frame log");
+        let Some(Message::Binary(bytes)) = held.first() else {
+            panic!("a text frame over the threshold crossed as text: {:?}", held.first())
+        };
+        assert_eq!(bytes.first().copied(), Some(COMPRESSED_JSON_TAG), "the compressed kind tag");
+        let mut body = String::new();
+        std::io::Read::read_to_string(&mut flate2::read::GzDecoder::new(&bytes[1..]), &mut body)
+            .expect("the body inflates");
+        assert_eq!(body, text, "the body is the frame it stood for");
+    }
+
     /// The clock a measured write reads, recording the frame each start was
     /// handed and answering a fixed second. **Deterministic**: the test never
     /// waits, and a start read taken before the frame exists records nothing.
@@ -4714,6 +4786,41 @@ mod tests {
         let write =
             send_frame_timed(&mut socket, a_frame(), &clock).await.expect("the write lands");
         assert_eq!(write.bytes, small, "a frame under the threshold stays the text frame it was");
+    }
+
+    /// **The threshold is exact** (#2560): a body of exactly the budget
+    /// crosses compressed, and one byte under stays the text frame it was -
+    /// the boundary a reader computes from this code is the boundary that
+    /// runs.
+    #[test]
+    fn the_compression_threshold_is_exact() {
+        let at_len = |len: usize| {
+            let base = serde_json::to_string(&ServerMessage::Snapshot {
+                subject: Subject::Home,
+                data: json!({ "pad": "" }),
+            })
+            .expect("the frame encodes")
+            .len();
+            let pad = "x".repeat(len - base);
+            let text = serde_json::to_string(&ServerMessage::Snapshot {
+                subject: Subject::Home,
+                data: json!({ "pad": pad }),
+            })
+            .expect("the frame encodes");
+            assert_eq!(text.len(), len, "precondition: the frame is exactly {len} bytes");
+            text
+        };
+
+        let under = at_len(COMPRESSED_MIN_BYTES - 1);
+        assert!(
+            matches!(frame_for_flag(true, &under), Message::Text(_)),
+            "a byte under the threshold stayed not-text",
+        );
+        let at = at_len(COMPRESSED_MIN_BYTES);
+        assert!(
+            matches!(frame_for_flag(true, &at), Message::Binary(_)),
+            "a frame at exactly the threshold crossed as text",
+        );
     }
 
     /// **`waited` is not a constant (#2506).** A write that yields says so;
