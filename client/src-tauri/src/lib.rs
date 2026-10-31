@@ -1158,11 +1158,16 @@ mod tests {
         let app = mock_builder().build(mock_context(noop_assets())).expect("a mock app builds");
         // **The plugin's default target is the OS log directory**, which for
         // this mock is `~/Library/Logs/test.log`: a gate run would litter the
-        // home directory. The level and the filter are what this test is
-        // about, so the one target it keeps is stdout.
+        // home directory. A scratch folder keeps a file target exercised -
+        // the shape the shipped logger writes through - while leaving
+        // nothing outside the test.
+        let log_dir = tempfile::tempdir().expect("a scratch log dir");
         let (_plugin, max, logger) = client_logger()
             .clear_targets()
-            .target(Target::new(TargetKind::Stdout))
+            .target(Target::new(TargetKind::Folder {
+                path: log_dir.path().to_path_buf(),
+                file_name: Some("test".to_owned()),
+            }))
             .split(app.handle())
             .expect("the logger builds");
         assert_eq!(max, LOG_MAX, "the facade allows what the filter keeps");
