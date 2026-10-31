@@ -9673,38 +9673,6 @@ impl Workspace {
         true
     }
 
-    /// Tag a worker session's JSONL with `forge:worker:<label>` and
-    /// transition its `WorkerEntry` from `Spawning` to `Running`.
-    /// Called from `SessionTask::translate_event` on the worker's first
-    /// `Connected`.
-    ///
-    /// `cwd` is the tree the worker runs in (the `directory`
-    /// discriminator `tag_session` uses to find the right `.jsonl` when
-    /// CONFIG_DIR hosts multiple project directories).
-    ///
-    /// The tag-write races against claude CLI's first JSONL write. For
-    /// workers spawned with an `initial_prompt`, the file lands within
-    /// ~100 ms-2 s of `Connected`, so a 30 x 100 ms retry loop reliably
-    /// catches it. For idle-spawned workers (no prompt) claude doesn't
-    /// create the JSONL at all until the first user turn arrives later,
-    /// so the retry will exhaust with `Io(NotFound)`. That's NOT a
-    /// rollback condition - we keep the worker live (it's fully
-    /// functional from `live_workers`), transition to `Running`, mark
-    /// the entry `needs_tag = true`, and emit `StatusChanged`. The
-    /// opportunistic retry on first `DeliverWorkerPrompt`
-    /// (see `spawn::handle_deliver_worker_prompt`) catches it once
-    /// claude is processing the turn.
-    ///
-    /// Other errors (permission denied, disk full, invalid UUID) still
-    /// indicate the worker can't be properly tracked on disk, so we
-    /// roll back: remove from `live_workers`, release the session, emit
-    /// a `Removed` status event.
-    ///
-    /// The tag-write runs in a detached tokio task to keep
-    /// `translate_event` synchronous.
-    ///
-    /// Idempotent - calling twice for the same session_key is a no-op
-    /// if the entry is already `Running`.
     /// Mark a git worker Failed and release its session when the worktree its
     /// connect is about to run in is gone or unusable. Answers whether it
     /// did, so the first-connect branch can stop before it kicks the worker,
@@ -9745,6 +9713,38 @@ impl Workspace {
         true
     }
 
+    /// Tag a worker session's JSONL with `forge:worker:<label>` and
+    /// transition its `WorkerEntry` from `Spawning` to `Running`.
+    /// Called from `SessionTask::translate_event` on the worker's first
+    /// `Connected`.
+    ///
+    /// `cwd` is the tree the worker runs in (the `directory`
+    /// discriminator `tag_session` uses to find the right `.jsonl` when
+    /// CONFIG_DIR hosts multiple project directories).
+    ///
+    /// The tag-write races against claude CLI's first JSONL write. For
+    /// workers spawned with an `initial_prompt`, the file lands within
+    /// ~100 ms-2 s of `Connected`, so a 30 x 100 ms retry loop reliably
+    /// catches it. For idle-spawned workers (no prompt) claude doesn't
+    /// create the JSONL at all until the first user turn arrives later,
+    /// so the retry will exhaust with `Io(NotFound)`. That's NOT a
+    /// rollback condition - we keep the worker live (it's fully
+    /// functional from `live_workers`), transition to `Running`, mark
+    /// the entry `needs_tag = true`, and emit `StatusChanged`. The
+    /// opportunistic retry on first `DeliverWorkerPrompt`
+    /// (see `spawn::handle_deliver_worker_prompt`) catches it once
+    /// claude is processing the turn.
+    ///
+    /// Other errors (permission denied, disk full, invalid UUID) still
+    /// indicate the worker can't be properly tracked on disk, so we
+    /// roll back: remove from `live_workers`, release the session, emit
+    /// a `Removed` status event.
+    ///
+    /// The tag-write runs in a detached tokio task to keep
+    /// `translate_event` synchronous.
+    ///
+    /// Idempotent - calling twice for the same session_key is a no-op
+    /// if the entry is already `Running`.
     pub(crate) fn apply_worker_tag_or_rollback(
         self: &Arc<Self>,
         session_key: &SessionSlot,
