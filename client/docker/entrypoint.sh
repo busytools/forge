@@ -6,15 +6,27 @@ set -eu
 
 seed=/usr/share/forge-web
 served="${FORGE_SERVED:-/srv/forge-web}"
+version_file=/usr/share/forge-web-version
+
+# **The seed is named for the release the image was built at**, so the
+# poller's same-version skip matches on the very first boot and a fresh
+# container does not fetch a build it already serves. An image built without
+# a version (a pull-request build, which is never published) falls back to
+# the unversioned name and polls once.
+seed_name=dist-bundled
+if [ -s "$version_file" ]; then
+    seed_version=$(cat "$version_file")
+    [ -z "$seed_version" ] || seed_name="dist-$seed_version"
+fi
 
 # An empty volume is the ordinary first start (and a bind mount is whatever
 # the host had): seed it so the container serves immediately, before the
 # poller has reached the manifest.
 if [ ! -e "$served/current/index.html" ]; then
-    echo "[..] seeding $served from the image's own build"
-    mkdir -p "$served/dist-bundled"
-    cp -a "$seed/." "$served/dist-bundled/"
-    ln -sfn dist-bundled "$served/current"
+    echo "[..] seeding $served from the image's own build ($seed_name)"
+    mkdir -p "$served/$seed_name"
+    cp -a "$seed/." "$served/$seed_name/"
+    ln -sfn "$seed_name" "$served/current"
 fi
 
 /usr/local/bin/poller.sh &
