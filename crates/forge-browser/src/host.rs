@@ -2124,7 +2124,8 @@ mod tests {
         assert!(super::parse(args(&[])).expect("parses").parent.is_none());
         let (read, _write) = super::parent_watch_pipe();
         // The read end's number is handed over exactly as the spawn hands
-        // it: parse takes ownership, so this test must not keep its own.
+        // it. The parsed Args holds only the number, so this test gives up
+        // its own copy rather than leaving two owners of one fd.
         let piped = super::parse(args(&["--parent-pipe", &read.into_raw_fd().to_string()]))
             .expect("parses");
         assert!(piped.parent.is_some(), "the fd is the watch");
