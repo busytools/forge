@@ -73,7 +73,11 @@ pub(crate) fn another_instance_running(config_dir: &Path, app_support: &Path) ->
         if path == ours || !path.is_file() {
             continue;
         }
-        let Ok(file) = OpenOptions::new().read(true).write(true).open(&path) else { continue };
+        // A lockfile that cannot be opened cannot be shown to be free:
+        // treat it as a live peer rather than step over it.
+        let Ok(file) = OpenOptions::new().read(true).write(true).open(&path) else {
+            return true;
+        };
         match flock(&file, FlockOperation::NonBlockingLockExclusive) {
             Ok(()) => {
                 let _ = flock(&file, FlockOperation::Unlock);
@@ -282,6 +286,20 @@ mod tests {
         assert!(
             !another_instance_running(cfg_a.path(), base.path()),
             "the peer is gone once its lock drops",
+        );
+
+        // A lock that cannot be opened cannot be shown to be free, so it is
+        // treated as a live peer rather than stepped over.
+        use std::os::unix::fs::PermissionsExt as _;
+        let locked = lock_path(tempdir().expect("cfg c").path(), base.path());
+        std::fs::create_dir_all(locked.parent().expect("locks dir")).expect("locks dir");
+        std::fs::write(&locked, b"12345").expect("the unreadable lock");
+        let mut perms = std::fs::metadata(&locked).expect("metadata").permissions();
+        perms.set_mode(0o000);
+        std::fs::set_permissions(&locked, perms).expect("make it unreadable");
+        assert!(
+            another_instance_running(cfg_a.path(), base.path()),
+            "an unopenable lock reads as live",
         );
     }
 }

@@ -816,19 +816,37 @@ fn process_argv(pid: u32) -> Option<Vec<String>> {
 #[cfg(target_os = "macos")]
 const CODE_SIGN_CLONE: &str = "dev.vedhavyas.forge.browser-host.code_sign_clone";
 
-/// Whether `path` is a code-sign clone of this host's own bundle. **The clone
+/// Whether `path` is a code-sign clone of a staged host bundle. **The clone
 /// is our host**: Chromium re-execs the browser process from the copy, and a
 /// reaper that refused it would leave the profile's lock held.
 #[cfg(target_os = "macos")]
-fn is_code_sign_clone(path: &std::path::Path, mine: &std::path::Path) -> bool {
-    path.file_name() == mine.file_name()
+fn is_code_sign_clone(path: &std::path::Path) -> bool {
+    path.file_name() == Some(std::ffi::OsStr::new(crate::host_bundle::EXECUTABLE_NAME))
         && path.components().any(|part| part.as_os_str() == CODE_SIGN_CLONE)
 }
 
-/// Whether `pid` runs the host executable this server ships, so a reaper
+/// Whether `path` is a host executable of ANY staged version:
+/// `<install root>/<version>/Forge Browser.app/Contents/MacOS/Forge Browser`.
+///
+/// **Any version, not only this build's.** An orphan left by the previous
+/// version runs under the same bundle name and holds the same profile's
+/// singleton lock; matching only this version's path would clear that lock
+/// without killing the process and let a second host take the profile.
+#[cfg(target_os = "macos")]
+fn is_staged_host(path: &std::path::Path, install_root: &std::path::Path) -> bool {
+    let Ok(relative) = path.strip_prefix(install_root) else { return false };
+    let parts: Vec<&std::ffi::OsStr> = relative.iter().collect();
+    parts.len() == 5
+        && parts[1] == std::ffi::OsStr::new(crate::host_bundle::APP)
+        && parts[2] == std::ffi::OsStr::new("Contents")
+        && parts[3] == std::ffi::OsStr::new("MacOS")
+        && parts[4] == std::ffi::OsStr::new(crate::host_bundle::EXECUTABLE_NAME)
+}
+
+/// Whether `pid` runs a host executable this machine staged, so a reaper
 /// never signals an unrelated process that reused a recorded number.
 pub fn is_our_binary(pid: u32) -> bool {
-    let Ok(mine) = crate::host_bundle::executable() else {
+    let Ok(install_root) = crate::host_bundle::install_root() else {
         return false;
     };
     #[cfg(target_os = "macos")]
@@ -849,11 +867,12 @@ pub fn is_our_binary(pid: u32) -> bool {
         let path = unsafe { std::ffi::CStr::from_ptr(buffer.as_ptr()) };
         let text = path.to_string_lossy();
         let path = std::path::Path::new(text.as_ref());
-        path == mine || is_code_sign_clone(path, &mine)
+        is_staged_host(path, &install_root) || is_code_sign_clone(path)
     }
     #[cfg(not(target_os = "macos"))]
     {
         let _ = pid;
+        let _ = install_root;
         false
     }
 }
@@ -1086,28 +1105,56 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn a_code_sign_clone_of_the_host_is_ours() {
-        let mine = std::path::Path::new(
-            "/Users/x/Library/Application Support/forge/browser-host/Forge Browser.app/Contents/MacOS/Forge Browser",
-        );
         let clone = std::path::Path::new(
             "/var/folders/x/dev.vedhavyas.forge.browser-host.code_sign_clone/code_sign_clone.ABC/Forge Browser.app.bundle/Contents/MacOS/Forge Browser",
         );
-        assert!(is_code_sign_clone(clone, mine), "the clone is our own host");
+        assert!(is_code_sign_clone(clone), "the clone is our own host");
         assert!(
-            !is_code_sign_clone(
-                std::path::Path::new("/tmp/Other.app/Contents/MacOS/Forge Browser"),
-                mine
-            ),
+            !is_code_sign_clone(std::path::Path::new(
+                "/tmp/Other.app/Contents/MacOS/Forge Browser"
+            )),
             "a same-named binary outside the clone directory is not ours"
         );
         assert!(
-            !is_code_sign_clone(
-                std::path::Path::new(
-                    "/tmp/dev.vedhavyas.forge.browser-host.code_sign_clone/code_sign_clone.ABC/Other"
-                ),
-                mine
-            ),
+            !is_code_sign_clone(std::path::Path::new(
+                "/tmp/dev.vedhavyas.forge.browser-host.code_sign_clone/code_sign_clone.ABC/Other"
+            )),
             "a clone directory holding another binary is not ours"
+        );
+    }
+
+    /// **A host of ANY staged version is ours.** An orphan the previous
+    /// version left holds the same profile's singleton lock; matching only
+    /// this build's path would clear the lock without killing the process.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_host_of_another_staged_version_is_ours() {
+        let root = std::path::Path::new("/Users/x/Library/Application Support/forge/browser-host");
+        let staged = |version: &str| {
+            root.join(version).join("Forge Browser.app/Contents/MacOS/Forge Browser")
+        };
+        assert!(is_staged_host(&staged("0.9.0"), root), "an older version's orphan is a host");
+        assert!(is_staged_host(&staged(env!("CARGO_PKG_VERSION")), root), "and this build's is");
+        assert!(
+            !is_staged_host(
+                std::path::Path::new("/tmp/Forge Browser.app/Contents/MacOS/Forge Browser"),
+                root
+            ),
+            "a bundle outside the install root is not ours"
+        );
+        assert!(
+            !is_staged_host(
+                &root.join("0.9.0").join("Other.app/Contents/MacOS/Forge Browser"),
+                root
+            ),
+            "another bundle name is not ours"
+        );
+        assert!(
+            !is_staged_host(
+                &root.join("0.9.0").join("Forge Browser.app/Contents/MacOS/Other"),
+                root
+            ),
+            "another binary in our bundle name is not ours"
         );
     }
 

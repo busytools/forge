@@ -9,6 +9,9 @@ use std::path::{Path, PathBuf};
 /// The bundle's directory name, as the staging script writes it.
 pub const APP: &str = "Forge Browser.app";
 
+/// The bundle's executable name, as its Info.plist names it.
+pub const EXECUTABLE_NAME: &str = "Forge Browser";
+
 /// The bundle's executable, as its Info.plist names it.
 const EXECUTABLE: &str = "Contents/MacOS/Forge Browser";
 
@@ -16,6 +19,12 @@ const EXECUTABLE: &str = "Contents/MacOS/Forge Browser";
 pub fn app_support() -> Result<PathBuf, String> {
     forge_sdk::app_support_dir()
         .map_err(|why| format!("the app-support directory cannot be resolved: {why}"))
+}
+
+/// The directory every staged version's bundle sits under, so a reaper can
+/// match a host of ANY staged version rather than only this build's.
+pub fn install_root() -> Result<PathBuf, String> {
+    app_support().map(|dir| dir.join("browser-host"))
 }
 
 /// The installed `Forge Browser.app`, under this server's own version.
@@ -34,9 +43,20 @@ pub fn path() -> Result<PathBuf, String> {
 /// needs it - so the boot of the new server is the one moment that knows the
 /// old tree is finished with. Each is a CEF tree, so leaving them would grow
 /// the app-support dir by hundreds of megabytes per release.
-pub fn prune_other_versions() {
+///
+/// **`sole_instance` is asked again before every removal**, not once at the
+/// boot: a peer on another config dir that takes its lock after the first
+/// check makes the tree shared again, and deleting its bundle is the
+/// mid-task loss this prune exists beside. A machine-wide lock every boot
+/// holds would close the window fully; this narrows it to the gap between
+/// the check and one `remove_dir_all`.
+pub fn prune_other_versions(sole_instance: &(dyn Fn() -> bool + Sync)) {
     let Ok(dir) = app_support() else { return };
-    let removed = prune_other_versions_in(&dir.join("browser-host"), env!("CARGO_PKG_VERSION"));
+    let removed = prune_other_versions_in(
+        &dir.join("browser-host"),
+        env!("CARGO_PKG_VERSION"),
+        sole_instance,
+    );
     if !removed.is_empty() {
         tracing::info!(
             event_name = "browser_host_versions_pruned",
@@ -46,13 +66,20 @@ pub fn prune_other_versions() {
     }
 }
 
-fn prune_other_versions_in(root: &Path, keep: &str) -> Vec<PathBuf> {
+fn prune_other_versions_in(
+    root: &Path,
+    keep: &str,
+    sole_instance: &(dyn Fn() -> bool + Sync),
+) -> Vec<PathBuf> {
     let Ok(entries) = std::fs::read_dir(root) else { return Vec::new() };
     let mut removed = Vec::new();
     for entry in entries.flatten() {
         let path = entry.path();
         if !path.is_dir() || path.file_name().and_then(|name| name.to_str()) == Some(keep) {
             continue;
+        }
+        if !sole_instance() {
+            break;
         }
         if std::fs::remove_dir_all(&path).is_ok() {
             removed.push(path);
@@ -149,12 +176,28 @@ mod tests {
         let stray = root.join("README");
         std::fs::write(&stray, b"not a bundle").expect("the stray file");
 
-        let removed = prune_other_versions_in(&root, env!("CARGO_PKG_VERSION"));
+        let removed = prune_other_versions_in(&root, env!("CARGO_PKG_VERSION"), &|| true);
 
         assert_eq!(removed, vec![theirs.clone()], "the other version's bundle is what went");
         assert!(ours.is_dir(), "this server's own bundle survives");
         assert!(!theirs.exists(), "and the other version's is gone");
         assert!(stray.is_file(), "a non-directory entry is not a staged bundle and is left alone");
+    }
+
+    /// **A shared machine prunes nothing.** The peer check is asked again
+    /// before each removal, so a peer that appeared after the boot's first
+    /// look keeps its bundle.
+    #[test]
+    fn a_shared_machine_prunes_nothing() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let root = dir.path().join("browser-host");
+        let theirs = root.join("0.0.1");
+        staged(&theirs, Some("0.0.1"));
+
+        let removed = prune_other_versions_in(&root, env!("CARGO_PKG_VERSION"), &|| false);
+
+        assert!(removed.is_empty(), "nothing is removed while a peer is live");
+        assert!(theirs.is_dir(), "the other version's bundle stays");
     }
 
     fn staged(app: &Path, version: Option<&str>) {

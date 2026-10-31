@@ -1631,7 +1631,22 @@ fn adopt_legacy_store_from(legacy: &Path, path: &Path) -> Adoption {
 /// default config dir; a second config dir starts empty, which is the
 /// isolation this keying exists for.
 fn open_db(app_support: &Path, config_dir: &Path) -> Option<crate::store::Db> {
-    let path = store_path(app_support, config_dir);
+    // **One key space.** `config_dir_store_key` falls back to the raw path
+    // when it cannot canonicalise, so a dir that fails once and resolves
+    // later would open a second, empty store. The boot has already created
+    // the config dir; a path that still cannot canonicalise gets no durable
+    // state rather than a key that may move.
+    let Ok(canonical) = config_dir.canonicalize() else {
+        tracing::warn!(
+            target: "forge_workspace::workspace",
+            event_name = "store_dir_unresolved",
+            config_dir = %config_dir.display(),
+            "the config dir cannot be canonicalised, so its store key would not be stable; \
+             durable crons, subscriptions, tasks and dynamic workers will not persist",
+        );
+        return None;
+    };
+    let path = store_path(app_support, &canonical);
     let stores = path.parent()?;
     if let Err(error) = std::fs::create_dir_all(stores) {
         tracing::warn!(
@@ -6318,6 +6333,7 @@ impl Workspace {
                 // whose wire-lagged `Running` echo hasn't landed yet. The
                 // committed turn also spends the previous turn's failure
                 // mark: the newest turn is this one now.
+                let mut committed = false;
                 if matches!(cmd, Command::Prompt { .. } | Command::PromptUnder { .. })
                     && let Some(domain) = self.domain_session_for(&key)
                 {
@@ -6336,7 +6352,7 @@ impl Workspace {
                         guard.pending_cancel = false;
                         guard.auto_continue = None;
                     }
-                    guard.commit_turn();
+                    committed = guard.commit_turn();
                     guard.failed_turn_at = None;
                 }
                 // A prompt the reader's own hands sent moves the seat on: a
@@ -6359,7 +6375,18 @@ impl Workspace {
                         guard.pending_cancel = true;
                     }
                 }
-                return sender.send(cmd).map_err(|_| DispatchError::SessionClosed(key));
+                // **A send that never reached the task spends the turn it
+                // just committed.** No Result is coming for a prompt the task
+                // never saw, so leaving `turn_pending` set draws a turn in
+                // flight on the header that nothing can close.
+                if let Err(unsent) = sender.send(cmd) {
+                    let _ = unsent;
+                    if committed && let Some(domain) = self.domain_session_for(&key) {
+                        domain.lock().uncommit_turn();
+                    }
+                    return Err(DispatchError::SessionClosed(key));
+                }
+                return Ok(());
             }
             drop(senders);
             // **`/resume` on a seat whose task has exited is the recovery
@@ -16320,6 +16347,32 @@ provider = "anthropic"
         cmd_rx
     }
 
+    /// **A prompt a dead task never receives spends the turn it committed.**
+    /// The send is refused, so no Result will ever serve it; leaving
+    /// `turn_pending` set draws a turn in flight on the header that nothing
+    /// can close.
+    #[test]
+    fn a_prompt_a_dead_task_never_receives_leaves_no_turn_in_flight() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
+        let key = SessionSlot::lead("TestOrg", "forge");
+        let receiver = install_fake_session_task(&ws, &key);
+        drop(receiver);
+
+        let refused = ws.dispatch(Command::Prompt {
+            key: key.clone(),
+            text: "hello".to_owned(),
+            attachments: Vec::new(),
+        });
+
+        assert!(refused.is_err(), "the dead task refuses the prompt");
+        let domain = ws.domain_session_for(&key).expect("the fixture registers the seat");
+        assert!(
+            !domain.lock().turn_in_flight(),
+            "a refused prompt leaves no turn in flight for the header",
+        );
+    }
+
     /// A session's `SessionTask` exiting (agent event channel closed -
     /// the subprocess died, e.g. after a cron turn) must RELEASE the
     /// session from the pool + command_senders. Without this the entry
@@ -24901,6 +24954,10 @@ provider = "anthropic"
         let app_support = dir.path().join("app-support");
         let one = dir.path().join("config-one");
         let two = dir.path().join("config-two");
+        // The boot creates the config dir before it opens the store, and the
+        // store key is a digest of the canonical path.
+        std::fs::create_dir_all(&one).expect("the first config dir");
+        std::fs::create_dir_all(&two).expect("the second config dir");
 
         let first = open_db(&app_support, &one).expect("the first config dir's store");
         let second = open_db(&app_support, &two).expect("the second config dir's own store");
