@@ -93,13 +93,21 @@ where
     T: Send + 'static,
     F: FnOnce() -> T + Send + 'static,
 {
+    record_panic_sites();
     let joined = tokio::task::spawn_blocking(move || {
+        // Clear this thread's slot first: what the hook records must be this
+        // call's panic, not an earlier one on a reused thread.
+        take_panic_site();
         let answered = std::panic::catch_unwind(std::panic::AssertUnwindSafe(work));
         match answered {
             Ok(value) => Ok(value),
             Err(panic) => {
                 let why = panic_text(panic.as_ref());
-                let backtrace = std::backtrace::Backtrace::force_capture();
+                // **At the raise, not at the catch**: the hook's backtrace
+                // names the frames that panicked; the fallback is the catch
+                // site, and says so by being the fallback.
+                let backtrace =
+                    take_panic_site().unwrap_or_else(std::backtrace::Backtrace::force_capture);
                 tauri_plugin_log::log::warn!(
                     target: LOG_TARGET,
                     "the microphone device layer panicked during {operation} (device {device:?}): \
@@ -123,6 +131,38 @@ fn panic_text(panic: &(dyn std::any::Any + Send)) -> String {
         .map(|said| (*said).to_owned())
         .or_else(|| panic.downcast_ref::<String>().cloned())
         .unwrap_or_else(|| "no message".to_owned())
+}
+
+std::thread_local! {
+    /// The backtrace a panic hook took on this thread.
+    static PANIC_SITE: std::cell::RefCell<Option<std::backtrace::Backtrace>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Install the hook that records a panic's OWN backtrace.
+///
+/// **Taken at the catch, a backtrace names the catch site, not the raise** -
+/// the frames that panicked are already unwound away. The hook runs where the
+/// panic is raised, so a guarded thread marks its slot and reads what was
+/// recorded, and a hook already installed is chained rather than replaced.
+fn record_panic_sites() {
+    static HOOK: std::sync::Once = std::sync::Once::new();
+    HOOK.call_once(|| {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            PANIC_SITE.with(|slot| {
+                if let Ok(mut slot) = slot.try_borrow_mut() {
+                    *slot = Some(std::backtrace::Backtrace::force_capture());
+                }
+            });
+            previous(info);
+        }));
+    });
+}
+
+/// The backtrace this thread's panic hook took, if it took one.
+fn take_panic_site() -> Option<std::backtrace::Backtrace> {
+    PANIC_SITE.with(|slot| slot.try_borrow_mut().ok().and_then(|mut slot| slot.take()))
 }
 
 /// The caller's give-up signal on a bounded open: the flag it sets when its
@@ -747,6 +787,10 @@ mod tests {
     /// panic's own words, and leaves a plain return untouched.
     #[test]
     fn a_panicking_device_call_answers_a_named_error() {
+        // **The line the issue asked for, level and content.** A named error
+        // alone is not enough: the WARN is what survives the launch and names
+        // the panic, so its level, operation, device and backtrace are pinned.
+        let kept = crate::log_capture::capture();
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(1)
             .enable_all()
@@ -767,6 +811,29 @@ mod tests {
             err.contains("a wedged audio layer"),
             "the panic's own words ride the answer: {err}"
         );
+
+        let warned = crate::log_capture::records()
+            .into_iter()
+            .find(|line| line.message.contains("the microphone device layer panicked"))
+            .expect("the panic leaves a line the shipped filter keeps");
+        assert_eq!(
+            warned.level,
+            tauri_plugin_log::log::Level::Warn,
+            "the line is a WARN, which the baseline filter keeps: {:?}",
+            warned.level,
+        );
+        assert!(
+            warned.message.contains("during the take's open")
+                && warned.message.contains("coreaudio:builtin"),
+            "the line names the operation and the device a reader acts on: {}",
+            warned.message,
+        );
+        assert!(
+            warned.message.lines().any(|line| line.trim_start().starts_with("0: ")),
+            "the line carries the backtrace taken at the raise, not just the message: {}",
+            warned.message,
+        );
+        drop(kept);
 
         let value = runtime
             .block_on(guarded("the take's open", None, || 7))
@@ -1901,6 +1968,42 @@ mod tests {
                 let (events, _frames) = tokio::sync::mpsc::unbounded_channel();
                 Self { mic, bridge: Bridge::new(None, events) }
             }
+        }
+
+        /// A stand-in device whose open panics: the device layer the bounded
+        /// take's guard has to answer.
+        struct Panicking {
+            mic: Arc<Mic>,
+            bridge: Arc<Bridge>,
+        }
+
+        impl Panicking {
+            fn new() -> Self {
+                let mic = Arc::new(Mic {
+                    warm: Mutex::new(None),
+                    opener: Box::new(|_, _| panic!("a wedged audio layer")),
+                });
+                let (events, _frames) = tokio::sync::mpsc::unbounded_channel();
+                Self { mic, bridge: Bridge::new(None, events) }
+            }
+        }
+
+        /// **The take's own open is guarded too.** `start_within` runs the
+        /// open under `guarded`, so a panicking device layer answers the named
+        /// error on the take's line rather than reclaiming the take in
+        /// silence or crossing the FFI boundary (#2426).
+        #[test]
+        fn a_panicking_open_is_answered_by_the_bounded_take() {
+            let rig = Panicking::new();
+            let runtime = runtime();
+            let err = runtime
+                .block_on(rig.mic.start_within(&rig.bridge, None, "page", "take-1", SETTLE))
+                .expect_err("a panicking open is answered");
+            assert!(
+                err.starts_with("the microphone device layer panicked during the take's open"),
+                "the take's line names the panicking operation: {err}"
+            );
+            assert!(err.contains("a wedged audio layer"), "and the panic's own words: {err}");
         }
 
         #[test]

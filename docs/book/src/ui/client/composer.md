@@ -116,7 +116,10 @@ microphone did not come up, and the take the open began is left nobody's:
 when it answers late it is ended, so the next press records rather than
 being refused as busy. A device layer that fails by panicking is answered
 the same way, named on that line (`the microphone device layer panicked
-during the take's open: ...`) rather than taking the boot with it.
+during the take's open: ...`): the panic is caught and logged with the
+input and a backtrace. That covers a panic in the pipeline body forge calls
+from the audio callback; a panic that unwinds through a foreign frame still
+aborts, which is the boundary no catch at this layer can reach.
 
 ## The states the surface can be in
 

@@ -80,23 +80,59 @@ fn i16_sample(sample: i16) -> f32 {
     f32::from(sample) / I16_SCALE
 }
 
+std::thread_local! {
+    /// The backtrace a panic hook took on this thread.
+    static PANIC_SITE: std::cell::RefCell<Option<std::backtrace::Backtrace>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Install the hook that records a panic's OWN backtrace.
+///
+/// **Taken at the catch, a backtrace names the catch site, not the raise.**
+/// The hook runs where the panic is raised, so a guarded block clears its
+/// slot first and reads what was recorded; an installed hook is chained
+/// rather than replaced.
+fn record_panic_sites() {
+    static HOOK: std::sync::Once = std::sync::Once::new();
+    HOOK.call_once(|| {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            PANIC_SITE.with(|slot| {
+                if let Ok(mut slot) = slot.try_borrow_mut() {
+                    *slot = Some(std::backtrace::Backtrace::force_capture());
+                }
+            });
+            previous(info);
+        }));
+    });
+}
+
+/// The backtrace this thread's panic hook took, if it took one.
+fn take_panic_site() -> Option<std::backtrace::Backtrace> {
+    PANIC_SITE.with(|slot| slot.try_borrow_mut().ok().and_then(|mut slot| slot.take()))
+}
+
 /// Run one audio-callback block with its panic caught.
 ///
 /// **cpal calls this body from its own frame**, so an unwind out of it crosses
 /// the FFI boundary and aborts the process as `rust_foreign_exception` - the
 /// signature in #2426's report. This is the one guard that can stop that
 /// crossing; after it the capture delivers nothing more, and the log names the
-/// loss once with a backtrace.
-fn guard_block(panicked: &AtomicBool, body: impl FnOnce()) {
+/// loss once, with the input and the backtrace taken at the raise.
+fn guard_block(panicked: &AtomicBool, input: &str, body: impl FnOnce()) {
     if panicked.load(Ordering::Acquire) {
         return;
     }
+    // Cleared first: a cpal thread is reused, and the slot must hold THIS
+    // block's panic rather than an earlier one's.
+    take_panic_site();
     if let Err(panic) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(body)) {
         panicked.store(true, Ordering::Release);
         let why = crate::panic_message(panic.as_ref());
-        let backtrace = std::backtrace::Backtrace::force_capture();
+        let backtrace = take_panic_site().unwrap_or_else(std::backtrace::Backtrace::force_capture);
         tracing::warn!(
             event_name = "input_callback_panicked",
+            input = %input,
             why = %why,
             backtrace = %backtrace,
             "a panic in the audio callback was caught before it could cross the FFI boundary; \
@@ -117,6 +153,17 @@ pub fn open(
     let device = open_device(device)?;
     let held = describe(&device);
     let plan = input_config(&device)?;
+    // What a panic line has to name for a reader to act: the input, its
+    // format, and the rate the samples were converted from where they were
+    // not already the model rate.
+    let input = format!(
+        "{} ({}) {:?}{}",
+        held.name,
+        held.id,
+        plan.sample_format,
+        plan.resample_from.map(|rate| format!(", resampled from {rate} Hz")).unwrap_or_default()
+    );
+    record_panic_sites();
     // Channel counts are single digits; the cast cannot lose anything.
     let channels = plan.config.channels as usize;
     let mut converter = InputConverter::new(channels, plan.resample_from)?;
@@ -143,6 +190,7 @@ pub fn open(
             // dropped sender, which reads as "the thread did not start" even
             // though it did; the guard sends the real reason and logs it
             // (#2362's review).
+            take_panic_site();
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
                 || -> Result<(), Error> {
                     // The stream is built in the format the device negotiated:
@@ -151,10 +199,11 @@ pub fn open(
                     let stream = match plan.sample_format {
                         InputFormat::F32 => {
                             let panicked = Arc::clone(&panicked);
+                            let input = input.clone();
                             device.build_input_stream(
                                 plan.config,
                                 move |block: &[f32], _: &cpal::InputCallbackInfo| {
-                                    guard_block(&panicked, || {
+                                    guard_block(&panicked, &input, || {
                                         converter.push(block, &mut |samples, peak| {
                                             on_block(Block { samples, peak });
                                         });
@@ -168,11 +217,12 @@ pub fn open(
                         }
                         InputFormat::I16 => {
                             let panicked = Arc::clone(&panicked);
+                            let input = input.clone();
                             let mut scaled: Vec<f32> = Vec::new();
                             device.build_input_stream(
                                 plan.config,
                                 move |block: &[i16], _: &cpal::InputCallbackInfo| {
-                                    guard_block(&panicked, || {
+                                    guard_block(&panicked, &input, || {
                                         scaled.clear();
                                         scaled.extend(
                                             block.iter().map(|sample| i16_sample(*sample)),
@@ -209,9 +259,11 @@ pub fn open(
                 }
                 Err(panic) => {
                     let why = crate::panic_message(panic.as_ref());
-                    let backtrace = std::backtrace::Backtrace::force_capture();
+                    let backtrace =
+                        take_panic_site().unwrap_or_else(std::backtrace::Backtrace::force_capture);
                     tracing::warn!(
                         event_name = "capture_thread_panicked",
+                        input = %input,
                         why = %why,
                         backtrace = %backtrace,
                         "the capture thread panicked"
@@ -254,12 +306,12 @@ mod tests_open {
     fn a_panicking_callback_block_is_caught_and_later_blocks_are_dropped() {
         let panicked = AtomicBool::new(false);
         let ran = std::cell::Cell::new(0_u32);
-        guard_block(&panicked, || {
+        guard_block(&panicked, "a stand-in input", || {
             ran.set(ran.get() + 1);
             panic!("a callback panic");
         });
         assert!(panicked.load(Ordering::Acquire), "the first panic stops the capture");
-        guard_block(&panicked, || ran.set(ran.get() + 1));
+        guard_block(&panicked, "a stand-in input", || ran.set(ran.get() + 1));
         assert_eq!(ran.get(), 1, "a block after the panic returns without touching the pipeline");
     }
 
