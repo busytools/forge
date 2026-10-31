@@ -2885,14 +2885,19 @@ fix the parser, then the client row.";
     }
 
     /// **The shipped skill is Ved's handoff skill, verbatim, plus the forge
-    /// additions.** Nothing above the appended section is rewritten: the
-    /// memory step, the handoff document and the index line are his text.
+    /// additions.** His own sentences are never rewritten: the memory step, the
+    /// handoff document and the index line are his text. The forge additions are
+    /// two: the closing section, and the seat split that sends a worker to its
+    /// own file - an override section rather than an edit to his sentences.
     #[test]
     fn the_shipped_skill_keeps_the_whole_handoff_procedure() {
         // Pinned on the words, not the wrap: the file is prose.
         let flat = SKILL.split_whitespace().collect::<Vec<_>>().join(" ");
         for (clause, why) in [
             ("## Step 1 - Memory first (REQUIRED, before any handoff text)", "his memory step"),
+            ("## Where the handoff goes: lead or worker", "the seat decides the destination"),
+            ("workers/<label>.md` in the same memory directory", "a worker writes its own file"),
+            ("A worker writes no index line", "a worker writes no index line"),
             ("update it in place and delete superseded narration", "in-place updates"),
             (
                 "Cross-project patterns or workarounds -> TIL files (`til/`), no need to ask.",
