@@ -444,6 +444,45 @@ describe('the fleet the snapshot describes', () => {
     ).toBe('now');
   });
 
+  it('marks a seatless project asleep when the catalog remembers a session', () => {
+    // After a forge restart only auto_start projects get seats, so the fleet
+    // is mostly seatless with history. The rail's dormant row already reads
+    // that history and draws Sleeping; the home used to seed the same project
+    // never-started, so one surface said `never` while the other said asleep
+    // - and the home's own age cell read `2h` beside the mark.
+    const remembered = fleetRows({
+      ...FLEET,
+      agents: [],
+      projects: [
+        project('Busytools', 'forge'),
+        withSessions(project('Busytools', 'notes'), {
+          secs_since_epoch: 2_500,
+          nanos_since_epoch: 0,
+        }),
+      ],
+    }).find((entry) => entry.name === 'notes');
+
+    expect(
+      remembered?.state,
+      'a project the catalog remembers is asleep rather than never started',
+    ).toEqual({ kind: 'lifecycle', lifecycle: 'Sleeping' });
+    expect(
+      markOf(remembered?.state ?? { kind: 'never-started' }).class,
+      'and not `never` on the row',
+    ).toBe('asleep');
+
+    const never = fleetRows({
+      ...FLEET,
+      agents: [],
+      projects: [project('Busytools', 'forge')],
+    }).find((entry) => entry.name === 'forge');
+    expect(never?.state, 'a project with neither a seat nor a session behind it stays new').toEqual(
+      {
+        kind: 'never-started',
+      },
+    );
+  });
+
   it('names a worker row for the worker and only the lead for its project', () => {
     const forge = rowsOf(FLEET);
     expect(forge.lead.name).toBe('forge');

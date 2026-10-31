@@ -264,7 +264,7 @@ export function fleetRows(wire: HomeWire): FleetViewRow[] {
         MARK_ORDER.indexOf(markOf(seat.state).class) < MARK_ORDER.indexOf(markOf(best).class)
           ? seat.state
           : best,
-      { kind: 'never-started' },
+      dormantState(lastActivity),
     );
     const org = project?.project.org ?? orgOf(wire, row.project);
     // The lead is the row's own target; a project between lead sessions still
@@ -958,6 +958,20 @@ function rowOf(agent: AgentRow, name: string, rows: BoardRow[], unseen: SessionS
 }
 
 /**
+ * The state a project with no seat draws: asleep once anything ever ran,
+ * never-started only when nothing did.
+ *
+ * **One decision for both surfaces.** The rail's dormant row and the home's
+ * fleet seed read the same history, so a project cannot read `never` on the
+ * home while the rail calls it Sleeping.
+ */
+function dormantState(lastRan: WireTime | null): RowState {
+  return lastRan === null
+    ? { kind: 'never-started' }
+    : { kind: 'lifecycle', lifecycle: 'Sleeping' };
+}
+
+/**
  * The row a project nobody has started gets.
  *
  * The project's own read is the right one here and nowhere else: there is no
@@ -967,8 +981,7 @@ function rowOf(agent: AgentRow, name: string, rows: BoardRow[], unseen: SessionS
 function dormantRow(wire: ProjectWire, lastRan: WireTime | null): Row {
   return {
     slot: { org: wire.project.org, project: wire.project.name, label: 'lead' },
-    state:
-      lastRan === null ? { kind: 'never-started' } : { kind: 'lifecycle', lifecycle: 'Sleeping' },
+    state: dormantState(lastRan),
     name: wire.project.name,
     place: placeOf(wire.work),
     tree: null,
