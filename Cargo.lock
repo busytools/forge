@@ -1225,6 +1225,7 @@ dependencies = [
  "clap",
  "clap_complete",
  "dirs",
+ "flate2",
  "forge-agent",
  "forge-browser",
  "forge-dictate",

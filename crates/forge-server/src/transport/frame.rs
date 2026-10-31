@@ -1,7 +1,7 @@
 //! The binary frames on the socket.
 //!
 //! One WebSocket binary message per frame: a one-byte kind tag, then the
-//! payload. Two kinds, and what tells them apart is the tag alone:
+//! payload. Three kinds, and what tells them apart is the tag alone:
 //!
 //! - [`Kind::Dictation`] - a client's mono PCM at [`SAMPLE_RATE`], the rate
 //!   the dictation models read. The server decodes this one.
@@ -9,9 +9,16 @@
 //!   frame: the profile id, sequence, view size, format, key flag, the page's
 //!   own viewport and the WebP payload, exactly as the host encoded it. **The
 //!   bytes are never re-encoded or decoded here**; the server only moves them.
+//! - [`Kind::BrowserAudio`] - the viewed page's audio, relayed to the
+//!   controlling client with its profile, sequence, sample rate and channels.
 //!
-//! **The kind tag is why the shape can grow**: a third kind is a variant here
-//! plus a line in the recorded contract, not a new message type.
+//! **Tag 3 is not a kind here.** A whole `ServerMessage` body, gzipped for a
+//! client that declared `deflate=1`, is built by the connection's encoder and
+//! read by that client's decoder, so it crosses as a server-only frame rather
+//! than as a variant of [`Kind`].
+//!
+//! **The kind tag is why the shape can grow**: a new client frame is a variant
+//! here plus a line in the recorded contract, not a new message type.
 //!
 //! **The server decodes what clients send and encodes what it sends.** A
 //! browser frame arriving from a client is refused: the host is the only

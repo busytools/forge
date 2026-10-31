@@ -23,6 +23,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::task::{Context, Poll};
 use std::time::Duration;
 
+use forge_primitives::wire::COMPRESSED_JSON_TAG;
 use futures_util::{SinkExt as _, StreamExt as _};
 use serde_json::{Value, json};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
@@ -96,6 +97,45 @@ pub(crate) const NO_REPLY: &str = "the server did not answer the command";
 /// bound rather than none, ~1.8x the measured maximum; capping the window
 /// itself is #1637's work, not this half's.
 const MAX_FRAME_BYTES: usize = 256 << 20;
+
+/// The URL this half dials, with the compression capability declared.
+///
+/// **A query on the address is the declaration.** An older server ignores a
+/// parameter it does not read, so the frames it sends stay the text this
+/// half has always parsed, and a client that says nothing keeps receiving
+/// exactly what it knew.
+fn declaring_compression(url: &str) -> String {
+    match url.split_once('?') {
+        Some((head, query)) if !query.is_empty() => format!("{head}?{query}&deflate=1"),
+        Some((head, _)) => format!("{head}?deflate=1"),
+        None => format!("{url}?deflate=1"),
+    }
+}
+
+/// One compressed frame's JSON body, inflated in place in the read loop.
+///
+/// **Synchronous on purpose**: the loop is the order this connection has
+/// always had, and a decompression spawned beside it would let the frames
+/// after it overtake it.
+///
+/// **Bounded by the frame bound the socket documents.** `max_message_size`
+/// bounds the COMPRESSED bytes, and a gzip body can inflate far past them -
+/// so the decoder stops one byte past `limit` and a body that reaches it is
+/// refused by name rather than grown without bound.
+fn inflate(bytes: &[u8], limit: usize) -> Result<String, String> {
+    use std::io::Read as _;
+    let mut text = String::new();
+    flate2::read::GzDecoder::new(bytes)
+        .take(u64::try_from(limit).unwrap_or(u64::MAX).saturating_add(1))
+        .read_to_string(&mut text)
+        .map_err(|why| format!("a compressed frame did not inflate: {why}"))?;
+    if text.len() > limit {
+        return Err(format!(
+            "a compressed frame inflated past the {limit} byte bound this socket documents"
+        ));
+    }
+    Ok(text)
+}
 
 /// The TCP stream under the socket, counting every byte the peer sends.
 ///
@@ -220,8 +260,10 @@ pub enum SocketEvent {
     Status(Status),
     /// A server frame, verbatim: the greeting, snapshots, updates, pages,
     /// browser state and errors alike. The receiver reads `kind`. `bytes` is
-    /// the raw frame's length and `parse_ms` how long this half's parse took -
-    /// the page's perf log carries both for a snapshot (#2513).
+    /// the JSON length this side walked - a compressed frame reports its
+    /// inflated length, not the smaller bytes it crossed as - and `parse_ms`
+    /// is the JSON parse alone; inflation is outside it, so #2513's metric
+    /// stays the parse wherever the frame came from.
     Message { value: Value, bytes: usize, parse_ms: f64 },
     /// A subscribe frame finished its write, with how long it waited in this
     /// half (the queue plus the write) - the page's perf log times the switch
@@ -889,6 +931,9 @@ async fn run(
     frames: FrameSink,
     audio: AudioSink,
 ) {
+    // Declared once, on the address: every dial and every retry after it
+    // carries the capability this half can read back.
+    let url = declaring_compression(&url);
     let mut held: Vec<Held> = Vec::new();
     // The subscribes sent over the wire and not yet answered, oldest first -
     // what a refusal from the core is attributed to.
@@ -1062,6 +1107,38 @@ async fn run(
                     // not this half's to read.
                     Some(Ok(Message::Binary(bytes))) => {
                         match bytes.first() {
+                            Some(&COMPRESSED_JSON_TAG) => {
+                                // **A frame over the server's threshold, for a
+                                // client that declared it can inflate one.**
+                                // Inflated here, in the read loop, so the
+                                // frames after it are delivered after it.
+                                match inflate(&bytes[1..], MAX_FRAME_BYTES) {
+                                    Ok(text) => {
+                                        // **The parse's own clock starts after
+                                        // the inflate** (#2513): `parse_ms` is
+                                        // the cost of the JSON walk, and the
+                                        // big frames it exists to measure are
+                                        // exactly the ones inflated here.
+                                        let at = tokio::time::Instant::now();
+                                        match serde_json::from_str::<Value>(&text) {
+                                            Ok(value) => receive(
+                                                &value,
+                                                text.len(),
+                                                at.elapsed().as_secs_f64() * 1000.0,
+                                                &mut pending,
+                                                &mut attaches,
+                                                &mut awaiting,
+                                                &events,
+                                            ),
+                                            Err(why) => say(
+                                                &events,
+                                                SocketEvent::Malformed(why.to_string()),
+                                            ),
+                                        }
+                                    }
+                                    Err(why) => say(&events, SocketEvent::Malformed(why)),
+                                }
+                            }
                             Some(&1) => frames(&bytes[1..]),
                             Some(&2) => audio(&bytes[1..]),
                             // **A binary frame of another kind is said**, not
@@ -1642,6 +1719,158 @@ pub(crate) mod tests {
         assert!(waited_ms.is_finite(), "the wait is measured, not a placeholder");
     }
 
+    /// **The desktop declares compression on the address it dials** (#2560):
+    /// the declaration is what makes the server compress at all, so a dial
+    /// that lost it would silently keep every frame as text.
+    #[tokio::test]
+    async fn the_dial_declares_compression() {
+        let stub = stub().await;
+        let (_socket, _rx) = connected(&stub).await;
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            let held = stub.uris.lock().expect("the uri log").clone();
+            if !held.is_empty() {
+                assert!(
+                    held[0].contains("deflate=1"),
+                    "the dial did not declare compression: {held:?}",
+                );
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "no dial was recorded");
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    }
+
+    /// **The inflate is bounded by the frame bound the socket documents**
+    /// (#2560): a gzip body can inflate past its compressed size, so an
+    /// unbounded read is how a documented frame bound stops bounding.
+    #[test]
+    fn a_compressed_body_past_the_bound_is_refused() {
+        let body = gzipped(b"0123456789");
+        assert_eq!(inflate(&body, 10).expect("ten bytes fit a ten byte bound"), "0123456789");
+        let refused = inflate(&body, 9).expect_err("an eleventh byte is past the bound");
+        assert!(
+            refused.contains("past the 9 byte bound"),
+            "the refusal names the bound: {refused}",
+        );
+    }
+
+    /// **The read loop's own bound is the socket's documented 256 MiB**, which
+    /// the page's inflate matches; a silent change is a frame the other half
+    /// refuses.
+    #[test]
+    fn the_frame_bound_is_the_documented_256_mib() {
+        assert_eq!(MAX_FRAME_BYTES, 256 << 20);
+    }
+
+    /// **A compressed frame is decoded by this half, in the socket's order**
+    /// (#2560). A text frame, a gzip body behind the compressed kind, then
+    /// another text frame: the page's events carry all three in the order
+    /// the server wrote them, the middle one decoded as the message it
+    /// stands for.
+    #[tokio::test]
+    async fn a_compressed_frame_is_inflated_in_the_read_order() {
+        let mut stub = stub().await;
+        let (socket, mut rx) = connected(&stub).await;
+        socket.subscribe(json!("home"), true, false);
+        // The subscribe reaching the stub is the barrier: the frames below
+        // are written to a connection already open, not raced against it.
+        stub.heard_until(|value| value["kind"] == "subscribe").await;
+
+        let _ = stub.say.send(json!({ "kind": "update", "update": "one" }));
+        let middle = json!({ "kind": "update", "update": "two" });
+        let mut frame = vec![3_u8];
+        frame.extend_from_slice(&gzipped(middle.to_string().as_bytes()));
+        stub.send_binary(&frame);
+        let _ = stub.say.send(json!({ "kind": "update", "update": "three" }));
+
+        let mut seen = Vec::new();
+        while seen.len() < 3 {
+            if let SocketEvent::Message { value, .. } = next_event(&mut rx).await
+                && let Some(update) = value.get("update").and_then(Value::as_str)
+            {
+                seen.push(update.to_owned());
+            }
+        }
+        assert_eq!(
+            seen,
+            ["one", "two", "three"],
+            "the compressed frame was delivered out of the socket's order",
+        );
+    }
+
+    /// The bytes a stub's marked binary push stands for.
+    fn binary_body(value: &Value) -> Vec<u8> {
+        value
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_u64)
+            .map(|byte| u8::try_from(byte).unwrap_or(0))
+            .collect()
+    }
+
+    /// One gzip body, as the server writes a compressed frame's tail.
+    fn gzipped(text: &[u8]) -> Vec<u8> {
+        use std::io::Write as _;
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        encoder.write_all(text).expect("write");
+        encoder.finish().expect("finish")
+    }
+
+    /// A stream that records the HTTP request head as the handshake reads it.
+    ///
+    /// **The stub reads the URI a dial carried from the bytes, not from a
+    /// callback**: tungstenite's header callback returns the library's large
+    /// `ErrorResponse`, which this crate's lints refuse, and the request line
+    /// is the first thing the peer sends anyway.
+    struct Tee {
+        inner: tokio::net::TcpStream,
+        head: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+    }
+
+    impl AsyncRead for Tee {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buf: &mut ReadBuf<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            let before = buf.filled().len();
+            let poll = Pin::new(&mut self.inner).poll_read(cx, buf);
+            if let Poll::Ready(Ok(())) = &poll
+                && let Ok(mut head) = self.head.lock()
+            {
+                // Past the head's terminator the bytes are frames, not the
+                // request, and the log does not grow with them.
+                if !head.windows(4).any(|window| window == b"\r\n\r\n") {
+                    head.extend_from_slice(&buf.filled()[before..]);
+                }
+            }
+            poll
+        }
+    }
+
+    impl AsyncWrite for Tee {
+        fn poll_write(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buf: &[u8],
+        ) -> Poll<std::io::Result<usize>> {
+            Pin::new(&mut self.inner).poll_write(cx, buf)
+        }
+
+        fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Pin::new(&mut self.inner).poll_flush(cx)
+        }
+
+        fn poll_shutdown(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            Pin::new(&mut self.inner).poll_shutdown(cx)
+        }
+    }
+
     /// A stub forge: accepts connections, forwards every text frame it hears,
     /// and broadcasts whatever the test pushes. `kill` drops the live
     /// connections while the listener lives on, which is what a reconnect
@@ -1664,6 +1893,9 @@ pub(crate) mod tests {
         _kill_keep: tokio::sync::broadcast::Receiver<()>,
         /// And for the spoken channel, for the same reason.
         _spoken_keep: tokio::sync::broadcast::Receiver<Value>,
+        /// Every dial's request URI, in arrival order: what the client
+        /// declared on the address it asked for.
+        pub(crate) uris: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
     }
 
     pub(crate) async fn stub() -> Stub {
@@ -1687,6 +1919,8 @@ pub(crate) mod tests {
         let say_for_task = say.clone();
         let kill_for_task = kill.clone();
         let spoken_for_task = spoken.clone();
+        let uris = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let uris_for_task = std::sync::Arc::clone(&uris);
         tokio::spawn(async move {
             loop {
                 let Ok((stream, _)) = listener.accept().await else { return };
@@ -1698,10 +1932,27 @@ pub(crate) mod tests {
                 }
                 let heard_tx = heard_tx.clone();
                 let spoken = spoken_for_task.clone();
+                let uris = std::sync::Arc::clone(&uris_for_task);
                 let mut said = say_for_task.subscribe();
                 let mut killed = kill_for_task.subscribe();
                 tokio::spawn(async move {
-                    let Ok(ws) = tokio_tungstenite::accept_async(stream).await else { return };
+                    // **The dial's request line is the handshake's first
+                    // bytes**, and what a client declared lives on it; a test
+                    // that does not read it cannot see the declaration.
+                    let request_bytes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+                    let tee = Tee { inner: stream, head: std::sync::Arc::clone(&request_bytes) };
+                    let Ok(ws) = tokio_tungstenite::accept_async(tee).await else {
+                        return;
+                    };
+                    let request =
+                        String::from_utf8_lossy(&request_bytes.lock().expect("the head log"))
+                            .to_string();
+                    if let Some(target) =
+                        request.lines().next().and_then(|line| line.split_whitespace().nth(1))
+                        && let Ok(mut held) = uris.lock()
+                    {
+                        held.push(target.to_owned());
+                    }
                     let (mut writer, mut reader) = ws.split();
                     loop {
                         tokio::select! {
@@ -1717,9 +1968,13 @@ pub(crate) mod tests {
                             },
                             pushed = said.recv() => match pushed {
                                 Ok(value) => {
-                                    let _ = writer
-                                        .send(Message::Text(value.to_string().into()))
-                                        .await;
+                                    let reply = match value.get("__binary") {
+                                        Some(bytes) => {
+                                            Message::Binary(binary_body(bytes).into())
+                                        }
+                                        None => Message::Text(value.to_string().into()),
+                                    };
+                                    let _ = writer.send(reply).await;
                                 }
                                 Err(_) => break,
                             },
@@ -1737,10 +1992,18 @@ pub(crate) mod tests {
             _keep: keep,
             _kill_keep: kill_keep,
             _spoken_keep: spoken_keep,
+            uris,
         }
     }
 
     impl Stub {
+        /// Push one binary frame, in the same order the text pushes take:
+        /// both kinds ride one channel, so a compressed frame cannot overtake
+        /// the text frame written before it.
+        pub(crate) fn send_binary(&self, frame: &[u8]) {
+            let _ = self.say.send(json!({ "__binary": frame }));
+        }
+
         pub(crate) async fn next_heard(&mut self) -> Value {
             tokio::time::timeout(Duration::from_secs(2), self.heard.recv())
                 .await
