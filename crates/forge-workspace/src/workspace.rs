@@ -9771,6 +9771,26 @@ impl Workspace {
             label,
             is_git_repo_at_spawn,
         );
+        // **The spawn checked the path before claude created it; nothing
+        // read it again.** A worktree removed before the session connected
+        // otherwise left the worker reading live with nowhere to work
+        // (#1593). A worker whose tree cannot be reused reads Failed with
+        // the reason instead.
+        if is_git_repo_at_spawn
+            && let Some(reason) =
+                forge_agent::env::worktree::worktree_missing_reason(&effective_cwd)
+        {
+            tracing::warn!(
+                target: "forge_workspace::workspace",
+                event_name = "worker_worktree_gone_at_connect",
+                slot = %session_key.display(),
+                label = %label,
+                worktree = %effective_cwd.display(),
+                "the worker's worktree is not usable at connect; the worker is marked failed",
+            );
+            transition_worker_to_failed(self, project_key, session_key, Some(reason));
+            return;
+        }
         self.apply_worker_tag_or_rollback_with_budget(
             session_key,
             session_id,
@@ -18034,6 +18054,68 @@ mod tag_retry_tests {
             !workspace.worker_rows_for_project(&project_key).is_empty(),
             "the durable row stays: nothing was rolled back, and the row is what re-spawns this \
              worker after a restart",
+        );
+    }
+
+    /// A worker whose worktree went missing between its creation and its
+    /// first connect reads Failed with the reason, not Running. The
+    /// spawn-time check only proves the path was free; nothing re-read the
+    /// directory after creation (#1593).
+    #[tokio::test]
+    async fn a_worker_whose_worktree_is_gone_by_connect_reads_failed() {
+        let (workspace, _updates) = Workspace::testing_stub();
+        workspace.seed_test_project("proj-x", "/tmp/proj-x");
+        let project_key = ProjectKey::new(
+            forge_agent::userdata::catalog::scan::project_key_for_directory(Some("/tmp/proj-x")),
+        );
+        let session_key = SessionSlot::worker("TestOrg", "proj-x", "builder");
+        workspace.insert_live_worker(
+            &project_key,
+            crate::mcp::workers::types::WorkerEntry {
+                label: "builder".to_owned(),
+                charter: "charter".to_owned(),
+                slot: session_key.clone(),
+                session_id: None,
+                status: forge_primitives::WorkerLiveness::Spawning,
+                spawned_at: std::time::SystemTime::UNIX_EPOCH,
+                spawned_by: SessionSlot::lead("TestOrg", "proj-x"),
+                needs_tag: true,
+                is_git_repo_at_spawn: true,
+                cwd: None,
+                diagnostic: None,
+                kick: None,
+            },
+        );
+        let cfg = tempdir().expect("cfg");
+        // The tree the spawn resolved: no `.claude/worktrees/builder`
+        // under it, so the worktree the worker was given is gone.
+        let cwd = tempdir().expect("cwd");
+        workspace.apply_worker_tag_or_rollback_with_config_dir(
+            &session_key,
+            "11111111-1111-4111-8111-111111111111",
+            &project_key,
+            "builder",
+            &cwd.path().to_string_lossy(),
+            true,
+            true,
+            true,
+            cfg.path(),
+        );
+
+        let entry = workspace
+            .list_live_workers(&project_key)
+            .into_iter()
+            .find(|entry| entry.label == "builder")
+            .expect("the entry stays as the visible failure");
+        assert_eq!(
+            entry.status,
+            forge_primitives::WorkerLiveness::Failed,
+            "a worker with no worktree must not read live",
+        );
+        let diagnostic = entry.diagnostic.expect("the row carries the reason");
+        assert!(
+            diagnostic.contains("worktree"),
+            "the reason names what went missing: {diagnostic}",
         );
     }
 

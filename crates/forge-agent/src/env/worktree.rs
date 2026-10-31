@@ -1103,13 +1103,31 @@ fn obstacle_from_listing(
     }
 }
 
-/// Whether the worktree registered at `path` still points at a gitdir: its
-/// `.git` link file names one that exists. git reads that link itself when
-/// it decides to reuse or refuse a worktree, so a directory whose link is
-/// gone - or whose link points at a pruned gitdir - is unreusable however
-/// present the directory is. A link whose gitdir exists but is not a usable
-/// worktree gitdir answers `true` here and is left to the add to refuse.
+/// Whether the worktree registered at `path` still points at a gitdir git
+/// can reuse.
+///
+/// git reads several facts here when it decides to reuse or refuse a
+/// worktree, so the link alone is not the question:
+///
+/// - the `.git` entry must be the plain link file git writes, not a symlink
+///   standing in for one;
+/// - the gitdir it names must be there;
+/// - that gitdir's own `gitdir` back-link must name THIS worktree's `.git`
+///   entry, which is what separates it from another repository's worktree
+///   gitdir;
+/// - its HEAD must resolve, so a HEAD that is missing or names a branch the
+///   repo deleted is refused rather than left for the add.
+///
+/// Each of those states is one git's own reuse probe returns null for, and
+/// the add then refuses - the silent failure this check exists to catch
+/// (#1593).
 fn worktree_gitdir_resolves(path: &Path) -> bool {
+    let Ok(link_meta) = std::fs::symlink_metadata(path.join(".git")) else {
+        return false;
+    };
+    if !link_meta.is_file() {
+        return false;
+    }
     let Ok(link) = std::fs::read_to_string(path.join(".git")) else {
         return false;
     };
@@ -1117,7 +1135,50 @@ fn worktree_gitdir_resolves(path: &Path) -> bool {
         return false;
     };
     let gitdir = Path::new(gitdir.trim());
-    if gitdir.is_absolute() { gitdir.is_dir() } else { path.join(gitdir).is_dir() }
+    let gitdir = if gitdir.is_absolute() { gitdir.to_path_buf() } else { path.join(gitdir) };
+    if !gitdir.is_dir() {
+        return false;
+    }
+    let Ok(back) = std::fs::read_to_string(gitdir.join("gitdir")) else {
+        return false;
+    };
+    let back = Path::new(back.trim());
+    let back = if back.is_absolute() { back.to_path_buf() } else { gitdir.join(back) };
+    // git writes the back link as the worktree's `.git` entry itself, so
+    // that file is what must canonicalize to this worktree's.
+    let (Ok(back), Ok(here)) =
+        (std::fs::canonicalize(back), std::fs::canonicalize(path.join(".git")))
+    else {
+        return false;
+    };
+    if back != here {
+        return false;
+    }
+    git_command::command("git")
+        .arg("--git-dir")
+        .arg(&gitdir)
+        .args(["rev-parse", "--verify", "--quiet", "HEAD"])
+        .output()
+        .is_ok_and(|out| out.status.success())
+}
+
+/// Why the worktree a git worker's spawn put it in is not usable, or `None`
+/// when it is there and git can read it.
+///
+/// The spawn-time check runs before creation; this is the read after it. A
+/// tree that went away before the session connected otherwise leaves the
+/// worker reading live with nowhere to work (#1593).
+pub fn worktree_missing_reason(path: &Path) -> Option<String> {
+    if !path.is_dir() {
+        return Some(format!("its worktree {} is gone", path.display()));
+    }
+    if !worktree_gitdir_resolves(path) {
+        return Some(format!(
+            "its worktree {} is not a git worktree git can reuse",
+            path.display()
+        ));
+    }
+    None
 }
 
 /// Whether something at `path` is in the way of `git worktree add`, which
@@ -3267,6 +3328,13 @@ mod tests {
         branch
     }
 
+    /// The gitdir a worktree's `.git` link names.
+    fn worktree_gitdir(wt: &Path) -> PathBuf {
+        let link = fs::read_to_string(wt.join(".git")).expect("the worktree's link");
+        let gitdir = link.trim().strip_prefix("gitdir:").expect("a gitdir link").trim();
+        PathBuf::from(gitdir)
+    }
+
     fn git_stdout(repo: &Path, args: &[&str]) -> String {
         let out = std::process::Command::new("git")
             .args(args)
@@ -3709,6 +3777,55 @@ mod tests {
         assert!(
             obstacle.contains("registration at"),
             "the obstacle names the registration that cannot be reused: {obstacle}"
+        );
+    }
+
+    /// **A gitdir that exists is not a usable worktree gitdir.** The
+    /// spawn-time check read only whether the linked directory was there,
+    /// so four states git's own reuse probe refuses - a link that is a
+    /// symlink, a gitdir with no HEAD, a HEAD naming a deleted branch, and
+    /// a link into another repository - all read as reusable and the spawn
+    /// started with nowhere to work (#1593).
+    #[test]
+    fn obstacle_refuses_a_registration_whose_gitdir_git_cannot_reuse() {
+        // A symlink standing in for the link file is not what git writes.
+        let (dir, wt, _branch) = init_repo_with_worker_worktree("lbl");
+        let real = wt.join("real-link");
+        fs::rename(wt.join(".git"), &real).expect("move the link aside");
+        std::os::unix::fs::symlink(&real, wt.join(".git")).expect("symlink the link");
+        assert!(
+            worktree_creation_obstacle(dir.path(), "lbl", &wt).is_some(),
+            "a symlinked .git link is not a registration git reuses",
+        );
+
+        // A gitdir whose HEAD is gone.
+        let (dir, wt, _branch) = init_repo_with_worker_worktree("lbl");
+        let gitdir = worktree_gitdir(&wt);
+        fs::remove_file(gitdir.join("HEAD")).expect("remove HEAD");
+        assert!(
+            worktree_creation_obstacle(dir.path(), "lbl", &wt).is_some(),
+            "a gitdir with no HEAD cannot be reused",
+        );
+
+        // A HEAD naming a branch the repo deleted.
+        let (dir, wt, _branch) = init_repo_with_worker_worktree("lbl");
+        let gitdir = worktree_gitdir(&wt);
+        fs::write(gitdir.join("HEAD"), "ref: refs/heads/gone\n").expect("point HEAD at nothing");
+        assert!(
+            worktree_creation_obstacle(dir.path(), "lbl", &wt).is_some(),
+            "a HEAD naming a deleted branch cannot be reused",
+        );
+
+        // A link pointing into another repository: its gitdir's own back
+        // link names that repository's worktree, not this one.
+        let (dir, wt, _branch) = init_repo_with_worker_worktree("lbl");
+        let (_other, other_wt, _other_branch) = init_repo_with_worker_worktree("lbl");
+        let other_gitdir = worktree_gitdir(&other_wt);
+        fs::write(wt.join(".git"), format!("gitdir: {}\n", other_gitdir.display()))
+            .expect("point at another repository");
+        assert!(
+            worktree_creation_obstacle(dir.path(), "lbl", &wt).is_some(),
+            "another repository's worktree gitdir is not this worktree's",
         );
     }
 
