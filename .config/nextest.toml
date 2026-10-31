@@ -26,15 +26,21 @@ filter = 'test(the_committed_socket_contract_is_still_what_the_server_emits) or 
 success-output = "immediate"
 
 # **The headless server tests run real child processes**, and every wait in
-# them is either derived from the SDK's own budget (65 s for a spawn, 15 s for
-# a stop) or a 100 s wedge over a delivery that ends the wait when it lands.
-# One test can stack two port waits around a boot (200 s), or a port, a spawn
-# and a stop (180 s), so the default 30 s x 4 kill (120 s) would take a merely
-# slow machine. This override puts the kill at 100 s x 4 = 400 s, above any
-# sum those waits allow and still a named stop rather than a job timeout.
+# them is bounded: derived from the SDK's own budgets (65 s for a spawn, 15 s
+# for a stop and its exit) or a 100 s wedge over a delivery that ends the wait
+# when it lands. The largest stack is `a_stop_signal_takes_the_sessions_
+# descendants_with_it`, which runs its scenario once per signal:
+#   2 x (100 listening + 65 marker + 15 stop + 15 gone) = 390 s.
+# The next largest are `a_termination_sent_straight_at_the_child_marks_it`
+# (100 + 65 + 65 + 5 + 15 = 250 s), `one_stop_takes_two_sessions_down`
+# (100 + 65 + 65 + 15 + 15 = 280 s) and `headless_boot_serves_the_home_and_
+# stops_clean` (100 + 3 walk + 15 + 100 + 15 = 233 s). The default 30 s x 4
+# kill (120 s) would take every one of them on a merely slow machine, so this
+# override puts the kill at 100 s x 5 = 500 s: 110 s above the largest real
+# stack, and still a named stop rather than a job timeout.
 [[profile.default.overrides]]
 filter = 'binary(headless_server)'
-slow-timeout = { period = "100s", terminate-after = 4 }
+slow-timeout = { period = "100s", terminate-after = 5 }
 
 # **This test can hold two full watch passes**, each a scan of ten budgeted
 # `git` children: the pass whose mark it waits on, and the driven pass that
