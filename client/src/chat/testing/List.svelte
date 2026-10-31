@@ -15,6 +15,7 @@
   let {
     data = [],
     shift = false,
+    itemSize,
     getKey,
     itemProps,
     onscroll,
@@ -23,6 +24,8 @@
   }: {
     data?: unknown[];
     shift?: boolean;
+    /** The seed the column gives unmeasured rows, landed where a test can read it. */
+    itemSize?: number;
     /**
      * How the real list identifies a row, which THIS STUB HAS TO HONOUR.
      *
@@ -251,7 +254,7 @@
   });
 </script>
 
-<div class="conv" {@attach container} {...rest}>
+<div class="conv" data-item-size={itemSize} {@attach container} {...rest}>
   {#each data as row, at (keyOf(row, at))}
     {@const itemKey = keyOf(row, at)}
     {@const attrs = itemProps?.({ item: row, index: at }) ?? {}}

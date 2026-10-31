@@ -38,13 +38,18 @@ export function attributed(info: TurnInfo): TurnInfo {
  * The share of this turn's input served from the cache, over every input-side
  * counter.
  *
- * `null` when the record carries no cache read at all, which is a turn that
- * never touched the cache rather than one that missed it entirely.
+ * `null` when the record is missing any of the three counters: a missing
+ * counter is an absent measurement, not a zero, and a share computed with it
+ * read as zero is a figure the wire never stated. An all-zero block has a
+ * zero denominator and so no share either; a present read of zero among
+ * counters that add up is a measurement and divides to `0`.
  */
 export function cached(info: TurnInfo): number | null {
   const read = info.cache_read_tokens;
-  if (read === null) return null;
-  const total = read + (info.input_tokens ?? 0) + (info.cache_written_tokens ?? 0);
+  const input = info.input_tokens;
+  const written = info.cache_written_tokens;
+  if (read === null || input === null || written === null) return null;
+  const total = read + input + written;
   return total === 0 ? null : Math.floor((read * 100) / total);
 }
 

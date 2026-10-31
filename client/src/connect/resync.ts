@@ -48,7 +48,10 @@ export function resync(connection: Connection, shown: SessionSlot | null): void 
   // rides the home snapshot.
   rereadHome(connection);
   rereadBoard(connection);
-  if (shown !== null) rereadSeat(connection, shown);
+  // The read a return asks is the returner's only word on a seat that was
+  // away, so it is named as such before it goes out; the chat spends the mark
+  // on the snapshot that answers it.
+  if (shown !== null) rereadSeat(connection, shown, { returned: true });
 }
 
 /**

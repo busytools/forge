@@ -80,6 +80,19 @@
    * keep the next ask one pull away without making the jump large.
    */
   const PAGE_VIEWPORTS = 1.5;
+  /**
+   * What the list reserves for a row it has not measured yet, in pixels.
+   *
+   * **A chosen seed, not virtua's own running median.** Left unset, the list
+   * re-estimates from the rows it has measured and applies that median to
+   * every unmeasured row, so a small row arriving below the reader was
+   * reserved at the median: the measured 66.5px row was drawn in a 270px
+   * slot (#1555). This is a short turn's height by choice rather than a
+   * measurement - the measured arrival was smaller. A wrong seed is
+   * corrected by the row's own measurement a frame later, and the follow's
+   * overhang check holds the pin until it is.
+   */
+  const ROW_ESTIMATE_PX = 120;
   /** How long the arrival mark stays on the newest item's wrapper. */
   const ARRIVE_MS = 300;
   /** The longest a return's hold waits for a paint before it lifts anyway. */
@@ -345,6 +358,16 @@
    * leaves the debt standing.
    */
   let owed: string | null = null;
+  /**
+   * Whether the last restore could not place the reader at all.
+   *
+   * **A debt needs paying even when its signature is already stamped.** The
+   * anchor row can be gone with no row holding the viewport's top edge - a
+   * layout between states, or a capture run before the rows measured - and
+   * `owed` alone would read that as "this order is paid", so no later publish
+   * would try again. Cleared by any capture or restore that lands.
+   */
+  let owedUnplaced = false;
   /** The tick a settling compensation waits on, held so a later one can replace it. */
   let timer: ReturnType<typeof setTimeout> | null = null;
 
@@ -562,38 +585,62 @@
     }
   }
 
-  /** Hold the row the reader's top edge is on, which is what their place means. */
-  function captureAnchor(): void {
-    if (viewport === null) return;
-    const landed = anchorAt(drawnRows(), viewport.getBoundingClientRect().top);
-    if (landed !== null) {
-      anchor = landed;
-      // A fresh capture owes nothing until an order moves under it; the next
-      // parked run schedules against a clean slate.
-      owed = null;
+  /**
+   * Hold the row the reader's top edge is on, which is what their place means,
+   * answering whether a row could be held.
+   *
+   * **No row at the top edge is not a place** - the column can be between
+   * layouts, or the reader below everything drawn - so a capture that finds
+   * none leaves the old anchor standing and says so, which is what lets the
+   * pass retry.
+   *
+   * **The debt is the caller's.** A capture from the reader's own move
+   * settles it where it is taken (`owed = null` at those call sites); a
+   * capture inside a restore pass is followed by that pass's own stamp, so
+   * clearing it here would be overwritten and would lie to the reader of
+   * this function.
+   */
+  function captureAnchor(): boolean {
+    if (viewport === null) {
+      owedUnplaced = true;
+      return false;
     }
+    const landed = anchorAt(drawnRows(), viewport.getBoundingClientRect().top);
+    if (landed === null) {
+      owedUnplaced = true;
+      return false;
+    }
+    anchor = landed;
+    owedUnplaced = false;
+    return true;
   }
 
   /**
    * Put the reader back on the row the anchor holds, wherever the layout moved
-   * it to - and nowhere at all when the row is out of the drawn window, since
-   * the column cannot measure where it went. The anchor stays for a pass that
-   * can, and the row coming back into the window is a size change like any
-   * other.
+   * it to, answering whether the pass placed them somewhere.
+   *
+   * **A lookup that misses re-captures from the viewport** (#1834): the fold
+   * can re-key a row in place, or take it away, and the reader's place is
+   * still whichever row holds the viewport's top edge - which is also true of
+   * a row that is merely outside the drawn window. A capture that finds no
+   * row either is the one case a pass cannot pay, and its caller keeps the
+   * debt so the next publish tries again.
    *
    * **The key is the turn's own plus the unit's**, which `Turn` writes, so the
    * lookup cannot land on a row of another turn: the fold names an id-less
    * frame `f<index>` within its own turn, and two turns can each carry one.
    */
-  function restoreAnchor(): void {
+  function restoreAnchor(): boolean {
     const held = anchor;
-    if (held === null || viewport === null) return;
+    if (held === null || viewport === null) return true;
     const row = viewport.querySelector(`[data-k="${CSS.escape(held.key)}"]`);
-    if (row === null) return;
+    if (row === null) return captureAnchor();
     const box = viewport.getBoundingClientRect();
     const top = row.getBoundingClientRect().top - box.top + viewport.scrollTop;
     const want = anchoredScroll(held, top);
     if (Math.abs(want - viewport.scrollTop) >= 1) viewport.scrollTop = want;
+    owedUnplaced = false;
+    return true;
   }
 
   /**
@@ -1221,7 +1268,7 @@
           // step the reveal just stopped taking.
           if (box.bottom < seen.top || box.top > seen.bottom) {
             row.scrollIntoView({ behavior: 'auto', block: 'nearest' });
-            captureAnchor();
+            if (captureAnchor()) owed = null;
           }
         };
         const chase = () => {
@@ -1230,7 +1277,7 @@
           // open causes) holds this new place rather than pulling the reader
           // back to the row they left.
           if (reveal(wanted)) {
-            captureAnchor();
+            if (captureAnchor()) owed = null;
             // The first pass waits a beat for the mount's own measurements to
             // land; the rest catch whatever settled behind them.
             const settleUntil = Date.now() + 1000;
@@ -1408,17 +1455,24 @@
       // No anchor parked, nothing owed: the next parked run schedules against
       // a clean slate rather than against an order from before the episode.
       owed = null;
+      owedUnplaced = false;
       return;
     }
     const above = keysAbove();
-    if (above === null || above === owed) return;
+    // **A null signature is a pass too**, because the anchor row can be gone
+    // rather than merely out of the drawn window: the fold can re-key a row in
+    // place, and without a pass the lookup would miss for every landing after
+    // it. The restore re-captures on the miss (#1834). **An unplaced pass
+    // retries even at an unchanged signature**, or a stamp with nothing under
+    // it would swallow every later publish.
+    if (above === owed && !owedUnplaced) return;
     const want = above;
     const seen = restored;
     const settled = requestAnimationFrame(() => {
       // The debt is paid HERE, by the pass that runs - so a teardown's cancel
       // before the paint leaves it standing for the next run to re-arm.
-      owed = want;
       if (restored === seen) restoreAnchor();
+      if (!owedUnplaced) owed = want;
     });
     return () => cancelAnimationFrame(settled);
   });
@@ -1572,7 +1626,7 @@
     // and a STREAM fold that engages the follow - a prompt frame - lands a
     // painted frame later - so a capture that read the record would depend on
     // which side of that timing it caught.
-    if (!foot) captureAnchor();
+    if (!foot && captureAnchor()) owed = null;
     if (offset < REACH) loadOlder(pageTurns());
   }
 
@@ -1710,6 +1764,7 @@
       style: { visibility: 'visible' },
     })}
     {shift}
+    itemSize={ROW_ESTIMATE_PX}
     onscroll={scrolled}
     {@attach scrollViewport}
     bind:this={list}

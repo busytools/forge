@@ -294,7 +294,7 @@
     align-items: baseline;
     margin: 0 0 6px;
     font-size: var(--fs-label);
-    font-weight: 700;
+    font-weight: 500;
     letter-spacing: 0.12em;
     text-transform: uppercase;
     color: var(--dim);
@@ -324,7 +324,7 @@
   .rn {
     font-family: var(--mono);
     font-size: var(--fs-base);
-    font-weight: 600;
+    font-weight: 500;
     color: var(--accent);
   }
   .age {
