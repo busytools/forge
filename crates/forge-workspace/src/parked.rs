@@ -54,12 +54,9 @@ impl crate::Workspace {
             .push(ParkedPeer { sender: sender.clone(), wrapped });
     }
 
-    /// Whether `slot`'s bucket still holds the peer prompt with `id`.
-    ///
-    /// The wake path parks before it dispatches a spawn, so the bucket a
-    /// moment later says what the wake really did: an entry the spawn's own
-    /// failure expired is gone, and the delivery that parked it was not
-    /// accepted.
+    /// Whether `slot`'s bucket still holds the peer prompt with `id`. The
+    /// wake path parks before it dispatches a spawn, so an entry the spawn's
+    /// own failure expired means the delivery was not accepted.
     pub(crate) fn peer_prompt_is_parked(
         &self,
         slot: &SessionSlot,

@@ -1108,21 +1108,13 @@ fn obstacle_from_listing(
 /// Whether the worktree registered at `path` still points at a gitdir git
 /// can reuse.
 ///
-/// git reads several facts here when it decides to reuse or refuse a
-/// worktree, so the link alone is not the question:
-///
-/// - the `.git` entry must be the plain link file git writes, not a symlink
-///   standing in for one;
-/// - the gitdir it names must be there;
-/// - that gitdir's own `gitdir` back-link must name THIS worktree's `.git`
-///   entry, which is what separates it from another repository's worktree
-///   gitdir;
-/// - its HEAD must resolve, so a HEAD that is missing or names a branch the
-///   repo deleted is refused rather than left for the add.
-///
-/// Each of those states is one git's own reuse probe returns null for, and
-/// the add then refuses - the silent failure this check exists to catch
-/// (#1593).
+/// git reads several facts when it decides to reuse or refuse a worktree, so
+/// the link alone is not the question: the `.git` entry must be the plain
+/// link file git writes (not a symlink standing in for one), the gitdir it
+/// names must be there, that gitdir's own `gitdir` back-link must name THIS
+/// worktree's `.git` entry, and its HEAD must resolve. Each of those states
+/// is one git's own reuse probe returns null for, and the add then refuses -
+/// the silent failure this check exists to catch (#1593).
 fn worktree_gitdir_resolves(path: &Path) -> bool {
     let Ok(link_meta) = std::fs::symlink_metadata(path.join(".git")) else {
         return false;

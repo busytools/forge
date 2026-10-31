@@ -27,13 +27,9 @@ pub const SHOW_ACK_BOUND: Duration = Duration::from_millis(100);
 /// How often the wait asks the endpoint.
 const PROBE_EVERY: Duration = Duration::from_millis(50);
 
-/// One child this server spawned, and the write end of its parent-watch
-/// pipe.
-///
-/// **The write end is kept for the host's whole life.** The host reads EOF on
-/// the other end only when every copy closes, so dropping this one at spawn
-/// would make the host read its server gone immediately. It closes when this
-/// entry goes, which is a server that has already ended the host.
+/// One child this server spawned. Its parent-watch write end is kept in
+/// [`parent_watches`] for the host's whole life: the host reads EOF only when
+/// every copy closes, so dropping it at spawn would read as the server gone.
 struct HostChild {
     child: std::process::Child,
 }
