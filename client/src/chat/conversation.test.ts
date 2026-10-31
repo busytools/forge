@@ -4371,6 +4371,72 @@ describe('the conversation the chat draws', () => {
   });
 
   /**
+   * **An unmatched mid-turn copy keeps the page's position, not the row's
+   * end.** The live echo of the reader's mid-turn prompt never arrived, so
+   * the page's copy has nothing to pair with - and appending it put it below
+   * the frames the row already held, which the page says came after it
+   * (#1584).
+   */
+  it('places an unmatched mid-turn copy where the page had it', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    try {
+      server.send(page([turn('t0', 'earlier')], null));
+      for (const frame of [typed('open'), said('call one'), said('call two')]) {
+        server.update({ chat_appended: { key: LEAD, msg: frame } });
+      }
+      const queued = {
+        type: 'user',
+        uuid: 'cli-queued-1',
+        message: {
+          role: 'user',
+          content: [
+            {
+              type: 'queued_command',
+              commandMode: 'prompt',
+              prompt: 'the words that never echoed',
+              source_uuid: 'forge_mid_1',
+            },
+          ],
+        },
+      };
+
+      // The page's cut at the mid-turn prompt: the turn's own row first, then
+      // the prompt's row carrying the frames that followed it.
+      server.send(
+        page(
+          [
+            { key: null, messages: [typed('open'), said('call one'), said('call two')] },
+            { key: null, messages: [queued, said('call two'), said('missed')] },
+          ],
+          null,
+        ),
+      );
+
+      const carriers = get(chat.value).turns.filter((row) =>
+        JSON.stringify(row.messages).includes('the words that never echoed'),
+      );
+      expect(carriers, 'the copy draws in one row, not a second one').toHaveLength(1);
+      const order = (carriers[0]?.messages ?? []).map((message) => JSON.stringify(message));
+      const at = (needle: string): number => order.findIndex((held) => held.includes(needle));
+      expect(at('call one'), 'precondition: the frame the prompt followed is drawn').toBeGreaterThan(
+        -1,
+      );
+      expect(
+        at('the words that never echoed'),
+        'the copy sits after the frame it followed on the page',
+      ).toBeGreaterThan(at('call one'));
+      expect(
+        at('the words that never echoed'),
+        'and above the frame the page says came after it',
+      ).toBeLessThan(at('call two'));
+    } finally {
+      stop();
+    }
+  });
+
+  /**
    * **A live frame that landed after the page was read sits at the row's end,
    * and the page's frames never go below it.**
    *
