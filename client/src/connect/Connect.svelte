@@ -199,7 +199,7 @@
     color: var(--text);
     font-family: var(--ui);
     font-size: var(--fs-base);
-    font-weight: 600;
+    font-weight: 500;
     cursor: pointer;
   }
 

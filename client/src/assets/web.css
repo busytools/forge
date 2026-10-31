@@ -24,6 +24,21 @@
 @import 'highlight.js/styles/github-dark.css';
 @import '@git-diff-view/svelte/styles/diff-view.css';
 
+/* **The imported sheets ask for weights the vendored face does not have.**
+   highlight.js and the diff viewer style their own bold marks at 700 and 600,
+   and the built-in face vendors 400 and 500 - the same smear the sheet's own
+   rules avoid, arriving through an import. Taken to the heaviest cut here
+   rather than forked; the typeface test reads these imports and refuses a
+   vendor weight above the ceiling with no override in this file. */
+.hljs-section,
+.hljs-strong { font-weight: 500; }
+.diff-tailwindcss-wrapper .font-semibold { font-weight: 500; }
+.diff-tailwindcss-wrapper[data-theme='light'] .diff-line-syntax-raw .hljs-section,
+.diff-tailwindcss-wrapper[data-theme='light'] .diff-line-syntax-raw .hljs-strong,
+.diff-tailwindcss-wrapper[data-theme='dark'] .diff-line-syntax-raw .hljs-section,
+.diff-tailwindcss-wrapper[data-theme='dark'] .diff-line-syntax-raw .hljs-strong {
+  font-weight: 500; }
+
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 /* One focus treatment, on every control the sheet can reach: an accent ring
@@ -202,13 +217,13 @@ header.top {
 .brand .mark { width: 30px; height: 30px; flex: 0 0 30px; color: var(--accent);
   position: relative; top: -1px; }
 .brand .mark svg { display: block; width: 100%; height: 100%; }
-.brand .word { font-size: 22px; font-weight: 650; letter-spacing: -.02em; }
+.brand .word { font-size: 22px; font-weight: 500; letter-spacing: -.02em; }
 /* The title-and-back chrome of a page header, shared by the pages that wear
    that shape (`pagetop`); the home's and the review's headers are shapes of
    their own and stay unmarked. This block was two copies of itself before it
    was lifted once. */
 header.top.pagetop .title { display: flex; flex-direction: column; }
-header.top.pagetop .title .t { font-size: var(--fs-title); font-weight: 650;
+header.top.pagetop .title .t { font-size: var(--fs-title); font-weight: 500;
   letter-spacing: -.01em; color: var(--text); }
 header.top.pagetop .title .s { font-family: var(--mono); font-size: var(--fs-label);
   color: var(--dim); }
@@ -222,7 +237,7 @@ header.top.pagetop .back:hover { border-color: var(--ctl); color: var(--text); }
    and claude apart, so a bare version cannot be read as another build's. */
 .versions .build { white-space: nowrap; }
 .versions .build .k { color: var(--dim); }
-.versions b { color: var(--muted); font-weight: 600; }
+.versions b { color: var(--muted); font-weight: 500; }
 /* The installed version is context; an available update is something to
    act on, so it carries the warn amber. */
 .versions .upd { color: var(--warn); }
@@ -459,7 +474,7 @@ button.upd { border: 0; background: none; padding: 0; font: inherit; cursor: poi
 .b-door {
   display: inline-flex; align-items: center; gap: 6px;
   background: transparent; color: var(--blue); font: inherit; font-size: 13px;
-  font-weight: 560; padding: 7px 13px; border-radius: 10px; cursor: pointer;
+  font-weight: 500; padding: 7px 13px; border-radius: 10px; cursor: pointer;
   text-decoration: none; box-shadow: inset 0 0 0 1px rgba(97,160,224,.45);
   transition: background .12s ease;
 }
@@ -485,9 +500,9 @@ button.upd { border: 0; background: none; padding: 0; font: inherit; cursor: poi
 .b-back:focus-visible, .b-done:focus-visible, .b-btn:focus-visible,
 .b-pick:focus-visible, .b-fold:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
 .b-id { margin-left: 8px; display: flex; align-items: baseline; gap: 12px; }
-.b-nm { font-size: 19px; font-weight: 600; letter-spacing: -.01em; color: var(--text); }
+.b-nm { font-size: 19px; font-weight: 500; letter-spacing: -.01em; color: var(--text); }
 .b-read { font-size: var(--fs-label); color: var(--dim); }
-.b-read b { font-weight: 560; color: var(--hot); }
+.b-read b { font-weight: 500; color: var(--hot); }
 .b-spacer { flex: 1; }
 /* the service line: the core's own words for an edit that did not land */
 .b-said { margin: -6px 0 16px; padding: 9px 13px; border-radius: 10px; font-size: var(--fs-data); }
@@ -520,7 +535,7 @@ button.upd { border: 0; background: none; padding: 0; font: inherit; cursor: poi
 /* A row's detail accumulates send-back words, so the strip's ask is bounded
    to four lines; the whole of it stays on the title and in the row page. */
 .b-q {
-  font-size: 15px; font-weight: 550; color: var(--text);
+  font-size: 15px; font-weight: 500; color: var(--text);
   display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical;
   overflow: hidden;
 }
@@ -548,17 +563,17 @@ button.upd { border: 0; background: none; padding: 0; font: inherit; cursor: poi
 /* Why a verify row cannot be approved yet: the children it still waits on. */
 .b-hold { font-size: var(--fs-label); color: var(--warn); }
 .b-btn { border: 0; cursor: pointer; font: inherit; border-radius: 10px; font-size: 13px; }
-.b-ok { background: var(--ok); color: var(--bg); font-weight: 640; padding: 8px 15px; }
+.b-ok { background: var(--ok); color: var(--bg); font-weight: 500; padding: 8px 15px; }
 .b-ok:hover { filter: brightness(1.06); }
 .b-no {
   background: transparent; color: var(--bad); padding: 8px 15px;
   box-shadow: inset 0 0 0 1px rgba(224,104,62,.45);
 }
 .b-no:hover { background: rgba(224,104,62,.08); }
-.b-plain { background: var(--s3); color: var(--text); font-weight: 560; padding: 8px 15px; }
+.b-plain { background: var(--s3); color: var(--text); font-weight: 500; padding: 8px 15px; }
 .b-plain:hover { background: var(--line); }
 .b-add {
-  background: var(--accent); color: var(--bg); font-weight: 640;
+  background: var(--accent); color: var(--bg); font-weight: 500;
   border-radius: 999px; padding: 9px 16px;
 }
 .b-add:hover { filter: brightness(1.08); }
@@ -582,7 +597,7 @@ button.upd { border: 0; background: none; padding: 0; font: inherit; cursor: poi
 .b-lanes { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 18px; }
 
 .b-cap { display: flex; align-items: center; gap: 8px; padding: 0 2px 10px; }
-.b-lane-nm { font-size: var(--fs-label); font-weight: 600; color: var(--muted); letter-spacing: .01em; }
+.b-lane-nm { font-size: var(--fs-label); font-weight: 500; color: var(--muted); letter-spacing: .01em; }
 .b-count { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
 .b-rule { flex: 1; height: 1px; background: var(--line); }
 /* A grown group's fold: under the last card, where the reader scrolling the
@@ -641,7 +656,7 @@ button.upd { border: 0; background: none; padding: 0; font: inherit; cursor: poi
 .b-owner { display: inline-flex; align-items: center; gap: 6px; }
 .b-ava {
   width: 18px; height: 18px; border-radius: 50%; background: var(--s3); color: var(--muted);
-  display: inline-flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 600;
+  display: inline-flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 500;
 }
 /* The epic's marks: the pill a child's card names its parent in, and the
    quiet `epic` pill a parent's card wears. A long name ellipsises inside the
@@ -771,7 +786,7 @@ button.b-epic-pill { cursor: pointer; }
 .dr-state.bad { color: var(--bad); border-color: rgba(224,104,62,.45); }
 .dr-state.run { color: var(--accent); border-color: rgba(244,118,0,.45); }
 .dr-state .ic { width: 11px; height: 11px; }
-.dr-title .t { font-size: 15px; font-weight: 600; }
+.dr-title .t { font-size: 15px; font-weight: 500; }
 .dr-title .sub { color: var(--dim); font-family: var(--mono); font-size: 11.5px; margin-top: 2px; }
 .dr-x {
   margin-left: auto; background: none; border: 0; color: var(--dim);
@@ -816,7 +831,7 @@ button.b-epic-pill { cursor: pointer; }
   border: 1px solid var(--ctl); background: var(--s2); color: var(--text);
   border-radius: 7px; padding: 6px 12px; font: inherit; font-size: 12px; cursor: pointer;
 }
-.dr-btn.go { background: var(--accent); border-color: var(--accent); color: var(--bg); font-weight: 600; }
+.dr-btn.go { background: var(--accent); border-color: var(--accent); color: var(--bg); font-weight: 500; }
 .dr-btn.no { background: transparent; color: var(--bad); box-shadow: inset 0 0 0 1px rgba(224,104,62,.45); }
 .dr-hold { font-size: var(--fs-label); color: var(--warn); }
 .dr-said { margin: 0 0 14px; padding: 9px 13px; border-radius: 10px; font-size: var(--fs-data); }
@@ -992,7 +1007,7 @@ button.b-epic-pill { cursor: pointer; }
 section.org { margin-bottom: 30px; }
 section.org > h2 {
   display: flex; align-items: baseline; gap: 10px;
-  font-size: 12.5px; font-weight: 600; letter-spacing: .11em; text-transform: uppercase;
+  font-size: 12.5px; font-weight: 500; letter-spacing: .11em; text-transform: uppercase;
   color: var(--muted); padding: 0 0 8px;
 }
 section.org > h2 .rule { flex: 1; height: 1px; background: var(--line); }
@@ -1067,7 +1082,7 @@ section.org > h2 .counts {
 }
 .row .what a:hover { text-decoration: underline; }
 
-.row.running .name, .row.idle .name, .row.spawning .name { font-weight: 600; }
+.row.running .name, .row.idle .name, .row.spawning .name { font-weight: 500; }
 
 .row.asleep .name { color: var(--muted); font-weight: 400; }
 .row.asleep .where, .row.asleep .what { opacity: .6; }
@@ -1084,17 +1099,17 @@ section.org > h2 .counts {
 .row.unseen .what { color: var(--ok); }
 
 .row.failed { background: rgba(224,104,62,.055); }
-.row.failed .name { color: var(--bad); font-weight: 600; }
+.row.failed .name { color: var(--bad); font-weight: 500; }
 .row.failed .where, .row.failed .what { color: var(--bad); }
 
 /* needs you: the one state that has to be impossible to miss */
 .row.needs { background: rgba(201,161,59,.075); }
-.row.needs .name { color: var(--warn); font-weight: 600; }
+.row.needs .name { color: var(--warn); font-weight: 500; }
 .row.needs .what { color: var(--warn); }
 
 /* sign-in needed is the same family as needs-you, one step harder */
 .row.auth { background: rgba(224,104,62,.06); }
-.row.auth .name { color: var(--bad); font-weight: 600; }
+.row.auth .name { color: var(--bad); font-weight: 500; }
 .row.auth .what { color: var(--bad); }
 
 /* hierarchy: an indent and nothing else. every other column stays put. */
@@ -1120,7 +1135,7 @@ section.org .note {
   margin-bottom: 14px; color: rgba(244,118,0,.55);
 }
 .empty .mark svg { display: block; width: 100%; height: 100%; }
-.empty .t { font-size: 15px; font-weight: 600; color: var(--muted); margin-bottom: 6px; }
+.empty .t { font-size: 15px; font-weight: 500; color: var(--muted); margin-bottom: 6px; }
 .empty .d { font-size: 12.5px; color: var(--dim); max-width: 46ch; margin: 0 auto; }
 .empty code {
   font-family: var(--mono); font-size: 11.5px; color: var(--muted);
@@ -1264,7 +1279,7 @@ details[open] > summary .arw { transform: rotate(90deg); }
 .rail .scroll { overflow-y: auto; overflow-x: hidden; flex: 1; padding: 0 8px 12px;
   scrollbar-gutter: stable; }
 .banner { display: flex; align-items: center; gap: 8px; padding: 13px 12px 9px; }
-.banner .t { font-size: var(--fs-label); font-weight: 700; letter-spacing: .12em;
+.banner .t { font-size: var(--fs-label); font-weight: 500; letter-spacing: .12em;
   text-transform: uppercase; color: var(--accent); }
 .banner .n { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); }
 .banner .n.ml { margin-left: auto; }
@@ -1415,7 +1430,7 @@ main.chat { display: flex; flex-direction: column; min-width: 0; min-height: 0; 
 .sess { container-type: inline-size;
   display: flex; align-items: center; gap: 12px; padding: 2px 0 12px;
   flex-wrap: nowrap; min-width: 0; }
-.sess .nm { font-size: var(--fs-title); font-weight: 650; letter-spacing: -.01em;
+.sess .nm { font-size: var(--fs-title); font-weight: 500; letter-spacing: -.01em;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 /* The wordmark in the header, the way home: the home's own brand a size down
    so the session's name still leads, in a real anchor so the keyboard reaches
@@ -1454,7 +1469,15 @@ main.chat { display: flex; flex-direction: column; min-width: 0; min-height: 0; 
    inside it and the queue stands at its foot, and the states the column pins
    to an edge - the older-page line at the top, the way back at the foot -
    have this as their containing block rather than the page's column. */
-.conv-body { position: relative; display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.conv-body { position: relative; display: flex; flex-direction: column; flex: 1; min-height: 0;
+  /* **The conversation's own container, and only the conversation's.** The
+     width guard on a stacked table asks the column's width, which the rail
+     folds under - so it cannot be the window. It also cannot be `main.chat`:
+     layout containment there would make the column the containing block for
+     the browser takeover, a `position: fixed` child of `main.chat`, and the
+     shell paints its frames at that rect. `.conv-body` holds the chat and
+     nothing else. */
+  container-type: inline-size; }
 /* The conversation leads tighter than the rest of the page. `body`'s 1.5 is a
    book page; a terminal draws one row per line at 1.231em of its own text
    size, and 1.35 is nearer that without sitting on it - a browser still has to
@@ -1478,7 +1501,7 @@ main.chat { display: flex; flex-direction: column; min-width: 0; min-height: 0; 
 /* The rail's section heading, shared with the home's fleet: the count rides
    the heading where the surface draws one, and a lone word lays out as it
    always did. */
-.state { padding: 12px 8px 4px; font-size: var(--fs-label); font-weight: 700;
+.state { padding: 12px 8px 4px; font-size: var(--fs-label); font-weight: 500;
   letter-spacing: .12em; text-transform: uppercase; color: var(--dim); }
 .state.needs { color: var(--warn); }
 .state .n { font-family: var(--mono); font-size: var(--fs-data); letter-spacing: 0; }
@@ -1487,7 +1510,7 @@ main.chat { display: flex; flex-direction: column; min-width: 0; min-height: 0; 
 details.gfold > summary { list-style: none; cursor: pointer; display: flex;
   align-items: center; gap: 8px; padding: 12px 8px 4px; }
 details.gfold > summary::-webkit-details-marker { display: none; }
-details.gfold > summary .gh { font-size: var(--fs-label); font-weight: 700;
+details.gfold > summary .gh { font-size: var(--fs-label); font-weight: 500;
   letter-spacing: .12em; text-transform: uppercase; color: var(--dim); }
 details.gfold > summary:hover .gh { color: var(--muted); }
 details.gfold > summary .cn { margin-left: auto; font-family: var(--mono);
@@ -1501,7 +1524,7 @@ details.gfold[open] > summary .arw { color: var(--accent); }
    draws a smaller dot cannot narrow the row and pull the name left. */
 .pr .dot-slot { width: 11px; height: 11px; flex: 0 0 11px;
   display: inline-flex; align-items: center; justify-content: center; }
-.pr .nm { font-size: var(--fs-base); font-weight: 600; flex: 0 1 auto; min-width: 0;
+.pr .nm { font-size: var(--fs-base); font-weight: 500; flex: 0 1 auto; min-width: 0;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pr .org { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim);
   flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
@@ -1775,6 +1798,28 @@ details.sfold div.wk:hover { background: none; }
 .prose td { overflow-wrap: break-word; }
 .prose th { color: var(--muted); font-weight: 500; overflow-wrap: normal;
   border-bottom: 1px solid var(--line); }
+/* **A table that cannot fit the column is stacked, as the terminal stacks
+   it.** A header keeps its own word, so a grid of multi-word headings or one
+   unbroken run can set a table wider than the conversation - and the column
+   then scrolls sideways, the last way it still could. The guard is the
+   COLUMN's width, not the window's: with the projects rail folded or static
+   the column is narrow at a wide window too, so this asks the conversation's
+   own container rather than a viewport breakpoint. The threshold is the
+   measured worst case: one 74-character header run sets a 746.8px table, so
+   every column narrower than that stacks. Each row falls to a block and each
+   cell carries its column's heading above it, from the `data-label` the
+   renderer writes. A header row is hidden only while a body row follows it,
+   so a table still streaming its rows keeps drawing its headings. */
+@container (max-width: 760px) {
+  :is(.prose, .doc-block) table, :is(.prose, .doc-block) thead,
+  :is(.prose, .doc-block) tbody, :is(.prose, .doc-block) tr,
+  :is(.prose, .doc-block) th, :is(.prose, .doc-block) td { display: block; }
+  :is(.prose, .doc-block) table:has(tbody tr) thead { display: none; }
+  :is(.prose, .doc-block) tr { padding: 10px 0; }
+  :is(.prose, .doc-block) tr + tr { border-top: 1px solid var(--line); }
+  :is(.prose, .doc-block) td[data-label]::before { content: attr(data-label);
+    display: block; color: var(--muted); font-size: var(--fs-label); }
+}
 .prose hr { border: 0; height: 1px; background: var(--line); margin: 20px 0; }
 
 /* A run of calls, or of peer messages: every call, message and thought on its
@@ -1915,7 +1960,7 @@ details.leaf > summary .sg-fig + .arw { margin-left: 8px; }
 .bz-list .bz-it .ring { width: 9px; height: 9px; flex: none; }
 .bz-list .bz-it .dot { width: 9px; height: 9px; flex: none; }
 .bz-list .bz-it .ic.bad { color: var(--bad); flex: none; }
-.bz-list .bz-it .nm { color: var(--accent); font-weight: 600; font-family: var(--mono); flex: none; }
+.bz-list .bz-it .nm { color: var(--accent); font-weight: 500; font-family: var(--mono); flex: none; }
 .bz-list .bz-it .tx { color: var(--dim); font-family: var(--mono); min-width: 0;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* **The delete verb, worn apart from close.** Close frees the name and keeps
@@ -1927,7 +1972,7 @@ details.leaf > summary .sg-fig + .arw { margin-left: 8px; }
 .bz-list .bz-take.bz-del:hover { color: var(--bad);
   background: color-mix(in srgb, var(--bad) 12%, transparent); }
 .bz-list .bz-take.bz-del.confirm { color: var(--bg); background: var(--bad);
-  border-color: var(--bad); font-weight: 600; }
+  border-color: var(--bad); font-weight: 500; }
 /* The row's own line WRAPS for the tones: it is nowrap for the owner text it
    usually carries, and a warning, a refusal or a delete's outcome is longer
    than that - truncated, each loses exactly the words it exists for. */
@@ -2010,7 +2055,7 @@ details.leaf > summary .sg-fig + .arw { margin-left: 8px; }
 .sg-list .sg-it .ic.ok { color: var(--ok); }
 .sg-list .sg-it .ic.bad { color: var(--bad); }
 .sg-list .sg-it .ic.off { color: var(--dim); }
-.sg-list .sg-it .nm { color: var(--accent); font-weight: 600; font-size: var(--fs-data); flex: none; }
+.sg-list .sg-it .nm { color: var(--accent); font-weight: 500; font-size: var(--fs-data); flex: none; }
 /* A row that LEADS with its name: the accent name takes what is left and
    elides, so a long key gives way instead of pushing the right figure out. */
 .sg-list .sg-it .nm.lead { flex: 1 1 auto; min-width: 0; overflow: hidden;
@@ -2124,7 +2169,7 @@ details.leaf.running > summary { color: var(--text); }
    page's brightest tone, so there is no lift left to take. */
 .ansi-white { color: var(--text); }
 .ansi-bright-white { color: var(--text); }
-.ansi-bold { font-weight: 640; }
+.ansi-bold { font-weight: 500; }
 .ansi-dim { opacity: .75; }
 .ansi-italic { font-style: italic; }
 .ansi-underline { text-decoration: underline; }
@@ -2356,7 +2401,7 @@ details.leaf.running > summary { color: var(--text); }
 /* peer traffic, drawn as tool rows: the words say which way it went, the mark
    reinforces them, and the label names the seat the row is about */
 details.leaf > summary .mk { color: var(--dim); flex: 0 0 15px; width: 15px; }
-details.leaf > summary .k { color: var(--text); font-weight: 700; }
+details.leaf > summary .k { color: var(--text); font-weight: 500; }
 /* The direction word that leads a message row, muted so the seat the row is
    about stays the subject, and the row's own word for a verb card. */
 details.leaf > summary .dir { color: var(--dim); margin-right: 5px; flex: none; }
@@ -2387,7 +2432,7 @@ details.leaf > summary .ic { width: 14px; height: 14px; flex: 0 0 14px; }
 /* The typed row's empty slot, holding the column a picked row's mark takes. */
 .card .a .gap { width: 15px; flex: 0 0 15px; }
 .card .a .picked { color: var(--ok); }
-.card .a .typed { color: var(--text); font-weight: 700; }
+.card .a .typed { color: var(--text); font-weight: 500; }
 
 /* the turn row */
 .turninfo { margin: 6px 0 2px; font-family: var(--mono); font-size: var(--fs-base);
@@ -2424,7 +2469,7 @@ details.handoff > summary { list-style: none; display: flex; align-items: center
   cursor: pointer; }
 details.handoff > summary::-webkit-details-marker { display: none; }
 .handoff .rule { flex: 1; height: 1px; background: var(--line); }
-.handoff .word { color: var(--muted); font-weight: 600; }
+.handoff .word { color: var(--muted); font-weight: 500; }
 .handoff .pair { color: var(--dim); }
 .handoff .pct { color: var(--dim); font-size: 12px; }
 .handoff:hover .word { color: var(--text); }
@@ -3020,7 +3065,7 @@ kbd { font-family: inherit; font-size: inherit; color: inherit;
   border: 1px solid var(--line); border-radius: 14px;
   box-shadow: 0 20px 48px rgba(0,0,0,.55); }
 .pop .hd { padding: 12px 15px 0; display: flex; align-items: center; gap: 9px; }
-.pop .hd .t { margin-right: auto; font-size: var(--fs-data); font-weight: 600; color: var(--text); }
+.pop .hd .t { margin-right: auto; font-size: var(--fs-data); font-weight: 500; color: var(--text); }
 .pop .hd .k { font-family: var(--mono); font-size: var(--fs-label);
   color: var(--dim); }
 /* The visible way out: the mic press is the trigger now, and a phone has no
@@ -3137,14 +3182,14 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
 /* The head, which says what kind of prompt this is: the question's own words,
    a permission's subject as it arrives, or a draft's destination. */
 .dock .d-head { display: flex; align-items: baseline; gap: 9px; font-size: var(--fs-base); }
-.dock .d-head .qm { color: var(--accent); font-weight: 700; flex: none; }
+.dock .d-head .qm { color: var(--accent); font-weight: 500; flex: none; }
 /* The trailing element of the head - the tool's name, the verb a post is -
    sits at the far edge, which is how the mock draws the head. */
 .dock .d-head .q { color: var(--dim); font-family: var(--mono); font-size: var(--fs-data);
   margin-left: auto;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dock .d-head .q.mono { font-weight: 400; }
-.dock .d-q { font-size: 16px; font-weight: 600; letter-spacing: -.01em;
+.dock .d-q { font-size: 16px; font-weight: 500; letter-spacing: -.01em;
   color: var(--text); overflow-wrap: anywhere; }
 /* The batch, as one mark per question with this one and the ones behind it lit. */
 .dock .segs { display: flex; align-items: center; gap: 5px; margin-left: auto; flex: none; }
@@ -3165,8 +3210,8 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
 .dock .qbar { display: flex; align-items: center; gap: 9px; padding: 12px 14px;
   background: none; border: 0; font: inherit; color: inherit; text-align: left;
   font-size: var(--fs-base); cursor: pointer; }
-.dock .qbar .qm { color: var(--accent); font-weight: 700; flex: none; }
-.dock .qbar .t { color: var(--text); font-weight: 600; letter-spacing: -.01em;
+.dock .qbar .qm { color: var(--accent); font-weight: 500; flex: none; }
+.dock .qbar .t { color: var(--text); font-weight: 500; letter-spacing: -.01em;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .dock .qbar .cnt { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); flex: none; }
 .dock .qbar .chevc { margin-left: auto; color: var(--dim); flex: none; font-size: 13px; }
@@ -3227,7 +3272,7 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
    nothing painted behind them - a tint read as a state of the row rather than
    as the thing being chosen, and one carrying padding dragged the label out
    of the column every other option's text sits in. */
-.opt.sel .lbl { color: var(--text); font-weight: 600; }
+.opt.sel .lbl { color: var(--text); font-weight: 500; }
 .opt.sel .why { color: var(--muted); }
 .opt .box2 { width: 15px; height: 15px; flex: 0 0 15px; border-radius: 4px;
   margin-top: 2px; border: 1px solid var(--ctl); display: grid; place-items: center; }
@@ -3631,7 +3676,7 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
    is what a reader skims for, so it says the rule rather than repeating the
    heading. */
 .models-page .hd4 { display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap;
-  font-size: var(--fs-label); font-weight: 600; letter-spacing: .11em;
+  font-size: var(--fs-label); font-weight: 500; letter-spacing: .11em;
   text-transform: uppercase; color: var(--muted); padding: 0 0 9px; }
 .models-page .hd4 .why { font-family: var(--mono); font-size: 11px; letter-spacing: 0;
   text-transform: none; color: var(--dim); font-weight: 400; }
@@ -3653,7 +3698,7 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
 .models-page .model .pick:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .models-page .model .role { font-size: var(--fs-label); letter-spacing: .1em; text-transform: uppercase;
   color: var(--dim); flex: 0 0 118px; }
-.models-page .model.shown .role { color: var(--accent); font-weight: 600; }
+.models-page .model.shown .role { color: var(--accent); font-weight: 500; }
 /* The row's own controls sit ABOVE the overlay so they stay pressable, and a
    state chip is a label rather than a control: it lets the press through. */
 .models-page .model .side { position: relative; z-index: 2; }
@@ -3914,7 +3959,7 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
 .rv-root { display: flex; align-items: center; gap: 6px; min-width: 0;
   padding: 2px 6px 6px 4px; }
 .rv-rootname { font-family: var(--mono); font-size: var(--fs-label); color: var(--text);
-  font-weight: 600; white-space: nowrap; }
+  font-weight: 500; white-space: nowrap; }
 .rv-rootpath { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
   min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rv-arw { flex: none; width: 9px; text-align: center; font-size: 10px; color: var(--dim);
@@ -3968,7 +4013,7 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
 .files-back { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim);
   text-decoration: none; }
 .files-back:hover { color: var(--text); }
-.files-top h1 { font-size: var(--fs-title); font-weight: 650; letter-spacing: -.01em; }
+.files-top h1 { font-size: var(--fs-title); font-weight: 500; letter-spacing: -.01em; }
 .files-facts { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); }
 .files-sep { color: var(--line); margin: 0 7px; }
 .files-body { display: grid;
@@ -4004,7 +4049,7 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
 .files-rail { display: flex; flex-direction: column; min-height: 0;
   overflow-y: auto; padding: 0 2px 12px; scrollbar-gutter: stable; }
 .files-railhead { display: flex; gap: 8px; align-items: baseline; margin-bottom: 8px;
-  font-size: var(--fs-label); font-weight: 700; letter-spacing: .12em;
+  font-size: var(--fs-label); font-weight: 500; letter-spacing: .12em;
   text-transform: uppercase; color: var(--dim); }
 .files-railen { font-family: var(--mono); letter-spacing: 0; }
 .files-replies { margin-left: auto; font-family: var(--mono); letter-spacing: 0;
@@ -4087,7 +4132,7 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
    and the one fact a reader acts on - it is still in the tree. */
 .files-notice { margin: 13px; padding: 11px 13px; border: 1px solid var(--line);
   border-radius: 9px; color: var(--dim); font-size: var(--fs-base); }
-.files-notice b { color: var(--text); font-weight: 600; }
+.files-notice b { color: var(--text); font-weight: 500; }
 /* The resolved marker is a press target in the reader, and it takes the row's
    whole width AND the expanded card's own ground (Ved, 2026-10-17), so a
    folded thread and an open one are one surface. */
@@ -4175,7 +4220,7 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
 .review-page .rv-add-host { position: relative; }
 .review-page .rv-add { position: absolute; inset: 0; display: flex; align-items: center;
   justify-content: center; background: none; border: 0; cursor: pointer;
-  color: var(--accent); font-weight: 700; opacity: 0; padding: 0; }
+  color: var(--accent); font-weight: 500; opacity: 0; padding: 0; }
 .review-page tr.diff-line:hover .rv-add { opacity: 1; }
 .review-page .rv-add:focus-visible { opacity: 1; outline: 1px solid var(--accent); }
 
@@ -4485,12 +4530,12 @@ details[open] > summary .arw { opacity: 1; }
 .extensions-page button.chip:disabled { opacity: .5; cursor: default; }
 .extensions-page .btn { border: 0; cursor: pointer; font: inherit; font-family: var(--mono);
   font-size: 13px; border-radius: 10px; }
-.extensions-page .btn.go { background: var(--ok); color: var(--bg); font-weight: 640; padding: 7px 14px; }
+.extensions-page .btn.go { background: var(--ok); color: var(--bg); font-weight: 500; padding: 7px 14px; }
 .extensions-page .btn.go:hover { filter: brightness(1.06); }
 .extensions-page .btn.ghost { background: transparent; color: var(--muted);
   box-shadow: inset 0 0 0 1px var(--ctl); padding: 7px 12px; }
 .extensions-page .btn.ghost:hover { color: var(--text); box-shadow: inset 0 0 0 1px var(--text); }
-.extensions-page .btn.add { background: var(--accent); color: var(--bg); font-weight: 640;
+.extensions-page .btn.add { background: var(--accent); color: var(--bg); font-weight: 500;
   border-radius: 999px; padding: 8px 15px; }
 .extensions-page .btn.add:hover { filter: brightness(1.08); }
 .extensions-page .btn:disabled { opacity: .5; cursor: default; }
@@ -4529,7 +4574,7 @@ details[open] > summary .arw { opacity: 1; }
   border-left: 1px solid var(--line); }
 .extensions-page .ext-pane-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
   margin: 2px 0 14px; }
-.extensions-page .ext-pane-head .t { font-size: 19px; font-weight: 620; letter-spacing: -.01em;
+.extensions-page .ext-pane-head .t { font-size: 19px; font-weight: 500; letter-spacing: -.01em;
   color: var(--text); }
 .extensions-page .ext-pane-head .s { font-family: var(--mono); font-size: var(--fs-label);
   color: var(--dim); }
@@ -4623,7 +4668,7 @@ details[open] > summary .arw { opacity: 1; }
 .extensions-page .ext-mp .dot { width: 10px; height: 10px; flex-basis: 10px; }
 
 .extensions-page .ext-sect { display: flex; align-items: baseline; gap: 9px; margin: 22px 0 10px;
-  font-size: var(--fs-label); font-weight: 600; letter-spacing: .11em; text-transform: uppercase;
+  font-size: var(--fs-label); font-weight: 500; letter-spacing: .11em; text-transform: uppercase;
   color: var(--muted); }
 .extensions-page .ext-sect .c { letter-spacing: 0; text-transform: none; font-family: var(--mono);
   font-size: 11px; color: var(--dim); font-weight: 400; }
@@ -4638,14 +4683,14 @@ details[open] > summary .arw { opacity: 1; }
 .extensions-page .ext-dialog { width: min(480px, 100%); background: var(--s1);
   border: 1px solid var(--line); border-radius: 14px; padding: 20px 22px 18px;
   box-shadow: 0 24px 60px rgba(0,0,0,.5); }
-.extensions-page .ext-dlg-t { font-size: 17px; font-weight: 620; color: var(--text); }
+.extensions-page .ext-dlg-t { font-size: 17px; font-weight: 500; color: var(--text); }
 .extensions-page .ext-dlg-s { font-size: var(--fs-data); color: var(--muted); margin: 6px 0 14px; }
 .extensions-page .ext-scopes { display: flex; flex-direction: column; gap: 6px; }
 .extensions-page .ext-scope { display: flex; align-items: center; gap: 10px; font-size: var(--fs-data);
   color: var(--text); padding: 8px 10px; border: 1px solid var(--ctl); border-radius: 10px;
   cursor: pointer; }
 .extensions-page .ext-scope:hover { border-color: var(--text); }
-.extensions-page .ext-scope b { font-weight: 600; }
+.extensions-page .ext-scope b { font-weight: 500; }
 .extensions-page .ext-scope span { color: var(--muted); }
 .extensions-page .ext-dlg-field { display: flex; align-items: center; gap: 10px; margin-top: 12px;
   font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
@@ -4745,7 +4790,7 @@ details[open] > summary .arw { opacity: 1; }
   border-left: 1px solid var(--line); }
 .settings-page .settings-pane-head { display: flex; align-items: baseline; gap: 10px;
   flex-wrap: wrap; margin: 2px 0 4px; }
-.settings-page .settings-pane-head .t { font-size: 19px; font-weight: 620; letter-spacing: -.01em;
+.settings-page .settings-pane-head .t { font-size: 19px; font-weight: 500; letter-spacing: -.01em;
   color: var(--text); }
 .settings-page .settings-pane-head .s { font-family: var(--mono); font-size: var(--fs-label);
   color: var(--dim); }
@@ -4757,7 +4802,7 @@ details[open] > summary .arw { opacity: 1; }
 .settings-page .settings-group { display: flex; align-items: center; gap: 10px;
   padding: 18px 2px 7px; }
 .settings-page .settings-group-name { font-family: var(--mono); font-size: 11px;
-  letter-spacing: .1em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+  letter-spacing: .1em; text-transform: uppercase; color: var(--muted); font-weight: 500; }
 .settings-page .settings-group-class { margin-left: auto; }
 
 .settings-page .settings-rows { width: 100%; border-collapse: collapse; table-layout: fixed;
@@ -4873,12 +4918,12 @@ details[open] > summary .arw { opacity: 1; }
 .settings-btn { border: 0; cursor: pointer; font: inherit; font-family: var(--mono);
   font-size: 12.5px; border-radius: 9px; padding: 7px 14px; }
 .settings-btn:disabled { opacity: .5; cursor: default; }
-.settings-btn.go { background: var(--accent); color: var(--bg); font-weight: 640; }
+.settings-btn.go { background: var(--accent); color: var(--bg); font-weight: 500; }
 .settings-btn.ghost { background: transparent; color: var(--muted);
   box-shadow: inset 0 0 0 1px var(--ctl); }
 .settings-btn.ghost:hover { color: var(--text);
   box-shadow: inset 0 0 0 1px var(--text); }
-.settings-btn.danger { background: var(--bad); color: var(--bg); font-weight: 640; }
+.settings-btn.danger { background: var(--bad); color: var(--bg); font-weight: 500; }
 
 .settings-scrim { position: fixed; inset: 0; z-index: 40; display: flex;
   align-items: center; justify-content: center; padding: 24px;
@@ -4886,7 +4931,7 @@ details[open] > summary .arw { opacity: 1; }
 .settings-dialog { width: min(460px, 100%); background: var(--s1);
   border: 1px solid var(--line); border-radius: 14px; padding: 20px 22px 18px;
   box-shadow: 0 24px 60px rgba(0,0,0,.5); }
-.settings-dialog .t { font-size: 17px; font-weight: 620; color: var(--text); }
+.settings-dialog .t { font-size: 17px; font-weight: 500; color: var(--text); }
 .settings-dialog .s { font-size: var(--fs-data); color: var(--muted);
   margin: 8px 0 16px; }
 .settings-dialog .acts { display: flex; justify-content: flex-end; gap: 8px; }
@@ -4934,12 +4979,14 @@ details[open] > summary .arw { opacity: 1; }
    rendered prose and the reviewable blocks (whose HTML is bare elements,
    so the same rules reach them). */
 .doc-page .doc-body { max-width: 940px; margin: 0 auto; background: var(--s1);
+  /* The document's own column, which its stacked tables guard on. */
+  container-type: inline-size;
   border: 1px solid var(--line); border-radius: 10px; padding: 52px 60px 44px; }
-.doc-page .doc-body h1 { font-size: 30px; line-height: 1.25; font-weight: 600;
+.doc-page .doc-body h1 { font-size: 30px; line-height: 1.25; font-weight: 500;
   letter-spacing: -0.01em; margin: 0 0 18px; }
-.doc-page .doc-body h2 { font-size: 19px; font-weight: 600; letter-spacing: -0.005em;
+.doc-page .doc-body h2 { font-size: 19px; font-weight: 500; letter-spacing: -0.005em;
   margin: 38px 0 12px; padding-top: 22px; border-top: 1px solid var(--line); }
-.doc-page .doc-body h3 { font-size: 16px; font-weight: 600; margin: 26px 0 8px; }
+.doc-page .doc-body h3 { font-size: 16px; font-weight: 500; margin: 26px 0 8px; }
 .doc-page .doc-body p, .doc-page .doc-body li { font-size: 15px; line-height: 1.72; }
 /* The PDF state is not a document body to typeset: the platform's viewer
    IS the page, so the sheet stands down and the embed takes the window. */

@@ -111,7 +111,7 @@ function tokenSpan(token: ThemedToken): string {
 function tokenFontStyle(bits: number): string {
   const styles = [
     (bits & 1) === 1 ? 'font-style:italic' : '',
-    (bits & 2) === 2 ? 'font-weight:bold' : '',
+    (bits & 2) === 2 ? 'font-weight:500' : '',
     (bits & 4) === 4 ? 'text-decoration:underline' : '',
   ].filter((style) => style !== '');
   return styles.join(';');
