@@ -21,6 +21,17 @@
  * that draws its edge as an inset shadow - its `box-shadow`, which is the
  * shape `.b-in` and `.ext-add-in` use. The whole value is compared, so a token
  * swapped for another cannot pass by naming something the table pairs.
+ *
+ * **A rule inside a media query is read too.** Two of the controls only get
+ * their boundary at a narrow width, and a scanner that skipped every nested
+ * rule could never fail for them.
+ *
+ * **Named exclusions, so the class is a claim with edges.** `.files-filter`
+ * and `.sg-open` draw a bottom rule on a text field and a text link - the
+ * underline is the idiom, not a boxed control boundary - so they stay the
+ * hairline. `.qcard.cur`'s ring is recorded in `contrast.test.ts` as
+ * decoration. Nothing else interactive is left out: a boxed control boundary
+ * here is `--ctl`, the `--s3` lift, or a button state's own solid tone.
  */
 
 import { readFileSync } from 'node:fs';
@@ -28,46 +39,55 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 /**
- * One top-level `selector { declarations }`, with comments stripped.
- *
- * A rule nested inside an at-rule is skipped rather than read: a `@media`
- * body holds its own rules, and several of the controls here have a coarse
- * pointer rule that sets a width and names no boundary.
+ * Every `selector { declarations }` whose selector is `selector`, at any
+ * depth, with comments stripped: a rule nested in an at-rule is a control's
+ * own rule as much as a top-level one.
  */
-function ruleIn(source: string, selector: string): string | null {
+function rulesIn(source: string, selector: string): string[] {
   const code = source.replace(/\/\*[\s\S]*?\*\//g, '');
-  let depth = 0;
+  const found: string[] = [];
   let start = 0;
   for (let at = 0; at < code.length; at += 1) {
-    if (code[at] === '{') {
+    const ch = code[at];
+    if (ch === '{') {
       const head = code.slice(start, at).trim().replace(/\s+/g, ' ');
-      if (depth === 0 && !head.startsWith('@')) {
-        const close = code.indexOf('}', at);
-        if (close === -1) break;
-        if (head === selector) return code.slice(at + 1, close);
-        at = close;
-        start = close + 1;
+      if (head.startsWith('@')) {
+        start = at + 1;
         continue;
       }
-      depth += 1;
-      start = at + 1;
-    } else if (code[at] === '}') {
-      depth -= 1;
+      const close = code.indexOf('}', at);
+      if (close === -1) break;
+      if (head === selector) found.push(code.slice(at + 1, close));
+      at = close;
+      start = close + 1;
+    } else if (ch === '}') {
       start = at + 1;
     }
   }
-  return null;
+  return found;
 }
 
-/** The value the rule draws its boundary with: its border, else its inset shadow. */
-function boundaryOf(selector: string, source: string): string {
-  const body = ruleIn(source, selector);
-  expect(body, `${selector} is drawn in the sheet`).not.toBeNull();
-  const border = /border(?:-color)?:\s*([^;]+);/.exec(body ?? '');
+/** The value one rule body draws its boundary with, or null for a body that names none. */
+function boundaryIn(body: string): string | null {
+  const border = /border(?:-color)?:\s*([^;]+);/.exec(body);
   const borderValue = border?.[1]?.trim() ?? '';
   if (borderValue.includes('var(')) return borderValue;
-  const shadow = /box-shadow:\s*([^;]+);/.exec(body ?? '');
-  return shadow?.[1]?.trim() ?? 'a boundary naming no token';
+  const shadow = /box-shadow:\s*([^;]+);/.exec(body);
+  return shadow?.[1]?.trim() ?? null;
+}
+
+/**
+ * The value the selector's boundary is drawn with: the first matching rule
+ * that names one, so a media-query rule that only sets a width is skipped.
+ */
+function boundaryOf(selector: string, source: string): string {
+  const bodies = rulesIn(source, selector);
+  expect(bodies.length, `${selector} is drawn in the sheet`).toBeGreaterThan(0);
+  for (const body of bodies) {
+    const boundary = boundaryIn(body);
+    if (boundary !== null) return boundary;
+  }
+  return 'a boundary naming no token';
 }
 
 const SHEET = readFileSync(new URL('./web.css', import.meta.url), 'utf8');
@@ -116,6 +136,15 @@ describe('the controls that draw a boundary nothing else carries', () => {
     );
     expect(boundaryOf('.tb-field', SHEET), "the takeover's field").toBe(CONTROL);
     expect(boundaryOf('.pop .dev', SHEET), "the device popover's row").toBe(CONTROL);
+    expect(boundaryOf('.pop .chip', SHEET), "the dictation panel's chips").toBe(CONTROL);
+    expect(boundaryOf('.rv-marker', SHEET), "the review thread's marker").toBe(CONTROL);
+    expect(boundaryOf('.files-sheetclose', SHEET), "the files sheet's close, media only").toBe(
+      CONTROL,
+    );
+    expect(
+      boundaryOf('.settings-page .settings-rail-item', SHEET),
+      'the settings rail item, media only',
+    ).toBe(CONTROL);
     expect(boundaryOf('.follow', SHEET), 'the follow button').toBe(CONTROL);
     expect(boundaryOf('.needchip.calm', SHEET), "the session band's calm chip").toBe('var(--ctl)');
     expect(boundaryOf('.rv-a', SHEET), "the review's action button").toBe(CONTROL);
@@ -134,6 +163,25 @@ describe('the controls that draw a boundary nothing else carries', () => {
     expect(
       boundaryOf('.models-page button.chip, .extensions-page button.chip', SHEET),
       'a chip that is a button',
+    ).toBe('var(--ctl)');
+    // **A button's state keeps a boundary that holds.** The base rule is
+    // outranked by each state's tint, and the warn tint measures 2.42:1, so
+    // each state that is a BUTTON marks itself in its own solid tone.
+    expect(
+      boundaryOf('.extensions-page button.chip.warn', SHEET),
+      'a warn chip that is a button',
+    ).toBe('var(--warn)');
+    expect(
+      boundaryOf('.extensions-page button.chip.bad', SHEET),
+      'a bad chip that is a button',
+    ).toBe('var(--bad)');
+    expect(
+      boundaryOf('.extensions-page button.chip.blue', SHEET),
+      'a blue chip that is a button',
+    ).toBe('var(--blue)');
+    expect(
+      boundaryOf('.extensions-page button.chip.dim', SHEET),
+      'a dim chip that is a button',
     ).toBe('var(--ctl)');
     expect(boundaryOf('.settings-page button.settings-mode', SHEET), 'the settings mode pill').toBe(
       CONTROL,
