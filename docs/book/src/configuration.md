@@ -1041,7 +1041,9 @@ same directory, validated by this loader, renamed over the path. Nothing
 else in forge writes it, which keeps it safe to sync between machines.
 
 Everything mutable lives in a single embedded redb database at
-`<app-support>/db.redb`: durable crons, Gotify subscriptions, Slack
+`<app-support>/db.redb`: durable crons and the schedules their fired
+prompts came from (the pairing a reloaded chat row titles itself by),
+Gotify subscriptions, Slack
 subscriptions, the sweep watermarks and the own-post ledger beside them,
 the session
 identity per project and label - the lead's and every worker's, which is

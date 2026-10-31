@@ -110,6 +110,21 @@ fn wake_default() -> bool {
     true
 }
 
+/// The schedule a fired prompt came from, keyed by the prompt's own id.
+///
+/// **The delivery frame carries this pairing once**, and a row drawn after a
+/// reload has nothing else to title itself from: the prose is the prompt and
+/// never the schedule. So the fire is remembered under the prompt's id, and a
+/// conversation read attaches the pair to the rows it serves.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CronName {
+    /// The entry that fired.
+    pub cron_id: String,
+    /// The entry's description, `None` for one registered without.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

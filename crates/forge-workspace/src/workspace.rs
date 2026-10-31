@@ -5304,6 +5304,7 @@ impl Workspace {
                 text: text.clone(),
                 attachments: Vec::new(),
                 source,
+                uuid: uuid.clone(),
                 sender: None,
             },
         ) {
