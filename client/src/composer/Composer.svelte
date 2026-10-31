@@ -328,12 +328,20 @@
       : null,
   );
 
+  const blocker = $derived(
+    blocked(seat, composer, box.sent, slot.label === 'lead', dockAsk !== null),
+  );
+  const filled = $derived(box.draft.trim() !== '');
+
   /**
    * The ask, said on the live row while it holds the body: its kind, the mark
    * it wears there, and the tone of something the reader owes an answer.
+   *
+   * **Not while a blocked line holds it.** The blocker outranks the ask, so a
+   * chip for an ask the body is not showing would be a door onto nothing.
    */
   const askChip = $derived.by(() => {
-    const held = dockAsk;
+    const held = blocker === null ? dockAsk : null;
     if (held === null) return null;
     if (held.kind === 'question') {
       return {
@@ -361,14 +369,14 @@
    * of the row.
    */
   const draftChip = $derived(
-    dockAsk !== null && !box.draftOpen && box.draft.trim() !== ''
+    blocker === null && dockAsk !== null && !box.draftOpen && box.draft.trim() !== ''
       ? { lines: box.draft.split('\n').length }
       : null,
   );
 
   /** Swap the body for the reader's draft, with the caret in it. */
   function swapToDraft(): void {
-    if (dockAsk === null) return;
+    if (dockAsk === null || blocker !== null) return;
     box.draftOpen = true;
     void tick().then(() => field?.focus({ preventScroll: true }));
   }
@@ -400,11 +408,6 @@
     composerPresent: dockAsk === null || box.draftOpen,
     dockPresent: dockOpen && !box.draftOpen,
   } satisfies Where);
-
-  const blocker = $derived(
-    blocked(seat, composer, box.sent, slot.label === 'lead', dockAsk !== null),
-  );
-  const filled = $derived(box.draft.trim() !== '');
 
   /**
    * Whether this seat has a turn to stop.

@@ -4166,6 +4166,41 @@ describe('the one body slot', () => {
     ).not.toBeNull();
   });
 
+  it('draws no ask chip over a blocked line', () => {
+    // The blocker outranks the ask, so a chip for the ask would be a door onto
+    // nothing. The row is pinned here so its absence is the chip's, not the
+    // row's.
+    pinnedRow.set(KEY, {
+      running: true,
+      failed: false,
+      duration_ms: 0,
+      api_ms: null,
+      ended_at_utc: null,
+      model: null,
+      thinking_tokens: null,
+      input_tokens: 1,
+      output_tokens: null,
+      cache_read_tokens: null,
+      cache_written_tokens: null,
+      session_cost_usd: null,
+    });
+    const harness = open({ record: record({ pending_asks: [questionAsk()] }) });
+    expect(
+      document.querySelector('.live-row .live-door.att'),
+      'precondition: the ask chip drew',
+    ).not.toBeNull();
+
+    harness.page.seat = seatRead({ lifecycle: null, waking: true });
+    flushSync();
+
+    expect(document.querySelector('.live-row'), 'precondition: the row stands').not.toBeNull();
+    expect(document.querySelector('.slot > .blocked'), 'precondition: blocked').not.toBeNull();
+    expect(
+      document.querySelector('.live-row .live-door.att'),
+      'the ask chip drew over a line the body is not showing',
+    ).toBeNull();
+  });
+
   it("opens the autocomplete as the card's own popover, not a lane of the body", () => {
     // The list took the band from 121px to 557px while it sat in the box's
     // flow. It is a child of the card now, placed by a rule of its own: a
