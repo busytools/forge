@@ -4,9 +4,9 @@
 # runs beside it, and neither ever restarts the other.
 set -eu
 
-seed=/usr/share/forge-web
+seed="${FORGE_SEED_DIR:-/usr/share/forge-web}"
 served="${FORGE_SERVED:-/srv/forge-web}"
-version_file=/usr/share/forge-web-version
+version_file="${FORGE_VERSION_FILE:-/usr/share/forge-web-version}"
 
 # **The seed is named for the release the image was built at**, so the
 # poller's same-version skip matches on the very first boot and a fresh
@@ -29,6 +29,6 @@ if [ ! -e "$served/current/index.html" ]; then
     ln -sfn "$seed_name" "$served/current"
 fi
 
-/usr/local/bin/poller.sh &
+"${FORGE_POLLER:-/usr/local/bin/poller.sh}" &
 
-exec nginx -g 'daemon off;'
+exec "${FORGE_NGINX:-nginx}" -g 'daemon off;'

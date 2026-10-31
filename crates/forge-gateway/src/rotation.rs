@@ -208,6 +208,25 @@ mod tests {
         );
     }
 
+    /// **The end a reader sleeps to is a live one.** An expired cooldown is
+    /// not a wake, so the filter drops it; the soonest of the rest is the
+    /// answer.
+    #[test]
+    fn the_soonest_cooldown_end_ignores_expired_cooldowns() {
+        let state = RotationState::new();
+        let now = SystemTime::now();
+        state.cool_down(&AccountKey("Expired".to_owned()), now - Duration::from_secs(1));
+        assert_eq!(state.soonest_cooldown_end(now), None, "an expired cooldown is no wake");
+
+        state.cool_down(&AccountKey("Later".to_owned()), now + Duration::from_secs(90));
+        state.cool_down(&AccountKey("Sooner".to_owned()), now + Duration::from_secs(30));
+        assert_eq!(
+            state.soonest_cooldown_end(now),
+            Some(now + Duration::from_secs(30)),
+            "the soonest live cooldown is what a reader sleeps to",
+        );
+    }
+
     #[test]
     fn a_unix_reset_time_maps_from_the_epoch() {
         let reset = reset_instant(1_000_000);

@@ -50,6 +50,9 @@ jobs:
       # The poller, outside the image: the swap, the same-version skip and
       # the sha256 refusal, against a local manifest.
       - run: ./docker/test_poller.sh
+      # The entrypoint's seed naming, outside the image: a release build's
+      # seed is named for its version, which is what the skip matches on.
+      - run: ./docker/test_entrypoint.sh
       - name: publish to ghcr
         if: startsWith(github.ref, 'refs/tags/v')
         run: |

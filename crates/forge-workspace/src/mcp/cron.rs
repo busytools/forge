@@ -248,8 +248,9 @@ impl Tool for List {
     fn description(&self) -> &'static str {
         "List the durable crons you registered, in your project. Returns a JSON array of {id, \
          project, schedule, prompt, next_fire}. Use an id with cron__delete. An empty array means \
-         you have no crons registered; any other failure is an error rather than an empty list. \
-         Takes no arguments. Any session in the project may call this."
+         you have no crons registered, or that this run opened no durable store (the boot log \
+         names it); an unresolvable caller is an error rather than an empty list. Takes no \
+         arguments. Any session in the project may call this."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -663,6 +664,13 @@ mod tests {
                  '{stale}' caveat: {list_desc}",
             );
         }
+        // The one condition that still lists nothing without being an error:
+        // a run whose store did not open has an empty in-memory set, so the
+        // description keeps that caveat - and only that one.
+        assert!(
+            list_desc.contains("opened no durable store"),
+            "an empty list must own up to a run with no durable store: {list_desc}",
+        );
     }
 
     /// A worker's directory can be gone with its row kept, and then

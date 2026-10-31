@@ -50,6 +50,15 @@ pub mod task_history;
 pub mod tasks;
 pub mod token_usage;
 
+/// This config dir's store file: `<app_support>/stores/<stable-key>.redb`.
+///
+/// The key is stable across Rust releases; the single-instance lock keeps its
+/// own [`forge_sdk::config_dir_hash`], so a new binary never misses a running
+/// old process's lock.
+pub fn path_for(app_support: &Path, config_dir: &Path) -> std::path::PathBuf {
+    app_support.join("stores").join(format!("{}.redb", forge_sdk::config_dir_store_key(config_dir)))
+}
+
 /// Handle to the machine-local redb database.
 pub struct Db {
     inner: redb::Database,

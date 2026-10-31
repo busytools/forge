@@ -373,6 +373,19 @@ mod prod_facade_tests {
         assert_eq!(left[0].id, neighbour.id, "and it is the neighbour that survives");
     }
 
+    /// **An unresolvable caller is a refusal from the real facade**, not an
+    /// empty registry: the production arm is what the tool's error renders.
+    #[test]
+    fn list_refuses_a_caller_that_maps_to_no_project() {
+        let (_ws, facade, _lead, _worker) = fixture();
+
+        assert_eq!(
+            facade.list_crons(&SessionSlot::lead("TestOrg", "no-such-project")),
+            Err(CronListError::UnknownCallerProject),
+            "a caller outside every project must not read as a caller with no crons",
+        );
+    }
+
     /// The other half of the refusal: an id the project never had is a
     /// different answer from one that exists under another session.
     #[test]

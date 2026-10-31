@@ -399,23 +399,17 @@ impl BrowserService {
         // **The deletion can be gigabytes, so it does not hold up boot.** It
         // runs once off this thread; the marker keeps a later boot off it,
         // and the one INFO line names every path that went.
-        std::thread::spawn(move || {
-            // **A boot is the one moment that knows an older bundle is done
-            // with.** An install leaves the running server's own version in
-            // place; this process keeps its own and drops the rest.
-            crate::host_bundle::prune_other_versions();
-            match store.delete_legacy() {
-                Ok(legacy) if legacy.ran => tracing::info!(
-                    "the legacy browser profiles are deleted (event_name \
-                     browser_profiles_legacy_deleted, removed {:?})",
-                    legacy.removed,
-                ),
-                Ok(_) => {}
-                Err(why) => tracing::warn!(
-                    "the legacy browser profiles could not be deleted (event_name \
-                     browser_profiles_legacy_delete_failed): {why}"
-                ),
-            }
+        std::thread::spawn(move || match store.delete_legacy() {
+            Ok(legacy) if legacy.ran => tracing::info!(
+                "the legacy browser profiles are deleted (event_name \
+                 browser_profiles_legacy_deleted, removed {:?})",
+                legacy.removed,
+            ),
+            Ok(_) => {}
+            Err(why) => tracing::warn!(
+                "the legacy browser profiles could not be deleted (event_name \
+                 browser_profiles_legacy_delete_failed): {why}"
+            ),
         });
         Ok(Self::at(root.clone(), root.join("stack")))
     }

@@ -213,6 +213,13 @@ fn install_browser(
 ) -> anyhow::Result<Arc<forge_browser::service::BrowserService>> {
     let fleet = forge_browser::service::BrowserService::installed()
         .map_err(|why| anyhow::anyhow!("forge: {why}"))?;
+    // **The old versions' bundles are dropped only when no peer is running.**
+    // The app-support tree is machine-wide, so a second config dir's server
+    // may still resolve the bundle this boot would delete. Off the boot
+    // thread because each prune is a CEF tree.
+    if workspace.sole_instance() {
+        std::thread::spawn(forge_browser::host_bundle::prune_other_versions);
+    }
     // **The encoding and the idle clock are the `[browser]` keys**: a
     // profile nobody has touched closes after the bound.
     let browser = workspace.browser_settings();

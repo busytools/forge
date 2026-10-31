@@ -576,7 +576,10 @@ impl SessionTask {
                             let sender = prompt.sender.clone();
                             let first = prompt.text.lines().next().unwrap_or_default().to_owned();
                             let uuid = forge_sdk::request_id::next_forged_prompt_id();
-                            if let Err(error) = workspace.dispatch(Command::PromptUnder {
+                            // `route`, not `dispatch`: the prompt was already
+                            // drawn when it was held, and the dispatch entry
+                            // would stamp an origin that draws it a second time.
+                            if let Err(error) = workspace.route(Command::PromptUnder {
                                 key: key.clone(),
                                 text: prompt.text,
                                 attachments: prompt.attachments,
@@ -1981,7 +1984,10 @@ impl SessionTask {
             let sender = prompt.sender.clone();
             let first = prompt.text.lines().next().unwrap_or_default().to_owned();
             let uuid = forge_sdk::request_id::next_forged_prompt_id();
-            if let Err(error) = workspace.dispatch(Command::PromptUnder {
+            // `route`, not `dispatch`: the prompt was already drawn when it
+            // was held, and the dispatch entry would stamp an origin that
+            // draws it a second time.
+            if let Err(error) = workspace.route(Command::PromptUnder {
                 key: key.clone(),
                 text: prompt.text,
                 attachments: prompt.attachments,
@@ -4352,9 +4358,10 @@ mod tests {
         assert!(
             dispatched.iter().any(|command| matches!(
                 command,
-                Command::PromptUnder { text, .. } if text == "sent during the swap"
+                Command::PromptUnder { text, origin: None, .. } if text == "sent during the swap"
             )),
-            "the held prompt goes back to the session that continues: {dispatched:?}",
+            "the held prompt goes back to the session that continues, drawn once already - a \
+             stamped origin would draw it a second time: {dispatched:?}",
         );
     }
 
@@ -4480,9 +4487,10 @@ mod tests {
         assert!(
             dispatched.iter().any(|command| matches!(
                 command,
-                Command::PromptUnder { text, .. } if text == "sent during the swap"
+                Command::PromptUnder { text, origin: None, .. } if text == "sent during the swap"
             )),
-            "the held prompt goes back to the session that continues: {dispatched:?}",
+            "the held prompt goes back to the session that continues, drawn once already - a \
+             stamped origin would draw it a second time: {dispatched:?}",
         );
     }
 
@@ -4645,9 +4653,10 @@ mod tests {
         assert!(
             dispatched.iter().any(|command| matches!(
                 command,
-                Command::PromptUnder { text, .. } if text == "sent during the swap"
+                Command::PromptUnder { text, origin: None, .. } if text == "sent during the swap"
             )),
-            "and what the swap held goes to the occupant that is here: {dispatched:?}",
+            "and what the swap held goes to the occupant that is here, drawn once already - a \
+             stamped origin would draw it a second time: {dispatched:?}",
         );
     }
 

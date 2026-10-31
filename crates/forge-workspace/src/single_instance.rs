@@ -58,6 +58,33 @@ fn lock_path(config_dir: &Path, app_support: &Path) -> PathBuf {
     app_support.join(LOCK_DIR_NAME).join(format!("{}.lock", forge_sdk::config_dir_hash(config_dir)))
 }
 
+/// Whether another live forge holds a lock under `app_support` for a config
+/// dir other than `config_dir`.
+///
+/// **The machine-wide app-support tree is shared by every config dir**, so a
+/// boot that changes something there - the browser host's per-version prune -
+/// has to ask whether a peer is still running first. A lock file whose flock
+/// nobody holds is a leftover from a process that exited, not a peer.
+pub(crate) fn another_instance_running(config_dir: &Path, app_support: &Path) -> bool {
+    let ours = lock_path(config_dir, app_support);
+    let Ok(entries) = std::fs::read_dir(app_support.join(LOCK_DIR_NAME)) else { return false };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path == ours || !path.is_file() {
+            continue;
+        }
+        let Ok(file) = OpenOptions::new().read(true).write(true).open(&path) else { continue };
+        match flock(&file, FlockOperation::NonBlockingLockExclusive) {
+            Ok(()) => {
+                let _ = flock(&file, FlockOperation::Unlock);
+            }
+            // Someone holds it: a live forge owns that config dir.
+            Err(_) => return true,
+        }
+    }
+    false
+}
+
 /// Acquire the per-config-dir single-instance lock under `app_support`.
 ///
 /// The caller resolves the base, so a test can pass a tempdir and never
@@ -223,5 +250,38 @@ mod tests {
         }
         let second = acquire(cfg.path(), base.path()).expect("second ok");
         assert!(second.is_some(), "the lock is reacquirable after the holder drops it");
+    }
+
+    /// **A peer's live lock is what a boot must not step over.** A floor of
+    /// stale lockfiles from exited processes is not a peer; a held one is.
+    #[test]
+    fn another_instance_running_sees_only_a_held_peer_lock() {
+        let base = base();
+        let cfg_a = tempdir().expect("cfg a");
+        let cfg_b = tempdir().expect("cfg b");
+
+        // A stale file from a process that exited: present, not held.
+        let stale = lock_path(cfg_b.path(), base.path());
+        std::fs::create_dir_all(stale.parent().expect("locks dir")).expect("locks dir");
+        std::fs::write(&stale, b"12345").expect("stale lock");
+        assert!(
+            !another_instance_running(cfg_a.path(), base.path()),
+            "an exited process's lockfile is not a live peer",
+        );
+
+        let held = acquire(cfg_b.path(), base.path()).expect("b acquires").expect("b holds");
+        assert!(
+            another_instance_running(cfg_a.path(), base.path()),
+            "a held peer lock means another forge is live",
+        );
+        assert!(
+            !another_instance_running(cfg_b.path(), base.path()),
+            "a server never counts its own lock as a peer",
+        );
+        drop(held);
+        assert!(
+            !another_instance_running(cfg_a.path(), base.path()),
+            "the peer is gone once its lock drops",
+        );
     }
 }

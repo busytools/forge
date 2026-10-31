@@ -1517,10 +1517,87 @@ fn persist_session_tag_cache(
     }
 }
 
-/// This config dir's redb store: `<app_support>/stores/<hex-hash>.redb`,
-/// keyed the way the single-instance lock is.
+/// This config dir's redb store: `<app_support>/stores/<stable-key>.redb`.
+///
+/// **The key is stable across Rust releases** ([`forge_sdk::config_dir_store_key`]),
+/// unlike the lock's `config_dir_hash`: a nightly bump must not open a new
+/// empty store and orphan every row.
 fn store_path(app_support: &Path, config_dir: &Path) -> PathBuf {
-    app_support.join("stores").join(format!("{}.redb", forge_sdk::config_dir_hash(config_dir)))
+    crate::store::path_for(app_support, config_dir)
+}
+
+/// Whether `config_dir` is the default one, `~/.claude`.
+///
+/// The pre-split machine-wide store is the default config dir's state, so
+/// only that config dir may adopt it. A scratch or second config dir booting
+/// first must not take it; such a dir leaves the legacy file in place and
+/// says so.
+fn is_default_config_dir(config_dir: &Path) -> bool {
+    let Some(home) = dirs::home_dir() else { return false };
+    let default = home.join(".claude");
+    match (config_dir.canonicalize(), default.canonicalize()) {
+        (Ok(ours), Ok(theirs)) => ours == theirs,
+        _ => config_dir == default,
+    }
+}
+
+/// Adopt the pre-split machine-wide store into this config dir's own, once.
+///
+/// **Only the default config dir adopts** (see [`is_default_config_dir`]),
+/// and the file is probe-opened first: a store another forge still holds is
+/// left where it is rather than renamed behind its back.
+fn adopt_legacy_store(app_support: &Path, config_dir: &Path, path: &Path) {
+    let legacy = app_support.join("db.redb");
+    if path.exists() || !legacy.is_file() {
+        return;
+    }
+    if !is_default_config_dir(config_dir) {
+        tracing::warn!(
+            target: "forge_workspace::workspace",
+            event_name = "store_legacy_left_in_place",
+            legacy = %legacy.display(),
+            config_dir = %config_dir.display(),
+            "the machine-wide store belongs to the default config dir; leaving it there",
+        );
+        return;
+    }
+    adopt_legacy_store_from(&legacy, path);
+}
+
+/// The adoption itself, with the default-dir verdict already decided.
+fn adopt_legacy_store_from(legacy: &Path, path: &Path) {
+    match crate::store::Db::open(legacy) {
+        // The probe takes the file's own lock and drops it again, so a store
+        // another process holds is refused here rather than moved under it.
+        Ok(probe) => drop(probe),
+        Err(error) => {
+            tracing::warn!(
+                target: "forge_workspace::workspace",
+                event_name = "store_legacy_in_use",
+                %error,
+                legacy = %legacy.display(),
+                "the machine-wide store is held by another process; this run starts with an empty store",
+            );
+            return;
+        }
+    }
+    match std::fs::rename(&legacy, path) {
+        Ok(()) => tracing::info!(
+            target: "forge_workspace::workspace",
+            event_name = "store_legacy_adopted",
+            from = %legacy.display(),
+            to = %path.display(),
+            "the machine-wide store is adopted by the default config dir",
+        ),
+        Err(error) => tracing::warn!(
+            target: "forge_workspace::workspace",
+            event_name = "store_legacy_adopt_failed",
+            %error,
+            from = %legacy.display(),
+            to = %path.display(),
+            "the machine-wide store could not be adopted; this run starts with an empty store",
+        ),
+    }
 }
 
 /// Open this config dir's redb store, creating the directories first.
@@ -1529,45 +1606,29 @@ fn store_path(app_support: &Path, config_dir: &Path) -> PathBuf {
 /// dynamic workers this session (hard rule #14: no cwd fallback).
 ///
 /// **The store is keyed by the config dir, as the lock is.** A machine-wide
-/// `<app_support>/db.redb` from before the split is adopted by the first
-/// config dir to boot: the common machine has one config dir, and that file
-/// is its state. A second config dir starts empty, which is the isolation
-/// this keying exists for.
+/// `<app_support>/db.redb` from before the split is adopted once, by the
+/// default config dir; a second config dir starts empty, which is the
+/// isolation this keying exists for.
 fn open_db(app_support: &Path, config_dir: &Path) -> Option<crate::store::Db> {
     let path = store_path(app_support, config_dir);
     let stores = path.parent()?;
     if let Err(error) = std::fs::create_dir_all(stores) {
         tracing::warn!(
             target: "forge_workspace::workspace",
+            event_name = "store_dir_create_failed",
             %error,
             path = %stores.display(),
             "creating the app-support stores dir failed; durable crons, subscriptions, tasks and dynamic workers will not persist",
         );
         return None;
     }
-    let legacy = app_support.join("db.redb");
-    if !path.exists() && legacy.is_file() {
-        match std::fs::rename(&legacy, &path) {
-            Ok(()) => tracing::info!(
-                target: "forge_workspace::workspace",
-                from = %legacy.display(),
-                to = %path.display(),
-                "the machine-wide store is adopted by this config dir",
-            ),
-            Err(error) => tracing::warn!(
-                target: "forge_workspace::workspace",
-                %error,
-                from = %legacy.display(),
-                to = %path.display(),
-                "the machine-wide store could not be adopted; this config dir starts with an empty store",
-            ),
-        }
-    }
+    adopt_legacy_store(app_support, config_dir, &path);
     match crate::store::Db::open(&path) {
         Ok(db) => Some(db),
         Err(error) => {
             tracing::warn!(
                 target: "forge_workspace::workspace",
+                event_name = "store_open_failed",
                 %error,
                 path = %path.display(),
                 "opening the redb store failed; durable crons, subscriptions, tasks and dynamic workers will not persist",
@@ -4168,6 +4229,19 @@ impl Workspace {
         });
     }
 
+    /// Whether this is the only live forge on the machine: no other config
+    /// dir's lock is held.
+    ///
+    /// **The app-support tree is machine-wide**, so a boot that changes
+    /// something shared in it - the browser host's per-version prune - has
+    /// to establish this first, or it deletes a peer's state.
+    pub fn sole_instance(&self) -> bool {
+        match self.app_support.as_deref() {
+            Some(base) => !crate::single_instance::another_instance_running(&self.config_dir, base),
+            None => false,
+        }
+    }
+
     /// Announce the roster on every rotation change: a cooldown a live 429
     /// starts (a write the gateway publishes) and the clock-driven thaw
     /// after it (which no write announces, so this task sleeps to it).
@@ -4180,6 +4254,7 @@ impl Workspace {
         if self.rotation_announcer_started.swap(true, std::sync::atomic::Ordering::AcqRel) {
             tracing::debug!(
                 target: "forge_workspace::workspace",
+                event_name = "rotation_announcer_started_twice",
                 "start_rotation_announcer called more than once; ignoring",
             );
             return;
@@ -13187,31 +13262,55 @@ provider = "anthropic"
     /// that hears nothing keeps drawing an account's old bindability. The
     /// cooling start is a write the gateway publishes; the thaw is only a
     /// clock, so the announcer sleeps to it.
+    ///
+    /// **The arrival instants are the evidence that the second frame is the
+    /// thaw and not a repeat.** A watcher announcing on every wake, or a
+    /// second watcher the duplicate-start guard failed to stop, delivers its
+    /// second frame before the reset; only the clock-driven wake lands after.
     #[tokio::test]
     async fn a_rotation_cool_and_its_thaw_each_announce_the_accounts() {
         let dir = tempdir().expect("tempdir");
         let (ws, mut rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        assert!(
+            !ws.rotation_announcer_started_for_test(),
+            "premise: no announcer before the boot call",
+        );
         ws.start_rotation_announcer();
+        ws.start_rotation_announcer();
+        assert!(
+            ws.rotation_announcer_started_for_test(),
+            "the boot call starts the one watcher, and a second call is a no-op",
+        );
 
         let reset_at = SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .expect("after the epoch")
             .as_secs()
-            + 2;
+            + 3;
+        let thaw = forge_gateway::rotation::reset_instant(reset_at);
         ws.gateway.report_probe_limit(&AccountKey("Cooling".to_owned()), Some(reset_at));
 
-        let mut announced = 0;
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
-        while announced < 2 {
+        let mut arrivals = Vec::new();
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
+        while arrivals.len() < 2 {
             let frame = tokio::time::timeout_at(deadline, rx.recv())
                 .await
                 .expect("the cool and the thaw both announce inside the bound")
                 .expect("the update channel stays open");
             if matches!(&*frame.update, SessionUpdate::AccountsChanged { .. }) {
-                announced += 1;
+                arrivals.push(SystemTime::now());
             }
         }
-        assert_eq!(announced, 2, "one frame for the cool and one for the thaw");
+        assert!(
+            arrivals[0] < thaw,
+            "the cool is announced when the write lands, before the thaw: {:?}",
+            arrivals[0],
+        );
+        assert!(
+            arrivals[1] >= thaw,
+            "the second frame is the thaw the clock drives, not a repeat: {:?} vs {thaw:?}",
+            arrivals[1],
+        );
     }
 
     /// **The row forge's machinery forges carries the stamp a clock is read
@@ -14897,7 +14996,9 @@ provider = "anthropic"
         let dir = make_workspace_dir_with_two_accounts();
         let app_support = dir.path().join("app-support");
         fs::create_dir_all(&app_support).expect("app-support dir");
-        let db = crate::store::Db::open(&app_support.join("db.redb")).expect("open db");
+        let db_path = store_path(&app_support, dir.path());
+        fs::create_dir_all(db_path.parent().expect("the stores dir")).expect("stores dir");
+        let db = crate::store::Db::open(&db_path).expect("open db");
         // The key the boot derives, so the seeded row is one it can match:
         // the config resolves the project path, so a literal from the
         // fixture is not the same string.
@@ -14949,7 +15050,9 @@ provider = "anthropic"
         let dir = make_workspace_dir_with_two_accounts();
         let app_support = dir.path().join("app-support");
         fs::create_dir_all(&app_support).expect("app-support dir");
-        let db = crate::store::Db::open(&app_support.join("db.redb")).expect("open db");
+        let db_path = store_path(&app_support, dir.path());
+        fs::create_dir_all(db_path.parent().expect("the stores dir")).expect("stores dir");
+        let db = crate::store::Db::open(&db_path).expect("open db");
         let config = crate::config::load_from_dir(dir.path()).expect("load config");
         let project_key = forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
             &config.projects[0].path.to_string_lossy(),
@@ -15052,7 +15155,9 @@ provider = "anthropic"
         let dir = make_workspace_dir_with_two_accounts();
         let app_support = dir.path().join("app-support");
         fs::create_dir_all(&app_support).expect("app-support dir");
-        let db = crate::store::Db::open(&app_support.join("db.redb")).expect("open db");
+        let db_path = store_path(&app_support, dir.path());
+        fs::create_dir_all(db_path.parent().expect("the stores dir")).expect("stores dir");
+        let db = crate::store::Db::open(&db_path).expect("open db");
         crate::store::dynamic_workers::insert_for_test(
             &db,
             &crate::store::dynamic_workers::DynamicWorker {
@@ -24778,23 +24883,50 @@ provider = "anthropic"
         drop((first, second));
     }
 
-    /// **A machine-wide store from before the split is adopted once.** The
-    /// common machine has one config dir, and the old file is its state; the
-    /// first config dir to boot takes it, and the old path is left empty.
+    /// **A machine-wide store from before the split is adopted once**, and
+    /// only from the default config dir: a scratch or second config dir
+    /// booting first must not take the user's state.
     #[test]
-    fn a_machine_wide_store_is_adopted_by_the_first_config_dir() {
+    fn a_machine_wide_store_is_adopted_once_and_only_by_the_default_config_dir() {
         let dir = tempdir().expect("tempdir");
         let app_support = dir.path().join("app-support");
         std::fs::create_dir_all(&app_support).expect("the app-support dir");
         let legacy = app_support.join("db.redb");
         drop(crate::store::Db::open(&legacy).expect("a store at the old path"));
-        let config_dir = dir.path().join("config");
+        let target = app_support.join("stores").join("adopted.redb");
+        std::fs::create_dir_all(target.parent().expect("the stores dir")).expect("stores dir");
 
-        let adopted = open_db(&app_support, &config_dir).expect("the adopted store");
+        adopt_legacy_store_from(&legacy, &target);
 
-        assert!(store_path(&app_support, &config_dir).is_file(), "it is this config dir's now");
-        assert!(!legacy.exists(), "and no longer at the machine-wide path");
-        drop(adopted);
+        assert!(target.is_file(), "the default config dir took it");
+        assert!(!legacy.exists(), "and the machine-wide path is empty");
+    }
+
+    /// **A store another process holds is left alone.** Renaming it would
+    /// move the file out from under a live writer; this run starts empty
+    /// instead, and the file stays where its owner has it.
+    #[test]
+    fn a_machine_wide_store_in_use_is_not_adopted() {
+        let dir = tempdir().expect("tempdir");
+        let app_support = dir.path().join("app-support");
+        std::fs::create_dir_all(&app_support).expect("the app-support dir");
+        let legacy = app_support.join("db.redb");
+        let held = crate::store::Db::open(&legacy).expect("a store at the old path");
+        let target = app_support.join("stores").join("adopted.redb");
+
+        adopt_legacy_store_from(&legacy, &target);
+
+        assert!(!target.exists(), "nothing was moved in");
+        assert!(legacy.is_file(), "and the owner still has its file where it was");
+        drop(held);
+    }
+
+    /// A temp config dir is not the default one, so it has no claim on the
+    /// machine-wide file.
+    #[test]
+    fn a_scratch_config_dir_is_not_the_default_one() {
+        let dir = tempdir().expect("tempdir");
+        assert!(!is_default_config_dir(dir.path()), "{}", dir.path().display());
     }
 }
 
