@@ -1157,6 +1157,28 @@ describe('the switch gap marks (#2513)', () => {
   });
 
   /**
+   * **A click dies with a subscribe for another seat.** The reader went
+   * elsewhere, so a later subscribe of the clicked seat is not that click's
+   * measurement - only the sessionless home loop leaves the click armed.
+   */
+  it('drops a click when another seat is subscribed', () => {
+    const h = harness();
+    h.probe.setSurface('session', 'forge/agent');
+    h.probe.noteSeatClick('forge/lead');
+    h.advance(1_000);
+    h.probe.noteSubscribe('forge/beta', false);
+    h.advance(2_000);
+    h.probe.noteSubscribe('forge/lead', false);
+
+    const [other, later] = h.records.flat().filter((record) => record.kind === 'subscribe');
+    expect(other?.since_click_ms, 'the other seat is not the click').toBeUndefined();
+    expect(
+      later?.since_click_ms,
+      'a click outlived the subscribe that went elsewhere',
+    ).toBeUndefined();
+  });
+
+  /**
    * **A click is spent on its own seat's subscribe and no other.** A seat the
    * client already holds opens no subscribe, so a bare timestamp outlived the
    * click - and the next automatic subscribe of an unrelated subject reported

@@ -203,14 +203,16 @@ export interface PerfRecord {
   /** A `subscribe`: ms since the click that preceded it; absent when no
    *  click did, so a reconnect never invents one. */
   since_click_ms?: number;
-  /** A slow `frame`: whether the document was hidden when the record was
-   *  written - a visibility gate rather than a blocked thread (#2569). */
+  /** A slow `frame`: whether the gap it measures overlapped a hidden window,
+   *  sampled when the record is written - a visibility gate rather than a
+   *  blocked thread (#2569). */
   hidden?: boolean;
   /**
    * A `snapshot`'s JSON length in string units (UTF-16 code units), which is
    * what the boundary parse walked without a second pass over it (#2513). A
    * frame that crossed compressed reports its inflated length here; the
-   * bytes it cost on the wire are the server's `frame_write` line.
+   * bytes it cost on the wire are the server's `frame_write` line when the
+   * frame was a seat's open - a home or board read has no such line.
    */
   chars?: number;
   /** A `snapshot`: how long its JSON.parse took, at the boundary. */
