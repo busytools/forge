@@ -117,6 +117,7 @@ pub const DEFAULT_LOG_DIRECTIVES: &str = "info,\
     agent.env_git=debug,\
     forge_agent::env::config_watch=debug,\
     forge_server=debug,\
+    agent.catalog_scan=debug,\
     forge_agent::userdata::catalog::scan=debug,\
     forge_workspace::output_tail=debug,\
     forge_workspace::work=debug,\
@@ -460,6 +461,19 @@ mod tests {
         // session's own data rather than forge's health, and without the
         // directive the records land nowhere at all.
         assert!(DEFAULT_LOG_DIRECTIVES.contains("forge_agent::userdata::catalog::scan=debug"));
+        // The scan's lite-read failures carry a target of their own,
+        // `agent.catalog_scan`, which the module-path directive above does
+        // not match: a target is not a module path. Without this directive
+        // those records - the only trace of a session whose transcript could
+        // not be read - land nowhere at all. Matched as a whole directive
+        // rather than a substring, so a prefix that only ends in this target
+        // cannot satisfy the pin.
+        assert!(
+            DEFAULT_LOG_DIRECTIVES
+                .split(',')
+                .any(|directive| directive.trim() == "agent.catalog_scan=debug"),
+            "the lite-read target has a directive of its own: {DEFAULT_LOG_DIRECTIVES}",
+        );
         // `forge_workspace::output_tail` carries the tail read's
         // unreadable-line record, demoted there for the same reason: a line
         // the watched command wrote that cannot be decoded is that command's
