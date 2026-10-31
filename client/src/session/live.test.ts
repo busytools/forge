@@ -3236,14 +3236,13 @@ describe('the seat the client holds between visits', () => {
 });
 
 /**
- * The read this client still makes, and what an answer the frames outran does.
+ * The read this client still makes, and the one answer it refuses.
  *
  * **Every slice a frame can carry has a handler now**, so a read is the whole
  * record and there is no field a timer keeps fresh: the poll retired with the
  * last one. What is left to pin is when an ANSWER is taken - a cold load, a
  * reconnect and a swap are owed the whole record, and an answer the frames
- * have already outrun is held for the stretch above its own number and taken
- * when that lands (#2563).
+ * have already outrun is not.
  */
 describe('the read, and the answer a frame has outrun', () => {
   /**
@@ -3267,131 +3266,103 @@ describe('the read, and the answer a frame has outrun', () => {
     back.stop();
   });
 
-  /** One repaired stretch, as the server answers a range ask. */
-  function repaired(...frames: { seq: number; text: string }[]): ServerMessage {
-    return {
-      kind: 'seat_frames',
-      slot: LEAD,
-      epoch: null,
-      frames: frames.map((frame) => ({
-        seq: frame.seq,
-        update: { chat_appended: { key: LEAD, msg: spoke(frame.text, `u${frame.seq}`) } },
-      })),
-    };
-  }
-
   /**
-   * **An answer the frames have outrun is taken with only its own stretch
-   * fetched** (#2563). A whole record is the whole conversation encoded again
-   * - megabytes on the link this exists for - while the frames since its
-   * encode point were drawn on the record it replaces. One range ask for
-   * exactly those numbers closes the gap, and the answer is held until it
-   * lands so the record never draws backwards on the reader.
+   * **An answer the frames have outrun is refused, and asked for again.** A
+   * read is the whole record now, so one encoded before a frame that has
+   * already landed carries the seat backwards: the page keeps what the frames
+   * left and asks a second time, which is the want the merge used to satisfy
+   * by patching around the answer.
    */
-  it('takes an answer the frames outran, and fetches only the stretch above it', () => {
+  it('refuses an answer the frames have outrun, and asks again', () => {
     const connection = drivable();
     const page = watch(connection);
     page.land(snapshotOf(LEAD, { conversation: { turns: [], compaction_count: 0 } }, { seq: 1 }));
-    for (let at = 1; at <= 3; at += 1) {
-      page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke(`line ${at}`, `u${at}`) } }, at));
-    }
+    page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke('hello') } }, 1));
     paint();
-    expect(spoken(page), 'precondition: the frames landed').toEqual(['line 1', 'line 2', 'line 3']);
+    expect(page.read().wire?.conversation.turns, 'precondition: the frame landed').toHaveLength(1);
 
-    // A notice wants the record, and the frames keep streaming while the
-    // answer is in flight.
-    rereadSeat(connection, LEAD);
+    // The seat takes a new occupant: the page asks for the whole record.
+    page.land(frameOf(occupant('new'), 2));
     const asked = page.reads();
-    page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke('line 4', 'u4') } }, 4));
-    page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke('line 5', 'u5') } }, 5));
+
+    // A frame lands while that answer is in flight - the new epoch's first,
+    // the successor of where the wipe left the record - so the record has
+    // been carried past where the answer was encoded.
+    page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke('more', 'u3') } }, 1));
     paint();
 
-    // The answer stands where the stream stood at the ask: it carries the
-    // record through the third frame, and the fourth and fifth outrun it.
+    // The answer lands: the seat as it was BEFORE that frame, standing where
+    // its stream stood before it.
     page.land(
       snapshotOf(
         LEAD,
-        {
-          conversation: {
-            turns: [
-              {
-                key: 'turn-1',
-                messages: [spoke('line 1', 'u1'), spoke('line 2', 'u2'), spoke('line 3', 'u3')],
-              },
-            ],
-            compaction_count: 0,
-          },
-        },
-        { seq: 4 },
+        { conversation: { turns: [], compaction_count: 0 } },
+        { seq: 1, epoch: 'new' },
       ),
     );
-    paint();
 
-    expect(page.reads(), 'the outrun answer was bought again whole').toBe(asked);
-    expect(connection.ranges, 'only the stretch above the answer is fetched').toEqual([
-      { slot: LEAD, epoch: null, from: 4, to: 5 },
-    ]);
     expect(
-      spoken(page),
-      'the record was drawn back to the answer before its stretch landed',
-    ).toEqual(['line 1', 'line 2', 'line 3', 'line 4', 'line 5']);
+      page.read().wire?.conversation.turns,
+      'an answer the frames had outrun was taken',
+    ).toHaveLength(2);
+    expect(page.reads(), 'the outrun answer was never asked for again').toBe(asked + 1);
 
-    // The stretch lands: the answer is taken and the frames above it draw on
-    // the record they belong to.
-    page.land(repaired({ seq: 4, text: 'line 4' }, { seq: 5, text: 'line 5' }));
-    paint();
-    expect(spoken(page), 'the stretch was not drawn on the answer').toEqual([
-      'line 1',
-      'line 2',
-      'line 3',
-      'line 4',
-      'line 5',
-    ]);
-    expect(page.reads(), 'a held answer bought another whole read').toBe(asked);
+    // And the fresh ask converges: its clean answer is taken whole.
+    page.land(
+      snapshotOf(
+        LEAD,
+        { conversation: { turns: [], compaction_count: 0 }, work: null },
+        { seq: 4, epoch: 'new' },
+      ),
+    );
+    expect(page.read().wire?.conversation.turns, 'the fresh answer was not taken').toHaveLength(0);
     page.stop();
   });
 
   /**
-   * **A read wanted while an outrun answer is held waits for the hold**
-   * (#2563): the stretch IS the rest of the read, so a notice during it must
-   * not buy a whole record beside the range already on its way. The want is
-   * served when the answer lands.
+   * **The re-ask stops at the cap, and the stale answer never reaches the
+   * record** (#1472): a seat framed faster than a round trip outruns every
+   * answer, so an uncapped re-ask asked once per trip forever, a full server
+   * encode apiece. The fourth consecutive outrun is the cap, and there the
+   * answer is DROPPED rather than taken - taking it would roll the record
+   * back to its encode point and rewind the count, and numbers the ring no
+   * longer holds are then never re-fetched (rule 25). The frames' rows must
+   * stand.
    */
-  it('holds a read wanted while an outrun answer is held', () => {
+  it('stops re-asking at the cap, and the drop keeps the frames record', () => {
     const connection = drivable();
     const page = watch(connection);
+    // The record exists, taken whole on the seat's first answer.
     page.land(snapshotOf(LEAD, { conversation: { turns: [], compaction_count: 0 } }, { seq: 1 }));
-    for (let at = 1; at <= 3; at += 1) {
-      page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke(`line ${at}`, `u${at}`) } }, at));
+
+    // The live loop, one ask per trip: three answers in a row are refused and
+    // re-asked; the fourth is the cap. Four rounds is the whole run - after
+    // the cap no ask is outstanding, so in life no fifth answer comes.
+    for (let round = 1; round <= 4; round += 1) {
+      page.land(
+        frameOf({ chat_appended: { key: LEAD, msg: spoke(`line ${round}`, `u${round}`) } }, round),
+      );
+      page.land(snapshotOf(LEAD, { conversation: { turns: [], compaction_count: 0 } }, { seq: 1 }));
     }
+    // Publishes are paint-gated: the frames' draws are still queued.
     paint();
-    rereadSeat(connection, LEAD);
-    const asked = page.reads();
-    page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke('line 4', 'u4') } }, 4));
-    page.land(snapshotOf(LEAD, { conversation: { turns: [], compaction_count: 0 } }, { seq: 4 }));
-    expect(connection.ranges, 'the hold asked for its stretch').toEqual([
-      { slot: LEAD, epoch: null, from: 4, to: 4 },
-    ]);
 
-    // A notice wants a read while the answer is held.
-    rereadSeat(connection, LEAD, { review: true });
-    expect(page.reads(), 'a want during the hold bought a whole read').toBe(asked);
-
-    // The stretch lands: the answer is taken and the want asked for.
-    page.land(repaired({ seq: 4, text: 'line 4' }));
-    paint();
-    expect(page.reads(), 'the want behind the hold was never served').toBe(asked + 1);
+    expect(page.reads(), 'the cap never stopped the re-ask').toBe(3);
+    expect(
+      page.read().wire?.conversation.turns,
+      'a stale answer reached the record past the cap',
+    ).toHaveLength(4);
     page.stop();
   });
 
   /**
-   * **Past the cap the stale answer is dropped, and the frames' record
-   * stands** (#1472) - at no cost in whole reads, because an outrun no longer
-   * buys one (#2563). The cap still bounds a stream that outruns every answer
-   * in a row: taking a fourth would roll the record back to its encode point,
-   * and numbers the ring no longer holds are then never re-fetched (rule 25).
+   * **The same occupant framed past the cap still drops, on a named id.**
+   * The case above runs with no occupant named on either side, where the
+   * record and the answer agree trivially - and the id is the fix's own
+   * operand (#2276), so the arm that compares two REAL ids has to be pinned
+   * too: same seat, same answer, still the frames' record.
    */
-  it('drops an answer past the cap, keeps the frames record, and never re-reads', () => {
+  it('keeps the frames record at the cap when the answer names the same occupant', () => {
     const connection = drivable();
     const page = watch(connection);
     page.land(
@@ -3401,35 +3372,77 @@ describe('the read, and the answer a frame has outrun', () => {
         { epoch: 'one', seq: 1 },
       ),
     );
-    for (let round = 1; round <= 3; round += 1) {
+
+    for (let round = 1; round <= 4; round += 1) {
       page.land(
         frameOf({ chat_appended: { key: LEAD, msg: spoke(`line ${round}`, `u${round}`) } }, round),
       );
-    }
-    paint();
-
-    // Four answers in a row stand behind the frames, all for the same
-    // occupant: the first three are held for their stretch, the fourth is the
-    // cap's and is dropped.
-    for (let round = 1; round <= 4; round += 1) {
       page.land(
         snapshotOf(
           LEAD,
           { conversation: { turns: [], compaction_count: 0 } },
-          { epoch: 'one', seq: 2 },
+          { epoch: 'one', seq: 1 },
         ),
       );
     }
     paint();
 
-    expect(page.reads(), 'an outrun bought a whole read').toBe(0);
+    expect(page.reads(), 'the cap never stopped the re-ask').toBe(3);
     expect(
       page.read().wire?.conversation.turns,
       "the same occupant's answer was taken past the cap, so the frames' record was rolled back",
-    ).toHaveLength(3);
-    expect(connection.ranges, 'the held answers asked one stretch, once').toEqual([
-      { slot: LEAD, epoch: 'one', from: 2, to: 3 },
-    ]);
+    ).toHaveLength(4);
+    page.stop();
+  });
+
+  /**
+   * **A read wanted while the cap dropped its answer is still served.** The
+   * cap drops the answer, but a want latched behind it would be unserved with
+   * no ask outstanding - the two-sources answer a review page's own read
+   * exists to prevent - and would fire later as a stray read. Every path that
+   * spends an ask funnels through the same want.
+   */
+  it('serves a read wanted while the cap dropped its answer', () => {
+    const connection = drivable();
+    const page = watch(connection);
+    page.land(
+      snapshotOf(
+        LEAD,
+        { conversation: { turns: [], compaction_count: 0 } },
+        { epoch: 'one', seq: 1 },
+      ),
+    );
+
+    // Three outruns, each re-asked; the ask from the third is in flight.
+    for (let round = 1; round <= 3; round += 1) {
+      page.land(
+        frameOf({ chat_appended: { key: LEAD, msg: spoke(`line ${round}`, `u${round}`) } }, round),
+      );
+      page.land(
+        snapshotOf(
+          LEAD,
+          { conversation: { turns: [], compaction_count: 0 } },
+          { epoch: 'one', seq: 1 },
+        ),
+      );
+    }
+    expect(page.reads(), 'the first three outruns asked').toBe(3);
+
+    // A frame lands, and the page wants a read while that ask is in flight.
+    page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke('four', 'u4') } }, 4));
+    rereadSeat(connection, LEAD, { review: true });
+
+    // The fourth answer is the cap's: dropped, and the want served.
+    page.land(
+      snapshotOf(
+        LEAD,
+        { conversation: { turns: [], compaction_count: 0 } },
+        { epoch: 'one', seq: 1 },
+      ),
+    );
+    paint();
+
+    expect(page.reads(), 'the want latched behind the dropped answer was never served').toBe(4);
     page.stop();
   });
 
@@ -3565,27 +3578,22 @@ describe('the read, and the answer a frame has outrun', () => {
       'an answer from before the settle put the running turn back',
     ).toBe(false);
 
-    // **The answer is held, and only its own stretch is fetched** (#2563):
-    // no whole read is bought, and the stretch above it is the settle the
-    // record already holds.
-    expect(page.reads(), 'the outrun answer was bought again whole').toBe(asked);
-    expect(connection.ranges, 'the stretch above the answer is asked for').toEqual([
-      { slot: LEAD, epoch: 'new', from: 1, to: 1 },
-    ]);
+    // **The whole record is still WANTED.** Refusing the outrun answer keeps
+    // the frame-fed record, which is the fix above, but the conversation and
+    // the header this answer was asked for are still owed - so the want is
+    // kept and asked again. Without this the old occupant stands until a later
+    // REPLACES frame with a clean window or a socket drop.
+    expect(page.reads(), 'the whole record was not asked for again').toBe(asked + 1);
 
-    // The stretch lands: the answer is taken and the settle draws on it, so
-    // the running turn stays settled.
-    page.land({
-      kind: 'seat_frames',
-      slot: LEAD,
-      epoch: 'new',
-      frames: [{ seq: 1, update: { turn_complete: { key: LEAD } } }],
-    });
-    paint();
-    expect(
-      page.read().wire?.header.turn_in_flight,
-      'taking the answer with its stretch put the running turn back',
-    ).toBe(false);
+    // And the fresh ask converges: its clean answer is adopted whole.
+    page.land(
+      snapshotOf(
+        LEAD,
+        { header: { turn_in_flight: false }, work: { branch: 'new' } },
+        { seq: 4, epoch: 'new' },
+      ),
+    );
+    expect(page.read().wire?.work.branch, 'the fresh answer was not taken').toBe('new');
     page.stop();
 
     // The control, and it is the guard's NARROWNESS it holds: the same answer
@@ -3748,260 +3756,6 @@ describe('the seat sequence', () => {
       'in sequence: the repaired row above the frame that followed it',
     ).toBe(true);
     expect(connection.ranges, 'and nothing is asked for twice').toHaveLength(1);
-    page.stop();
-  });
-
-  /**
-   * **A whole-record answer taken while a repair is in flight carries the
-   * rows beneath its own number** (#2564). The record becomes the page, and
-   * the repair's answer for that stretch then lands below it - drawn, it
-   * splices the rows onto themselves. The floor the answer already covers is
-   * what the repair skips.
-   */
-  it('does not draw a repair under the rows a taken answer carries', () => {
-    const connection = drivable();
-    const page = watch(connection);
-    page.land(snapshotOf(LEAD, { conversation: { turns: [], compaction_count: 0 } }, { seq: 1 }));
-    page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke('one', 'u1') } }, 1));
-    // Four ahead: the frames between are a hole, and its repair is asked for.
-    page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke('five', 'u5') } }, 5));
-    expect(connection.ranges, 'precondition: the hole was asked for').toEqual([
-      { slot: LEAD, epoch: null, from: 2, to: 4 },
-    ]);
-
-    // A whole record lands covering the first three rows - the stretch the
-    // repair was asked for starts inside it.
-    page.land(
-      snapshotOf(
-        LEAD,
-        {
-          conversation: {
-            turns: [
-              {
-                key: 'turn-1',
-                messages: [spoke('one', 'u1'), spoke('two', 'u2'), spoke('three', 'u3')],
-              },
-            ],
-            compaction_count: 0,
-          },
-        },
-        { seq: 4 },
-      ),
-    );
-    paint();
-    expect(spoken(page), 'precondition: the answer drew').toEqual(['one', 'two', 'three']);
-
-    // The repair's answer lands after the take: two of its rows are already
-    // on the page, and drawing them again is the same rows twice.
-    page.land(
-      repaired({ seq: 2, text: 'two' }, { seq: 3, text: 'three' }, { seq: 4, text: 'four' }),
-    );
-    paint();
-    expect(spoken(page), 'the repair re-drew rows the taken answer carries').toEqual([
-      'one',
-      'two',
-      'three',
-      'four',
-      'five',
-    ]);
-    page.stop();
-  });
-
-  /**
-   * **An outrun answer that lands over an open repair must not orphan
-   * either ask** (#2719). Two range asks in flight cannot be told apart, so a
-   * second one overwrites the first's window and the first's answer is then
-   * dropped as rows the record already carries - silently losing a stretch
-   * of rows until a reload. The held answer waits for the repair that is
-   * already open, then asks for its own stretch.
-   */
-  it('keeps every row when an outrun answer lands over an open repair', () => {
-    const connection = drivable();
-    const page = watch(connection);
-    page.land(snapshotOf(LEAD, { conversation: { turns: [], compaction_count: 0 } }, { seq: 1 }));
-    page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke('one', 'u1') } }, 1));
-    page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke('two', 'u2') } }, 2));
-    // Five arrives with three and four missing: the hole is asked for.
-    page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke('five', 'u5') } }, 5));
-    expect(connection.ranges, 'precondition: the hole is asked for').toEqual([
-      { slot: LEAD, epoch: null, from: 3, to: 4 },
-    ]);
-
-    // A whole record stands where the stream stood at row one - the frames
-    // since then outran it.
-    page.land(
-      snapshotOf(
-        LEAD,
-        {
-          conversation: {
-            turns: [{ key: 'turn-1', messages: [spoke('one', 'u1')] }],
-            compaction_count: 0,
-          },
-        },
-        { seq: 2 },
-      ),
-    );
-    // **Only one ask is in flight** while the repair holds the answer.
-    expect(connection.ranges, 'a second ask raced the open repair').toHaveLength(1);
-
-    // The hole's answer lands: its rows draw, and the held answer's stretch
-    // is asked for from row two through what the record now holds.
-    page.land(repaired({ seq: 3, text: 'three' }, { seq: 4, text: 'four' }));
-    paint();
-    expect(spoken(page), 'precondition: the hole filled').toEqual([
-      'one',
-      'two',
-      'three',
-      'four',
-      'five',
-    ]);
-    expect(connection.ranges, 'the held answer never asked for its stretch').toEqual([
-      { slot: LEAD, epoch: null, from: 3, to: 4 },
-      { slot: LEAD, epoch: null, from: 2, to: 5 },
-    ]);
-
-    // The stretch lands: the answer is taken and every row above it drawn on
-    // the record it replaced.
-    page.land(
-      repaired(
-        { seq: 2, text: 'two' },
-        { seq: 3, text: 'three' },
-        { seq: 4, text: 'four' },
-        { seq: 5, text: 'five' },
-      ),
-    );
-    paint();
-    expect(spoken(page), 'the held answer lost a row of its stretch').toEqual([
-      'one',
-      'two',
-      'three',
-      'four',
-      'five',
-    ]);
-    page.stop();
-  });
-
-  /**
-   * **A hole still owed after its hold overflowed is filled when its answer
-   * lands** (#2564). The overflow draws what was held, unordered, and stops
-   * holding - but the hole's answer can arrive later, and its rows must
-   * still be drawn where they belong, once each.
-   */
-  it('fills a hole whose hold overflowed', () => {
-    const connection = drivable();
-    const page = watch(connection);
-    page.land(snapshotOf(LEAD, { conversation: { turns: [], compaction_count: 0 } }, { seq: 1 }));
-    page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke('one', 'u1') } }, 1));
-    // A frame four ahead opens the hole [2..3].
-    page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke('row 4', 'u4') } }, 4));
-    // The hold overflows: frames above the hole draw unordered once the cap
-    // is crossed.
-    for (let at = 5; at <= 265; at += 1) {
-      page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke(`row ${at}`, `u${at}`) } }, at));
-    }
-    paint();
-    // The hole's answer lands after the flush: rows two and three are still
-    // owed, and the record must gain them exactly once.
-    page.land(repaired({ seq: 2, text: 'two' }, { seq: 3, text: 'three' }));
-    paint();
-    const words = spoken(page);
-    expect(words, 'a row the overflowed hold still owed was dropped').toContain('two');
-    expect(words, "and so was the hole's second row").toContain('three');
-    expect(new Set(words).size, 'a row was drawn twice').toBe(words.length);
-    page.stop();
-  });
-
-  /**
-   * **The other arrival order: the hole's answer lands first, then the
-   * outrun answer.** No repair is open when the answer arrives, so its
-   * stretch is asked for at once - covering every row above its own floor,
-   * including the rows the hole's answer just drew on the record it is about
-   * to replace (#2719).
-   */
-  it('keeps every row when the hole answers before an outrun answer lands', () => {
-    const connection = drivable();
-    const page = watch(connection);
-    page.land(snapshotOf(LEAD, { conversation: { turns: [], compaction_count: 0 } }, { seq: 1 }));
-    page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke('one', 'u1') } }, 1));
-    page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke('two', 'u2') } }, 2));
-    page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke('five', 'u5') } }, 5));
-    // The hole (3..4) is answered first, and the record fills through five.
-    page.land(repaired({ seq: 3, text: 'three' }, { seq: 4, text: 'four' }));
-    paint();
-    expect(spoken(page), 'precondition: the hole filled').toEqual([
-      'one',
-      'two',
-      'three',
-      'four',
-      'five',
-    ]);
-
-    // The whole record stands where the stream stood at row one.
-    page.land(
-      snapshotOf(
-        LEAD,
-        {
-          conversation: {
-            turns: [{ key: 'turn-1', messages: [spoke('one', 'u1')] }],
-            compaction_count: 0,
-          },
-        },
-        { seq: 2 },
-      ),
-    );
-    // **One ask covers the stretch above the answer**, rows the hole's
-    // answer already drew included.
-    expect(connection.ranges, 'the stretch above the answer was not asked for').toEqual([
-      { slot: LEAD, epoch: null, from: 3, to: 4 },
-      { slot: LEAD, epoch: null, from: 2, to: 5 },
-    ]);
-
-    page.land(
-      repaired(
-        { seq: 2, text: 'two' },
-        { seq: 3, text: 'three' },
-        { seq: 4, text: 'four' },
-        { seq: 5, text: 'five' },
-      ),
-    );
-    paint();
-    expect(spoken(page), 'the outrun answer lost a row of its stretch').toEqual([
-      'one',
-      'two',
-      'three',
-      'four',
-      'five',
-    ]);
-    page.stop();
-  });
-
-  /**
-   * **A gap after a held stretch overflowed falls back to a whole read**
-   * (#2719). The overflow stops holding but the stretch answer is still
-   * owed; opening a hole ask now would orphan one of the two answers, and
-   * the whole read is the old, correct recovery.
-   */
-  it('falls back to a whole read when a gap lands after a held stretch overflowed', () => {
-    const connection = drivable();
-    const page = watch(connection);
-    page.land(snapshotOf(LEAD, { conversation: { turns: [], compaction_count: 0 } }, { seq: 1 }));
-    page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke('one', 'u1') } }, 1));
-    rereadSeat(connection, LEAD);
-    const asked = page.reads();
-    page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke('two', 'u2') } }, 2));
-    page.land(snapshotOf(LEAD, { conversation: { turns: [], compaction_count: 0 } }, { seq: 2 }));
-    expect(connection.ranges, 'precondition: the stretch ask went').toEqual([
-      { slot: LEAD, epoch: null, from: 2, to: 2 },
-    ]);
-
-    // The hold overflows, and a later frame opens a gap of its own.
-    for (let at = 3; at <= 260; at += 1) {
-      page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke(`row ${at}`, `u${at}`) } }, at));
-    }
-    page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke('far', 'u500') } }, 500));
-
-    expect(page.reads(), 'the orphaned stretch was not resolved with a whole read').toBe(asked + 1);
-    expect(connection.ranges, 'a second ask was opened over the held answer').toHaveLength(1);
     page.stop();
   });
 
