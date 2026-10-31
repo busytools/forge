@@ -196,6 +196,15 @@ interface Seat {
     to: number;
     filled: number;
     holding: boolean;
+    /**
+     * Whether this ask's answer is the stretch of a held whole-record answer.
+     *
+     * **One ask is in flight at a time** (#2719): an answer the frames
+     * outran, arriving over an open repair, waits for that repair to land
+     * rather than racing a second ask nothing could tell apart. This is what
+     * says which held thing the answer that arrives belongs to.
+     */
+    seeks_answer: boolean;
   } | null;
   /**
    * The newest number a whole-record answer the frames outran covers, while
@@ -997,8 +1006,8 @@ function createSeat(
    * Open a repair for `from..to`: hold arriving frames and ask for the
    * stretch. `false` means the socket could not carry the ask.
    */
-  function openRepair(from: number, to: number): boolean {
-    seat.repair = { from, to, filled: from - 1, holding: true };
+  function openRepair(from: number, to: number, seeksAnswer: boolean): boolean {
+    seat.repair = { from, to, filled: from - 1, holding: true, seeks_answer: seeksAnswer };
     return askRange(from, to);
   }
 
@@ -1015,6 +1024,9 @@ function createSeat(
   function takeAnswer(): void {
     const floor = seat.outrunFloor ?? seat.lastSeq;
     seat.outrunFloor = null;
+    // The read the hold was standing in for is over; a want recorded while it
+    // was held is served by the answer publishing below.
+    seat.asking = false;
     closeRepair();
     seat.lastSeq = floor;
     seat.seen = Math.max(seat.seen, floor);
@@ -1190,7 +1202,7 @@ function createSeat(
         if (seq > seat.lastSeq + 1) {
           const from = seat.lastSeq + 1;
           seat.repairHeld.push({ seq, span, update: frame.update });
-          if (!openRepair(from, seq - 1)) {
+          if (!openRepair(from, seq - 1, false)) {
             // A socket that is not open cannot ask, so nothing is coming:
             // the held frames draw rather than waiting forever.
             closeRepair();
@@ -1284,6 +1296,9 @@ function createSeat(
           seat.repairHeld.length = 0;
           closeRepair();
           seat.outrunFloor = null;
+          // The refused ask was a read in flight; the re-ask below is the
+          // read, not another want.
+          seat.asking = false;
           reread();
         }
         return;
@@ -1342,6 +1357,9 @@ function createSeat(
             // the re-ask stops here (#1472).
             if (sameOccupant) {
               seat.outrun = 0;
+              // A held answer is still a read outstanding, so a want behind
+              // it waits for the hold rather than asking over it.
+              seat.asking = seat.outrunFloor !== null;
               // The answer is dropped, but a read the page wanted while it
               // was in flight is still owed.
               serveWanted();
@@ -1358,14 +1376,23 @@ function createSeat(
             seat.outrun += 1;
             const floor = Math.max(reach.seq - 1, seat.outrunFloor ?? reach.seq - 1);
             seat.outrunFloor = floor;
+            // **The read this answer answers is still outstanding**: the
+            // stretch is the rest of it, so a want recorded now waits for the
+            // hold rather than buying a whole read of its own (#2563).
+            seat.asking = true;
             const from = floor + 1;
             const to = seat.lastSeq;
-            const covered =
-              seat.repair !== null && seat.repair.from <= from && seat.repair.to >= to;
+            if (seat.repair !== null) {
+              // **A repair is already open, so its answer is the next one to
+              // arrive.** Defer the stretch until it lands: two asks in
+              // flight cannot be told apart, and the one whose window was
+              // overwritten has its rows dropped as already carried (#2719).
+              return;
+            }
             if (from > to) {
               takeAnswer();
               flushRepaired();
-            } else if (!covered && !openRepair(from, to)) {
+            } else if (!openRepair(from, to, true)) {
               // A socket that cannot ask has nothing more to send: take the
               // answer and draw what is held rather than waiting on a stretch
               // nobody will answer.
@@ -1378,6 +1405,9 @@ function createSeat(
         // The answer is taken, so the run of outruns is over.
         seat.outrun = 0;
         seat.outrunFloor = null;
+        // A hold standing in for this read ends here; a want recorded behind
+        // it is asked for by `answeredRead`, not latched again.
+        seat.asking = false;
         let refill = false;
         if (reach.seq !== null) {
           seat.lastSeq = reach.seq - 1;
@@ -1397,15 +1427,34 @@ function createSeat(
       // rather than arriving as a second kind of drawing.
       if (message.kind === 'seat_frames') {
         if (subjectKey({ session: message.slot }) !== key) return;
-        // **The held whole-record answer is taken the moment its stretch
-        // lands** (#2563): the record goes to the answer's floor, then the
-        // frames above it draw on the record they belong to.
-        if (seat.outrunFloor !== null) takeAnswer();
+        if (seat.repair?.seeks_answer === true) {
+          // **The held answer is taken first, then its stretch drawn on it**
+          // (#2563): the frames were fetched for the record the answer
+          // replaces, so they apply to that answer and never to the one it
+          // supersedes.
+          closeRepair();
+          if (seat.outrunFloor !== null) takeAnswer();
+          for (const frame of message.frames) applyFrame(frame, true);
+          flushRepaired();
+          return;
+        }
+        // A hole's answer: its rows draw, then what crossed it - in
+        // sequence, which is the order the hold was for.
         for (const frame of message.frames) applyFrame(frame, true);
-        // The hole is filled, so what crossed it draws now - in sequence,
-        // which is the order the hold was for.
         closeRepair();
         flushRepaired();
+        // **A held answer's stretch starts now** (#2719). It was deferred
+        // rather than raced against this repair, and it covers everything
+        // above its own floor - this repair's rows included, because they
+        // were drawn on the record the answer is about to replace.
+        if (seat.outrunFloor !== null) {
+          const from = seat.outrunFloor + 1;
+          const to = seat.lastSeq;
+          if (from > to || !openRepair(from, to, true)) {
+            takeAnswer();
+            flushRepaired();
+          }
+        }
         return;
       }
       if (message.kind !== 'update') return;

@@ -3352,6 +3352,39 @@ describe('the read, and the answer a frame has outrun', () => {
   });
 
   /**
+   * **A read wanted while an outrun answer is held waits for the hold**
+   * (#2563): the stretch IS the rest of the read, so a notice during it must
+   * not buy a whole record beside the range already on its way. The want is
+   * served when the answer lands.
+   */
+  it('holds a read wanted while an outrun answer is held', () => {
+    const connection = drivable();
+    const page = watch(connection);
+    page.land(snapshotOf(LEAD, { conversation: { turns: [], compaction_count: 0 } }, { seq: 1 }));
+    for (let at = 1; at <= 3; at += 1) {
+      page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke(`line ${at}`, `u${at}`) } }, at));
+    }
+    paint();
+    rereadSeat(connection, LEAD);
+    const asked = page.reads();
+    page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke('line 4', 'u4') } }, 4));
+    page.land(snapshotOf(LEAD, { conversation: { turns: [], compaction_count: 0 } }, { seq: 4 }));
+    expect(connection.ranges, 'the hold asked for its stretch').toEqual([
+      { slot: LEAD, epoch: null, from: 4, to: 4 },
+    ]);
+
+    // A notice wants a read while the answer is held.
+    rereadSeat(connection, LEAD, { review: true });
+    expect(page.reads(), 'a want during the hold bought a whole read').toBe(asked);
+
+    // The stretch lands: the answer is taken and the want asked for.
+    page.land(repaired({ seq: 4, text: 'line 4' }));
+    paint();
+    expect(page.reads(), 'the want behind the hold was never served').toBe(asked + 1);
+    page.stop();
+  });
+
+  /**
    * **Past the cap the stale answer is dropped, and the frames' record
    * stands** (#1472) - at no cost in whole reads, because an outrun no longer
    * buys one (#2563). The cap still bounds a stream that outruns every answer
@@ -3771,6 +3804,110 @@ describe('the seat sequence', () => {
       'four',
       'five',
     ]);
+    page.stop();
+  });
+
+  /**
+   * **An outrun answer that lands over an open repair must not orphan
+   * either ask** (#2719). Two range asks in flight cannot be told apart, so a
+   * second one overwrites the first's window and the first's answer is then
+   * dropped as rows the record already carries - silently losing a stretch
+   * of rows until a reload. The held answer waits for the repair that is
+   * already open, then asks for its own stretch.
+   */
+  it('keeps every row when an outrun answer lands over an open repair', () => {
+    const connection = drivable();
+    const page = watch(connection);
+    page.land(snapshotOf(LEAD, { conversation: { turns: [], compaction_count: 0 } }, { seq: 1 }));
+    page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke('one', 'u1') } }, 1));
+    page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke('two', 'u2') } }, 2));
+    // Five arrives with three and four missing: the hole is asked for.
+    page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke('five', 'u5') } }, 5));
+    expect(connection.ranges, 'precondition: the hole is asked for').toEqual([
+      { slot: LEAD, epoch: null, from: 3, to: 4 },
+    ]);
+
+    // A whole record stands where the stream stood at row one - the frames
+    // since then outran it.
+    page.land(
+      snapshotOf(
+        LEAD,
+        {
+          conversation: {
+            turns: [{ key: 'turn-1', messages: [spoke('one', 'u1')] }],
+            compaction_count: 0,
+          },
+        },
+        { seq: 2 },
+      ),
+    );
+    // **Only one ask is in flight** while the repair holds the answer.
+    expect(connection.ranges, 'a second ask raced the open repair').toHaveLength(1);
+
+    // The hole's answer lands: its rows draw, and the held answer's stretch
+    // is asked for from row two through what the record now holds.
+    page.land(repaired({ seq: 3, text: 'three' }, { seq: 4, text: 'four' }));
+    paint();
+    expect(spoken(page), 'precondition: the hole filled').toEqual([
+      'one',
+      'two',
+      'three',
+      'four',
+      'five',
+    ]);
+    expect(connection.ranges, 'the held answer never asked for its stretch').toEqual([
+      { slot: LEAD, epoch: null, from: 3, to: 4 },
+      { slot: LEAD, epoch: null, from: 2, to: 5 },
+    ]);
+
+    // The stretch lands: the answer is taken and every row above it drawn on
+    // the record it replaced.
+    page.land(
+      repaired(
+        { seq: 2, text: 'two' },
+        { seq: 3, text: 'three' },
+        { seq: 4, text: 'four' },
+        { seq: 5, text: 'five' },
+      ),
+    );
+    paint();
+    expect(spoken(page), 'the held answer lost a row of its stretch').toEqual([
+      'one',
+      'two',
+      'three',
+      'four',
+      'five',
+    ]);
+    page.stop();
+  });
+
+  /**
+   * **A hole still owed after its hold overflowed is filled when its answer
+   * lands** (#2564). The overflow draws what was held, unordered, and stops
+   * holding - but the hole's answer can arrive later, and its rows must
+   * still be drawn where they belong, once each.
+   */
+  it('fills a hole whose hold overflowed', () => {
+    const connection = drivable();
+    const page = watch(connection);
+    page.land(snapshotOf(LEAD, { conversation: { turns: [], compaction_count: 0 } }, { seq: 1 }));
+    page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke('one', 'u1') } }, 1));
+    // A frame four ahead opens the hole [2..3].
+    page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke('row 4', 'u4') } }, 4));
+    // The hold overflows: frames above the hole draw unordered once the cap
+    // is crossed.
+    for (let at = 5; at <= 265; at += 1) {
+      page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke(`row ${at}`, `u${at}`) } }, at));
+    }
+    paint();
+    // The hole's answer lands after the flush: rows two and three are still
+    // owed, and the record must gain them exactly once.
+    page.land(repaired({ seq: 2, text: 'two' }, { seq: 3, text: 'three' }));
+    paint();
+    const words = spoken(page);
+    expect(words, 'a row the overflowed hold still owed was dropped').toContain('two');
+    expect(words, "and so was the hole's second row").toContain('three');
+    expect(new Set(words).size, 'a row was drawn twice').toBe(words.length);
     page.stop();
   });
 
