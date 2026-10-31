@@ -433,6 +433,75 @@ function variantOf(command: Command): string {
 const BROWSER_FRAME_TAG = 1;
 
 /**
+ * The binary kind a compressed JSON frame crosses as.
+ *
+ * Kind 1 is a relayed browser frame and kind 2 its audio; this one is a whole
+ * `ServerMessage` body, gzipped, for a client that declared it can inflate
+ * one. The server sends it only to a connection that asked (see
+ * [`declaringCompression`]), so a server that predates it never sends one.
+ * `forge_primitives::wire::COMPRESSED_JSON_TAG` is the Rust half's copy, and
+ * a test there pins the two together.
+ */
+const COMPRESSED_JSON_TAG = 3;
+
+/**
+ * The bound on what a compressed frame may inflate to, in bytes.
+ *
+ * **The same bound the shell's socket documents**: the socket's own frame
+ * bound limits the COMPRESSED bytes, and a gzip body can inflate far past
+ * them, so both halves stop one byte past the limit rather than grow without
+ * bound.
+ */
+export const MAX_INFLATED_BYTES = 256 << 20;
+
+/**
+ * The address this page dials, with the compression capability declared.
+ *
+ * **A query on the socket URL is the declaration.** A server that predates
+ * the compressed frame kind ignores a parameter it does not read and keeps
+ * sending text, which this page parses as it always did; a server that reads
+ * it sends frames over its threshold compressed.
+ */
+function declaringCompression(url: string): string {
+  // **A browser without the API must not declare the capability** (#2560):
+  // the server would compress for it, every large frame would fail to
+  // inflate, and the seat would load forever with only a console report.
+  if (typeof DecompressionStream === 'undefined') return url;
+  const parsed = new URL(url);
+  parsed.searchParams.set('deflate', '1');
+  return parsed.toString();
+}
+
+/**
+ * One compressed frame's JSON body, inflated in the inbound queue.
+ *
+ * **`DecompressionStream` is the platform's own**, so it works on the web,
+ * in the desktop webview and in Android's, with no dependency to carry. The
+ * caller awaits it inside the one ordered queue, so the frames behind it are
+ * delivered after it.
+ */
+export async function inflate(bytes: Uint8Array, limit: number): Promise<string> {
+  const body = new Blob([bytes as BlobPart]).stream().pipeThrough(new DecompressionStream('gzip'));
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let text = '';
+  let read = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    read += value.byteLength;
+    if (read > limit) {
+      await reader.cancel();
+      throw new Error(
+        `a compressed frame inflated past the ${limit} byte bound this socket documents`,
+      );
+    }
+    text += decoder.decode(value, { stream: true });
+  }
+  return text + decoder.decode();
+}
+
+/**
  * One relayed browser frame, as the host encoded it.
  *
  * The server re-encodes nothing: the payload is the host's own WebP and the
@@ -964,7 +1033,7 @@ export function connect(
 
     let next: WebSocket;
     try {
-      next = new WebSocket(url);
+      next = new WebSocket(declaringCompression(url));
     } catch (error) {
       // An address the constructor will not take is not one a retry will
       // take either, but a retry is what keeps the connection trying when
@@ -1055,22 +1124,92 @@ export function connect(
     });
     gate = opened;
 
-    next.onmessage = (event) => {
-      if (next !== socket) return;
-      // **Any inbound frame answers the probe**, whatever it carried: the
-      // pong exists to guarantee one arrives, and a frame already flowing
-      // proves the same.
-      armQuiet();
-      // **A binary message is a relayed browser frame.** The phone's canvas
-      // draws it; a page with no viewer ignores it, which is the desktop,
-      // where the shell took the same bytes off its own socket.
-      if (event.data instanceof ArrayBuffer) {
-        const frame = browserFrame(new Uint8Array(event.data));
+    /**
+     * **One inbound queue, so a compressed frame is inflated before the
+     * frames behind it are delivered** (#2560). A text stream stays the
+     * synchronous path it has always been; the queue exists only while an
+     * inflated frame is still being read, which is the one case where a frame
+     * arrives as a promise rather than as itself.
+     */
+    let pending: Promise<void> | null = null;
+    let queued = 0;
+    const release = (): void => {
+      queued -= 1;
+      if (queued === 0) pending = null;
+    };
+    const enqueue = (work: () => void | Promise<void>): void => {
+      // **Queued work belongs to the socket that carried it** (#2560): a
+      // reconnect replaces `socket` while frames still wait behind an
+      // inflate, and the queue outlives the drop. The check is at run time
+      // because that is when the socket can have changed.
+      const guarded = (): void | Promise<void> => {
+        if (next !== socket) return;
+        return work();
+      };
+      if (pending === null) {
+        const outcome = guarded();
+        if (outcome instanceof Promise) {
+          queued = 1;
+          pending = outcome.then(release, (why: unknown) => {
+            release();
+            report('an inbound frame could not be read', why);
+          });
+        }
+        return;
+      }
+      queued += 1;
+      const step = pending.then(guarded, guarded);
+      pending = step.then(release, (why: unknown) => {
+        release();
+        report('an inbound frame could not be read', why);
+      });
+    };
+
+    /** One frame, narrowed and handed to every reader in the socket's order. */
+    const accept = (data: unknown): void | Promise<void> => {
+      if (data instanceof ArrayBuffer) {
+        const bytes = new Uint8Array(data);
+        if (bytes[0] === COMPRESSED_JSON_TAG) {
+          return inflate(bytes.subarray(1), MAX_INFLATED_BYTES).then(
+            (text) => {
+              // **A frame that outlived its socket is not the new one's to
+              // deliver** (#2560): the inflate is the one async step on the
+              // inbound path, and a reconnect may have replaced the socket
+              // while it ran.
+              if (next !== socket) return;
+              acceptText(text);
+            },
+            (why: unknown) => {
+              if (next !== socket) return;
+              // **A frame this client cannot inflate is a stream it cannot
+              // read.** Whatever asked for it - a page, a record, an update -
+              // would wait on an answer that died here, so the socket is
+              // dropped and the reconnect's own asks are the recovery: the
+              // conversation clears its page in flight on the status change
+              // and re-reads the record. The payload is gone, so the seat it
+              // belonged to cannot be named; the kind and the size can.
+              report('a compressed frame did not inflate', {
+                kind: COMPRESSED_JSON_TAG,
+                bytes: bytes.byteLength,
+                why,
+              });
+              // The socket is closed before the drop, as the dial bound does:
+              // `dropped` schedules the retry but leaves the socket itself
+              // open.
+              next.close();
+              dropped();
+            },
+          );
+        }
+        // **A binary message is a relayed browser frame.** The phone's canvas
+        // draws it; a page with no viewer ignores it, which is the desktop,
+        // where the shell took the same bytes off its own socket.
+        const frame = browserFrame(bytes);
         if (frame === null) {
           // **A binary frame this page cannot read is said**, not dropped:
           // an unknown kind or a short header would otherwise vanish with no
           // trace at all.
-          report('a binary frame was not a browser frame', event.data.byteLength);
+          report('a binary frame was not a browser frame', bytes.byteLength);
           return;
         }
         for (const fn of frameListeners) {
@@ -1082,7 +1221,15 @@ export function connect(
         }
         return;
       }
-      const raw = String(event.data);
+      if (typeof data !== 'string') {
+        report('the server sent a frame this client could not read', data);
+        return;
+      }
+      acceptText(data);
+    };
+
+    /** A JSON frame: parsed once at the boundary, then delivered. */
+    const acceptText = (raw: string): void => {
       let message: ServerMessage;
       try {
         // The boundary: a frame is narrowed once, here, rather than by each
@@ -1109,6 +1256,15 @@ export function connect(
       for (const ordered of opened.inbound(message)) {
         deliver(ordered);
       }
+    };
+
+    next.onmessage = (event) => {
+      if (next !== socket) return;
+      // **Any inbound frame answers the probe**, whatever it carried: the
+      // pong exists to guarantee one arrives, and a frame already flowing
+      // proves the same.
+      armQuiet();
+      enqueue(() => accept(event.data));
     };
 
     /**

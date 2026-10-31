@@ -26,6 +26,7 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
 
 import { HEARTBEAT_TICK_MS } from './heartbeat';
+import { cannotPaint } from './paint';
 import { CLIENT_VERSION } from './protocol';
 import type { Subject } from './protocol';
 import type { Route } from './routes';
@@ -204,10 +205,16 @@ export interface PerfRecord {
   /** A `subscribe`: ms since the click that preceded it; absent when no
    *  click did, so a reconnect never invents one. */
   since_click_ms?: number;
+  /** A slow `frame`: whether the gap it measures overlapped a hidden window,
+   *  sampled when the record is written - a visibility gate rather than a
+   *  blocked thread (#2569). */
+  hidden?: boolean;
   /**
-   * A `snapshot`'s frame length in string units (UTF-16 code units). The
-   * wire is JSON and its non-ASCII arrives escaped, so this tracks the
-   * server's bytes closely without walking a multi-MB string (#2513).
+   * A `snapshot`'s JSON length in string units (UTF-16 code units), which is
+   * what the boundary parse walked without a second pass over it (#2513). A
+   * frame that crossed compressed reports its inflated length here; the
+   * bytes it cost on the wire are the server's `frame_write` line when the
+   * frame was a seat's open - a home or board read has no such line.
    */
   chars?: number;
   /** A `snapshot`: how long its JSON.parse took, at the boundary. */
@@ -280,6 +287,10 @@ interface ProbeOptions {
     cb: (lateMs: number) => void,
     failed: (why: string) => void,
   ) => (() => void) | null;
+  /** Reports the page's visibility as it changes; returns its own disconnect,
+   *  or null where there is no document - which keeps the flag a fact rather
+   *  than a claim (#2569). */
+  observeVisibility?: (cb: (hidden: boolean) => void) => (() => void) | null;
   /** Where finished records go; the shell write by default. */
   sink?: (records: PerfRecord[]) => void;
   version?: string;
@@ -297,6 +308,22 @@ interface ProbeOptions {
 function nextFrame(cb: () => void): () => void {
   const id = requestAnimationFrame(cb);
   return () => cancelAnimationFrame(id);
+}
+
+/**
+ * Reports the page's visibility as it changes; returns its own disconnect,
+ * or null where there is no document.
+ *
+ * **The event, not a poll**: a hidden window produces no frames at all, so
+ * the only way to know a gap overlapped one is to hear it end. Reading
+ * `document.hidden` at the deferred write would read the state AFTER the
+ * return - the opposite of the diagnosis (#2569).
+ */
+function observeVisibility(cb: (hidden: boolean) => void): (() => void) | null {
+  if (typeof document === 'undefined') return null;
+  const report = (): void => cb(cannotPaint());
+  document.addEventListener('visibilitychange', report);
+  return () => document.removeEventListener('visibilitychange', report);
 }
 
 function observeLongTasks(cb: (ms: number, name: string) => void): () => void {
@@ -542,9 +569,31 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
     sinceBeat: number | null;
     beats: number;
     beatLate: number;
+    /** Whether this gap overlapped a hidden period, sampled at measurement. */
+    hidden: boolean;
     surface: string | null;
     session: string | null;
   } | null = null;
+  let cancelVisibility: (() => void) | null = null;
+  /**
+   * Whether the page is hidden now, and when it last stopped being hidden.
+   *
+   * **A hidden window produces no frames**, so the gap it causes is measured
+   * on the first frame after the page returns, when visibility has already
+   * flipped back. The end of the hidden period is what says the gap
+   * overlapped it; the deferred write cannot (#2569).
+   */
+  let hiddenNow = typeof document !== 'undefined' && document.hidden;
+  let hiddenEndedAt: number | null = null;
+  const noteVisibility = (hidden: boolean): void => {
+    if (hidden === hiddenNow) return;
+    hiddenNow = hidden;
+    if (!hidden) hiddenEndedAt = now();
+  };
+  /** Whether the gap that opened at `from` overlapped a hidden period. */
+  function gapHidden(from: number): boolean {
+    return hiddenNow || (hiddenEndedAt !== null && hiddenEndedAt >= from);
+  }
   let postBeats = 0;
   let postLate = 0;
   let flushArmed = false;
@@ -574,7 +623,16 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
    * user action and the last snapshot's completion (what makes a subscribe
    * "unprompted"), and the connection window's subscribes and snapshot chars.
    */
-  let clickAt: number | null = null;
+  /**
+   * The last seat click, and the seat it named.
+   *
+   * **A click is spent only by a subscribe of its own seat.** A seat the
+   * client already holds opens no subscribe - the one-subscribe rule
+   * guarantees it - so a bare timestamp outlived the click and the next
+   * automatic subscribe of any subject reported the old click's age as its
+   * own gap (measured: 18,006 ms on a session-less home read).
+   */
+  let clickAt: { at: number; seat: string } | null = null;
   let lastUserActionAt: number | null = null;
   let lastSnapshotAt: number | null = null;
   let connStart = 0;
@@ -655,6 +713,11 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
       ts_ms: Date.now(),
       frame: waiting.frame,
       ms: waiting.gap,
+      // **What tells a gap on an occluded window from a stuck thread**, the
+      // same fact `paint.ts` reads, sampled when the gap was measured: a
+      // hidden page is producing no frames at all, so its gap is the
+      // visibility gate rather than blocked work.
+      hidden: waiting.hidden,
       // The evidence: beats that reached the page across this gap, the
       // WORST lateness among them, when the last one landed, and how many
       // the gap WOULD carry at the tick. **Both axes are needed to read it**:
@@ -726,6 +789,7 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
           sinceBeat: lastBeatAt === null ? null : at - lastBeatAt,
           beats,
           beatLate,
+          hidden: gapHidden(last),
           surface,
           session,
         };
@@ -819,6 +883,9 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
           session,
         });
       });
+      hiddenNow = typeof document !== 'undefined' && document.hidden;
+      hiddenEndedAt = null;
+      cancelVisibility = (options.observeVisibility ?? observeVisibility)?.(noteVisibility) ?? null;
       cancelHeartbeat = heartbeat(
         (lateMs) => {
           beats += 1;
@@ -876,9 +943,11 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
       cancelFrame?.();
       cancelObserver?.();
       cancelHeartbeat?.();
+      cancelVisibility?.();
       cancelFrame = null;
       cancelObserver = null;
       cancelHeartbeat = null;
+      cancelVisibility = null;
     },
     setSurface(next: string | null, seat: string | null): void {
       surface = next;
@@ -895,6 +964,9 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
     noteConversationOpened(seat: string): void {
       openSeat = seat;
       openAt = now();
+      // A click for the seat the reader left opens nothing here, so it is
+      // spent rather than left to a later read (#2708).
+      if (clickAt !== null && clickAt.seat !== seat) clickAt = null;
       // A conversation opening is a user action (a deep link, a reload, a
       // palette move), so the subscribe it leads to is not "unprompted".
       lastUserActionAt = openAt;
@@ -918,6 +990,13 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
       if (content ? contentSeen : placeholderSeen) return;
       if (content) {
         contentSeen = true;
+        // **The seat's content drew without a subscribe spending the click**:
+        // a seat the client already holds is drawn from what it kept and
+        // subscribes nothing, so its open is what says the click opened no
+        // read. A later subscribe would otherwise report this click's age as
+        // its own gap (#2708). The placeholder is not this mark: a cold
+        // seat's waking line draws before the subscribe still to come.
+        if (clickAt !== null && clickAt.seat === openSeat) clickAt = null;
       } else {
         placeholderSeen = true;
       }
@@ -935,7 +1014,10 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
     },
     noteSeatClick(seat: string): void {
       const at = now();
-      clickAt = at;
+      // **A click on the seat already on screen opens nothing**: no switch,
+      // no read, so arming it would hand a later reconnect an old gap as its
+      // own. The click record is still written - it is a real action.
+      clickAt = seat === session ? null : { at, seat };
       lastUserActionAt = at;
       emit({
         schema: SCHEMA,
@@ -955,11 +1037,16 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
       connSubscribes += 1;
       connSurface = surface;
       connSession = session;
-      // **A click is spent by the first subscribe it causes.** Left armed,
-      // every later subscribe - the automatic home loop included - would
-      // report its gap since some old click as its own (#2513).
-      const sinceClick = clickAt === null ? undefined : at - clickAt;
-      clickAt = null;
+      // **A click is spent by the first subscribe of its OWN seat.** A
+      // subscribe for another seat supersedes it, because the reader went
+      // elsewhere; a sessionless subscribe - the automatic home loop - is no
+      // seat switch and leaves the click armed, so an unrelated ack landing
+      // first cannot cost the click the seat switch it was measuring
+      // (#2513, #2708).
+      const clicked = clickAt;
+      const own = clicked !== null && seat !== null && clicked.seat === seat;
+      if (own || seat !== null) clickAt = null;
+      const sinceClick = own && clicked !== null ? at - clicked.at : undefined;
       emit({
         schema: SCHEMA,
         kind: 'subscribe',

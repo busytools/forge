@@ -156,6 +156,15 @@ pub struct ClientPerfRecord {
     /// A `paint`: the frame's own sequence on its tab.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seq: Option<u32>,
+    /// Whether a slow frame's gap overlapped a hidden window (#2569).
+    ///
+    /// The page samples it at measurement, because a deferred write can
+    /// outlast the hidden period it describes - and a hidden window produces
+    /// no frames at all, so the gap is the visibility gate rather than a
+    /// blocked thread. A field this struct does not name is parsed away
+    /// before the write, so it has to be here to reach the log.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hidden: Option<bool>,
 }
 
 /// Every field the kinds do not fill, for a record built here rather than
@@ -370,7 +379,24 @@ mod tests {
             profile: None,
             tab: None,
             seq: None,
+            hidden: None,
         }
+    }
+
+    /// **A page field the struct does not name is parsed away before the
+    /// write** (#2569), so the slow frame's visibility has to be a named
+    /// field to survive the desktop's own write. Read from a page-shaped
+    /// line, the flag must come out with the record on the other side.
+    #[test]
+    fn a_slow_frames_hidden_flag_survives_the_page_shape() {
+        let line = r#"{"schema":"forge-perf/v1","kind":"frame","run_id":"run-1","ts_ms":12,
+            "frame":3,"ms":21000.0,"hidden":true,"worker_beats":20,
+            "surface":"session","session":"forge/lead"}"#
+            .replace('\n', "");
+        let held: ClientPerfRecord = serde_json::from_str(&line).expect("the page's line parses");
+        assert_eq!(held.hidden, Some(true), "hidden was parsed away before the write");
+        let written = serde_json::to_string(&held).expect("the record serialises");
+        assert!(written.contains("\"hidden\":true"), "the write carries it: {written}");
     }
 
     /// **Two batches in flight at once must not share a line.**
