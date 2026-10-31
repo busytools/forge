@@ -9,6 +9,12 @@
 //! seat is remembered here under that id when the notification is raised, and
 //! the page that asks on mount is handed it.
 
+#![allow(
+    clippy::unused_async,
+    reason = "every await here is behind cfg(target_os = \"android\"); the desktop shares the \
+              async shape so the page's command has one implementation"
+)]
+
 use std::path::PathBuf;
 #[cfg(any(target_os = "android", test))]
 use std::sync::atomic::{AtomicI32, Ordering};
@@ -134,7 +140,7 @@ impl Seats {
 /// launch on the desktop as well.
 pub(crate) async fn take(app: &tauri::AppHandle) -> Option<SessionSlot> {
     let ask = tapped(app).await?;
-    asked(ask, Seats::open(app).as_ref())
+    asked(&ask, Seats::open(app).as_ref())
 }
 
 /// What one ask answers, and what it leaves behind.
@@ -142,7 +148,7 @@ pub(crate) async fn take(app: &tauri::AppHandle) -> Option<SessionSlot> {
 /// **The launch is counted whether or not it names a tap**: a warm tap lands
 /// on a launch whose first ask named nothing, and that ask must still arm the
 /// latch, or the reload after the tap would take a seat the tap itself opened.
-fn asked(ask: Ask, seats: Option<&Seats>) -> Option<SessionSlot> {
+fn asked(ask: &Ask, seats: Option<&Seats>) -> Option<SessionSlot> {
     answered(first_for(ask.launch), seats, ask.id)
 }
 
@@ -231,7 +237,7 @@ fn next_id() -> i32 {
     let seed = *SEED.get_or_init(|| {
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |since| since.subsec_nanos() as i32)
+            .map_or(0, |since| since.subsec_nanos().cast_signed())
     });
     seed.wrapping_add(NEXT.fetch_add(1, Ordering::Relaxed))
 }
@@ -416,7 +422,7 @@ mod tests {
     fn a_reload_answers_nothing_and_leaves_the_seat() {
         let (_dir, seats) = store();
         seats.record(7, &lead());
-        assert_eq!(answered(false, Some(&seats), Some(7)), None, "a reload is not the launch",);
+        assert_eq!(answered(false, Some(&seats), Some(7)), None, "a reload is not the launch");
         assert_eq!(seats.peek(7), Some(lead()), "and a reload does not take the seat");
         assert_eq!(
             answered(true, Some(&seats), Some(7)),
@@ -433,18 +439,18 @@ mod tests {
         let (_dir, seats) = store();
         seats.record(7, &lead());
         // The launcher starts the app: the first ask names no tap.
-        assert_eq!(asked(Ask { id: None, launch: 51 }, Some(&seats)), None);
+        assert_eq!(asked(&Ask { id: None, launch: 51 }, Some(&seats)), None);
         // A warm tap then opens the seat from the store without taking it ...
         assert_eq!(seats.peek(7), Some(lead()), "the warm report left the seat");
         // ... and a reload in the same activity asks again, now naming the tap.
         assert_eq!(
-            asked(Ask { id: Some(7), launch: 51 }, Some(&seats)),
+            asked(&Ask { id: Some(7), launch: 51 }, Some(&seats)),
             None,
             "a reload after a warm tap must not open the seat",
         );
         assert_eq!(seats.peek(7), Some(lead()), "and must not take it either");
         // The next activity launch is the launch that answers it.
-        assert_eq!(asked(Ask { id: Some(7), launch: 52 }, Some(&seats)), Some(lead()));
+        assert_eq!(asked(&Ask { id: Some(7), launch: 52 }, Some(&seats)), Some(lead()));
     }
 
     /// **Two notifications of one run never share an id**, or the second

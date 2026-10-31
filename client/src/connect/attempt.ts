@@ -19,8 +19,12 @@ import { connectRust } from './rust';
  * A server that accepts the connection and then says nothing is not one this
  * client can draw, and a form that waits forever for it is a form that never
  * comes back.
+ *
+ * Exported so a test that exercises a real launch can derive its own deadline
+ * from it: a suite default equal to the handshake fails a machine that is
+ * merely loaded, with nothing naming the test's own property.
  */
-const HANDSHAKE_MS = 5000;
+export const HANDSHAKE_MS = 5000;
 
 /** The address the form opens on: the loopback port forge serves on. */
 export const DEFAULT_ADDRESS = `127.0.0.1:${DEFAULT_SERVER_PORT}`;
