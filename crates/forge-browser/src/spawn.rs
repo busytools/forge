@@ -8,6 +8,7 @@
 
 #![allow(unsafe_code, reason = "setsid, signals and the kernel's process tables are libc calls")]
 
+use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -26,18 +27,63 @@ pub const SHOW_ACK_BOUND: Duration = Duration::from_millis(100);
 /// How often the wait asks the endpoint.
 const PROBE_EVERY: Duration = Duration::from_millis(50);
 
+/// One child this server spawned, with the write end of its parent-watch
+/// pipe.
+///
+/// **The write end is held here.** The host reads EOF on the other end only
+/// when every copy of the write end closes, and this is the copy that lives
+/// as long as the server process: dropping it at spawn would make the host
+/// read its server gone immediately. It closes when this entry goes, which is
+/// a server that has already ended the host.
+struct HostChild {
+    child: std::process::Child,
+    _parent_watch: Option<std::os::fd::OwnedFd>,
+}
+
 /// The children this server spawned, so a launch failure is read from the
 /// child's own exit rather than a blind timeout, and a pid another process
 /// has since reused is never signalled.
-fn children() -> &'static std::sync::Mutex<std::collections::HashMap<u32, std::process::Child>> {
+fn children() -> &'static std::sync::Mutex<std::collections::HashMap<u32, HostChild>> {
     static CHILDREN: std::sync::OnceLock<
-        std::sync::Mutex<std::collections::HashMap<u32, std::process::Child>>,
+        std::sync::Mutex<std::collections::HashMap<u32, HostChild>>,
     > = std::sync::OnceLock::new();
     CHILDREN.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
 }
 
-fn locked() -> std::sync::MutexGuard<'static, std::collections::HashMap<u32, std::process::Child>> {
+fn locked() -> std::sync::MutexGuard<'static, std::collections::HashMap<u32, HostChild>> {
     children().lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// The parent-watch pipe: the read end for the host, the write end this
+/// server keeps for the host's whole life. Both start close-on-exec; the
+/// spawn clears that only on the copy it dups to the inherited number.
+fn open_parent_watch() -> Result<(std::os::fd::OwnedFd, std::os::fd::OwnedFd), String> {
+    let mut fds = [0_i32; 2];
+    // SAFETY: pipe writes two fresh fds into the array.
+    if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
+        return Err(format!(
+            "the parent watch's pipe cannot be opened: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    // SAFETY: both fds are fresh, and this function owns them from here on.
+    let read: std::os::fd::OwnedFd =
+        unsafe { std::os::fd::FromRawFd::from_raw_fd(fds[0]) };
+    let write: std::os::fd::OwnedFd =
+        unsafe { std::os::fd::FromRawFd::from_raw_fd(fds[1]) };
+    for fd in [&read, &write] {
+        // SAFETY: fcntl on a live fd this function owns.
+        let flags = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFD) };
+        if flags < 0
+            || unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFD, flags | libc::FD_CLOEXEC) } < 0
+        {
+            return Err(format!(
+                "the parent watch's pipe cannot be closed on exec: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+    }
+    Ok((read, write))
 }
 
 /// Whether `pid` is a child this server spawned and that has not exited.
@@ -205,6 +251,10 @@ pub(crate) fn set_test_spawn(hook: TestSpawnHook) {
     *TEST_SPAWN.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(hook);
 }
 
+/// The fd the host reads the parent watch on: the read end is `dup2`'d here
+/// between fork and exec, so the number is fixed rather than passed through.
+const PARENT_WATCH_FD: std::os::fd::RawFd = 3;
+
 /// The host's command line, without the pipes or the detachment: the spawn
 /// adds those, and a test reads the arguments a real launch carries.
 fn host_command(
@@ -217,6 +267,7 @@ fn host_command(
     profile_id: u16,
     encoding: (u16, u8),
     frames: &Path,
+    watched: bool,
 ) -> std::process::Command {
     let mut command = std::process::Command::new(exe);
     command
@@ -236,13 +287,14 @@ fn host_command(
         .arg("--fps")
         .arg(encoding.0.to_string())
         .arg("--quality")
-        .arg(encoding.1.to_string())
+        .arg(encoding.1.to_string());
+    if watched {
         // **The host outlives an orderly server and not a killed one.** The
-        // pid is the server's own, recorded here because the host's parent
-        // races the server's death; the host takes its SIGTERM path when the
-        // pid is gone, since a SIGKILL runs no exit path to reap it.
-        .arg("--parent")
-        .arg(std::process::id().to_string());
+        // read end is the identity: EOF means the server's process - and
+        // every copy of the write end it holds - is gone, where a pid could
+        // be recycled or belong to an unreaped zombie (#2499).
+        command.arg("--parent-pipe").arg(PARENT_WATCH_FD.to_string());
+    }
     command
 }
 
@@ -268,8 +320,14 @@ pub fn spawn_with(
         .append(true)
         .open(host_log_path(profile))
         .map_err(|why| format!("the host's log cannot be opened: {why}"))?;
+    // **The parent watch's pipe.** The write end stays in this process for
+    // the host's life; the read end is handed across exec as fd 3, so the
+    // host reads EOF exactly when this server's process ends, where a pid
+    // could be recycled or belong to an unreaped zombie (#2499).
+    let (parent_read, parent_write) = open_parent_watch()?;
+    let parent_read_fd = parent_read.as_raw_fd();
     let mut command =
-        host_command(exe, profile, port, ring, width, height, profile_id, encoding, frames);
+        host_command(exe, profile, port, ring, width, height, profile_id, encoding, frames, true);
     command
         // **Pointer input rides this pipe.** CEF's own mouse calls are what
         // route into a windowless popup, so the host's gestures come down
@@ -285,15 +343,24 @@ pub fn spawn_with(
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt as _;
-        // SAFETY: setsid in the child between fork and exec.
+        // SAFETY: setsid and dup2 in the child between fork and exec. The
+        // read end is this process's own fd, inherited into the child, and
+        // the dup2 clears the close-on-exec flag on the copy the host reads.
         unsafe {
-            command.pre_exec(|| {
+            command.pre_exec(move || {
                 libc::setsid();
+                if libc::dup2(parent_read_fd, PARENT_WATCH_FD) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
                 Ok(())
             });
         }
     }
     let mut child = command.spawn().map_err(|why| format!("the host did not start: {why}"))?;
+    // The host has its own copy of the read end now; dropping this one leaves
+    // the host's read end and the write end held below as the only copies
+    // keeping the pipe alive.
+    drop(parent_read);
     let pid = child.id();
     let Some(mut stdin) = child.stdin.take() else {
         let _ = child.kill();
@@ -337,7 +404,7 @@ pub fn spawn_with(
         let _ = child.wait();
         return Err(format!("the host's event reader did not start: {why}"));
     }
-    locked().insert(pid, child);
+    locked().insert(pid, HostChild { child, _parent_watch: Some(parent_write) });
     Ok((pid, input, event_rx))
 }
 
@@ -436,7 +503,7 @@ pub fn alive(pid: u32) -> bool {
 pub fn gone(pid: u32) -> bool {
     let mut held = locked();
     match held.get_mut(&pid) {
-        Some(child) => match child.try_wait() {
+        Some(child) => match child.child.try_wait() {
             Ok(status) => status.is_some(),
             // `exit` treats a status it cannot read as gone; the two
             // liveness answers must agree.
@@ -452,7 +519,7 @@ pub fn gone(pid: u32) -> bool {
 pub fn exit(pid: u32) -> Option<Option<std::process::ExitStatus>> {
     let mut held = locked();
     let waited = match held.get_mut(&pid) {
-        Some(child) => child.try_wait(),
+        Some(child) => child.child.try_wait(),
         None => return (!running(pid)).then_some(None),
     };
     match waited {
@@ -628,7 +695,7 @@ pub async fn end(pid: u32) {
     // that is not this server's child has no handle here and is left to its
     // own parent.
     if let Some(mut child) = locked().remove(&pid) {
-        let _ = child.wait();
+        let _ = child.child.wait();
     }
 }
 
@@ -1129,11 +1196,12 @@ mod tests {
         assert_eq!(singleton_pid(profile), None, "and the lock is gone");
     }
 
-    /// **The launch line names the server as the host's parent.** A SIGKILL
-    /// runs no server exit path, so the pid on this line is the watch's only
-    /// way to know the host has been left behind.
+    /// **The launch line hands the host a watch pipe, not a pid.** A SIGKILL
+    /// runs no server exit path, and EOF on the read end is tied to the
+    /// server's process where a pid could be recycled or be an unreaped
+    /// zombie (#2499).
     #[test]
-    fn the_launch_line_names_the_server_as_the_parent() {
+    fn the_launch_line_hands_the_host_a_parent_watch_pipe() {
         let command = host_command(
             Path::new("/tmp/Forge Browser"),
             Path::new("/tmp/forge-profile/cef"),
@@ -1144,14 +1212,34 @@ mod tests {
             1,
             (30, 75),
             Path::new("/tmp/forge-frames.sock"),
+            true,
         );
         let args: Vec<&std::ffi::OsStr> = command.get_args().collect();
-        let at =
-            args.iter().position(|arg| *arg == "--parent").expect("the parent flag is on the line");
+        let at = args
+            .iter()
+            .position(|arg| *arg == "--parent-pipe")
+            .expect("the watch flag is on the line");
         assert_eq!(
-            args.get(at + 1).map(|pid| pid.to_string_lossy().into_owned()),
-            Some(std::process::id().to_string()),
-            "the pid is the spawning server's own"
+            args.get(at + 1).map(|fd| fd.to_string_lossy().into_owned()),
+            Some("3".to_owned()),
+            "the read end is dup'd to the fixed fd the host reads"
+        );
+
+        let bare = host_command(
+            Path::new("/tmp/Forge Browser"),
+            Path::new("/tmp/forge-profile/cef"),
+            9411,
+            "/forge-ring",
+            1440,
+            900,
+            1,
+            (30, 75),
+            Path::new("/tmp/forge-frames.sock"),
+            false,
+        );
+        assert!(
+            !bare.get_args().any(|arg| arg == "--parent-pipe"),
+            "a launch that holds no pipe carries no flag",
         );
     }
 
