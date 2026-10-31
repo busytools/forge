@@ -7,6 +7,8 @@ import { review } from '../chat/review.svelte';
 import { tasks } from '../chat/tasks.svelte';
 import { git } from '../chat/git.svelte';
 import { subagents } from '../chat/subagents.svelte';
+import Frames from '../chat/testing/Frames.svelte';
+import Lagging from '../chat/testing/Lagging.svelte';
 import type { TurnInfo } from '../chat/units';
 import type { BackgroundTask } from '../session/wire';
 import LiveRow from './LiveRow.svelte';
@@ -225,6 +227,77 @@ describe('the live row', () => {
     for (const absent of ['\u{2191}', 'cached', 'written', 'cumulative', 'thinking']) {
       expect(words(), `no ${absent} where the record carried none`).not.toContain(absent);
     }
+  });
+
+  it('moves the clock on the tick, so a row does not freeze on a call that waits', () => {
+    // The fold's span only grows when a frame lands, and a turn can sit minutes
+    // on one call - which is the stretch a reader is watching the clock
+    // through, and the row would read one number for all of it.
+    draw(opening());
+    expect(words()).toContain('0.0s');
+
+    vi.advanceTimersByTime(2000);
+    flushSync();
+
+    expect(words(), 'the clock the tick moved').toContain('2.0s');
+  });
+
+  it('keeps the clock moving while frames land faster than the tick', () => {
+    // **The timer must not be re-armed per frame.** A frame is a fresh record,
+    // so an effect reading the record restarts the interval before it can fire
+    // - and a turn emitting about every 50 tokens emits faster than 1 s, which
+    // is exactly when a reader is watching the clock. Frozen, the row reads
+    // one number while the model works, then jumps when the stream pauses
+    // (Ved, 2026-10-09: "it stops and then it just jumps to a bigger value").
+    app = mount(Frames, {
+      target: document.body,
+      props: {},
+    });
+    flushSync();
+    expect(words()).toContain('0.0s');
+
+    // Just over three seconds of a frame every 400 ms, each flushed as the
+    // stream flushes it - which is what re-runs an effect that reads the
+    // record, and so what kills a timer that re-arms per frame.
+    for (let at = 0; at < 8; at += 1) {
+      vi.advanceTimersByTime(400);
+      flushSync();
+    }
+
+    // 3.2s, not 3.0s: the 100 ms tick reads the clock as of the last tick, so
+    // the display tracks the fake clock instead of lagging a whole second
+    // behind it - which is the smoothness below.
+    expect(words(), 'the clock the frames did not freeze').toContain('3.2s');
+  });
+
+  it('never walks the clock back when a correction arrives behind it', () => {
+    // **The rule Ved asked for (live look 2026-10-11): expect locally, correct
+    // when the detail lands - forward.** A record whose measured span sits
+    // behind the clock the tick has already carried (a delivery lag, a fold
+    // window that starts later) must not step the display backward; the clock
+    // holds at its high-water mark and takes the next real reading once it
+    // passes it.
+    const column = mount(Lagging, {
+      target: document.body,
+      props: {},
+    }) as unknown as { lag: () => void };
+    app = column;
+    flushSync();
+    expect(words(), 'precondition: the clock stands at the turn start').toContain('0.0s');
+
+    vi.advanceTimersByTime(3200);
+    flushSync();
+    expect(words(), 'the local tick carried it').toContain('3.2s');
+
+    column.lag();
+    flushSync();
+    expect(words(), 'the late correction stepped the clock back').toContain('3.2s');
+
+    vi.advanceTimersByTime(3000);
+    flushSync();
+    expect(words(), 'and the clock resumes from the reading once it passes the mark').toContain(
+      '3.7s',
+    );
   });
 
   it('draws a chip only when its store has something to state, in the fixed order', () => {

@@ -10,10 +10,6 @@
  *
  * Held per seat, keyed the way the composer's box is: a seat switch swaps the
  * whole surface, and another seat's running figures must never draw on it.
- *
- * The name is `pinnedRow` rather than `pinned` on purpose: a store beside the
- * `Pinned.svelte` component would collide with it on a case-insensitive
- * filesystem, and `./pinned.svelte` would resolve to the component.
  */
 
 import { SvelteMap } from 'svelte/reactivity';

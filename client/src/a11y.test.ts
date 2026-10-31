@@ -3,7 +3,6 @@ import { render } from 'svelte/server';
 import { describe, expect, it, vi } from 'vitest';
 
 import Board from './board/Board.svelte';
-import Pinned from './chat/Pinned.svelte';
 import { connectors } from './chat/connectors.svelte';
 import { files } from './chat/files.svelte';
 import { git } from './chat/git.svelte';
@@ -745,29 +744,6 @@ describe('axe over the rendered pages', () => {
    * which no server render can populate. Worth closing when a page can be
    * mounted in a test with a record.
    */
-  it('draws the strip with every row populated, with no violations', async () => {
-    seedStrip(true);
-    try {
-      const html = render(Pinned, { props: { info: null } }).body;
-      // Every row drew, so axe saw all of them.
-      for (const [mark, what] of [
-        ['i-subagents', 'the agents row'],
-        ['i-processes', 'the processes row'],
-        ['i-gotify', 'the connectors row'],
-        ['i-schedules', 'the schedules row'],
-        ['i-mcp', 'the servers row'],
-        ['i-git', 'the tree row'],
-        ['i-tasks', 'the tasks row'],
-        ['i-monitors', 'the monitors row'],
-      ] as const) {
-        expect(html, `${what} drew, so axe saw it`).toContain(mark);
-      }
-      expect(await idsOf(`<main>${html}</main>`)).toEqual([]);
-    } finally {
-      seedStrip(false);
-    }
-  });
-
   /**
    * **The live row** is the strip's successor, and it draws the same segments
    * as a list of doors. Rendered with NO turn, which is also the shape an idle

@@ -2,7 +2,6 @@
   import { tick, untrack } from 'svelte';
 
   import { echoes } from '../chat/echoes.svelte';
-  import Pinned from '../chat/Pinned.svelte';
   import { pinnedRow } from '../chat/pinnedRow.svelte';
   import { runningAt } from '../chat/conversation';
   import { drawsSurface, navigateBrowser } from '../browser/link';
@@ -21,6 +20,7 @@
   import Dock from './Dock.svelte';
   import Field from './Field.svelte';
   import Hold from './Hold.svelte';
+  import LiveRow from './LiveRow.svelte';
   import TakeoverBar from './TakeoverBar.svelte';
   import { LIST_ID, offer, rowId, type Sources } from './autocomplete';
   import { axesFor, deviceFor, rememberAxes, rememberDevice } from './dictation';
@@ -347,21 +347,6 @@
     blocked(seat, composer, box.sent, slot.label === 'lead', dockAsk !== null),
   );
   const filled = $derived(box.draft.trim() !== '');
-
-  /**
-   * Whether the bar draws its second row: the keys and controls under the
-   * field, rather than on it.
-   *
-   * **An empty bar is one row** (Ved, 2026-10-09): the controls ride the
-   * field's own line, so an idle seat is not two rows tall for a stop button
-   * nobody is looking at. A draft needs somewhere for the keys to live, and
-   * **the second row STAYS through a take** - the bar takes the draft's own
-   * line under it, so the box's height is the same before, during and after
-   * (a foot that vanished with the take made the whole page jump on every
-   * press, Ved, 2026-10-15). The inline controls stand down exactly when the
-   * foot is up, so the buttons are still drawn once.
-   */
-  const secondRow = $derived(filled);
 
   /**
    * Whether this seat has a turn to stop.
@@ -1492,6 +1477,90 @@
       onretry={surface.phase === 'failed' ? takeoverRetry : null}
     />
   {/if}
+
+  <!-- The controls every body row that takes typing carries: the mic, the stop
+       while a turn runs, and the send once there is something to send. One
+       copy, because the field and a take's card are the same row. -->
+  {#snippet ctls()}
+    <span class="ctls">
+      {#if dictation}
+        <DictateControl
+          {dictate}
+          onpress={() => {
+            fromMic = true;
+          }}
+          element={(el: HTMLElement | null) => {
+            micEl = el;
+          }}
+        />
+      {/if}
+      {#if running}
+        <button class="stop" type="button" title="stop" aria-label="stop" onclick={stop}>
+          <Icon name="stop" />
+        </button>
+      {/if}
+      {#if filled}
+        <button class="send" type="button" title="send" aria-label="send" onclick={send}>
+          <Icon name="send" />
+        </button>
+      {/if}
+    </span>
+  {/snippet}
+
+  <!-- The composer's own body: the notice above, and one row holding the field
+       or the take that replaced it. The keys ride that row as a pointer's own
+       detail - a finger never sees them - which is the width the band could not
+       spare for a second row. -->
+  {#snippet fieldBody()}
+    {#if line !== null && composer.take === null}
+      <div class="notice {line.tone}">{line.text}</div>
+    {/if}
+    <div class="line" class:takeline={rowPhase !== null} bind:this={inputBox}>
+      {#if rowPhase !== null}
+        <!-- **The take is the body's own row.** The words would be typed into
+             this row, so they arrive on it: nothing is added and nothing moves
+             when a take starts or ends, the controls ride it, and the band's
+             ring carries the state. -->
+        <TakeCard
+          take={composer.take}
+          {wire}
+          phase={rowPhase}
+          oncancel={dropTake}
+          spread
+          silent={silentLine}
+        />
+      {:else}
+        <!-- The list belongs to the field rather than being a surface the reader
+         Tabs into: the field keeps focus and points at the marked row. The
+         combobox role is not available here - ARIA allows it on an input,
+         not on a textarea - so this is the textbox-and-controlled-listbox
+         shape, which is what a multi-line composer can validly be. -->
+        <Field
+          editor="composer"
+          class="txt"
+          name="draft"
+          placeholder="Type a message..."
+          aria={{
+            autocomplete: 'list',
+            controls: list === null ? undefined : LIST_ID,
+            activeDescendant: list === null ? undefined : rowId(list, box.marked),
+          }}
+          bind:value={box.draft}
+          {oninput}
+          onkeydown={onkey}
+          field={(el: HTMLElement | null) => {
+            field = el;
+          }}
+        />
+      {/if}
+      {#if filled && rowPhase === null}
+        <span class="hints"><kbd>Shift</kbd> <kbd>Enter</kbd> newline</span>
+        <span class="hints"><kbd>Enter</kbd> send</span>
+      {/if}
+      {@render ctls()}
+    </div>
+  {/snippet}
+
   <div
     class="surf"
     class:rec={ring === 'rec'}
@@ -1507,146 +1576,59 @@
     {#if ring === 'load'}
       <span class="sr" role="status">opening the microphone</span>
     {/if}
-    <Pinned info={pinnedRow.of(seatKey)} {slot} />
-    {#if blocker !== null}
-      <Hold line={blocker.line} sub={blocker.sub} bad={blocker.bad} shimmer={blocker.shimmer} />
-    {:else if dockAsk !== null}
-      <!-- Keyed on the prompt, so a batch's next question is a fresh dock: the
-         wire's option ids are positional, so a mark or a toggle left over from
-         the question before is a valid answer to the one after, and the core
-         accepts it. A repaint of the same prompt keeps its key, so a frame
-         arriving clears nothing the reader has turned on. -->
-      {#key ownKeyOf(dockAsk)}
-        <Dock
-          ask={dockAsk}
-          ownKey={ownKeyOf(dockAsk)}
-          {slot}
-          {connection}
-          depth={seat.pendingDepth}
-          notice={box.refusal}
-          take={composer.take}
-          {wire}
-          bind:notes={box.dockDraft}
-          bind:ownOpen={dockOpen}
-          land={box.dockLanded}
-          carried={box.carried}
-          onanswer={remember}
-          onabandon={abandon}
-          onmic={() => dictate.toggle()}
-          {dictation}
-          silent={silentLine}
-          takeline={box.dictateLine}
-          answered={box.answeredKey !== null &&
-            box.answeredKey === ownKeyOf(dockAsk) &&
-            box.refusal === null}
-        />
-      {/key}
-    {:else}
-      {#if seat.lifecycle === 'AuthRequired'}
-        <div class="hint login">
-          Authentication required
-          <span class="sub">{SIGN_IN_FALLBACK}</span>
-        </div>
-      {/if}
-      <!-- The box's controls, drawn in one of two places: on the field's own line
-         while the bar is one row, and in the foot once a draft or a recording
-         gives the bar a second. One copy, because the two are the same buttons
-         and a second rendering of them is a second thing to keep in step. -->
-      {#snippet ctls()}
-        <span class="ctls">
-          {#if dictation}
-            <DictateControl
-              {dictate}
-              onpress={() => {
-                fromMic = true;
-              }}
-              element={(el: HTMLElement | null) => {
-                micEl = el;
-              }}
-            />
-          {/if}
-          {#if running}
-            <button class="stop" type="button" title="stop" aria-label="stop" onclick={stop}>
-              <Icon name="stop" />
-            </button>
-          {/if}
-          {#if filled}
-            <button class="send" type="button" title="send" aria-label="send" onclick={send}>
-              <Icon name="send" />
-            </button>
-          {/if}
-        </span>
-      {/snippet}
-
-      <div class="box" bind:this={inputBox}>
-        {#if line !== null && composer.take === null}
-          <div class="notice {line.tone}">{line.text}</div>
-        {/if}
-        {#if list !== null}
-          <Autocomplete offer={list} marked={box.marked} onpick={pick} />
-        {/if}
-        <div class="line" class:takeline={rowPhase !== null}>
-          {#if rowPhase !== null}
-            <!-- **The take takes the draft's own line.** The row the words
-                 would be typed into is the row they arrive on, so nothing is
-                 added and nothing moves when a take starts or ends; the
-                 controls ride it, and the surface's ring carries the state. -->
-            <TakeCard
-              take={composer.take}
-              {wire}
-              phase={rowPhase}
-              oncancel={dropTake}
-              spread
-              silent={silentLine}
-            />
-            {#if !secondRow}
-              {@render ctls()}
-            {/if}
-          {:else}
-            <!-- The list belongs to the field rather than being a surface the reader
-             Tabs into: the field keeps focus and points at the marked row. The
-             combobox role is not available here - ARIA allows it on an input,
-             not on a textarea - so this is the textbox-and-controlled-listbox
-             shape, which is what a multi-line composer can validly be. -->
-            <Field
-              editor="composer"
-              class="txt"
-              name="draft"
-              placeholder="Type a message..."
-              aria={{
-                autocomplete: 'list',
-                controls: list === null ? undefined : LIST_ID,
-                activeDescendant: list === null ? undefined : rowId(list, box.marked),
-              }}
-              bind:value={box.draft}
-              {oninput}
-              onkeydown={onkey}
-              field={(el: HTMLElement | null) => {
-                field = el;
-              }}
-            />
-            {#if !secondRow}
-              {@render ctls()}
-            {/if}
-          {/if}
-        </div>
-        {#if secondRow}
-          <!-- The box's own foot: the keys the field honours on the left, the
-             controls on the right. The draft keeps the box's whole width, and
-             the controls follow it down to the box's bottom edge. An empty bar
-             draws none of it - the controls ride the field's own line. -->
-          <div class="foot">
-            <!-- The keys only while the field is the row's own: a take in its
-               place unmounts the field, so the hints would promise keys that
-               do nothing. The foot stays either way - that is the height. -->
-            {#if filled && rowPhase === null}
-              <span class="hints"><kbd>Shift</kbd> <kbd>Enter</kbd> newline</span>
-              <span class="hints"><kbd>Enter</kbd> send</span>
-            {/if}
-            {@render ctls()}
+    <!-- **The live row is the card's own first line, whatever the body draws.**
+         The seat's figures and its segments stay on screen while a prompt, a
+         take or a blocked line holds the slot below, so the context is never
+         something the reader has to press for. -->
+    <LiveRow info={pinnedRow.of(seatKey)} {slot} />
+    <div class="slot">
+      {#if blocker !== null}
+        <Hold line={blocker.line} sub={blocker.sub} bad={blocker.bad} shimmer={blocker.shimmer} />
+      {:else if dockAsk !== null}
+        <!-- Keyed on the prompt, so a batch's next question is a fresh dock:
+           the wire's option ids are positional, so a mark or a toggle left over
+           from the question before is a valid answer to the one after, and the
+           core accepts it. A repaint of the same prompt keeps its key, so a
+           frame arriving clears nothing the reader has turned on. -->
+        {#key ownKeyOf(dockAsk)}
+          <Dock
+            ask={dockAsk}
+            ownKey={ownKeyOf(dockAsk)}
+            {slot}
+            {connection}
+            depth={seat.pendingDepth}
+            notice={box.refusal}
+            take={composer.take}
+            {wire}
+            bind:notes={box.dockDraft}
+            bind:ownOpen={dockOpen}
+            land={box.dockLanded}
+            carried={box.carried}
+            onanswer={remember}
+            onabandon={abandon}
+            onmic={() => dictate.toggle()}
+            {dictation}
+            silent={silentLine}
+            takeline={box.dictateLine}
+            answered={box.answeredKey !== null &&
+              box.answeredKey === ownKeyOf(dockAsk) &&
+              box.refusal === null}
+          />
+        {/key}
+      {:else}
+        {#if seat.lifecycle === 'AuthRequired'}
+          <div class="hint login">
+            Authentication required
+            <span class="sub">{SIGN_IN_FALLBACK}</span>
           </div>
         {/if}
-      </div>
+        {@render fieldBody()}
+      {/if}
+    </div>
+    <!-- The list is the card's own popover, not a lane of the bar: it hangs
+         above the card, so opening one never moves the band's height. -->
+    {#if list !== null && blocker === null && dockAsk === null}
+      <Autocomplete offer={list} marked={box.marked} onpick={pick} />
     {/if}
   </div>
   <!-- The panel is a popover OVER the surface, not a lane of it: it hangs off

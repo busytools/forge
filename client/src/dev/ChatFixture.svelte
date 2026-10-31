@@ -1,6 +1,6 @@
 <script lang="ts">
   import Chat from '../chat/Chat.svelte';
-  import Pinned from '../chat/Pinned.svelte';
+  import LiveRow from '../composer/LiveRow.svelte';
   import { SvelteSet } from 'svelte/reactivity';
   import { pinnedRow } from '../chat/pinnedRow.svelte';
   import { subjectKey } from '../protocol';
@@ -352,11 +352,12 @@
   <!-- The column's own height, which in the session page is the grid's. -->
   <div class="devchat">
     <Chat slot={canned.page.slot} connection={canned.held.connection} />
-    <!-- The strip lane, which the session page draws inside the composer's
-         surface: the fixture mounts the column alone, so the lane draws here
-         to keep the rows on screen - and their connection methods exercised. -->
+    <!-- The live row, which the session page draws inside the composer's
+         surface: the fixture mounts the column alone, so the row draws here
+         to keep the segments on screen - and their connection methods
+         exercised. -->
     <div class="surf devfoot">
-      <Pinned
+      <LiveRow
         info={pinnedRow.of(subjectKey({ session: canned.page.slot }))}
         slot={canned.page.slot}
       />

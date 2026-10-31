@@ -1,6 +1,6 @@
 <script lang="ts">
+  import LiveRow from '../../composer/LiveRow.svelte';
   import type { TurnInfo } from '../units';
-  import Pinned from '../Pinned.svelte';
 
   /**
    * A pinned row whose record slips BEHIND its clock, the way a late-arriving
@@ -8,7 +8,7 @@
    * the span only half a second while the stamp sits three seconds in - and
    * the local tick has already carried the display past both.
    *
-   * The record is `Pinned.test.ts`'s running fixture, so the clock starts at
+   * The record is `LiveRow.test.ts`'s running fixture, so the clock starts at
    * the same instant and only the slip is under test.
    */
   let info = $state<TurnInfo>({
@@ -32,4 +32,4 @@
   }
 </script>
 
-<Pinned {info} />
+<LiveRow {info} />

@@ -68,7 +68,7 @@ html::-webkit-scrollbar,
 .ac .rows::-webkit-scrollbar,
 .sg-list::-webkit-scrollbar,
 .pop::-webkit-scrollbar,
-.box textarea::-webkit-scrollbar,
+.line textarea::-webkit-scrollbar,
 .dock .notes::-webkit-scrollbar,
 .dock .opts::-webkit-scrollbar,
 .dock .preview::-webkit-scrollbar,
@@ -82,7 +82,7 @@ html::-webkit-scrollbar-track,
 .ac .rows::-webkit-scrollbar-track,
 .sg-list::-webkit-scrollbar-track,
 .pop::-webkit-scrollbar-track,
-.box textarea::-webkit-scrollbar-track,
+.line textarea::-webkit-scrollbar-track,
 .dock .notes::-webkit-scrollbar-track,
 .dock .opts::-webkit-scrollbar-track,
 .dock .preview::-webkit-scrollbar-track,
@@ -96,7 +96,7 @@ html::-webkit-scrollbar-corner,
 .ac .rows::-webkit-scrollbar-corner,
 .sg-list::-webkit-scrollbar-corner,
 .pop::-webkit-scrollbar-corner,
-.box textarea::-webkit-scrollbar-corner,
+.line textarea::-webkit-scrollbar-corner,
 .dock .notes::-webkit-scrollbar-corner,
 .dock .opts::-webkit-scrollbar-corner,
 .dock .preview::-webkit-scrollbar-corner,
@@ -110,7 +110,7 @@ html::-webkit-scrollbar-thumb,
 .ac .rows::-webkit-scrollbar-thumb,
 .sg-list::-webkit-scrollbar-thumb,
 .pop::-webkit-scrollbar-thumb,
-.box textarea::-webkit-scrollbar-thumb,
+.line textarea::-webkit-scrollbar-thumb,
 .dock .notes::-webkit-scrollbar-thumb,
 .dock .opts::-webkit-scrollbar-thumb,
 .dock .preview::-webkit-scrollbar-thumb,
@@ -125,7 +125,7 @@ html::-webkit-scrollbar-thumb:hover,
 .ac .rows::-webkit-scrollbar-thumb:hover,
 .sg-list::-webkit-scrollbar-thumb:hover,
 .pop::-webkit-scrollbar-thumb:hover,
-.box textarea::-webkit-scrollbar-thumb:hover,
+.line textarea::-webkit-scrollbar-thumb:hover,
 .dock .notes::-webkit-scrollbar-thumb:hover,
 .dock .opts::-webkit-scrollbar-thumb:hover,
 .dock .preview::-webkit-scrollbar-thumb:hover,
@@ -138,7 +138,7 @@ html::-webkit-scrollbar-thumb:active,
 .ac .rows::-webkit-scrollbar-thumb:active,
 .sg-list::-webkit-scrollbar-thumb:active,
 .pop::-webkit-scrollbar-thumb:active,
-.box textarea::-webkit-scrollbar-thumb:active,
+.line textarea::-webkit-scrollbar-thumb:active,
 .dock .notes::-webkit-scrollbar-thumb:active,
 .dock .opts::-webkit-scrollbar-thumb:active,
 .dock .preview::-webkit-scrollbar-thumb:active,
@@ -2819,11 +2819,11 @@ details.leaf.nrow details.raw pre { margin: 4px 0 2px; padding: 6px 9px; border:
   backdrop-filter: blur(10px); box-shadow: 0 14px 38px rgba(0,0,0,.42);
   display: flex; flex-direction: column;
   transition: border-color .3s ease; }
-/* Lanes are split by hairlines; the hidden status line is not a lane. Counting
-   it as one grew the band a pixel and drew a hairline from the gate, which is
-   the open's own flinch - the span is absolutely placed and adds
-   nothing to the band but its words. */
-.surf > :not(.sr) + :not(.sr) { border-top: 1px solid var(--line); }
+/* The card draws its own hairlines where a row has one: the live row's border
+   is the line under it, so the surface adds no separator of its own between
+   children. The hidden status line is not a lane either - it is absolutely
+   placed and adds nothing to the band but its words. */
+
 .surf.rec { border-color: color-mix(in srgb, var(--accent) 35%, var(--hot)); }
 .surf.tr { border-color: var(--blue); }
 .surf.done { border-color: var(--ok); }
@@ -2860,17 +2860,16 @@ details.leaf.nrow details.raw pre { margin: 4px 0 2px; padding: 6px 9px; border:
 .hint.login .sub { color: var(--dim); display: block; font-size: var(--fs-data); }
 
 /* A lane of the surface now, not a box of its own: the ring lives on `.surf`. */
-.box { position: relative;
-  padding: 10px 13px; display: flex; flex-direction: column; gap: 0; }
-/* The draft's own row: the field, and the controls too while the bar is one
-   row. A draft long enough to need the keys takes the second row instead, and
-   the controls follow it down. */
-.line { display: flex; align-items: center; gap: 8px; }
-/* The separation the box's gap gave every row above the draft: C moved the
-   field and the footer together and left only that pair tight, so this stays
-   per pair rather than a gap. */
-.comp .notice + .line, .comp .notice + .ac,
-.ac + .line { margin-top: 8px; }
+/* The card's one body slot: exactly one of the field (with its notice above),
+   an ask, a take's card or a blocked line. The row carries the padding,
+   because the row is the only thing in it that draws edge to edge. */
+.slot { display: flex; flex-direction: column; }
+/* The draft's own row: the field or the take's card, the controls, and the
+   keys a pointer can read. */
+.line { display: flex; align-items: center; gap: 8px; padding: 10px 12px 10px 14px; }
+/* The separation the box's gap gave every row above the draft: the notice
+   sits above the row, so this stays per pair rather than a body gap. */
+.comp .notice + .line { margin-top: 8px; }
 /* The draft. A field rather than a span, so it carries no chrome of the
    page's: the box's own border is the identity. */
 .line .txt { flex: 1; min-width: 0; font-family: inherit; color: inherit;
@@ -2881,11 +2880,10 @@ details.leaf.nrow details.raw pre { margin: 4px 0 2px; padding: 6px 9px; border:
    its own. */
 .line .txt:focus { outline: none; }
 .line .txt::placeholder { color: var(--dim); font-style: italic; }
-/* The controls sit together at the right end of whichever row holds them - the
-   field's own line while the bar is one row, the foot once a draft or a
-   recording gives it a second - so the draft keeps the box's whole width and
-   the controls still land at the caret's last line. 24px is the floor a
-   pointer target takes. */
+/* The controls sit together at the right end of the body's row - the field's
+   or the take's - so the draft keeps the body's whole width and the controls
+   still land at the caret's last line. 24px is the floor a pointer target
+   takes. */
 .ctls { margin-left: auto; flex: none; display: flex; align-items: center;
   gap: 10px; }
 .mic { flex: none; width: 24px; height: 24px;
@@ -2911,16 +2909,14 @@ details.leaf.nrow details.raw pre { margin: 4px 0 2px; padding: 6px 9px; border:
 .stop { color: var(--dim); background: none; border: 0; cursor: pointer;
   display: grid; place-items: center; width: 24px; height: 24px; }
 .stop:hover { color: var(--bad); }
-.foot { display: flex; align-items: center; gap: 10px;
-  font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
-/* A narrow box cannot hold the hints and the controls on one row: the keys are
-   what the phone can spare, so they go and the controls keep the row. Measured:
-   the widest set (hints + mic + stop + send) needs 371px with a mouse's glyphs
-   and 431px with a finger's; each threshold below is that set plus the box's
-   26px of padding, a little early. */
-@container (max-width: 400px) { .foot .hints { display: none; } }
-@media (pointer: coarse) {
-  @container (max-width: 470px) { .foot .hints { display: none; } }
+/* The keys the field honours, drawn for a pointer that can see them: a finger
+   gets the row's controls alone, which is the width the band could not spare
+   for a row of its own. */
+.line .hints { display: none; }
+@media (pointer: fine) {
+  .line .hints { display: inline-flex; align-items: center; gap: 4px; flex: none;
+    font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
+    white-space: nowrap; }
 }
 
 /* The line a composer puts where the mockup puts key hints. The box's names
@@ -3104,7 +3100,7 @@ kbd { font-family: inherit; font-size: inherit; color: inherit;
 
 /* While the session cannot take input the box is replaced entirely, and the
    slot says why it is not accepting keys. */
-.blocked { display: flex; flex-direction: column; gap: 3px; }
+.blocked { display: flex; flex-direction: column; gap: 3px; padding: 12px 14px; }
 .blocked .b1 { display: flex; align-items: center; gap: 10px; font-family: var(--mono);
   font-size: var(--fs-base); color: var(--text); }
 /* The second line starts where the first does, which is the terminal's own
