@@ -165,6 +165,9 @@ describe('the return re-read', () => {
     await returnAfter(5_000);
 
     expect(fake.calls).toEqual(['probe', 'home', 'board', 'seat']);
+    // The seat's read is named as a return's, or the chat has no way to trust
+    // the snapshot that answers it over an ordinary mid-stream read.
+    expect(vi.mocked(rereadSeat)).toHaveBeenCalledWith(fake.connection, LEAD, { returned: true });
     stop();
   });
 

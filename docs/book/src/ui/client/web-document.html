@@ -86,6 +86,7 @@
       .doc-body {
         max-width: 940px;
         margin: 0 auto;
+        container-type: inline-size;
         background: var(--s1);
         border: 1px solid var(--line);
         border-radius: 10px;
@@ -94,20 +95,20 @@
       .doc-body h1 {
         font-size: 30px;
         line-height: 1.25;
-        font-weight: 600;
+        font-weight: 500;
         letter-spacing: -0.01em;
         margin: 0 0 18px;
       }
       .doc-body h2 {
         font-size: 19px;
-        font-weight: 600;
+        font-weight: 500;
         margin: 38px 0 12px;
         padding-top: 22px;
         border-top: 1px solid var(--line);
       }
       .doc-body h3 {
         font-size: 16px;
-        font-weight: 600;
+        font-weight: 500;
         margin: 26px 0 8px;
       }
       .doc-body p,
@@ -266,6 +267,29 @@
         overflow-wrap: normal;
         border-bottom: 1px solid var(--line);
       }
+      /* A prose table too wide for the column stacks, as the terminal stacks
+         it: one field per line, each cell labelled with its heading. */
+      @container (max-width: 760px) {
+        .doc-block table, .doc-block thead, .doc-block tbody, .doc-block tr,
+        .doc-block th, .doc-block td {
+          display: block;
+        }
+        .doc-block table:has(tbody tr) thead {
+          display: none;
+        }
+        .doc-block tr {
+          padding: 10px 0;
+        }
+        .doc-block tr + tr {
+          border-top: 1px solid var(--line);
+        }
+        .doc-block td[data-label]::before {
+          content: attr(data-label);
+          display: block;
+          color: var(--muted);
+          font-size: var(--fs-label);
+        }
+      }
       .prose hr {
         border: 0;
         height: 1px;
@@ -332,7 +356,7 @@
       .strip .doc-block h1 {
         font-size: calc(var(--fs-base) * 1.6);
         margin: 6px 0;
-        font-weight: 600;
+        font-weight: 500;
       }
       .strip .doc-block p {
         margin: 8px 0;
@@ -628,22 +652,26 @@ max_size_mib = 10</pre>
           </div>
           <div class="doc-block">
             <table>
-              <tr>
-                <th>surface</th>
-                <th>the PDF rides</th>
-              </tr>
-              <tr>
-                <td>desktop app</td>
-                <td>WKWebView's own viewer (measured)</td>
-              </tr>
-              <tr>
-                <td>a browser</td>
-                <td>its own viewer (Chromium measured)</td>
-              </tr>
-              <tr>
-                <td>the phone</td>
-                <td>pdf.js, in the page</td>
-              </tr>
+              <thead>
+                <tr>
+                  <th>surface</th>
+                  <th>the PDF rides</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td data-label="surface">desktop app</td>
+                  <td data-label="the PDF rides">WKWebView's own viewer (measured)</td>
+                </tr>
+                <tr>
+                  <td data-label="surface">a browser</td>
+                  <td data-label="the PDF rides">its own viewer (Chromium measured)</td>
+                </tr>
+                <tr>
+                  <td data-label="surface">the phone</td>
+                  <td data-label="the PDF rides">pdf.js, in the page</td>
+                </tr>
+              </tbody>
             </table>
           </div>
           <hr />
