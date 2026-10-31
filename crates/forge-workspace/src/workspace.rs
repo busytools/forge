@@ -21007,6 +21007,8 @@ provider = "anthropic"
 
         // Resolves to `real/a/b/.claude/worktrees/shared`, which sanitises to
         // the same key as the project's `real/a-b/.claude/worktrees/shared`.
+        // Both paths are far under the 200-character sanitise cap, so the key
+        // is the plain substitution rather than a truncated-and-hashed one.
         let gone = link.join("a/b").join(".claude/worktrees/shared");
         assert!(!gone.exists(), "the run directory is gone, which is the case under test");
         assert_eq!(
