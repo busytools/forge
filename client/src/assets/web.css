@@ -2889,9 +2889,12 @@ details.leaf.nrow details.raw pre { margin: 4px 0 2px; padding: 6px 9px; border:
    is lost, and out of the page for the keyboard and the eye alike. */
 .ask-body { display: flex; flex-direction: column; }
 .ask-body.covered { display: none; }
+/* The row's shape is shared - the review and document pages draw their own
+   `.line` - so the composer's padding is scoped to the card's body. */
+.line { display: flex; align-items: center; gap: 8px; }
 /* The draft's own row: the field or the take's card, the controls, and the
    keys a pointer can read. */
-.line { display: flex; align-items: center; gap: 8px; padding: 10px 12px 10px 14px; }
+.surf .slot > .line { padding: 10px 12px 10px 14px; }
 /* The separation the box's gap gave every row above the draft: the notice
    sits above the row, so this stays per pair rather than a body gap. */
 .comp .notice + .line { margin-top: 8px; }
@@ -3430,7 +3433,7 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
 @media (pointer: coarse) {
   .dock .btn { min-height: 44px; }
   /* The fold control is a glyph: its box is ~19px wide without this floor. */
-  .dock .chevb { min-width: 44px; }
+  .dock .chevb { min-width: 44px; min-height: 44px; }
   .micb { min-height: 44px; min-width: 44px; }
   .sendb { min-height: 44px; min-width: 44px; }
 }

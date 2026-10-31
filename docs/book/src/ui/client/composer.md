@@ -190,10 +190,10 @@ record, so the body does not come alive under it.
 ## The two widths
 
 The card is drawn and checked on the session page's column, at 1600 and at
-430. At 1600 the idle band is 82px, or 46px on a seat with nothing to report;
-an open menu does not move it. At 430 the bar is 100px: every control a finger
-reaches takes a 44px target under a coarse pointer, keyed on the pointer rather
-than the width - the phone has no push-to-talk key, so the mic is the only way
-into dictation there - and the key hints stand down because a finger has no use
-for them. The live row never wraps at either width; what does not fit is behind
-`+N`.
+430. At 1600 the idle band measures 83px, or 46px on a seat with nothing to
+report; an open menu does not move it. At 430 it measures 121px: every control
+a finger reaches takes a 44px target under a coarse pointer, keyed on the
+pointer rather than the width - the phone has no push-to-talk key, so the mic
+is the only way into dictation there - and the key hints stand down because a
+finger has no use for them. The live row never wraps at either width; the
+figures give way first, and what still does not fit is behind `+N`.

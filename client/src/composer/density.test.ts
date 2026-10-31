@@ -6,12 +6,13 @@ import { describe, expect, it } from 'vitest';
  * The band's height, kept from growing by a rule.
  *
  * **Read off the sheet, not the DOM.** jsdom performs no layout, so no
- * rendered assertion can see a height; what is pinned here is the declared
- * arithmetic the measured heights rest on - the live row's padding and the
- * body row's, the coarse-pointer floor on every control, and the row's own
- * clip rather than a wrap. The measured heights themselves (82px idle on a
- * live seat, 46px on a quiet one, 100px at a phone) are in the book's drawing
- * and were taken in a browser.
+ * rendered assertion can see a height: this pins the declarations the
+ * measured heights rest on - the live row's own padding and wrap, the body
+ * row's padding scoped to the card, and the coarse-pointer floors that set
+ * the phone's height. The heights themselves are measured in the app with the
+ * CDP recorder and recorded in the book: **83px** at 1600 on a live seat and
+ * **121px** at 430 with a coarse pointer. A browser measurement, not a jsdom
+ * one, is what those numbers are; a rule that grows either band breaks them.
  */
 const SHEET = readFileSync(new URL('../assets/web.css', import.meta.url), 'utf8');
 
@@ -39,11 +40,14 @@ describe("the band's height", () => {
     expect(value(row, 'overflow'), 'the row scrolls sideways again').toBe('hidden');
   });
 
-  it('draws the body row at the sheet field padding, not a second lane', () => {
-    const line = rule('.line');
+  it('draws the card body row at the sheet field padding, scoped to the card', () => {
+    // The class is shared with the review and document rows; the padding is
+    // the composer's own, so it hangs off the card's body.
+    const line = rule('.surf .slot > .line');
     expect(value(line, 'padding'), 'the body row grew a padding nothing asked for').toBe(
       '10px 12px 10px 14px',
     );
+    expect(rule('.line'), 'the shared row grew the composer padding').not.toContain('padding:');
     // The controls ride this row; a column of their own was the second row.
     expect(value(rule('.ctls'), 'margin-left'), 'the controls left the row').toBe('auto');
   });

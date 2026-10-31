@@ -19,6 +19,12 @@
   import Composer from '../composer/Composer.svelte';
   import Queue from '../chat/Queue.svelte';
   import { pinnedRow } from '../chat/pinnedRow.svelte';
+  import { files } from '../chat/files.svelte';
+  import { git } from '../chat/git.svelte';
+  import { mcp } from '../chat/mcp.svelte';
+  import { review } from '../chat/review.svelte';
+  import { subagents } from '../chat/subagents.svelte';
+  import { tasks } from '../chat/tasks.svelte';
   import type { TurnInfo } from '../chat/units';
   import { subjectKey } from '../protocol';
   import Arising from './Arising.svelte';
@@ -57,9 +63,75 @@
 
   onMount(() => {
     pinnedRow.set(subjectKey({ session: LIVE_SLOT }), running);
+    // **The row's chips are stores, not props.** Seeded once for the page so
+    // every specimen draws the bar a real seat draws; the segment components
+    // are the same ones, so their own states come with them.
+    subagents.sync([
+      {
+        name: 'map the calls',
+        dispatch_id: 'tu-sub',
+        agent_type: 'general-purpose',
+        running: true,
+        failed: false,
+        backgrounded: false,
+        ended_at: null,
+        calls: 2,
+        tail: [],
+        usage: null,
+      },
+    ]);
+    files.sync('/Users/me/proj', 'proj');
+    mcp.sync([
+      {
+        name: 'forge',
+        k: 'forge \u{b7} session',
+        v: '2 tools',
+        tools: ['roster'],
+        command: 'node forge-server.js',
+        reason: null,
+        synthetic: false,
+      },
+    ]);
+    git.sync({
+      label: 'feat/composer-one-bar \u{b7} 3 files',
+      head: "the project's tree",
+      ahead: null,
+      uncommitted: null,
+      pr: null,
+      gate: null,
+    });
+    tasks.sync([
+      {
+        id: 't-1',
+        status: 'in_progress',
+        display: 'Rolling the chip',
+        subject: 'Roll the chip',
+        owner: 'lead',
+        meta: '1 of 3',
+      },
+    ]);
+    review.sync(
+      [
+        {
+          id: 'r-1',
+          state: 'question',
+          where: 'a.rs:1',
+          words: 'the answer',
+          waiting: true,
+          synthetic: false,
+        },
+      ],
+      [],
+    );
   });
   onDestroy(() => {
     pinnedRow.set(subjectKey({ session: LIVE_SLOT }), null);
+    subagents.sync(null);
+    files.sync(null, null);
+    mcp.sync(null);
+    git.sync(null);
+    tasks.sync(null);
+    review.sync(null, null);
   });
 
   /**
@@ -447,7 +519,7 @@
       },
     },
     {
-      label: 'blocking · connecting',
+      label: 'blocking · waking up',
       props: { seat: seat({ lifecycle: 'Spawning' }) },
     },
     {

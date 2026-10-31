@@ -411,6 +411,20 @@ describe('the chat column as it draws', () => {
     expect(document.querySelector('.conv'), 'the column went missing').not.toBeNull();
   });
 
+  it('reports its loaded flag, which the band draws the read wait from', () => {
+    // **The band cannot read the column's state**, so the column tells it: the
+    // first report is the wait, and the page landing is the second. A wiring
+    // that never reports keeps the band reading forever.
+    const server = stub();
+    const reports: boolean[] = [];
+    draw({ onloaded: (loaded: boolean) => reports.push(loaded) }, server);
+    expect(reports.at(-1), 'the column did not report its read wait').toBe(false);
+
+    server.answer([{ key: 't1', messages: [{ type: 'assistant', uuid: 'a1' }] }]);
+    flushSync();
+    expect(reports.at(-1), 'the column did not report the page landing').toBe(true);
+  });
+
   it('draws the words a reader sends while the column is still reading', () => {
     const server = stub();
     draw({}, server);

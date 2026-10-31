@@ -44,11 +44,13 @@ describe('the canned page', () => {
 
     // **The canned conversation loads from its subscribe** (#2420): the
     // snapshot carries the page, so a fixture that only answered `more` would
-    // never leave its loading state. (The rows themselves are the list's to
-    // measure, and jsdom lays nothing out; the state is the seed's pin.)
-    expect(document.body.textContent, 'the canned page never left loading').not.toContain(
-      'Reading the conversation',
-    );
+    // never leave its loading state and the column would draw no content.
+    // (The rows themselves are the list's to measure, and jsdom lays nothing
+    // out; the state is the seed's pin.)
+    expect(
+      document.querySelector('.conv'),
+      'the canned page never drew its conversation column',
+    ).not.toBeNull();
 
     // One appended turn is what puts the live row on screen: the row is
     // drawn for a running turn.

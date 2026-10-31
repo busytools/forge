@@ -3950,9 +3950,10 @@ describe('the frame', () => {
     );
     // The fold control's floor lives in the dock's own multiline coarse block,
     // where the one-line pattern above cannot reach it: read from the media
-    // query to the control's own line, the lines between allowed.
-    expect(sheet, 'the fold control lost its width floor on a finger').toMatch(
-      /@media \(pointer: coarse\) \{\n(?: {2}[^\n]*\n)*? {2}\.dock \.chevb \{ min-width: 44px; \}/,
+    // query to the control's own line, the lines between allowed. **Both
+    // floors**: a width-only rule leaves a finger a 44 by 15 sliver.
+    expect(sheet, 'the fold control lost its size floors on a finger').toMatch(
+      /@media \(pointer: coarse\) \{\n(?: {2}[^\n]*\n)*? {2}\.dock \.chevb \{ min-width: 44px; min-height: 44px; \}/,
     );
     expect(sheetRule('.mic:hover'), 'the mic lost its accent hover').toContain(
       'color: var(--accent)',
@@ -4211,6 +4212,10 @@ describe('the one body slot', () => {
       document.querySelector('.surf .slot > .notice')?.textContent,
       'the band does not say it is reading',
     ).toContain('Reading the conversation');
+    expect(
+      document.querySelector('.slot > .notice')?.getAttribute('role'),
+      'the read wait lost the live region the column carried',
+    ).toBe('status');
     expect(document.querySelector('.comp .line'), 'the read wait took the field').not.toBeNull();
   });
 
@@ -9815,6 +9820,16 @@ describe("the dock's settled shape", () => {
     const field = document.querySelector<HTMLTextAreaElement>('.comp .line textarea');
     expect(field?.value, "the reader's draft did not come back").toBe('a draft');
 
+    // **A frame is not a new prompt.** The record is replaced on every frame,
+    // and the prompt with it; keyed on the object, the swap would clear under
+    // the reader's caret on the next one.
+    harness.page.record = record({ pending_asks: [questionAsk()] });
+    flushSync();
+    expect(
+      document.querySelector('.ask-body.covered'),
+      'a record frame cleared the swap',
+    ).not.toBeNull();
+
     const back = document.querySelector<HTMLElement>('.live-row .live-door.att');
     if (back === null) throw new Error('the row drew no ask chip to go back with');
     back.click();
@@ -9826,6 +9841,52 @@ describe("the dock's settled shape", () => {
       'the toggled set was lost to the swap',
     ).toHaveLength(1);
     expect(markedAt(), 'the marked row was lost to the swap').toBe('Production');
+  });
+
+  it('lands a take begun in the draft under an ask in the draft, not the hidden dock', async () => {
+    // **The draft has the body, so a take begun there is the draft's.** With
+    // the ask parked and its chip showing the field, routing the words to the
+    // dock would put them in a row the reader cannot see.
+    const harness = open({ dictation: true });
+    type('a draft');
+    harness.page.record = record({ pending_asks: [questionAsk()] });
+    flushSync();
+    const chip = document.querySelector<HTMLElement>('[data-draft]');
+    if (chip === null) throw new Error('the row drew no draft chip');
+    chip.click();
+    flushSync();
+    expect(
+      document.querySelector('.ask-body.covered'),
+      'precondition: the draft has the body',
+    ).not.toBeNull();
+    expect(
+      document.querySelector<HTMLTextAreaElement>('.comp .line textarea')?.value,
+      'precondition: the field carries the draft',
+    ).toBe('a draft');
+
+    await beginTake(harness);
+    harness.page.record = record({
+      pending_asks: [questionAsk()],
+      composer: {
+        take: null,
+        notice: { kind: 'landed', text: 'spoken words', truncated: false },
+        machine: null,
+      },
+    });
+    flushSync();
+
+    expect(
+      document.querySelector('.ask-body.covered'),
+      'the swap cleared during the take',
+    ).not.toBeNull();
+    expect(
+      document.querySelector('.comp .line'),
+      'the field row is not the body after the landing',
+    ).not.toBeNull();
+    const field = document.querySelector<HTMLTextAreaElement>('.comp .line textarea');
+    expect(field?.value ?? '', 'the words did not land in the draft').toContain('spoken words');
+    const notes = document.querySelector<HTMLTextAreaElement>('.dock textarea.notes');
+    expect(notes?.value ?? '', 'the words landed in the hidden dock').toBe('');
   });
 
   it('keeps the bar folded across a repaint of the same prompt', () => {

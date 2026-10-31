@@ -2,8 +2,13 @@
 import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { connectors } from '../chat/connectors.svelte';
+import { files } from '../chat/files.svelte';
 import { processes } from '../chat/processes.svelte';
 import { review } from '../chat/review.svelte';
+import { monitors } from '../chat/monitors.svelte';
+import { mcp } from '../chat/mcp.svelte';
+import { schedules } from '../chat/schedules.svelte';
 import { tasks } from '../chat/tasks.svelte';
 import { git } from '../chat/git.svelte';
 import { subagents } from '../chat/subagents.svelte';
@@ -199,6 +204,11 @@ afterEach(async () => {
   document.body.innerHTML = '';
   subagents.sync(null);
   processes.sync(null, null, false);
+  connectors.sync(null);
+  schedules.sync(null);
+  mcp.sync(null);
+  files.sync(null, null);
+  monitors.sync(null);
   review.sync(null, null);
   tasks.sync(null);
   git.sync(null);
@@ -302,16 +312,58 @@ describe('the live row', () => {
 
   it('draws a chip only when its store has something to state, in the fixed order', () => {
     subagent('a');
+    processFailed();
+    connectors.sync([{ kind: 'gotify', id: 'g-1', key: 'ci', value: 'any priority' }]);
+    schedules.sync([{ id: 'c-1', key: 'rules sweep', value: 'in 27d' }]);
+    mcp.sync([
+      {
+        name: 'forge',
+        k: 'forge \u{b7} session',
+        v: '2 tools',
+        tools: ['roster'],
+        command: 'node forge-server.js',
+        reason: null,
+        synthetic: false,
+      },
+    ]);
+    files.sync('/Users/me/proj', 'proj');
     reviewWaiting(false);
     boardTask();
     tree();
+    monitors.sync([
+      {
+        id: 'm1',
+        running: true,
+        completed: false,
+        name: 'ci-watch',
+        label: 'persistent',
+        command: 'gh run watch 18234567',
+      },
+    ]);
     draw(null);
 
-    // The row's order is the strip's: subagents, git, review, tasks.
-    expect(drawn()).toEqual(['subagents', 'git', 'review', 'tasks']);
+    // The row's fixed order, every segment the stores state.
+    expect(drawn()).toEqual([
+      'subagents',
+      'processes',
+      'connectors',
+      'schedules',
+      'mcp',
+      'files',
+      'git',
+      'review',
+      'tasks',
+      'monitors',
+    ]);
 
     subagents.sync(null);
+    processes.sync(null, null, false);
+    connectors.sync(null);
+    schedules.sync(null);
+    mcp.sync(null);
+    files.sync(null, null);
     review.sync(null, null);
+    monitors.sync(null);
     tasks.sync(null);
     git.sync(null);
     flushSync();

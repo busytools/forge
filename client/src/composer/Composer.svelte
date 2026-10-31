@@ -388,9 +388,15 @@
 
   // **The swap belongs to the ask that offered it.** A new prompt, or none,
   // is the field's body again; a flag left standing would hide the next ask
-  // behind a draft the reader was typing for the one before.
+  // behind a draft the reader was typing for the one before. **Remembered by
+  // its key**, because the record is replaced on every frame and the prompt
+  // object with it: keyed on the object, the swap cleared under the reader's
+  // caret on the next frame.
+  let swapKey: string | null = null;
   $effect(() => {
-    void ownKeyOf(dockAsk);
+    const key = ownKeyOf(dockAsk);
+    if (key === swapKey) return;
+    swapKey = key;
     box.draftOpen = false;
   });
 
@@ -1581,7 +1587,11 @@
          the seat is up and takes a prompt - a send made before the page lands
          draws as the reader's own row in the column. -->
     {#if reading && composer.take === null}
-      <div class="notice q"><span class="shimmer">Reading the conversation...</span></div>
+      <!-- role=status is the live region the column carried on main: a
+           screen reader is told the page is reading, and told when it lands. -->
+      <div class="notice q" role="status">
+        <span class="shimmer">Reading the conversation...</span>
+      </div>
     {/if}
     {#if line !== null && composer.take === null}
       <div class="notice {line.tone}">{line.text}</div>

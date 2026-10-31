@@ -121,13 +121,8 @@
   .live-panel { position: absolute; z-index: 30; background: var(--s2);
     outline: 1px solid var(--line); outline-offset: -1px; border-radius: 11px;
     box-shadow: 0 14px 38px rgba(0,0,0,.5); padding: 3px 0; }
-  .live-panel .hd { padding: 8px 13px 3px; font-family: var(--mono);
-    font-size: var(--fs-label); color: var(--dim); text-transform: uppercase;
-    letter-spacing: .06em; }
-  .live-panel .it { display: flex; align-items: center; gap: 9px; padding: 6px 13px;
-    font-family: var(--mono); font-size: var(--fs-data); color: var(--muted); }
-  .live-panel .it .n { color: var(--text); }
-  .live-panel .it .d { margin-left: auto; color: var(--dim); }
+  /* The panel lists the chips the row could not hold, each still its own door. */
+  .live-panel .lp-row { display: flex; align-items: center; padding: 3px 6px; }
 
   /* ---------- the body slot ---------- */
   .slot { display: flex; flex-direction: column; }
@@ -915,12 +910,10 @@ with a list.</p>
             <span class="live-chip att"><svg class="ic"><use href="#i-badge"/></svg>review <span class="n">3</span></span>
           </span>
           <span class="live-more open">+7</span>
-          <div class="live-panel" style="left:8px;right:8px;bottom:calc(100% + 6px)">
-            <div class="hd">All context <span style="float:right">11 live</span></div>
-            <div class="it"><span class="n" style="width:96px">turn</span><span>1 running &middot; 0:42 &middot; 12.4k tokens</span><span class="d">open</span></div>
-            <div class="it"><span class="n" style="width:96px">subagents</span><span>3 running, 1 settled</span><span class="d">open</span></div>
-            <div class="it"><span class="n" style="width:96px">review</span><span>3 comments on PR #1203</span><span class="d">open</span></div>
-            <div class="it"><span class="n" style="width:96px">git</span><span>web-home-layout &middot; dirty</span><span class="d">open</span></div>
+          <div class="live-panel" style="left:8px;right:8px;bottom:calc(100% + 6px)" role="group">
+            <div class="lp-row"><span class="live-chip"><svg class="ic"><use href="#i-mcp"/></svg>MCPs <span class="n">3</span></span></div>
+            <div class="lp-row"><span class="live-chip"><svg class="ic"><use href="#i-git"/></svg>web-home-layout <span class="n">&middot; dirty</span></span></div>
+            <div class="lp-row"><span class="live-chip"><svg class="ic"><use href="#i-tasks"/></svg>tasks <span class="n">1 of 3</span></span></div>
           </div>
         </div>
         <div class="slot"><div class="line">
@@ -929,17 +922,21 @@ with a list.</p>
         </div></div>
       </div></div>
       <p class="note" style="margin:8px 0 0">Every door in one place: the chips the row could
-      not hold, in the row's own order.</p>
+      not hold, kept mounted and listed in the row's own order, each opening its own panel.</p>
     </div>
     <div class="col">
       <div class="lab">something wants you <span class="h">82px</span></div>
       <div class="comp"><div class="surf">
         <div class="live-row">
-          <span class="live-chip att"><svg class="ic"><use href="#i-badge"/></svg>review <span class="n">3 comments</span></span>
-          <span class="live-chip bad"><svg class="ic"><use href="#i-processes"/></svg>processes <span class="n">1 failed</span></span>
           <span class="live-fig"><span class="ring"></span><span>0:42</span>
             <span class="sep">&middot;</span><span>thinking 1.2k</span></span>
           <span class="div"></span>
+          <span class="live-segs">
+            <span class="live-chip"><svg class="ic"><use href="#i-users"/></svg>subagents <span class="n">3</span></span>
+            <span class="live-chip bad"><svg class="ic"><use href="#i-processes"/></svg>processes <span class="n">1 failed</span></span>
+            <span class="live-chip"><svg class="ic"><use href="#i-git"/></svg>web-home-layout</span>
+            <span class="live-chip att"><svg class="ic"><use href="#i-badge"/></svg>review <span class="n">3 comments</span></span>
+          </span>
           <span class="live-more">+6</span>
         </div>
         <div class="slot"><div class="line">
@@ -947,8 +944,9 @@ with a list.</p>
           <span class="ctls"><span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span></span>
         </div></div>
       </div></div>
-      <p class="note" style="margin:8px 0 0">Anything that wants you sorts to the front and
-      takes its tone: the review answer in the accent, a failed process in red.</p>
+      <p class="note" style="margin:8px 0 0">The chips keep their fixed order and take their
+      tone in place: the review answer in the accent, a failed process in red. A tone is not a
+      promotion; the row never reorders under the reader.</p>
     </div>
   </div>
 </div>
@@ -982,7 +980,6 @@ badge - so there is only ever one animation to read.</p>
       <div class="lab">take, recording <span class="h">79px</span></div>
       <div class="comp"><div class="surf rec">
         <div class="live-row">
-          <span class="live-door"><svg class="ic"><use href="#i-file"/></svg>draft 1 line</span>
           <span class="live-segs">
             <span class="live-chip"><svg class="ic"><use href="#i-users"/></svg>subagents <span class="n">3 running</span></span>
           </span>
@@ -1066,12 +1063,6 @@ badge - so there is only ever one animation to read.</p>
 stands above it; the order the states are read in is the one a reader has to be told.</p>
 <div class="stage">
   <div class="row">
-    <div class="col">
-      <div class="lab">connecting <span class="h">53px</span></div>
-      <div class="comp"><div class="surf">
-        <div class="slot"><div class="blocked"><span class="b1"><span class="shimmer">Connecting...</span></span></div></div>
-      </div></div>
-    </div>
     <div class="col">
       <div class="lab">reading the conversation <span class="h">82px</span></div>
       <div class="comp"><div class="surf">
@@ -1189,10 +1180,14 @@ the key hints stand down; the row clips rather than wrapping.</p>
 <div class="stage">
   <div class="row">
     <div class="col">
-      <div class="lab">idle <span class="h">100px</span></div>
+      <div class="lab">idle <span class="h">121px</span></div>
       <div class="phone"><div class="band"><div class="comp"><div class="surf">
         <div class="live-row">
-          <span class="live-fig"><span class="ring"></span><span>0:42</span></span>
+          <span class="live-fig" style="overflow: hidden"><span class="ring"></span><span>0:42</span>
+            <span class="sep">&middot;</span><span>thinking 1.2k</span>
+            <span class="sep">&middot;</span><span>18.4k&uarr; 3.1k&darr;</span>
+            <span class="sep">&middot;</span><span>62% cached</span>
+            <span class="sep">&middot;</span><span>4.8k written</span></span>
           <span class="div"></span>
           <span class="live-segs">
             <span class="live-chip"><svg class="ic"><use href="#i-git"/></svg>web-home-layout</span>
@@ -1205,13 +1200,18 @@ the key hints stand down; the row clips rather than wrapping.</p>
             <span class="stop"><svg class="ic"><use href="#i-stop"/></svg></span></span>
         </div></div>
       </div></div></div></div>
+      <p class="note" style="margin:8px 0 0">Measured in the app at 430 with a coarse pointer:
+      121px, the row's chips 44px and the field's controls 44px. The figures give way first -
+      the row clips them rather than the +N - so every chip stays one door away.</p>
     </div>
     <div class="col">
       <div class="lab">question, expanded <span class="h">273px</span></div>
       <div class="phone"><div class="band"><div class="comp"><div class="surf">
         <div class="live-row">
           <span class="live-door att"><svg class="ic"><use href="#i-question"/></svg>question <span>1 of 2</span></span>
-          <span class="live-more">+9</span>
+          <span class="live-fig" style="overflow: hidden"><span class="ring"></span><span>0:42</span>
+            <span class="sep">&middot;</span><span>thinking 1.2k</span></span>
+          <span class="live-more">+4</span>
         </div>
         <div class="slot"><div class="ask-body"><div class="dock">
           <div class="d-head"><span class="qm"><svg class="ic"><use href="#i-question"/></svg></span>
