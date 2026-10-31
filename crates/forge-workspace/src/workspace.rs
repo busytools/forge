@@ -5585,6 +5585,7 @@ impl Workspace {
             attachments: Vec::new(),
             uuid,
             source,
+            dispatch_id: None,
             origin: None,
         })
     }
@@ -5681,6 +5682,7 @@ impl Workspace {
             attachments: Vec::new(),
             uuid,
             source: crate::protocol::PromptSource::Forge,
+            dispatch_id: None,
             origin: None,
         })
     }
@@ -5726,6 +5728,7 @@ impl Workspace {
                 attachments: Vec::new(),
                 uuid,
                 source,
+                dispatch_id: None,
                 origin: None,
             })
         };
@@ -5843,10 +5846,19 @@ impl Workspace {
                 attachments,
                 uuid: forge_sdk::request_id::next_prompt_id(),
                 source: crate::protocol::PromptSource::You,
+                dispatch_id: None,
                 origin: Some(origin),
             },
-            Command::PromptUnder { key, text, attachments, uuid, source, .. } => {
-                Command::PromptUnder { key, text, attachments, uuid, source, origin: Some(origin) }
+            Command::PromptUnder { key, text, attachments, uuid, source, dispatch_id, .. } => {
+                Command::PromptUnder {
+                    key,
+                    text,
+                    attachments,
+                    uuid,
+                    source,
+                    dispatch_id,
+                    origin: Some(origin),
+                }
             }
             other => other,
         };
@@ -5963,6 +5975,7 @@ impl Workspace {
                     launch_settings,
                 }
             }
+            ForgePrompt::ShowMode => return self.show_mode(key),
             ForgePrompt::SetMode { mode } => {
                 let Some(mode) = forge_primitives::permission::PermissionMode::from_wire(mode)
                 else {
@@ -5973,9 +5986,46 @@ impl Workspace {
             ForgePrompt::SetModel { model } => {
                 Command::SetModel { key: key.clone(), model: model.clone() }
             }
+            ForgePrompt::ShowEffort => return self.show_effort(key),
             ForgePrompt::SetEffort { level } => return self.set_effort(key, level),
         };
         (self.route(command), None)
+    }
+
+    /// **A bare `/mode` answers what the session is on**, not what the
+    /// command's usage is (#1626). The hook's observation outranks the
+    /// launch's own setting - the precedence the inspector draws - because
+    /// the CLI can change mode without re-emitting status. A session that
+    /// has reported neither is answered with the usage line it answered
+    /// before.
+    fn show_mode(&self, key: &SessionSlot) -> (Result<(), DispatchError>, Option<ForgeAnswer>) {
+        let mode = self.domain_session_for(key).and_then(|domain| {
+            let domain = domain.lock();
+            domain.observed_permission_mode.or(domain.configured_permission_mode)
+        });
+        (
+            Ok(()),
+            Some(match mode {
+                Some(mode) => (NoticeSeverity::Info, format!("Mode: {}", mode.as_wire())),
+                None => forge_misuse("Usage: /mode <id>"),
+            }),
+        )
+    }
+
+    /// **A bare `/effort` answers the level in force**, on `show_mode`'s
+    /// terms: the observed level, else the one the launch asked for (#1626).
+    fn show_effort(&self, key: &SessionSlot) -> (Result<(), DispatchError>, Option<ForgeAnswer>) {
+        let level = self.domain_session_for(key).map(|domain| {
+            let domain = domain.lock();
+            domain.observed_effort.unwrap_or(domain.configured_effort)
+        });
+        (
+            Ok(()),
+            Some(match level {
+                Some(level) => (NoticeSeverity::Info, format!("Effort: {}", level.as_stored())),
+                None => forge_misuse("Usage: /effort <level>"),
+            }),
+        )
     }
 
     /// Tell the fleet a `/new` or `/resume` kept the slot and swapped the
@@ -6880,7 +6930,14 @@ impl Workspace {
                     let _enter = span.enter();
                     self.release_session_with_cascade(&session_key);
                 }
-                Command::UpsertReviewThread { project, branch, thread, respond } => {
+                Command::UpsertReviewThread {
+                    project,
+                    branch,
+                    thread,
+                    origin: _,
+                    sent_words: _,
+                    respond,
+                } => {
                     let span = tracing::info_span!(
                         "upsert_review_thread",
                         project = %project,
@@ -13630,6 +13687,7 @@ provider = "anthropic"
             attachments: Vec::new(),
             uuid: uuid.to_owned(),
             source,
+            dispatch_id: None,
             origin: None,
         };
 
@@ -16133,6 +16191,8 @@ provider = "anthropic"
                 project: "forge".to_owned(),
                 branch: "feat".to_owned(),
                 thread: thread.clone(),
+                origin: None,
+                sent_words: None,
                 respond: Some(respond_tx),
             })
             .expect("dispatch");
@@ -25939,6 +25999,95 @@ mod prompt_frame_origin_tests {
         );
         let commands = ws.drain_test_dispatch_buffer();
         assert!(commands.is_empty(), "and nothing is dispatched: {commands:?}");
+    }
+
+    /// One bare invocation, answered: what a view dispatches and the notices
+    /// that answer it.
+    fn bare(
+        ws: &std::sync::Arc<Workspace>,
+        rx: &mut mpsc::UnboundedReceiver<SeatUpdate>,
+        seat: &SessionSlot,
+        text: &str,
+    ) -> Vec<(NoticeSeverity, String)> {
+        let dispatched = ws.dispatch_from_view(Command::Prompt {
+            key: seat.clone(),
+            text: text.to_owned(),
+            attachments: Vec::new(),
+        });
+        assert!(dispatched.is_ok(), "the core takes {text}: {dispatched:?}");
+        std::iter::from_fn(|| rx.try_recv().ok())
+            .filter_map(|frame| match std::sync::Arc::unwrap_or_clone(frame.update) {
+                SessionUpdate::Notice { severity, text, .. } => Some((severity, text)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// **A bare `/mode` and `/effort` answer the value in force.** The core
+    /// holds what the session reported, so the reader is told it rather than
+    /// handed the usage line (#1626).
+    #[test]
+    fn a_bare_mode_and_effort_answer_the_value_in_force() {
+        let (ws, mut rx, seat) = a_fleet();
+        let domain = ws.register_domain_session(seat.clone(), None);
+        {
+            let mut domain = domain.lock();
+            domain.observed_permission_mode =
+                Some(forge_primitives::permission::PermissionMode::Plan);
+            domain.observed_effort = Some(forge_primitives::EffortLevel::High);
+        }
+
+        assert_eq!(
+            bare(&ws, &mut rx, &seat, "/mode"),
+            vec![(NoticeSeverity::Info, "Mode: plan".to_owned())],
+            "the hook's observation is what the session runs",
+        );
+        assert_eq!(
+            bare(&ws, &mut rx, &seat, "/effort"),
+            vec![(NoticeSeverity::Info, "Effort: high".to_owned())],
+        );
+
+        // **The launch's own setting answers where no hook has reported**,
+        // which is the precedence the inspector draws - the two surfaces
+        // cannot disagree about the same session.
+        {
+            let mut domain = domain.lock();
+            domain.observed_permission_mode = None;
+            domain.configured_permission_mode =
+                Some(forge_primitives::permission::PermissionMode::Ask);
+            domain.observed_effort = None;
+            domain.configured_effort = forge_primitives::EffortLevel::Low;
+        }
+        assert_eq!(
+            bare(&ws, &mut rx, &seat, "/mode"),
+            vec![(NoticeSeverity::Info, "Mode: default".to_owned())],
+            "with nothing observed the launch's mode answers",
+        );
+        assert_eq!(
+            bare(&ws, &mut rx, &seat, "/effort"),
+            vec![(NoticeSeverity::Info, "Effort: low".to_owned())],
+        );
+        let commands = ws.drain_test_dispatch_buffer();
+        assert!(commands.is_empty(), "and neither read dispatches anything: {commands:?}");
+    }
+
+    /// **A seat with no session at all answers the usage line it answered
+    /// before** (#1626): the read is the domain's, and a slot no task holds
+    /// has nothing to report.
+    #[test]
+    fn a_bare_mode_and_effort_with_no_session_answer_their_usage() {
+        let (ws, mut rx, seat) = a_fleet();
+
+        assert_eq!(
+            bare(&ws, &mut rx, &seat, "/mode"),
+            vec![(NoticeSeverity::Error, "Usage: /mode <id>".to_owned())],
+        );
+        assert_eq!(
+            bare(&ws, &mut rx, &seat, "/effort"),
+            vec![(NoticeSeverity::Error, "Usage: /effort <level>".to_owned())],
+        );
+        let commands = ws.drain_test_dispatch_buffer();
+        assert!(commands.is_empty(), "and neither read dispatches anything: {commands:?}");
     }
 
     /// Slash text this session cannot run is answered where it is typed,

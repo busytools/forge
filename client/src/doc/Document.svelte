@@ -344,7 +344,7 @@
    * to the composer.
    */
   $effect(() => {
-    const words = landing.place(boxKey(slot), composer.notice);
+    const words = landing.place(boxKey(slot), composer.notice, composer.take?.generation ?? null);
     if (words === null) return;
     if (
       composer.take === null &&
@@ -506,7 +506,9 @@
     draftsVersion += 1;
     try {
       void connection
-        ?.dispatch(upsertCommand(slot, scope, docThread(draft, held.path, held.contentHash)))
+        ?.dispatch(
+          upsertCommand(slot, scope, docThread(draft, held.path, held.contentHash), written),
+        )
         ?.catch((why: unknown) => {
           report('a comment could not be stored', why);
         });
@@ -552,7 +554,7 @@
   async function editedThread(threadId: string, index: number, text: string): Promise<boolean> {
     const full = held.threads.find((thread) => thread.id === threadId);
     if (full === undefined) return false;
-    const ok = await put(upsertCommand(slot, scope, withEditedTurn(full, index, text)));
+    const ok = await put(upsertCommand(slot, scope, withEditedTurn(full, index, text), text));
     if (!ok) return false;
     edit.thread = null;
     edit.index = null;
@@ -567,7 +569,7 @@
     draftsVersion += 1;
     if (held.path !== null && held.contentHash !== null) {
       void connection
-        ?.dispatch(upsertCommand(slot, scope, docThread(next, held.path, held.contentHash)))
+        ?.dispatch(upsertCommand(slot, scope, docThread(next, held.path, held.contentHash), text))
         ?.catch((why: unknown) => {
           report('an edited comment could not be stored', why);
         });

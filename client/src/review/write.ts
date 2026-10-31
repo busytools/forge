@@ -282,8 +282,24 @@ export function withEditedTurn(
   };
 }
 
-export function upsertCommand(slot: SessionSlot, branch: string, thread: ThreadPayload) {
-  return { upsert_review_thread: { project: slot.project, branch, thread } };
+export function upsertCommand(
+  slot: SessionSlot,
+  branch: string,
+  thread: ThreadPayload,
+  sent: string,
+) {
+  // **The seat and the words the press sent** (#2283): a landed take's words
+  // are the seat's until a write carries them, and the thread re-carries every
+  // turn it ever had - so the words are stated rather than searched for.
+  return {
+    upsert_review_thread: {
+      project: slot.project,
+      branch,
+      thread,
+      origin: slot,
+      sent_words: sent,
+    },
+  };
 }
 
 /** The submit command sealing a round of the listed threads. */

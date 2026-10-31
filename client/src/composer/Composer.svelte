@@ -698,7 +698,7 @@
       box.dismissed = null;
       return;
     }
-    const words = box.landing.place(boxKey(slot), held);
+    const words = box.landing.place(boxKey(slot), held, composer.take?.generation ?? null);
     if (words === null) return;
     // **Where the words go is where the take began, checked against what is
     // still on screen.** A take the dock's own row never touched still belongs
@@ -858,6 +858,18 @@
         return;
       }
       if (message.what !== 'dispatch') return;
+      // **A numbered refusal belongs to the press it names, matched or not.**
+      // The send minted a dispatch id and the core echoes it, so two seats
+      // waiting on a send are not both marked, and a refusal that lands after
+      // the reader moved still reaches its own send (#1583). **A press with no
+      // echo left is not another send's**: a second quick send takes the
+      // seat's one echo, and marking what is outstanding with the older
+      // press's reason would be a stranger's failure (#1583). Only a server
+      // that predates the field names none, and that is the fallback below.
+      if (typeof message.dispatch_id === 'number') {
+        echoes.refuseDispatch(message.dispatch_id, message.why);
+        return;
+      }
       // **A take's own refusal is not an answer's.** This composer knows it
       // dispatched one, and the wire's `what` cannot say which command a
       // `dispatch` refusal was about - so an outstanding answer would take a
@@ -911,12 +923,22 @@
     // the queued row the core echoes back carries the same id - so this send,
     // its row and its frames are one thing by id, never by order or text.
     const uuid = mintPromptId();
+    // **The press's own number, which a refusal echoes back** (#1583): it is
+    // what tells this send from another seat's when the reason arrives.
+    const dispatch = echoes.mint();
     try {
       // A prompt is fire-and-forget: its outcome rides the subscription rather
       // than a reply, so there is nothing here to await.
       void connection.dispatch(
         {
-          prompt_under: { key: slot, text, attachments: [], uuid, source: 'you' },
+          prompt_under: {
+            key: slot,
+            text,
+            attachments: [],
+            uuid,
+            source: 'you',
+            dispatch_id: dispatch,
+          },
         },
         slot,
       );
@@ -937,7 +959,7 @@
     // frame can be applied and not yet drawn - and a send posted as
     // not-running is taken by the very publish that carries the turn, where a
     // refusal can no longer reach it.
-    echoes.post(boxKey(slot), text, runningAt(connection, slot, running), uuid);
+    echoes.post(boxKey(slot), text, runningAt(connection, slot, running), uuid, dispatch);
     box.draft = '';
   }
 

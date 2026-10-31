@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { familyOf, iconOf, rowOf, taskStatus } from './families';
+import { familyOf, iconOf, isEdit, rowOf, taskStatus } from './families';
 
 describe('the row a call is summarised under', () => {
   it('keys a family tool on its family', () => {
@@ -9,11 +9,30 @@ describe('the row a call is summarised under', () => {
   });
 
   it('gives every mutation the one edit row', () => {
-    // The wire's own answer gives each of the four tools a row of its own,
+    // The wire's own answer gives each of the tools a row of its own,
     // which draws two rows both reading `edit` with the second out of order
     // behind the first.
     for (const name of ['Edit', 'Write', 'MultiEdit', 'NotebookEdit']) {
       expect(rowOf(name), `${name} is a mutation`).toEqual({ kind: 'family', family: 'edit' });
+    }
+  });
+
+  /**
+   * **`Move` draws the edit row without being a mutation** (#1188). The row
+   * and the glyph are the edits'; the mutation predicate is not, because it
+   * also decides which calls open by default and which draw a diff - and a
+   * move carries a source and a destination, neither of them a body.
+   */
+  it('draws a Move as an edit without claiming the mutation predicate', () => {
+    expect(rowOf('Move'), "the row is the edits'").toEqual({ kind: 'family', family: 'edit' });
+    expect(iconOf(rowOf('Move')), 'and so is the glyph').toBe('edit');
+    expect(isEdit('Move'), 'but it is not a mutation, which opens and diffs').toBe(false);
+    // The worktree tools keep their own family; only `Move`'s entry was wrong.
+    for (const name of ['EnterWorktree', 'ExitWorktree']) {
+      expect(rowOf(name), `${name} is a worktree call`).toEqual({
+        kind: 'family',
+        family: 'worktree',
+      });
     }
   });
 

@@ -165,6 +165,30 @@ describe('a landing', () => {
   });
 
   /**
+   * **The armed take's own landing is placed from the record's re-hand.**
+   * A whole-record read can be taken after the landing frame and hand the
+   * words back as `carried`, with the frame itself never arriving - and the
+   * take's generation is what tells those words from an older re-hand
+   * (#2283): the arm is spent and the words placed, rather than the arm
+   * standing for ever and the words arriving late or not at all.
+   */
+  it("places the armed take's own carried landing and spends the arm", () => {
+    const own: Notice = {
+      kind: 'landed',
+      text: 'new spoken',
+      truncated: false,
+      generation: 2,
+      carried: true,
+    };
+    const landing = new Landing('composer');
+    landing.arm(SEAT, null);
+    expect(landing.place(SEAT, own, 2), "the record's copy of this take's landing places").toBe(
+      'new spoken',
+    );
+    expect(landing.armed, 'and the arm is spent by it').toBe(false);
+  });
+
+  /**
    * **A carried re-hand is skipped whatever the arm was set under** (#1360).
    * An intervening failed take moves `under` off the seat's unsent words, so
    * the identity rule alone would let a mid-take read place them again and
@@ -193,7 +217,10 @@ describe('a landing', () => {
     };
     const landing = new Landing('composer');
     landing.arm(SEAT, line);
-    expect(landing.place(SEAT, carried), "the older unsent words are not this take's").toBeNull();
+    expect(
+      landing.place(SEAT, carried, 3),
+      "the older unsent words are not this take's, even with the take named",
+    ).toBeNull();
     expect(
       landing.place(SEAT, spoken),
       "and the take's own landing still places: the arm was not spent",
