@@ -15,6 +15,26 @@ use std::time::Duration;
 
 use serde_json::Value;
 
+/// A wedge bound for a wait on the child's own delivery - the port it binds,
+/// a file the mock writes. The wait itself ends when the delivery lands, so
+/// this is reached only by a stuck child or a delivery slower still, and it
+/// sits under the kill this binary's tests run with so the failure names its
+/// property instead of dying as a bare timeout.
+const WEDGE: Duration = Duration::from_secs(100);
+
+/// The session spawn's own budget plus a settle margin, the same derivation
+/// forge-workspace's `spawn_wait` uses: a wait shorter than the budget under
+/// it fails a machine that is merely slow.
+fn spawn_wait() -> Duration {
+    forge_sdk::INIT_HANDSHAKE_TIMEOUT + Duration::from_secs(5)
+}
+
+/// A stop's teardown budget plus a settle margin: the drain spends the
+/// workspace's `TEARDOWN_WAIT` and the process then exits.
+fn stop_wait() -> Duration {
+    forge_sdk::CLOSE_WAIT_TIMEOUT + Duration::from_secs(10)
+}
+
 /// Two ports the OS just handed out.
 ///
 /// Both are bound at once before either is released, so they cannot be the
@@ -133,7 +153,7 @@ async fn terminate_group(pid: u32) {
 
 /// Wait until the server answers on `port`, or fail with its stderr.
 async fn wait_for_port(port: u16, server: &mut tokio::process::Child) {
-    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let deadline = std::time::Instant::now() + WEDGE;
     loop {
         if let Ok(Some(status)) = server.try_wait() {
             let stderr = drain_stderr(server).await;
@@ -145,7 +165,7 @@ async fn wait_for_port(port: u16, server: &mut tokio::process::Child) {
         if std::time::Instant::now() > deadline {
             drop(server.kill().await);
             let stderr = drain_stderr(server).await;
-            panic!("the server never bound port {port}: {stderr}");
+            panic!("the server never bound port {port} within {WEDGE:?}: {stderr}");
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
@@ -271,7 +291,7 @@ port = {gateway_port}
 
 /// The pid the session's mock child wrote, or a failure naming the tree.
 async fn wait_for_marker_pid(marker: &std::path::Path) -> u32 {
-    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    let deadline = std::time::Instant::now() + spawn_wait();
     loop {
         if let Ok(text) = std::fs::read_to_string(marker)
             && let Ok(pid) = text.trim().parse()
@@ -280,8 +300,9 @@ async fn wait_for_marker_pid(marker: &std::path::Path) -> u32 {
         }
         assert!(
             std::time::Instant::now() <= deadline,
-            "the session's child never wrote its descendant's pid to {}",
-            marker.display()
+            "the session's child never wrote its descendant's pid to {} within {:?}",
+            marker.display(),
+            spawn_wait(),
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
@@ -289,7 +310,7 @@ async fn wait_for_marker_pid(marker: &std::path::Path) -> u32 {
 
 /// Wait for a file to appear, or answer false once the deadline passes.
 async fn wait_for_file(path: &std::path::Path) -> bool {
-    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    let deadline = std::time::Instant::now() + WEDGE;
     while std::time::Instant::now() < deadline {
         if path.exists() {
             return true;
@@ -311,7 +332,7 @@ fn is_running(pid: u32) -> bool {
 }
 
 async fn wait_until_gone(pid: u32) -> bool {
-    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    let deadline = std::time::Instant::now() + stop_wait();
     while std::time::Instant::now() < deadline {
         if !is_running(pid) {
             return true;
@@ -366,7 +387,7 @@ async fn assert_stop_leaves_no_descendant(signal: &str) {
     assert!(is_running(pid), "the session's descendant must be running before {signal}: pid {pid}");
 
     send_signal(server.id().expect("the server has a pid while it runs"), signal).await;
-    let exit = tokio::time::timeout(Duration::from_secs(30), server.wait())
+    let exit = tokio::time::timeout(stop_wait(), server.wait())
         .await
         .expect("the server finishes its stop within the deadline")
         .expect("the server is reaped");
@@ -411,7 +432,7 @@ async fn a_group_stop_signal_does_not_reach_the_session_tools() {
 
     let server_pid = server.id().expect("the server has a pid while it runs");
     terminate_group(server_pid).await;
-    let exit = tokio::time::timeout(Duration::from_secs(30), server.wait())
+    let exit = tokio::time::timeout(stop_wait(), server.wait())
         .await
         .expect("the server finishes its stop within the deadline")
         .expect("the server is reaped");
@@ -466,7 +487,7 @@ async fn one_stop_takes_two_sessions_down() {
 
     let started = std::time::Instant::now();
     terminate(server.id().expect("the server has a pid while it runs")).await;
-    let exit = tokio::time::timeout(Duration::from_secs(30), server.wait())
+    let exit = tokio::time::timeout(stop_wait(), server.wait())
         .await
         .expect("the server finishes its stop within the deadline")
         .expect("the server is reaped");
@@ -526,7 +547,7 @@ async fn a_termination_sent_straight_at_the_child_marks_it() {
     );
 
     terminate(server.id().expect("the server has a pid while it runs")).await;
-    let exit = tokio::time::timeout(Duration::from_secs(30), server.wait())
+    let exit = tokio::time::timeout(stop_wait(), server.wait())
         .await
         .expect("the server finishes its stop within the deadline")
         .expect("the server is reaped");

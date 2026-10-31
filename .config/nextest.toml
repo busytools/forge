@@ -25,6 +25,17 @@ slow-timeout = { period = "60s", terminate-after = 8 }
 filter = 'test(the_committed_socket_contract_is_still_what_the_server_emits) or test(every_subject_round_trips_through_its_fixture)'
 success-output = "immediate"
 
+# **The headless server tests run real child processes**, and every wait in
+# them is either derived from the SDK's own budget (65 s for a spawn, 15 s for
+# a stop) or a 100 s wedge over a delivery that ends the wait when it lands.
+# One test can stack two port waits around a boot (200 s), or a port, a spawn
+# and a stop (180 s), so the default 30 s x 4 kill (120 s) would take a merely
+# slow machine. This override puts the kill at 100 s x 4 = 400 s, above any
+# sum those waits allow and still a named stop rather than a job timeout.
+[[profile.default.overrides]]
+filter = 'binary(headless_server)'
+slow-timeout = { period = "100s", terminate-after = 4 }
+
 # **This test can hold two full watch passes**, each a scan of ten budgeted
 # `git` children: the pass whose mark it waits on, and the driven pass that
 # moves the values. Its own wedge for one pass is `POKE_INTERVAL +
