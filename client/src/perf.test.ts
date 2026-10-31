@@ -1171,7 +1171,10 @@ describe('the switch gap marks (#2513)', () => {
     h.probe.noteSubscribe('forge/lead', false);
 
     const [other, same] = h.records.flat().filter((record) => record.kind === 'subscribe');
-    expect(other?.since_click_ms, 'a session-less subscribe names the old click gap').toBeUndefined();
+    expect(
+      other?.since_click_ms,
+      'a session-less subscribe names the old click gap',
+    ).toBeUndefined();
     expect(
       same?.since_click_ms,
       'and the click is spent rather than left armed for a later read',

@@ -3293,16 +3293,10 @@ describe('the read, and the answer a frame has outrun', () => {
     const page = watch(connection);
     page.land(snapshotOf(LEAD, { conversation: { turns: [], compaction_count: 0 } }, { seq: 1 }));
     for (let at = 1; at <= 3; at += 1) {
-      page.land(
-        frameOf({ chat_appended: { key: LEAD, msg: spoke(`line ${at}`, `u${at}`) } }, at),
-      );
+      page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke(`line ${at}`, `u${at}`) } }, at));
     }
     paint();
-    expect(spoken(page), 'precondition: the frames landed').toEqual([
-      'line 1',
-      'line 2',
-      'line 3',
-    ]);
+    expect(spoken(page), 'precondition: the frames landed').toEqual(['line 1', 'line 2', 'line 3']);
 
     // A notice wants the record, and the frames keep streaming while the
     // answer is in flight.
@@ -3766,7 +3760,9 @@ describe('the seat sequence', () => {
 
     // The repair's answer lands after the take: two of its rows are already
     // on the page, and drawing them again is the same rows twice.
-    page.land(repaired({ seq: 2, text: 'two' }, { seq: 3, text: 'three' }, { seq: 4, text: 'four' }));
+    page.land(
+      repaired({ seq: 2, text: 'two' }, { seq: 3, text: 'three' }, { seq: 4, text: 'four' }),
+    );
     paint();
     expect(spoken(page), 'the repair re-drew rows the taken answer carries').toEqual([
       'one',
