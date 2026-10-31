@@ -19,6 +19,7 @@ use forge_primitives::browser::{
     BrowserFrame, BrowserInputEvent, BrowserTabList, BrowserViewState, MouseAction,
 };
 use forge_primitives::document::DocumentRead;
+use forge_primitives::wire::COMPRESSED_JSON_TAG;
 use forge_workspace::browser::BrowserAttachment;
 use serde_json::json;
 
@@ -1495,11 +1496,11 @@ fn log_open(report: &OpenReport, write: &FrameWrite) {
         prep_ms = write.prep_ms,
         write_ms = write.write_ms,
         waited = write.waited,
-        "the snapshot's write: prep is the record serialised into the \
-         bytes the socket takes, write_ms is the socket's share after \
-         that, and waited says the write yielded at least once before it \
-         was done (a prior frame's flush, kernel send-buffer pressure or \
-         a slow reader)",
+        "the snapshot's write: prep is the record serialised and \
+         compressed into the bytes the socket takes, write_ms is the \
+         socket's share after that, and waited says the write yielded at \
+         least once before it was done (a prior frame's flush, kernel \
+         send-buffer pressure or a slow reader)",
     );
     // The session's open, in its own slices: the numbers a reader places a
     // slow switch with, beside the client's own marks and the client it
@@ -3201,13 +3202,6 @@ fn take_frame(surface: &ViewSurface, dictate: &Streaming, me: u64, route: FrameR
     }
 }
 
-/// The binary kind a compressed JSON frame crosses as.
-///
-/// Kinds 0, 1 and 2 are dictation, a browser frame and its audio; this one is
-/// a whole `ServerMessage` body, gzipped, for a client that declared it can
-/// inflate one.
-const COMPRESSED_JSON_TAG: u8 = 3;
-
 /// The JSON bytes at which a frame crosses compressed, for a connection that
 /// declared the capability.
 ///
@@ -3272,7 +3266,14 @@ where
         // Binary kind, a control frame - passes through untouched.
         let deflate = self.deflate;
         let item = match item {
-            Message::Text(text) => frame_for_flag(deflate, text.as_str()),
+            // **A frame the encoder leaves alone keeps the bytes it already
+            // owns.** The batched path and a subscribe's queued backlog write
+            // text frames of their own, and rebuilding each of them here
+            // would copy the hottest writes on the socket. Only a frame that
+            // will actually compress is re-encoded.
+            Message::Text(text) if deflate && text.len() >= COMPRESSED_MIN_BYTES => {
+                frame_for_flag(deflate, text.as_str())
+            }
             other => other,
         };
         std::pin::Pin::new(&mut self.inner).start_send(item)
@@ -3445,8 +3446,8 @@ where
 /// whether the write yielded at least once before it was done.
 struct FrameWrite {
     bytes: usize,
-    /// The message's serialisation into the bytes the socket takes, on the
-    /// process's own clock.
+    /// The message's serialisation and compression into the bytes the socket
+    /// takes, on the process's own clock.
     prep_ms: f64,
     write_ms: f64,
     waited: bool,
@@ -4464,6 +4465,54 @@ mod tests {
         std::io::Read::read_to_string(&mut flate2::read::GzDecoder::new(&bytes[1..]), &mut body)
             .expect("the body inflates");
         assert_eq!(body, text, "the body is the frame it stood for");
+    }
+
+    /// **A text frame the encoder leaves alone is handed on as itself**
+    /// (#2560): a frame under the threshold, or one for a client that never
+    /// declared the capability, is the frame the caller built. Rebuilding it
+    /// would copy every frame the batched stream and the subscribe backlog
+    /// write, which are the hottest writes on the socket.
+    #[tokio::test]
+    async fn a_text_frame_the_encoder_leaves_alone_is_not_rebuilt() {
+        let recorded = Arc::new(Mutex::new(Vec::new()));
+        let mut socket = ClientSocket::new(Recorded(Arc::clone(&recorded)), true);
+        let frame = Message::Text("{\"kind\":\"update\"}".into());
+        let Message::Text(kept) = &frame else { panic!("a text frame") };
+        // Kept alive across the send: a rebuilt string could otherwise land
+        // on the address the original freed and pass by accident.
+        let kept = kept.clone();
+        let address = kept.as_str().as_ptr();
+        futures_util::SinkExt::send(&mut socket, frame).await.expect("the frame goes");
+        {
+            let held = recorded.lock().expect("the frame log");
+            let Some(Message::Text(sent)) = held.first() else {
+                panic!("an under-threshold frame was not text: {:?}", held.first())
+            };
+            assert_eq!(
+                sent.as_str().as_ptr(),
+                address,
+                "the encoder rebuilt a text frame it should have passed through"
+            );
+        }
+
+        // The control: a client that never declared the capability gets its
+        // large frame passed through too, whatever its size.
+        let recorded = Arc::new(Mutex::new(Vec::new()));
+        let mut socket = ClientSocket::new(Recorded(Arc::clone(&recorded)), false);
+        let frame = Message::Text("x".repeat(COMPRESSED_MIN_BYTES).into());
+        let Message::Text(kept) = &frame else { panic!("a text frame") };
+        let kept = kept.clone();
+        let address = kept.as_str().as_ptr();
+        futures_util::SinkExt::send(&mut socket, frame).await.expect("the frame goes");
+        let held = recorded.lock().expect("the frame log");
+        let Some(Message::Text(sent)) = held.first() else {
+            panic!("a non-declaring client's frame was not text: {:?}", held.first())
+        };
+        assert_eq!(
+            sent.as_str().as_ptr(),
+            address,
+            "a non-declaring client's frame was rebuilt"
+        );
     }
 
     /// The clock a measured write reads, recording the frame each start was
