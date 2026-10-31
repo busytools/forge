@@ -473,10 +473,14 @@ pub async fn upgrade(
         }
     }
     if malformed || !origin_gate::allows(origin, &state.surface.server_config()) {
+        // A malformed request is refused whatever its first value said, so
+        // the line must not print an origin the gate would have allowed.
+        let refused_origin =
+            if malformed { "<malformed>" } else { origin.unwrap_or("<malformed>") };
         tracing::warn!(
             target: "forge_server::transport",
             event_name = "socket_origin_refused",
-            origin = origin.unwrap_or("<malformed>"),
+            origin = refused_origin,
             peer = %peer,
             "refused a socket upgrade from an origin forge does not serve",
         );
