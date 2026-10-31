@@ -170,6 +170,8 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::Arc;
 
+    use forge_primitives::document::DocumentHandOffEnding;
+
     use crate::SessionSlot;
     use crate::workspace::Workspace;
 
@@ -205,6 +207,62 @@ mod tests {
         )
         .expect("the stub builds");
         (ws, SessionSlot::lead("TestOrg", "myproj"))
+    }
+
+    /// **A waiter that goes away releases its park.** The document guard
+    /// carries the same rule the browser and Slack ones do: a cancelled
+    /// turn must not leave an ask no view can close.
+    #[tokio::test]
+    async fn a_hand_off_waiter_that_dies_is_reported_as_abandoned() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let base = dir.path().canonicalize().expect("canonical");
+        std::fs::create_dir_all(base.join("tree/docs")).expect("the tree");
+        std::fs::write(base.join("tree/docs/readme.md"), b"# hi\n").expect("the document");
+        let (ws, seat) = ws_with_project(&base.join("tree").to_string_lossy(), Vec::new());
+        ws.note_client_attached();
+        let mut updates = ws.subscribe_answerer();
+
+        let task = tokio::spawn({
+            let ws = Arc::clone(&ws);
+            let seat = seat.clone();
+            async move { ws.hand_off_document(&seat, "docs/readme.md", false).await }
+        });
+        // The ask lands in the registry, which is what the blocked call just
+        // did.
+        let mut pending = false;
+        for _ in 0..400 {
+            while let Ok(frame) = updates.try_recv() {
+                if matches!(
+                    &*frame.update,
+                    crate::protocol::SessionUpdate::DocumentHandOffPending { .. }
+                ) {
+                    pending = true;
+                }
+            }
+            if pending {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(pending, "the blocked call parked the ask");
+
+        task.abort();
+        let _ = task.await;
+
+        let mut resolved = Vec::new();
+        while let Ok(frame) = updates.try_recv() {
+            if let crate::protocol::SessionUpdate::DocumentHandOffResolved { ending, .. } =
+                &*frame.update
+            {
+                resolved.push(ending.clone());
+            }
+        }
+        assert_eq!(
+            resolved,
+            vec![DocumentHandOffEnding::Abandoned],
+            "a dropped waiter says which ending took the ask",
+        );
+        assert!(ws.document_handoffs.lock().is_empty(), "and leaves nothing registered");
     }
 
     /// The hand-off consults the seat's PROJECT's vault_roots: a file
