@@ -253,7 +253,8 @@ mod commands {
     ) -> Result<Value, String> {
         let bridge = Arc::clone(bridge.inner());
         let mic = Arc::clone(mic.inner());
-        let answered = crate::mic::guarded(move || {
+        let logged = device.clone();
+        let answered = crate::mic::guarded("the hold", logged, move || {
             mic.hold(&bridge, device, &page).map(|held| crate::mic::device_json(&held))
         })
         .await?;
@@ -338,7 +339,7 @@ mod commands {
     /// device list does not know.
     #[tauri::command]
     pub async fn client_mic_devices() -> Result<Vec<Value>, String> {
-        crate::mic::guarded(|| {
+        crate::mic::guarded("the device listing", None, || {
             forge_capture::devices()
                 .map(|all| all.iter().map(crate::mic::device_json).collect::<Vec<Value>>())
                 .map_err(|error| error.to_string())

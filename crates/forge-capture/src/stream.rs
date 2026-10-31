@@ -69,6 +69,42 @@ impl Drop for Capture {
     }
 }
 
+/// The scale a full-scale `i16` sample maps to, in the f32 the pipeline reads.
+const I16_SCALE: f32 = 32_768.0;
+
+/// One device sample as the f32 the pipeline reads.
+///
+/// Pulled out of the callback so the scale is a thing a test can pin: an
+/// operator flipped in place would compile and ship scaled nonsense silently.
+fn i16_sample(sample: i16) -> f32 {
+    f32::from(sample) / I16_SCALE
+}
+
+/// Run one audio-callback block with its panic caught.
+///
+/// **cpal calls this body from its own frame**, so an unwind out of it crosses
+/// the FFI boundary and aborts the process as `rust_foreign_exception` - the
+/// signature in #2426's report. This is the one guard that can stop that
+/// crossing; after it the capture delivers nothing more, and the log names the
+/// loss once with a backtrace.
+fn guard_block(panicked: &AtomicBool, body: impl FnOnce()) {
+    if panicked.load(Ordering::Acquire) {
+        return;
+    }
+    if let Err(panic) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(body)) {
+        panicked.store(true, Ordering::Release);
+        let why = crate::panic_message(panic.as_ref());
+        let backtrace = std::backtrace::Backtrace::force_capture();
+        tracing::warn!(
+            event_name = "input_callback_panicked",
+            why = %why,
+            backtrace = %backtrace,
+            "a panic in the audio callback was caught before it could cross the FFI boundary; \
+             this capture delivers nothing more"
+        );
+    }
+}
+
 /// Open the named input (or the system default) and feed `on_block` its
 /// audio, already mono at [`SAMPLE_RATE`], until the capture is stopped.
 ///
@@ -93,58 +129,98 @@ pub fn open(
         "input open"
     );
 
+    // One flag for both formats' callbacks: a panic is logged once, and every
+    // later block returns without touching the pipeline.
+    let panicked = Arc::new(AtomicBool::new(false));
     let stop = Arc::new(AtomicBool::new(false));
     let reader_stop = Arc::clone(&stop);
     let (ready, started) = std::sync::mpsc::channel::<Result<(), Error>>();
     let reader = std::thread::Builder::new()
         .name("forge-capture".into())
         .spawn(move || {
-            // The stream is built in the format the device negotiated: I16 is
-            // converted on the way in, because everything downstream reads
-            // f32.
-            let stream = match plan.sample_format {
-                InputFormat::F32 => device.build_input_stream(
-                    plan.config,
-                    move |block: &[f32], _: &cpal::InputCallbackInfo| {
-                        converter.push(block, &mut |samples, peak| on_block(Block { samples, peak }));
-                    },
-                    |error| tracing::warn!(event_name = "input_stream_error", %error, "input stream error"),
-                    None,
-                ),
-                InputFormat::I16 => {
-                    let mut scaled: Vec<f32> = Vec::new();
-                    device.build_input_stream(
-                        plan.config,
-                        move |block: &[i16], _: &cpal::InputCallbackInfo| {
-                            scaled.clear();
-                            scaled.extend(
-                                block.iter().map(|sample| f32::from(*sample) / 32_768.0),
-                            );
-                            converter.push(&scaled, &mut |samples, peak| {
-                                on_block(Block { samples, peak });
-                            });
-                        },
-                        |error| tracing::warn!(event_name = "input_stream_error", %error, "input stream error"),
-                        None,
-                    )
+            // **A panic on this thread is answered, not lost.** Without the
+            // guard a panic before the first send leaves the receiver with a
+            // dropped sender, which reads as "the thread did not start" even
+            // though it did; the guard sends the real reason and logs it
+            // (#2362's review).
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+                || -> Result<(), Error> {
+                    // The stream is built in the format the device negotiated:
+                    // I16 is converted on the way in, because everything
+                    // downstream reads f32.
+                    let stream = match plan.sample_format {
+                        InputFormat::F32 => {
+                            let panicked = Arc::clone(&panicked);
+                            device.build_input_stream(
+                                plan.config,
+                                move |block: &[f32], _: &cpal::InputCallbackInfo| {
+                                    guard_block(&panicked, || {
+                                        converter.push(block, &mut |samples, peak| {
+                                            on_block(Block { samples, peak });
+                                        });
+                                    });
+                                },
+                                |error| {
+                                    tracing::warn!(event_name = "input_stream_error", %error, "input stream error");
+                                },
+                                None,
+                            )
+                        }
+                        InputFormat::I16 => {
+                            let panicked = Arc::clone(&panicked);
+                            let mut scaled: Vec<f32> = Vec::new();
+                            device.build_input_stream(
+                                plan.config,
+                                move |block: &[i16], _: &cpal::InputCallbackInfo| {
+                                    guard_block(&panicked, || {
+                                        scaled.clear();
+                                        scaled.extend(
+                                            block.iter().map(|sample| i16_sample(*sample)),
+                                        );
+                                        converter.push(&scaled, &mut |samples, peak| {
+                                            on_block(Block { samples, peak });
+                                        });
+                                    });
+                                },
+                                |error| {
+                                    tracing::warn!(event_name = "input_stream_error", %error, "input stream error");
+                                },
+                                None,
+                            )
+                        }
+                    };
+                    let stream = stream
+                        .map_err(|error| Error::Capture { message: error.to_string() })?;
+                    stream
+                        .play()
+                        .map_err(|error| Error::Capture { message: error.to_string() })?;
+                    let _ = ready.send(Ok(()));
+                    while !reader_stop.load(Ordering::Relaxed) {
+                        std::thread::sleep(Duration::from_millis(20));
+                    }
+                    drop(stream);
+                    Ok(())
+                },
+            ));
+            match outcome {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => {
+                    let _ = ready.send(Err(error));
                 }
-            };
-            let stream = match stream {
-                Ok(stream) => stream,
-                Err(error) => {
-                    let _ = ready.send(Err(Error::Capture { message: error.to_string() }));
-                    return;
+                Err(panic) => {
+                    let why = crate::panic_message(panic.as_ref());
+                    let backtrace = std::backtrace::Backtrace::force_capture();
+                    tracing::warn!(
+                        event_name = "capture_thread_panicked",
+                        why = %why,
+                        backtrace = %backtrace,
+                        "the capture thread panicked"
+                    );
+                    let _ = ready.send(Err(Error::Capture {
+                        message: format!("the capture thread panicked: {why}"),
+                    }));
                 }
-            };
-            if let Err(error) = stream.play() {
-                let _ = ready.send(Err(Error::Capture { message: error.to_string() }));
-                return;
             }
-            let _ = ready.send(Ok(()));
-            while !reader_stop.load(Ordering::Relaxed) {
-                std::thread::sleep(Duration::from_millis(20));
-            }
-            drop(stream);
         })
         .map_err(|error| Error::Capture { message: error.to_string() })?;
 
@@ -168,6 +244,36 @@ pub fn open(
 mod tests_open {
     use super::*;
     use crate::device::devices;
+
+    /// **A panicking block is caught once, and the capture stops.** The
+    /// callback body is Rust called from cpal's frame; an unwind out of it
+    /// crosses the FFI boundary and aborts, so the guard is the only thing
+    /// standing between a bug in the pipeline and the process. The log cannot
+    /// be read from here, but the flag and the dropped later block can.
+    #[test]
+    fn a_panicking_callback_block_is_caught_and_later_blocks_are_dropped() {
+        let panicked = AtomicBool::new(false);
+        let ran = std::cell::Cell::new(0_u32);
+        guard_block(&panicked, || {
+            ran.set(ran.get() + 1);
+            panic!("a callback panic");
+        });
+        assert!(panicked.load(Ordering::Acquire), "the first panic stops the capture");
+        guard_block(&panicked, || ran.set(ran.get() + 1));
+        assert_eq!(ran.get(), 1, "a block after the panic returns without touching the pipeline");
+    }
+
+    /// Full scale maps to 1.0 and the operator is a division: the reverse
+    /// compiles, and would ship every I16 device's audio as nonsense.
+    #[test]
+    fn an_i16_sample_is_scaled_to_full_scale_one() {
+        assert_eq!(i16_sample(0), 0.0, "silence stays silence");
+        assert_eq!(i16_sample(-32_768), -1.0, "the negative rail is -1");
+        assert!(
+            (i16_sample(32_767) - 0.999_969_5).abs() < 1e-6,
+            "the positive rail lands just under 1, as cpal's own conversion does"
+        );
+    }
 
     #[test]
     #[ignore = "opens the real default input; run with --run-ignored all on a machine with audio hardware"]

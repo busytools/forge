@@ -71,33 +71,47 @@ pub const OPEN_LIMIT: Duration = Duration::from_secs(20);
 /// caller's bound, whether the bound answered it or the device did, late.
 const NOT_COME_UP: &str = "the microphone did not come up";
 
-/// Run device work off the reactor with any unwind caught.
+/// Run device work off the reactor with any unwind caught and answered.
 ///
-/// **A panic that escapes a blocking task reaches the FFI boundary and
-/// aborts the process** as `rust_foreign_exception` (#2426), so every Tauri
-/// command that reaches cpal goes through here: a panicking device layer
-/// answers the named error a caller can draw, and leaves a warning naming
-/// the panic for the log after the launch that it would otherwise have
-/// killed.
-pub(crate) async fn guarded<T, F>(work: F) -> Result<T, String>
+/// **What this buys, and what it cannot.** `spawn_blocking` already turns a
+/// panic in its task into a `JoinError`, so this is not what stops an abort:
+/// the `rust_foreign_exception` in #2426's report is an unwind crossing a
+/// NON-Rust frame, which no catch at this layer can reach (the audio
+/// callback's own guard in `forge-capture` is the one that can). What the
+/// guard buys is the part the issue asked for - a named error the command
+/// answers with, and a warning carrying the operation, the requested device
+/// and a backtrace, logged from INSIDE the blocking task. That last point is
+/// load-bearing: a take's open abandoned at `OPEN_LIMIT` is still running its
+/// blocking task, and a panic after the timeout would otherwise leave no
+/// line at all.
+pub(crate) async fn guarded<T, F>(
+    operation: &'static str,
+    device: Option<String>,
+    work: F,
+) -> Result<T, String>
 where
     T: Send + 'static,
     F: FnOnce() -> T + Send + 'static,
 {
     let joined = tokio::task::spawn_blocking(move || {
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(work))
+        let answered = std::panic::catch_unwind(std::panic::AssertUnwindSafe(work));
+        match answered {
+            Ok(value) => Ok(value),
+            Err(panic) => {
+                let why = panic_text(panic.as_ref());
+                let backtrace = std::backtrace::Backtrace::force_capture();
+                tauri_plugin_log::log::warn!(
+                    target: LOG_TARGET,
+                    "the microphone device layer panicked during {operation} (device {device:?}): \
+                     {why}\n{backtrace}"
+                );
+                Err(format!("the microphone device layer panicked during {operation}: {why}"))
+            }
+        }
     })
     .await;
     match joined {
-        Ok(Ok(value)) => Ok(value),
-        Ok(Err(panic)) => {
-            let why = panic_text(panic.as_ref());
-            tauri_plugin_log::log::warn!(
-                target: LOG_TARGET,
-                "the microphone device layer panicked: {why}"
-            );
-            Err(format!("the microphone device layer panicked: {why}"))
-        }
+        Ok(answered) => answered,
         Err(error) => Err(error.to_string()),
     }
 }
@@ -599,8 +613,10 @@ impl Mic {
         let mic = Arc::clone(self);
         let bridge = Arc::clone(bridge);
         let (page, take) = (page.to_owned(), take.to_owned());
-        let started =
-            guarded(move || mic.start_inner(&bridge, device, &page, &take, Some(&signal)));
+        let logged = device.clone();
+        let started = guarded("the take's open", logged, move || {
+            mic.start_inner(&bridge, device, &page, &take, Some(&signal))
+        });
         match tokio::time::timeout(limit, started).await {
             Ok(Ok(answered)) => answered,
             Ok(Err(error)) => Err(error),
@@ -737,18 +753,24 @@ mod tests {
             .build()
             .expect("a runtime");
         let err = runtime
-            .block_on(guarded(|| -> Result<(), String> { panic!("a wedged audio layer") }))
+            .block_on(guarded(
+                "the take's open",
+                Some("coreaudio:builtin".to_owned()),
+                || -> Result<(), String> { panic!("a wedged audio layer") },
+            ))
             .expect_err("a panic is answered, not propagated");
         assert!(
-            err.starts_with("the microphone device layer panicked"),
-            "the answer names what panicked: {err}"
+            err.starts_with("the microphone device layer panicked during the take's open"),
+            "the answer names what panicked and where: {err}"
         );
         assert!(
             err.contains("a wedged audio layer"),
             "the panic's own words ride the answer: {err}"
         );
 
-        let value = runtime.block_on(guarded(|| 7)).expect("a plain answer is untouched");
+        let value = runtime
+            .block_on(guarded("the take's open", None, || 7))
+            .expect("a plain answer is untouched");
         assert_eq!(value, 7, "the guard changes nothing about what the work returned");
     }
 
