@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { hideBrowser, showBrowser } from '../browser/link';
+import { hideBrowser, onModifier, onModifierChord, showBrowser } from '../browser/link';
 import { openSurface, selectTab, surface } from '../browser/surface.svelte';
 
 /**
@@ -25,6 +25,13 @@ vi.mock('../browser/link', async (importOriginal) => {
     // that wants the failure resolves the reason instead.
     showBrowser: vi.fn(() => Promise.resolve({ profile: 'job-hunt', tab: 2 })),
     hideBrowser: vi.fn(() => Promise.resolve(true)),
+    // The overlay's own key route, opened by the composer while a takeover is
+    // up. jsdom has no responder chain to deliver it from, so a case fires
+    // the handler this recorded.
+    onModifier: vi.fn((_fn: (press: { code: number; down: boolean }) => void) =>
+      Promise.resolve(() => {}),
+    ),
+    onModifierChord: vi.fn((_fn: () => void) => Promise.resolve(() => {})),
   };
 });
 
@@ -217,6 +224,10 @@ afterEach(() => {
   // behind would hand it to the next.
   echoes.clear(boxKey(SLOT));
   echoes.clear(boxKey(ELSEWHERE));
+  // The overlay's key doors are this file's own state too: a registration
+  // left in the history would answer the next case's mount.
+  vi.mocked(onModifier).mockClear();
+  vi.mocked(onModifierChord).mockClear();
 });
 
 /** The send a seat is waiting on, which the conversation draws and the box does not. */
@@ -552,6 +563,8 @@ beforeEach(() => {
   surface.viewer = null;
   surface.controller = null;
   surface.nav = { can_back: false, can_forward: false };
+  vi.mocked(onModifier).mockClear();
+  vi.mocked(onModifierChord).mockClear();
 });
 
 describe("the reader's draft", () => {
@@ -7885,7 +7898,469 @@ describe("the takeover bar's feedback line", () => {
       vi.useRealTimers();
     }
   });
+
+  /** **The bar's line is dictatable without a click.** A reader driving the
+   *  page under the takeover leaves the caret on the page - the body, not one
+   *  of this client's boxes - and the key presses there were dropped unless
+   *  the reader had first clicked into the feedback field. The press has to
+   *  begin the bar's take instead: its line opens if it was shut, and its
+   *  field takes the keyboard so the words have a home and the release is the
+   *  natural one. */
+  it('begins the bar take from the key with the caret on the page, and takes the keyboard', async () => {
+    mic.held.gated = true;
+    try {
+      const harness = open({
+        record: record({ pending_asks: [browserHandOffAsk()] }),
+        dictation: true,
+      });
+      action('Open browser').click();
+      await opened();
+      expect(
+        document.querySelector('.takeover-bar textarea'),
+        'precondition: the feedback line is shut',
+      ).toBeNull();
+      (document.activeElement as HTMLElement | null)?.blur();
+      expect(document.activeElement, 'precondition: the caret sits on the page').toBe(
+        document.body,
+      );
+
+      key('ControlRight', 'keydown');
+      await opened();
+
+      const line = document.querySelector<HTMLTextAreaElement>('.takeover-bar textarea');
+      expect(
+        line,
+        'the press opens the bar line, rather than landing where nothing types',
+      ).not.toBeNull();
+      expect(document.activeElement, 'and its field holds the keyboard').toBe(line);
+
+      mic.held.release?.();
+      await opened();
+      expect(commands(harness), 'the take opens at the bar').toMatchObject([
+        { dictate_stream: { key: SLOT } },
+      ]);
+    } finally {
+      mic.held.gated = false;
+      mic.held.release = null;
+    }
+  });
+
+  /** **A take in flight ends on the key wherever the caret is.** Beginning the
+   *  take swaps the line's field for its card, and the swap is what swallowed
+   *  the stop: the caret fell to the body, which is not a dictation box, so
+   *  the press was dropped and the reader had to reach for the mic.
+   *
+   *  **What this is evidence for is the finish decision**: the bar's own take,
+   *  before the record has echoed it, still counts as in flight. The takeover
+   *  guard's live-take clause is `push-to-talk.test.ts`'s - here the bar line
+   *  would let the press through on its own. */
+  it('ends the bar take from the key with the caret on the page, while the card draws', async () => {
+    vi.useFakeTimers();
+    try {
+      const harness = open({
+        record: record({ pending_asks: [browserHandOffAsk()] }),
+        dictation: true,
+      });
+      action('Open browser').click();
+      await opened();
+      barAction('something').click();
+      flushSync();
+      await startBarTake();
+      expect(
+        document.querySelector('.tb-feedback .tc'),
+        'precondition: the card replaces the line',
+      ).not.toBeNull();
+      expect(
+        document.querySelector('.takeover-bar textarea'),
+        'precondition: no field holds the caret',
+      ).toBeNull();
+      (document.activeElement as HTMLElement | null)?.blur();
+      expect(document.activeElement, 'precondition: the caret sits on the page').toBe(
+        document.body,
+      );
+
+      key('ControlRight', 'keydown');
+      key('ControlRight', 'keyup');
+      settle();
+
+      expect(
+        commands(harness).at(-1),
+        'the press ends the take rather than beginning one behind the page',
+      ).toMatchObject({ dictate_stop: { key: SLOT, submit: true } });
+      expect(
+        commands(harness).filter((command) => 'dictate_stream' in command),
+        'and no second take opens',
+      ).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  /** **One press is one act.** The bar's line is a dictation box on the same
+   *  page as the composer's, so a second registration hearing the same press
+   *  would stop the take twice.
+   *
+   *  **The take here is the record's, which this page did not start**: each
+   *  handler's finish goes to the socket rather than collapsing on one local
+   *  capture's drain, so the stop count is the honest one a duplicate
+   *  registration would move. */
+  it('stops once from one press under the takeover', async () => {
+    const harness = open({
+      record: record({
+        pending_asks: [browserHandOffAsk()],
+        composer: { take: take(), notice: null, machine: null, bind: 'right_cmd', mode: 'toggle' },
+      }),
+      dictation: true,
+    });
+    action('Open browser').click();
+    await opened();
+    barAction('something').click();
+    flushSync();
+
+    key('ControlRight', 'keydown');
+    key('ControlRight', 'keyup');
+
+    expect(
+      commands(harness).filter((command) => 'dictate_stop' in command),
+      'the press stops the seat take exactly once',
+    ).toHaveLength(1);
+  });
+
+  /** **A line the reader cannot close is not a door for the key.** While the
+   *  page is still opening the bar draws no toggle, so a press that opened the
+   *  feedback line there would leave words in a row with no way to shut it. */
+  it('begins nothing while the page has no line to close', async () => {
+    let land: (answer: { profile: string; tab: number }) => void = () => {};
+    vi.mocked(showBrowser).mockReturnValueOnce(
+      new Promise((resolve) => {
+        land = resolve;
+      }),
+    );
+    const harness = open({
+      record: record({ pending_asks: [browserHandOffAsk()] }),
+      dictation: true,
+    });
+    action('Open browser').click();
+    flushSync();
+    expect(surface.phase, 'precondition: the page is still opening').toBe('opening');
+    (document.activeElement as HTMLElement | null)?.blur();
+
+    key('ControlRight', 'keydown');
+    await opened();
+
+    expect(commands(harness), 'the press opens no take under a page with no controls').toEqual([]);
+    expect(
+      document.querySelector('.takeover-bar textarea'),
+      'and no line is drawn for it',
+    ).toBeNull();
+
+    land({ profile: 'job-hunt', tab: 2 });
+    await raised();
+  });
+
+  /** **The overlay's bare modifier is the key too.** While the overlay holds
+   *  first responder the webview gets no keydown, so a person pressing the
+   *  binding on the page reached nothing at all. The shell forwards the raw
+   *  side and the page decides which one is bound. */
+  it("begins the bar take from the overlay's modifier with the caret on the page", async () => {
+    const harness = open({
+      record: record({ pending_asks: [browserHandOffAsk()] }),
+      dictation: true,
+    });
+    action('Open browser').click();
+    await opened();
+    const pressed = await modifierRoute();
+    (document.activeElement as HTMLElement | null)?.blur();
+    expect(document.activeElement, 'precondition: the caret sits on the page').toBe(document.body);
+
+    pressed({ code: 62, down: true });
+    flushSync();
+    pressed({ code: 62, down: false });
+    await opened();
+
+    expect(commands(harness), 'the overlay press begins the bar take').toMatchObject([
+      { dictate_stream: { key: SLOT } },
+    ]);
+    expect(
+      document.querySelector('.tb-feedback .tc'),
+      'and the bar draws the take it opened for',
+    ).not.toBeNull();
+  });
+
+  /** **The overlay's release ends it too.** A take in flight is the stop
+   *  wherever the caret is; the shell's route has to land on the same finish
+   *  the window key does, or a person driving the page can start a take they
+   *  cannot end. */
+  it("ends a live bar take from the overlay's modifier", async () => {
+    vi.useFakeTimers();
+    try {
+      const harness = open({
+        record: record({ pending_asks: [browserHandOffAsk()] }),
+        dictation: true,
+      });
+      action('Open browser').click();
+      await opened();
+      barAction('something').click();
+      flushSync();
+      await startBarTake();
+      const pressed = await modifierRoute();
+      (document.activeElement as HTMLElement | null)?.blur();
+
+      pressed({ code: 62, down: true });
+      flushSync();
+      pressed({ code: 62, down: false });
+      settle();
+
+      expect(commands(harness).at(-1), 'the overlay press ends the take').toMatchObject({
+        dictate_stop: { key: SLOT, submit: true },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  /** **A chord heard on the overlay's route discards the take it began.** The
+   *  page never sees Cmd+C while the overlay holds the keyboard, so the shell
+   *  reports the other key; without it the release would submit a take the
+   *  person meant as a shortcut. */
+  it("discards the take when a chord arrives on the overlay's route", async () => {
+    vi.useFakeTimers();
+    try {
+      const harness = open({
+        record: record({ pending_asks: [browserHandOffAsk()] }),
+        dictation: true,
+      });
+      action('Open browser').click();
+      await opened();
+      const pressed = await modifierRoute();
+      const chord = await modifierChordRoute();
+
+      pressed({ code: 62, down: true });
+      await opened();
+      chord();
+      pressed({ code: 62, down: false });
+      settle();
+
+      expect(
+        commands(harness).at(-1),
+        'the release discards the take rather than submitting it',
+      ).toMatchObject({ dictate_stop: { key: SLOT, submit: false } });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  /** **One press is one act, whichever route delivered it.** The webview gets
+   *  no keydown while the overlay is first responder, but if a shell ever
+   *  forwarded both, they land in ONE handler pair - and a second press while
+   *  one is already down carries no instruction.
+   *
+   *  **The take is the record's and the mode auto**, which is what makes the
+   *  count discriminating: a separate pair would track its own press and send
+   *  its own finish, where the shared pair's second release has nothing left
+   *  to end. */
+  it('acts once when the overlay and the window both deliver the press', async () => {
+    const harness = open({
+      record: record({
+        pending_asks: [browserHandOffAsk()],
+        composer: { take: take(), notice: null, machine: null, bind: 'right_cmd', mode: 'auto' },
+      }),
+      dictation: true,
+    });
+    action('Open browser').click();
+    await opened();
+    const pressed = await modifierRoute();
+
+    pressed({ code: 62, down: true });
+    key('ControlRight', 'keydown');
+    key('ControlRight', 'keyup');
+    pressed({ code: 62, down: false });
+    await opened();
+
+    expect(
+      commands(harness).filter((command) => 'dictate_stop' in command),
+      'both routes end the seat take exactly once',
+    ).toHaveLength(1);
+    expect(
+      commands(harness).filter((command) => 'dictate_stream' in command),
+      'and nothing begins a take behind the page',
+    ).toHaveLength(0);
+  });
+
+  /** **The field comes back with the words and the keyboard with it.** A take
+   *  lands its words in the line and the line's field returns; a reader who
+   *  just dictated them is about to press Enter or type, and a keystroke on
+   *  the body goes nowhere.
+   *
+   *  **The row is the record's phase, not this page's take.** A release leaves
+   *  the record transcribing for a drain after the local capture has gone, so
+   *  the field only returns when the record clears; the sequence below is the
+   *  production one, a flush apart, because a focus keyed on the local take
+   *  fired while the card was still drawn and never ran again. */
+  it("gives the keyboard back to the bar's field when the take row clears", async () => {
+    const harness = open({
+      record: record({ pending_asks: [browserHandOffAsk()] }),
+      dictation: true,
+    });
+    action('Open browser').click();
+    await opened();
+    barAction('something').click();
+    flushSync();
+    await startBarTake();
+
+    // The release: the record shows the take transcribing while the local
+    // capture is still ending.
+    harness.page.record = record({
+      pending_asks: [browserHandOffAsk()],
+      composer: { take: take({ phase: 'transcribing' }), notice: null, machine: null },
+    });
+    flushSync();
+    endTake(harness);
+    flushSync();
+    // **The record transcribes for a beat after the local end**, as a server
+    // update does; the focus this page's own take queued has to have died
+    // with the field by then, or the later clear finds nothing to drive it.
+    await opened();
+    expect(
+      document.querySelector('.takeover-bar textarea'),
+      'the card still holds the line while the record transcribes',
+    ).toBeNull();
+    expect(document.activeElement, 'and the keyboard sits on the page').toBe(document.body);
+
+    // The record clears a flush later: the field returns with the words.
+    harness.page.record = record({
+      pending_asks: [browserHandOffAsk()],
+      composer: {
+        take: null,
+        notice: { kind: 'landed', text: 'the words', truncated: false },
+        machine: null,
+      },
+    });
+    flushSync();
+
+    const line = document.querySelector<HTMLTextAreaElement>('.takeover-bar textarea');
+    expect(line, "the line's field returns with the take's words").not.toBeNull();
+    expect(line?.value, 'and it holds what was dictated').toBe('the words');
+    await vi.waitFor(() =>
+      expect(document.activeElement, 'the keyboard is in the field the words landed in').toBe(line),
+    );
+  });
+
+  /** **An install that cannot dictate opens no overlay key routes.** The
+   *  shell's doors sit behind the same gate the window listener does. */
+  it('opens no overlay key route on an install that cannot dictate', async () => {
+    open({ record: record({ pending_asks: [browserHandOffAsk()] }), dictation: false });
+    action('Open browser').click();
+    await opened();
+    await opened();
+
+    expect(vi.mocked(onModifier), 'no modifier door is opened').not.toHaveBeenCalled();
+    expect(vi.mocked(onModifierChord), 'and no chord door either').not.toHaveBeenCalled();
+  });
+
+  /** **A refused event door is said, and the next run opens it again.** A
+   *  route that dies in silence is a key that stops working with no line
+   *  anywhere. */
+  it('says when the overlay key door could not open, and opens it on the next run', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      vi.mocked(onModifier).mockReturnValueOnce(
+        Promise.reject(new Error('the event plugin was not ready')),
+      );
+      open({ record: record({ pending_asks: [browserHandOffAsk()] }), dictation: true });
+      action('Open browser').click();
+      await opened();
+
+      await vi.waitFor(() =>
+        expect(
+          warn.mock.calls.some((call) =>
+            String(call[0]).includes('overlay key route did not open'),
+          ),
+          'the refusal is said rather than swallowed',
+        ).toBe(true),
+      );
+      expect(
+        vi.mocked(onModifier).mock.calls.length,
+        'the next run of the door opens it again',
+      ).toBeGreaterThan(1);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  /** **A press whose release landed while the window was away is forgotten.**
+   *  Without the reset the press stays on record, the next key is taken for a
+   *  repeat, and the key looks dead. */
+  it('begins again after a press whose release was lost', async () => {
+    vi.useFakeTimers();
+    try {
+      const harness = open({
+        record: record({
+          pending_asks: [browserHandOffAsk()],
+          composer: { take: null, notice: null, machine: null, bind: 'right_cmd', mode: 'toggle' },
+        }),
+        dictation: true,
+      });
+      action('Open browser').click();
+      await opened();
+      barAction('something').click();
+      flushSync();
+
+      key('ControlRight', 'keydown');
+      await opened();
+      expect(
+        commands(harness).filter((command) => 'dictate_stream' in command),
+        'the press began a take',
+      ).toHaveLength(1);
+
+      window.dispatchEvent(new Event('blur'));
+      key('ControlRight', 'keydown');
+      settle();
+
+      expect(
+        commands(harness).filter((command) => 'dictate_stop' in command),
+        'the next press stops the take rather than being taken for a repeat',
+      ).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
+
+/**
+ * The handler the shell's modifier door carried, once the takeover is up and
+ * the composer has opened it.
+ *
+ * **jsdom has no responder chain**, so nothing here proves AppKit delivers
+ * `flagsChanged:` - the shell's own test pins the payload it emits. What the
+ * cases below pin is the client's half: the door is opened only while the
+ * takeover is up, and what arrives through it goes into the same handler pair
+ * the window key does.
+ */
+async function modifierRoute(): Promise<(press: { code: number; down: boolean }) => void> {
+  await vi.waitFor(() =>
+    expect(
+      vi.mocked(onModifier),
+      'the overlay key door is opened while the takeover is up',
+    ).toHaveBeenCalled(),
+  );
+  const call = vi.mocked(onModifier).mock.calls.at(-1);
+  if (call === undefined) throw new Error('the overlay key door was never opened');
+  return call[0];
+}
+
+/** The handler the shell's chord door carried, once the takeover is up. */
+async function modifierChordRoute(): Promise<() => void> {
+  await vi.waitFor(() =>
+    expect(
+      vi.mocked(onModifierChord),
+      'the overlay chord door is opened while the takeover is up',
+    ).toHaveBeenCalled(),
+  );
+  const call = vi.mocked(onModifierChord).mock.calls.at(-1);
+  if (call === undefined) throw new Error('the overlay chord door was never opened');
+  return call[0];
+}
 
 /**
  * The list that opens over the box: five triggers, one popover shape.
