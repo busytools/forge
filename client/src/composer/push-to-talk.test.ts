@@ -6,7 +6,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { surface } from '../browser/surface.svelte';
-import { type Dictation, pushToTalkHandlers, type PushToTalk } from './dictate.svelte';
+import {
+  type Dictation,
+  pushToTalkHandlers,
+  type PushToTalk,
+  routeModifier,
+} from './dictate.svelte';
 
 /** The bound key on this platform: jsdom reports no mac. */
 const BOUND = { code: 'ControlRight', key: 'Control' };
@@ -14,6 +19,7 @@ const BOUND = { code: 'ControlRight', key: 'Control' };
 function wiring(
   over: Partial<PushToTalk> = {},
   recording = false,
+  opening = false,
 ): {
   wiring: PushToTalk;
   act: ReturnType<typeof vi.fn>;
@@ -21,7 +27,7 @@ function wiring(
 } {
   const act = vi.fn();
   const began = vi.fn();
-  const dictate = { held: recording, act } as unknown as Dictation;
+  const dictate = { held: recording, opening, openingHere: opening, act } as unknown as Dictation;
   return {
     act,
     began,
@@ -31,6 +37,7 @@ function wiring(
       bind: () => 'right_cmd',
       mode: () => 'auto',
       machine: () => false,
+      barLine: () => false,
       onBegin: began,
       ...over,
     },
@@ -156,6 +163,44 @@ describe('the push-to-talk key', () => {
     expect(act, 'a press with no takeover begins the take').toHaveBeenCalledWith('begin');
   });
 
+  /// **The bar's line is a dictation box wherever the caret is.** It is the
+  /// only text box above the page the takeover stands for, so a press made on
+  /// the page itself - the caret on the body, where a reader driving the page
+  /// leaves it - belongs to the bar's take rather than being swallowed by the
+  /// takeover's keyboard stand-down.
+  it('starts the bar take from a caret outside every box while a takeover is up', () => {
+    const { wiring: w, act, began } = wiring({ barLine: () => true });
+    const handlers = pushToTalkHandlers(w);
+    surface.phase = 'live';
+    press(handlers);
+    expect(act, 'a press with the caret on the page begins the bar take').toHaveBeenCalledWith(
+      'begin',
+    );
+    expect(began, 'and the keyboard is moved into the bar line').toHaveBeenCalledTimes(1);
+  });
+
+  /// **A take already in flight still ends on the key**, even under a takeover
+  /// that stands for no ask: the reader cannot see the bar's row for it, and
+  /// Escape would throw the words away.
+  it('ends a live take under a takeover the bar does not take dictation for', () => {
+    const { wiring: w, act } = wiring({ mode: () => 'toggle' }, true);
+    const handlers = pushToTalkHandlers(w);
+    surface.phase = 'live';
+    press(handlers);
+    expect(act, 'the press ends the live take').toHaveBeenCalledWith('finish');
+  });
+
+  /// **A take is in flight from its press, not from its open landing.** The
+  /// browser's permission round trip is seconds long; a reader pressing again
+  /// there means the stop, and a press that read only the landed take began
+  /// nothing and left the open running.
+  it('ends a take that is still opening', () => {
+    const { wiring: w, act } = wiring({ mode: () => 'toggle' }, false, true);
+    const handlers = pushToTalkHandlers(w);
+    press(handlers);
+    expect(act, 'the press asks for the stop while the open runs').toHaveBeenCalledWith('finish');
+  });
+
   /// **A release still lands while a takeover is up**: a press that began
   /// before it opened has a capture waiting for this release.
   it('releases a take that a takeover opened over', () => {
@@ -167,5 +212,93 @@ describe('the push-to-talk key', () => {
     surface.phase = 'live';
     release(handlers);
     expect(act, 'the capture begun before the takeover still ends').toHaveBeenCalledWith('finish');
+  });
+
+  /// **The overlay's route is the window's route.** AppKit hands the overlay a
+  /// bare modifier as its raw keycode; the shell forwards it here, and it goes
+  /// into the same handlers, so the side this client binds ends the one take.
+  it("routes the overlay's modifier into the same handlers", () => {
+    const { wiring: w, act } = wiring({ mode: () => 'toggle' }, true);
+    const handlers = pushToTalkHandlers(w);
+    surface.phase = 'live';
+    routeModifier(handlers, { code: 62, down: true });
+    expect(act, 'the raw right Control is this platform bound key').toHaveBeenCalledWith('finish');
+  });
+
+  /// **A forwarded chord discards the take it began.** The page never hears
+  /// the other key on the overlay route; the shell reports it, and without the
+  /// mark the release submits a take the person meant as a shortcut.
+  it('cancels a take when a key arrives under the forwarded modifier', () => {
+    const { wiring: w, act } = wiring({ mode: () => 'hold' });
+    const handlers = pushToTalkHandlers(w);
+    routeModifier(handlers, { code: 62, down: true });
+    expect(act).toHaveBeenCalledWith('begin');
+    act.mockClear();
+    handlers.chord();
+    routeModifier(handlers, { code: 62, down: false });
+    expect(act, 'the release discards the take its press began').toHaveBeenCalledWith('cancel');
+  });
+
+  /// **A bare forwarded modifier is not a chord.** The control beside the case
+  /// above: with no other key the release finishes the take as it always did.
+  it('finishes a bare forwarded modifier without a chord', () => {
+    const { wiring: w, act } = wiring({ mode: () => 'hold' });
+    const handlers = pushToTalkHandlers(w);
+    routeModifier(handlers, { code: 62, down: true });
+    act.mockClear();
+    routeModifier(handlers, { code: 62, down: false });
+    expect(act, 'a bare modifier release finishes the take').toHaveBeenCalledWith('finish');
+  });
+
+  /// **The Mac sides are the bind's.** Every other case runs jsdom's non-mac
+  /// substitution; the desktop is the platform where raw 54 is the bound
+  /// right Command and 55 is the other side, which must not chord.
+  it('binds the Mac sides: the right Command acts and the left does not chord', () => {
+    const platform = navigator.platform;
+    Object.defineProperty(navigator, 'platform', { configurable: true, value: 'MacIntel' });
+    try {
+      const { wiring: w, act } = wiring({ mode: () => 'hold' });
+      const handlers = pushToTalkHandlers(w);
+      routeModifier(handlers, { code: 54, down: true });
+      expect(act, 'the right Command is the bound side').toHaveBeenCalledWith('begin');
+      act.mockClear();
+      routeModifier(handlers, { code: 55, down: true });
+      routeModifier(handlers, { code: 54, down: false });
+      expect(act, 'the left Command does not chord, so the release finishes').toHaveBeenCalledWith(
+        'finish',
+      );
+    } finally {
+      Object.defineProperty(navigator, 'platform', { configurable: true, value: platform });
+    }
+  });
+
+  /// **A press whose release was lost is forgotten.** The window blur and a
+  /// hidden page clear it; a press kept on record would take the next one for
+  /// a repeat and ignore it.
+  it('forgets a press whose release was lost', () => {
+    const { wiring: w, act } = wiring();
+    const handlers = pushToTalkHandlers(w);
+    press(handlers);
+    expect(act).toHaveBeenCalledWith('begin');
+    act.mockClear();
+    handlers.reset();
+    press(handlers);
+    expect(act, 'the next press begins again').toHaveBeenCalledWith('begin');
+  });
+
+  /// **The other side's modifier is bare, not a chord.** The window route
+  /// reads the DOM `key` for that; the overlay's route has to carry it too, or
+  /// brushing the other Control while the key is held would discard the take
+  /// the press began.
+  it("leaves the other side's modifier out of a press in flight", () => {
+    const { wiring: w, act } = wiring({ mode: () => 'hold' });
+    const handlers = pushToTalkHandlers(w);
+    press(handlers);
+    act.mockClear();
+    routeModifier(handlers, { code: 59, down: true });
+    release(handlers);
+    expect(act, 'the release still finishes rather than abandoning the take').toHaveBeenCalledWith(
+      'finish',
+    );
   });
 });
