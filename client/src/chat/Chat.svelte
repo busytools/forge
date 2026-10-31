@@ -121,6 +121,15 @@
    */
   let viewport: HTMLElement | null = $state(null);
   /**
+   * The viewport's own top padding, read once where it is bound.
+   *
+   * The list's measured size stops at its content, so this is the whole of
+   * the gap between the browser's scroll numbers and the list's own - the
+   * difference the foot pin has to account for when it holds at the model
+   * instead of at the browser's end.
+   */
+  let padTop = 0;
+  /**
    * The list's own handle, for the one move the element cannot make: a jump
    * to a row that may not be drawn. `land` deliberately goes through the
    * element; finding an arbitrary past row needs the list's index math.
@@ -454,6 +463,7 @@
 
   function scrollViewport(node: HTMLElement): () => void {
     viewport = node;
+    padTop = Number.parseFloat(getComputedStyle(node).paddingTop) || 0;
     // A token armed against a previous viewport must not eat this one's first event.
     pinEcho = null;
     // The sizes and the last event belong to the element a previous conversation scrolled.
@@ -1188,6 +1198,32 @@
     // has the newest turn outside the window, where their pin is the jump
     // down to it and must go through.
     if (undrawnOverhang() > 0) return foot;
+    // **Hold at the list's own bottom while the browser's runs ahead of it.**
+    // A row that grew in this update is already in the browser's scrollHeight,
+    // and the list measures it a callback later. A scroll written past the
+    // measured content makes the list compute its window past its own end, so
+    // it drops rows that are on screen and draws them again when the
+    // measurement lands - the whole conversation flickering while a turn is
+    // live. The pin stops at the model and lands again next frame, when the
+    // growth is measured.
+    const max = foot - viewport.clientHeight;
+    const model = modelFoot();
+    let target = foot;
+    if (model !== null && max > model) {
+      // The list's measurement is a callback behind the browser's count, so
+      // this write holds at the model and comes back for the rest next frame.
+      // Two frames is the whole of that wait; past it the browser's foot is
+      // written anyway rather than leaving the reader short of the end.
+      if (repinTries < REPIN_TRIES) {
+        target = model;
+        repinTries += 1;
+        repin();
+      } else {
+        repinTries = 0;
+      }
+    } else {
+      repinTries = 0;
+    }
     // **The write is unconditional, and the token comes from the read-back.**
     // `scrollTop` clamps to `scrollHeight - clientHeight`, so what the write
     // lands on is not what it asked for, and only the read-back knows whether
@@ -1196,12 +1232,50 @@
     // it armed with no echo coming, to be eaten by the next real event the
     // browser fires - a clamp the follow then misreads as the reader.
     const was = viewport.scrollTop;
-    viewport.scrollTop = foot;
+    viewport.scrollTop = target;
     if (viewport.scrollTop !== was) pinEcho = viewport.scrollTop;
     // Where the column last left the reader, which is the foot the browser
     // clamped the pin to.
     placed = viewport.scrollTop;
     return foot;
+  }
+
+  /** How many frames a pin holds at the list's model while it measures a row. */
+  const REPIN_TRIES = 2;
+  /** How many of those frames the current hold has already spent. */
+  let repinTries = 0;
+  /** A pin deferred to the next frame, while the list measures the row that grew. */
+  let repinFrame: number | null = null;
+
+  /**
+   * Land again once the list has measured what the browser already counted.
+   *
+   * **A frame, not a tick**: the list's measurement is a ResizeObserver
+   * callback, delivered before the next frame's callbacks - so the next
+   * animation frame is the first moment the pin can be written against it.
+   * One frame is held at a time, and a reader who has left the foot by then
+   * is left where they are.
+   */
+  function repin(): void {
+    if (repinFrame !== null) return;
+    repinFrame = requestAnimationFrame(() => {
+      repinFrame = null;
+      if (held.following) land();
+    });
+  }
+
+  /**
+   * The bottom the list itself has measured, as a scroll offset; `null`
+   * before the list has a handle to ask.
+   *
+   * **The element's own room, not the list's report of it.** What can lag
+   * behind the browser is the content the list has measured, and a column
+   * whose room changed - the composer taking space - must pin on that change
+   * at once rather than wait for a measurement nothing moved.
+   */
+  function modelFoot(): number | null {
+    if (list === null || viewport === null) return null;
+    return Math.max(0, list.getScrollSize() - viewport.clientHeight) + padTop;
   }
 
   /** The ask already answered, so a repeat of the same token is not acted on twice. */

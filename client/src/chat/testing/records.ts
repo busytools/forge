@@ -140,6 +140,11 @@ export function setElement(height: number, viewport: number): void {
   element.viewport = viewport;
 }
 
+/** The list catching up on a measurement the browser already counted. */
+export function setModel(total: number): void {
+  reported.size = total;
+}
+
 let mounted: ListHandle | null = null;
 
 export function register(handle: ListHandle | null): void {

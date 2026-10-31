@@ -29,7 +29,7 @@ vi.mock('./conversation', async (importOriginal) => {
   return frozenConversation(await importOriginal<typeof import('./conversation')>());
 });
 
-const { clear, element, layout, list, measured, pinned, setElement, setMeasured } =
+const { clear, element, layout, list, measured, pinned, setElement, setMeasured, setModel } =
   await import('./testing/records');
 const { default: Chat } = await import('./Chat.svelte');
 const { default: Seats } = await import('./testing/Seats.svelte');
@@ -481,7 +481,9 @@ describe('whether the column follows the newest end', () => {
 
     server.frame();
     await settle();
-    // The late layout, after the frame's own pin has landed.
+    // The late layout, after the frame's own pin has landed: the row reported
+    // its height, so the list's measurement and the element move together.
+    setModel(TOTAL + 80);
     element.height = TOTAL + 80;
     resized();
     await settle();
@@ -491,6 +493,43 @@ describe('whether the column follows the newest end', () => {
       PIN,
       { asked: grown, landed: grown - VIEWPORT },
     ]);
+  });
+
+  it("holds the pin at the list's own end while the browser counts a row it has not measured", async () => {
+    // **The blink while a turn is live.** A row that grows is in the browser's
+    // scrollHeight at once, and the list measures it a callback later. A scroll
+    // written past the measured end is read by the list as a position beyond
+    // its content, and it answers by dropping the rows on screen until the
+    // measurement lands - the whole conversation flickering frame after frame.
+    const server = stub();
+    await draw(server);
+    readerAt(FOOT);
+    await settle();
+    clear();
+
+    // The row grew in the DOM; the list has not measured it yet.
+    setElement(TOTAL + 40, VIEWPORT);
+    server.frame();
+    await settle();
+
+    // The pin stops at the measured end rather than at the browser's.
+    expect(pinned().length, 'the lagging pin still lands').toBeGreaterThan(0);
+    for (const pin of pinned()) {
+      expect(pin.asked, 'no pin is written past the end the list measured').toBeLessThanOrEqual(
+        TOTAL - VIEWPORT,
+      );
+    }
+
+    // The measurement lands, and the column comes back for the rest of it.
+    setModel(TOTAL + 40);
+    resized();
+    await settle();
+
+    const grown = Math.floor(TOTAL + 40);
+    expect(pinned().at(-1), 'the real foot is pinned once the row is measured').toEqual({
+      asked: grown,
+      landed: grown - VIEWPORT,
+    });
   });
 
   it('does not pin onto a slot the list has reserved for the newest turn but not drawn', async () => {
@@ -522,6 +561,7 @@ describe('whether the column follows the newest end', () => {
     expect(pinned(), 'the reserved slot is not a foot to pin onto').toEqual([]);
 
     // The measurement lands and the slot corrects to what the row drew.
+    setModel(TOTAL + 60);
     measured(TOTAL + 60, [...reserved, { top: TOTAL, height: 60 }]);
     element.height = TOTAL + 60;
     resized();
@@ -735,7 +775,9 @@ describe('whether the column follows the newest end', () => {
     clear();
 
     // The content grows under a reader at the foot and the frame's pin rides
-    // them down: the write moved, so its echo is on the way.
+    // them down: the write moved, so its echo is on the way. The list's
+    // measurement is the row's own report, so it moves with the element.
+    setModel(TOTAL + 80);
     setElement(TOTAL + 80, VIEWPORT);
     server.frame();
     flushSync();
@@ -2352,7 +2394,12 @@ describe('the heights a turn ends at', () => {
       'the pin holds the finished row for its beat',
     ).toHaveLength(0);
     vi.advanceTimersByTime(450);
-    if (grow > 0) element.height = TOTAL + grow;
+    if (grow > 0) {
+      // The row is laid out in the turn: the browser's count and the list's
+      // measurement move together, which is what a real row's growth is.
+      setModel(TOTAL + grow);
+      element.height = TOTAL + grow;
+    }
     // The page landing and the completion each pinned the old foot; what the
     // beat itself lands is the only pin the cases below are about.
     clear();
@@ -2399,6 +2446,7 @@ describe('the heights a turn ends at', () => {
     await settle();
     clear();
 
+    setModel(TOTAL + ROW);
     setElement(TOTAL + ROW, VIEWPORT);
     // Only the newest turn's own observer: every other node is skipped, the
     // column's watcher included, so the height reaches the key by that row
