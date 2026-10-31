@@ -1742,6 +1742,7 @@ pub(crate) fn handle_spawn_worker(
             }));
         }
         Err(err) => {
+            let message = format!("agent spawn failed: {err}");
             tracing::error!(
                 target: "forge_workspace::spawn",
                 project = %project_key.as_str(),
@@ -1749,6 +1750,11 @@ pub(crate) fn handle_spawn_worker(
                 error = %err,
                 "spawn_worker: get_agent_handle failed"
             );
+            // **The reason a view reads.** The lead's arm records the same
+            // failure for its slot, and without this one the rollback's
+            // `Removed` event is all a view has: it names no cause, and the
+            // chat draws it as a close.
+            workspace.record_spawn_failure(&slot, &message);
             // A fresh spawn the caller asked for creates its row above, so
             // a failure here has to take the row with it: the caller is
             // told the spawn failed and the live entry is rolled back, and
@@ -1762,7 +1768,11 @@ pub(crate) fn handle_spawn_worker(
             }
             // Roll back the live_workers entry we just inserted.
             let removed = workspace.remove_latest_worker(&project_key, label);
-            if let Some(rolled) = removed {
+            if let Some(mut rolled) = removed {
+                // The last-known snapshot is carried for symmetry, so the
+                // reason rides it too: a view that renders the event's
+                // status has the cause even though the entry is gone.
+                rolled.diagnostic = Some(message.clone());
                 try_emit(
                     workspace,
                     "spawn_worker::WorkerStatusChanged::Removed",
@@ -1777,7 +1787,9 @@ pub(crate) fn handle_spawn_worker(
                     },
                 );
             }
-            let _ = return_to.send(Err(format!("agent spawn failed: {err}")));
+            // The caller's error is the same sentence the slot records, so
+            // the two cannot name different failures.
+            let _ = return_to.send(Err(message));
         }
     }
 }
@@ -3299,6 +3311,71 @@ provider = "anthropic"
         assert!(
             record.contains("agent spawn failed"),
             "the record carries the reason the envelope announced: {record}",
+        );
+    }
+
+    /// The worker counterpart of `spawn_project_records_the_failure_it_announces`:
+    /// a synchronous worker spawn failure records the reason on the worker's
+    /// slot and carries it on the rollback's `Removed` event, so a view says
+    /// why instead of drawing the rollback as a close.
+    #[tokio::test]
+    async fn a_synchronous_worker_spawn_failure_names_its_cause() {
+        let dir = tempdir().expect("tempdir");
+        write_forge_toml(dir.path(), FIXTURE_PROJECT_PATH);
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        // A shut boot gate is the cheapest way to a spawn that never
+        // builds a task: the entry is written and then the handle
+        // construction refuses.
+        workspace.seed_test_gateway_ready(false);
+        let project = workspace
+            .list_projects()
+            .into_iter()
+            .next()
+            .expect("fixture project present")
+            .key;
+        let mut rx = workspace.subscribe_answerer();
+        let (tx, reply) = tokio::sync::oneshot::channel();
+
+        handle_spawn_worker(
+            &workspace,
+            project,
+            WorkerSpawnArgs {
+                label: "builder".to_owned(),
+                charter: "charter".to_owned(),
+                kick: None,
+                resume_kick: None,
+                interactive: false,
+                mcp_families: None,
+                cwd: None,
+            },
+            SessionSlot::from_str_for_test("lead"),
+            None,
+            false,
+            tx,
+        );
+
+        let reason = reply.await.expect("reply channel").expect_err("the shut gate refuses");
+        assert!(reason.contains("agent spawn failed"), "the caller is told why: {reason}");
+        let slot = SessionSlot::worker("Default", "forge", "builder");
+        let record = workspace.spawn_failure(&slot).expect("the failure is recorded on the slot");
+        assert!(record.contains("agent spawn failed"), "the record carries the cause: {record}");
+
+        let mut removed_diagnostic = None;
+        while let Ok(frame) = rx.try_recv() {
+            if let SessionUpdate::WorkerStatusChanged {
+                action: WorkerStatusAction::Removed,
+                status,
+                ..
+            } = &*frame.update
+            {
+                removed_diagnostic = status.diagnostic.clone();
+            }
+        }
+        assert!(
+            removed_diagnostic
+                .as_ref()
+                .is_some_and(|diagnostic| diagnostic.contains("agent spawn failed")),
+            "the rollback event carries the cause a view shows: {removed_diagnostic:?}",
         );
     }
 
