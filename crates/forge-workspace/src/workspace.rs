@@ -3438,7 +3438,7 @@ impl Workspace {
         // pooled first (the save's guard sees it and refuses). Without
         // that, a spawn resolving mid-save leaves a session running but
         // off every roster.
-        {
+        let (cmd_rx, teardown_done, replaced_sender) = {
             let _settings = self.settings_write.lock();
             let held = self.config_arc();
             // **A save that has landed but that the watcher has not reloaded
@@ -3483,6 +3483,23 @@ impl Workspace {
                     return Ok(Arc::clone(&existing.handle));
                 }
             }
+            // **Registered before the entry is visible, so a pooled handle
+            // never exists without a task behind it.** The teardown signal
+            // and the command sender are what a later spawn reads as "a task
+            // consumes this slot"; inserting the pool entry first left a
+            // window where a concurrent spawn released the winner and both
+            // tasks ran (#2683). A shutdown here starts no session, and the
+            // child this spawn already started goes with it.
+            let Some(teardown_done) = self.mint_session_teardown(&session_slot) else {
+                arc.kill_process_group();
+                return Err(forge_sdk::Error::Connection {
+                    reason: "forge is shutting down; the session was not started".to_owned(),
+                }
+                .into());
+            };
+            let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<Command>();
+            let replaced_sender =
+                self.command_senders.lock().insert(session_slot.clone(), cmd_tx).is_some();
             pool.insert(
                 session_slot.clone(),
                 PooledAgent {
@@ -3495,21 +3512,7 @@ impl Workspace {
             );
             // The session is pooled: its id and domain are its own now.
             rollback.armed = false;
-        }
-
-        // Spawn the per-session `SessionTask` actor. A second
-        // `get_agent_handle` call for the same key never reaches here while
-        // its task is alive - both fast paths answer it first - so a sender
-        // still registered at this point belongs to a task the pool has
-        // left behind, and keeping it would install this handle with no
-        // task: the state a seat could never start from (#2683). The new
-        // task takes the slot.
-        let (cmd_rx, replaced_sender) = {
-            let mut senders = self.command_senders.lock();
-            let replaced = senders.remove(&session_slot).is_some();
-            let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<Command>();
-            senders.insert(session_slot.clone(), cmd_tx);
-            (Some(cmd_rx), replaced)
+            (cmd_rx, teardown_done, replaced_sender)
         };
         if replaced_sender {
             tracing::info!(
@@ -3519,7 +3522,7 @@ impl Workspace {
                 "a command sender had no live task behind it; the rebuilt session takes the slot",
             );
         }
-        if let Some(cmd_rx) = cmd_rx {
+        {
             // `domain_arc` was hoisted above the spawn. Stamp the live
             // `Arc<AgentHandle>` onto its `conn` slot
             // now that the handle exists. Whoever holds the
@@ -3528,25 +3531,6 @@ impl Workspace {
             // round-trip after the spawn lands.
             domain_arc.lock().conn = Some(Arc::clone(&arc));
             let domain = Arc::clone(&domain_arc);
-            // Minted beside the command channel, on the same cold path:
-            // the despawn waits on the receiver before it removes the
-            // worker's worktree, so the removal comes after the child the
-            // task's exit path reaps (#1767). `None` means a shutdown began
-            // between the gate above and here: the child this spawn just
-            // started is released rather than left outside the awaited set.
-            let Some(teardown_done) = self.mint_session_teardown(&session_slot) else {
-                drop(cmd_rx);
-                self.release_session_if_current(&session_slot, &arc);
-                // No task will run this session's exit path, so its group
-                // is taken down here: dropping the handle alone kills the
-                // direct child and leaves the tools the CLI already started
-                // behind.
-                arc.kill_process_group();
-                return Err(forge_sdk::Error::Connection {
-                    reason: "forge is shutting down; the session was not started".to_owned(),
-                }
-                .into());
-            };
             let task = SessionTask {
                 key: session_slot,
                 handle: Arc::clone(&arc),
@@ -9789,6 +9773,12 @@ impl Workspace {
                 "the worker's worktree is not usable at connect; the worker is marked failed",
             );
             transition_worker_to_failed(self, project_key, session_key, Some(reason));
+            // **A Failed row means nothing is running.** Every other Failed
+            // transition leaves no session behind; a pooled handle here would
+            // let a later re-spawn fast-path a live child under an id the row
+            // no longer means, with the CLI running while every view and
+            // delivery reads NotLive.
+            self.release_session(session_key);
             return;
         }
         self.apply_worker_tag_or_rollback_with_budget(
@@ -18084,12 +18074,12 @@ mod tag_retry_tests {
         );
     }
 
-    /// A worker whose worktree went missing between its creation and its
-    /// first connect reads Failed with the reason, not Running. The
-    /// spawn-time check only proves the path was free; nothing re-read the
-    /// directory after creation (#1593).
-    #[tokio::test]
-    async fn a_worker_whose_worktree_is_gone_by_connect_reads_failed() {
+    /// Drive the connect-time worktree check for a worker whose session is
+    /// pooled behind the row, and answer the row's status, its reason, and
+    /// whether the pool, sender and domain were released with the failure.
+    fn connect_worktree_check(
+        cwd: &std::path::Path,
+    ) -> (forge_primitives::WorkerLiveness, Option<String>, bool) {
         let (workspace, _updates) = Workspace::testing_stub();
         workspace.seed_test_project("proj-x", "/tmp/proj-x");
         let project_key = ProjectKey::new(
@@ -18113,16 +18103,31 @@ mod tag_retry_tests {
                 kick: None,
             },
         );
+        // The session the row is about, so the release the failure owes can
+        // be seen: a Failed row must leave none behind.
+        let (handle, _commands) = Workspace::testing_stub_handle();
+        let handle = Arc::new(handle);
+        workspace.pool.lock().insert(
+            session_key.clone(),
+            crate::workspace::PooledAgent {
+                handle: Arc::clone(&handle),
+                account: forge_gateway::AccountKey("acct-a".to_owned()),
+                permission_mode: None,
+                registration: None,
+                session_id: "builder-session".to_owned(),
+            },
+        );
+        let (cmd_tx, _cmd_rx) = tokio::sync::mpsc::unbounded_channel();
+        workspace.command_senders.lock().insert(session_key.clone(), cmd_tx);
+        workspace.register_domain_session(session_key.clone(), Some(Arc::clone(&handle)));
+
         let cfg = tempdir().expect("cfg");
-        // The tree the spawn resolved: no `.claude/worktrees/builder`
-        // under it, so the worktree the worker was given is gone.
-        let cwd = tempdir().expect("cwd");
         workspace.apply_worker_tag_or_rollback_with_config_dir(
             &session_key,
             "11111111-1111-4111-8111-111111111111",
             &project_key,
             "builder",
-            &cwd.path().to_string_lossy(),
+            &cwd.to_string_lossy(),
             true,
             true,
             true,
@@ -18134,16 +18139,50 @@ mod tag_retry_tests {
             .into_iter()
             .find(|entry| entry.label == "builder")
             .expect("the entry stays as the visible failure");
+        let released = !workspace.session_is_pooled(&session_key)
+            && !workspace.command_senders.lock().contains_key(&session_key)
+            && !workspace.domain_handles.lock().contains_key(&session_key);
+        (entry.status, entry.diagnostic, released)
+    }
+
+    /// A worker whose worktree went missing between its creation and its
+    /// first connect reads Failed with the reason, not Running, and the
+    /// session behind it is released (#1593).
+    #[test]
+    fn a_worker_whose_worktree_is_gone_by_connect_reads_failed() {
+        let cwd = tempdir().expect("cwd");
+        let (status, diagnostic, released) = connect_worktree_check(cwd.path());
+
         assert_eq!(
-            entry.status,
+            status,
             forge_primitives::WorkerLiveness::Failed,
             "a worker with no worktree must not read live",
         );
-        let diagnostic = entry.diagnostic.expect("the row carries the reason");
+        let diagnostic = diagnostic.expect("the row carries the reason");
         assert!(
-            diagnostic.contains("worktree"),
+            diagnostic.contains("worktree") && diagnostic.contains("gone"),
             "the reason names what went missing: {diagnostic}",
         );
+        assert!(released, "a Failed row leaves no pooled session behind");
+    }
+
+    /// The same check for a tree that is there but is not a git worktree git
+    /// can reuse: the branch the tag-write also reads, and the reason says
+    /// so rather than that the directory is gone (#1593).
+    #[test]
+    fn a_worker_whose_worktree_is_not_a_git_worktree_reads_failed() {
+        let cwd = tempdir().expect("cwd");
+        let worktree = cwd.path().join(".claude/worktrees/builder");
+        fs::create_dir_all(&worktree).expect("the worktree dir stands");
+        let (status, diagnostic, released) = connect_worktree_check(cwd.path());
+
+        assert_eq!(status, forge_primitives::WorkerLiveness::Failed);
+        let diagnostic = diagnostic.expect("the row carries the reason");
+        assert!(
+            diagnostic.contains("not a git worktree"),
+            "the reason names the unusable tree: {diagnostic}",
+        );
+        assert!(released, "a Failed row leaves no pooled session behind");
     }
 
     /// Drive a non-NotFound tag failure over a seeded row and live worker,

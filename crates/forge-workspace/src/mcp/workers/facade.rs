@@ -80,10 +80,9 @@ pub enum WorkerSpawnError {
     /// (workers MCP uses it as an addressing target for the worker's
     /// own lead - see [`LEAD_LABEL`]).
     ReservedLabel,
-    /// `label` carries a path separator. claude rewrites one before
-    /// deriving its worktree path and branch, so forge's own composition
-    /// from the raw label names a directory and a branch claude never uses
-    /// (#1603).
+    /// `label` carries a slash. claude rewrites one before deriving its
+    /// worktree path and branch, so forge's own composition from the raw
+    /// label names a directory and a branch claude never uses (#1603).
     LabelWithPathSeparator,
     /// `charter` is empty after trim.
     EmptyCharter,
@@ -459,9 +458,9 @@ impl WorkerSpawnError {
                  the addressing keyword for the caller's project's own agent. Pick a different label."
             ),
             Self::LabelWithPathSeparator => {
-                "label must not contain a path separator ('/' or '\\'): claude rewrites one in \
-                 the worktree name, so forge's path and branch would point somewhere it never \
-                 creates. Pick a label without one."
+                "label must not contain a slash ('/'): claude rewrites it in the worktree name, \
+                 so forge's path and branch would point somewhere it never creates. Pick a label \
+                 without one."
                     .to_owned()
             }
             Self::EmptyCharter => "charter must be non-empty after trim".to_owned(),
@@ -482,9 +481,9 @@ impl WorkerSpawnError {
 }
 
 /// The label rules a spawn must pass wherever it enters: empty, the
-/// reserved `lead`, and a path separator. Shared by the tool's validation
-/// and the spawn handler so the MCP tool, the command bus and the socket
-/// cannot disagree about which labels mint a worker.
+/// reserved `lead`, and a slash. Shared by the tool's validation and the
+/// spawn handler so the MCP tool, the command bus and the socket cannot
+/// disagree about which labels mint a worker.
 pub(crate) fn validate_worker_label(label: &str) -> Result<(), WorkerSpawnError> {
     if label.trim().is_empty() {
         return Err(WorkerSpawnError::EmptyLabel);
@@ -492,7 +491,7 @@ pub(crate) fn validate_worker_label(label: &str) -> Result<(), WorkerSpawnError>
     if label.trim() == LEAD_LABEL {
         return Err(WorkerSpawnError::ReservedLabel);
     }
-    if label.contains(['/', '\\']) {
+    if label.contains('/') {
         return Err(WorkerSpawnError::LabelWithPathSeparator);
     }
     Ok(())
@@ -1521,10 +1520,6 @@ mod mock_tests {
         // forge would never find (#1603).
         assert!(matches!(
             validate_worker_spawn(true, "a/b", "c"),
-            Err(WorkerSpawnError::LabelWithPathSeparator)
-        ));
-        assert!(matches!(
-            validate_worker_spawn(true, "a\\b", "c"),
             Err(WorkerSpawnError::LabelWithPathSeparator)
         ));
         assert!(matches!(

@@ -469,6 +469,46 @@ mod lead_resolution_tests {
         }
     }
 
+    /// **A delivery no session could take is not a success.** The running
+    /// branch is chosen on the pool entry alone; the dispatch then finds no
+    /// session task, and that has to reach the caller as an error rather
+    /// than the old warn-and-Ok (#2342).
+    #[test]
+    fn a_delivery_no_session_can_take_is_not_acked() {
+        let (ws, _rx) = Workspace::testing_stub();
+        ws.seed_test_project("beta", "/tmp/beta");
+        let slot = SessionSlot::lead("TestOrg", "beta");
+        let (handle, _commands) = Workspace::testing_stub_handle();
+        ws.pool.lock().insert(
+            slot,
+            crate::workspace::PooledAgent {
+                handle: std::sync::Arc::new(handle),
+                account: forge_gateway::AccountKey("acct-a".to_owned()),
+                permission_mode: None,
+                registration: None,
+                session_id: "pooled-no-task".to_owned(),
+            },
+        );
+        let facade = ProdWorkspaceFacade::from_arc(&ws);
+
+        let result = facade.deliver_peer_prompt(
+            &SessionSlot::from_str_for_test("caller"),
+            "beta",
+            WrappedPrompt {
+                id: MessageId::mint(),
+                kind: WrappedKind::Message,
+                sender_name: "forge".to_owned(),
+                sender_org: "Personal".to_owned(),
+                body: "hi".to_owned(),
+            },
+        );
+
+        assert!(
+            matches!(result, Err(DeliverError::DispatchFailed { .. })),
+            "a prompt the pooled lead's missing task cannot take is a refusal; got {result:?}",
+        );
+    }
+
     #[test]
     fn deliver_to_unknown_project_errors() {
         let (ws, _rx) = Workspace::testing_stub();
