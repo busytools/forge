@@ -2967,6 +2967,7 @@ mod tests {
         let host = SlackSubsystemHost::new(&ws);
 
         assert!(host.thread_first_walk("acme", "C1", "100.0"), "a new row is a first walk");
+        assert!(host.thread_first_walk("acme", "C1", "100.0"), "a peek does not consume the mark");
         assert_eq!(
             host.thread_edit_watermark("acme", "C1", "100.0").as_deref(),
             Some(since.as_str()),
@@ -2987,6 +2988,39 @@ mod tests {
             !host.thread_first_walk("acme", "C1", "100.0"),
             "following an existing row again does not re-arm the mark",
         );
+    }
+
+    /// **A pruned thread forgets its clocks**, so the maps do not leak a row
+    /// that no longer exists and a re-follow starts clean.
+    #[test]
+    fn a_pruned_thread_forgets_its_clocks() {
+        let (ws, dir, _rx) = workspace_with_one_slack_workspace("acme");
+        ws.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        let since = format!(
+            "{}.000000",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("the clock is past the epoch")
+                .as_secs()
+        );
+        let owner =
+            SlackThreadOwner { project: "forge".to_owned(), team_role: Some("gone".to_owned()) };
+        ws.follow_slack_thread("acme", "C1", "100.0", owner, &since);
+        let host = SlackSubsystemHost::new(&ws);
+        assert!(host.thread_first_walk("acme", "C1", "100.0"));
+        assert!(host.thread_edit_watermark("acme", "C1", "100.0").is_some());
+
+        ws.prune_slack_threads("acme");
+
+        assert!(!host.thread_first_walk("acme", "C1", "100.0"), "the first-walk mark is gone");
+        assert_eq!(
+            host.thread_edit_watermark("acme", "C1", "100.0"),
+            None,
+            "and the edit watermark with it",
+        );
+        assert_eq!(host.thread_full_read_at("acme", "C1", "100.0"), None, "as is the stamp");
     }
 
     /// A cursor survives while ANY subscription still covers its
