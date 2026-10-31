@@ -262,6 +262,15 @@ pub struct BrowserUpload {
 pub const MAX_UPLOAD_BYTES: u64 = 8 * 1024 * 1024;
 pub const MAX_UPLOAD_FILES: usize = 16;
 
+/// How many finished downloads one profile's broadcast keeps for a viewer
+/// that is not reading.
+///
+/// **The backlog is memory, and a download is bytes**: a finished offer can
+/// carry 32 MiB, so this is the memory a profile holds for a page that saved
+/// files while nobody looked. A viewer that lags past it loses the oldest
+/// offers, which the server reports as a dropped download.
+pub const DOWNLOAD_BACKLOG: usize = 4;
+
 /// One finished download, on its way to the person's save door.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BrowserDownload {

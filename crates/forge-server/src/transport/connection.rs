@@ -284,7 +284,7 @@ enum ViewEvent {
 /// lives in forge-browser: a change there must change the words, so the
 /// mismatch is a compile error rather than a notice that lies.
 const _: () = assert!(
-    forge_browser::service::DOWNLOAD_BACKLOG == 4,
+    forge_primitives::browser::DOWNLOAD_BACKLOG == 4,
     "the drop notice says 'four' finished downloads; change the words with the backlog"
 );
 

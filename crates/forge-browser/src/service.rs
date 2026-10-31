@@ -21,7 +21,7 @@ use forge_primitives::SessionSlot;
 use forge_primitives::browser::{
     BrowserAudio, BrowserDownload, BrowserFileAsk, BrowserFrame, BrowserInputEvent,
     BrowserNavState, BrowserPart, BrowserTabList, BrowserUpload, BrowserViewState,
-    MAX_UPLOAD_BYTES, MAX_UPLOAD_FILES, MouseAction, ProfileKey,
+    DOWNLOAD_BACKLOG, MAX_UPLOAD_BYTES, MAX_UPLOAD_FILES, MouseAction, ProfileKey,
 };
 use serde_json::{Value, json};
 use tokio::sync::{Mutex as AsyncMutex, broadcast, mpsc, watch};
@@ -3695,20 +3695,6 @@ pub struct Profile {
 /// The most a finished download may carry to a viewer.
 const MAX_DOWNLOAD_BYTES: u64 = 32 * 1024 * 1024;
 
-/// How many finished downloads one profile may hold for a lagging viewer.
-///
-/// **The backlog is memory, and a download is bytes.** Every reader that is
-/// behind keeps up to this many `BrowserDownload`s, each up to
-/// [`MAX_DOWNLOAD_BYTES`], so the ceiling is this times 32 MiB per profile -
-/// 128 MiB here, against 512 at the sixteen this used to keep. A viewer that
-/// lags past it loses the oldest offers, which is already what a broadcast
-/// does; what it must not do is hold half a gigabyte per open profile for a
-/// page that saved sixteen files while nobody looked.
-///
-/// **Public because the notice says the number in words**: the server's
-/// drop sentence names this ceiling, and a test pins the two together.
-pub const DOWNLOAD_BACKLOG: usize = 4;
-
 /// What the host last said about a recording: whether the writer opened, and -
 /// once it stopped - how the take ended.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -5995,14 +5981,16 @@ fn device_pixels(css: u32, scale: f64) -> u32 {
 
 #[cfg(test)]
 mod tests {
+    use forge_primitives::browser::DOWNLOAD_BACKLOG;
+
     use super::{
-        BrowserService, Call, ChooserAnswer, ChooserFuture, ChooserLedger, DOWNLOAD_BACKLOG,
-        DeadDriverOutcome, DeadHost, DeadPageOutcome, Driven, HostEnd, Profile, ReconcilePass,
-        State, UploadRequest, agent_upload_paths, agent_upload_refused, begin_upload,
-        captured_generation, clear_if_dead, dead_driver_answer, dead_host_answer, dead_page_answer,
-        death_cause, device_pixels, file_name, installed_generation, note_agent_answered,
-        note_surfaced_opened, note_upload_finished, owner_size, pair_tab_events,
-        stage_agent_uploads, upload_request, window_dimension, write_uploads,
+        BrowserService, Call, ChooserAnswer, ChooserFuture, ChooserLedger, DeadDriverOutcome,
+        DeadHost, DeadPageOutcome, Driven, HostEnd, Profile, ReconcilePass, State, UploadRequest,
+        agent_upload_paths, agent_upload_refused, begin_upload, captured_generation, clear_if_dead,
+        dead_driver_answer, dead_host_answer, dead_page_answer, death_cause, device_pixels,
+        file_name, installed_generation, note_agent_answered, note_surfaced_opened,
+        note_upload_finished, owner_size, pair_tab_events, stage_agent_uploads, upload_request,
+        window_dimension, write_uploads,
     };
     use forge_primitives::SessionSlot;
     use forge_primitives::browser::BrowserDownload;
