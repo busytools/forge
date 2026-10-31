@@ -43,6 +43,7 @@ use tauri::Emitter as _;
 use tauri::Manager as _;
 use tokio::sync::mpsc;
 
+use crate::perf;
 use crate::records::{self, Records};
 use crate::socket::{Socket, SocketEvent, Status};
 
@@ -170,6 +171,13 @@ struct State {
     /// Which attach (or lower) is current. A re-attach that lands after a
     /// later lower or a second attach is stale, and takes itself back.
     attach_generation: u64,
+    /// The profile the viewed page belongs to, from the last `browser_view`:
+    /// **the perf marks name it**, so two profiles' tab 2s are not one page
+    /// in the log (#2645).
+    view_profile: Option<String>,
+    /// The tab a gesture is waiting for a frame from: the round trip's other
+    /// end, spent by the first frame on that tab (#2645).
+    awaiting_paint: Option<u16>,
     /// The seat the page has on screen, as the last `showing` said.
     shown: Option<SessionSlot>,
     /// The asks this half has announced, over the home reads it sees.
@@ -279,6 +287,8 @@ impl Bridge {
                 refreshed: HashMap::new(),
                 attach: None,
                 attach_generation: 0,
+                view_profile: None,
+                awaiting_paint: None,
                 shown: None,
                 asks: crate::asks::Asks::default(),
             }),
@@ -519,8 +529,39 @@ impl Bridge {
     /// ordered stream on the wire whatever sent them.
     pub fn browser_input(&self, event: forge_primitives::browser::BrowserInputEvent) {
         let seq = self.input_seq.fetch_add(1, Ordering::Relaxed) + 1;
+        self.mark_browser_input(&event);
         if let Some(socket) = self.socket() {
             socket.browser_input(seq, event);
+        }
+    }
+
+    /// **A gesture's mark, and the frame it will wait on** (#2645): the round
+    /// trip is read from here to the first frame drawn for its tab.
+    fn mark_browser_input(&self, event: &forge_primitives::browser::BrowserInputEvent) {
+        let Some(name) = gesture_mark(event) else { return };
+        let Some(app) = self.app.as_ref() else { return };
+        let (tab, profile) = {
+            let mut state = self.lock();
+            let Some(tab) = state.attach.as_ref().and_then(|attach| attach.tab) else { return };
+            state.awaiting_paint = Some(tab);
+            (tab, state.view_profile.clone())
+        };
+        perf::note_browser_input(app, name, profile.as_deref(), tab);
+    }
+
+    /// **The frame that answers a gesture is the first drawn for its tab**
+    /// (#2645). The overlay draws what the socket hands it, so the sink is
+    /// where the desktop's end of the round trip is marked; the page marks
+    /// its own canvas after the draw.
+    fn browser_painted(&self, bytes: &[u8]) {
+        let Some(frame) = crate::browser::split_frame(bytes) else { return };
+        let Some(app) = self.app.as_ref() else { return };
+        let (owed, profile) = {
+            let mut state = self.lock();
+            (perf::paint_owed(&mut state.awaiting_paint, frame.tab), state.view_profile.clone())
+        };
+        if owed {
+            perf::note_browser_paint(app, profile.as_deref(), frame.tab, frame.seq);
         }
     }
 
@@ -578,7 +619,11 @@ impl Bridge {
         let frames: crate::socket::FrameSink = match &self.app {
             Some(app) => {
                 let app = app.clone();
-                Arc::new(move |bytes: &[u8]| crate::browser::frame(&app, bytes))
+                let bridge = Arc::clone(self);
+                Arc::new(move |bytes: &[u8]| {
+                    crate::browser::frame(&app, bytes);
+                    bridge.browser_painted(bytes);
+                })
             }
             None => Arc::new(|_: &[u8]| {}),
         };
@@ -1302,6 +1347,9 @@ impl Bridge {
                     }
                     let _ = app.emit("browser_view", message.clone());
                 }
+                if let Some(profile) = message.get("profile").and_then(Value::as_str) {
+                    self.lock().view_profile = Some(profile.to_owned());
+                }
                 self.forward(&message, None);
             }
             // **The strip follows the pushed tab list**: the page listens for
@@ -1750,6 +1798,24 @@ fn take_attach(state: &mut State) -> Option<Attach> {
     state.attach.take()
 }
 
+/// The perf mark a gesture leaves, or `None` where it is not a step.
+///
+/// **A pointer move is a stream**, one per frame at a mouse's speed, so it is
+/// not marked; and a key's release is part of its press rather than a second
+/// gesture (#2645).
+fn gesture_mark(event: &forge_primitives::browser::BrowserInputEvent) -> Option<&'static str> {
+    use forge_primitives::browser::{BrowserInputEvent, MouseAction};
+    match event {
+        BrowserInputEvent::Mouse { action: MouseAction::Move, .. } => None,
+        BrowserInputEvent::Mouse { action: MouseAction::Press, .. } => Some("mouse:press"),
+        BrowserInputEvent::Mouse { action: MouseAction::Release, .. } => Some("mouse:release"),
+        BrowserInputEvent::Wheel { .. } => Some("wheel"),
+        BrowserInputEvent::Key { down: false, .. } => None,
+        BrowserInputEvent::Key { down: true, .. } => Some("key"),
+        BrowserInputEvent::Text { .. } => Some("text"),
+    }
+}
+
 /// Whether one browser refusal writes a line: **only a refused input can be
 /// a burst** - a surface with no role is refused one per pointer move - so
 /// its first is the record, while a refused take, attach or surface is one
@@ -1863,6 +1929,50 @@ mod tests {
             refusal_title(false, None),
             "the download was not saved",
             "and a genuine save failure keeps the words it had",
+        );
+    }
+
+    /// **A gesture is marked where it leaves, and a pointer move is not a
+    /// gesture**: it is one per frame at a mouse's speed, and one line per
+    /// frame would drown the file the round trip is read from (#2645). A
+    /// key's release is part of its press, not a second gesture.
+    #[test]
+    fn a_pointer_move_is_not_a_gesture_mark() {
+        use forge_primitives::browser::{BrowserInputEvent, InputModifiers, MouseAction};
+
+        let modifiers = InputModifiers::default();
+        let mouse = |action| BrowserInputEvent::Mouse {
+            action,
+            x: 1.0,
+            y: 2.0,
+            button: 0,
+            clicks: 1,
+            modifiers,
+        };
+        assert_eq!(gesture_mark(&mouse(MouseAction::Press)), Some("mouse:press"));
+        assert_eq!(gesture_mark(&mouse(MouseAction::Release)), Some("mouse:release"));
+        assert_eq!(gesture_mark(&mouse(MouseAction::Move)), None, "a move is a stream");
+
+        let key = |down| BrowserInputEvent::Key {
+            down,
+            key: "Enter".to_owned(),
+            code: "Enter".to_owned(),
+            windows_vk: 13,
+            modifiers,
+        };
+        assert_eq!(gesture_mark(&key(true)), Some("key"));
+        assert_eq!(gesture_mark(&key(false)), None, "a release is not a gesture of its own");
+
+        assert_eq!(gesture_mark(&BrowserInputEvent::Text { text: "hi".to_owned() }), Some("text"),);
+        assert_eq!(
+            gesture_mark(&BrowserInputEvent::Wheel {
+                x: 1.0,
+                y: 2.0,
+                delta_x: 0.0,
+                delta_y: 40.0,
+                modifiers,
+            }),
+            Some("wheel"),
         );
     }
 

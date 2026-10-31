@@ -8,6 +8,7 @@
    */
   import { onMount } from 'svelte';
 
+  import { noteBrowserInput, noteBrowserPaint } from '../perf';
   import type { BrowserInputEvent, InputModifiers } from '../protocol';
   import type { BrowserFrame, Connection } from '../socket';
   import { drawsCanvas, keptFrame } from './link';
@@ -141,6 +142,7 @@
     bitmap.close();
     painted[key] = frame.seq;
     picturePage = { width: frame.page_width, height: frame.page_height };
+    noteBrowserPaint(frame.seq, frame.tab, surface.attachedProfile ?? surface.profile);
     return true;
   }
 
@@ -179,6 +181,36 @@
     };
   }
 
+  /**
+   * One gesture to the page, marked for the perf log where it leaves.
+   * **A pointer move is a stream**, one per frame at a mouse's speed, so it
+   * is not a mark: the file is a latency record, not a gesture log.
+   */
+  function input(event: BrowserInputEvent): void {
+    connection.browserInput(event);
+    const name = markOf(event);
+    if (name !== null && surface.tab !== null) {
+      noteBrowserInput(name, surface.tab, surface.attachedProfile ?? surface.profile);
+    }
+  }
+
+  /** What a gesture is called in the log, or `null` where it is not a step. */
+  function markOf(event: BrowserInputEvent): string | null {
+    switch (event.kind) {
+      case 'mouse':
+        return event.action === 'move' ? null : `mouse:${event.action}`;
+      case 'wheel':
+        return 'wheel';
+      // **A key's release is not a gesture of its own**: the press is where
+      // the page was told, and pairing the frame with the release would
+      // measure from the wrong end of the keystroke.
+      case 'key':
+        return event.down ? 'key' : null;
+      case 'text':
+        return 'text';
+    }
+  }
+
   /** **Only the controller's gestures go out**: the server refuses the rest,
    *  and the bar's Take control is the door to the role. */
   function send(action: 'move' | 'press' | 'release', event: PointerEvent): void {
@@ -195,7 +227,7 @@
       clicks: event.detail > 0 ? event.detail : 1,
       modifiers: modifiers(event),
     };
-    connection.browserInput(gesture);
+    input(gesture);
   }
 
   /** One-finger state, for the phone's own gestures. */
@@ -290,7 +322,7 @@
         // finger moving left scrolls right.
         const dx = (event.clientX - touch.lastX) * scaleX;
         const dy = (event.clientY - touch.lastY) * scaleY;
-        connection.browserInput({
+        input({
           kind: 'wheel',
           x,
           y,
@@ -331,8 +363,8 @@
           clicks: 1,
           modifiers: modifiers(event),
         };
-        connection.browserInput(gesture);
-        connection.browserInput({ ...gesture, action: 'release' });
+        input(gesture);
+        input({ ...gesture, action: 'release' });
       }
       return;
     }
@@ -377,8 +409,8 @@
       windows_vk: event.keyCode,
       modifiers: modifiers(event),
     };
-    connection.browserInput(gesture);
-    connection.browserInput({ ...gesture, down: false });
+    input(gesture);
+    input({ ...gesture, down: false });
     if (
       event.key === 'Enter' ||
       event.key === 'Backspace' ||
@@ -393,7 +425,7 @@
   function beforeinput(event: InputEvent): void {
     if (!holdsControl() || event.isComposing) return;
     if (event.inputType === 'insertText' && typeof event.data === 'string' && event.data !== '') {
-      connection.browserInput({ kind: 'text', text: event.data });
+      input({ kind: 'text', text: event.data });
       event.preventDefault();
     }
   }
@@ -416,14 +448,14 @@
       return;
     }
     composedText = null;
-    connection.browserInput({ kind: 'text', text: value });
+    input({ kind: 'text', text: value });
     if (imeEl !== null) imeEl.value = '';
   }
 
   function composed(event: CompositionEvent): void {
     const data = event.data;
     if (holdsControl() && data !== '') {
-      connection.browserInput({ kind: 'text', text: data });
+      input({ kind: 'text', text: data });
       composedText = data;
       // **A re-fired input lands in this turn**; clearing on the next task
       // keeps a later identical insert from being swallowed.
@@ -466,7 +498,7 @@
       delta_y: -event.deltaY,
       modifiers: modifiers(event),
     };
-    connection.browserInput(gesture);
+    input(gesture);
   }
 
   function measure(): void {
