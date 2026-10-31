@@ -3912,6 +3912,70 @@ describe('the seat sequence', () => {
   });
 
   /**
+   * **The other arrival order: the hole's answer lands first, then the
+   * outrun answer.** No repair is open when the answer arrives, so its
+   * stretch is asked for at once - covering every row above its own floor,
+   * including the rows the hole's answer just drew on the record it is about
+   * to replace (#2719).
+   */
+  it('keeps every row when the hole answers before an outrun answer lands', () => {
+    const connection = drivable();
+    const page = watch(connection);
+    page.land(snapshotOf(LEAD, { conversation: { turns: [], compaction_count: 0 } }, { seq: 1 }));
+    page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke('one', 'u1') } }, 1));
+    page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke('two', 'u2') } }, 2));
+    page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke('five', 'u5') } }, 5));
+    // The hole (3..4) is answered first, and the record fills through five.
+    page.land(repaired({ seq: 3, text: 'three' }, { seq: 4, text: 'four' }));
+    paint();
+    expect(spoken(page), 'precondition: the hole filled').toEqual([
+      'one',
+      'two',
+      'three',
+      'four',
+      'five',
+    ]);
+
+    // The whole record stands where the stream stood at row one.
+    page.land(
+      snapshotOf(
+        LEAD,
+        {
+          conversation: {
+            turns: [{ key: 'turn-1', messages: [spoke('one', 'u1')] }],
+            compaction_count: 0,
+          },
+        },
+        { seq: 2 },
+      ),
+    );
+    // **One ask covers the stretch above the answer**, rows the hole's
+    // answer already drew included.
+    expect(connection.ranges, 'the stretch above the answer was not asked for').toEqual([
+      { slot: LEAD, epoch: null, from: 3, to: 4 },
+      { slot: LEAD, epoch: null, from: 2, to: 5 },
+    ]);
+
+    page.land(
+      repaired(
+        { seq: 2, text: 'two' },
+        { seq: 3, text: 'three' },
+        { seq: 4, text: 'four' },
+        { seq: 5, text: 'five' },
+      ),
+    );
+    paint();
+    expect(spoken(page), 'the outrun answer lost a row of its stretch').toEqual([
+      'one',
+      'two',
+      'three',
+      'four',
+      'five',
+    ]);
+    page.stop();
+  });
+
+  /**
    * **A frame the record already has is not a hole.** A repeat, a replay or a
    * reorder that lands behind the newest number is a frame already drawn -
    * asking for it would be a range ask for frames nobody missed, which is a
