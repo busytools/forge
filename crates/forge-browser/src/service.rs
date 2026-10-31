@@ -1035,10 +1035,11 @@ impl BrowserService {
                         Ok(parts)
                     }
                     Err(why) => {
-                        // **A second mute on this path ends the host too**:
-                        // the create-plus-navigate leg can wedge a page with
-                        // no page call behind it, so the flag is read here as
-                        // the others read it.
+                        // **A second mute on this path takes the same end as
+                        // the others**, refusing by name when another
+                        // session's tab is on the host: the create-plus-
+                        // navigate leg can wedge a page with no page call
+                        // behind it, so the flag is read here too.
                         if crate::driver::timed_out(&why)
                             && Self::drop_dead_driver(&profile, generation, &why).await
                         {
@@ -1150,7 +1151,7 @@ impl BrowserService {
     /// **Answers whether a driver was already dropped since the last page
     /// call answered.** A fresh driver that mutes too is not the driver's
     /// fault, so the caller ends the host, or is refused by name when another
-    /// session's tab is on it (#2728), instead of paying budget after budget.
+    /// session's tab is on it, instead of paying budget after budget.
     async fn drop_dead_driver(profile: &Arc<Profile>, generation: u64, why: &str) -> bool {
         let mut state = profile.state.lock().await;
         if state.driver_generation != generation || state.driver.is_none() {
@@ -1733,7 +1734,8 @@ impl BrowserService {
                         // across this listing, so taking it now would wait on
                         // the task that is waiting on us. The call's own
                         // failure path ends the host once the decision is
-                        // released.
+                        // released, or refuses by name when another session's
+                        // tab is on it.
                         Self::mark_host_suspect(profile, fresh_generation).await;
                         // **The driver's own words go back unchanged**, so the
                         // call's failure path can still classify them.
@@ -2154,7 +2156,7 @@ impl BrowserService {
     /// died is rebuilt, and only a call safe to repeat is repeated; a host
     /// that never let the driver attach is ended and named with its own
     /// identity when the caller alone owns it, and left running with its
-    /// holder named otherwise (#2728); a plain tool failure leaves the driver
+    /// holder named otherwise; a plain tool failure leaves the driver
     /// where it is. Every clear is aimed at the generation this call drove,
     /// so a newer driver started in between keeps its handle.
     async fn after_failure(
@@ -2192,7 +2194,7 @@ impl BrowserService {
             // spend a second; the slot goes so the next call starts fresh.
             // **A fresh driver whose page call is mute too is the host's
             // pages**: the host is ended so the next call starts a new one,
-            // unless another session's page would go with it (#2728).
+            // unless another session's page would go with it.
             if Self::drop_dead_driver(profile, generation, &why).await {
                 Self::mark_host_suspect(profile, generation).await;
                 if let Some(answer) = self.end_marked_host(profile, seat, &why).await {
@@ -2217,7 +2219,7 @@ impl BrowserService {
         }
         // **A host another session's page is open on is left running even
         // with its endpoint gone**: it is a shared host, and the idle clock
-        // is its only fallback until the stability cut (#2728).
+        // is its only fallback until the stability change in #2732 lands.
         let holders =
             profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).other_owners(seat);
         // **A driver built against a browser that is gone is dropped.** The
@@ -2257,7 +2259,7 @@ impl BrowserService {
     /// used to cost an hour: the call that finds it, after replacing the
     /// driver, ends it so the next call starts a fresh browser with the
     /// profile's data intact. **A host another session's tab is open on is
-    /// left running**: the caller is answered by name instead (#2728).
+    /// left running**: the caller is answered by name instead.
     async fn end_dead_host(
         &self,
         profile: &Arc<Profile>,
@@ -2268,7 +2270,7 @@ impl BrowserService {
         let _decision = profile.file_decision.lock().await;
         // **A host another session's page is open on is never ended**: one
         // host per profile is what the browser requires, so ending it loses
-        // that page with the sign-in behind it (#2728).
+        // that page with the sign-in behind it.
         let holders =
             profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).other_owners(seat);
         let mut tail = String::new();
@@ -3723,7 +3725,7 @@ pub struct Profile {
     /// since. **An atomic rather than state**, because `host_gone` clears it
     /// on the paths that already hold the state lock. A second one with a
     /// fresh driver installed in between is the host's pages, not the
-    /// driver, and the host is ended if the caller alone owns it (#2728).
+    /// driver, and the host is ended if the caller alone owns it.
     mute_dropped: AtomicBool,
     /// **The identity of the host this profile is on.** Bumped on every
     /// successful launch and again when a host goes, so a tab birth or close
@@ -3733,7 +3735,7 @@ pub struct Profile {
     /// A fresh driver still could not list this profile's pages: the host it
     /// was listed from is wedged, and is ended on the first path that can
     /// take `file_decision` without waiting on the call that found it, or is
-    /// left running with its holder named (#2728).
+    /// left running with its holder named.
     host_suspect: Mutex<Option<HostIdentity>>,
     /// The driver a replacement installs under test, so a test can tell a
     /// replacement from a retry of the same fake. One-shot.
@@ -5604,7 +5606,7 @@ struct HostIdentity {
 }
 
 /// What became of a host a call tried to end.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 enum DeadHost {
     /// This call ended it, with the identity a recurrence is diagnosed by.
     Ended { pid: u32, port: u16 },
@@ -5618,7 +5620,7 @@ enum DeadHost {
     /// Other sessions hold tabs on this host, so it was left running. Each
     /// entry is a session and how long it has held its oldest tab; `wedged`
     /// says the endpoint stopped answering, which only the idle clock
-    /// releases until the stability cut (#2728).
+    /// releases until the stability change in #2732 lands.
     Shared { pid: u32, port: u16, holders: Vec<(SessionSlot, Duration)>, wedged: bool },
 }
 
@@ -6546,7 +6548,7 @@ mod tests {
     /// **A timeout never ends a host another session's page is open on.** Two
     /// sessions share a profile by owning a tab each of the one host; the
     /// caller that times out is refused by name, and the host stays up with
-    /// the other session's page (#2728).
+    /// the other session's page.
     #[tokio::test]
     async fn a_timeout_on_a_host_another_session_holds_is_refused_not_ended() {
         let dir = tempfile::tempdir().expect("a temp dir");
@@ -6616,7 +6618,7 @@ mod tests {
     /// **More than one tab is not another session.** The guard is about whose
     /// page would go, not how many pages there are: a host whose only tabs
     /// are the caller's own is still ended, so today's wedge recovery keeps
-    /// working (#2728).
+    /// working.
     #[tokio::test]
     async fn a_timeout_ends_a_host_the_caller_alone_holds_with_several_tabs() {
         let dir = tempfile::tempdir().expect("a temp dir");
@@ -6707,8 +6709,8 @@ mod tests {
     }
 
     /// **A genuinely wedged shared host is left to the idle clock.** Ending
-    /// it is the patched-on escape the stability cut replaces, so the caller
-    /// is refused, the holder is named, and nothing is taken down (#2728).
+    /// it is the patched-on escape the stability change in #2732 replaces, so
+    /// the caller is refused, the holder is named, and nothing is taken down.
     #[tokio::test]
     async fn a_wedged_shared_host_is_left_to_the_idle_clock() {
         let dir = tempfile::tempdir().expect("a temp dir");
@@ -6756,7 +6758,7 @@ mod tests {
     /// **A replacement that cannot start hands back the refusal it found.**
     /// The end path builds the shared host's sentence, and dropping it left
     /// the caller with a bare "the replacement could not start" while another
-    /// session's tab sat on the host (#2728).
+    /// session's tab sat on the host.
     #[tokio::test]
     async fn a_failed_replacement_hands_back_the_shared_hosts_refusal() {
         let dir = tempfile::tempdir().expect("a temp dir");
@@ -7425,19 +7427,6 @@ mod tests {
 
     /// **A host a call ended is named by pid, port and profile**, and one a
     /// newer driver owns is not claimed.
-    /// **A held tab is named in the coarsest unit that fits.** The refusal is
-    /// read by a person deciding whether to wait or close a tab, so a minute
-    /// read as a second, or an hour as sixty minutes, misleads them.
-    #[test]
-    fn a_held_tab_is_named_in_the_coarsest_unit_that_fits() {
-        assert_eq!(super::held_words(Duration::from_millis(400)), "under a second");
-        assert_eq!(super::held_words(Duration::from_secs(9)), "9 s");
-        assert_eq!(super::held_words(Duration::from_secs(59)), "59 s");
-        assert_eq!(super::held_words(Duration::from_secs(60)), "1 min");
-        assert_eq!(super::held_words(Duration::from_secs(59 * 60)), "59 min");
-        assert_eq!(super::held_words(Duration::from_secs(60 * 60)), "1 h");
-    }
-
     #[tokio::test]
     async fn a_dead_host_answer_names_the_host_and_the_next_call() {
         let dir = tempfile::tempdir().expect("a temp dir");
@@ -7476,6 +7465,19 @@ mod tests {
         let ours = dead_host_answer(&profile, DeadHost::NotOurs, "a listing timed out");
         assert!(ours.contains("stopped answering"), "{ours}");
         assert!(!ours.contains("pid"), "a host this call does not own is not claimed: {ours}");
+    }
+
+    /// **A held tab is named in the coarsest unit that fits.** The refusal is
+    /// read by a person deciding whether to wait or close a tab, so a minute
+    /// read as a second, or an hour as sixty minutes, misleads them.
+    #[test]
+    fn a_held_tab_is_named_in_the_coarsest_unit_that_fits() {
+        assert_eq!(super::held_words(Duration::from_millis(400)), "under a second");
+        assert_eq!(super::held_words(Duration::from_secs(9)), "9 s");
+        assert_eq!(super::held_words(Duration::from_secs(59)), "59 s");
+        assert_eq!(super::held_words(Duration::from_secs(60)), "1 min");
+        assert_eq!(super::held_words(Duration::from_secs(59 * 60)), "59 min");
+        assert_eq!(super::held_words(Duration::from_secs(60 * 60)), "1 h");
     }
 
     /// **A host that was not ended is not reported as ended.** The record's
