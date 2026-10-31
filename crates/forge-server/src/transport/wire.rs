@@ -1463,7 +1463,7 @@ pub fn page(
     before: Option<&str>,
     turns: u32,
 ) -> Page {
-    page_within(messages, rendered, dropped, before, turns, usize::MAX, None)
+    page_within(messages, rendered, dropped, before, turns, usize::MAX, "page", None)
 }
 
 /// [`page`], with the whole turns it carries held to `budget` bytes.
@@ -1487,6 +1487,10 @@ pub fn page(
 /// **The newest turn is served even when it alone is over the budget**: a
 /// budget that answered with no page would draw the seat empty, and one that
 /// split the turn would hand a client half of it. `usize::MAX` is no budget.
+///
+/// `budget_key` is the `forge.toml` key the budget came from, named on a cut:
+/// two caps share the default, and a line that did not say which one moved
+/// would mislead.
 pub fn page_within(
     messages: &[Message],
     rendered: &Rendered,
@@ -1494,6 +1498,7 @@ pub fn page_within(
     before: Option<&str>,
     turns: u32,
     budget: usize,
+    budget_key: &'static str,
     cap: Option<(usize, &SessionSlot)>,
 ) -> Page {
     // A page of no turns ends where it began: its cursor would name the turn it
@@ -1568,6 +1573,7 @@ pub fn page_within(
             tracing::debug!(
                 event_name = "page_cut_by_budget",
                 slot = %seat.display(),
+                budget_key,
                 budget,
                 turns_kept = kept.len(),
                 turns_available = ends_at - window_first,
@@ -2333,6 +2339,7 @@ async fn session(
                         None,
                         SUBSCRIBE_TURNS,
                         first_frame,
+                        "first_frame_cap_kb",
                         Some((cap, &capped)),
                     );
                     floor_cursor(&mut page, held.dropped());
@@ -2894,7 +2901,8 @@ mod tests {
         let newest_two = &every.turns[every.turns.len() - 2..];
         let budget = wire_bytes(newest_two);
 
-        let bounded = page_within(&messages, &rendered, 0, None, SUBSCRIBE_TURNS, budget, None);
+        let bounded =
+            page_within(&messages, &rendered, 0, None, SUBSCRIBE_TURNS, budget, "test", None);
 
         assert_eq!(
             bounded.turns.iter().map(opened_on).collect::<Vec<_>>(),
@@ -2919,7 +2927,7 @@ mod tests {
         let (messages, rendered) = a_conversation(&borrowed);
         let every = every_turn(&messages, &rendered);
 
-        let bounded = page_within(&messages, &rendered, 0, None, SUBSCRIBE_TURNS, 1, None);
+        let bounded = page_within(&messages, &rendered, 0, None, SUBSCRIBE_TURNS, 1, "test", None);
 
         assert_eq!(bounded.turns.len(), 1, "a budget under one turn still answers with one");
         assert_eq!(opened_on(&bounded.turns[0]), every[every.len() - 1], "and it is the newest");
@@ -2936,7 +2944,8 @@ mod tests {
         let counted = page(&messages, &rendered, 0, None, SUBSCRIBE_TURNS);
         let budget = wire_bytes(&counted.turns);
 
-        let bounded = page_within(&messages, &rendered, 0, None, SUBSCRIBE_TURNS, budget, None);
+        let bounded =
+            page_within(&messages, &rendered, 0, None, SUBSCRIBE_TURNS, budget, "test", None);
 
         assert_eq!(
             bounded.turns.len(),
@@ -3182,7 +3191,8 @@ mod tests {
         };
         let newest_two: usize = ranges[ranges.len() - 2..].iter().map(raw_turn).sum();
 
-        let bounded = page_within(&messages, &rendered, 0, None, SUBSCRIBE_TURNS, newest_two, None);
+        let bounded =
+            page_within(&messages, &rendered, 0, None, SUBSCRIBE_TURNS, newest_two, "test", None);
 
         assert_eq!(bounded.turns.len(), 2, "the same two turns the raw budget kept");
         assert!(
@@ -3214,7 +3224,7 @@ mod tests {
         let (messages, rendered) = a_conversation(&borrowed);
         let seat = fixture_seat();
 
-        let raw = page_within(&messages, &rendered, 0, None, SUBSCRIBE_TURNS, 2_048, None);
+        let raw = page_within(&messages, &rendered, 0, None, SUBSCRIBE_TURNS, 2_048, "test", None);
         assert_eq!(raw.turns.len(), 1, "a raw record of 20 KB leaves one turn in 2 KB");
 
         let capped = page_within(
@@ -3224,6 +3234,7 @@ mod tests {
             None,
             SUBSCRIBE_TURNS,
             2_048,
+            "test",
             Some((1_024, &seat)),
         );
         assert!(

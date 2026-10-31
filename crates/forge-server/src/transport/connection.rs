@@ -2162,6 +2162,7 @@ where
                         opening.as_deref(),
                         turns,
                         budget,
+                        "more_page_cap_kb",
                         Some((cap, &capped)),
                     )
                 });
@@ -3729,7 +3730,8 @@ fn page_of_span(
     cap: Option<(usize, &SessionSlot)>,
 ) -> crate::transport::wire::Page {
     let rendered = crate::transcript::render(&span.messages, live);
-    let mut page = page_within(&span.messages, &rendered, 0, None, turns, budget, cap);
+    let mut page =
+        page_within(&span.messages, &rendered, 0, None, turns, budget, "more_page_cap_kb", cap);
     // The page's oldest row, out of the frames it served: the first one whose
     // id names a row of the span. A frame with no id - a forged ending, an
     // attachment's hoist - is stepped over, which errs toward serving a row
@@ -5557,6 +5559,69 @@ mod tests {
         assert!(
             matches!(rows_below_floor(&state, &seat, &cwd, None, 4).await, BelowFloor::Empty),
             "a session whose file is gone is the empty page too",
+        );
+    }
+
+    /// **The transcript path is held to `more_page_cap_kb` too** (#2538).
+    /// Without the budget wired here, a page below the floor is cut by its
+    /// turn count alone and eight large turns cross whole.
+    #[tokio::test]
+    async fn a_page_below_the_floor_is_held_to_the_more_page_budget() {
+        let dir = tempfile::tempdir().expect("a config dir of its own");
+        let fleet = crate::testing::Fleet::in_dir_with_server(
+            dir.path(),
+            &[("TestOrg", &["proj"])],
+            "[server]\nmore_page_cap_kb = 1\n",
+        )
+        .expect("a fleet");
+        fleet.start("TestOrg", "proj").expect("a live lead session");
+        let rows: Vec<String> = (0..12)
+            .map(|at| {
+                format!(
+                    "{{\"type\":\"user\",\"uuid\":\"u{at}\",\"session_id\":\"s1\",\
+                     \"message\":{{\"role\":\"user\",\"content\":\"turn {at} {}\"}}}}",
+                    "x".repeat(2_000),
+                )
+            })
+            .collect();
+        fleet
+            .seed_transcript(
+                "TestOrg",
+                "proj",
+                "lead",
+                &rows.iter().map(String::as_str).collect::<Vec<_>>(),
+            )
+            .expect("the session's transcript");
+        let state = TransportState {
+            surface: fleet.surface(),
+            work: Arc::new(WorkCache::new()),
+            conversations: Arc::new(crate::transport::conversation::Conversations::new()),
+            live: Mutex::new(crate::live::Live::new()),
+            settings: crate::transport::settings_channel(),
+            browser_host: None,
+            heartbeat: Heartbeat::default(),
+        };
+        let seat = SessionSlot::lead("TestOrg", "proj");
+        let cwd = state.surface.roster().cwd_for(&seat).expect("the seat's own directory");
+        let below = forge_primitives::TranscriptAnchor { row: "u8".to_owned(), offset: None };
+        let BelowFloor::Page(page) = rows_below_floor(&state, &seat, &cwd, Some(below), 8).await
+        else {
+            panic!("the transcript answers a page below the floor")
+        };
+        let texts = turn_texts(&page);
+        assert_eq!(
+            texts.len(),
+            1,
+            "a 1 KB budget keeps the newest turn of eight large ones and not the rest: {texts:?}",
+        );
+        assert!(
+            texts[0].starts_with("turn 7"),
+            "and it is the newest row below the anchor: {:?}",
+            texts[0],
+        );
+        assert!(
+            page.cursor.is_some(),
+            "and the walk above it continues from the row it stopped at",
         );
     }
 

@@ -4253,9 +4253,10 @@ async fn a_more_page_is_held_to_the_more_page_budget() {
         panic!("a page is the answer to a request for more")
     };
     let kept = page_words(&turns);
-    assert!(
-        !kept.is_empty() && kept.len() < 8,
-        "a 512 KB budget keeps some of eight 250 KB turns and not all: {kept:?}",
+    assert_eq!(
+        kept.len(),
+        2,
+        "two 250 KB turns fit the 512 KB budget and the third does not: {kept:?}",
     );
     assert_eq!(
         kept.last().map(String::as_str),
@@ -4292,9 +4293,17 @@ async fn a_more_page_is_held_to_the_more_page_budget() {
     // with no line is a page a reader has to guess about.
     let cut = captured()
         .lines()
-        .filter(|line| line.contains("page_cut_by_budget") && line.contains("TestOrg/morecap/lead"))
+        .filter(|line| {
+            line.contains("page_cut_by_budget")
+                && line.contains("TestOrg/morecap/lead")
+                && line.contains("more_page_cap_kb")
+        })
         .count();
-    assert!(cut >= 1, "the budget's cut is named on the log: {}", captured());
+    assert!(
+        cut >= 1,
+        "the budget's cut names the key it came from, not just that it happened: {}",
+        captured(),
+    );
 }
 
 /// **`more_page_cap_kb = 0` serves the turns the client asked for.** The
@@ -4309,7 +4318,10 @@ async fn a_zero_more_page_cap_serves_the_asked_turns() {
     )
     .expect("the fleet builds");
     let (url, state) = serve_fleet(&fleet, Heartbeat::default()).await;
-    let rows: Vec<String> = (0..8).map(|turn| a_turns_rows_padded(turn, 4_000)).collect();
+    // **Over the default budget on purpose**: 8 x 250 KB is 2 MB, so only a
+    // genuinely unbounded budget serves all eight - a cap near the default
+    // would serve two and this test could not tell the opt-out from the cap.
+    let rows: Vec<String> = (0..8).map(|turn| a_turns_rows_padded(turn, 250_000)).collect();
     let borrowed: Vec<&str> = rows.iter().map(String::as_str).collect();
     fleet.seed_transcript("TestOrg", "proj", "lead", &borrowed).expect("the transcript seeds");
     fleet
