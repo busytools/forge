@@ -149,6 +149,7 @@ still aborts; no catch at either layer can reach it.
 | A command in flight | `Running <name>` for the slash command the turn is still working on, the sweep |
 | Waking | `Waking up agent...` while the lead's seat comes up, the sweep |
 | Not running | `not running` and the seat's own reason: a worker's seat has no spawn coming, and says so |
+| Reading | `Reading the conversation...` above the field while the seat's first page is still out, with the sweep; the field stays live |
 | A take that does not come up | the body stays, with the line above it: the microphone did not come up, or the device layer's own named failure |
 | Failed | `Input disabled due to error` and what to do: quit and start forge again |
 
@@ -157,12 +158,14 @@ order the states are read in is the one a reader has to be told: a failing
 seat first, then a seat nothing has started, then the more specific truth
 about a turn the reader caused.
 
-**A conversation still being read is not one of them.** The seat is up and
-takes a prompt, so the body keeps its field while the column says
-`Reading the conversation...` - and the words a send puts there are drawn
-under that line as the reader's own row, not lost until the page lands.
+**The read wait is one of them.** A seat whose first page is still out says
+`Reading the conversation...` on the band above the field, with the sweep -
+the band is the single place every narrative state speaks. It is the one
+narrative line that does not take the field with it: the seat is up and takes
+a prompt while the page is out, and a send made before it landed is drawn as
+the reader's own row in the column above, so its words are never lost.
 
-**Every narrative hold is one draw.** Waking, a command in flight, a
+**Every narrative hold is one draw.** Waking, reading, a command in flight, a
 compaction and a handoff all replace the body with one line and the same sweep
 moving through its words - only the text changes - so a hold reads the same
 wherever it comes from. The two states that are not progress carry no motion:

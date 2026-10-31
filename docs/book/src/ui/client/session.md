@@ -404,15 +404,13 @@ where it has moved on) beside the whole thread, its turns in order.
   successful probe - or `-` where there is none - until the account answers
   again.
 
-**The column says when it is still reading.** A seat whose first page is
-still out draws `Reading the conversation...` in the column itself, with the
-band's sweep: leaving the words to the band alone left the column reading as a
-dead screen whenever the band's line was not there yet. Every other
-narrative hold - a seat coming up, a command in flight, a compaction, a
-handoff - stays in the composer's band, described on the composer's own page.
-The one line the column keeps besides the wait is `not running`: a worker's
-seat with no spawn coming is a stop, not a wait, and the band says the same
-thing.
+**The band is where every narrative state speaks.** A seat coming up, the
+first page still out, a command in flight, a compaction, a handoff and a
+worker's `not running` all draw one line in the composer's band, with the same
+sweep and only the text changing; the column draws none of them, and the
+composer's own page describes that draw. The column keeps one thing for the
+read wait: a send made before the page arrived is drawn there as the reader's
+own row, so words already on their way are never invisible.
 
 ## The two widths
 

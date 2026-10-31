@@ -143,6 +143,15 @@ export interface ComposerProps {
    * than both.
    */
   dictation: boolean;
+  /**
+   * Whether this seat's first conversation page is still out.
+   *
+   * **The band is where every narrative state speaks**, so the read wait is a
+   * line there rather than one on the column's own ground: the page hands it
+   * down from the conversation the column is folding, and the composer draws
+   * it as the one hold the body slot can take at a time.
+   */
+  reading: boolean;
 }
 
 /**
@@ -242,8 +251,9 @@ const STOPPED: Pick<Blocker, 'bad' | 'shimmer'> = { bad: false, shimmer: false }
  * waiting for.
  *
  * **A conversation whose first page is still out does not block the box.** The
- * seat is up and takes a prompt; the column says it is reading, and the words
- * a send puts there are drawn as the reader's echo under that line.
+ * seat is up and takes a prompt, so the read wait is drawn as a line on the
+ * band above the field rather than in place of it; the words a send puts there
+ * are drawn as the reader's echo in the column.
  */
 export function blocked(
   seat: SeatRead,

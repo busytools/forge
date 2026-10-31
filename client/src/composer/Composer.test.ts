@@ -4201,6 +4201,31 @@ describe('the one body slot', () => {
     ).toBeNull();
   });
 
+  it('says the read wait on the band above the field', () => {
+    // **One place for every narrative state.** The read wait was the column's
+    // own line; it is the band's now, above the field rather than in its
+    // place - the seat is up and takes a prompt while the page is out.
+    open({ reading: true });
+
+    expect(
+      document.querySelector('.surf .slot > .notice')?.textContent,
+      'the band does not say it is reading',
+    ).toContain('Reading the conversation');
+    expect(document.querySelector('.comp .line'), 'the read wait took the field').not.toBeNull();
+  });
+
+  it('keeps a parked ask ahead of the read wait', () => {
+    // The dock is the body when an ask waits: the read line belongs to the
+    // field's body and would be a second thing in the slot.
+    open({ reading: true, record: record({ pending_asks: [questionAsk()] }) });
+
+    expect(document.querySelector('.slot .dock'), 'the wait covered the ask').not.toBeNull();
+    expect(
+      document.querySelector('.slot > .notice'),
+      'the read wait drew beside a parked ask',
+    ).toBeNull();
+  });
+
   it("opens the autocomplete as the card's own popover, not a lane of the body", () => {
     // The list took the band from 121px to 557px while it sat in the box's
     // flow. It is a child of the card now, placed by a rule of its own: a

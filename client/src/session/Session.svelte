@@ -18,6 +18,7 @@
   import { closingSeat } from './close';
   import { chosenAfterPop, railEntry, railOnTop, type RailSide } from './rail-history';
   import Queue from '../chat/Queue.svelte';
+  import { conversationsFor } from '../chat/conversations';
   import { emptyComposer } from '../composer/view';
   import { rememberedRailMode, rememberRailMode, type RailMode } from './rail-mode';
   import { connectors } from '../chat/connectors.svelte';
@@ -211,6 +212,17 @@
     review.sync(reviewRows(record), reviewSets(record, now));
   });
   const seat = $derived(seatState(wire, slot));
+  /**
+   * Whether the conversation column is still waiting for its first page.
+   *
+   * Read from the conversation the COLUMN folds rather than from the page's
+   * own read: the column owns the turns and their `loaded` flag, and the band's
+   * line has to agree with what the column is showing. An entry not yet in the
+   * map is a page that has not come back.
+   */
+  const reading = $derived(
+    conversationsFor(connection).kept.get(subjectKey({ session: slot }))?.loaded !== true,
+  );
   /** Whether this seat's name needs its org on the header line (#1707). */
   const collides = $derived(orgNeeded(wire, slot));
   const facts = $derived(record === null ? null : headerFacts(record.header));
@@ -547,7 +559,6 @@
   const conversationProps = $derived<ConversationProps>({
     waking: seat.waking,
     spawning: seat.lifecycle === 'Spawning',
-    reason: seat.reason,
     slot,
     connection,
     queue: seatQueue,
@@ -821,7 +832,13 @@
        made in the gap goes to the right place. -->
   {#if composer !== null}
     <div class="composer">
-      {@render composer({ record: record ?? emptyComposer(slot), slot, seat, connection })}
+      {@render composer({
+        record: record ?? emptyComposer(slot),
+        slot,
+        seat,
+        connection,
+        reading,
+      })}
     </div>
   {/if}
 </div>

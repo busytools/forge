@@ -112,6 +112,7 @@
       seat: over.seat ?? seat(),
       connection: idle,
       dictation: over.dictation ?? false,
+      reading: over.reading ?? false,
     };
   }
 
@@ -448,6 +449,10 @@
     {
       label: 'blocking · connecting',
       props: { seat: seat({ lifecycle: 'Spawning' }) },
+    },
+    {
+      label: 'blocking · reading the conversation',
+      props: { reading: true },
     },
     {
       label: 'blocking · a slash command in flight (typed, then sent)',

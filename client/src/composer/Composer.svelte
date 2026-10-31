@@ -58,7 +58,7 @@
   /** How long a landed take's border holds its green beat, which the book states. */
   const BEAT_MS = 450;
 
-  let { record, slot, connection, seat, dictation }: ComposerProps = $props();
+  let { record, slot, connection, seat, dictation, reading }: ComposerProps = $props();
 
   /**
    * Every box this composer has opened, held for as long as it lives: leaving a
@@ -1576,6 +1576,13 @@
        detail - a finger never sees them - which is the width the band could not
        spare for a second row. -->
   {#snippet fieldBody()}
+    <!-- **The read wait is the band's, above the field.** Every narrative
+         state speaks here; this one does not take the field with it, because
+         the seat is up and takes a prompt - a send made before the page lands
+         draws as the reader's own row in the column. -->
+    {#if reading && composer.take === null}
+      <div class="notice q"><span class="shimmer">Reading the conversation...</span></div>
+    {/if}
     {#if line !== null && composer.take === null}
       <div class="notice {line.tone}">{line.text}</div>
     {/if}
