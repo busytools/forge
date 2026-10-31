@@ -838,8 +838,9 @@ pub enum WorktreeEnsure {
     /// attached to it. The branch predates the call and may hold the
     /// worker's only copy of its commits.
     AttachedExistingBranch,
-    /// `path` was created and `worktree-<label>` was minted at the
-    /// repo's current HEAD.
+    /// `path` was created and `worktree-<label>` was minted at claude's
+    /// fresh base: `origin/<default-branch>`, or the local HEAD when the
+    /// repo names no usable origin base.
     CreatedWithNewBranch,
 }
 
@@ -848,12 +849,13 @@ pub enum WorktreeEnsure {
 /// transcript lives under the worktree's storage key, so `claude
 /// --resume` cannot find it from any other directory. Anchored on the
 /// branch: attach the surviving `worktree-<label>` when despawn kept
-/// it, otherwise recreate the branch at the repo's current HEAD. Under
-/// claude's default `worktree.baseRef` of `fresh` that is not the base
-/// a fresh `--worktree <label>` would use, which cuts from
-/// `origin/<default-branch>`; local HEAD is that base only with
-/// `baseRef` set to `head`, or with no local `origin/<default>` ref and
-/// a fetch that fails.
+/// it, otherwise recreate the branch from `origin/<default-branch>` - the
+/// base claude's own `--worktree <label>` uses under its default
+/// `worktree.baseRef` of `fresh`.
+///
+/// **`worktree.baseRef = "head"` is not honoured.** forge always cuts from
+/// the origin base and falls back to the local HEAD only when the repo names
+/// no `origin/HEAD`, or names one that no longer resolves.
 ///
 /// A `path` that exists is judged by its REGISTRATION, not its presence:
 /// a worktree git still lists is reused, while a leftover directory git
@@ -1061,9 +1063,9 @@ fn listed_worktrees(listing: &str) -> Vec<ListedWorktree> {
 /// (and claude locks every worktree it creates), while a git older than
 /// 2.36 carries none for anything - so the line cannot tell a registration
 /// whose gitdir is gone from one whose gitdir is there, which is the half
-/// the link answers. It does not carry the whole question: a link whose
-/// gitdir EXISTS but is not a usable worktree gitdir still reads as
-/// reusable here, and git only refuses that one when the add is reached.
+/// the link answers. [`worktree_gitdir_resolves`] then asks whether that
+/// gitdir is one git can actually reuse, so a present-but-unusable
+/// registration is refused here rather than left for the add.
 fn obstacle_from_listing(
     entries: &[ListedWorktree],
     repo: &Path,
@@ -3625,6 +3627,29 @@ mod tests {
             git_stdout(dir.path(), &["rev-parse", "worktree-lbl"]),
             origin,
             "the new branch starts at origin/HEAD's commit, the base claude's own path uses",
+        );
+    }
+
+    /// An `origin/HEAD` naming a ref the remote no longer carries is not a
+    /// base git can resolve: the recreate falls back to the local HEAD
+    /// rather than refusing the whole resume.
+    #[test]
+    fn ensure_worker_worktree_falls_back_when_origin_head_dangles() {
+        let dir = init_repo_with_commit();
+        let local = git_stdout(dir.path(), &["rev-parse", "HEAD"]);
+        run_git(
+            dir.path(),
+            &["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/gone"],
+        );
+        let wt = dir.path().join(".claude").join("worktrees").join("lbl");
+
+        let outcome = ensure_worker_worktree(dir.path(), "lbl", &wt).expect("recreate succeeds");
+
+        assert_eq!(outcome, WorktreeEnsure::CreatedWithNewBranch);
+        assert_eq!(
+            git_stdout(dir.path(), &["rev-parse", "worktree-lbl"]),
+            local,
+            "the local HEAD is the fallback when the origin base does not resolve",
         );
     }
 

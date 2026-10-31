@@ -444,8 +444,13 @@ impl ViewSurface {
             return ConversationHistory::default();
         };
         let read = forge_workspace::session_history(self.workspace.config_dir(), &session_id, &cwd);
+        let mut messages = crate::transcript::notices_as_blocks(read.messages);
+        // **Sub-agent frames are card material, not chat rows.** The cards
+        // come from the workspace's fold; a chat read that carried these
+        // would spend its frame budget on rows no page draws (#1763).
+        messages.retain(|message| !forge_primitives::messages::ran_under_a_dispatch(message));
         ConversationHistory {
-            messages: crate::transcript::notices_as_blocks(read.messages),
+            messages,
             compaction_count: read.compaction_count,
             session_id: Some(session_id),
         }
@@ -671,6 +676,50 @@ mod tests {
         let read = ViewSurface::new(Arc::clone(&workspace)).conversation(&lead, Path::new(""));
 
         assert_eq!(read.messages.len(), 2, "the record places the read the caller could not");
+    }
+
+    /// **A sub-agent's frames are card material, not chat rows.** The resume
+    /// read folds a sidecar in under its dispatch for the card fold, and
+    /// this read serves the chat: the parented frames are trimmed here so
+    /// they cannot spend the conversation's frame budget on rows no page
+    /// draws (#1763).
+    #[test]
+    fn conversation_omits_subagent_frames() {
+        let (workspace, _dir) = crate::surface::testing::workspace();
+        let lead = SessionSlot::lead("TestOrg", "forge");
+        workspace.seed_test_running_session_id(&lead, SESSION_A);
+        let projects = workspace.config_dir().join("projects").join(
+            forge_workspace::userdata::catalog::scan::project_key_for_directory(Some("/tmp")),
+        );
+        std::fs::create_dir_all(&projects).expect("projects dir");
+        std::fs::write(
+            projects.join(format!("{SESSION_A}.jsonl")),
+            "{\"type\":\"assistant\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-sonnet-5\",\"content\":[{\"type\":\"tool_use\",\"id\":\"toolu_a\",\"name\":\"Agent\",\"input\":{\"prompt\":\"x\"}}]},\"uuid\":\"a1\"}\n\
+             {\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_a\",\"content\":\"done\"}]},\"uuid\":\"u1\"}\n",
+        )
+        .expect("write");
+        let sidecars = projects.join(SESSION_A).join("subagents");
+        std::fs::create_dir_all(&sidecars).expect("subagents dir");
+        std::fs::write(
+            sidecars.join("agent-abc.meta.json"),
+            "{\"agentType\":\"Explore\",\"toolUseId\":\"toolu_a\"}",
+        )
+        .expect("meta");
+        std::fs::write(
+            sidecars.join("agent-abc.jsonl"),
+            "{\"type\":\"assistant\",\"message\":{\"id\":\"msg_2\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-sonnet-5\",\"content\":[{\"type\":\"text\",\"text\":\"child\"}]},\"uuid\":\"c1\"}\n",
+        )
+        .expect("sidecar");
+
+        let read = ViewSurface::new(Arc::clone(&workspace)).conversation(&lead, Path::new(""));
+
+        assert_eq!(read.messages.len(), 2, "the transcript's own rows are the chat");
+        assert!(
+            read.messages
+                .iter()
+                .all(|message| !forge_primitives::messages::ran_under_a_dispatch(message)),
+            "no parented frame reaches the chat",
+        );
     }
 
     /// A slot whose cwd no record places reads as empty, and not as whatever

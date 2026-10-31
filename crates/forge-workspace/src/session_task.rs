@@ -325,7 +325,13 @@ impl SessionTask {
                 history_updates,
                 compaction_count,
             } => {
-                let read = history_updates.unwrap_or_default();
+                let mut read = history_updates.unwrap_or_default();
+                // **Sub-agent frames are card material, not chat rows.** The
+                // card fold takes them from this same read (`hold_view_facts`
+                // runs before this arm); the chat window is cut over the
+                // rest, so they cannot spend its frame budget on rows only
+                // the SUBAGENTS surface draws (#1763).
+                read.retain(|message| !forge_primitives::messages::ran_under_a_dispatch(message));
                 // **The read becomes a window HERE, and the update carries
                 // it.** A resume hands over the whole transcript, and every
                 // consumer of it - the transport's copy seeded from the
@@ -9478,6 +9484,72 @@ provider = "anthropic"
             }
             assert_eq!(seen, Some(7), "{arm} must carry the count through unchanged");
         }
+    }
+
+    /// A resumed conversation's sub-agent frames feed the card fold, not the
+    /// chat: they are trimmed from the Connected history so they cannot spend
+    /// its frame budget on rows only the SUBAGENTS surface draws (#1763).
+    #[tokio::test]
+    async fn subagent_frames_stay_out_of_the_connected_history() {
+        let (workspace, mut update_rx) = crate::Workspace::testing_stub();
+        let session_key = SessionSlot::from_str_for_test("sidecar-chat-uuid");
+        let domain =
+            Arc::new(parking_lot::Mutex::new(DomainSession::new(session_key.clone(), None)));
+        let (handle, _agent_cmd_rx) = Agent::testing_stub();
+        let (_cmd_tx, command_rx) =
+            tokio::sync::mpsc::unbounded_channel::<crate::protocol::Command>();
+        let mut task = SessionTask {
+            key: session_key.clone(),
+            handle: Arc::new(handle),
+            command_rx,
+            domain: Arc::clone(&domain),
+            update_tx: workspace.update_sender(),
+            connected_once: false,
+            workspace: Arc::downgrade(&workspace),
+            compaction_count: 0,
+            successor: None,
+            teardown_done: None,
+        };
+        let dispatch = serde_json::from_value(serde_json::json!({
+            "type": "assistant",
+            "message": {"id": "msg_1", "type": "message", "role": "assistant",
+                "model": "claude-sonnet-5", "content": [
+                {"type": "tool_use", "id": "toolu_a", "name": "Agent",
+                 "input": {"prompt": "explore"}}
+            ]},
+            "session_id": "sidecar-chat",
+            "uuid": "a1",
+        }))
+        .expect("the dispatch decodes");
+        let child = serde_json::from_value(serde_json::json!({
+            "type": "assistant",
+            "message": {"id": "msg_2", "type": "message", "role": "assistant",
+                "model": "claude-sonnet-5", "content": [
+                {"type": "tool_use", "id": "toolu_child", "name": "Bash",
+                 "input": {"command": "ls"}}
+            ]},
+            "parent_tool_use_id": "toolu_a",
+            "session_id": "sidecar-chat",
+            "uuid": "c1",
+        }))
+        .expect("the sub-agent frame decodes");
+        let mut event = connected_event("sidecar-chat", "/tmp/sidecar");
+        if let AgentEvent::Connected { history_updates, .. } = &mut event {
+            *history_updates = Some(vec![dispatch, child]);
+        }
+
+        task.translate_event(event);
+
+        let mut history_len = None;
+        while let Ok(frame) = update_rx.try_recv() {
+            if let SessionUpdate::Connected { history, .. } = &*frame.update {
+                history_len = Some(history.len());
+            }
+        }
+        assert_eq!(history_len, Some(1), "the sub-agent frame is not a chat row");
+        let cards = domain.lock().cards_snapshot.clone();
+        assert_eq!(cards.len(), 1, "the card fold still opened the instance");
+        assert_eq!(cards[0].calls, 1, "and its call is the card's");
     }
 
     /// A compaction boundary moves the task's count, which is the handoff
