@@ -30,7 +30,7 @@ use super::frame::FrameTransport as _;
 use super::origin as origin_gate;
 use super::wire::{
     FileContentWire, OpenTimings, cap_message_record, cap_tool_records, conversation_for,
-    encode_subject, encode_subject_timed, floor_cursor, page,
+    encode_subject, encode_subject_timed, floor_cursor, page_within,
 };
 use super::{PROTOCOL_VERSION, TransportState, WRITE_BOUND, WriteStalled, write_within};
 use crate::live::Live;
@@ -2144,20 +2144,27 @@ where
             let opening = before.clone();
             let floor = held.lock().dropped();
             let capped = seat.clone();
+            let budget = state.surface.more_page_cap_bytes();
             let folded = tokio::task::spawn_blocking(move || {
                 let mut page = held.read(|held| {
-                    page(
+                    page_within(
                         held.messages(),
                         held.rendered(),
                         held.dropped(),
                         opening.as_deref(),
                         turns,
+                        budget,
+                        Some((cap, &capped)),
                     )
                 });
                 // The bound runs in the same blocking task as the fold: a page
                 // is what a client is served, and the cap is part of building
-                // it rather than a pass over the socket's thread (#2374).
-                cap_tool_records(&mut page.turns, cap, &capped);
+                // it rather than a pass over the socket's thread (#2374). A
+                // page cut to a byte budget was capped as it was measured, so
+                // only an uncut page still needs the pass - the seed's rule.
+                if budget == usize::MAX {
+                    cap_tool_records(&mut page.turns, cap, &capped);
+                }
                 page
             })
             .await;
@@ -3554,10 +3561,15 @@ async fn rows_below_floor(
     // travels with the read.
     let live = state.conversations.live_of(seat);
     let cap = state.surface.tool_record_cap_bytes();
+    let budget = state.surface.more_page_cap_bytes();
     let capped = seat.clone();
     let folded = tokio::task::spawn_blocking(move || {
-        let mut page = page_of_span(&span, turns, live);
-        cap_tool_records(&mut page.turns, cap, &capped);
+        let mut page = page_of_span(&span, turns, live, budget, Some((cap, &capped)));
+        // A page cut to a byte budget was capped as it was measured; only an
+        // uncut page still needs the pass, as the held window's does.
+        if budget == usize::MAX {
+            cap_tool_records(&mut page.turns, cap, &capped);
+        }
         page
     })
     .await;
@@ -3586,9 +3598,11 @@ fn page_of_span(
     span: &forge_primitives::TranscriptSpan,
     turns: u32,
     live: bool,
+    budget: usize,
+    cap: Option<(usize, &SessionSlot)>,
 ) -> crate::transport::wire::Page {
     let rendered = crate::transcript::render(&span.messages, live);
-    let mut page = page(&span.messages, &rendered, 0, None, turns);
+    let mut page = page_within(&span.messages, &rendered, 0, None, turns, budget, cap);
     // The page's oldest row, out of the frames it served: the first one whose
     // id names a row of the span. A frame with no id - a forged ending, an
     // attachment's hoist - is stepped over, which errs toward serving a row
@@ -5227,7 +5241,7 @@ mod tests {
             offsets: (from as u64..160).map(|at| at * 100).collect(),
             exhausted: false,
         };
-        let page = page_of_span(&span, 4, false);
+        let page = page_of_span(&span, 4, false, usize::MAX, None);
 
         assert_eq!(
             turn_texts(&page),
@@ -5249,7 +5263,7 @@ mod tests {
             offsets: (100_u64..106).map(|at| at * 100).collect(),
             exhausted: false,
         };
-        let short_page = page_of_span(&short, 8, false);
+        let short_page = page_of_span(&short, 8, false, usize::MAX, None);
         assert_eq!(short_page.turns.len(), 6, "precondition: the span holds six turns");
         assert_eq!(
             short_page.cursor.as_deref(),
@@ -5258,8 +5272,39 @@ mod tests {
         );
         let ended = forge_primitives::TranscriptSpan { exhausted: true, ..short };
         assert!(
-            page_of_span(&ended, 8, false).cursor.is_none(),
+            page_of_span(&ended, 8, false, usize::MAX, None).cursor.is_none(),
             "and only a page reaching the transcript's first row ends the walk",
+        );
+    }
+
+    /// **A page below the floor is held to the `more` byte budget too.** The
+    /// transcript path answers through the same cut the held window does, so
+    /// one large turn below the floor cannot cross whole either.
+    #[test]
+    fn a_transcript_page_is_held_to_the_byte_budget() {
+        let transcript = transcript_frames(8);
+        let span = forge_primitives::TranscriptSpan {
+            messages: transcript,
+            offsets: (0u64..8).map(|at| at * 100).collect(),
+            exhausted: true,
+        };
+        let unbounded = page_of_span(&span, 8, false, usize::MAX, None);
+        assert_eq!(unbounded.turns.len(), 8, "precondition: the span holds eight turns");
+
+        let bounded = page_of_span(&span, 8, false, 1, None);
+        assert!(
+            !bounded.turns.is_empty() && bounded.turns.len() < 8,
+            "a 1-byte budget keeps some of eight turns and not all: {}",
+            bounded.turns.len(),
+        );
+        assert_eq!(
+            turn_texts(&bounded).last().map(String::as_str),
+            Some("turn 7"),
+            "the newest turn is served even when it alone is over the budget",
+        );
+        assert!(
+            bounded.cursor.is_some(),
+            "and the row it stopped at is what the walk above continues from",
         );
     }
 

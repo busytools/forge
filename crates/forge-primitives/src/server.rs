@@ -42,6 +42,16 @@ pub struct ServerConfig {
     /// `0` serves the page the turn count asks for, for a reader who would
     /// rather have the whole window in one frame.
     pub first_frame_cap_kb: u64,
+    /// How many bytes of conversation a `more` page carries, in KB.
+    ///
+    /// **A page past the first frame is unbounded by its turn count alone**:
+    /// the page contract is whole turns, so one large turn crossed whole and
+    /// a `more` answer could be tens of megabytes. The newest whole turns are
+    /// kept while they fit, the newest rides even when it alone is over, and
+    /// the cursor names the history above the page as it always did - nothing
+    /// is dropped and the walk above it still reaches every turn.
+    /// `0` serves the page the turn count asks for.
+    pub more_page_cap_kb: u64,
     /// Extra browser origins allowed to open the socket, beside the shell's
     /// own and the server's own. A web client is served from wherever it is
     /// hosted, so only the operator knows that origin; an empty list allows
@@ -61,6 +71,10 @@ pub const DEFAULT_TOOL_RECORD_CAP_KB: u64 = 64;
 /// first_frame_cap_kb` is absent. See `ServerConfig::first_frame_cap_kb`.
 pub const DEFAULT_FIRST_FRAME_CAP_KB: u64 = 512;
 
+/// A `more` page's conversation budget when `[server] more_page_cap_kb` is
+/// absent. See `ServerConfig::more_page_cap_kb`.
+pub const DEFAULT_MORE_PAGE_CAP_KB: u64 = 512;
+
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
@@ -69,6 +83,7 @@ impl Default for ServerConfig {
             bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
             tool_record_cap_kb: DEFAULT_TOOL_RECORD_CAP_KB,
             first_frame_cap_kb: DEFAULT_FIRST_FRAME_CAP_KB,
+            more_page_cap_kb: DEFAULT_MORE_PAGE_CAP_KB,
             allowed_origins: Vec::new(),
         }
     }
@@ -89,6 +104,18 @@ mod tests {
         let parsed: ServerConfig =
             serde_json::from_str(r#"{"tool_record_cap_kb": 0}"#).expect("the key parses");
         assert_eq!(parsed.tool_record_cap_kb, 0);
+    }
+
+    /// The shipped default, and the opt-out: absent means a 512 KB `more`
+    /// page, and `0` means the turn count alone decides it. Pinned as a
+    /// literal for the same reason as the other caps'.
+    #[test]
+    fn the_more_page_cap_defaults_to_512_kb_and_zero_means_the_count() {
+        assert_eq!(ServerConfig::default().more_page_cap_kb, 512, "the documented default");
+        assert_eq!(DEFAULT_MORE_PAGE_CAP_KB, 512, "and the constant the default is built from");
+        let parsed: ServerConfig =
+            serde_json::from_str(r#"{"more_page_cap_kb": 0}"#).expect("the key parses");
+        assert_eq!(parsed.more_page_cap_kb, 0);
     }
 
     /// The shipped default, and the opt-out: absent means a 512 KB first

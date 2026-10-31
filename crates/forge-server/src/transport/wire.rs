@@ -1470,10 +1470,13 @@ pub fn page(
 ///
 /// **A page of twenty turns is unbounded in bytes**, and the first page is
 /// what a seat switch waits on: a few large turns made one 5 MB, which is
-/// seconds over a network and milliseconds locally. So the newest page is cut
-/// where the budget runs out, at a turn boundary - a client draws turns, and
-/// a turn cut in half is one it cannot place. The handle it carries is the
-/// first kept turn's, so `more` walks the history above it as it always did.
+/// seconds over a network and milliseconds locally. A `more` answer is held
+/// the same way (`[server] more_page_cap_kb`): its page contract is whole
+/// turns too, so one large turn crossed whole and a single page could be tens
+/// of megabytes. So the newest page is cut where the budget runs out, at a
+/// turn boundary - a client draws turns, and a turn cut in half is one it
+/// cannot place. The handle it carries is the first kept turn's, so `more`
+/// walks the history above it as it always did.
 ///
 /// **The bytes counted are the bytes SERVED**: each candidate is bounded by
 /// `cap` first, exactly as the page would have been after the cut. Measuring
@@ -1556,6 +1559,22 @@ pub fn page_within(
             total = total.saturating_add(bytes);
             kept.push(turn);
             first -= 1;
+        }
+        // **The cut is named where it happens.** A page that stopped at its
+        // budget is not a page that ran out of history: its cursor is what
+        // says the turns above it are still askable, and a reader of the log
+        // should not have to tell a short page from a finished walk.
+        if first > window_first {
+            if let Some((_, seat)) = cap {
+                tracing::debug!(
+                    event_name = "page_cut_by_budget",
+                    slot = %seat.display(),
+                    budget,
+                    turns_kept = kept.len(),
+                    turns_available = ends_at - window_first,
+                    "the page stopped at its byte budget; its cursor names the turns above it",
+                );
+            }
         }
         kept.reverse();
         (first, kept)

@@ -141,6 +141,13 @@ impl ViewSurface {
         cap_bytes(self.workspace.server_config().first_frame_cap_kb)
     }
 
+    /// The conversation bytes a `more` page may carry:
+    /// `[server] more_page_cap_kb`, with `0` meaning the turn count alone
+    /// decides the page.
+    pub fn more_page_cap_bytes(&self) -> usize {
+        cap_bytes(self.workspace.server_config().more_page_cap_kb)
+    }
+
     /// Dispatch one command to the core, which is how a view acts rather
     /// than only reads.
     ///

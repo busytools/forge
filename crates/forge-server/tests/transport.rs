@@ -4223,6 +4223,108 @@ async fn a_zero_first_frame_cap_serves_the_twenty_turn_page() {
     assert_eq!(first.len(), 20, "a 0 cap serves every turn the count asks for: {first:?}");
 }
 
+/// **A `more` page is held to a byte budget too.** The first frame has had
+/// one since #2493; a `more` answer was still cut by its turn count alone, so
+/// one large turn crossed whole and a page could be tens of MB. The budget
+/// keeps whole turns while they fit, the newest rides even when it alone is
+/// over, and the cursor still names the history above the page.
+#[tokio::test]
+async fn a_more_page_is_held_to_the_more_page_budget() {
+    install_capture();
+    let dir = tempfile::tempdir().expect("tempdir");
+    // The shipped default is what a page inherits when the key is absent. The
+    // project is its own so the log assertion below never reads a case
+    // running beside it.
+    let fleet = Fleet::in_dir_with_server(dir.path(), &[("TestOrg", &["morecap"])], "")
+        .expect("the fleet builds");
+    let (url, state) = serve_fleet(&fleet, Heartbeat::default()).await;
+    let seat = SessionSlot::lead("TestOrg", "morecap");
+    let rows: Vec<String> = (0..8).map(|turn| a_turns_rows_padded(turn, 250_000)).collect();
+    let borrowed: Vec<&str> = rows.iter().map(String::as_str).collect();
+    fleet.seed_transcript("TestOrg", "morecap", "lead", &borrowed).expect("the transcript seeds");
+    fleet
+        .hold_conversation(&state, "TestOrg", "morecap", "lead")
+        .expect("the seat's conversation is held");
+
+    let mut socket = connect(&url).await;
+    send(&mut socket, ClientMessage::More { conversation: seat.clone(), before: None, turns: 8 })
+        .await;
+    let ServerMessage::Page { turns, cursor, .. } = next_server(&mut socket).await else {
+        panic!("a page is the answer to a request for more")
+    };
+    let kept = page_words(&turns);
+    assert!(
+        !kept.is_empty() && kept.len() < 8,
+        "a 512 KB budget keeps some of eight 250 KB turns and not all: {kept:?}",
+    );
+    assert_eq!(
+        kept.last().map(String::as_str),
+        Some("turn 7"),
+        "the newest turn is served even when the budget is under the page",
+    );
+    assert!(cursor.is_some(), "and the handle above the page is carried");
+
+    // The walk above the handed-back cursor reaches every turn the budget cut.
+    let mut reached = kept;
+    let mut asked = cursor;
+    let mut walks = 0;
+    while let Some(before) = asked.take() {
+        walks += 1;
+        assert!(walks < 10, "the walk terminates rather than cycling");
+        send(
+            &mut socket,
+            ClientMessage::More { conversation: seat.clone(), before: Some(before), turns: 8 },
+        )
+        .await;
+        let ServerMessage::Page { turns, cursor, .. } = next_server(&mut socket).await else {
+            panic!("the page above is answered too")
+        };
+        reached.extend(page_words(&turns));
+        asked = cursor;
+    }
+    reached.sort_by_key(|word| turn_number(word));
+    let mut every: Vec<String> = (0..8).map(|turn| format!("turn {turn}")).collect();
+    every.sort_by_key(|word| turn_number(word));
+    assert_eq!(reached, every, "nothing the budget cut is lost to the walk");
+
+    // **The cut names itself**, the way a capped record does: the seat, the
+    // budget and what it kept. A page that stopped short of the asked count
+    // with no line is a page a reader has to guess about.
+    let cut = captured()
+        .lines()
+        .filter(|line| line.contains("page_cut_by_budget") && line.contains("TestOrg/morecap/lead"))
+        .count();
+    assert!(cut >= 1, "the budget's cut is named on the log: {}", captured());
+}
+
+/// **`more_page_cap_kb = 0` serves the turns the client asked for.** The
+/// opt-out is the count's page rather than the one the budget's floor keeps.
+#[tokio::test]
+async fn a_zero_more_page_cap_serves_the_asked_turns() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir_with_server(
+        dir.path(),
+        &[("TestOrg", &["proj"])],
+        "[server]\nmore_page_cap_kb = 0\n",
+    )
+    .expect("the fleet builds");
+    let (url, state) = serve_fleet(&fleet, Heartbeat::default()).await;
+    let rows: Vec<String> = (0..8).map(|turn| a_turns_rows_padded(turn, 4_000)).collect();
+    let borrowed: Vec<&str> = rows.iter().map(String::as_str).collect();
+    fleet.seed_transcript("TestOrg", "proj", "lead", &borrowed).expect("the transcript seeds");
+    fleet
+        .hold_conversation(&state, "TestOrg", "proj", "lead")
+        .expect("the seat's conversation is held");
+
+    let mut socket = connect(&url).await;
+    send(&mut socket, ClientMessage::More { conversation: lead_seat(), before: None, turns: 8 })
+        .await;
+    let ServerMessage::Page { turns, .. } = next_server(&mut socket).await else {
+        panic!("a page is the answer to a request for more")
+    };
+    assert_eq!(page_words(&turns).len(), 8, "a 0 cap serves every turn the client asked for",);
+}
+
 /// `turn N` as `N`, so an order check compares the numbers rather than the
 /// words ("turn 10" sorts before "turn 9" as text).
 fn turn_number(word: &str) -> u32 {
