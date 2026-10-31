@@ -1844,11 +1844,13 @@ fn take_attach(state: &mut State) -> Option<Attach> {
 fn gesture_mark(event: &forge_primitives::browser::BrowserInputEvent) -> Option<&'static str> {
     use forge_primitives::browser::{BrowserInputEvent, MouseAction};
     match event {
-        BrowserInputEvent::Mouse { action: MouseAction::Move, .. } => None,
+        // A pointer move is a stream, and a key's release is part of its
+        // press: neither is a step of its own.
+        BrowserInputEvent::Mouse { action: MouseAction::Move, .. }
+        | BrowserInputEvent::Key { down: false, .. } => None,
         BrowserInputEvent::Mouse { action: MouseAction::Press, .. } => Some("mouse:press"),
         BrowserInputEvent::Mouse { action: MouseAction::Release, .. } => Some("mouse:release"),
         BrowserInputEvent::Wheel { .. } => Some("wheel"),
-        BrowserInputEvent::Key { down: false, .. } => None,
         BrowserInputEvent::Key { down: true, .. } => Some("key"),
         BrowserInputEvent::Text { .. } => Some("text"),
     }
