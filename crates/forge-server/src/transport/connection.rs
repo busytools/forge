@@ -274,20 +274,21 @@ enum ViewEvent {
     Audio(forge_primitives::browser::BrowserAudio),
 }
 
+/// **The drop notice says "four" in words**, and the backlog that decides it
+/// lives in forge-primitives so every platform compiles the coupling: a
+/// change there must change the words, and the mismatch is a compile error
+/// rather than a notice that lies.
+const _: () = assert!(
+    forge_primitives::browser::DOWNLOAD_BACKLOG == 4,
+    "the drop notice says 'four' finished downloads; change the words with the backlog"
+);
+
 /// The next thing this connection's viewer has for the loop.
 ///
 /// **A connection with no viewer parks here**, so its branch is inert
 /// rather than ending the loop - the same shape [`next_update`] uses. The
 /// watch holds one value per source, so a viewer that falls behind is
 /// served the newest frame rather than a queue.
-/// **The drop notice says "four" in words**, and the backlog that decides it
-/// lives in forge-browser: a change there must change the words, so the
-/// mismatch is a compile error rather than a notice that lies.
-const _: () = assert!(
-    forge_primitives::browser::DOWNLOAD_BACKLOG == 4,
-    "the drop notice says 'four' finished downloads; change the words with the backlog"
-);
-
 async fn next_view_event(viewing: &mut Option<Viewing>) -> ViewEvent {
     let Some(viewing) = viewing.as_mut() else { return std::future::pending().await };
     loop {
