@@ -41,13 +41,18 @@ setTimeout(() => { \
 }, 100);\
 </script>";
 
-/// A page that navigates away on a gesture, with a beforeunload prompt armed.
-const LEAVING: &str = "<title>leaving</title>\
+/// A page that navigates away from a real click, with a beforeunload prompt
+/// armed. **A person's own click is the only activation CEF counts on every
+/// machine**: a CDP `userGesture` did not raise the prompt on the CI runner.
+const LEAVING: &str = "<!doctype html><meta charset=utf-8>\
+<style>html,body{margin:0;padding:0}button{width:300px;height:120px;font-size:24px}</style>\
+<button id=leave>Leave</button>\
 <script>\
-function go() { \
+document.getElementById('leave').onclick = function() { \
   window.onbeforeunload = () => 'leave?'; \
   location.href = '/other'; \
-}\
+};\
+document.title = 'ready';\
 </script>";
 
 #[test]
@@ -115,13 +120,13 @@ fn a_before_unload_dialog_is_dismissed_at_its_deadline() {
     let Live { host, runtime, cdp, .. } = &mut live;
 
     runtime.block_on(async {
-        // **The gesture is the page's own**, so the navigation counts as
-        // user-initiated and the browser asks before leaving.
-        cdp.call("Runtime.evaluate", json!({ "expression": "go()", "userGesture": true }), None)
-            .await
-            .expect("the page takes the gesture");
+        wait_for_title(cdp, "ready", BOUND).await;
 
-        wait_for_dialog(host, "beforeunload", JsDialogState::Shown);
+        // **The gesture is the person's own**: a press and release on the
+        // host's input pipe. The first click after a host starts can be spent
+        // activating the app, so it is retried until the host reports the
+        // prompt.
+        click_until_dialog(host, "beforeunload", JsDialogState::Shown, BOUND);
         wait_for_dialog(host, "beforeunload", JsDialogState::Expired);
 
         // **The page stays and runs again**: a dismissal is "do not leave",
@@ -139,10 +144,35 @@ fn a_before_unload_dialog_is_dismissed_at_its_deadline() {
         .expect("the page reads its title");
         assert_eq!(
             still.pointer("/result/value").and_then(Value::as_str),
-            Some("leaving"),
+            Some("ready"),
             "a dismissed beforeunload leaves the page where it was",
         );
     });
+}
+
+/// Click the page's leave button until the host reports the dialog. **The
+/// first pointer events after a host starts are spent activating it**, so a
+/// single click is not the proof a person's gesture is.
+fn click_until_dialog(
+    host: &mut support::Host,
+    wanted: &str,
+    state: JsDialogState,
+    bound: Duration,
+) {
+    let deadline = Instant::now() + bound;
+    loop {
+        support::click(host, 60, 60);
+        std::thread::sleep(Duration::from_millis(250));
+        if saw_state(host, wanted, state) {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "no {wanted} dialog after clicking the page: {:?} (log: {})",
+            host.events(),
+            host.log_tail(),
+        );
+    }
 }
 
 /// One host, one served page and one DevTools connection, ended together.
@@ -175,6 +205,12 @@ impl Live {
         let (page_port, server) = serve(body);
         let host =
             support::Host::start_with_events(&exe, &profile, port, &ring, "800x600", &[], &log);
+        // **A host with no viewer is paused.** The service unpauses the ring
+        // when a viewer attaches; a click test does the same, so the page
+        // paints before the gesture.
+        let mapped = wait_for_ring(&ring, &host);
+        mapped.pause(false);
+        mapped.key();
         let page = support::wait_for_page(port, &log, BOUND);
         let runtime =
             tokio::runtime::Builder::new_current_thread().enable_all().build().expect("a runtime");
@@ -211,6 +247,24 @@ impl Live {
                 self.runtime.block_on(connect(self.port, &format!("/devtools/page/{page}")));
             self.cdp = cdp;
             assert!(attempt < 2, "the page never navigated: {result:?}");
+        }
+    }
+}
+
+/// The host's ring, once the host has mapped it.
+fn wait_for_ring(name: &str, host: &support::Host) -> forge_browser::osr::Ring {
+    let deadline = Instant::now() + BOUND;
+    loop {
+        match forge_browser::osr::Ring::open(name) {
+            Ok(ring) => return ring,
+            Err(why) => {
+                assert!(
+                    Instant::now() < deadline,
+                    "the host's ring never appeared: {why} (log: {})",
+                    host.log(),
+                );
+                std::thread::sleep(POLL);
+            }
         }
     }
 }
