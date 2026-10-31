@@ -1487,7 +1487,7 @@
     color: inherit;
   }
   .rv-scope-btn:hover {
-    border-color: var(--ctl);
+    border-color: var(--text);
   }
   .rv-scope-now {
     font-family: var(--mono);
@@ -1703,7 +1703,7 @@
   }
   .rv-mode {
     display: flex;
-    border: 1px solid var(--line);
+    border: 1px solid var(--ctl);
     border-radius: 99px;
     overflow: hidden;
   }

@@ -242,6 +242,13 @@ const LIFTED = (token: string): string => `color-mix(in srgb, var(${token}) 70%,
  */
 const DIMMED = (token: string): string => `color-mix(in srgb, var(${token}) 75%, var(--s2))`;
 
+/**
+ * The control mark lifted toward the prose tone. The tab bar's pick and
+ * buttons fill with `--s3`, where plain `--ctl` measures 2.77:1; lifted 90/10
+ * it measures 3.24 on that fill and 3.53 on `--s2`.
+ */
+const CTL_LIFTED = 'color-mix(in srgb, var(--ctl) 90%, var(--text))';
+
 const DRAWN: readonly Pair[] = [
   ['--text', '--bg', PROSE_FLOOR, PROSE_CEILING],
   ['--text', '--s1', TEXT],
@@ -263,6 +270,9 @@ const DRAWN: readonly Pair[] = [
   // on `--s1` and its `button` on `--s2`.
   ['--ctl', '--s1', MARK],
   ['--ctl', '--s2', MARK],
+  // The `--s3`-filled controls: the tab bar's pick and buttons draw a mark
+  // lifted a step, because plain `--ctl` on `--s3` measures 2.77.
+  [CTL_LIFTED, '--s3', MARK],
   ['--accent', '--bg', TEXT],
   ['--accent', '--s1', TEXT],
   ['--accent', '--s2', TEXT],
@@ -423,6 +433,7 @@ describe('the palette', () => {
     expect(sheet, 'and the dim composites are that sheet value').toContain(
       '.ansi-dim { opacity: .75; }',
     );
+    expect(sheet, "the s3 controls' lifted mark is the sheet's own").toContain(CTL_LIFTED);
     expect(sheet, "bare dim draws the body's own tone").toContain(
       '.bodytext { font-family: var(--mono); font-size: var(--fs-prose); color: var(--muted);',
     );

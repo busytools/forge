@@ -6,7 +6,9 @@
  * control at all: `--line` is the hairline (1.42:1 on the page), and WCAG
  * 1.4.11 asks 3:1 of a control's boundary. `--ctl` is the token for exactly
  * this job and already measures 3.50:1 on the page, 3.25:1 on `--s1` and
- * 3.02:1 on `--s2`; `contrast.test.ts` carries those pairs.
+ * 3.02:1 on `--s2`; `contrast.test.ts` carries those pairs, and the mark
+ * lifted 90/10 toward `--text` for the `--s3`-filled tab bar controls, where
+ * plain `--ctl` measures 2.77:1.
  *
  * **Why a rule-level pin as well as the table.** That file measures tokens
  * against each other, and cannot see WHICH token a rule names - the half that
@@ -17,8 +19,8 @@
  *
  * **What the pin reads.** A rule's boundary is its `border`, or - for a field
  * that draws its edge as an inset shadow - its `box-shadow`, which is the
- * shape `.b-in` and `.ext-add-in` use. A rule that names neither is reported
- * rather than passed.
+ * shape `.b-in` and `.ext-add-in` use. The whole value is compared, so a token
+ * swapped for another cannot pass by naming something the table pairs.
  */
 
 import { readFileSync } from 'node:fs';
@@ -57,14 +59,15 @@ function ruleIn(source: string, selector: string): string | null {
   return null;
 }
 
-/** The colour token the rule draws its boundary with. */
-function boundaryToken(selector: string, source: string): string {
+/** The value the rule draws its boundary with: its border, else its inset shadow. */
+function boundaryOf(selector: string, source: string): string {
   const body = ruleIn(source, selector);
   expect(body, `${selector} is drawn in the sheet`).not.toBeNull();
-  const border = /border(?:-color)?:[^;]*var\((--[\w-]+)\)/.exec(body ?? '');
-  if (border) return border[1] ?? 'a border naming no token';
-  const shadow = /box-shadow:[^;]*var\((--[\w-]+)\)/.exec(body ?? '');
-  return shadow?.[1] ?? 'a boundary naming no token';
+  const border = /border(?:-color)?:\s*([^;]+);/.exec(body ?? '');
+  const borderValue = border?.[1]?.trim() ?? '';
+  if (borderValue.includes('var(')) return borderValue;
+  const shadow = /box-shadow:\s*([^;]+);/.exec(body ?? '');
+  return shadow?.[1]?.trim() ?? 'a boundary naming no token';
 }
 
 const SHEET = readFileSync(new URL('./web.css', import.meta.url), 'utf8');
@@ -75,32 +78,100 @@ const REVIEW =
     readFileSync(new URL('../review/Review.svelte', import.meta.url), 'utf8'),
   )?.[1] ?? '';
 
+const CONTROL = '1px solid var(--ctl)';
+const INSET = 'inset 0 0 0 1px var(--ctl)';
+/** The `--s3`-filled controls: `--ctl` alone measures 2.77 there. */
+const LIFTED = '1px solid color-mix(in srgb, var(--ctl) 90%, var(--text))';
+
 describe('the controls that draw a boundary nothing else carries', () => {
   /**
    * One assertion per rule, because one can be restyled without the others:
    * the fields, the drawer's buttons, the dock's buttons and glyph buttons,
-   * the copy button and its handoff twin, and the extensions page's add
-   * field.
+   * the copy button and its handoff twin, the two page searches, the tab
+   * bar's pick and buttons, a fleet link, a retry, a take, and the header's
+   * way back.
    */
   it('draws the sheet controls in the control mark rather than the hairline', () => {
-    expect(boundaryToken('.b-in', SHEET), 'the board field').toBe('--ctl');
-    expect(boundaryToken('.dr-ask input', SHEET), "the drawer's answer field").toBe('--ctl');
-    expect(boundaryToken('.dr-btn', SHEET), "the drawer's buttons").toBe('--ctl');
-    expect(boundaryToken('.dock .btn', SHEET), "the dock's permission buttons").toBe('--ctl');
-    expect(boundaryToken('.micb', SHEET), "the dock's mic").toBe('--ctl');
-    expect(boundaryToken('.cp', SHEET), 'the copy button').toBe('--ctl');
-    expect(boundaryToken('.handoff .sessions .cp', SHEET), "the handoff row's copy").toBe('--ctl');
-    expect(boundaryToken('.extensions-page .ext-add-in', SHEET), 'the extensions add field').toBe(
-      '--ctl',
+    expect(boundaryOf('.b-in', SHEET), 'the board field').toBe(INSET);
+    expect(boundaryOf('.dr-ask input', SHEET), "the drawer's answer field").toBe(CONTROL);
+    expect(boundaryOf('.dr-btn', SHEET), "the drawer's buttons").toBe(CONTROL);
+    expect(boundaryOf('.dock .btn', SHEET), "the dock's permission buttons").toBe(CONTROL);
+    expect(boundaryOf('.micb', SHEET), "the dock's mic").toBe(CONTROL);
+    expect(boundaryOf('.cp', SHEET), 'the copy button').toBe(CONTROL);
+    expect(boundaryOf('.handoff .sessions .cp', SHEET), "the handoff row's copy").toBe(CONTROL);
+    expect(boundaryOf('.extensions-page .ext-add-in', SHEET), 'the extensions add field').toBe(
+      INSET,
     );
+    expect(boundaryOf('.extensions-page .find', SHEET), "the extensions page's search").toBe(
+      CONTROL,
+    );
+    expect(boundaryOf('.models-page .find', SHEET), "the models page's search").toBe(CONTROL);
+    expect(boundaryOf('.tb-pick', SHEET), "the tab bar's pick").toBe(LIFTED);
+    expect(boundaryOf('.tb-btn', SHEET), "the tab bar's buttons").toBe(LIFTED);
+    expect(boundaryOf('.bz-list .bz-take', SHEET), "the browser's take button").toBe(CONTROL);
+    expect(boundaryOf('.mine .retry', SHEET), "the refused echo's retry").toBe(CONTROL);
+    expect(boundaryOf('.fleet-open', SHEET), "the fleet row's way to the board").toBe(CONTROL);
+    expect(boundaryOf('header.top.pagetop .back', SHEET), "the page header's way back").toBe(
+      CONTROL,
+    );
+    expect(boundaryOf('.tb-field', SHEET), "the takeover's field").toBe(CONTROL);
+    expect(boundaryOf('.pop .dev', SHEET), "the device popover's row").toBe(CONTROL);
+    expect(boundaryOf('.follow', SHEET), 'the follow button').toBe(CONTROL);
+    expect(boundaryOf('.needchip.calm', SHEET), "the session band's calm chip").toBe('var(--ctl)');
+    expect(boundaryOf('.rv-a', SHEET), "the review's action button").toBe(CONTROL);
+    expect(boundaryOf('.rv-txarea', SHEET), "the review's comment box").toBe(CONTROL);
+    expect(boundaryOf('.files-sheetbtn', SHEET), "the files rail's sheet button").toBe(CONTROL);
+    expect(boundaryOf('.extensions-page .btn.ghost', SHEET), 'the extensions ghost button').toBe(
+      INSET,
+    );
+    expect(
+      boundaryOf('.extensions-page .ext-scope', SHEET),
+      "the extensions page's scope row",
+    ).toBe(CONTROL);
+    expect(boundaryOf('.extensions-page .ext-dlg-field select', SHEET), 'the install select').toBe(
+      CONTROL,
+    );
+    expect(
+      boundaryOf('.models-page button.chip, .extensions-page button.chip', SHEET),
+      'a chip that is a button',
+    ).toBe('var(--ctl)');
+    expect(boundaryOf('.settings-page button.settings-mode', SHEET), 'the settings mode pill').toBe(
+      CONTROL,
+    );
+    expect(
+      boundaryOf('.settings-page .settings-add, .settings-page .settings-row-action', SHEET),
+      "the settings page's row actions",
+    ).toBe(CONTROL);
+    expect(
+      boundaryOf(
+        '.settings-page .settings-rows input, .settings-page .settings-rows select, .list-editor input',
+        SHEET,
+      ),
+      'the settings fields',
+    ).toBe(CONTROL);
+    expect(boundaryOf('.settings-btn.ghost', SHEET), 'the settings ghost button').toBe(INSET);
+    expect(boundaryOf('.toggle .track', SHEET), 'the toggle track').toBe(CONTROL);
+    expect(boundaryOf('.list-x', SHEET), 'the list remove button').toBe(CONTROL);
+    expect(boundaryOf('.list-add', SHEET), 'the list add button').toBe('1px dashed var(--ctl)');
+    expect(boundaryOf('.doc-page .doc-compose textarea', SHEET), 'the document comment box').toBe(
+      CONTROL,
+    );
+    expect(
+      boundaryOf(
+        '.doc-page .doc-comment-btn, .doc-page .doc-cancel-btn, .doc-page .doc-finish-btn',
+        SHEET,
+      ),
+      "the document page's actions",
+    ).toBe(CONTROL);
   });
 
   it('draws the review controls in the control mark rather than the hairline', () => {
-    expect(boundaryToken('.rv-scope-btn', REVIEW), 'the scope control').toBe('--ctl');
-    expect(boundaryToken('.rv-step-btn', REVIEW), 'the comment stepper').toBe('--ctl');
+    expect(boundaryOf('.rv-scope-btn', REVIEW), 'the scope control').toBe(CONTROL);
+    expect(boundaryOf('.rv-step-btn', REVIEW), 'the comment stepper').toBe(CONTROL);
     expect(
-      boundaryToken('.rv-cstep-n', REVIEW),
+      boundaryOf('.rv-cstep-n', REVIEW),
       "the stepper's count cell shares its arrows' boundary",
-    ).toBe('--ctl');
+    ).toBe(CONTROL);
+    expect(boundaryOf('.rv-mode', REVIEW), 'the view-mode switch').toBe(CONTROL);
   });
 });
