@@ -253,7 +253,7 @@ mod tests {
 
         let refused = facade.hand_off(&seat, "look at this", 2).await;
 
-        assert_eq!(refused, Err("no attached client can show the browser hand-off".to_owned()),);
+        assert_eq!(refused, Err("no attached client can show the browser hand-off".to_owned()));
         assert!(workspace.browser_handoffs.lock().is_empty(), "nothing is left parked");
     }
 

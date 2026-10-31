@@ -766,12 +766,7 @@ impl SlackFacade for ProdSlackFacade {
         tokio::spawn(async move {
             let approved = decision.await.unwrap_or(false);
             let Some(ws) = workspace.upgrade() else { return };
-            let answer = if !approved {
-                let what = if deleting { "deletion" } else { "replacement" };
-                format!(
-                    "[slack__edit {id}] The {what} was not approved, so the message is untouched."
-                )
-            } else {
+            let answer = if approved {
                 // Ownership is the wire's verdict, never a local lookup's:
                 // conversations.history cannot see thread replies, so a
                 // pre-check would wrongly refuse an edit of the user's own
@@ -806,6 +801,11 @@ impl SlackFacade for ProdSlackFacade {
                         super::format_edit_error(&SlackEditError::Fetch(err.to_string()))
                     ),
                 }
+            } else {
+                let what = if deleting { "deletion" } else { "replacement" };
+                format!(
+                    "[slack__edit {id}] The {what} was not approved, so the message is untouched."
+                )
             };
             ws.deliver_ask_answer(&caller, answer);
         });
@@ -845,12 +845,7 @@ impl SlackFacade for ProdSlackFacade {
         tokio::spawn(async move {
             let approved = decision.await.unwrap_or(false);
             let Some(ws) = workspace.upgrade() else { return };
-            let answer = if !approved {
-                format!(
-                    "[slack__react {id}] The reaction was not approved, so nothing was added or \
-                     removed."
-                )
-            } else {
+            let answer = if approved {
                 match api
                     .set_reaction(&request.conversation, &request.ts, &request.name, request.add)
                     .await
@@ -861,6 +856,11 @@ impl SlackFacade for ProdSlackFacade {
                         super::format_react_error(&SlackReactError::Fetch(err.to_string()))
                     ),
                 }
+            } else {
+                format!(
+                    "[slack__react {id}] The reaction was not approved, so nothing was added or \
+                     removed."
+                )
             };
             ws.deliver_ask_answer(&caller, answer);
         });
@@ -2435,7 +2435,7 @@ token = "y"
         ws.resolve_slack_draft(id, &caller(), answered(true));
 
         let outcome = posted_record(&follow_up(&mut rx).await);
-        assert_eq!(outcome["ts"], serde_json::json!(["1.0", "2.0"]), "two parts were sent",);
+        assert_eq!(outcome["ts"], serde_json::json!(["1.0", "2.0"]), "two parts were sent");
         for ts in ["1.0", "2.0"] {
             assert!(ws.slack_own_post("acme", "C1", ts), "part {ts} must be refused to the sweep");
         }
@@ -2863,7 +2863,7 @@ token = "y"
         let id =
             facade.post(&caller(), post_request("C1", "hello")).await.expect("the draft is held");
 
-        assert!(ws.slack_draft_waiting(id, &caller()), "the ask stays open with no clock on it",);
+        assert!(ws.slack_draft_waiting(id, &caller()), "the ask stays open with no clock on it");
 
         ws.resolve_slack_draft(id, &caller(), answered(true));
         let _ = follow_up(&mut rx).await;

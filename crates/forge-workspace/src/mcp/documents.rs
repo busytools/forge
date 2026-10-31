@@ -3,8 +3,8 @@
 //! the client's own viewer rather than in the conversation.
 //!
 //! **The tool answers as soon as the ask is raised, like the browser
-//! hand-off.** The call names the ask's id and returns; the reader's finish
-//! - **done** with what it filed, or **not now** - arrives later as a
+//! hand-off.** The call names the ask's id and returns. The reader's finish,
+//! either **done** with what it filed or **not now**, arrives later as a
 //! follow-up turn, because the CLI aborts an MCP call after 70 seconds and a
 //! reader may take longer. A review the reader leaves is filed under the
 //! document's own scope and named in that follow-up, so the agent reads it
