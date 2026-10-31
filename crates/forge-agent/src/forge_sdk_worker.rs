@@ -634,9 +634,9 @@ pub(crate) fn load_history_messages(
 }
 
 /// [`load_history_messages`] over the session's own rows only: sub-agent
-/// sidecars are neither opened nor folded. A handoff or a page read wants the
-/// conversation as chat rows and must not pay for frames no row draws
-/// (#1763).
+/// sidecars are neither opened nor folded. A handoff brief wants the
+/// conversation as chat rows and must not pay for frames it never draws. A
+/// page read does not: a dispatch row draws its sidecar frames (#1763).
 pub(crate) fn load_history_messages_main_thread(
     config_dir: &Path,
     prev_session_id: &str,

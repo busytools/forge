@@ -64,9 +64,9 @@ pub fn session_history(
 }
 
 /// [`session_history`] over the session's own rows only: sub-agent sidecars
-/// are not opened or folded. A read that draws chat rows - a page, a handoff
-/// brief - takes this one, so it pays for neither the frames nor the parse
-/// (#1763).
+/// are not opened or folded. The handoff brief takes this one, so it pays for
+/// neither the frames nor the parse. A page read does not: a dispatch row
+/// draws its sidecar frames (#1763).
 pub fn session_history_main_thread(
     config_dir: &std::path::Path,
     session_id: &str,

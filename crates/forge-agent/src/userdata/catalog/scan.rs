@@ -791,9 +791,9 @@ pub fn get_session_messages(
 }
 
 /// [`get_session_messages`] over the session's own rows only: no sub-agent
-/// sidecars are opened or folded. A consumer that wants the conversation as
-/// chat rows (a page read, a handoff brief) takes this one, so it neither
-/// pays for the sidecar parse nor carries frames no row draws (#1763).
+/// sidecars are opened or folded. The handoff brief takes this one, so it
+/// neither pays for the sidecar parse nor carries frames it does not read. A
+/// page read does not: a dispatch row draws its sidecar frames (#1763).
 pub(crate) fn read_session_messages_main_thread(
     config_dir: &Path,
     session_id: &str,
@@ -3237,6 +3237,17 @@ mod tests {
                 "each folded frame names the dispatch id itself, not the stem or the agent id",
             );
         }
+        // The chat-row read takes the session's own rows only: a folded
+        // sidecar frame here would be drawn as a chat row no card owns.
+        let main_thread =
+            read_session_messages_main_thread(config_dir.path(), session_id, Some(directory))
+                .messages;
+        let main_uuids: Vec<_> = main_thread.iter().map(|message| message.uuid.as_str()).collect();
+        assert_eq!(
+            main_uuids,
+            vec!["a1", "u1", "a2"],
+            "the main-thread read leaves every sub-agent frame out",
+        );
     }
 
     /// The read budget bounds the parse: a sidecar larger than the budget is
@@ -3280,6 +3291,52 @@ mod tests {
         assert!(
             !uuids.iter().any(|uuid| uuid == "l1"),
             "a sidecar past the budget is skipped rather than parsed",
+        );
+    }
+
+    /// **The budget spends on the newest sidecars first.** A sidecar past
+    /// the budget keeps its dispatch alone, and the sidecars beyond the
+    /// conversation window are the oldest ones - so a read that kept the
+    /// oldest would bring back exactly the #1763 symptom at the newest edge.
+    #[test]
+    fn subagent_sidecars_spend_the_budget_on_the_newest_first() {
+        let config_dir = tempfile::tempdir().unwrap();
+        let session_id = "550e8400-e29b-41d4-a716-446655440002";
+        let directory = "/Users/me/Projects/playground";
+        let dir = project_dir_for(config_dir.path(), directory);
+        fs::create_dir_all(&dir).unwrap();
+        write_session_jsonl(&dir, session_id, "");
+        let transcript = dir.join(format!("{session_id}.jsonl"));
+        let sidecars = dir.join(session_id).join("subagents");
+        fs::create_dir_all(&sidecars).unwrap();
+        let write_sidecar = |stem: &str, uuid: &str| {
+            fs::write(
+                sidecars.join(format!("{stem}.meta.json")),
+                "{\"agentType\":\"Explore\",\"toolUseId\":\"toolu_a\"}",
+            )
+            .unwrap();
+            fs::write(
+                sidecars.join(format!("{stem}.jsonl")),
+                format!(
+                    "{{\"type\":\"assistant\",\"isSidechain\":true,\"message\":{{\"role\":\"assistant\",\"content\":[{{\"type\":\"text\",\"text\":\"x\"}}]}},\"uuid\":\"{uuid}\"}}\n"
+                ),
+            )
+            .unwrap();
+        };
+        write_sidecar("agent-older", "old");
+        write_sidecar("agent-newer", "new");
+        set_age(&sidecars.join("agent-older.meta.json"), 600);
+        set_age(&sidecars.join("agent-newer.meta.json"), 60);
+        let one = fs::metadata(sidecars.join("agent-newer.jsonl")).unwrap().len();
+
+        let groups = subagent_sidecars_with_budget(session_id, &transcript, one);
+        let uuids: Vec<_> =
+            groups.iter().flat_map(|(_, rows)| rows.iter().map(|row| row.uuid.clone())).collect();
+
+        assert!(uuids.iter().any(|uuid| uuid == "new"), "the newest sidecar is read");
+        assert!(
+            !uuids.iter().any(|uuid| uuid == "old"),
+            "an older sidecar past the budget is skipped, not kept in place of the newest",
         );
     }
 
