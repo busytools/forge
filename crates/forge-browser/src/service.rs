@@ -1149,8 +1149,8 @@ impl BrowserService {
     ///
     /// **Answers whether a driver was already dropped since the last page
     /// call answered.** A fresh driver that mutes too is not the driver's
-    /// fault, and the caller ends the host instead of paying budget after
-    /// budget.
+    /// fault, so the caller ends the host, or is refused by name when another
+    /// session's tab is on it (#2728), instead of paying budget after budget.
     async fn drop_dead_driver(profile: &Arc<Profile>, generation: u64, why: &str) -> bool {
         let mut state = profile.state.lock().await;
         if state.driver_generation != generation || state.driver.is_none() {
@@ -2153,9 +2153,10 @@ impl BrowserService {
     /// **The driver is the suspect before the tool is.** A page context that
     /// died is rebuilt, and only a call safe to repeat is repeated; a host
     /// that never let the driver attach is ended and named with its own
-    /// identity; a plain tool failure leaves the driver where it is. Every
-    /// clear is aimed at the generation this call drove, so a newer driver
-    /// started in between keeps its handle.
+    /// identity when the caller alone owns it, and left running with its
+    /// holder named otherwise (#2728); a plain tool failure leaves the driver
+    /// where it is. Every clear is aimed at the generation this call drove,
+    /// so a newer driver started in between keeps its handle.
     async fn after_failure(
         &self,
         profile: &Arc<Profile>,
@@ -2214,10 +2215,12 @@ impl BrowserService {
                 .replace_dead_driver(profile, seat, generation, drove, tab, again, deadline, &why)
                 .await;
         }
-        // **A driver built against a browser that is gone is dropped.** The
-        // probe is the browser's own liveness, not the driver's; a host that
-        // is not answering is torn down so the next call starts a fresh one.
-        let host_up = spawn::probe(port).await;
+        // **A host ended here takes other sessions' tabs with it, so the
+        // sentence names them** (#2728); the probe asks twice so a moment's
+        // stall is not taken for a wedge.
+        let holders =
+            profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).other_owners(seat);
+        let host_up = spawn::probe_settled(port).await;
         let _decision = profile.file_decision.lock().await;
         // **A test profile has no host to probe**, so the fake driver is not
         // a dead one to clear. The decision lock is still taken above, which
@@ -2233,8 +2236,13 @@ impl BrowserService {
             // call that finds the host gone may be the first to notice it;
             // without this a viewer reads "tab N was closed" and never
             // hears that the browser went.
+            let took = if holders.is_empty() {
+                String::new()
+            } else {
+                format!(", taking {} with it", holders_words(&holders))
+            };
             profile.failures.send_replace(Some(format!(
-                "the browser host stopped answering (pid {pid}); the next call brings it back"
+                "the browser host stopped answering (pid {pid}){took}; the next call brings it back"
             )));
             profile.teardown(&mut state, Some(HostEnd::Unresponsive), &why).await;
         }
@@ -2245,7 +2253,8 @@ impl BrowserService {
     /// only on process liveness that no driver can list is the wedge that
     /// used to cost an hour: the call that finds it, after replacing the
     /// driver, ends it so the next call starts a fresh browser with the
-    /// profile's data intact.
+    /// profile's data intact. **A host another session's tab is open on is
+    /// left running**: the caller is answered by name instead (#2728).
     async fn end_dead_host(
         &self,
         profile: &Arc<Profile>,
@@ -2275,6 +2284,14 @@ impl BrowserService {
                 None => return DeadHost::AlreadyGone,
             }
             if !holders.is_empty() {
+                tracing::debug!(
+                    event_name = "browser_host_shared",
+                    profile = %profile.key,
+                    pid = drove.pid,
+                    port = drove.port,
+                    holders = %holders_words(&holders),
+                    "a failing call left the host running; another session holds a tab: {why}"
+                );
                 return DeadHost::Shared { pid: drove.pid, port: drove.port, holders };
             }
             state.driver = None;
@@ -2524,7 +2541,10 @@ impl BrowserService {
                 // **A replacement that cannot start leaves the host suspect**:
                 // end the host this call drove, if it is still the one there
                 // and no other session's page would go with it.
-                self.end_dead_host(profile, seat, drove, &cannot).await;
+                let host = self.end_dead_host(profile, seat, drove, &cannot).await;
+                if matches!(&host, DeadHost::Shared { .. }) {
+                    return Err(dead_host_answer(profile, host, &cannot));
+                }
                 return Err(dead_driver_answer(DeadDriverOutcome::ReplaceFailed { why: &cannot }));
             }
         };
@@ -3702,7 +3722,7 @@ pub struct Profile {
     /// since. **An atomic rather than state**, because `host_gone` clears it
     /// on the paths that already hold the state lock. A second one with a
     /// fresh driver installed in between is the host's pages, not the
-    /// driver, and the host is ended.
+    /// driver, and the host is ended if the caller alone owns it (#2728).
     mute_dropped: AtomicBool,
     /// **The identity of the host this profile is on.** Bumped on every
     /// successful launch and again when a host goes, so a tab birth or close
@@ -3711,7 +3731,8 @@ pub struct Profile {
     host_generation: AtomicU64,
     /// A fresh driver still could not list this profile's pages: the host it
     /// was listed from is wedged, and is ended on the first path that can
-    /// take `file_decision` without waiting on the call that found it.
+    /// take `file_decision` without waiting on the call that found it, or is
+    /// left running with its holder named (#2728).
     host_suspect: Mutex<Option<HostIdentity>>,
     /// The driver a replacement installs under test, so a test can tell a
     /// replacement from a retry of the same fake. One-shot.
@@ -5669,7 +5690,7 @@ fn dead_host_answer(profile: &Profile, host: DeadHost, why: &str) -> String {
         DeadHost::Shared { pid, port, holders } => format!(
             "the browser host (pid {pid}, port {port}, profile {}) is in use by {}, so it was left \
              running rather than ended: {why}. Call browser_tabs to see the tabs, or try again \
-             once that session is done.",
+             once it closes the tab it holds.",
             profile.dir.display(),
             holders_words(&holders),
         ),
@@ -6468,6 +6489,29 @@ mod tests {
         crate::osr::Ring::unlink(&ring_name);
     }
 
+    /// A host standing on the profile, as the call that drove it would have
+    /// left it: an identity to end, plus the ring name the test unlinks.
+    async fn install_test_host(profile: &Arc<Profile>, port: u16) -> (super::HostIdentity, String) {
+        let ring_name = format!("/forge-test-host-{}-{port}", std::process::id());
+        let generation = {
+            let mut state = profile.state.lock().await;
+            let generation = state.driver_generation;
+            let ring = crate::osr::Ring::create(&ring_name, 4, 4).expect("a test ring");
+            let (input, _input_rx) = std::sync::mpsc::channel();
+            state.host = Some(crate::spawn::ActiveHost {
+                pid: std::process::id(),
+                port,
+                ring: Arc::new(ring),
+                profile: profile.dir.join(format!("host-{port}")),
+                input,
+                reader: None,
+                monitor: None,
+            });
+            generation
+        };
+        (super::HostIdentity { pid: std::process::id(), port, generation }, ring_name)
+    }
+
     /// **A timeout never ends a host another session's page is open on.** Two
     /// sessions share a profile by owning a tab each of the one host; the
     /// caller that times out is refused by name, and the host stays up with
@@ -6519,6 +6563,7 @@ mod tests {
             .await
             .expect_err("a mute listing drops its driver for the next call");
         assert!(first.contains("the driver did not answer"), "{first}");
+        assert!(!first.contains("is in use by"), "the first mute is not a refusal: {first}");
         let refused = service
             .call(&lead, "browser_snapshot", json!({}))
             .await
@@ -6527,8 +6572,151 @@ mod tests {
         assert!(refused.contains("a tab held for"), "and since when: {refused}");
         assert!(!refused.contains("was ended"), "no end is claimed: {refused}");
         assert!(profile.state.lock().await.host.is_some(), "the shared host was left running");
+        assert_eq!(
+            profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).numbers(),
+            vec![1, 2],
+            "and both sessions' tabs are still the host's pages",
+        );
+        assert!(profile.up.load(Ordering::Acquire), "the profile still reads as up");
         assert!(successor.listings() > 0, "the replacement driver had to list before the refusal");
         crate::osr::Ring::unlink(&ring_name);
+    }
+
+    /// **More than one tab is not another session.** The guard is about whose
+    /// page would go, not how many pages there are: a host whose only tabs
+    /// are the caller's own is still ended, so today's wedge recovery keeps
+    /// working (#2728).
+    #[tokio::test]
+    async fn a_timeout_ends_a_host_the_caller_alone_holds_with_several_tabs() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let seat = SessionSlot::lead("O", "p");
+        service.install_fake(&seat, FakeDriver::with_blank("T1")).await;
+        let profile = service.find("O/default").await.expect("the profile");
+        let (drove, ring) = install_test_host(&profile, 9).await;
+        {
+            let mut tabs = profile.tabs.lock().unwrap_or_else(PoisonError::into_inner);
+            tabs.adopt(1, seat.clone(), "T1", "T1", "", "").expect("the first tab");
+            tabs.adopt(2, seat.clone(), "T2", "T2", "", "").expect("the second tab");
+        }
+        *profile.host_suspect.lock().unwrap_or_else(PoisonError::into_inner) = Some(drove);
+        let why = crate::driver::did_not_answer("browser_snapshot", Duration::from_secs(90));
+        let refused = service
+            .after_failure(
+                &profile,
+                &seat,
+                Driven {
+                    generation: drove.generation,
+                    pid: drove.pid,
+                    port: drove.port,
+                    tab: 1,
+                    deadline: tokio::time::Instant::now() + Duration::from_secs(1),
+                },
+                Call { tool: "browser_snapshot", reported: "browser_snapshot", args: &json!({}) },
+                Err(why),
+            )
+            .await
+            .expect_err("a host the caller alone holds is ended");
+
+        assert!(refused.contains("was ended"), "the caller's own host is ended: {refused}");
+        assert!(profile.state.lock().await.host.is_none(), "the host was taken down");
+        assert!(!profile.up.load(Ordering::Acquire), "and the profile reads as down");
+        crate::osr::Ring::unlink(&ring);
+    }
+
+    /// **The caller's own tab is not required.** A session that holds none,
+    /// because its call failed before it adopted one, is refused by the
+    /// foreign holder rather than taking the host down, and a row whose seat
+    /// has ended still counts: the page is what the end would destroy.
+    #[tokio::test]
+    async fn a_tab_whose_seat_ended_still_keeps_its_host() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let lead = SessionSlot::lead("O", "p");
+        let worker = SessionSlot::worker("O", "p", "w");
+        service.install_fake(&lead, FakeDriver::with_blank("T1")).await;
+        let profile = service.find("O/default").await.expect("the profile");
+        let (drove, ring) = install_test_host(&profile, 9).await;
+        profile
+            .tabs
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .adopt(1, worker.clone(), "T1", "T1", "", "")
+            .expect("the worker's tab");
+        // The seat is gone; its tab is still a page, and the sweep that
+        // closes it has not run yet.
+        service.session_ended(&worker);
+        *profile.host_suspect.lock().unwrap_or_else(PoisonError::into_inner) = Some(drove);
+        let why = crate::driver::did_not_answer("browser_snapshot", Duration::from_secs(90));
+        let refused = service
+            .after_failure(
+                &profile,
+                &lead,
+                Driven {
+                    generation: drove.generation,
+                    pid: drove.pid,
+                    port: drove.port,
+                    tab: 1,
+                    deadline: tokio::time::Instant::now() + Duration::from_secs(1),
+                },
+                Call { tool: "browser_snapshot", reported: "browser_snapshot", args: &json!({}) },
+                Err(why),
+            )
+            .await
+            .expect_err("a foreign tab keeps the host");
+
+        assert!(refused.contains("O/p/w"), "the foreign holder is named: {refused}");
+        assert!(profile.state.lock().await.host.is_some(), "the host was left running");
+        assert_eq!(
+            profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).numbers(),
+            vec![1],
+            "and the foreign tab is still its page",
+        );
+        crate::osr::Ring::unlink(&ring);
+    }
+
+    /// **A shared host whose endpoint really is gone is still ended, and the
+    /// sentence says whose pages went with it.** This is the wedge path the
+    /// policy keeps apart from a driver deadline: it asks the endpoint twice,
+    /// so a busy host is not mistaken for a dead one.
+    #[tokio::test]
+    async fn a_wedged_shared_host_is_ended_and_names_its_holders() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let lead = SessionSlot::lead("O", "p");
+        let worker = SessionSlot::worker("O", "p", "w");
+        service.install_fake(&lead, FakeDriver::with_blank("T1")).await;
+        let profile = service.find("O/default").await.expect("the profile");
+        let (drove, ring) = install_test_host(&profile, 9).await;
+        profile
+            .tabs
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .adopt(1, worker.clone(), "T1", "T1", "", "")
+            .expect("the worker's tab");
+
+        let _ = service
+            .after_failure(
+                &profile,
+                &lead,
+                Driven {
+                    generation: drove.generation,
+                    pid: drove.pid,
+                    port: drove.port,
+                    tab: 1,
+                    deadline: tokio::time::Instant::now() + Duration::from_secs(1),
+                },
+                Call { tool: "browser_snapshot", reported: "browser_snapshot", args: &json!({}) },
+                Err("the page answered with a script error".to_owned()),
+            )
+            .await;
+
+        assert!(profile.state.lock().await.host.is_none(), "a gone endpoint ends the host");
+        assert!(!profile.up.load(Ordering::Acquire), "and the profile reads as down");
+        let sentence = profile.failures.borrow().clone().expect("the refusal is published");
+        assert!(sentence.contains("O/p/w"), "the holder is named: {sentence}");
+        assert!(sentence.contains("taking"), "and says what went with it: {sentence}");
+        crate::osr::Ring::unlink(&ring);
     }
 
     /// **A rebuild that replaces the host ends the host standing after it.**
@@ -7161,6 +7349,19 @@ mod tests {
 
     /// **A host a call ended is named by pid, port and profile**, and one a
     /// newer driver owns is not claimed.
+    /// **A held tab is named in the coarsest unit that fits.** The refusal is
+    /// read by a person deciding whether to wait or close a tab, so a minute
+    /// read as a second, or an hour as sixty minutes, misleads them.
+    #[test]
+    fn a_held_tab_is_named_in_the_coarsest_unit_that_fits() {
+        assert_eq!(super::held_words(Duration::from_millis(400)), "under a second");
+        assert_eq!(super::held_words(Duration::from_secs(9)), "9 s");
+        assert_eq!(super::held_words(Duration::from_secs(59)), "59 s");
+        assert_eq!(super::held_words(Duration::from_secs(60)), "1 min");
+        assert_eq!(super::held_words(Duration::from_secs(59 * 60)), "59 min");
+        assert_eq!(super::held_words(Duration::from_secs(60 * 60)), "1 h");
+    }
+
     #[tokio::test]
     async fn a_dead_host_answer_names_the_host_and_the_next_call() {
         let dir = tempfile::tempdir().expect("a temp dir");

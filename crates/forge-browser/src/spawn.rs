@@ -576,6 +576,21 @@ pub async fn probe(port: u16) -> bool {
         .is_some_and(|answer| answer.contains("\"Browser\""))
 }
 
+/// How long a second probe waits before it is asked.
+const PROBE_RETRY: Duration = Duration::from_millis(500);
+
+/// Whether the endpoint on `port` still answers after a second look. **A live
+/// host busy for a moment can miss one 2 s read**, and ending it over that
+/// takes every session's page, so a stall and a host that is gone are told
+/// apart by asking twice.
+pub async fn probe_settled(port: u16) -> bool {
+    if probe(port).await {
+        return true;
+    }
+    tokio::time::sleep(PROBE_RETRY).await;
+    probe(port).await
+}
+
 /// End a host this server spawned, or one still answering on `port`.
 ///
 /// **A recorded pid is only a number**: another process may have been given
@@ -971,6 +986,37 @@ mod tests {
         assert!(read_record(&profile).is_none(), "the record is cleared");
         assert!(singleton_pid(&profile).is_none(), "and the lock with it");
         assert!(running(me), "a pid that is not this profile's host is left alone");
+    }
+
+    /// **One missed read is not a dead host.** A live host busy for a moment
+    /// can miss the probe's 2 s read; the second look is what separates that
+    /// from a host that is gone, and without it a stall ends every session's
+    /// page (#2728).
+    #[tokio::test]
+    async fn a_host_busy_for_one_probe_read_is_still_alive() {
+        use std::io::{Read as _, Write as _};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a listener");
+        let port = listener.local_addr().expect("the bound address").port();
+        let stand_in = std::thread::spawn(move || {
+            // The first look is dropped unanswered, as a busy host would.
+            let (first, _) = listener.accept().expect("the first probe");
+            drop(first);
+            let (mut second, _) = listener.accept().expect("the second probe");
+            let mut request = [0_u8; 1024];
+            let _ = second.read(&mut request);
+            let body = r#"{"Browser":"CEF"}"#;
+            let _ = second.write_all(
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .as_bytes(),
+            );
+        });
+
+        assert!(probe_settled(port).await, "the second look finds the host");
+        stand_in.join().expect("the stand-in host");
     }
 
     /// **A cue is not one-way.** The server waits for the host to apply it
