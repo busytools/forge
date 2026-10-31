@@ -1,7 +1,19 @@
 # Clippy uses the nearest clippy.toml and does not merge, so this file replaces
-# the workspace one for this crate rather than adding to it: the workspace's
-# `disallowed-methods` list, its argument threshold and its ident exemptions do
-# not reach here either. The MSRV differs because `tauri` declares 1.90, and
-# leaving it at the workspace's 1.88 makes `clippy::incompatible_msrv` reject
-# standard-library APIs the crate may use.
+# the workspace one for this crate rather than adding to it. Everything in the
+# root clippy.toml is repeated here so the crate is held to the same set; only
+# the MSRV differs, because `tauri` declares 1.90 and leaving it at the
+# workspace's 1.88 makes `clippy::incompatible_msrv` reject standard-library
+# APIs the crate may use.
 msrv = "1.90.0"
+
+# Tests can use these freely; production code is gated via [lints] in Cargo.toml.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+allow-print-in-tests = true
+allow-dbg-in-tests = true
+allow-indexing-slicing-in-tests = true
+
+too-many-arguments-threshold = 10
+
+allowed-idents-below-min-chars = ["i", "j", "k", "x", "y", "z", "n", "s", "c", "op", "tx", "rx", "id", "ip", "os", "ex"]

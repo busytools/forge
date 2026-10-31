@@ -9,6 +9,12 @@
 //! **The overlay is the desktop's.** The phone draws the same frames in its
 //! page instead (the canvas viewer), so nothing here runs on Android.
 
+#![allow(
+    clippy::needless_pass_by_value,
+    reason = "tauri's IPC macro hands every command argument by value; a reference is not a \
+              CommandArg"
+)]
+
 use serde::Deserialize;
 // **Every macOS command here reads the viewer's state through `Manager`**,
 // the one trait this file needs an `AppHandle` for.
@@ -91,6 +97,8 @@ pub mod viewer {
 /// that is really there.
 pub fn remeasure_soon(app: &tauri::AppHandle) {
     use std::sync::atomic::{AtomicU64, Ordering};
+    use tauri::Emitter as _;
+
     static GENERATION: AtomicU64 = AtomicU64::new(0);
     let mine = GENERATION.fetch_add(1, Ordering::Relaxed) + 1;
     let app = app.clone();
@@ -99,7 +107,6 @@ pub fn remeasure_soon(app: &tauri::AppHandle) {
         if GENERATION.load(Ordering::Relaxed) != mine {
             return;
         }
-        use tauri::Emitter as _;
         let _ = app.emit("browser_surface_remeasure", ());
     });
 }
@@ -503,7 +510,7 @@ mod tests {
         assert!(!super::sound_is_viewed(&sound(5, 3)), "another tab's is dropped");
         assert!(!super::sound_is_viewed(&sound(6, 2)), "another profile's is dropped");
         *super::VIEWED.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
-        assert!(super::sound_is_viewed(&sound(9, 9)), "with no attach yet, nothing is refused",);
+        assert!(super::sound_is_viewed(&sound(9, 9)), "with no attach yet, nothing is refused");
     }
 
     /// **A relayed frame splits into the fields both arms draw by.** The

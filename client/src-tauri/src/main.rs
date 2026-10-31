@@ -1,3 +1,3 @@
-fn main() {
-    forge_client::run();
+fn main() -> std::process::ExitCode {
+    std::process::ExitCode::from(forge_client::run())
 }
