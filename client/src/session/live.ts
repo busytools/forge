@@ -886,7 +886,17 @@ function createSeat(
     seat.askedAt = seat.seen;
     // **The mark rides the refresh that actually goes out**, here and in the
     // want this path defers. Nothing is marked by a call that asked nothing.
-    if (options?.returned === true && held !== null) markReturn(connection, held);
+    //
+    // **Set after this dispatch, not inside it.** When this read is the want
+    // a just-arrived answer served, that answer is being delivered right now,
+    // and listeners run in registration order with the seat's before the
+    // chat's: a mark set here would be spent by the chat on the answer that
+    // triggered it, leaving this read's own answer unmarked. A microtask
+    // lands before any later frame, so this read's answer is the first to
+    // meet the mark.
+    if (options?.returned === true && held !== null) {
+      queueMicrotask(() => markReturn(connection, held));
+    }
     connection.refresh(subject, { review: scope });
   }
 

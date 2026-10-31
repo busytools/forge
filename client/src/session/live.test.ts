@@ -3941,7 +3941,7 @@ describe('the review read', () => {
    * return's ask behind it - where the mark has to wait for the deferred
    * refresh, or the earlier read's answer would spend it.
    */
-  it('marks the read a return asked, when it actually goes out', () => {
+  it('marks the read a return asked, when it actually goes out', async () => {
     // A seat with no subscription asks nothing and leaves no mark.
     const idle = drivable();
     watchSession(idle, LEAD, true, {});
@@ -3963,11 +3963,42 @@ describe('the review read', () => {
     rereadSeat(connection, LEAD, { returned: true });
     expect(takeReturn(connection, LEAD), 'a deferred ask marks nothing yet').toBe(false);
 
-    // The answer lands and the deferred read goes out as the return's.
+    // The answer lands and the deferred read goes out as the return's. Its
+    // mark is set after that answer's dispatch, so the answer cannot spend it.
     connection.land(snapshotOf(LEAD, {}, { epoch: 'e1', seq: 2 }));
     expect(connection.refreshes.length, 'the return asks once the answer lands').toBe(asked + 1);
+    expect(takeReturn(connection, LEAD), 'the answer that triggered the read spent the mark').toBe(
+      false,
+    );
+    await Promise.resolve();
     expect(takeReturn(connection, LEAD), "the return's ask is marked when it goes").toBe(true);
     expect(takeReturn(connection, LEAD), 'and the mark is spent once').toBe(false);
+    stop();
+  });
+
+  /**
+   * **The answer that serves a deferred want cannot spend the mark the want
+   * is about to set.** Listeners run in registration order with the seat's
+   * before the chat's, so the mark must be set after the dispatch: a listener
+   * registered behind the seat sees the triggering answer unmarked, and the
+   * deferred read's own answer is the first one to meet it.
+   */
+  it('sets a deferred return mark after the triggering answer is dispatched', async () => {
+    const connection = drivable();
+    const view = watchSession(connection, LEAD, true, {});
+    const stop = view.subscribe(() => {});
+    connection.land(snapshotOf(LEAD, {}, { epoch: 'e1', seq: 1 }));
+    rereadSeat(connection, LEAD);
+    rereadSeat(connection, LEAD, { returned: true });
+
+    const seen: boolean[] = [];
+    connection.onMessage((message) => {
+      if (message.kind === 'snapshot') seen.push(takeReturn(connection, LEAD));
+    });
+    connection.land(snapshotOf(LEAD, {}, { epoch: 'e1', seq: 2 }));
+    expect(seen, 'the triggering answer is seen before the mark exists').toEqual([false]);
+    await Promise.resolve();
+    expect(takeReturn(connection, LEAD), 'the deferred read is marked afterwards').toBe(true);
     stop();
   });
 
