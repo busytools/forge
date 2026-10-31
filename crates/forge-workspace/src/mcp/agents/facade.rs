@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use crate::SessionSlot;
 use crate::mcp::agents::target::{AgentTarget, LEAD_LABEL};
-use crate::mcp::peers::facade::WorkspaceFacade;
+use crate::mcp::peers::facade::{DeliverError, WorkspaceFacade};
 use crate::mcp::peers::types::WrappedPrompt;
 use crate::mcp::workers::facade::{WorkerDeliverError, WorkerFacade, WorkerLeadDeliverError};
 
@@ -58,9 +58,14 @@ impl AgentDispatcher {
         if target.label() == LEAD_LABEL {
             return match self.peers.deliver_peer_prompt(caller, target.project(), wrapped) {
                 Ok(()) => Ok(()),
-                Err(err) => Err(format!(
-                    "project '{}' is no longer reachable ({err:?}); call agents__list to see \
-                     who you can reach.",
+                Err(DeliverError::UnknownTarget { .. }) => Err(format!(
+                    "project '{}' is no longer reachable; call agents__list to see who you can \
+                     reach.",
+                    target.project(),
+                )),
+                Err(DeliverError::DispatchFailed { message }) => Err(format!(
+                    "project '{}' did not take the message ({message}). Nothing was delivered, \
+                     so do not wait on an answer from it.",
                     target.project(),
                 )),
             };

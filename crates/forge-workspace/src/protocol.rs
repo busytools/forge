@@ -581,6 +581,13 @@ pub enum Command {
         caller: SessionSlot,
         target_project: String,
         wrapped: WrappedPrompt,
+        /// What happened to the prompt: `Ok(())` once it was accepted -
+        /// handed to the target's running session, or parked for a spawn
+        /// this handler kicked off - and `Err(reason)` when nothing could
+        /// take it. The sender's ack is built from this answer alone, the
+        /// way the worker engine's is (#2342).
+        #[serde(skip)]
+        respond: Option<oneshot::Sender<Result<(), String>>>,
     },
     /// Spawn a new worker session in `project_key`. Dispatched by
     /// the `agents__spawn` MCP Tool impl after caller-tag validation,

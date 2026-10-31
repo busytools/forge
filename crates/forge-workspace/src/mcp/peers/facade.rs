@@ -25,7 +25,6 @@
 use std::sync::{Arc, Weak};
 
 use crate::mcp::peers::types::{PeerLiveness, PeerStatus, WrappedPrompt};
-use tracing::warn;
 
 use crate::SessionSlot;
 use crate::protocol::Command;
@@ -40,6 +39,11 @@ use crate::workspace::Workspace;
 pub enum DeliverError {
     /// No project named `name` in forge.toml.
     UnknownTarget { name: String },
+    /// The command reached the handler and the handler refused it: the
+    /// target's session did not take the prompt, the project left
+    /// `forge.toml` between the tool's check and the dispatch, or the
+    /// workspace is shutting down. `message` says which.
+    DispatchFailed { message: String },
 }
 
 /// The narrow workspace-state surface peer-coordination tools call
@@ -57,11 +61,11 @@ pub trait WorkspaceFacade: Send + Sync {
 
     /// Deliver a wrapped peer prompt to `target_project`.
     ///
-    /// Synchronous return is the immediate decision: `Ok(())` means
-    /// `Command::DeliverPeerPrompt` has been dispatched, and whether the
-    /// target was running or asleep is that handler's business (it either
-    /// dispatches a `Command::Prompt` or parks the prompt and spawns).
-    /// `Err(UnknownTarget)` - target not in forge.toml.
+    /// The answer is the handler's own: `Ok(())` once the target's session
+    /// took the prompt or it was parked for a spawn the handler kicked off,
+    /// `Err(UnknownTarget)` for a project not in forge.toml, and
+    /// `Err(DispatchFailed)` when the handler refused the delivery. A
+    /// delivery that never left forge is never `Ok` (#2342).
     fn deliver_peer_prompt(
         &self,
         caller: &SessionSlot,
@@ -186,18 +190,26 @@ impl WorkspaceFacade for ProdWorkspaceFacade {
         if !ws.list_projects().iter().any(|v| v.name == target_project) {
             return Err(DeliverError::UnknownTarget { name: target_project.to_owned() });
         }
-        if let Err(err) = ws.dispatch(Command::DeliverPeerPrompt {
+        let (respond, mut reply) = tokio::sync::oneshot::channel();
+        ws.dispatch(Command::DeliverPeerPrompt {
             caller: caller.clone(),
             target_project: target_project.to_owned(),
             wrapped,
-        }) {
-            warn!(
-                target: "forge_workspace::mcp::peers",
-                error = ?err,
-                "Command::DeliverPeerPrompt dispatch failed; tool will still report the send"
-            );
+            respond: Some(respond),
+        })
+        .map_err(|err| DeliverError::DispatchFailed {
+            message: format!("the workspace did not take the command ({err:?})"),
+        })?;
+        // **The handler runs inline on this thread**, so its answer is
+        // already in the channel. An empty channel is still not a success:
+        // a delivery nobody answered is a delivery nobody can claim.
+        match reply.try_recv() {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(message)) => Err(DeliverError::DispatchFailed { message }),
+            Err(_) => Err(DeliverError::DispatchFailed {
+                message: "the delivery handler took the command and answered nothing".to_owned(),
+            }),
         }
-        Ok(())
     }
 
     fn handoff(&self, caller: &SessionSlot, note: String) -> Result<(), HandoffError> {

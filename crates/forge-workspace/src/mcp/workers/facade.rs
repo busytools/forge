@@ -80,6 +80,11 @@ pub enum WorkerSpawnError {
     /// (workers MCP uses it as an addressing target for the worker's
     /// own lead - see [`LEAD_LABEL`]).
     ReservedLabel,
+    /// `label` carries a path separator. claude rewrites one before
+    /// deriving its worktree path and branch, so forge's own composition
+    /// from the raw label names a directory and a branch claude never uses
+    /// (#1603).
+    LabelWithPathSeparator,
     /// `charter` is empty after trim.
     EmptyCharter,
     /// Caller's session key resolves to no known project (defensive;
@@ -437,6 +442,62 @@ async fn await_delivery(
     }
 }
 
+impl WorkerSpawnError {
+    /// The sentence a caller reads. Shared with the spawn handler, which the
+    /// command bus and the socket reach without the tool's own validation,
+    /// so both seams refuse a label with the same words.
+    pub(crate) fn message(&self) -> String {
+        match self {
+            Self::NotLeadCaller => {
+                "agents__spawn is lead-only; this session is a worker. Workers cannot \
+                 spawn other workers in v1."
+                    .to_owned()
+            }
+            Self::EmptyLabel => "label must be non-empty after trim".to_owned(),
+            Self::ReservedLabel => format!(
+                "label '{LEAD_LABEL}' is reserved - agents__send_message uses it as \
+                 the addressing keyword for the caller's project's own agent. Pick a different label."
+            ),
+            Self::LabelWithPathSeparator => {
+                "label must not contain a path separator ('/' or '\\'): claude rewrites one in \
+                 the worktree name, so forge's path and branch would point somewhere it never \
+                 creates. Pick a label without one."
+                    .to_owned()
+            }
+            Self::EmptyCharter => "charter must be non-empty after trim".to_owned(),
+            Self::UnknownCallerProject => {
+                "could not resolve caller to a known project (forge bug)".to_owned()
+            }
+            Self::DispatchFailed { message } => format!("worker spawn failed: {message}"),
+            Self::WorktreeCreationFailed { reason } => {
+                format!("worktree creation failed: {reason}")
+            }
+            Self::ResumeLookupFailed { label, message } => format!(
+                "could not look up a prior session for '{label}': {message}. Nothing was spawned, \
+                 because a failed lookup is not the same answer as no prior session; retry, or \
+                 spawn without resume_session to start fresh"
+            ),
+        }
+    }
+}
+
+/// The label rules a spawn must pass wherever it enters: empty, the
+/// reserved `lead`, and a path separator. Shared by the tool's validation
+/// and the spawn handler so the MCP tool, the command bus and the socket
+/// cannot disagree about which labels mint a worker.
+pub(crate) fn validate_worker_label(label: &str) -> Result<(), WorkerSpawnError> {
+    if label.trim().is_empty() {
+        return Err(WorkerSpawnError::EmptyLabel);
+    }
+    if label.trim() == LEAD_LABEL {
+        return Err(WorkerSpawnError::ReservedLabel);
+    }
+    if label.contains(['/', '\\']) {
+        return Err(WorkerSpawnError::LabelWithPathSeparator);
+    }
+    Ok(())
+}
+
 /// Validation chain shared by the production and mock `spawn_worker`
 /// impls so tests exercise the real rules rather than a hand-copied
 /// duplicate. `is_lead` is the resolved caller role.
@@ -448,12 +509,7 @@ pub(super) fn validate_worker_spawn(
     if !is_lead {
         return Err(WorkerSpawnError::NotLeadCaller);
     }
-    if label.trim().is_empty() {
-        return Err(WorkerSpawnError::EmptyLabel);
-    }
-    if label.trim() == LEAD_LABEL {
-        return Err(WorkerSpawnError::ReservedLabel);
-    }
+    validate_worker_label(label)?;
     if charter.trim().is_empty() {
         return Err(WorkerSpawnError::EmptyCharter);
     }
@@ -1459,6 +1515,17 @@ mod mock_tests {
         assert!(matches!(
             validate_worker_spawn(true, LEAD_LABEL, "c"),
             Err(WorkerSpawnError::ReservedLabel)
+        ));
+        // claude rewrites a slash before deriving the worktree's path and
+        // branch, so a label carrying one names a directory and a branch
+        // forge would never find (#1603).
+        assert!(matches!(
+            validate_worker_spawn(true, "a/b", "c"),
+            Err(WorkerSpawnError::LabelWithPathSeparator)
+        ));
+        assert!(matches!(
+            validate_worker_spawn(true, "a\\b", "c"),
+            Err(WorkerSpawnError::LabelWithPathSeparator)
         ));
         assert!(matches!(
             validate_worker_spawn(true, "reviewer", "   "),

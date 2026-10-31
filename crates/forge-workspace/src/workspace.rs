@@ -6272,14 +6272,21 @@ impl Workspace {
                     let _enter = span.enter();
                     spawn::handle_spawn_project(self, &project_name, launch_settings);
                 }
-                Command::DeliverPeerPrompt { caller, target_project, wrapped } => {
+                Command::DeliverPeerPrompt { caller, target_project, wrapped, respond } => {
                     let span = tracing::info_span!(
                         "deliver_peer_prompt",
                         target = %target_project,
                         message_id = %wrapped.id,
                     );
                     let _enter = span.enter();
-                    spawn::handle_deliver_peer_prompt(self, &caller, target_project, wrapped);
+                    let outcome =
+                        spawn::handle_deliver_peer_prompt(self, &caller, target_project, wrapped);
+                    // The answer is the handler's own, handed back to
+                    // whoever awaited the dispatch: a caller that got no
+                    // answer must not read one into the silence.
+                    if let Some(respond) = respond {
+                        let _ = respond.send(outcome);
+                    }
                 }
                 Command::SpawnWorker {
                     project_key,
