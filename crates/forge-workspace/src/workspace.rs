@@ -3425,11 +3425,11 @@ impl Workspace {
         // SessionTask to drain on Connected.
         let arc = Arc::new(handle);
 
-        // Insert: race-safe via "if absent" semantics. If a concurrent
-        // caller raced us to the spawn, theirs wins the pool slot and
-        // ours drops at end-of-scope (subprocess killed via Client's
-        // existing Drop). Single-user scope makes the race effectively
-        // impossible.
+        // Insert: a concurrent caller's live session wins the slot and hands
+        // its handle back (ours drops at end-of-scope); an entry whose task
+        // is gone is stale and this spawn replaces it. Single-user scope
+        // makes the race effectively impossible, so the check is about the
+        // stale entry a crashed task left, not about two live spawns.
         //
         // **A session may not bind to a project the config no longer
         // holds.** A save's identity diff and this bind are serialized on
