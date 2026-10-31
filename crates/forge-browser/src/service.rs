@@ -6719,6 +6719,48 @@ mod tests {
         crate::osr::Ring::unlink(&ring);
     }
 
+    /// **A replacement that cannot start hands back the refusal it found.**
+    /// The end path builds the shared host's sentence, and dropping it left
+    /// the caller with a bare "the replacement could not start" while another
+    /// session's tab sat on the host (#2728).
+    #[tokio::test]
+    async fn a_failed_replacement_hands_back_the_shared_hosts_refusal() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let lead = SessionSlot::lead("O", "p");
+        let worker = SessionSlot::worker("O", "p", "w");
+        service.install_fake(&lead, FakeDriver::with_blank("T1")).await;
+        let profile = service.find("O/default").await.expect("the profile");
+        let (drove, ring) = install_test_host(&profile, 9).await;
+        profile
+            .tabs
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .adopt(1, worker.clone(), "T1", "T1", "", "")
+            .expect("the worker's tab");
+        // The profile is closed, so no replacement driver can start.
+        profile.ended.store(true, Ordering::Release);
+
+        let refused = service
+            .replace_dead_driver(
+                &profile,
+                &lead,
+                drove.generation,
+                drove,
+                1,
+                Call { tool: "browser_snapshot", reported: "browser_snapshot", args: &json!({}) },
+                tokio::time::Instant::now() + Duration::from_secs(1),
+                "the driver did not answer browser_tabs within 9 s",
+            )
+            .await
+            .expect_err("the replacement cannot start");
+
+        assert!(refused.contains("is in use by"), "the refusal is handed back: {refused}");
+        assert!(refused.contains("O/p/w"), "the holder is named: {refused}");
+        assert!(profile.state.lock().await.host.is_some(), "and the host was left running");
+        crate::osr::Ring::unlink(&ring);
+    }
+
     /// **A rebuild that replaces the host ends the host standing after it.**
     /// A rebuild starts a new host when the old one died, so the fresh
     /// driver serves a host the call never looked up; a listing that dies
