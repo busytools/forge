@@ -25,22 +25,25 @@ slow-timeout = { period = "60s", terminate-after = 8 }
 filter = 'test(the_committed_socket_contract_is_still_what_the_server_emits) or test(every_subject_round_trips_through_its_fixture)'
 success-output = "immediate"
 
-# **The headless server tests run real child processes**, and every wait in
-# them is bounded: derived from the SDK's own budgets (65 s for a spawn, 15 s
-# for a stop and its exit) or a 100 s wedge over a delivery that ends the wait
-# when it lands. The largest stack is `a_stop_signal_takes_the_sessions_
+# **The headless server tests run real child processes**, and every wait on
+# the server's lifecycle in them is bounded: the SDK's own budgets (65 s for a
+# spawn on top of the boot wave's 60 s hold, 15 s for a stop and its exit) or
+# a 100 s wedge over a delivery that ends the wait when it lands.
+# `the_nextest_kill_stays_above_every_wait_stack` checks the sums below
+# against this block. The largest is `a_stop_signal_takes_the_sessions_
 # descendants_with_it`, which runs its scenario once per signal:
-#   2 x (100 listening + 65 marker + 15 stop + 15 gone) = 390 s.
-# The next largest are `a_termination_sent_straight_at_the_child_marks_it`
-# (100 + 65 + 65 + 5 + 15 = 250 s), `one_stop_takes_two_sessions_down`
-# (100 + 65 + 65 + 15 + 15 = 280 s) and `headless_boot_serves_the_home_and_
-# stops_clean` (100 + 3 walk + 15 + 100 + 15 = 233 s). The default 30 s x 4
-# kill (120 s) would take every one of them on a merely slow machine, so this
-# override puts the kill at 100 s x 5 = 500 s: 110 s above the largest real
+#   2 x (100 listening + 125 marker + 15 stop + 15 gone) = 510 s.
+# Next are `one_stop_takes_two_sessions_down` (100 + 125 + 125 + 15 + 15 + 15
+# = 395 s), `a_termination_sent_straight_at_the_child_marks_it` (100 + 125 +
+# 125 + 15 + 15 = 380 s), `a_second_instance_is_refused_with_the_holders_pid`
+# (three 100 s waits + 15 = 315 s), the group-stop test (255 s) and the boot
+# test (100 + 3 walk + 15 + 100 + 15 = 233 s). The default 30 s x 4 kill
+# (120 s) would take every one of them on a merely slow machine, so this
+# override puts the kill at 100 s x 6 = 600 s: 90 s above the largest real
 # stack, and still a named stop rather than a job timeout.
 [[profile.default.overrides]]
 filter = 'binary(headless_server)'
-slow-timeout = { period = "100s", terminate-after = 5 }
+slow-timeout = { period = "100s", terminate-after = 6 }
 
 # **This test can hold two full watch passes**, each a scan of ten budgeted
 # `git` children: the pass whose mark it waits on, and the driven pass that
