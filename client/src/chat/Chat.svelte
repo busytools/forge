@@ -197,10 +197,11 @@
    * window, so a turn being written holds the mark throughout and a row
    * landing as it settles enters too.
    *
-   * **A window, not the turn's own life**: the list recreates items as they
-   * leave its window, and a class still carried would replay the entrance on
-   * the next scroll back to the foot. The window is longer than the
-   * animation.
+   * **A window that ends shortly after the turn last took a row**: the list
+   * recreates items as they leave its window, so a mark carried on a settled
+   * turn would replay the entrance on the next scroll back to it. A turn
+   * still taking rows holds the mark throughout, which is the same rule - it
+   * ends when the turn does.
    */
   let touched = $state<{ key: string; at: number } | null>(null);
   $effect(() => {

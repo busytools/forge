@@ -520,9 +520,35 @@ describe('whether the column follows the newest end', () => {
       expect(pin.asked, 'the pin holds at the end the list measured').toBe(TOTAL - VIEWPORT);
     }
 
-    // **The measurement lands with NO size report behind it**, so the deferred
-    // pin is the only thing that can move the reader: one frame is enough for
-    // that and nothing else.
+    // **The budget bounds the retries, not the hold.** Frames past it, with
+    // the measurement still behind, still ask the model's end and never the
+    // browser's - the fallback a give-up write would be.
+    for (let at = 0; at < 3; at += 1) {
+      await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
+      flushSync();
+    }
+    for (const pin of pinned()) {
+      expect(pin.asked, 'the exhausted budget still holds at the measured end').toBe(
+        TOTAL - VIEWPORT,
+      );
+    }
+  });
+
+  it('lands the foot again when the list measures what the browser already counted', async () => {
+    // **No size report follows the growth.** The row's own measurement is the
+    // list's, not the column's, so the deferred pin is the only thing that can
+    // land the reader on the real foot - which is what makes this the retry's
+    // own test.
+    const server = stub();
+    await draw(server);
+    readerAt(FOOT);
+    await settle();
+    clear();
+
+    setElement(TOTAL + 40, VIEWPORT);
+    server.frame();
+    await settle();
+
     const before = pinned().length;
     setModel(TOTAL + 40);
     await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
