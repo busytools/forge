@@ -142,7 +142,7 @@ node "$SCRIPT_DIR/check_browser_stack_list.mjs" "$STACK"
 # (#2732).
 node "$SCRIPT_DIR/check_browser_stack_tabs.mjs" "$STACK"
 
-printf 'node %s %s\n@playwright/mcp %s (npm integrity)\nforge-driver-patches 4\n' \
+printf 'node %s %s\n@playwright/mcp %s (npm integrity)\nforge-driver-patches 6\n' \
     "$NODE_VERSION" "$NODE_SHA256" "$PLAYWRIGHT_MCP_VERSION" \
     > "$STACK/manifest.txt"
 

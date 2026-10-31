@@ -10,6 +10,17 @@ use std::io::Write as _;
 
 use serde::{Deserialize, Serialize};
 
+/// Where a JavaScript dialog stands: raised, answered, or closed by the
+/// host's deadline. **An answer and an expiry are different facts**, and the
+/// server tells them apart by this.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JsDialogState {
+    Shown,
+    Answered,
+    Expired,
+}
+
 /// One thing the host needs the server to route.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -30,10 +41,10 @@ pub enum HostEvent {
     /// A page's file chooser: the client's picker answers with the files'
     /// bytes, and the host is handed server-local paths.
     FileDialog { id: u64, tab: u16, multiple: bool },
-    /// A page's JavaScript dialog. **The host answers every one**: this line
-    /// says it was raised, and a second line with `dismissed` says the
-    /// deadline ran out before its agent answered.
-    JsDialog { tab: u16, dialog: String, message: String, dismissed: bool },
+    /// A page's JavaScript dialog. **The host answers every one**: a `shown`
+    /// line is followed by `answered` when the agent's answer arrives, or by
+    /// `expired` when the deadline dismissed it.
+    JsDialog { tab: u16, dialog: String, message: String, state: JsDialogState },
     /// A download finished on the server: the tab it started from, the file's
     /// name, its path beside the profile, and how many bytes it holds.
     Download { tab: u16, name: String, path: String, size: u64 },
@@ -74,27 +85,32 @@ mod tests {
         assert!(parse("{\"kind\":\"other\"}").is_none());
     }
 
-    /// **A dialog's raise and its dismissal are two lines of one shape**, so a
-    /// server can tell an answered dialog from one the deadline closed.
+    /// **A dialog's raise, answer and expiry are three lines of one shape**, so
+    /// a server can tell an answered dialog from one the deadline closed.
     #[test]
     fn a_js_dialog_round_trips_its_line() {
-        let shown = HostEvent::JsDialog {
-            tab: 2,
-            dialog: "confirm".to_owned(),
-            message: "are you sure?".to_owned(),
-            dismissed: false,
-        };
-        let line = serde_json::to_string(&shown).expect("a line");
-        assert!(line.contains("js_dialog"), "the server matches the kind: {line}");
-        assert_eq!(parse(&line), Some(shown));
-
-        let dismissed = HostEvent::JsDialog {
-            tab: 2,
-            dialog: "confirm".to_owned(),
-            message: "are you sure?".to_owned(),
-            dismissed: true,
-        };
-        assert_eq!(parse(&serde_json::to_string(&dismissed).expect("a line")), Some(dismissed));
+        for state in [JsDialogState::Shown, JsDialogState::Answered, JsDialogState::Expired] {
+            let event = HostEvent::JsDialog {
+                tab: 2,
+                dialog: "confirm".to_owned(),
+                message: "are you sure?".to_owned(),
+                state,
+            };
+            let line = serde_json::to_string(&event).expect("a line");
+            assert!(line.contains("js_dialog"), "the server matches the kind: {line}");
+            assert_eq!(parse(&line), Some(event));
+        }
+        assert!(
+            serde_json::to_string(&HostEvent::JsDialog {
+                tab: 2,
+                dialog: "confirm".to_owned(),
+                message: String::new(),
+                state: JsDialogState::Expired,
+            })
+            .expect("a line")
+            .contains("\"expired\""),
+            "the state is spelled in the line",
+        );
     }
 
     /// **A tab's birth and end are named on the control line**, with the tab

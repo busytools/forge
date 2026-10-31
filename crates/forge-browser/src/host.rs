@@ -1280,6 +1280,14 @@ impl HostRuntime {
                         );
                     }
                 }
+                crate::input::HostInput::Dialog { tab, accept, prompt } => {
+                    if !crate::jsdialog::answer(tab, accept, prompt.as_deref()) {
+                        eprintln!(
+                            "cef host: a dialog answer named no open dialog (event_name \
+                             cef_dialog_answer_stray, tab {tab})"
+                        );
+                    }
+                }
                 crate::input::HostInput::RecordStart { tab, path } => {
                     self.recording.start(tab, &path);
                 }
@@ -1763,6 +1771,10 @@ cef::wrap_life_span_handler! {
         /// and nothing in this host watches render-process termination.
         fn on_before_close(&self, _browser: Option<&mut Browser>) {
             self.popups.forget(self.tab);
+            // **A dialog open on this browser goes with it.** The callback has
+            // nothing left to answer, and an entry kept for a destroyed page
+            // would be expired against a browser that no longer exists.
+            crate::jsdialog::forget(self.tab);
         }
     }
 }

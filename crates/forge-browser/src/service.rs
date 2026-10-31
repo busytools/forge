@@ -1421,20 +1421,7 @@ impl BrowserService {
                         && !known.contains(&page.id)
                 })
                 .collect();
-            // **A blank page is the one this call asked for.** A popup born in
-            // the same window carries its own address; when both are blank,
-            // CEF lists the newest page first, so the request's place among
-            // the host's births counts back from the newest.
-            let blank: Vec<&spawn::PageTarget> =
-                new_pages.iter().filter(|page| page.url == "about:blank").collect();
-            let chosen = if new_pages.len() == 1 {
-                new_pages.first()
-            } else if blank.len() == 1 {
-                blank.first().copied()
-            } else {
-                new_pages.get(new_pages.len().saturating_sub(1 + ours))
-            };
-            chosen
+            choose_new_page(&new_pages, ours)
                 .map(|page| tabs.adopt(number, seat.clone(), &page.id, &page.title, &page.url))
                 .and_then(Result::ok)
         };
@@ -2326,9 +2313,8 @@ impl BrowserService {
         Err(dead_page_answer(DeadPageOutcome::NotRepeated { tool: reported }))
     }
 
-    /// **A driver that stopped answering is replaced on this call.** The
-    /// replacement is the one `tabs_recovering` uses; the call is repeated
-    /// only where repeating cannot land twice.
+    /// **A driver that stopped answering is replaced on this call.** The call
+    /// is repeated only where repeating cannot land twice.
     async fn replace_dead_driver(
         &self,
         profile: &Arc<Profile>,
@@ -4086,6 +4072,26 @@ impl Profile {
     /// watcher is never asked and never cancels it. With no controller the
     /// chooser waits for an agent's own `browser_file_upload`, which is the
     /// same MCP tool that owns the captured chooser.
+    /// Hand the agent's dialog answer to the host that owns the dialog's CEF
+    /// callback. **The tab is the one the answer was made for**: the MCP
+    /// answers the current tab, and forge's current tab is the focused one,
+    /// read when the notice arrived.
+    async fn dialog_answer(&self, answer: driver::DialogAnswer, tab: u16) {
+        if tab == 0 {
+            return;
+        }
+        let input = {
+            let state = self.state.lock().await;
+            state.host.as_ref().map(|host| host.input.clone())
+        };
+        let Some(input) = input else { return };
+        let _ = input.send(input::host_line(&input::HostInput::Dialog {
+            tab,
+            accept: answer.accept,
+            prompt: answer.prompt,
+        }));
+    }
+
     async fn file_chooser(
         self: &Arc<Self>,
         chooser: driver::FileChooser,
@@ -4369,19 +4375,20 @@ impl Profile {
         // tests replace this handle with a gated one.
         let calls: Arc<dyn ChooserAnswer> = driver.clone();
         *self.chooser_answer.lock().unwrap_or_else(PoisonError::into_inner) = Some(calls);
-        // **Every chooser the driver surfaces is the profile's to answer.**
-        // The task ends when the driver is replaced: its sender is dropped
-        // with the Arc, and `recv` then closes.
-        let mut choosers = driver.file_choosers();
+        // **Every notice the driver surfaces is the profile's to answer**: a
+        // page's chooser, or the agent's answer to a page's dialog. The task
+        // ends when the driver is replaced: its sender is dropped with the
+        // Arc, and `recv` then closes.
+        let mut notices = driver.notices();
         let this = Arc::clone(self);
         let generation = installed_generation(state);
         state.driver_generation = generation;
         tokio::spawn(async move {
             loop {
-                match choosers.recv().await {
-                    Ok(chooser) => {
+                match notices.recv().await {
+                    Ok(notice) => {
                         // **The tab and the driver are captured when the
-                        // chooser arrives**: by the time a queued event runs,
+                        // notice arrives**: by the time a queued event runs,
                         // `focused` may belong to another tab and this reader
                         // may belong to a replaced driver.
                         let tab = this
@@ -4389,7 +4396,14 @@ impl Profile {
                             .lock()
                             .unwrap_or_else(PoisonError::into_inner)
                             .unwrap_or(0);
-                        this.file_chooser(chooser, generation, tab).await;
+                        match notice {
+                            driver::DriverNotice::File(chooser) => {
+                                this.file_chooser(chooser, generation, tab).await;
+                            }
+                            driver::DriverNotice::Dialog(answer) => {
+                                this.dialog_answer(answer, tab).await;
+                            }
+                        }
                     }
                     // **A lagged reader keeps reading**: the newest chooser
                     // still matters, and a dropped event is not a closed
@@ -4747,7 +4761,7 @@ impl Profile {
                         );
                         profile.files.send_replace(Some(BrowserFileAsk { id, tab, multiple }));
                     }
-                    HostEvent::JsDialog { tab, dialog, message, dismissed } => {
+                    HostEvent::JsDialog { tab, dialog, message, state } => {
                         // **A page's own dialog is information, not a warning**
                         // (rule 20): an unanswered one is dismissed by the
                         // host's deadline, which is what keeps its renderer
@@ -4757,7 +4771,7 @@ impl Profile {
                             profile = %key,
                             tab,
                             dialog = %dialog,
-                            dismissed,
+                            state = ?state,
                             "a page's JavaScript dialog ({message})"
                         );
                     }
@@ -5551,6 +5565,23 @@ fn left(deadline: tokio::time::Instant) -> Duration {
     deadline.saturating_duration_since(tokio::time::Instant::now()).max(Duration::from_millis(1))
 }
 
+/// The page a create made, out of the page targets that appeared while it
+/// ran. **A blank page is the one a create asked for.** A popup born in the
+/// same window carries its own address, so the blank one is picked; when more
+/// than one is blank, CEF's list is newest-first, so the request's place among
+/// the host's births counts back from the newest.
+fn choose_new_page(pages: &[spawn::PageTarget], ours: usize) -> Option<&spawn::PageTarget> {
+    if pages.len() == 1 {
+        return pages.first();
+    }
+    let blank: Vec<&spawn::PageTarget> =
+        pages.iter().filter(|page| page.url == "about:blank").collect();
+    if blank.len() == 1 {
+        return blank.first().copied();
+    }
+    pages.get(pages.len().saturating_sub(1 + ours))
+}
+
 /// The pages reconcile closes: every page target the registry does not know,
 /// except a fresh host's boot page while no session has adopted it yet.
 fn closed_as_orphans(
@@ -6114,6 +6145,77 @@ mod tests {
         );
     }
 
+    /// **`browser_tabs` refreshes its rows from the browser's own list.** A
+    /// title and url that changed since the row was adopted reach the answer,
+    /// matched by target, with no driver call.
+    #[tokio::test]
+    async fn a_listing_refreshes_its_rows_from_the_browser() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let seat = SessionSlot::lead("O", "p");
+        let driver = FakeDriver::with_blank("T1");
+        let seen = driver.clone();
+        service.install_fake(&seat, driver).await;
+        service.call(&seat, "browser_snapshot", json!({})).await.expect("the tab is adopted");
+        let pages = StubEndpoint::start(&[("T1", "http://refreshed/", "a new title")]);
+        attach_host_port(&service, &seat, dir.path(), pages.port).await;
+        let before = seen.listings();
+
+        let parts = service
+            .call(&seat, "browser_tabs", json!({ "action": "list" }))
+            .await
+            .expect("the listing answers");
+        let text = parts
+            .iter()
+            .find_map(|part| match part {
+                forge_primitives::browser::BrowserPart::Text { text } => Some(text.as_str()),
+                forge_primitives::browser::BrowserPart::Image { .. } => None,
+            })
+            .expect("a text answer");
+        assert!(text.contains("[a new title](http://refreshed/)"), "{text}");
+        assert_eq!(seen.listings(), before, "the refresh asked the driver nothing");
+    }
+
+    /// **A create's page is the blank one**, even beside a popup born in the
+    /// same window, and ties count back from CEF's newest-first list.
+    #[test]
+    fn a_create_takes_the_blank_page_the_host_listed() {
+        use super::{choose_new_page, spawn::PageTarget};
+
+        let page = |id: &str, url: &str| PageTarget {
+            id: id.to_owned(),
+            title: String::new(),
+            url: url.to_owned(),
+        };
+        let alone = [page("T1", "about:blank")];
+        assert_eq!(
+            choose_new_page(&alone, 0).map(|page| page.id.as_str()),
+            Some("T1"),
+            "a sole new page is the tab",
+        );
+
+        // Newest first, as CEF lists them: the popup was created last.
+        let with_popup = [page("pop", "http://sign-in/"), page("T1", "about:blank")];
+        assert_eq!(
+            choose_new_page(&with_popup, 0).map(|page| page.id.as_str()),
+            Some("T1"),
+            "a create's blank page outranks a popup's address",
+        );
+
+        let two_blanks = [page("new", "about:blank"), page("old", "about:blank")];
+        assert_eq!(
+            choose_new_page(&two_blanks, 0).map(|page| page.id.as_str()),
+            Some("old"),
+            "the first birth counts back from the newest",
+        );
+        assert_eq!(
+            choose_new_page(&two_blanks, 1).map(|page| page.id.as_str()),
+            Some("new"),
+            "and the second is the newest",
+        );
+        assert!(choose_new_page(&[], 0).is_none(), "no page is no tab");
+    }
+
     /// A stub DevTools endpoint: `/json/list` answers with the pages given,
     /// and a test can swap them mid-run. **No renderer sits behind it**, so
     /// what a test reads is exactly the control plane's own answer.
@@ -6124,7 +6226,7 @@ mod tests {
     }
 
     impl StubEndpoint {
-        fn start(pages: &[(&str, &str)]) -> Self {
+        fn start(pages: &[(&str, &str, &str)]) -> Self {
             use std::io::{Read as _, Write as _};
 
             let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("a stub endpoint");
@@ -6151,7 +6253,7 @@ mod tests {
             Self { port, body, hits }
         }
 
-        fn set(&self, pages: &[(&str, &str)]) {
+        fn set(&self, pages: &[(&str, &str, &str)]) {
             *self.body.lock().expect("the served body") = page_list_body(pages);
         }
 
@@ -6160,10 +6262,10 @@ mod tests {
         }
     }
 
-    fn page_list_body(pages: &[(&str, &str)]) -> String {
+    fn page_list_body(pages: &[(&str, &str, &str)]) -> String {
         let rows: Vec<serde_json::Value> = pages
             .iter()
-            .map(|(id, url)| json!({"id": id, "url": url, "title": "", "type": "page"}))
+            .map(|(id, url, title)| json!({"id": id, "url": url, "title": title, "type": "page"}))
             .collect();
         serde_json::to_string(&rows).expect("a page list body")
     }
@@ -6182,7 +6284,7 @@ mod tests {
         service.install_fake(&seat, FakeDriver::with_blank("T1")).await;
         service.call(&seat, "browser_snapshot", json!({})).await.expect("the tab is adopted");
         let profile = service.find("O/default").await.expect("the profile");
-        let pages = StubEndpoint::start(&[("T1", "http://a/")]);
+        let pages = StubEndpoint::start(&[("T1", "http://a/", "one")]);
         attach_host_port(&service, &seat, dir.path(), pages.port).await;
 
         let watch = start_nav_watch(Arc::clone(&profile), pages.port);
@@ -6334,8 +6436,7 @@ mod tests {
 
     /// **A host with no boot tab is ended from the create it wedges.** A
     /// create installs its own driver and lists with it; a listing that dies
-    /// there is the same wedge `tabs_recovering` ends, and this path never
-    /// reaches that recovery.
+    /// there is a wedged host, and this path never reaches a listing recovery.
     #[tokio::test]
     async fn a_create_whose_fresh_driver_cannot_list_ends_the_host() {
         let dir = tempfile::tempdir().expect("a temp dir");
@@ -6433,7 +6534,7 @@ mod tests {
 
         // A host for watch_nav's port, and the finished handle the Gone path
         // leaves in the slot.
-        let pages = StubEndpoint::start(&[("T1", "http://a/")]);
+        let pages = StubEndpoint::start(&[("T1", "http://a/", "one")]);
         let ring_name = format!("/forge-watch-{}", std::process::id());
         let ring = crate::osr::Ring::create(&ring_name, 4, 4).expect("a test ring");
         let (input, _input_rx) = std::sync::mpsc::channel();
@@ -6843,10 +6944,14 @@ mod tests {
         let fake = FakeDriver::with_blank("T1");
         let seen = fake.clone();
         service.install_fake(&seat, fake).await;
-        service.call(&seat, "browser_snapshot", json!({})).await.expect("the tab is adopted");
         let profile = service.find("O/default").await.expect("the profile");
         // The browser never gave this row a target.
-        profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).retarget(1, "");
+        profile
+            .tabs
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .adopt(1, seat.clone(), "", "a tab", "http://a/")
+            .expect("the test's row");
         let drives = seen.selected().len();
 
         let refused = service

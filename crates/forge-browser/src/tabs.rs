@@ -253,16 +253,6 @@ impl TabRegistry {
         changed
     }
 
-    /// Follow a fresh target for a row. The browser's target id is the
-    /// page's identity; a listing that names the same page by another id is
-    /// the only thing that moves it.
-    pub fn retarget(&mut self, tab: u16, target: &str) {
-        if let Some(entry) = self.tabs.get_mut(&tab) {
-            target.clone_into(&mut entry.target);
-        }
-        self.unresolved.remove(&tab);
-    }
-
     pub(crate) fn owned(&self, session: &SessionSlot, tab: u16) -> Result<&Tab, String> {
         let entry = self.tabs.get(&tab).ok_or_else(|| format!("tab {tab} is not open"))?;
         if &entry.owner != session {
@@ -396,17 +386,6 @@ mod tests {
             },
         ];
         assert_eq!(orphan_targets(&registry, &listing), vec!["T2".to_owned()]);
-    }
-
-    #[test]
-    fn a_target_is_what_moves_when_a_listing_names_another_one() {
-        let seat = SessionSlot::lead("O", "p");
-        let mut registry = TabRegistry::default();
-        let tab =
-            registry.adopt(1, seat.clone(), "old-target", "", "about:blank").expect("the tab");
-        registry.retarget(tab, "new-target");
-        assert_eq!(registry.target(tab), Some("new-target"), "the CDP target follows the page");
-        assert_eq!(registry.owner(tab), Some(&seat), "the number and owner stay");
     }
 
     /// **A close clears the unresolved flag, and a number with no row is

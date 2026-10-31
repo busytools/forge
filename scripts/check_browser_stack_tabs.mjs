@@ -4,10 +4,11 @@
 // paused on a `confirm()`, or one whose script stopped, holds that call for
 // ever, so every session's listing hung behind it and forge ended the healthy
 // host (#2732). This runs the listing against stub tabs - one whose CDP
-// attach never settles, one healthy - and fails unless both rows come back
-// within the bound, the paused one carrying no target. It also pins the
-// per-page cache (a second listing reads no renderer) and, on a bundle that
-// carries it, selection by target.
+// attach never settles on its first read, one healthy - and fails unless both
+// rows come back within the bound, the paused one carrying no target. It also
+// pins the per-page cache (a second listing reads no renderer, a read after
+// the window retries once), selection by target, and the select arm's own
+// bounded re-read of a page whose first read timed out.
 //
 // Usage: check_browser_stack_tabs.mjs <stack dir>
 //        check_browser_stack_tabs.mjs --bundle <coreBundle.js>
@@ -18,8 +19,8 @@ import { join } from "node:path";
 // **Well under the bound a call is given**, so a listing that waits on the
 // paused page fails here instead of looking like a slow answer.
 const BOUND_MS = 5000;
-// The patch's own per-page read timeout, plus room for a loaded machine.
-const SETTLE_MS = 3000;
+// The patch retries a failed read only after this window (see the patch).
+const RETRY_AFTER_MS = 5000;
 
 const args = process.argv.slice(2);
 let bundle;
@@ -53,10 +54,11 @@ if (!tool) {
 }
 
 const patched = readFileSync(bundle, "utf8");
-const byTarget = patched.includes("FORGE_SELECT_TARGET 1");
+const byTarget = patched.includes("FORGE_SELECT_TARGET");
 
 const problems = [];
 let attaches = 0;
+let pausedAttempts = 0;
 let selected = [];
 let context;
 
@@ -73,8 +75,9 @@ const tab = (target, current) => {
   };
 };
 
-// The paused page's attach never settles: exactly what a renderer stopped on
-// a dialog does to `Target.attachToTarget`.
+// The paused page's FIRST attach never settles: exactly what a renderer
+// stopped on a dialog does to `Target.attachToTarget`. Its later reads
+// answer, which is what the retry and the select arm's heal are for.
 const paused = tab("T1", false);
 const healthy = tab("T2", true);
 context = {
@@ -82,7 +85,17 @@ context = {
   tabs: () => [paused, healthy],
   newCDPSession: async (page) => {
     attaches += 1;
-    if (page === paused.page) return new Promise(() => {});
+    if (page === paused.page) {
+      pausedAttempts += 1;
+      if (pausedAttempts === 1) return new Promise(() => {});
+      return {
+        send: async (method) =>
+          method === "Target.getTargetInfo"
+            ? { targetInfo: { targetId: "T1" } }
+            : {},
+        detach: async () => {},
+      };
+    }
     return {
       send: async (method) =>
         method === "Target.getTargetInfo"
@@ -105,8 +118,6 @@ const response = {
   addTextResult(value) {
     text += value;
   },
-  // Version 2's arm called headerSnapshot directly, so this stub is not what
-  // it needs; an arm that asks the response for a snapshot still works.
   setIncludeSnapshot() {},
 };
 
@@ -114,48 +125,52 @@ const timeout = new Promise((resolve) =>
   setTimeout(() => resolve("timeout"), BOUND_MS),
 );
 
-const listed = await Promise.race([
-  tool.handle(context, { action: "list" }, response).then(() => "answered"),
-  timeout,
-]);
-if (listed === "timeout") {
+/// Run one listing and answer its parsed rows, or null when it did not answer.
+const list = async () => {
+  text = "";
+  const listed = await Promise.race([
+    tool.handle(context, { action: "list" }, response).then(() => "answered"),
+    timeout,
+  ]);
+  if (listed === "timeout") return null;
+  const exportLine = text
+    .split("\n")
+    .find((line) => line.startsWith("FORGE-TABS "));
+  if (!exportLine) return [];
+  return JSON.parse(exportLine.slice("FORGE-TABS ".length));
+};
+
+const rows = await list();
+if (rows === null) {
   problems.push(
     `the listing did not answer within ${BOUND_MS} ms: the paused page held it`,
   );
 } else {
-  const exportLine = text
-    .split("\n")
-    .find((line) => line.startsWith("FORGE-TABS "));
-  if (!exportLine) {
-    problems.push("the listing carried no FORGE-TABS export");
-  } else {
-    const rows = JSON.parse(exportLine.slice("FORGE-TABS ".length));
-    if (rows.length !== 2) {
-      problems.push(`the listing named ${rows.length} tabs, expected 2`);
-    }
-    const pausedRow = rows.find((row) => row.i === 0) || {};
-    const healthyRow = rows.find((row) => row.i === 1) || {};
-    if (pausedRow.target !== "") {
-      problems.push(
-        `the paused page was given a target (${JSON.stringify(pausedRow.target)})`,
-      );
-    }
-    if (healthyRow.target !== "T2") {
-      problems.push(
-        `the healthy page's target is ${JSON.stringify(healthyRow.target)}, expected T2`,
-      );
-    }
-    if (!healthyRow.current) {
-      problems.push("the healthy page's row lost its current flag");
-    }
+  if (rows.length !== 2) {
+    problems.push(`the listing named ${rows.length} tabs, expected 2`);
   }
-  // **The cache is the point**: a second listing reads no renderer, so the
-  // paused page costs one bounded read per driver, not one per listing.
+  const pausedRow = rows.find((row) => row.i === 0) || {};
+  const healthyRow = rows.find((row) => row.i === 1) || {};
+  if (pausedRow.target !== "") {
+    problems.push(
+      `the paused page was given a target (${JSON.stringify(pausedRow.target)})`,
+    );
+  }
+  if (healthyRow.target !== "T2") {
+    problems.push(
+      `the healthy page's target is ${JSON.stringify(healthyRow.target)}, expected T2`,
+    );
+  }
+  if (!healthyRow.current) {
+    problems.push("the healthy page's row lost its current flag");
+  }
+}
+
+// **The cache is the point**: a second listing inside the retry window reads
+// no renderer, so the paused page costs one bounded read, not one per listing.
+if (problems.length === 0) {
   const before = attaches;
-  await Promise.race([
-    tool.handle(context, { action: "list" }, response).then(() => "answered"),
-    timeout,
-  ]);
+  await list();
   if (attaches !== before) {
     problems.push(
       `a second listing attached to ${attaches - before} more page(s); the target read must be cached`,
@@ -163,7 +178,26 @@ if (listed === "timeout") {
   }
 }
 
-if (byTarget) {
+// **A failed read is retried after the window**, on the next listing.
+if (problems.length === 0 && byTarget) {
+  paused.forgeTargetAt = Date.now() - RETRY_AFTER_MS - 1000;
+  const before = attaches;
+  const healed = await list();
+  if (attaches !== before + 1) {
+    problems.push(
+      `a listing after the retry window attached ${attaches - before} time(s), expected 1`,
+    );
+  }
+  const pausedRow = (healed || []).find((row) => row.i === 0) || {};
+  if (pausedRow.target !== "T1") {
+    problems.push(
+      `the retried read left the paused page as ${JSON.stringify(pausedRow.target)}, expected T1`,
+    );
+  }
+}
+
+// **Selection is by target**, and a target no page carries is refused.
+if (problems.length === 0 && byTarget) {
   selected = [];
   await tool.handle(context, { action: "select", target: "T2" }, response);
   if (selected.length !== 1 || selected[0] !== 1) {
@@ -182,6 +216,40 @@ if (byTarget) {
   }
 }
 
+// **A select whose page the cache cannot name reads it again**, bounded, and
+// drives it on that same call: the service no longer lists the driver before
+// a call, so this is the only place the heal can happen.
+if (problems.length === 0 && byTarget) {
+  paused.forgeTarget = "";
+  paused.forgeTargetAt = Date.now();
+  const before = attaches;
+  selected = [];
+  let healed;
+  try {
+    healed = await Promise.race([
+      tool.handle(context, { action: "select", target: "T1" }, response).then(
+        () => "answered",
+      ),
+      timeout,
+    ]);
+  } catch (why) {
+    problems.push(`a select with an empty cache threw: ${why}`);
+  }
+  if (healed === "timeout") {
+    problems.push("a select with an empty cache did not answer within the bound");
+  }
+  if (attaches !== before + 1) {
+    problems.push(
+      `a select with an empty cache attached ${attaches - before} time(s), expected its own bounded re-read`,
+    );
+  }
+  if (selected.length !== 1 || selected[0] !== 0) {
+    problems.push(
+      `a select with an empty cache drove ${JSON.stringify(selected)}, expected [0]`,
+    );
+  }
+}
+
 if (problems.length > 0) {
   console.error(
     `[ERROR] the vendored tab listing is not a read of memory: ${problems.join("; ")}. ` +
@@ -192,6 +260,6 @@ if (problems.length > 0) {
 }
 console.log(
   `[OK] the vendored tab listing reads memory: 2 tabs answered within ${BOUND_MS} ms, ` +
-    `the paused page carried no target, ${attaches} attach(es) over two listings` +
-    (byTarget ? ", selection by target resolves" : ""),
+    `the paused page carried no target, ${attaches} attach(es) over the run` +
+    (byTarget ? ", selection by target resolves and heals" : ""),
 );

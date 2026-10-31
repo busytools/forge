@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// Give the vendored @playwright/mcp the three things forge needs and
-// upstream does not provide.
+// Give the vendored @playwright/mcp the surface forge needs and upstream does
+// not provide.
 //
 // **A file chooser surface.** Playwright owns the page's file chooser: its
 // tab attaches a `filechooser` listener, which enables
@@ -11,13 +11,18 @@
 // person or answer with the agent's own paths - both through the SAME
 // captured chooser the MCP's `browser_file_upload` tool answers.
 //
-// **A stable name per tab.** Playwright addresses tabs by position and prints
-// no identity; a close renumbers every later tab, so a hand-off number or an
-// owner record keyed by position would silently point at another page. The
-// CDP target id is the only stable name a page has, and only Playwright's
-// internal page object carries it (`page.delegate._targetId`). The patch adds
-// one machine line to the tab listing with each tab's target id; the service
-// strips that line before the agent sees the listing.
+// **A name per tab that costs no renderer.** Playwright addresses tabs by
+// position and prints no identity; a close renumbers every later tab, so a
+// hand-off number or an owner record keyed by position would silently point
+// at another page. The CDP target id is the name the browser and forge's
+// registry share, and it is only readable through a page-domain CDP call, so
+// the patch reads it once per page, bounded, caches it on the tab, and adds
+// one machine line to the tab listing; the service strips that line before
+// the agent sees the listing.
+//
+// **Selection by that name.** The select arm takes a CDP target instead of a
+// position, and reads the target again when a page's cached read failed, so a
+// page paused at the wrong moment heals on its own call.
 //
 // **A listing that reads.** See the tab-list patch below: the list arm must
 // not make a page, because forge lists from a history watch.
@@ -26,8 +31,7 @@
 // bundle's own excerpt, checked in beside this file. A version bump that
 // changes any of them fails here, at install time, rather than silently
 // shipping a driver that never surfaces a chooser, never names a tab or
-// creates one on every listing. The borrowed private field is named by the
-// tab patch's marker, so a bump's failure points at it.
+// creates one on every listing.
 //
 // Usage: patch_browser_stack.mjs <stack dir>
 //        patch_browser_stack.mjs --bundle <coreBundle.js>
@@ -87,11 +91,107 @@ const TABSCHEMA_NEEDLE = readFileSync(
   "utf8",
 ).replace(/\n$/, "");
 
+const DIALOG_NEEDLE = readFileSync(
+  new URL("./playwright-mcp-0.0.83-dialoganswer.txt", import.meta.url),
+  "utf8",
+).replace(/\n$/, "");
+
+// **A page dialog's CEF callback is the host's**, so the page's own CDP
+// session cannot answer it: `Page.handleJavaScriptDialog` reports "No dialog
+// is showing" whether or not a host handler exists (measured 2026-11-01).
+// The agent's answer therefore goes to forge over the driver's socket, and
+// the host answers the callback it already holds. A socket that cannot be
+// reached falls back to the CDP call, which is what an unpatched forge did.
+const DIALOG_REPLACEMENT = [
+  "      handle: async (tab2, params2, response2) => {",
+  "        const dialogState = tab2.modalStates().find((state) => state.type === \"dialog\");",
+  "        if (!dialogState)",
+  '          throw new Error("No dialog visible");',
+  "        tab2.clearModalState(dialogState);",
+  "        // FORGE_DIALOG_ANSWER 1: the host owns the dialog's CEF callback.",
+  "        let forgeAnswered = false;",
+  "        try {",
+  "          const forgeSocket = process.env.FORGE_DIALOG_SOCKET;",
+  "          if (forgeSocket) {",
+  '            const forgeNet = require("net");',
+  "            const forgeLine = JSON.stringify({",
+  "              accept: params2.accept,",
+  "              promptText: params2.promptText",
+  "            });",
+  "            await new Promise((resolve, reject) => {",
+  "              const forgeClient = forgeNet.createConnection(forgeSocket);",
+  '              forgeClient.on("error", reject);',
+  '              forgeClient.end(forgeLine + "\\n", resolve);',
+  "            });",
+  "            forgeAnswered = true;",
+  "          }",
+  "        } catch (forgeWhy) {}",
+  "        await tab2.waitForCompletion(async () => {",
+  "          if (forgeAnswered) return;",
+  "          if (params2.accept)",
+  "            await dialogState.dialog.accept(params2.promptText);",
+  "          else",
+  "            await dialogState.dialog.dismiss();",
+  "        });",
+  "      },",
+].join("\n");
+
 // **A tab is selected by its target, never by its position.** The position
 // renumbers on every close and can only be learned from a listing; the CDP
 // target is what the browser names every page by and what forge's registry
 // already holds, so a call selects its tab with no listing at all (#2732).
+//
+// **A miss is a page the last read could not name, and this arm heals it.**
+// The service no longer lists the driver on the call path, so a page that was
+// paused when its target was read would never be named by another listing;
+// the selection itself is where the second, bounded read goes.
 const TABSELECT_REPLACEMENT = [
+  "          case \"select\": {",
+  "            // FORGE_SELECT_TARGET 2: a target names the page, not a position.",
+  "            if (params2.target !== void 0) {",
+  "              let forgeAt = context.tabs().findIndex((tab2) => tab2.forgeTarget === params2.target);",
+  "              if (forgeAt < 0) {",
+  "                // A page whose target read timed out is read again here, so",
+  "                // a tab paused while the driver attached heals on its own call.",
+  "                for (const tab2 of context.tabs()) {",
+  '                  if (tab2.forgeTarget !== "") continue;',
+  "                  try {",
+  "                    const forgeTimeout = () =>",
+  '                      new Promise((_, reject) => setTimeout(() => reject(new Error("forge target read timed out")), 1000));',
+  "                    const forgeSession = await Promise.race([",
+  "                      tab2.page.context().newCDPSession(tab2.page),",
+  "                      forgeTimeout()",
+  "                    ]);",
+  "                    const forgeInfo = await Promise.race([",
+  '                      forgeSession.send("Target.getTargetInfo"),',
+  "                      forgeTimeout()",
+  "                    ]);",
+  '                    tab2.forgeTarget = (forgeInfo && forgeInfo.targetInfo && forgeInfo.targetInfo.targetId) || "";',
+  "                    await forgeSession.detach().catch(() => {});",
+  "                  } catch (forgeWhy) {",
+  '                    tab2.forgeTarget = "";',
+  "                  }",
+  "                  tab2.forgeTargetAt = Date.now();",
+  "                  if (tab2.forgeTarget === params2.target) {",
+  "                    forgeAt = context.tabs().indexOf(tab2);",
+  "                    break;",
+  "                  }",
+  "                }",
+  "              }",
+  "              if (forgeAt < 0)",
+  '                throw new Error(`Tab ${params2.target} is not one the driver can name`);',
+  "              await context.selectTab(forgeAt);",
+  "              break;",
+  "            }",
+  "            if (params2.index === void 0)",
+  '              throw new Error("Tab index is required");',
+  "            await context.selectTab(params2.index);",
+  "            break;",
+  "          }",
+].join("\n");
+
+/// The version-1 select arm, rewritten in place on an existing stack.
+const OLD_TABSELECT_REPLACEMENT = [
   "          case \"select\": {",
   "            // FORGE_SELECT_TARGET 1: a target names the page, not a position.",
   "            if (params2.target !== void 0) {",
@@ -280,9 +380,10 @@ const PATCHES = [
   },
   {
     label: "tab select by target",
-    marker: "FORGE_SELECT_TARGET 1",
+    marker: "FORGE_SELECT_TARGET 2",
     needle: TABSELECT_NEEDLE,
     replacement: TABSELECT_REPLACEMENT,
+    old: OLD_TABSELECT_REPLACEMENT,
     missing:
       "the pinned Playwright bundle does not carry the select arm this patch " +
       "expects. Bump scripts/patch_browser_stack.mjs with the @playwright/mcp version.",
@@ -297,6 +398,16 @@ const PATCHES = [
       "the pinned Playwright bundle does not carry the tab schema this patch " +
       "expects. Bump scripts/patch_browser_stack.mjs with the @playwright/mcp version.",
     twice: "the tab schema appears more than once; refusing to guess.",
+  },
+  {
+    label: "dialog answer",
+    marker: "FORGE_DIALOG_ANSWER 1",
+    needle: DIALOG_NEEDLE,
+    replacement: DIALOG_REPLACEMENT,
+    missing:
+      "the pinned Playwright bundle does not carry the dialog tool this patch " +
+      "expects. Bump scripts/patch_browser_stack.mjs with the @playwright/mcp version.",
+    twice: "the dialog tool appears more than once; refusing to guess.",
   },
   {
     label: "tab list reads",
@@ -330,6 +441,10 @@ if (args[0] === "--print-tabselect-needle") {
 }
 if (args[0] === "--print-tabschema-needle") {
   process.stdout.write(`${TABSCHEMA_NEEDLE}\n`);
+  process.exit(0);
+}
+if (args[0] === "--print-dialog-needle") {
+  process.stdout.write(`${DIALOG_NEEDLE}\n`);
   process.exit(0);
 }
 if (args[0] === "--print-old") {

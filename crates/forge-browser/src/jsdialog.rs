@@ -23,7 +23,7 @@ use cef::{
     JsdialogType, WrapJsdialogHandler,
 };
 
-use crate::control::{self, HostEvent};
+use crate::control::{self, HostEvent, JsDialogState};
 
 /// How long a dialog nobody answers stays open. **The agent's answer is the
 /// one that matters**: its `browser_handle_dialog` closes the dialog through
@@ -102,13 +102,13 @@ cef::wrap_jsdialog_handler! {
         /// module makes has already taken the entry, so it is not announced
         /// twice.
         fn on_dialog_closed(&self, _browser: Option<&mut cef::Browser>) {
-            OPEN.with(|open| open.borrow_mut().remove(&self.tab));
+            forget(self.tab);
         }
 
         /// The page navigated out of its own dialog; there is nothing left to
         /// answer, and nothing to announce.
         fn on_reset_dialog_state(&self, _browser: Option<&mut cef::Browser>) {
-            OPEN.with(|open| open.borrow_mut().remove(&self.tab));
+            forget(self.tab);
         }
     }
 }
@@ -128,8 +128,35 @@ fn raise(tab: u16, dialog: &'static str, message: String, callback: &JsdialogCal
         tab,
         dialog: dialog.to_owned(),
         message,
-        dismissed: false,
+        state: JsDialogState::Shown,
     });
+}
+
+/// Forget a tab's dialog without answering it. **The browser is going**, so
+/// its callback has nothing left to answer, and the entry must not outlive
+/// the page that raised it.
+pub fn forget(tab: u16) {
+    OPEN.with(|open| open.borrow_mut().remove(&tab));
+}
+
+/// Answer one dialog: `accept` is the button the agent chose, `prompt` the
+/// text a prompt asks for. `false` names a tab no dialog is open on, **which
+/// is not an error**: the deadline may have answered it first.
+///
+/// **Called on the UI thread** by the host's pump, the thread that raised the
+/// callback.
+pub fn answer(tab: u16, accept: bool, prompt: Option<&str>) -> bool {
+    let dialog = OPEN.with(|open| open.borrow_mut().remove(&tab));
+    let Some(dialog) = dialog else { return false };
+    let input = prompt.map(CefString::from);
+    dialog.callback.cont(i32::from(accept), input.as_ref());
+    control::emit(&HostEvent::JsDialog {
+        tab,
+        dialog: dialog.dialog.to_owned(),
+        message: dialog.message,
+        state: JsDialogState::Answered,
+    });
+    true
 }
 
 /// Dismiss every dialog past its deadline. **Called on the UI thread** by the
@@ -150,7 +177,7 @@ pub fn expire(now: u64) {
             tab,
             dialog: dialog.dialog.to_owned(),
             message: dialog.message,
-            dismissed: true,
+            state: JsDialogState::Expired,
         });
         tracing::debug!(
             event_name = "cef_js_dialog_dismissed",

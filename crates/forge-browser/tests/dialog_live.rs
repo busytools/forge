@@ -1,5 +1,5 @@
-//! A page dialog is answered on a deadline: one nobody answers is dismissed
-//! by the host, and the page runs again.
+//! Page dialogs on a deadline: one nobody answers is dismissed by the host,
+//! one the agent answers is not, and both leave the page running.
 //!
 //! **The measured defect was a `confirm()` no one answered**: the host had no
 //! JS dialog handler, so the dialog never closed, the page's own thread
@@ -16,13 +16,19 @@ mod support;
 use std::io::{Read as _, Write as _};
 use std::time::{Duration, Instant};
 
-use forge_browser::control::HostEvent;
+use forge_browser::control::{HostEvent, JsDialogState};
+use forge_browser::input::HostInput;
+use forge_browser::jsdialog::DEADLINE_MS;
 use forge_browser::window::{Backlog, Cdp};
 use serde_json::{Value, json};
 
 /// How long CEF is given to create, paint and answer.
 const BOUND: Duration = Duration::from_secs(30);
 const POLL: Duration = Duration::from_millis(50);
+/// The deadline plus the polish a loaded machine may add to the pump. **The
+/// pin is a stretch of the real five seconds**: a deadline of twenty-five
+/// seconds lands outside it.
+const DEADLINE_AND_POLISH: Duration = Duration::from_millis(DEADLINE_MS + 10_000);
 
 /// A page that opens a dialog on its own, then records what the answer was.
 /// **The title is the page's own proof that its thread ran again**: it is set
@@ -35,80 +41,198 @@ setTimeout(() => { \
 }, 100);\
 </script>";
 
+/// A page that navigates away on a gesture, with a beforeunload prompt armed.
+const LEAVING: &str = "<title>leaving</title>\
+<script>\
+function go() { \
+  window.onbeforeunload = () => 'leave?'; \
+  location.href = '/other'; \
+}\
+</script>";
+
 #[test]
 fn an_unanswered_dialog_is_dismissed_at_its_deadline() {
-    let scratch = tempfile::tempdir().expect("a temp dir");
-    let exe = support::host_executable(scratch.path());
-    let profile = scratch.path().join("profile");
-    std::fs::create_dir_all(&profile).expect("the profile dir");
-    let port = support::free_port();
-    let ring_name = format!("/forge-dialog-test-{}", std::process::id());
-    let log = scratch.path().join("host.log");
+    let mut live = Live::start(PAGE);
+    let Live { host, runtime, cdp, page_port, .. } = &mut live;
 
-    let (page_port, page_server) = serve(PAGE);
-    let mut host =
-        support::Host::start_with_events(&exe, &profile, port, &ring_name, "800x600", &[], &log);
-    let page = support::wait_for_page(port, &log, BOUND);
-
-    let runtime =
-        tokio::runtime::Builder::new_current_thread().enable_all().build().expect("a runtime");
     runtime.block_on(async {
-        let (mut cdp, _events) = connect(port, &format!("/devtools/page/{page}")).await;
-        cdp.call("Page.navigate", json!({ "url": format!("http://127.0.0.1:{page_port}/") }), None)
-            .await
-            .expect("the page navigates");
-        wait_for_title(&mut cdp, "ready", BOUND).await;
+        navigate(cdp, *page_port).await;
 
         // **The host says a dialog is open**, and nobody answers it.
-        let shown = wait_for_dialog(&host, false, BOUND);
-        assert_eq!(shown_dialog(&shown), "confirm", "the page's confirm is the dialog: {shown:?}");
+        wait_for_dialog(host, "confirm", JsDialogState::Shown);
+        let shown_at = Instant::now();
 
-        // **The deadline is the host's**, not the page's: the dismissal
-        // arrives on its own, and the event says so.
-        let dismissed = wait_for_dialog(&host, true, BOUND);
-        assert_eq!(shown_dialog(&dismissed), "confirm", "{dismissed:?}");
+        // **The dismissal is the host's deadline**, not the page's: it
+        // arrives on its own. **Only the upper bound is the clock's**: the
+        // raise is read from the host's pipe, so when this test first sees it
+        // can lag the host's own deadline.
+        let dismissed = wait_for_dialog(host, "confirm", JsDialogState::Expired);
+        let elapsed = shown_at.elapsed();
+        assert!(
+            elapsed <= DEADLINE_AND_POLISH,
+            "the dialog outlived its deadline by too much: {elapsed:?} ({dismissed})",
+        );
 
         // **The page's own thread runs again**: only the dismissal can have
         // set the title, because the page never answers its own dialog.
-        wait_for_title(&mut cdp, "after", BOUND).await;
+        wait_for_title(cdp, "after", BOUND).await;
     });
-
-    assert!(host.terminate(Duration::from_secs(10)).success(), "the host ends on SIGTERM");
-    drop(page_server);
-    forge_browser::osr::Ring::unlink(&ring_name);
 }
 
-/// The tab and dialog type of one host event line.
-fn shown_dialog(line: &str) -> String {
-    match forge_browser::control::parse(line) {
-        Some(HostEvent::JsDialog { tab, dialog, .. }) => {
-            assert_eq!(tab, 1, "the boot tab raised it: {line}");
-            dialog
-        }
-        other => panic!("not a dialog event: {other:?}"),
+#[test]
+fn an_answered_dialog_is_not_dismissed_at_the_deadline() {
+    let mut live = Live::start(PAGE);
+    let Live { host, runtime, cdp, page_port, .. } = &mut live;
+
+    runtime.block_on(async {
+        navigate(cdp, *page_port).await;
+        wait_for_dialog(host, "confirm", JsDialogState::Shown);
+
+        // **The answer comes from the agent's tool**, which hands it to the
+        // host over the driver's socket. **CDP cannot answer a CEF dialog**:
+        // `Page.handleJavaScriptDialog` reports "No dialog is showing"
+        // whether or not a host handler exists (measured 2026-11-01), so this
+        // is the only path an agent's answer can take.
+        host.input(&forge_browser::input::host_line(&HostInput::Dialog {
+            tab: 1,
+            accept: true,
+            prompt: None,
+        }));
+        wait_for_dialog(host, "confirm", JsDialogState::Answered);
+        wait_for_title(cdp, "accepted", BOUND).await;
+
+        // **The deadline is cancelled by that answer.** A second dismissal
+        // after the deadline would be the host answering a dialog twice.
+        std::thread::sleep(Duration::from_millis(DEADLINE_MS + 3_000));
+        assert!(
+            !saw_state(host, "confirm", JsDialogState::Expired),
+            "an answered dialog was dismissed at the deadline: {:?}",
+            host.events(),
+        );
+    });
+}
+
+#[test]
+fn a_before_unload_dialog_is_dismissed_at_its_deadline() {
+    let mut live = Live::start(LEAVING);
+    let Live { host, runtime, cdp, page_port, .. } = &mut live;
+
+    runtime.block_on(async {
+        navigate(cdp, *page_port).await;
+
+        // **The gesture is the page's own**, so the navigation counts as
+        // user-initiated and the browser asks before leaving.
+        cdp.call("Runtime.evaluate", json!({ "expression": "go()", "userGesture": true }), None)
+            .await
+            .expect("the page takes the gesture");
+
+        wait_for_dialog(host, "beforeunload", JsDialogState::Shown);
+        wait_for_dialog(host, "beforeunload", JsDialogState::Expired);
+
+        // **The page stays and runs again**: a dismissal is "do not leave",
+        // and the renderer is not paused behind it any more.
+        let still = tokio::time::timeout(
+            Duration::from_secs(5),
+            cdp.call(
+                "Runtime.evaluate",
+                json!({ "expression": "document.title", "returnByValue": true }),
+                None,
+            ),
+        )
+        .await
+        .expect("the page answers after the dismissal")
+        .expect("the page reads its title");
+        assert_eq!(
+            still.pointer("/result/value").and_then(Value::as_str),
+            Some("leaving"),
+            "a dismissed beforeunload leaves the page where it was",
+        );
+    });
+}
+
+/// Bring the served page in and wait for its navigation to commit.
+async fn navigate(cdp: &mut Cdp, page_port: u16) {
+    let url = format!("http://127.0.0.1:{page_port}/");
+    cdp.call("Page.navigate", json!({ "url": url }), None).await.expect("the page navigates");
+}
+
+/// One host, one served page and one DevTools connection, ended together.
+struct Live {
+    host: support::Host,
+    runtime: tokio::runtime::Runtime,
+    cdp: Cdp,
+    ring: String,
+    page_port: u16,
+    _server: std::thread::JoinHandle<()>,
+}
+
+impl Live {
+    fn start(body: &str) -> Self {
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(1);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let scratch = tempfile::tempdir().expect("a temp dir");
+        let exe = support::host_executable(scratch.path());
+        let profile = scratch.path().join("profile");
+        std::fs::create_dir_all(&profile).expect("the profile dir");
+        let port = support::free_port();
+        let ring = format!("/forge-dialog-test-{}-{n}", std::process::id());
+        let log = scratch.path().join("host.log");
+        let (page_port, server) = serve(body);
+        let host =
+            support::Host::start_with_events(&exe, &profile, port, &ring, "800x600", &[], &log);
+        let page = support::wait_for_page(port, &log, BOUND);
+        let runtime =
+            tokio::runtime::Builder::new_current_thread().enable_all().build().expect("a runtime");
+        let (cdp, _events) = runtime.block_on(connect(port, &format!("/devtools/page/{page}")));
+        Self { host, runtime, cdp, ring, page_port, _server: server }
     }
 }
 
-/// Wait for one JavaScript dialog event with the answer `dismissed` says.
-fn wait_for_dialog(host: &support::Host, dismissed: bool, bound: Duration) -> String {
-    let deadline = Instant::now() + bound;
+/// Wait for one JavaScript dialog event in `state`.
+fn wait_for_dialog(host: &support::Host, wanted: &str, state: JsDialogState) -> String {
+    let deadline = Instant::now() + BOUND;
     loop {
         if let Some(line) = host.events().into_iter().find(|line| {
             matches!(
                 forge_browser::control::parse(line),
-                Some(HostEvent::JsDialog { dismissed: event_dismissed, .. })
-                    if event_dismissed == dismissed
+                Some(HostEvent::JsDialog {
+                    tab: 1,
+                    ref dialog,
+                    state: event_state,
+                    ..
+                }) if dialog.as_str() == wanted && event_state == state
             )
         }) {
             return line;
         }
         assert!(
             Instant::now() < deadline,
-            "no dialog event with dismissed={dismissed}: {:?} (log: {})",
+            "no {wanted} dialog event in {state:?}: {:?} (log: {})",
             host.events(),
             host.log_tail(),
         );
         std::thread::sleep(POLL);
+    }
+}
+
+/// Whether this dialog ever reached `state`.
+fn saw_state(host: &support::Host, wanted: &str, state: JsDialogState) -> bool {
+    host.events().into_iter().any(|line| {
+        matches!(
+            forge_browser::control::parse(&line),
+            Some(HostEvent::JsDialog {
+                ref dialog,
+                state: event_state,
+                ..
+            }) if dialog.as_str() == wanted && event_state == state
+        )
+    })
+}
+
+impl Drop for Live {
+    fn drop(&mut self) {
+        let _ = self.host.terminate(Duration::from_secs(10));
+        forge_browser::osr::Ring::unlink(&self.ring);
     }
 }
 

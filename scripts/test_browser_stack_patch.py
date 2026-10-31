@@ -25,17 +25,20 @@ import unittest
 from pathlib import Path
 
 PATCHER = Path(__file__).resolve().parent / "patch_browser_stack.mjs"
+TABS_CHECKER = Path(__file__).resolve().parent / "check_browser_stack_tabs.mjs"
 FIXTURE = Path(__file__).resolve().parent / "playwright-mcp-0.0.83-filechooser.txt"
 TABS_FIXTURE = Path(__file__).resolve().parent / "playwright-mcp-0.0.83-tabids.txt"
 TABLIST_FIXTURE = Path(__file__).resolve().parent / "playwright-mcp-0.0.83-tablist.txt"
 TABSELECT_FIXTURE = Path(__file__).resolve().parent / "playwright-mcp-0.0.83-tabselect.txt"
 TABSCHEMA_FIXTURE = Path(__file__).resolve().parent / "playwright-mcp-0.0.83-tabschema.txt"
+DIALOG_FIXTURE = Path(__file__).resolve().parent / "playwright-mcp-0.0.83-dialoganswer.txt"
 VENDOR = Path(__file__).resolve().parent / "vendor_browser_stack.sh"
 MARKER = "FORGE_FILE_CHOOSER_SOCKET"
 TABS_MARKER = "FORGE_TAB_IDS_PATCH 3"
 TABLIST_MARKER = "FORGE_TAB_LIST_READS 1"
-TABSELECT_MARKER = "FORGE_SELECT_TARGET 1"
+TABSELECT_MARKER = "FORGE_SELECT_TARGET 2"
 TABSCHEMA_MARKER = "FORGE_SELECT_TARGET_SCHEMA 1"
+DIALOG_MARKER = "FORGE_DIALOG_ANSWER 1"
 
 
 def run_patcher(*args: str) -> "subprocess.CompletedProcess[str]":
@@ -69,11 +72,15 @@ def tabschema_needle() -> str:
     return printed("--print-tabschema-needle")
 
 
+def dialog_needle() -> str:
+    return printed("--print-dialog-needle")
+
+
 def pinned_bundle() -> str:
     """A bundle carrying every excerpt the patch expects, in one file."""
     return (
         f"// before\n{needle()}\n{tabs_needle()}\n{tablist_needle()}\n"
-        f"{tabselect_needle()}\n{tabschema_needle()}\n// after\n"
+        f"{tabselect_needle()}\n{tabschema_needle()}\n{dialog_needle()}\n// after\n"
     )
 
 
@@ -128,6 +135,13 @@ class BrowserStackPatchTest(unittest.TestCase):
             tabschema_fixture,
             "the patcher's schema needle is the checked-in 0.0.83 excerpt",
         )
+        dialog_fixture = DIALOG_FIXTURE.read_text().rstrip("\n")
+        self.assertIn("dialogState.dialog.accept", dialog_fixture)
+        self.assertEqual(
+            dialog_needle(),
+            dialog_fixture,
+            "the patcher's dialog needle is the checked-in 0.0.83 excerpt",
+        )
 
     def test_the_pinned_listener_is_patched_once_and_carries_the_socket(self) -> None:
         bundle = self.bundle(pinned_bundle())
@@ -140,7 +154,11 @@ class BrowserStackPatchTest(unittest.TestCase):
         self.assertIn('this.setModalState({', patched)
         self.assertIn('fileChooser: chooser,', patched)
         self.assertIn('chooser.isMultiple()', patched)
-        self.assertEqual(patched.count('forgeNet.createConnection'), 1, "one socket write")
+        self.assertEqual(
+            patched.count('forgeNet.createConnection'),
+            2,
+            "one socket write in the chooser patch, one in the dialog answer",
+        )
 
         second = run_patcher("--bundle", str(bundle))
         self.assertEqual(second.returncode, 0, second.stderr)
@@ -181,8 +199,8 @@ class BrowserStackPatchTest(unittest.TestCase):
         self.assertEqual(patched.count("FORGE-TABS "), 1, "the export line appears once")
         self.assertEqual(
             patched.count("Target.getTargetInfo"),
-            1,
-            "the target id is read once per page, not once per tab per listing",
+            2,
+            "one bounded read in the listing's cache fill, one in the select heal",
         )
         self.assertIn("forgeTab.forgeTarget = forgeTarget", patched, "the id is cached on the tab")
         self.assertIn("forgeTargetAt", patched, "a failed read is retried after a window")
@@ -227,7 +245,7 @@ class BrowserStackPatchTest(unittest.TestCase):
         )
         bundle = self.bundle(
             f"// before\n{needle()}\n{version_2}\n{tablist_needle()}\n"
-            f"{tabselect_needle()}\n{tabschema_needle()}\n// after\n"
+            f"{tabselect_needle()}\n{tabschema_needle()}\n{dialog_needle()}\n// after\n"
         )
 
         updated = run_patcher("--bundle", str(bundle))
@@ -252,6 +270,82 @@ class BrowserStackPatchTest(unittest.TestCase):
             'target: z25.string().optional().describe("CDP target id of the tab to select.")',
             patched,
         )
+
+        second = run_patcher("--bundle", str(bundle))
+        self.assertIn("already applied", second.stdout)
+        self.assertEqual(bundle.read_text(), patched, "a second run rewrites nothing")
+
+    def test_a_version_1_select_arm_is_updated_in_place(self) -> None:
+        # The version-1 select arm, as a stack vendored before the heal carries
+        # it: it selects by target but never reads a failed target again.
+        version_1 = (
+            '          case "select": {\n'
+            "            // FORGE_SELECT_TARGET 1: a target names the page, not a position.\n"
+            "            if (params2.target !== void 0) {\n"
+            "              const forgeAt = context.tabs().findIndex((tab2) => tab2.forgeTarget === params2.target);\n"
+            "              if (forgeAt < 0)\n"
+            "                throw new Error(`Tab ${params2.target} is not one the driver can name`);\n"
+            "              await context.selectTab(forgeAt);\n"
+            "              break;\n"
+            "            }\n"
+            "            if (params2.index === void 0)\n"
+            '              throw new Error("Tab index is required");\n'
+            "            await context.selectTab(params2.index);\n"
+            "            break;\n"
+            "          }"
+        )
+        bundle = self.bundle(
+            f"// before\n{needle()}\n{tabs_needle()}\n{tablist_needle()}\n"
+            f"{version_1}\n{tabschema_needle()}\n{dialog_needle()}\n// after\n"
+        )
+
+        updated = run_patcher("--bundle", str(bundle))
+        self.assertEqual(updated.returncode, 0, updated.stderr)
+        self.assertIn("updated", updated.stdout)
+        patched = bundle.read_text()
+        self.assertIn("FORGE_SELECT_TARGET 2", patched)
+        self.assertIn("let forgeAt", patched, "the heal re-assigns the lookup")
+        self.assertIn("read again here", patched)
+
+    def test_the_tabs_checker_fails_a_listing_that_reads_a_renderer(self) -> None:
+        # **The checker needs a negative control in the repo**: CI only runs it
+        # against the already-patched bundle, where it is green by
+        # construction. A stub bundle whose listing awaits every tab's CDP
+        # attach is the shape version 2 shipped.
+        stub = (
+            "const tools = { browserTools: [{ schema: { name: \"browser_tabs\" },"
+            " handle: async (context, params, response) => {\n"
+            "  for (const tab of context.tabs()) {\n"
+            "    const session = await tab.page.context().newCDPSession(tab.page);\n"
+            "    await session.send(\"Target.getTargetInfo\");\n"
+            "  }\n"
+            "  response.addTextResult(\"FORGE-TABS []\\n\");\n"
+            "} }] };\n"
+            "module.exports = { tools };\n"
+        )
+        bundle = self.bundle(stub)
+
+        result = subprocess.run(
+            ["node", str(TABS_CHECKER), "--bundle", str(bundle)],
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("did not answer within", result.stderr)
+        self.assertIn("paused page held it", result.stderr)
+
+    def test_the_dialog_tool_answers_through_forge(self) -> None:
+        bundle = self.bundle(pinned_bundle())
+
+        first = run_patcher("--bundle", str(bundle))
+        self.assertEqual(first.returncode, 0, first.stderr)
+        patched = bundle.read_text()
+        self.assertIn(DIALOG_MARKER, patched)
+        self.assertIn("process.env.FORGE_DIALOG_SOCKET", patched)
+        self.assertIn("if (forgeAnswered) return;", patched, "a forge answer skips the CDP call")
+        # The CDP fallback stays for a socket that cannot be reached.
+        self.assertIn("dialogState.dialog.accept(params2.promptText)", patched)
 
         second = run_patcher("--bundle", str(bundle))
         self.assertIn("already applied", second.stdout)
@@ -283,7 +377,7 @@ class BrowserStackPatchTest(unittest.TestCase):
     def test_a_bundle_without_the_pinned_list_arm_fails_loudly(self) -> None:
         body = (
             f"// before\n{needle()}\n{tabs_needle()}\n{tabselect_needle()}\n"
-            f"{tabschema_needle()}\n// after\n"
+            f"{tabschema_needle()}\n{dialog_needle()}\n// after\n"
         )
         bundle = self.bundle(body)
 
@@ -299,7 +393,10 @@ class BrowserStackPatchTest(unittest.TestCase):
         self.assertEqual(bundle.read_text(), body, "nothing is written when a needle is missing")
 
     def test_a_bundle_without_the_pinned_select_arm_fails_loudly(self) -> None:
-        body = f"// before\n{needle()}\n{tabs_needle()}\n{tablist_needle()}\n// after\n"
+        body = (
+            f"// before\n{needle()}\n{tabs_needle()}\n{tablist_needle()}\n"
+            f"{dialog_needle()}\n// after\n"
+        )
         bundle = self.bundle(body)
 
         result = run_patcher("--bundle", str(bundle))
