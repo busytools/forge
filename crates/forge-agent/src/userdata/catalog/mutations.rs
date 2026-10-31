@@ -17,10 +17,10 @@ use crate::userdata::catalog::scan::is_valid_uuid;
 /// required: a tag row that names no project cannot be told from another
 /// project's.
 ///
-/// The append is not fsynced, so a crash mid-write can lose the row; the
-/// scanner ignores an unterminated line and the next tag write restores
-/// it. The CLI names transcripts by session UUID, so a non-UUID stem is
-/// refused here rather than matched elsewhere.
+/// The append is not fsynced, so a crash mid-write can leave a half-written
+/// final line. The scanner still reads that line and reports the tag it
+/// carries, and keeps it out of the cached state, so the next scan reads it
+/// again.
 ///
 /// # Errors
 ///
@@ -65,6 +65,8 @@ pub fn tag_session(
     append_to_session(config_dir, session_id, directory, &payload)
 }
 
+/// The CLI names transcripts by session UUID, so a stem that is not one is
+/// refused rather than matched against some other file.
 fn validate_uuid(s: &str) -> Result<(), Error> {
     if is_valid_uuid(s) {
         Ok(())

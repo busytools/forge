@@ -24,6 +24,17 @@
 //! recording instead of failing against it: a reload discards the page that
 //! held the stop, so the page that comes back is what ends the orphaned take.
 
+#![allow(
+    clippy::cast_possible_truncation,
+    reason = "encode_frame clamps each sample to the i16 range one line before the cast; it is \
+              the codec's own conversion"
+)]
+#![allow(
+    clippy::needless_pass_by_value,
+    reason = "hold and start take the device owned because start_within moves it onto the \
+              capture thread; the sync entry points keep one shape with it"
+)]
+
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
@@ -450,7 +461,7 @@ fn log_press(
     hold: Option<&Warm>,
     found: &Found,
 ) {
-    let session = session.map(SessionSlot::display).unwrap_or_else(|| "none".to_owned());
+    let session = session.map_or_else(|| "none".to_owned(), SessionSlot::display);
     tauri_plugin_log::log::debug!(
         target: LOG_TARGET,
         "a press asks for the microphone (event_name client_mic_press, session {session}, \
@@ -657,13 +668,11 @@ impl Mic {
         let started = guarded("the take's open", logged, move || {
             mic.start_inner(&bridge, device, &page, &take, Some(&signal))
         });
-        match tokio::time::timeout(limit, started).await {
-            Ok(Ok(answered)) => answered,
-            Ok(Err(error)) => Err(error),
-            Err(_) => {
-                flag.store(true, Ordering::Release);
-                Err(NOT_COME_UP.to_owned())
-            }
+        if let Ok(joined) = tokio::time::timeout(limit, started).await {
+            joined?
+        } else {
+            flag.store(true, Ordering::Release);
+            Err(NOT_COME_UP.to_owned())
         }
     }
 
@@ -1013,7 +1022,9 @@ mod tests {
         fn staled(rig: &Rig) {
             let warm = rig.mic.warm.lock().unwrap();
             let held = warm.as_ref().expect("a held capture");
-            held.held.carry().held.lock().unwrap().at = Instant::now() - SILENT_LIMIT * 4;
+            held.held.carry().held.lock().unwrap().at = Instant::now()
+                .checked_sub(SILENT_LIMIT * 4)
+                .expect("the clock has run past four silent limits");
         }
 
         #[test]
@@ -1295,7 +1306,9 @@ mod tests {
             {
                 let warm = mic.warm.lock().unwrap();
                 let held = warm.as_ref().expect("a held capture");
-                held.held.carry().held.lock().unwrap().at = Instant::now() - SILENT_LIMIT * 4;
+                held.held.carry().held.lock().unwrap().at = Instant::now()
+                    .checked_sub(SILENT_LIMIT * 4)
+                    .expect("the clock has run past four silent limits");
             }
             // The capture the hold keeps, by identity: a fresh open of the
             // same input would carry the same id, so only the pointer proves
@@ -2091,7 +2104,9 @@ mod tests {
         fn spent_signal() -> GivenUp {
             GivenUp {
                 flag: Arc::new(AtomicBool::new(false)),
-                deadline: Instant::now() - Duration::from_secs(1),
+                deadline: Instant::now()
+                    .checked_sub(Duration::from_secs(1))
+                    .expect("the clock has run past a second"),
             }
         }
 

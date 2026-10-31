@@ -6,6 +6,12 @@
 //! is not looking at is dropped - the server relays only what this
 //! connection attached to, so a mismatch is a frame from before an attach.
 
+#![allow(
+    clippy::needless_pass_by_value,
+    reason = "tauri's IPC macro hands every command argument by value; a reference is not a \
+              CommandArg"
+)]
+
 use std::sync::{Arc, Mutex};
 
 use super::{Rect, Viewport};
