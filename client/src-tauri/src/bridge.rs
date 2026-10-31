@@ -541,10 +541,21 @@ impl Bridge {
     /// **A gesture's mark, and the frame it will wait on** (#2645): the round
     /// trip is read from here to the first frame drawn for its tab.
     fn mark_browser_input(&self, event: &forge_primitives::browser::BrowserInputEvent) {
+        // **The desktop overlay is the only shell that draws the picture**:
+        // everywhere else the page paints its own canvas and marks there, so
+        // a shell mark beside it would write every gesture twice.
+        if !cfg!(target_os = "macos") {
+            return;
+        }
         let Some(name) = gesture_mark(event) else { return };
         let Some(app) = self.app.as_ref() else { return };
         let (tab, profile) = {
             let mut state = self.lock();
+            // **A closed connection drops the gesture**, so a mark written
+            // for it would pair with no frame at all.
+            if state.status != "open" {
+                return;
+            }
             let Some(tab) = state.attach.as_ref().and_then(|attach| attach.tab) else { return };
             state.awaiting_paint = Some(tab);
             (tab, state.view_profile.clone())
@@ -557,6 +568,10 @@ impl Bridge {
     /// where the desktop's end of the round trip is marked; the page marks
     /// its own canvas after the draw.
     fn browser_painted(&self, bytes: &[u8]) {
+        // The same platform rule as the input mark: one writer per client.
+        if !cfg!(target_os = "macos") {
+            return;
+        }
         let Some(frame) = crate::browser::split_frame(bytes) else { return };
         let Some(app) = self.app.as_ref() else { return };
         let (owed, profile) = {
@@ -1691,10 +1706,11 @@ fn refusal_title(dropped: bool, lost: Option<u64>) -> &'static str {
         return "the download was not saved";
     }
     // **The title agrees with the body's count.** A count that did not arrive
-    // cannot say one, so only a known single loss is titled as one.
+    // is an older server, whose drop was always titled as one loss; a known
+    // many is the only case that reads plural.
     match lost {
-        Some(1) => "a download was dropped before it was read",
-        _ => "downloads were dropped before they were read",
+        Some(count) if count != 1 => "downloads were dropped before they were read",
+        _ => "a download was dropped before it was read",
     }
 }
 
@@ -1925,8 +1941,8 @@ mod tests {
         );
         assert_eq!(
             refusal_title(true, None),
-            "downloads were dropped before they were read",
-            "a count that did not arrive still cannot say one",
+            "a download was dropped before it was read",
+            "an older server's drop keeps the title it always had",
         );
         assert_eq!(
             refusal_title(false, None),

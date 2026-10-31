@@ -187,7 +187,9 @@
    * is not a mark: the file is a latency record, not a gesture log.
    */
   function input(event: BrowserInputEvent): void {
-    connection.browserInput(event);
+    // **A gesture the socket refused never left**, so it is not marked: the
+    // log would pair it with a frame it never asked for.
+    if (!connection.browserInput(event)) return;
     const name = markOf(event);
     if (name !== null && surface.tab !== null) {
       noteBrowserInput(name, surface.tab, surface.attachedProfile ?? surface.profile);

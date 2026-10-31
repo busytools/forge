@@ -204,14 +204,16 @@ record, written once a second while anything happened, carries `subscribes`
 and `snapshot_chars` with `subscribe_rate` and `snapshot_chars_per_s` - the
 pair that tells a switch's own subscribe apart from a client re-subscribing
 back to back. **The browser takeover's own round trip has marks (#2645):**
-`input` where a gesture leaves - the shell's for the desktop overlay, the
-page's for a canvas - naming the gesture (`mouse:press`, `mouse:release`,
-`key`, `text`, `wheel`; a pointer move is a stream and is not marked), and
-`paint` for the first frame drawn after it, with the frame's `seq`. Both
-carry `surface: "browser"`, the profile and the tab, so one gesture pairs
-with the frame that answered it. Both halves run the probe: the web page's
-records are the same shape, written by the server to its own
-`forge-perf-web.log`.
+`input` where a gesture leaves and `paint` for the first frame drawn after
+it, with the frame's `seq`; `input` names the gesture (`mouse:press`,
+`mouse:release`, `key`, `text`, `wheel`; a pointer move is a stream and is
+not marked). Both carry `surface: "browser"`, the profile and the tab, so
+one gesture pairs with the frame that answered it. **One writer per
+client**: the desktop's shell marks, because its native overlay draws the
+picture and the page never sees the gesture; the page marks wherever it
+paints its own canvas, which is the phone and the web. Both halves run the
+probe: the web page's records are the same shape, written by the server to
+its own `forge-perf-web.log`.
 
 ## Notifications
 
