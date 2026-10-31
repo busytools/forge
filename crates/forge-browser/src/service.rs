@@ -3704,7 +3704,10 @@ const MAX_DOWNLOAD_BYTES: u64 = 32 * 1024 * 1024;
 /// lags past it loses the oldest offers, which is already what a broadcast
 /// does; what it must not do is hold half a gigabyte per open profile for a
 /// page that saved sixteen files while nobody looked.
-const DOWNLOAD_BACKLOG: usize = 4;
+///
+/// **Public because the notice says the number in words**: the server's
+/// drop sentence names this ceiling, and a test pins the two together.
+pub const DOWNLOAD_BACKLOG: usize = 4;
 
 /// What the host last said about a recording: whether the writer opened, and -
 /// once it stopped - how the take ended.
