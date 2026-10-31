@@ -14,8 +14,14 @@
    * Reached only from the development route, and only through `fixture.ts`'s
    * deferred import, so neither it nor its specimens reach the shipped bundle.
    */
+  import { onDestroy, onMount } from 'svelte';
+
   import Composer from '../composer/Composer.svelte';
   import Queue from '../chat/Queue.svelte';
+  import { pinnedRow } from '../chat/pinnedRow.svelte';
+  import type { TurnInfo } from '../chat/units';
+  import { subjectKey } from '../protocol';
+  import Arising from './Arising.svelte';
   import Driven from './Driven.svelte';
   import type {
     ComposerConnection,
@@ -29,6 +35,32 @@
   import type { SessionSlot } from '../wire/types';
 
   const SLOT: SessionSlot = { org: 'Busytools', project: 'forge', label: 'lead' };
+  /**
+   * The one specimen with a running turn, on its own seat: the pin is read per
+   * seat, so a shared slot would put the figures on every specimen's row.
+   */
+  const LIVE_SLOT: SessionSlot = { org: 'Busytools', project: 'forge', label: 'live' };
+  const running: TurnInfo = {
+    running: true,
+    failed: false,
+    duration_ms: 42_000,
+    api_ms: null,
+    ended_at_utc: null,
+    model: 'claude-opus-5',
+    thinking_tokens: 1200,
+    input_tokens: 18_400,
+    output_tokens: 3100,
+    cache_read_tokens: 30_000,
+    cache_written_tokens: 4800,
+    session_cost_usd: null,
+  };
+
+  onMount(() => {
+    pinnedRow.set(subjectKey({ session: LIVE_SLOT }), running);
+  });
+  onDestroy(() => {
+    pinnedRow.set(subjectKey({ session: LIVE_SLOT }), null);
+  });
 
   /**
    * A connection that sends nothing and records everything.
@@ -76,7 +108,7 @@
   function withDefaults(over: Partial<ComposerProps>): ComposerProps {
     return {
       record: over.record ?? blank(),
-      slot: SLOT,
+      slot: over.slot ?? SLOT,
       seat: over.seat ?? seat(),
       connection: idle,
       dictation: over.dictation ?? false,
@@ -265,12 +297,71 @@
     },
   };
 
+  const documentHandOff = {
+    kind: 'document_hand_off',
+    request: {
+      id: '0192e1c0-0000-7000-8000-0000000000dd',
+      path: '/tmp/composer-rethink/brief.md',
+      reviewable: true,
+    },
+  };
+
+  const browserHandOff = {
+    kind: 'browser_hand_off',
+    request: {
+      id: '0192e1c0-0000-7000-8000-0000000000aa',
+      reason: 'confirm the staging deploy page shows the new rate-limit chip',
+      tab: 3,
+    },
+  };
+
   /**
    * One specimen: what it is called, the composer it draws, and - for a state
-   * only the reader can produce - the text to type into it.
+   * only the reader can produce - the text to type, the send that follows it,
+   * or the press that reaches a folded ask.
    */
-  const specimens: { label: string; props: Partial<ComposerProps>; driven?: string }[] = [
+  const specimens: {
+    label: string;
+    props: Partial<ComposerProps>;
+    driven?: string;
+    send?: boolean;
+    click?: string;
+    rising?: { draft: string; later: Partial<ComposerProps> };
+  }[] = [
     { label: 'idle', props: {} },
+    {
+      label: 'idle · a live seat',
+      props: {
+        slot: LIVE_SLOT,
+        record: { ...blank(), slot: LIVE_SLOT },
+      },
+    },
+    { label: 'typing · one line', props: {}, driven: 'roll the chip to staging', send: false },
+    {
+      label: 'typing · wrapped',
+      props: {},
+      driven:
+        'roll the rate-limit chip to staging, but only if the replica caught the bad statement. If it did not, leave production alone and tell me what it saw.',
+      send: false,
+    },
+    { label: 'autocomplete · slash', props: {}, driven: '/', send: false },
+    { label: 'autocomplete · files', props: {}, driven: '@composer', send: false },
+    { label: 'autocomplete · subagents', props: {}, driven: '&cli', send: false },
+    { label: 'autocomplete · emoji', props: {}, driven: ':thu', send: false },
+    {
+      label: 'autocomplete · resume',
+      props: {
+        record: {
+          ...blank(),
+          resume_sessions: [
+            { session_id: '0192e1c0-4a7b-7000-8000-000000000001', summary: 'the composer cut' },
+            { session_id: '0192e1c0-91fd-7000-8000-000000000002', summary: 'the board sweep' },
+          ],
+        },
+      },
+      driven: '/resume 0192',
+      send: false,
+    },
     {
       label: 'hint · authentication',
       props: {
@@ -419,6 +510,47 @@
       props: { record: { ...blank(), pending_asks: [question] } },
     },
     {
+      label: 'dock · question · folded',
+      props: { record: { ...blank(), pending_asks: [question] } },
+      click: '.dock .chevb',
+    },
+    {
+      label: 'dock · permission · folded',
+      props: { record: { ...blank(), pending_asks: [permission] } },
+      click: '.dock .chevb',
+    },
+    {
+      label: 'dock · slack draft · folded',
+      props: { record: { ...blank(), pending_asks: [slackDraft] } },
+      click: '.dock .chevb',
+    },
+    {
+      label: 'dock · document hand-off',
+      props: { record: { ...blank(), pending_asks: [documentHandOff] } },
+    },
+    {
+      label: 'dock · document hand-off · folded',
+      props: { record: { ...blank(), pending_asks: [documentHandOff] } },
+      click: '.dock .chevb',
+    },
+    {
+      label: 'dock · browser hand-off',
+      props: { record: { ...blank(), pending_asks: [browserHandOff] } },
+    },
+    {
+      label: 'dock · browser hand-off · folded',
+      props: { record: { ...blank(), pending_asks: [browserHandOff] } },
+      click: '.dock .chevb',
+    },
+    {
+      label: 'dock · the draft chip under a parked question',
+      props: {},
+      rising: {
+        draft: 'actually, roll staging first and tell me what the replica saw',
+        later: { record: { ...blank(), pending_asks: [question] } },
+      },
+    },
+    {
       label: 'dock · queued behind another',
       props: {
         seat: seat({ pendingDepth: 3 }),
@@ -445,7 +577,20 @@
     <section>
       <h3>{specimen.label}</h3>
       {#if specimen.driven !== undefined}
-        <Driven command={specimen.driven} props={withDefaults(specimen.props)} />
+        <Driven
+          command={specimen.driven}
+          send={specimen.send ?? true}
+          click={specimen.click ?? null}
+          props={withDefaults(specimen.props)}
+        />
+      {:else if specimen.rising !== undefined}
+        <Arising
+          initial={withDefaults(specimen.props)}
+          draft={specimen.rising.draft}
+          later={withDefaults(specimen.rising.later)}
+        />
+      {:else if specimen.click !== undefined}
+        <Driven click={specimen.click} props={withDefaults(specimen.props)} />
       {:else}
         <div class="comp">
           <Composer {...withDefaults(specimen.props)} />
