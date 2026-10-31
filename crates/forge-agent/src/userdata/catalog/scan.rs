@@ -821,7 +821,64 @@ pub fn get_session_messages(
             return SessionHistory::default();
         }
     };
-    parse_session_messages(file)
+    let mut history = parse_session_messages(file);
+    history.messages.extend(subagent_sidecar_rows(session_id, &path));
+    history
+}
+
+/// The frames a session's sub-agent sidecars hold, each stamped with the
+/// dispatch it ran under - the join the card fold reads.
+///
+/// The CLI writes a sub-agent's own frames to
+/// `<session>/subagents/agent-<id>.jsonl` and names the dispatch in the
+/// sibling `.meta.json`'s `toolUseId`; neither is in the session transcript,
+/// so a resumed conversation drew every card as its dispatch alone until
+/// this read folded them in (#1763). A sidecar that cannot be read or named
+/// is skipped: the card falls back to the dispatch it already had.
+fn subagent_sidecar_rows(session_id: &str, transcript: &Path) -> Vec<SessionMessage> {
+    let Some(dir) = transcript.parent() else {
+        return Vec::new();
+    };
+    let Ok(entries) = fs::read_dir(dir.join(session_id).join("subagents")) else {
+        return Vec::new();
+    };
+    let mut metas: Vec<PathBuf> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.ends_with(".meta.json"))
+        })
+        .collect();
+    metas.sort();
+    let mut rows = Vec::new();
+    for meta in metas {
+        let Ok(body) = fs::read(&meta) else { continue };
+        let Ok(value) = serde_json::from_slice::<Value>(&body) else { continue };
+        let Some(dispatch) = value
+            .get("toolUseId")
+            .and_then(Value::as_str)
+            .filter(|id| !id.trim().is_empty())
+        else {
+            continue;
+        };
+        let Some(stem) = meta
+            .file_name()
+            .and_then(|name| name.to_str())
+            .and_then(|name| name.strip_suffix(".meta.json"))
+        else {
+            continue;
+        };
+        let Ok(file) = fs::File::open(meta.with_file_name(format!("{stem}.jsonl"))) else {
+            continue;
+        };
+        for mut row in parse_session_messages(file).messages {
+            row.parent_tool_use_id = Some(dispatch.to_owned());
+            rows.push(row);
+        }
+    }
+    rows
 }
 
 /// The rows a transcript's messages convert to, typed as the wire sends them
@@ -2977,6 +3034,59 @@ mod tests {
         assert_eq!(
             info.storage_key, storage_key,
             "the scanned session reports the projects/<KEY>/ dir it lives in",
+        );
+    }
+
+    /// A resumed git worker anchors its history read at the worktree run
+    /// dir (`claude --resume` receives that cwd via `worker_tag_dir`), so
+    /// the JSONL is read from the worktree project key, not the repo-root
+    /// key. The same session id under the repo-root key is invisible -
+    /// which is why the resume-map must pick a worktree-scoped session.
+    #[test]
+    fn get_session_messages_folds_subagent_sidecars_under_their_dispatch() {
+        let config_dir = tempfile::tempdir().unwrap();
+        let session_id = "550e8400-e29b-41d4-a716-446655440000";
+        let directory = "/Users/me/Projects/playground";
+        let dir = project_dir_for(config_dir.path(), directory);
+        fs::create_dir_all(&dir).unwrap();
+        write_session_jsonl(
+            &dir,
+            session_id,
+            "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"toolu_dispatch\",\"name\":\"Agent\",\"input\":{\"prompt\":\"explore\"}}]},\"uuid\":\"a1\"}\n\
+             {\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_dispatch\",\"content\":\"done\"}]},\"uuid\":\"u1\"}\n",
+        );
+        // The CLI's own layout: one sidecar per sub-agent, the dispatch it
+        // ran under named in the sibling meta file.
+        let sidecars = dir.join(session_id).join("subagents");
+        fs::create_dir_all(&sidecars).unwrap();
+        fs::write(
+            sidecars.join("agent-abc.meta.json"),
+            "{\"agentType\":\"Explore\",\"description\":\"map it\",\"toolUseId\":\"toolu_dispatch\"}",
+        )
+        .unwrap();
+        fs::write(
+            sidecars.join("agent-abc.jsonl"),
+            "{\"type\":\"assistant\",\"isSidechain\":true,\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"toolu_child\",\"name\":\"Bash\",\"input\":{\"command\":\"ls\"}}]},\"uuid\":\"c1\"}\n\
+             {\"type\":\"user\",\"isSidechain\":true,\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_child\",\"content\":\"out\"}]},\"uuid\":\"c2\"}\n",
+        )
+        .unwrap();
+
+        let messages = get_session_messages(config_dir.path(), session_id, Some(directory)).messages;
+
+        assert_eq!(messages.len(), 4, "the transcript's two rows plus the sidecar's two");
+        let folded: Vec<_> = messages
+            .iter()
+            .filter(|message| message.parent_tool_use_id.as_deref() == Some("toolu_dispatch"))
+            .collect();
+        assert_eq!(
+            folded.len(),
+            2,
+            "both sidecar frames name the dispatch they ran under, which is the card fold's join",
+        );
+        assert_eq!(
+            messages.iter().filter(|message| message.parent_tool_use_id.is_none()).count(),
+            2,
+            "the transcript's own rows stay the main thread's",
         );
     }
 
