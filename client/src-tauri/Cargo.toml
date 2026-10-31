@@ -38,11 +38,6 @@ required-features = ["testing"]
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
-[lints.clippy]
-# The test stub records a dial through tungstenite's handshake callback, whose
-# `Err` is large by the library's own definition; nothing here can change it.
-result_large_err = "allow"
-
 [dependencies]
 # `generate_context!` embeds the config's `plugins` section through serde_json.
 serde_json = "1"

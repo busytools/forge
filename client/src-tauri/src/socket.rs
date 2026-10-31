@@ -23,6 +23,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::task::{Context, Poll};
 use std::time::Duration;
 
+use forge_primitives::wire::COMPRESSED_JSON_TAG;
 use futures_util::{SinkExt as _, StreamExt as _};
 use serde_json::{Value, json};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
@@ -96,14 +97,6 @@ pub(crate) const NO_REPLY: &str = "the server did not answer the command";
 /// bound rather than none, ~1.8x the measured maximum; capping the window
 /// itself is #1637's work, not this half's.
 const MAX_FRAME_BYTES: usize = 256 << 20;
-
-/// The binary kind a compressed JSON frame crosses as.
-///
-/// Kind 1 is a relayed browser frame and kind 2 its audio; this one is a
-/// whole message body, gzipped, for a client that declared `deflate=1` on
-/// its socket URL. A server that predates it never sends one, and this half
-/// only ever receives what it declared.
-const COMPRESSED_JSON_TAG: u8 = 3;
 
 /// The URL this half dials, with the compression capability declared.
 ///
@@ -1824,6 +1817,62 @@ pub(crate) mod tests {
         encoder.finish().expect("finish")
     }
 
+    /// A stream that records the HTTP request head as the handshake reads it.
+    ///
+    /// **The stub reads the URI a dial carried from the bytes, not from a
+    /// callback**: tungstenite's header callback returns the library's large
+    /// `ErrorResponse`, which this crate's lints refuse, and the request line
+    /// is the first thing the peer sends anyway.
+    struct Tee {
+        inner: tokio::net::TcpStream,
+        head: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+    }
+
+    impl AsyncRead for Tee {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buf: &mut ReadBuf<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            let before = buf.filled().len();
+            let poll = Pin::new(&mut self.inner).poll_read(cx, buf);
+            if let Poll::Ready(Ok(())) = &poll
+                && let Ok(mut head) = self.head.lock()
+            {
+                // Past the head's terminator the bytes are frames, not the
+                // request, and the log does not grow with them.
+                if !head.windows(4).any(|window| window == b"\r\n\r\n") {
+                    head.extend_from_slice(&buf.filled()[before..]);
+                }
+            }
+            poll
+        }
+    }
+
+    impl AsyncWrite for Tee {
+        fn poll_write(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buf: &[u8],
+        ) -> Poll<std::io::Result<usize>> {
+            Pin::new(&mut self.inner).poll_write(cx, buf)
+        }
+
+        fn poll_flush(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            Pin::new(&mut self.inner).poll_flush(cx)
+        }
+
+        fn poll_shutdown(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            Pin::new(&mut self.inner).poll_shutdown(cx)
+        }
+    }
+
     /// A stub forge: accepts connections, forwards every text frame it hears,
     /// and broadcasts whatever the test pushes. `kill` drops the live
     /// connections while the listener lives on, which is what a reconnect
@@ -1889,18 +1938,24 @@ pub(crate) mod tests {
                 let mut said = say_for_task.subscribe();
                 let mut killed = kill_for_task.subscribe();
                 tokio::spawn(async move {
-                    // **The hook is the handshake's own request**: what a
-                    // client declared lives on the URI it dialled, and a test
+                    // **The dial's request line is the handshake's first
+                    // bytes**, and what a client declared lives on it; a test
                     // that does not read it cannot see the declaration.
-                    let recorded = move |request: &tokio_tungstenite::tungstenite::handshake::server::Request, response| {
-                        if let Ok(mut held) = uris.lock() {
-                            held.push(request.uri().to_string());
-                        }
-                        Ok(response)
-                    };
-                    let Ok(ws) = tokio_tungstenite::accept_hdr_async(stream, recorded).await else {
+                    let head = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+                    let tee = Tee { inner: stream, head: std::sync::Arc::clone(&head) };
+                    let Ok(ws) = tokio_tungstenite::accept_async(tee).await else {
                         return;
                     };
+                    let request =
+                        String::from_utf8_lossy(&head.lock().expect("the head log")).to_string();
+                    if let Some(target) = request
+                        .lines()
+                        .next()
+                        .and_then(|line| line.split_whitespace().nth(1))
+                        && let Ok(mut held) = uris.lock()
+                    {
+                        held.push(target.to_owned());
+                    }
                     let (mut writer, mut reader) = ws.split();
                     loop {
                         tokio::select! {
