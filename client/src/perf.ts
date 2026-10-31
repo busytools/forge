@@ -559,7 +559,16 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
    * user action and the last snapshot's completion (what makes a subscribe
    * "unprompted"), and the connection window's subscribes and snapshot chars.
    */
-  let clickAt: number | null = null;
+  /**
+   * The last seat click, and the seat it named.
+   *
+   * **A click is spent only by a subscribe of its own seat.** A seat the
+   * client already holds opens no subscribe - the one-subscribe rule
+   * guarantees it - so a bare timestamp outlived the click and the next
+   * automatic subscribe of any subject reported the old click's age as its
+   * own gap (measured: 18,006 ms on a session-less home read).
+   */
+  let clickAt: { at: number; seat: string } | null = null;
   let lastUserActionAt: number | null = null;
   let lastSnapshotAt: number | null = null;
   let connStart = 0;
@@ -872,6 +881,9 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
     noteConversationOpened(seat: string): void {
       openSeat = seat;
       openAt = now();
+      // A click for the seat the reader left opens nothing here, so it is
+      // spent rather than left to a later read (#2708).
+      if (clickAt !== null && clickAt.seat !== seat) clickAt = null;
       // A conversation opening is a user action (a deep link, a reload, a
       // palette move), so the subscribe it leads to is not "unprompted".
       lastUserActionAt = openAt;
@@ -895,6 +907,13 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
       if (content ? contentSeen : placeholderSeen) return;
       if (content) {
         contentSeen = true;
+        // **The seat's content drew without a subscribe spending the click**:
+        // a seat the client already holds is drawn from what it kept and
+        // subscribes nothing, so its open is what says the click opened no
+        // read. A later subscribe would otherwise report this click's age as
+        // its own gap (#2708). The placeholder is not this mark: a cold
+        // seat's waking line draws before the subscribe still to come.
+        if (clickAt !== null && clickAt.seat === openSeat) clickAt = null;
       } else {
         placeholderSeen = true;
       }
@@ -912,7 +931,7 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
     },
     noteSeatClick(seat: string): void {
       const at = now();
-      clickAt = at;
+      clickAt = { at, seat };
       lastUserActionAt = at;
       emit({
         schema: SCHEMA,
@@ -932,11 +951,15 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
       connSubscribes += 1;
       connSurface = surface;
       connSession = session;
-      // **A click is spent by the first subscribe it causes.** Left armed,
-      // every later subscribe - the automatic home loop included - would
-      // report its gap since some old click as its own (#2513).
-      const sinceClick = clickAt === null ? undefined : at - clickAt;
+      // **A click is spent by the first subscribe of its OWN seat.** A
+      // subscribe for another subject - the automatic home loop included -
+      // reports nothing, and the click does not outlive it: a timestamp that
+      // survived a click that opened nothing was handed to an unrelated read
+      // as its gap (#2513, #2708).
+      const clicked = clickAt;
       clickAt = null;
+      const sinceClick =
+        clicked !== null && seat !== null && clicked.seat === seat ? at - clicked.at : undefined;
       emit({
         schema: SCHEMA,
         kind: 'subscribe',

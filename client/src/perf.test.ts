@@ -1115,6 +1115,63 @@ describe('the switch gap marks (#2513)', () => {
     expect(second?.since_click_ms).toBeUndefined();
   });
 
+  /**
+   * **A click is spent on its own seat's subscribe and no other.** A seat the
+   * client already holds opens no subscribe, so a bare timestamp outlived the
+   * click - and the next automatic subscribe of an unrelated subject reported
+   * the old click's age as its own gap. Measured on the shipping client: a
+   * click at 1793438352496, then 18,006 ms later an `auto:true` subscribe
+   * with no session carrying `since_click_ms: 18006`, with none between.
+   */
+  it('does not hand a click to a subscribe for another subject', () => {
+    const h = harness();
+    h.probe.setSurface('session', 'forge/lead');
+    h.probe.noteSeatClick('forge/lead');
+    h.advance(18_006);
+    h.probe.noteSubscribe(null, false);
+    h.advance(20);
+    h.probe.noteSubscribe('forge/lead', false);
+
+    const [other, same] = h.records.flat().filter((record) => record.kind === 'subscribe');
+    expect(other?.since_click_ms, 'a session-less subscribe names the old click gap').toBeUndefined();
+    expect(
+      same?.since_click_ms,
+      'and the click is spent rather than left armed for a later read',
+    ).toBeUndefined();
+  });
+
+  /**
+   * **A seat switch that opens nothing clears its click.** A revisit to a
+   * held seat draws from what the client kept and subscribes nothing; the
+   * content drawing landing is what proves the click opened no read, and the
+   * click must not outlive it. A switch to another seat ends it the same way:
+   * no subscribe will ever belong to the seat the reader left.
+   */
+  it('clears the click when the switch opens no subscribe', () => {
+    const h = harness();
+    h.probe.setSurface('session', 'forge/lead');
+    h.probe.noteSeatClick('forge/lead');
+    h.probe.noteConversationOpened('forge/lead');
+    h.probe.noteDrawn('conversation');
+    h.advance(30_000);
+    h.probe.noteSubscribe('forge/lead', false);
+
+    h.probe.noteSeatClick('forge/lead');
+    h.probe.noteConversationOpened('forge/busymail');
+    h.advance(5_000);
+    h.probe.noteSubscribe('forge/lead', false);
+
+    const [drawn, switched] = h.records.flat().filter((record) => record.kind === 'subscribe');
+    expect(
+      drawn?.since_click_ms,
+      'a click the switch never spent outlived its open',
+    ).toBeUndefined();
+    expect(
+      switched?.since_click_ms,
+      'a click for the seat the reader left outlived the switch',
+    ).toBeUndefined();
+  });
+
   it('is not unprompted when the click came after the snapshot', () => {
     const h = harness();
     h.probe.noteSnapshot('forge/lead', 708_018, 12);
