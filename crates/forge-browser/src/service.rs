@@ -10210,7 +10210,12 @@ mod tests {
 
     /// **Two calls on one profile take turns.** The driver's current page is
     /// a single slot, so overlapping calls would swap it under each other.
-    #[tokio::test]
+    ///
+    /// **The clock is paused so the wait is the code's, not the runner's**:
+    /// the driver's 80 ms sleep and the queue's test bound are virtual, so a
+    /// loaded machine cannot spend the headroom and refuse the second call
+    /// as busy (#2579).
+    #[tokio::test(start_paused = true)]
     async fn two_calls_on_one_profile_take_turns() {
         let dir = tempfile::tempdir().expect("a temp dir");
         let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
