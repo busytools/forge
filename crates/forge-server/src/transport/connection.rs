@@ -4711,7 +4711,7 @@ mod tests {
         let small = serde_json::to_string(&a_frame()).expect("the frame encodes").len();
         let write =
             send_frame_timed(&mut socket, a_frame(), &clock).await.expect("the write lands");
-        assert_eq!(write.bytes, small, "a frame under the threshold stays the text frame it was",);
+        assert_eq!(write.bytes, small, "a frame under the threshold stays the text frame it was");
     }
 
     /// **`waited` is not a constant (#2506).** A write that yields says so;

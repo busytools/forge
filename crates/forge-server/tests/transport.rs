@@ -4350,7 +4350,7 @@ async fn next_json_frame(socket: &mut Client) -> (ServerMessage, bool) {
                 return (serde_json::from_str(&text).expect("decode"), true);
             }
             // A browser frame or its audio: not this test's to read.
-            _ => continue,
+            _ => {}
         }
     }
 }
