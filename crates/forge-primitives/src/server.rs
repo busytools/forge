@@ -53,9 +53,10 @@ pub struct ServerConfig {
     /// `0` serves the page the turn count asks for.
     pub more_page_cap_kb: u64,
     /// Extra browser origins allowed to open the socket, beside the shell's
-    /// own and the server's own. A web client is served from wherever it is
-    /// hosted, so only the operator knows that origin; an empty list allows
-    /// none.
+    /// own, the server's own, and any page served on the user's own machine
+    /// (`localhost`, `127.0.0.1` or `[::1]`, any port, http or https). A web
+    /// client served from another address is one only the operator knows; an
+    /// empty list allows none.
     pub allowed_origins: Vec<String>,
 }
 

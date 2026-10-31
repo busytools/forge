@@ -2022,18 +2022,19 @@ async fn a_shell_origin_connects_and_reads_the_settings_frame() {
 }
 
 /// An origin the operator listed in `[server] allowed_origins` is the web
-/// client's own, and it connects.
+/// client's own, and it connects. The host is not loopback, so the list is
+/// what allows it.
 #[tokio::test]
 async fn a_configured_web_origin_connects() {
     let dir = tempfile::tempdir().expect("tempdir");
     let fleet = Fleet::in_dir_with_server(
         dir.path(),
         &[("TestOrg", &["proj"])],
-        "[server]\nallowed_origins = [\"http://localhost:8080\"]\n",
+        "[server]\nallowed_origins = [\"http://forge-web.example:8080\"]\n",
     )
     .expect("the fleet builds");
     let (url, _state) = serve_fleet(&fleet, Heartbeat::default()).await;
-    let _socket = connect_with_origin(&url, "http://localhost:8080").await;
+    let _socket = connect_with_origin(&url, "http://forge-web.example:8080").await;
 }
 
 /// An unchanged save publishes nothing: the workspace compares the document
