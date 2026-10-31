@@ -9837,6 +9837,30 @@ mod lead_charter_tests {
         );
     }
 
+    /// A worktree is a live cut's tree, not a cache: removing one by hand to
+    /// reclaim disk loses its branch and forces a full rebuild. Pinned with
+    /// the reclaim's owner and the in-tree clean that survives a live worker.
+    #[test]
+    fn lead_charter_never_prunes_a_worktree_by_hand() {
+        assert!(
+            DEFAULT_LEAD_CHARTER
+                .contains("Never prune a worker's worktree by hand to reclaim disk"),
+            "the rule's handle is pinned: {DEFAULT_LEAD_CHARTER}",
+        );
+        assert!(
+            DEFAULT_LEAD_CHARTER
+                .contains("a tree removed mid-cut loses its branch and forces a full rebuild"),
+            "the reason a hand prune costs work is pinned: {DEFAULT_LEAD_CHARTER}",
+        );
+        assert!(
+            DEFAULT_LEAD_CHARTER.contains(
+                "under disk pressure, have live workers push their branches and clean inside \
+                 their own trees"
+            ),
+            "the reclaim that survives a live worker is pinned: {DEFAULT_LEAD_CHARTER}",
+        );
+    }
+
     /// The attention rule is the lead's posture toward the user, and both
     /// halves read as the opposite of themselves when softened: the two
     /// shapes become "ask when unsure", and the spec half becomes a
@@ -9993,6 +10017,87 @@ mod lead_charter_tests {
         assert!(
             DEFAULT_LEAD_CHARTER.contains("never merge on the first one back"),
             "the merge waits for the last review, not the first: {DEFAULT_LEAD_CHARTER}",
+        );
+    }
+
+    /// A false claim of coverage survives author review because the diff
+    /// cannot contradict a sentence, so one lens reads the prose. Pinned
+    /// with what it reads, what it fails, and the phrases that hide a claim
+    /// with nothing behind it.
+    #[test]
+    fn lead_charter_carries_the_prose_audit_lens() {
+        assert!(
+            DEFAULT_LEAD_CHARTER.contains("one lens that audits the prose, not the code"),
+            "the lens and its subject are pinned: {DEFAULT_LEAD_CHARTER}",
+        );
+        assert!(
+            DEFAULT_LEAD_CHARTER.contains(
+                "reads the PR body, the commit messages and the spec against what the work \
+                 actually does"
+            ),
+            "what the lens reads is pinned: {DEFAULT_LEAD_CHARTER}",
+        );
+        assert!(
+            DEFAULT_LEAD_CHARTER.contains(
+                "fails any claim of coverage, a passing gate, a failure mode or a known gap \
+                 with no evidence behind it"
+            ),
+            "the claim classes it fails are pinned: {DEFAULT_LEAD_CHARTER}",
+        );
+        assert!(
+            DEFAULT_LEAD_CHARTER.contains(
+                "\"covered by tests\", \"cannot happen\", \"unchanged behaviour\" and \"known \
+                 limitation\" are the highest-risk phrases"
+            ),
+            "the highest-risk phrases are pinned: {DEFAULT_LEAD_CHARTER}",
+        );
+        assert!(
+            DEFAULT_LEAD_CHARTER.contains("one of them reading the prose, not the code"),
+            "the roster names the prose lens at the fan-out: {DEFAULT_LEAD_CHARTER}",
+        );
+    }
+
+    /// Two workflows fire per push and their ids sit adjacent in no stable
+    /// order, so a verdict is only checkable when it names its workflow.
+    /// Pinned at the merge gate and the health check, where a lead reports.
+    #[test]
+    fn lead_charter_quotes_the_workflow_beside_a_verdict() {
+        assert!(
+            DEFAULT_LEAD_CHARTER.contains("Quote the workflow name beside every verdict"),
+            "the rule's handle is pinned: {DEFAULT_LEAD_CHARTER}",
+        );
+        assert!(
+            DEFAULT_LEAD_CHARTER.contains(
+                "read the job list off the run whose workflow is the one you are claiming"
+            ),
+            "the job list is read off the claimed workflow: {DEFAULT_LEAD_CHARTER}",
+        );
+        assert!(
+            DEFAULT_LEAD_CHARTER.contains("one workflow's green is not another's"),
+            "the adjacent-workflow confusion is pinned: {DEFAULT_LEAD_CHARTER}",
+        );
+        assert!(
+            DEFAULT_LEAD_CHARTER.contains("quote each run's workflow name with its verdict"),
+            "the health check repeats the rule where a lead reconciles: {DEFAULT_LEAD_CHARTER}",
+        );
+    }
+
+    /// A permission decision belongs to the conversation that raised it, so
+    /// a lead relaying the user's go-ahead cannot clear a worker's gated
+    /// action. Pinned at the merge step, where the lead is most likely to
+    /// pass one on.
+    #[test]
+    fn lead_charter_carries_the_relayed_approval_rule() {
+        assert!(
+            DEFAULT_LEAD_CHARTER.contains("a relayed approval is not an approval"),
+            "the rule's handle is pinned: {DEFAULT_LEAD_CHARTER}",
+        );
+        assert!(
+            DEFAULT_LEAD_CHARTER.contains(
+                "a worker's gated action needs the user's word in that worker's own \
+                 conversation, not your relay of it"
+            ),
+            "the seat that needs the word is pinned: {DEFAULT_LEAD_CHARTER}",
         );
     }
 

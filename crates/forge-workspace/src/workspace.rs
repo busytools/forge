@@ -392,7 +392,7 @@ reviewer kept on as a long-lived worker.";
 /// `resume_kick` of its own. On a resuming re-spawn forge delivers this
 /// constant as the worker's first turn - telling it to continue rather
 /// than start the task over.
-const DYNAMIC_WORKER_RESTART_NOTE: &str = "This session was restarted by forge. Your prior conversation and progress are in the history above. Continue where you left off; do not restart the task.";
+const DYNAMIC_WORKER_RESTART_NOTE: &str = "This session was restarted by forge. Your prior conversation and progress are in the history above. Continue where you left off; do not restart the task. If the history's timestamps disagree with the clock and the live schedules, believe the clock and the schedules, and still do the concrete asks.";
 
 /// One enqueue onto the workspace-level worker-kick channel
 /// (#259). Built by `maybe_kick_worker_on_connected` (and any
@@ -19128,6 +19128,23 @@ mod worker_respawn_tests {
                 other => panic!("unexpected label {other}"),
             }
         }
+    }
+
+    /// The restart note is the first turn a resumed worker reads, and a
+    /// brief in its history can carry an earlier loss's clock. Pinned so the
+    /// note names the clock and the schedule list as the authority.
+    #[test]
+    fn the_restart_note_marks_a_briefs_timestamps_unverified() {
+        assert!(
+            DYNAMIC_WORKER_RESTART_NOTE.contains(
+                "If the history's timestamps disagree with the clock and the live schedules"
+            ),
+            "the note sends a resumed worker to the clock and the schedules",
+        );
+        assert!(
+            DYNAMIC_WORKER_RESTART_NOTE.contains("still do the concrete asks"),
+            "the note keeps the brief's asks, which are usually right",
+        );
     }
 
     /// A row carrying its own `resume_kick` takes that text on resume

@@ -853,6 +853,9 @@ impl Tool for Approve {
          and must not be empty: it lands in the row's detail and is the evidence the board \
          draws as lead-attested. This door is for a look only - never a decision or a \
          question, which are the user's to answer - and only the project lead may call it. \
+         A verification wait on a row with no `verify: \"user\"` gate of its own is a stale \
+         park, not a look: never attest it, and clear it with a move off waiting or a \
+         withdraw. \
          The user's own approve, send-back and cancel doors stay; the user's reopen strikes \
          the attestation, re-mints the look gate and parks the row on them again. A task is \
          named by its full id or any unique prefix of one. Refused when the row is not \
@@ -1030,6 +1033,30 @@ mod tests {
             approve.input_schema()["required"],
             serde_json::json!(["id", "approval"]),
             "the quote is required at the schema",
+        );
+    }
+
+    /// The gate is minted on the row, never inherited, so a verification
+    /// wait left behind by an inherited gate is a stale park - not a look
+    /// the lead can attest. Its door is a move or a withdraw, and the
+    /// description says so where the lead reads the door's scope.
+    #[test]
+    fn the_approve_description_separates_a_stale_park_from_the_look() {
+        let approve = Approve { facade: MockTasksFacade::new().into_arc(), slot: lead_slot() };
+        assert!(
+            approve.description().contains(
+                "A verification wait on a row with no `verify: \"user\"` gate of its own is a \
+                 stale park, not a look"
+            ),
+            "the stale park is separated from the look: {}",
+            approve.description(),
+        );
+        assert!(
+            approve
+                .description()
+                .contains("never attest it, and clear it with a move off waiting or a withdraw"),
+            "the stale park's own door is pinned: {}",
+            approve.description(),
         );
     }
 
