@@ -592,9 +592,11 @@ impl SessionTask {
                     // first announced a dead worker live and dispatched
                     // crons, Gotify, Slack and peer prompts into a session
                     // the failure then released (#1593).
-                    if self.workspace.upgrade().is_some_and(|workspace| {
-                        workspace.fail_worker_without_worktree(&self.key, &cwd)
-                    }) {
+                    if self
+                        .workspace
+                        .upgrade()
+                        .is_some_and(|workspace| workspace.fail_worker_without_worktree(&self.key))
+                    {
                         return false;
                     }
                     self.connected_once = true;
@@ -9611,11 +9613,18 @@ provider = "anthropic"
     /// A git worker whose worktree is gone must not be announced live,
     /// kicked, or handed its parked prompts, because the failure then
     /// releases the session those prompts were dispatched into (#1593).
+    ///
+    /// **The path composes from the row's root, never the connect cwd.** A
+    /// resumed worker connects with its worktree as cwd, so composing from
+    /// that asked about `<worktree>/.claude/worktrees/<label>` and named the
+    /// doubled path in the reason.
     #[tokio::test]
     async fn a_git_worker_without_a_worktree_is_failed_before_the_first_connect_effects() {
         let (workspace, mut update_rx) = crate::Workspace::testing_stub();
         let session_key = SessionSlot::worker("TestOrg", "proj-x", "builder");
         let project_key = crate::ProjectKey::new("proj-x");
+        let root = tempfile::tempdir().expect("root");
+        let worktree = root.path().join(".claude/worktrees/builder");
         workspace.insert_live_worker(
             &project_key,
             crate::mcp::workers::types::WorkerEntry {
@@ -9628,7 +9637,7 @@ provider = "anthropic"
                 spawned_by: SessionSlot::lead("TestOrg", "proj-x"),
                 needs_tag: true,
                 is_git_repo_at_spawn: true,
-                cwd: None,
+                cwd: Some(root.path().to_path_buf()),
                 diagnostic: None,
                 kick: None,
             },
@@ -9663,10 +9672,9 @@ provider = "anthropic"
             successor: None,
             teardown_done: None,
         };
-        let cwd = tempfile::tempdir().expect("cwd");
-
+        // A resumed worker's connect cwd is already its worktree.
         let alive =
-            task.translate_event(connected_event("builder-session", &cwd.path().to_string_lossy()));
+            task.translate_event(connected_event("builder-session", &worktree.to_string_lossy()));
 
         assert!(!alive, "the task stops rather than continue on a failed worker");
         let mut connected = false;
@@ -9683,9 +9691,12 @@ provider = "anthropic"
             .find(|entry| entry.label == "builder")
             .expect("the row stays as the visible failure");
         assert_eq!(entry.status, forge_primitives::WorkerLiveness::Failed);
+        let reason = entry.diagnostic.expect("the row names the missing worktree");
+        let worktree = worktree.display().to_string();
+        assert!(reason.contains(&worktree), "the row names the worktree: {reason}");
         assert!(
-            entry.diagnostic.is_some_and(|reason| reason.contains("worktree")),
-            "the row names the missing worktree",
+            !reason.contains("builder/.claude/worktrees/builder"),
+            "the reason is not the connect cwd composed a second time: {reason}",
         );
         assert!(
             !workspace.session_is_pooled(&session_key),

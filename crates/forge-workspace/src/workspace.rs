@@ -8421,7 +8421,8 @@ impl Workspace {
 
     /// Every persisted worker label the launchpad still offers, keyed by
     /// the project key it holds. A row the boot wave would not start is
-    /// not among them.
+    /// not among them, unless a live worker holds it as Failed: that row
+    /// is the failure's own record, and its reason has to be drawable.
     ///
     /// The launchpad's worker rows read this once per frame, which is
     /// what the shape is for: one read transaction answers every project
@@ -8453,13 +8454,25 @@ impl Workspace {
             if row.label == forge_primitives::LEAD_LABEL {
                 continue;
             }
-            // A row the wave would not start is not a worker the
-            // launchpad can offer either - the same question, so the
-            // pane and the wave answer it with one call. The tree it
-            // asks about is the ROW's own: a worker pointed at another
-            // directory is offered on that directory, not the project's.
-            if let Some(view) = views.iter().find(|v| v.org == row.org && v.name == row.project)
-                && crate::mcp::workers::types::worker_row_can_start(
+            let Some(view) = views.iter().find(|v| v.org == row.org && v.name == row.project)
+            else {
+                continue;
+            };
+            // A live Failed row is the failure's own record: the start probe
+            // would drop it with the reason it exists to show (#1593). Any
+            // other row the wave would not start is not a worker the
+            // launchpad can offer either - the same question, so the pane
+            // and the wave answer it with one call. The tree it asks about is
+            // the ROW's own: a worker pointed at another directory is offered
+            // on that directory, not the project's.
+            let failed_live = self.live_workers.lock().get(&view.key).is_some_and(|entries| {
+                entries.iter().any(|entry| {
+                    entry.label == row.label
+                        && entry.status == forge_primitives::WorkerLiveness::Failed
+                })
+            });
+            if failed_live
+                || crate::mcp::workers::types::worker_row_can_start(
                     row.cwd.as_deref().map_or(view.path.as_path(), std::path::Path::new),
                     &row.label,
                     row.is_git_repo,
@@ -9696,19 +9709,22 @@ impl Workspace {
     /// connect is about to run in is gone or unusable. Answers whether it
     /// did, so the first-connect branch can stop before it kicks the worker,
     /// announces it live or hands it parked prompts (#1593).
-    pub(crate) fn fail_worker_without_worktree(
-        self: &Arc<Self>,
-        slot: &SessionSlot,
-        cwd: &str,
-    ) -> bool {
-        let Some((project_key, label, is_git, _, _)) = self.worker_lookup_for_session(slot) else {
+    ///
+    /// The path composes from the row's own root, never the connect cwd: a
+    /// resumed worker connects with its worktree as cwd, and composing from
+    /// that doubled the path in the reason.
+    pub(crate) fn fail_worker_without_worktree(self: &Arc<Self>, slot: &SessionSlot) -> bool {
+        let Some((project_key, label, is_git, _, root)) = self.worker_lookup_for_session(slot)
+        else {
             return false;
         };
         if !is_git {
             return false;
         }
-        let path =
-            crate::mcp::workers::types::worker_tag_dir(std::path::Path::new(cwd), &label, true);
+        let Some(root) = self.live_worker_root(&project_key, root.as_deref()) else {
+            return false;
+        };
+        let path = crate::mcp::workers::types::worker_tag_dir(&root, &label, true);
         let Some(reason) = forge_agent::env::worktree::worktree_missing_reason(&path) else {
             return false;
         };
@@ -9801,8 +9817,8 @@ impl Workspace {
         // **The spawn checked the path before claude created it; nothing
         // read it again.** A worktree removed before the session connected
         // otherwise left the worker reading live with nowhere to work
-        // (#1593). The read runs inside the detached tag task below, off the
-        // session's event loop, because it shells out to git.
+        // (#1593). That read is `fail_worker_without_worktree`'s, on the
+        // first-connect path before this tag write runs.
         self.apply_worker_tag_or_rollback_with_budget(
             session_key,
             session_id,
@@ -18127,7 +18143,7 @@ mod tag_retry_tests {
                 spawned_by: SessionSlot::lead("TestOrg", "proj-x"),
                 needs_tag: true,
                 is_git_repo_at_spawn: true,
-                cwd: None,
+                cwd: Some(cwd.to_path_buf()),
                 diagnostic: None,
                 kick: None,
             },
@@ -18150,7 +18166,7 @@ mod tag_retry_tests {
         workspace.command_senders.lock().insert(session_key.clone(), cmd_tx);
         workspace.register_domain_session(session_key.clone(), Some(Arc::clone(&handle)));
 
-        let failed = workspace.fail_worker_without_worktree(&session_key, &cwd.to_string_lossy());
+        let failed = workspace.fail_worker_without_worktree(&session_key);
         assert!(failed, "the connect check refuses a git worker without a usable worktree");
         let entry = workspace
             .list_live_workers(&project_key)
@@ -18201,6 +18217,65 @@ mod tag_retry_tests {
             "the reason names the unusable tree: {diagnostic}",
         );
         assert!(released, "a Failed row leaves no pooled session behind");
+    }
+
+    /// **A failed worker stays in the persisted-row listing.** The agents
+    /// surface draws its worker rows from these labels; a gone worktree
+    /// fails the start probe, and dropping the row there would hide both
+    /// the failure and its reason (#1593).
+    #[test]
+    fn a_failed_worker_with_a_gone_worktree_stays_in_the_listing() {
+        let (workspace, _updates) = Workspace::testing_stub();
+        let root = tempdir().expect("root");
+        let path = root.path().to_string_lossy().into_owned();
+        workspace.seed_test_project("proj-x", &path);
+        let project_key = ProjectKey::new(
+            forge_agent::userdata::catalog::scan::project_key_for_directory(Some(&path)),
+        );
+        let db_dir = tempdir().expect("db tempdir");
+        workspace.install_db_for_test(
+            crate::store::Db::open(&db_dir.path().join("db.redb")).expect("open db"),
+        );
+        workspace
+            .record_worker_row(
+                &project_key,
+                "builder",
+                "builder-session",
+                "charter",
+                None,
+                None,
+                false,
+                crate::mcp::workers::types::WorkerTree { is_git_repo: true, cwd: None },
+                None,
+            )
+            .expect("seed the worker's row");
+        let session_key = SessionSlot::worker("TestOrg", "proj-x", "builder");
+        workspace.insert_live_worker(
+            &project_key,
+            crate::mcp::workers::types::WorkerEntry {
+                label: "builder".to_owned(),
+                charter: "charter".to_owned(),
+                slot: session_key.clone(),
+                session_id: Some(forge_primitives::SessionId::new("builder-session")),
+                status: forge_primitives::WorkerLiveness::Spawning,
+                spawned_at: std::time::SystemTime::UNIX_EPOCH,
+                spawned_by: SessionSlot::lead("TestOrg", "proj-x"),
+                needs_tag: true,
+                is_git_repo_at_spawn: true,
+                cwd: Some(root.path().to_path_buf()),
+                diagnostic: None,
+                kick: None,
+            },
+        );
+
+        assert!(workspace.fail_worker_without_worktree(&session_key));
+        assert!(
+            workspace
+                .worker_labels_by_project()
+                .get(&project_key)
+                .is_some_and(|labels| labels.iter().any(|label| label == "builder")),
+            "the failed row stays listed, so its reason is drawable",
+        );
     }
 
     /// Drive a non-NotFound tag failure over a seeded row and live worker,
