@@ -275,6 +275,12 @@ pub enum Command {
         uuid: String,
         /// Who dispatched it, for the queued row's label.
         source: PromptSource,
+        /// The pressing view's own token for this press, like
+        /// [`Self::MarketplaceAdd`]'s: a refusal of this prompt echoes it, so
+        /// a composer with sends out on two seats marks the one that failed
+        /// (#1583). `None` from a view that minted none.
+        #[serde(default)]
+        dispatch_id: Option<u64>,
     },
     Cancel {
         key: SessionSlot,
@@ -883,7 +889,9 @@ impl Command {
     /// named one: what a refusal echoes and the outcome frames carry back.
     pub fn dispatch_id(&self) -> Option<u64> {
         match self {
-            Self::MarketplaceAdd { dispatch_id, .. } => *dispatch_id,
+            Self::MarketplaceAdd { dispatch_id, .. } | Self::PromptUnder { dispatch_id, .. } => {
+                *dispatch_id
+            }
             _ => None,
         }
     }
@@ -3135,6 +3143,26 @@ mod workers_command_tests {
             None,
             "a command no press names a dispatch for carries none",
         );
+    }
+
+    /// **A prompt's press names itself too** (#1583). The refusal of a
+    /// prompt echoes the dispatch id it carried, so a composer with sends
+    /// out on two seats marks the one the core refused rather than both -
+    /// and a view that minted none, which is every view before this field,
+    /// still parses.
+    #[test]
+    fn a_prompt_under_names_the_dispatch_its_press_made() {
+        let named: Command = serde_json::from_str(
+            r#"{"prompt_under":{"key":{"org":"Org","project":"p","label":"lead"},"text":"hi","attachments":[],"uuid":"u1","source":"you","dispatch_id":9}}"#,
+        )
+        .expect("a press that names its dispatch");
+        assert_eq!(named.dispatch_id(), Some(9), "the accessor reads the press's own id");
+
+        let bare: Command = serde_json::from_str(
+            r#"{"prompt_under":{"key":{"org":"Org","project":"p","label":"lead"},"text":"hi","attachments":[],"uuid":"u1","source":"you"}}"#,
+        )
+        .expect("a press that named none still parses");
+        assert_eq!(bare.dispatch_id(), None, "and answers none");
     }
 
     /// A move WITHOUT a place parses: the keyboard's lane step sends the

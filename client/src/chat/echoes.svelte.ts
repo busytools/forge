@@ -47,13 +47,21 @@ export type Echo =
    * cancel is settled per prompt - so the arm that clears a pending mark on a
    * cancel compares this, not the words.
    */
-  | { state: 'sending'; words: string; running: boolean; id: string }
-  | { state: 'taken'; words: string; id: string }
-  | { state: 'failed'; words: string; why: string; id: string };
+  | { state: 'sending'; words: string; running: boolean; id: string; dispatch: number }
+  | { state: 'taken'; words: string; id: string; dispatch: number }
+  | { state: 'failed'; words: string; why: string; id: string; dispatch: number };
 
 /** A send the core's copy of has arrived leaves nothing behind, which is a delete rather than a fourth state. */
 class Echoes {
   #held = new SvelteMap<string, Echo>();
+  /**
+   * The number this client's next press carries.
+   *
+   * **The refusal names it back**, so one seat's failed send is not read as
+   * another's: a refusal echoes the dispatch id the command carried, and the
+   * composer marks the send that minted it (#1583).
+   */
+  #next = 0;
 
   /** What this seat is waiting on, or `undefined` when it is waiting on nothing. */
   of(key: string): Echo | undefined {
@@ -71,8 +79,30 @@ class Echoes {
    * left, which is what tells a send that started a turn from one that landed
    * in a turn already running.
    */
-  post(key: string, words: string, running: boolean, id: string): void {
-    this.#held.set(key, { state: 'sending', words, running, id });
+  post(key: string, words: string, running: boolean, id: string, dispatch: number): void {
+    this.#held.set(key, { state: 'sending', words, running, id, dispatch });
+  }
+
+  /** A number for one press, minted before its command goes. */
+  mint(): number {
+    this.#next += 1;
+    return this.#next;
+  }
+
+  /**
+   * The core refused the press that named this dispatch, in its own words.
+   *
+   * Returns whether this client holds a send for that dispatch: the frame is
+   * that send's whatever state it is in, and a refusal must not be read
+   * against another seat's send (`refuse` only rewrites one still on its way).
+   */
+  refuseDispatch(dispatch: number, why: string): boolean {
+    for (const [key, echo] of this.#held) {
+      if (echo.dispatch !== dispatch) continue;
+      this.refuse(key, why);
+      return true;
+    }
+    return false;
   }
 
   /**
@@ -90,7 +120,7 @@ class Echoes {
   take(key: string): void {
     const held = this.#held.get(key);
     if (held === undefined || held.state !== 'sending' || held.running) return;
-    this.#held.set(key, { state: 'taken', words: held.words, id: held.id });
+    this.#held.set(key, { state: 'taken', words: held.words, id: held.id, dispatch: held.dispatch });
   }
 
   /**
@@ -103,7 +133,13 @@ class Echoes {
   refuse(key: string, why: string): void {
     const held = this.#held.get(key);
     if (held === undefined || held.state !== 'sending') return;
-    this.#held.set(key, { state: 'failed', words: held.words, why, id: held.id });
+    this.#held.set(key, {
+      state: 'failed',
+      words: held.words,
+      why,
+      id: held.id,
+      dispatch: held.dispatch,
+    });
   }
 
   /**

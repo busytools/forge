@@ -421,7 +421,7 @@ describe('the chat column as it draws', () => {
     // **The box stays live while the first page is out**, so a send happens
     // here - and its row has to be drawn under the wait, or the words the
     // reader just sent are nowhere at all until the page lands.
-    echoes.post(PIN, 'sent during the read', false, 'e-read');
+    echoes.post(PIN, 'sent during the read', false, 'e-read', echoes.mint());
     flushSync();
 
     expect(drawn(), 'the send vanished behind the read wait').toContain('sent during the read');
@@ -1407,7 +1407,7 @@ describe('the reader own words before the core has them', () => {
     draw({}, server);
     server.answer([{ key: 't1', messages: [frame('a1', 12)] }]);
 
-    echoes.post(key, 'and run the gate too', false, 'e-gate');
+    echoes.post(key, 'and run the gate too', false, 'e-gate', echoes.mint());
     flushSync();
     expect(drawn(), 'the words are drawn before the core has them').toContain(
       'and run the gate too',
@@ -1439,7 +1439,7 @@ describe('the reader own words before the core has them', () => {
     // Posted with the seat already running: the CLI queues it, and the row's
     // home is the pile above the box. Drawing it here too would say "sent" in
     // the chat and "queued" in the pile about one prompt.
-    echoes.post(key, 'queued while the gate runs', true, 'e-q1');
+    echoes.post(key, 'queued while the gate runs', true, 'e-q1', echoes.mint());
     flushSync();
     expect(drawn(), 'the chat does not claim a prompt the pile is holding').not.toContain(
       'queued while the gate runs',
@@ -1458,7 +1458,7 @@ describe('the reader own words before the core has them', () => {
     // dispatch was refused, so no queued row exists anywhere. The suppression
     // is for the WAITING state alone: a failure has to be visible, or the
     // words are lost behind a row that never comes.
-    echoes.post(key, 'queued but refused', true, 'e-q2');
+    echoes.post(key, 'queued but refused', true, 'e-q2', echoes.mint());
     echoes.refuse(key, 'the socket closed mid-send');
     flushSync();
 
@@ -1477,7 +1477,7 @@ describe('the reader own words before the core has them', () => {
     draw({}, server);
     server.answer([{ key: 't1', messages: [frame('a1', 12)] }]);
 
-    echoes.post(key, 'and the gate again', false, 'e-again');
+    echoes.post(key, 'and the gate again', false, 'e-again', echoes.mint());
     flushSync();
     expect(drawn(), 'the row is up before the read lands').toContain('and the gate again');
 
@@ -1493,7 +1493,7 @@ describe('the reader own words before the core has them', () => {
       'Nothing said yet',
     );
 
-    echoes.post(key, 'start here', false, 'e-start');
+    echoes.post(key, 'start here', false, 'e-start', echoes.mint());
     flushSync();
     expect(drawn(), 'the first thing the seat says is the reader own words').toContain(
       'start here',
@@ -1506,7 +1506,7 @@ describe('the reader own words before the core has them', () => {
     draw({}, server);
     server.answer([{ key: 't1', messages: [frame('a1', 12)] }]);
 
-    echoes.post(key, 'and run the gate too', false, 'e-gate');
+    echoes.post(key, 'and run the gate too', false, 'e-gate', echoes.mint());
     echoes.refuse(key, 'the session is not running');
     flushSync();
     expect(drawn(), 'the words stay where they were sent from').toContain('and run the gate too');
@@ -1551,7 +1551,7 @@ describe('the reader own words before the core has them', () => {
     draw({}, server);
     server.answer([{ key: 't1', messages: [frame('a1', 12)] }]);
 
-    echoes.post(key, 'and run the gate too', false, 'e-gate');
+    echoes.post(key, 'and run the gate too', false, 'e-gate', echoes.mint());
     echoes.refuse(key, 'the session is not running');
     flushSync();
 
@@ -1584,7 +1584,7 @@ describe('the reader own words before the core has them', () => {
     draw({}, server);
     server.answer([{ key: 't1', messages: [frame('a1', 12)] }]);
 
-    echoes.post(key, 'and run the gate too', false, 'e-gate');
+    echoes.post(key, 'and run the gate too', false, 'e-gate', echoes.mint());
     echoes.refuse(key, 'the session is not running');
     flushSync();
 
@@ -1624,7 +1624,7 @@ describe('the reader own words before the core has them', () => {
       data: { header: { turn_in_flight: true } },
     });
 
-    echoes.post(key, 'and run the gate too', false, 'e-gate');
+    echoes.post(key, 'and run the gate too', false, 'e-gate', echoes.mint());
     echoes.refuse(key, 'the session is not running');
     flushSync();
 

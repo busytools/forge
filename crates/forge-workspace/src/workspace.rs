@@ -5314,6 +5314,7 @@ impl Workspace {
             attachments: Vec::new(),
             uuid,
             source,
+            dispatch_id: None,
         })
     }
 
@@ -5409,6 +5410,7 @@ impl Workspace {
             attachments: Vec::new(),
             uuid,
             source: crate::protocol::PromptSource::Forge,
+            dispatch_id: None,
         })
     }
 
@@ -5453,6 +5455,7 @@ impl Workspace {
                 attachments: Vec::new(),
                 uuid,
                 source,
+                dispatch_id: None,
             })
         };
         if result.is_ok() {
@@ -5561,6 +5564,7 @@ impl Workspace {
                 attachments,
                 uuid: forge_sdk::request_id::next_prompt_id(),
                 source: crate::protocol::PromptSource::You,
+                dispatch_id: None,
             },
             other => other,
         };
@@ -13227,6 +13231,7 @@ provider = "anthropic"
             attachments: Vec::new(),
             uuid: uuid.to_owned(),
             source,
+            dispatch_id: None,
         };
 
         ws.dispatch(prompt("cron-1", crate::protocol::PromptSource::Cron)).expect("routed");

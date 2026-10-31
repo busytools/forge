@@ -3264,6 +3264,47 @@ describe('the seat the box belongs to', () => {
     ).toBeUndefined();
     expect(field().value, 'and its box is not where it lands either').toBe('');
   });
+
+  /**
+   * **A refusal names the press it refuses.** The server echoes the dispatch
+   * id the send minted, so two seats waiting on a send are not both marked by
+   * one refusal - and a refusal that arrives after the reader moved still
+   * finds the seat it belongs to (#1583).
+   */
+  it('routes a refusal to the dispatch it names, not to every waiting seat', () => {
+    const shared = wire();
+    const harness = open({}, shared);
+    type('push it once CI is green');
+    sendBox();
+    const first = harness.sent[0]?.command['prompt_under'] as Record<string, unknown>;
+
+    // The reader moves on with that send still outstanding, and sends again
+    // from the seat they moved to.
+    harness.page.slot = ELSEWHERE;
+    flushSync();
+    type('and the gate too');
+    sendBox();
+    expect(harness.sent, 'both sends went out').toHaveLength(2);
+    const second = harness.sent[1]?.command['prompt_under'] as Record<string, unknown>;
+    expect(first['dispatch_id'], 'each press minted its own id').not.toBe(second['dispatch_id']);
+
+    shared.say({
+      kind: 'error',
+      what: 'dispatch',
+      why: 'that seat is gone',
+      dispatch_id: first['dispatch_id'] as number,
+    });
+    flushSync();
+
+    expect(echoAt(SLOT), 'the seat the refusal names is the one marked').toMatchObject({
+      state: 'failed',
+      why: 'that seat is gone',
+    });
+    expect(
+      echoAt(ELSEWHERE),
+      'and the seat still waiting on its own send is untouched',
+    ).toMatchObject({ state: 'sending', words: 'and the gate too' });
+  });
 });
 
 // A path rather than a URL: this file runs under jsdom, where `import.meta.url`

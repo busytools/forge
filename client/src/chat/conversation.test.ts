@@ -6813,7 +6813,7 @@ describe('the chat holds a queued prompt until the CLI takes it', () => {
     chat.start();
     server.send(page([turn('t1', 'first')], null));
 
-    echoes.post(seatKey, 'queue words', true, 'p9');
+    echoes.post(seatKey, 'queue words', true, 'p9', echoes.mint());
     server.update({ prompt_queued: { key: LEAD, uuid: 'p-other', source: 'you', text: 'x' } });
     expect(echoes.of(seatKey)?.id, "another prompt's queueing is not this send's to settle").toBe(
       'p9',
@@ -6838,7 +6838,7 @@ describe('the chat holds a queued prompt until the CLI takes it', () => {
     chat.start();
     server.send(page([turn('t1', 'first')], null));
 
-    echoes.post(seatKey, 'same words', true, 'e-other');
+    echoes.post(seatKey, 'same words', true, 'e-other', echoes.mint());
     server.update({ prompt_queued: { key: LEAD, uuid: 'p1', source: 'you', text: 'same words' } });
     server.update({ chat_appended: { key: LEAD, msg: forgedUnder('same words', 'p1') } });
     server.update({ prompt_lifecycle: { key: LEAD, uuid: 'p1', state: 'cancelled' } });
@@ -6847,7 +6847,7 @@ describe('the chat holds a queued prompt until the CLI takes it', () => {
       "a second send of the same words is not this cancel's to settle",
     ).toBe('e-other');
 
-    echoes.post(seatKey, 'other words', true, 'p2');
+    echoes.post(seatKey, 'other words', true, 'p2', echoes.mint());
     server.update({ prompt_queued: { key: LEAD, uuid: 'p2', source: 'you', text: 'other words' } });
     server.update({ chat_appended: { key: LEAD, msg: forgedUnder('other words', 'p2') } });
     server.update({ prompt_lifecycle: { key: LEAD, uuid: 'p2', state: 'cancelled' } });
@@ -7042,7 +7042,7 @@ describe('the chat holds a queued prompt until the CLI takes it', () => {
     chat.start();
     server.send(page([turn('t1', 'first')], null));
 
-    echoes.post(seatKey, 'orphan words', true, 'p1');
+    echoes.post(seatKey, 'orphan words', true, 'p1', echoes.mint());
     server.update({
       prompt_queued: { key: LEAD, uuid: 'p1', source: 'you', text: 'orphan words' },
     });

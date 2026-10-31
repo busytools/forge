@@ -841,6 +841,14 @@
         return;
       }
       if (message.what !== 'dispatch') return;
+      // **A refusal names the press it refuses.** The send minted a dispatch
+      // id and the core echoes it, so two seats waiting on a send are not both
+      // marked by one refusal, and a refusal that lands after the reader moved
+      // still reaches the seat it belongs to (#1583). A server that predates
+      // the field names none, and the outstanding set below is the fallback.
+      if (typeof message.dispatch_id === 'number') {
+        if (echoes.refuseDispatch(message.dispatch_id, message.why)) return;
+      }
       // **A take's own refusal is not an answer's.** This composer knows it
       // dispatched one, and the wire's `what` cannot say which command a
       // `dispatch` refusal was about - so an outstanding answer would take a
@@ -894,12 +902,22 @@
     // the queued row the core echoes back carries the same id - so this send,
     // its row and its frames are one thing by id, never by order or text.
     const uuid = mintPromptId();
+    // **The press's own number, which a refusal echoes back** (#1583): it is
+    // what tells this send from another seat's when the reason arrives.
+    const dispatch = echoes.mint();
     try {
       // A prompt is fire-and-forget: its outcome rides the subscription rather
       // than a reply, so there is nothing here to await.
       void connection.dispatch(
         {
-          prompt_under: { key: slot, text, attachments: [], uuid, source: 'you' },
+          prompt_under: {
+            key: slot,
+            text,
+            attachments: [],
+            uuid,
+            source: 'you',
+            dispatch_id: dispatch,
+          },
         },
         slot,
       );
@@ -920,7 +938,7 @@
     // frame can be applied and not yet drawn - and a send posted as
     // not-running is taken by the very publish that carries the turn, where a
     // refusal can no longer reach it.
-    echoes.post(boxKey(slot), text, runningAt(connection, slot, running), uuid);
+    echoes.post(boxKey(slot), text, runningAt(connection, slot, running), uuid, dispatch);
     box.draft = '';
   }
 
