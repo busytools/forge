@@ -873,7 +873,9 @@ impl Tool for Despawn {
          repository's workers share one `<main>/.claude/worktrees/<label>` \
          and one branch, a directory that is another project's checkout or \
          another project's worker's tree refuses the despawn outright, \
-         whatever that worker's state. Nothing is \
+         whatever that worker's state. Never prune a worker's worktree by \
+         hand to reclaim disk - reclaim is the despawn's, and a tree \
+         removed mid-cut loses its branch. Nothing is \
          ever silently discarded. The worktree-<label> branch claude \
          created for the worker is deleted alongside the worktree, but \
          only when every commit on it is reachable from some other ref - \
@@ -1516,6 +1518,16 @@ mod tests {
         assert!(
             tool.description().contains("done when it hands over"),
             "the non-PR case closes at handover: {}",
+            tool.description()
+        );
+        assert!(
+            tool.description().contains("Never prune a worker's worktree by hand to reclaim disk"),
+            "the worktree is not a hand-reclaimable directory: {}",
+            tool.description()
+        );
+        assert!(
+            tool.description().contains("reclaim is the despawn's"),
+            "reclaim is named as this tool's: {}",
             tool.description()
         );
         let schema = tool.input_schema();

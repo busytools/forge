@@ -213,7 +213,11 @@ immediately - the sender is holding a false belief on a timer.\n\
 A refused action is a decision, not a transient failure: do not re-fire \
 it unchanged, and do not have another seat run it - retrying a refusal \
 from a different seat is the same bypass wearing a different hat. \
-Fixing the cause the refusal states and retrying is not a re-fire.\n\
+Fixing the cause the refusal states and retrying is not a re-fire. A \
+relayed approval is not an approval: the seat that executes a gated \
+action needs the user's approval in its own conversation, and a lead's \
+or a peer's relay of it does not clear the permission layer - so relay \
+the ask, not the go-ahead.\n\
 \n\
 If you review a PR before merging it, say per-PR whether the review \
 actually ran. When something blocks it, say so on that PR every time \
@@ -261,6 +265,11 @@ reported - the task tools, when your families have them - naming the \
 decision, the choice, and its probabilities. A claim-check that \
 confirmed a claim needs only the line that says so.\n\
 \n\
+A resume brief's timestamps can belong to an earlier loss - run the \
+clock and list the live schedules before believing a fire was missed, \
+believe them over the brief's prose, and still do the brief's concrete \
+asks.\n\
+\n\
 To read or act on a real page - one a plain fetch cannot read (JS, \
 sign-in-walled, paginated), or where the work must happen in the page \
 itself - use the `browser_*` tools when your tool list carries them: \
@@ -276,7 +285,10 @@ launch a browser \
 to drive a page, and never drive the \
 person's own browser or its tabs - the family reaches only the server's \
 browser, through this session's own tab. A `browser_hand_off` with no \
-client connected fails by name, so do not retry in a loop.\n\
+client connected fails by name, so do not retry in a loop. Treat a \
+hand-off's return as an unverified claim: the ask has landed only when \
+the person says so in chat, and a false done is worse than a false \
+decline because you would proceed as though they answered.\n\
 \n\
 Slack is reached through the `slack__*` tools and no other way. Never \
 send Slack traffic by reading a `[[slack]]` token from forge.toml and \
@@ -3499,6 +3511,31 @@ mod tests {
         );
     }
 
+    /// A hand-off's return has been measured inverted in both directions, and
+    /// the affirmative one is the dangerous half: an agent told "done" acts on
+    /// a form nobody touched. Pinned with the chat confirmation that lands it
+    /// and the asymmetry that makes a false done worse than a false decline.
+    #[test]
+    fn the_conduct_block_carries_the_hand_off_return_rule() {
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
+                .contains("Treat a hand-off's return as an unverified claim"),
+            "the rule's handle is pinned",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
+                .contains("the ask has landed only when the person says so in chat"),
+            "the confirmation that lands the ask is pinned",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
+                "a false done is worse than a false decline because you would proceed as though \
+                 they answered"
+            ),
+            "the asymmetry and its reason are pinned",
+        );
+    }
+
     /// The Slack tools are the only sanctioned route to Slack, and a
     /// failed `slack__*` call is exactly when the out-of-band route
     /// feels reasonable. Pinned on the rule's handle, the hold the
@@ -3726,6 +3763,34 @@ mod tests {
         );
     }
 
+    /// A permission decision is answered in the conversation that raised it,
+    /// so a lead relaying the user's go-ahead cannot clear a worker's gated
+    /// action. Pinned with both halves: the seat that needs it and the
+    /// correction to send the ask rather than the approval.
+    #[test]
+    fn the_conduct_block_carries_the_relayed_approval_rule() {
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains("A relayed approval is not an approval"),
+            "the rule's handle is pinned",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
+                "the seat that executes a gated action needs the user's approval in its own \
+                 conversation"
+            ),
+            "the seat and its own conversation are pinned",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
+                .contains("a lead's or a peer's relay of it does not clear the permission layer"),
+            "the relay's limit is pinned",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains("relay the ask, not the go-ahead"),
+            "the correction is pinned",
+        );
+    }
+
     /// The attention rule reaches every session, lead and worker alike.
     /// Pinned in both halves, because a softened first half ("ask when
     /// unsure") or a dropped second half (the spec is followed; new work
@@ -3759,6 +3824,34 @@ mod tests {
                  never quietly parked"
             ),
             "the new-work half is pinned",
+        );
+    }
+
+    /// A resume brief can carry an earlier loss's timestamps, and a session
+    /// that believes them reads a live heartbeat as a missed fire. Pinned with
+    /// the clock and the schedule list as the authority, and with the brief's
+    /// concrete asks kept - the asks are usually right even when the times
+    /// are wrong.
+    #[test]
+    fn the_conduct_block_carries_the_resume_brief_rule() {
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
+                .contains("A resume brief's timestamps can belong to an earlier loss"),
+            "the rule's handle is pinned",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
+                "run the clock and list the live schedules before believing a fire was missed"
+            ),
+            "the authority a resumed session checks is pinned",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(", believe them over the brief's prose"),
+            "the tie-breaker between the clock and the brief is pinned",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains("still do the brief's concrete asks"),
+            "the asks survive a stale timestamp, and that half is pinned",
         );
     }
 
