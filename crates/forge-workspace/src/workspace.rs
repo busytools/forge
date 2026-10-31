@@ -30,8 +30,7 @@ fn resolve_existing_prefix(path: &Path) -> PathBuf {
     }
     let mut missing = Vec::new();
     let mut head = path.to_path_buf();
-    loop {
-        let Some(parent) = head.parent().map(Path::to_path_buf) else { break };
+    while let Some(parent) = head.parent().map(Path::to_path_buf) {
         let Some(name) = head.file_name() else { break };
         missing.push(name.to_owned());
         if let Ok(resolved) = std::fs::canonicalize(&parent) {
