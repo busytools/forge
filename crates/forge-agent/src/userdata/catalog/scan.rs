@@ -791,9 +791,15 @@ pub async fn list_sessions(
         let cache = tag_cache.cloned();
         set.spawn_blocking(move || read_session_info(&path, cache.as_deref()));
     };
+    // **The reads stay pipelined, and the cap is counted rather than
+    // re-counted.** The boot scan is uncapped and reads the whole tree, so
+    // recounting the kept rows on every pass would multiply its cost by the
+    // number of batches, and draining the set before refilling would leave
+    // the pool idle between them.
+    let mut kept = 0usize;
     loop {
-        let kept = entries.iter().filter(|entry| matches(entry)).count();
-        if wanted_rows.is_some_and(|wanted| kept >= wanted) {
+        let owed = wanted_rows.map_or(usize::MAX, |wanted| wanted.saturating_sub(kept));
+        if owed == 0 {
             break;
         }
         // **A batch is no wider than the rows still owed**, so a cap reads
@@ -801,27 +807,26 @@ pub async fn list_sessions(
         // transcript gone, or one the seat's own tag rules out - is filled by
         // the next, so the read is bounded without the listing coming up
         // short.
-        let width = wanted_rows.map_or(LIST_SESSIONS_MAX_CONCURRENT, |wanted| {
-            wanted.saturating_sub(kept).clamp(1, LIST_SESSIONS_MAX_CONCURRENT)
-        });
-        let batch: Vec<PathBuf> = paths.by_ref().take(width).map(|(path, _)| path).collect();
-        if batch.is_empty() {
-            break;
-        }
-        for path in batch {
+        let width = owed.min(LIST_SESSIONS_MAX_CONCURRENT);
+        while set.len() < width {
+            let Some((path, _)) = paths.next() else { break };
             spawn_read(&mut set, path);
         }
-        while let Some(res) = set.join_next().await {
-            match res {
-                Ok(Some(info)) => entries.push(info),
-                Ok(None) => {}
-                Err(err) => {
-                    tracing::debug!(
-                        target: "forge_agent::catalog::scan",
-                        error = %err,
-                        "list_sessions: per-file read task failed",
-                    );
+        let Some(res) = set.join_next().await else { break };
+        match res {
+            Ok(Some(info)) => {
+                if matches(&info) {
+                    kept += 1;
                 }
+                entries.push(info);
+            }
+            Ok(None) => {}
+            Err(err) => {
+                tracing::debug!(
+                    target: "forge_agent::catalog::scan",
+                    error = %err,
+                    "list_sessions: per-file read task failed",
+                );
             }
         }
     }
