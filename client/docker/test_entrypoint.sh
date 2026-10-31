@@ -12,6 +12,11 @@ here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 scratch=$(mktemp -d)
 trap 'rm -rf "$scratch"' EXIT
 
+fail() {
+    echo "[ERROR] $1" >&2
+    exit 1
+}
+
 # The image writes the version file where the entrypoint reads it by default;
 # the test overrides both paths, so this is what keeps the pair from drifting.
 grep -q 'FORGE_VERSION_FILE:-/usr/share/forge-web-version' "$here/entrypoint.sh" \
@@ -24,11 +29,6 @@ served="$scratch/served"
 mkdir -p "$seed"
 printf 'the build\n' > "$seed/index.html"
 printf '1.2.3' > "$scratch/version"
-
-fail() {
-    echo "[ERROR] $1" >&2
-    exit 1
-}
 
 run() {
     FORGE_SEED_DIR="$seed" \

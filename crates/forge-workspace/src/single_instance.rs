@@ -173,6 +173,8 @@ fn read_pid(file: &mut File) -> Option<u32> {
 
 #[cfg(test)]
 mod tests {
+    use std::os::unix::fs::PermissionsExt as _;
+
     use super::*;
     use tempfile::tempdir;
 
@@ -290,7 +292,6 @@ mod tests {
 
         // A lock that cannot be opened cannot be shown to be free, so it is
         // treated as a live peer rather than stepped over.
-        use std::os::unix::fs::PermissionsExt as _;
         let locked = lock_path(tempdir().expect("cfg c").path(), base.path());
         std::fs::create_dir_all(locked.parent().expect("locks dir")).expect("locks dir");
         std::fs::write(&locked, b"12345").expect("the unreadable lock");

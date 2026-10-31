@@ -213,20 +213,6 @@ fn install_browser(
 ) -> anyhow::Result<Arc<forge_browser::service::BrowserService>> {
     let fleet = forge_browser::service::BrowserService::installed()
         .map_err(|why| anyhow::anyhow!("forge: {why}"))?;
-    // **The old versions' bundles are dropped only while no peer is
-    // running.** The app-support tree is machine-wide, so a second config
-    // dir's server may still resolve a bundle this boot would delete; the
-    // prune re-asks before every removal because a peer can take its lock
-    // after the boot's first look. Off the boot thread: each prune is a CEF
-    // tree.
-    {
-        let workspace = Arc::downgrade(workspace);
-        std::thread::spawn(move || {
-            forge_browser::host_bundle::prune_other_versions(&move || {
-                workspace.upgrade().is_some_and(|workspace| workspace.sole_instance())
-            });
-        });
-    }
     // **The encoding and the idle clock are the `[browser]` keys**: a
     // profile nobody has touched closes after the bound.
     let browser = workspace.browser_settings();
@@ -240,9 +226,26 @@ fn install_browser(
     // **A host an unclean exit left behind is reaped before any profile is
     // used.** It still holds the profile's singleton lock, and the first
     // call would wedge on it; the reaper checks the process is really this
-    // bundle's host before it signals anything.
+    // bundle's host, and that its server is gone, before it signals anything.
+    //
+    // **The prune runs after the reap.** The reaper identifies an orphan by
+    // its executable's path, and a prune that unlinked a live host's binary
+    // first would take that identity away (`proc_pidpath` returns nothing for
+    // an unlinked binary). A peer's live hosts are spared by the reaper's
+    // parent check; the prune re-asks whether the machine is shared before
+    // every removal, because a peer can take its lock after the boot's first
+    // look. Off the boot thread: each prune is a CEF tree.
     let reaper = Arc::clone(&fleet);
-    tokio::spawn(async move { reaper.reap_stale().await });
+    let prune_workspace = Arc::downgrade(workspace);
+    tokio::spawn(async move {
+        reaper.reap_stale().await;
+        let _ = tokio::task::spawn_blocking(move || {
+            forge_browser::host_bundle::prune_other_versions(&move || {
+                prune_workspace.upgrade().is_some_and(|workspace| workspace.sole_instance())
+            });
+        })
+        .await;
+    });
     workspace.install_browser_host(Arc::new(HostedBrowser(Arc::clone(&fleet))));
     Ok(fleet)
 }

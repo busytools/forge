@@ -25050,6 +25050,56 @@ provider = "anthropic"
         drop(held);
     }
 
+    /// **The boot adopts through `open_db` itself**, not only through the
+    /// helper: the home config dir's first boot moves the legacy store in
+    /// and opens it. Wiring the adoption out of `open_db` would create a
+    /// fresh target first, and every later boot would never look again.
+    #[test]
+    fn open_db_adopts_the_machine_wide_store_for_the_home_config_dir() {
+        let dir = tempdir().expect("tempdir");
+        let app_support = dir.path().join("app-support");
+        std::fs::create_dir_all(&app_support).expect("the app-support dir");
+        let legacy = app_support.join("db.redb");
+        drop(crate::store::Db::open(&legacy).expect("a store at the old path"));
+        let home_config = dirs::home_dir().expect("a home dir").join(".claude");
+        // The boot creates the config dir before opening the store; a runner
+        // without one gets an empty directory this test never writes into.
+        std::fs::create_dir_all(&home_config).expect("the home config dir");
+
+        let opened = open_db(&app_support, &home_config).expect("the adopted store opens");
+
+        assert!(!legacy.exists(), "the machine-wide file moved");
+        assert!(
+            store_path(&app_support, &home_config).is_file(),
+            "into this config dir's own store",
+        );
+        drop(opened);
+    }
+
+    /// **A held store defers the boot at the `open_db` boundary too**: no
+    /// fresh target is created, so the next boot can still adopt the legacy
+    /// file instead of finding a target and never looking again.
+    #[test]
+    fn open_db_leaves_no_target_when_the_legacy_store_is_held() {
+        let dir = tempdir().expect("tempdir");
+        let app_support = dir.path().join("app-support");
+        std::fs::create_dir_all(&app_support).expect("the app-support dir");
+        let legacy = app_support.join("db.redb");
+        let held = crate::store::Db::open(&legacy).expect("a store at the old path");
+        let home_config = dirs::home_dir().expect("a home dir").join(".claude");
+        std::fs::create_dir_all(&home_config).expect("the home config dir");
+
+        let opened = open_db(&app_support, &home_config);
+
+        assert!(opened.is_none(), "the boot runs without durable state this run");
+        assert!(
+            !store_path(&app_support, &home_config).exists(),
+            "and creates no target that would hide the legacy file for good",
+        );
+        assert!(legacy.is_file(), "the held file is still where its owner has it");
+        drop(held);
+    }
+
     /// **A peer's lock makes the machine shared.** A boot may prune shared
     /// app-support state only when this is false; a hardcoded true would let
     /// it delete a live peer's CEF bundle.

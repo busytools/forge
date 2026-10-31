@@ -676,6 +676,13 @@ pub async fn reap_stale_profile(profile: &Path) {
     if let Some(record) = record.as_ref()
         && is_our_host(record.pid, profile, Some(record.port))
     {
+        // **A host whose server is alive belongs to a peer.** The profile
+        // tree is machine-wide, so another config dir's server can be using
+        // this very profile; signalling its host is the mid-call loss the
+        // whole record exists beside.
+        if !orphaned(record.pid) {
+            return;
+        }
         end_verified(record.pid, record.port, profile).await;
         tracing::info!(
             event_name = "browser_stale_host_reaped",
@@ -688,6 +695,9 @@ pub async fn reap_stale_profile(profile: &Path) {
     if let Some(pid) = singleton
         && is_our_host(pid, profile, None)
     {
+        if !orphaned(pid) {
+            return;
+        }
         end(pid).await;
         tracing::info!(
             event_name = "browser_stale_host_reaped",
@@ -715,13 +725,77 @@ pub async fn reap_stale_profile(profile: &Path) {
 /// browser it is. A reaper that skipped this would end whichever host
 /// happened to hold the pid.
 pub fn is_our_host(pid: u32, profile: &Path, port: Option<u16>) -> bool {
-    if !is_our_binary(pid) {
-        return false;
+    #[cfg(target_os = "macos")]
+    {
+        let Ok(install_root) = crate::host_bundle::install_root() else { return false };
+        // **The path is preferred; argv carries the identity when the kernel
+        // cannot read it.** `proc_pidpath` returns nothing for a process
+        // whose executable was unlinked - the state a prune leaves a live
+        // host in - and refusing that pid would clear the lock around it.
+        if let Some(path) = binary_path(pid)
+            && !(is_staged_host(&path, &install_root) || is_code_sign_clone(&path))
+        {
+            return false;
+        }
     }
     let Some(args) = process_argv(pid) else {
         return false;
     };
     host_matches(&args, profile, port)
+}
+
+/// One process's BSD info, from the kernel. `None` when it will not answer
+/// for `pid` (the process is gone).
+#[cfg(target_os = "macos")]
+fn proc_info(pid: u32) -> Option<libc::proc_bsdinfo> {
+    let mut info = std::mem::MaybeUninit::<libc::proc_bsdinfo>::uninit();
+    let size = i32::try_from(std::mem::size_of::<libc::proc_bsdinfo>()).ok()?;
+    // SAFETY: `info` is sized for `proc_bsdinfo`, which is what this call
+    // writes; a short write is discarded below.
+    let wrote = unsafe {
+        libc::proc_pidinfo(
+            i32::try_from(pid).ok()?,
+            libc::PROC_PIDTBSDINFO,
+            0,
+            info.as_mut_ptr().cast(),
+            size,
+        )
+    };
+    if wrote != size {
+        return None;
+    }
+    // SAFETY: the call filled the whole struct.
+    Some(unsafe { info.assume_init() })
+}
+
+/// Whether the process that spawned `pid` is still running. `None` when the
+/// kernel will not answer for `pid`.
+#[cfg(target_os = "macos")]
+fn parent_alive(pid: u32) -> Option<bool> {
+    let parent = proc_info(pid)?.pbi_ppid;
+    if parent == 0 {
+        return Some(false);
+    }
+    // A zombie parent is dead: it has exited and only its entry remains.
+    proc_info(parent).map(|info| info.pbi_status != libc::SZOMB)
+}
+
+/// Whether `pid` is an orphan whose server is gone. **The parent is the
+/// discriminator**: another config dir's live server owns its browser hosts,
+/// and this boot must not signal them; an orphan's parent has exited.
+///
+/// `false` when the kernel will not answer: a host that cannot be placed is
+/// left alone rather than risked.
+fn orphaned(pid: u32) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        parent_alive(pid) == Some(false)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = pid;
+        false
+    }
 }
 
 /// Whether one host's argument list names THIS profile (and port).
@@ -836,11 +910,42 @@ fn is_code_sign_clone(path: &std::path::Path) -> bool {
 fn is_staged_host(path: &std::path::Path, install_root: &std::path::Path) -> bool {
     let Ok(relative) = path.strip_prefix(install_root) else { return false };
     let parts: Vec<&std::ffi::OsStr> = relative.iter().collect();
-    parts.len() == 5
-        && parts[1] == std::ffi::OsStr::new(crate::host_bundle::APP)
-        && parts[2] == std::ffi::OsStr::new("Contents")
-        && parts[3] == std::ffi::OsStr::new("MacOS")
-        && parts[4] == std::ffi::OsStr::new(crate::host_bundle::EXECUTABLE_NAME)
+    // **Both layouts.** The pre-version release staged the bundle directly
+    // under the root (`<root>/Forge Browser.app/...`); this one adds the
+    // version segment. A host spawned by the previous release still runs from
+    // the four-part path, and `install.sh` never removes that directory.
+    let bundle = match parts.len() {
+        4 => &parts[..],
+        5 => &parts[1..],
+        _ => return false,
+    };
+    bundle[0] == std::ffi::OsStr::new(crate::host_bundle::APP)
+        && bundle[1] == std::ffi::OsStr::new("Contents")
+        && bundle[2] == std::ffi::OsStr::new("MacOS")
+        && bundle[3] == std::ffi::OsStr::new(crate::host_bundle::EXECUTABLE_NAME)
+}
+
+/// Whether `pid` runs a host executable this machine staged, so a reaper
+/// never signals an unrelated process that reused a recorded number.
+/// The executable's path, read from the kernel. `None` when the process is
+/// gone **or its binary has been unlinked** - a prune leaves the second case.
+#[cfg(target_os = "macos")]
+fn binary_path(pid: u32) -> Option<std::path::PathBuf> {
+    let mut buffer = [0_i8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
+    // SAFETY: `proc_pidpath` writes at most the buffer's length.
+    let wrote = unsafe {
+        libc::proc_pidpath(
+            i32::try_from(pid).unwrap_or(i32::MAX),
+            buffer.as_mut_ptr().cast(),
+            u32::try_from(buffer.len()).unwrap_or(u32::MAX),
+        )
+    };
+    if wrote <= 0 {
+        return None;
+    }
+    // SAFETY: a successful call NUL-terminates the path in the buffer.
+    let path = unsafe { std::ffi::CStr::from_ptr(buffer.as_ptr()) };
+    Some(std::path::PathBuf::from(path.to_string_lossy().into_owned()))
 }
 
 /// Whether `pid` runs a host executable this machine staged, so a reaper
@@ -851,23 +956,8 @@ pub fn is_our_binary(pid: u32) -> bool {
     };
     #[cfg(target_os = "macos")]
     {
-        let mut buffer = [0_i8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
-        // SAFETY: `proc_pidpath` writes at most the buffer's length.
-        let wrote = unsafe {
-            libc::proc_pidpath(
-                i32::try_from(pid).unwrap_or(i32::MAX),
-                buffer.as_mut_ptr().cast(),
-                u32::try_from(buffer.len()).unwrap_or(u32::MAX),
-            )
-        };
-        if wrote <= 0 {
-            return false;
-        }
-        // SAFETY: a successful call NUL-terminates the path in the buffer.
-        let path = unsafe { std::ffi::CStr::from_ptr(buffer.as_ptr()) };
-        let text = path.to_string_lossy();
-        let path = std::path::Path::new(text.as_ref());
-        is_staged_host(path, &install_root) || is_code_sign_clone(path)
+        binary_path(pid)
+            .is_some_and(|path| is_staged_host(&path, &install_root) || is_code_sign_clone(&path))
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -1135,6 +1225,13 @@ mod tests {
         };
         assert!(is_staged_host(&staged("0.9.0"), root), "an older version's orphan is a host");
         assert!(is_staged_host(&staged(env!("CARGO_PKG_VERSION")), root), "and this build's is");
+        // **The layout this release upgrades from.** The previous release
+        // staged the bundle directly under the root, and an install leaves
+        // that directory behind, so its host is still ours to reap.
+        assert!(
+            is_staged_host(&root.join("Forge Browser.app/Contents/MacOS/Forge Browser"), root),
+            "the pre-version layout's host is ours",
+        );
         assert!(
             !is_staged_host(
                 std::path::Path::new("/tmp/Forge Browser.app/Contents/MacOS/Forge Browser"),
@@ -1155,6 +1252,23 @@ mod tests {
                 root
             ),
             "another binary in our bundle name is not ours"
+        );
+    }
+
+    /// **The parent is the orphan discriminator.** A live peer's host has a
+    /// live parent, so a boot must not signal it; an orphan's parent is gone.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_parent_check_separates_a_live_parent_from_a_gone_pid() {
+        assert_eq!(parent_alive(std::process::id()), Some(true), "this test's own parent is alive");
+        assert_eq!(parent_alive(u32::MAX - 1), None, "a pid that does not exist has no answer");
+        assert!(
+            !orphaned(std::process::id()),
+            "a host with a live parent belongs to a live server",
+        );
+        assert!(
+            !orphaned(u32::MAX - 1),
+            "a host that cannot be placed is left alone rather than risked",
         );
     }
 
