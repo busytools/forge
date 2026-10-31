@@ -266,8 +266,10 @@ pub const MAX_UPLOAD_FILES: usize = 16;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BrowserDownload {
     /// The tab the download was started from, so only its viewer is offered
-    /// the save.
-    pub tab: u16,
+    /// the save. **`None` is a profile-level notice**: the backlog dropped
+    /// offers before a viewer read them, and the lost ones may belong to any
+    /// tab of the profile.
+    pub tab: Option<u16>,
     pub name: String,
     /// The file's bytes, empty when it could not be relayed.
     pub bytes: Vec<u8>,

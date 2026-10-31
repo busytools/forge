@@ -1344,10 +1344,11 @@ impl Bridge {
                 let data = message.get("data").and_then(Value::as_str).map(str::to_owned);
                 let error = message.get("error").and_then(Value::as_str).map(str::to_owned);
                 let dropped = dropped_of(&message);
+                let lost = lost_of(&message);
                 if let Some(app) = self.app.as_ref() {
                     let app = app.clone();
                     tauri::async_runtime::spawn(async move {
-                        save_download(&app, name, data, error, dropped).await;
+                        save_download(&app, name, data, error, dropped, lost).await;
                     });
                 }
                 self.forward(&message, None);
@@ -1564,11 +1565,12 @@ async fn save_download(
     data: Option<String>,
     error: Option<String>,
     dropped: bool,
+    lost: Option<u64>,
 ) {
     use tauri_plugin_dialog::DialogExt as _;
 
     if let Some(error) = error {
-        say_download_refused(app, &error, dropped);
+        say_download_refused(app, &error, dropped, lost);
         return;
     }
     let Some(data) = data else { return };
@@ -1580,6 +1582,7 @@ async fn save_download(
                 app,
                 &format!("the download's bytes did not arrive intact: {why}"),
                 false,
+                None,
             );
             return;
         }
@@ -1597,7 +1600,7 @@ async fn save_download(
         file.write_all(&bytes)
     });
     if let Err(why) = written {
-        say_download_refused(app, &format!("the file could not be saved: {why}"), false);
+        say_download_refused(app, &format!("the file could not be saved: {why}"), false, None);
     }
 }
 
@@ -1609,6 +1612,13 @@ async fn save_download(
 /// they always did.
 fn dropped_of(message: &Value) -> bool {
     message.get("dropped").and_then(Value::as_bool).unwrap_or(false)
+}
+
+/// How many offers a drop cost, when the server counted them. **The title
+/// says one loss or many from it**; absent on any other download, and on a
+/// server that predates the field.
+fn lost_of(message: &Value) -> Option<u64> {
+    message.get("lost").and_then(Value::as_u64)
 }
 
 /// The event name a download's refusal is logged under.
@@ -1625,8 +1635,16 @@ fn download_event(dropped: bool) -> &'static str {
 /// never reached a save door at all, so it says so; anything that did reach
 /// one - a write that failed, bytes that did not arrive intact - keeps the
 /// words it always had.
-fn refusal_title(dropped: bool) -> &'static str {
-    if dropped { "a download was dropped before it was read" } else { "the download was not saved" }
+fn refusal_title(dropped: bool, lost: Option<u64>) -> &'static str {
+    if !dropped {
+        return "the download was not saved";
+    }
+    // **The title agrees with the body's count.** A count that did not arrive
+    // cannot say one, so only a known single loss is titled as one.
+    match lost {
+        Some(1) => "a download was dropped before it was read",
+        _ => "downloads were dropped before they were read",
+    }
 }
 
 /// Tell the person a download did not arrive, and why.
@@ -1634,19 +1652,19 @@ fn refusal_title(dropped: bool) -> &'static str {
 /// **The line is the dialog's shadow**: a person who never saw the alert can
 /// still find out what happened, and the reason is the same sentence.
 #[cfg(target_os = "macos")]
-fn say_download_refused(app: &tauri::AppHandle, why: &str, dropped: bool) {
+fn say_download_refused(app: &tauri::AppHandle, why: &str, dropped: bool, lost: Option<u64>) {
     use objc2::MainThreadMarker;
     use objc2_app_kit::{NSAlert, NSAlertStyle, NSApplication};
     use objc2_foundation::NSString;
 
     tauri_plugin_log::log::info!(
         "{} (event_name {}): {why}",
-        refusal_title(dropped),
+        refusal_title(dropped, lost),
         download_event(dropped)
     );
     let app = app.clone();
     let why = why.to_owned();
-    let title = refusal_title(dropped);
+    let title = refusal_title(dropped, lost);
     // **The alert is AppKit's own, run modally.** The dialog plugin's alert
     // picked a window of its own and was never seen (measured 2026-10-24);
     // one started from the app's own event loop is the one a person sees.
@@ -1670,16 +1688,16 @@ fn say_download_refused(app: &tauri::AppHandle, why: &str, dropped: bool) {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn say_download_refused(app: &tauri::AppHandle, why: &str, dropped: bool) {
+fn say_download_refused(app: &tauri::AppHandle, why: &str, dropped: bool, lost: Option<u64>) {
     use tauri_plugin_dialog::DialogExt as _;
     tauri_plugin_log::log::info!(
         "{} (event_name {}): {why}",
-        refusal_title(dropped),
+        refusal_title(dropped, lost),
         download_event(dropped)
     );
     app.dialog()
         .message(why)
-        .title(refusal_title(dropped))
+        .title(refusal_title(dropped, lost))
         .kind(tauri_plugin_dialog::MessageDialogKind::Error)
         .show(|_| {});
 }
@@ -1827,15 +1845,34 @@ mod tests {
     #[test]
     fn a_dropped_download_does_not_claim_a_failed_save() {
         assert_eq!(
-            refusal_title(true),
+            refusal_title(true, Some(1)),
             "a download was dropped before it was read",
             "the dropped offer's own title",
         );
         assert_eq!(
-            refusal_title(false),
+            refusal_title(true, Some(3)),
+            "downloads were dropped before they were read",
+            "a counted loss is not titled as one loss",
+        );
+        assert_eq!(
+            refusal_title(true, None),
+            "downloads were dropped before they were read",
+            "a count that did not arrive still cannot say one",
+        );
+        assert_eq!(
+            refusal_title(false, None),
             "the download was not saved",
             "and a genuine save failure keeps the words it had",
         );
+    }
+
+    /// **The drop's count is the server's, under its own key.** A save carries
+    /// no count, and a value that is not a number is not one.
+    #[test]
+    fn the_lost_count_is_read_from_the_drop_only() {
+        assert_eq!(lost_of(&json!({ "lost": 3 })), Some(3), "the server counted them");
+        assert_eq!(lost_of(&json!({})), None, "a save carries none");
+        assert_eq!(lost_of(&json!({ "lost": "many" })), None, "a non-number is not a count");
     }
 
     /// **Only an explicit true marks a dropped offer.** The flag is what the

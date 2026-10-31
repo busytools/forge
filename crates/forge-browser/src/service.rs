@@ -3732,7 +3732,7 @@ fn read_download(dir: &Path, tab: u16, name: &str, path: &str, size: u64) -> Bro
             path.display()
         );
         return BrowserDownload {
-            tab,
+            tab: Some(tab),
             name: name.to_owned(),
             bytes: Vec::new(),
             error: Some("the downloaded file could not be read on the server".to_owned()),
@@ -3741,7 +3741,7 @@ fn read_download(dir: &Path, tab: u16, name: &str, path: &str, size: u64) -> Bro
     if size > MAX_DOWNLOAD_BYTES {
         let _ = std::fs::remove_file(path);
         return BrowserDownload {
-            tab,
+            tab: Some(tab),
             name: name.to_owned(),
             bytes: Vec::new(),
             error: Some("this file is larger than 32 MiB, so the viewer cannot save it".to_owned()),
@@ -3750,14 +3750,14 @@ fn read_download(dir: &Path, tab: u16, name: &str, path: &str, size: u64) -> Bro
     let bytes = std::fs::read(path);
     let _ = std::fs::remove_file(path);
     match bytes {
-        Ok(bytes) => BrowserDownload { tab, name: name.to_owned(), bytes, error: None },
+        Ok(bytes) => BrowserDownload { tab: Some(tab), name: name.to_owned(), bytes, error: None },
         Err(why) => {
             tracing::warn!(
                 "a finished download could not be read (event_name browser_download_unreadable, \
                  tab {tab}, name {name}): {why}"
             );
             BrowserDownload {
-                tab,
+                tab: Some(tab),
                 name: name.to_owned(),
                 bytes: Vec::new(),
                 error: Some("the downloaded file could not be read on the server".to_owned()),
@@ -6114,7 +6114,7 @@ mod tests {
         let small = downloads.join("1-small.txt");
         std::fs::write(&small, b"hello").expect("a small file");
         let read = read_download(dir.path(), 2, "small.txt", small.to_str().expect("a path"), 5);
-        assert_eq!(read.tab, 2, "the tab comes with the file");
+        assert_eq!(read.tab, Some(2), "the tab comes with the file");
         assert_eq!(read.bytes, b"hello", "the bytes are handed on");
         assert!(read.error.is_none());
         assert!(!small.exists(), "the server's copy goes once it is read");
@@ -10754,7 +10754,7 @@ mod tests {
             tokio::sync::broadcast::channel::<BrowserDownload>(DOWNLOAD_BACKLOG);
         for n in 0..5 {
             let offer = BrowserDownload {
-                tab: 0,
+                tab: Some(0),
                 name: format!("file-{n}"),
                 bytes: Vec::new(),
                 error: None,

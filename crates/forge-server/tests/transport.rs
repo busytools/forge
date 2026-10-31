@@ -10615,7 +10615,7 @@ async fn a_chooser_and_a_download_for_another_tab_are_not_delivered() {
     assert_eq!((id, tab), (9, 1));
 
     let download = |tab, name: &str| forge_primitives::browser::BrowserDownload {
-        tab,
+        tab: Some(tab),
         name: name.to_owned(),
         bytes: b"x".to_vec(),
         error: None,
@@ -10630,7 +10630,7 @@ async fn a_chooser_and_a_download_for_another_tab_are_not_delivered() {
     let ServerMessage::BrowserDownload { tab, name, dropped, .. } = saved else {
         panic!("this tab's save is sent, got {saved:?}")
     };
-    assert_eq!((tab, name.as_str()), (1, "mine.txt"));
+    assert_eq!((tab, name.as_str()), (Some(1), "mine.txt"));
     assert!(!dropped, "a delivered save is not a dropped offer");
 }
 
