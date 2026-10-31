@@ -455,8 +455,8 @@ describe("the takeover bar's keyboard", () => {
     flushSync();
   }
 
-  function controls(target: HTMLElement): HTMLElement[] {
-    const all = [...target.querySelectorAll<HTMLElement>('.takeover-bar button')];
+  function controls(target: HTMLElement): HTMLButtonElement[] {
+    const all = [...target.querySelectorAll<HTMLButtonElement>('.takeover-bar button')];
     return all.filter((button) => !button.disabled);
   }
 
