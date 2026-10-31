@@ -219,7 +219,13 @@ impl Workspace {
     ///
     /// Best-effort: a store that will not write costs a reloaded row its
     /// title, which is exactly what it had before the pairing existed.
-    pub(crate) fn remember_cron_name(&self, uuid: &str, cron_id: &str, description: Option<&str>) {
+    pub(crate) fn remember_cron_name(
+        &self,
+        slot: &forge_primitives::SessionSlot,
+        uuid: &str,
+        cron_id: &str,
+        description: Option<&str>,
+    ) {
         let guard = self.db.lock();
         let Some(db) = guard.as_ref() else {
             return;
@@ -231,6 +237,10 @@ impl Workspace {
         if let Err(error) = crate::store::cron_names::put(db, uuid, &name) {
             tracing::warn!(
                 event_name = "cron_name_store_failed",
+                org = slot.org(),
+                project = slot.project(),
+                label = slot.label(),
+                cron = %cron_id,
                 prompt = %uuid,
                 %error,
                 "the fired prompt's schedule was not recorded; a reload falls back to the prompt"
@@ -242,6 +252,7 @@ impl Workspace {
     /// own id: the read half of the pairing the delivery frame carries.
     pub fn cron_names(
         &self,
+        slot: &forge_primitives::SessionSlot,
         uuids: &[&str],
     ) -> std::collections::BTreeMap<String, forge_primitives::cron::CronName> {
         let guard = self.db.lock();
@@ -251,6 +262,10 @@ impl Workspace {
         crate::store::cron_names::for_uuids(db, uuids).unwrap_or_else(|error| {
             tracing::warn!(
                 event_name = "cron_names_read_failed",
+                org = slot.org(),
+                project = slot.project(),
+                label = slot.label(),
+                prompts = uuids.len(),
                 %error,
                 "the fired prompts' schedules could not be read; their rows fall back to the prompt"
             );

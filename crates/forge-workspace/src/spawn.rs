@@ -1132,7 +1132,7 @@ pub(crate) fn push_cron_prompt_into_chat(
 ) {
     // The frame names the schedule once, and the row outlives it: keep the
     // pairing so the read path can title the same row after a reload.
-    workspace.remember_cron_name(uuid, cron_id, description);
+    workspace.remember_cron_name(target_key, uuid, cron_id, description);
     let _ = workspace.update_sender().send(SessionUpdate::CronPromptAppended {
         key: target_key.clone(),
         text: text.to_owned(),

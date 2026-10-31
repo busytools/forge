@@ -456,9 +456,10 @@ impl ViewSurface {
     /// carries once.
     pub fn cron_names(
         &self,
+        slot: &SessionSlot,
         uuids: &[&str],
     ) -> std::collections::BTreeMap<String, forge_primitives::cron::CronName> {
-        self.workspace.cron_names(uuids)
+        self.workspace.cron_names(slot, uuids)
     }
 
     /// The rows of `slot`'s transcript that sit strictly before `below`, for a

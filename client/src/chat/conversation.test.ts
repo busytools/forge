@@ -513,7 +513,10 @@ const typed = (text: string): unknown => ({
  * needs from it is three things - what it asked for, the frames it was sent,
  * and the store it subscribed to - so that is what this answers with.
  */
-function fakeConnection() {
+function fakeConnection(
+  store?: () =>
+    { snapshot: () => unknown; dropped: () => number; updates: () => unknown[] } | undefined,
+) {
   const asks: ClientMessage[] = [];
   const listeners = new Set<(message: ServerMessage) => void>();
   const statuses = new Set<(status: ConnectionStatus) => void>();
@@ -536,7 +539,7 @@ function fakeConnection() {
       statuses.add(fn);
       return () => statuses.delete(fn);
     },
-    store: () => undefined,
+    store: store ?? (() => undefined),
     settings: () => null,
     status: () => 'open' as const,
     close: () => undefined,
@@ -638,6 +641,33 @@ describe('the conversation the chat draws', () => {
     const inPage = 'p-reload-page';
     server.send(page([], 'above', { [inPage]: { cron_id: 'c2', description: 'Nightly sweep' } }));
     expect(cronNames.nameFor(inPage), 'an older page seeds its own rows').toBe('Nightly sweep');
+    stop();
+  });
+
+  /**
+   * **A return to a visited seat reads its pairing from the store.** A
+   * visited seat keeps its subscription, so no snapshot follows a column
+   * mounting on it; the record the frames kept current is all there is, and
+   * that path seeds the cron store too (#1815).
+   */
+  it('seeds a visited seat cron pairing from the record it already holds', () => {
+    const uuid = 'p-store-seed';
+    const server = fakeConnection(() => ({
+      snapshot: () => ({
+        conversation: {
+          turns: [cronTurn(uuid, '[Cron]\n\novernight CI')],
+          cursor: null,
+          handoff: null,
+          cron_names: { [uuid]: { cron_id: 'c1', description: 'Morning summary' } },
+        },
+      }),
+      dropped: () => 0,
+      updates: () => [],
+    }));
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+
+    expect(cronNames.nameFor(uuid), 'the held record seeds the schedule').toBe('Morning summary');
     stop();
   });
 

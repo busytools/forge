@@ -662,6 +662,7 @@ pub struct ConversationWire {
 /// the map holds nothing for a row no schedule produced.
 pub fn cron_names_of(
     surface: &ViewSurface,
+    slot: &SessionSlot,
     turns: &[TurnWire],
 ) -> BTreeMap<String, forge_primitives::cron::CronName> {
     let mut uuids: Vec<&str> = Vec::new();
@@ -681,7 +682,7 @@ pub fn cron_names_of(
     if uuids.is_empty() {
         return BTreeMap::new();
     }
-    surface.cron_names(&uuids)
+    surface.cron_names(slot, &uuids)
 }
 
 /// The review reads for one branch, each carrying its own answer.
@@ -2367,16 +2368,12 @@ async fn session(
                 if first_frame == usize::MAX {
                     cap_tool_records(&mut page.turns, cap, &capped);
                 }
-                let names = cron_names_of(&surface, &page.turns);
-                (
-                    page.turns,
-                    page.cursor,
-                    count,
-                    at.elapsed().as_secs_f64() * 1000.0,
-                    covered,
-                    handoff,
-                    names,
-                )
+                // **The page's own cost is measured before the cron read.**
+                // The pairing is annotating the page, not building it, and the
+                // standing watch reads this number.
+                let page_ms = at.elapsed().as_secs_f64() * 1000.0;
+                let names = cron_names_of(&surface, &capped, &page.turns);
+                (page.turns, page.cursor, count, page_ms, covered, handoff, names)
             })
             .await
             .unwrap_or_else(|error| {
@@ -2694,6 +2691,15 @@ mod tests {
                 },
             )
             .expect("write the pairing");
+            forge_workspace::store::cron_names::put(
+                &db,
+                "a-1",
+                &forge_primitives::cron::CronName {
+                    cron_id: "not-a-fire".to_owned(),
+                    description: Some("an assistant row's id".to_owned()),
+                },
+            )
+            .expect("write a pairing under a non-prompt id too");
         }
         let fleet =
             crate::testing::Fleet::in_dir(dir.path(), &[("TestOrg", &["proj"])]).expect("a fleet");
@@ -2724,7 +2730,8 @@ mod tests {
             ],
         }];
 
-        let names = super::cron_names_of(&fleet.surface(), &page);
+        let seat = forge_primitives::SessionSlot::lead("TestOrg", "proj");
+        let names = super::cron_names_of(&fleet.surface(), &seat, &page);
         assert_eq!(
             names.get("p-reload").and_then(|name| name.description.as_deref()),
             Some("Morning summary"),
@@ -2733,6 +2740,11 @@ mod tests {
         assert!(
             !names.contains_key("p-other"),
             "a page carries the pairings its own fired rows need and no others",
+        );
+        assert!(
+            !names.contains_key("a-1"),
+            "a pairing stored under an id an ASSISTANT row carries is not a fired prompt, so the \
+             type filter must keep it out of the map",
         );
     }
 

@@ -2099,8 +2099,11 @@ where
                 for anchor in anchors {
                     match rows_below_floor(state, &seat, &cwd, anchor, turns).await {
                         BelowFloor::Page(page) => {
-                            let cron_names =
-                                crate::transport::wire::cron_names_of(&state.surface, &page.turns);
+                            let cron_names = crate::transport::wire::cron_names_of(
+                                &state.surface,
+                                &seat,
+                                &page.turns,
+                            );
                             return send(
                                 socket,
                                 ServerMessage::Page {
@@ -2208,7 +2211,8 @@ where
                     .await;
                 }
             };
-            let cron_names = crate::transport::wire::cron_names_of(&state.surface, &page.turns);
+            let cron_names =
+                crate::transport::wire::cron_names_of(&state.surface, &seat, &page.turns);
             send(
                 socket,
                 ServerMessage::Page {
@@ -6119,6 +6123,96 @@ mod tests {
 
     fn lead() -> SessionSlot {
         SessionSlot::lead("TestOrg", "proj")
+    }
+
+    /// **The conversation read carries the cron pairing, not just the frame.**
+    /// A fired prompt's row is replayed from a transcript after a reload,
+    /// where the delivery frame is long gone. Both reads that serve it - the
+    /// subscribe's record and a `more` page - must carry the schedule, or the
+    /// reloaded row falls back to the prompt's first line (#1815).
+    #[tokio::test]
+    async fn a_seat_read_carries_the_cron_pairing_its_rows_came_from() {
+        let dir = tempfile::tempdir().expect("a config dir of its own");
+        // The pairing is written before the fleet opens the store, as a fire
+        // would have left it while this seat ran.
+        std::fs::create_dir_all(dir.path().join("app-support")).expect("app-support");
+        {
+            let db = forge_workspace::store::Db::open(&dir.path().join("app-support/db.redb"))
+                .expect("open db");
+            forge_workspace::store::cron_names::put(
+                &db,
+                "p-cron",
+                &forge_primitives::cron::CronName {
+                    cron_id: "c1".to_owned(),
+                    description: Some("Morning summary".to_owned()),
+                },
+            )
+            .expect("write the pairing");
+        }
+        let fleet = crate::testing::Fleet::in_dir(dir.path(), &[("TestOrg", &["proj"])])
+            .expect("the fleet builds");
+        fleet
+            .seed_transcript(
+                "TestOrg",
+                "proj",
+                "lead",
+                &[r#"{"type":"user","uuid":"p-cron","message":{"role":"user","content":[{"type":"text","text":"[Cron]\n\nsummarise overnight CI"}]}}"#],
+            )
+            .expect("the fired prompt's row");
+        let state = Arc::new(TransportState::for_workspace(&fleet.workspace()));
+        fleet.hold_conversation(&state, "TestOrg", "proj", "lead").expect("the held conversation");
+        let slot = lead();
+        let Driven { to_server, written, driven } = connection(&state);
+
+        subscribed(&to_server, &slot);
+        until(
+            || {
+                written.lock().expect("the frame log").iter().any(|frame| {
+                    let ServerMessage::Snapshot { subject: Subject::Session(read), data } = frame
+                    else {
+                        return false;
+                    };
+                    read == &slot
+                        && data
+                            .pointer("/conversation/cron_names/p-cron/description")
+                            .and_then(serde_json::Value::as_str)
+                            == Some("Morning summary")
+                })
+            },
+            "the record carrying its cron pairing",
+        )
+        .await;
+
+        to_server
+            .send(Message::Text(
+                serde_json::to_string(&ClientMessage::More {
+                    conversation: slot.clone(),
+                    before: None,
+                    turns: 5,
+                })
+                .expect("the ask encodes")
+                .into(),
+            ))
+            .expect("the ask goes");
+        until(
+            || {
+                written.lock().expect("the frame log").iter().any(|frame| {
+                    matches!(
+                        frame,
+                        ServerMessage::Page { cron_names, .. }
+                            if cron_names
+                                .get("p-cron")
+                                .and_then(|name| name.description.as_deref())
+                                == Some("Morning summary")
+                    )
+                })
+            },
+            "the page carrying its cron pairing",
+        )
+        .await;
+
+        drop(to_server);
+        let _ = driven.await;
     }
 
     /// **The subscription is not the showing.** A seat a client merely listens
