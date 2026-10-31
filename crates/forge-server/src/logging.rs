@@ -460,7 +460,12 @@ mod tests {
         // session with no on-disk file, an anchor no row names. Each is one
         // session's own data rather than forge's health, and without the
         // directive the records land nowhere at all.
-        assert!(DEFAULT_LOG_DIRECTIVES.contains("forge_agent::userdata::catalog::scan=debug"));
+        let scan_module = "forge_agent::userdata::catalog::scan=debug";
+        assert!(
+            DEFAULT_LOG_DIRECTIVES.split(',').any(|directive| directive.trim() == scan_module),
+            "the scan's module path keeps its directive ({scan_module}): \
+             {DEFAULT_LOG_DIRECTIVES}",
+        );
         // The scan's lite-read failures carry a target of their own, which
         // the module-path directive above does not match: a target is not a
         // module path. Without this directive those records - the only trace
