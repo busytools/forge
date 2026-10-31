@@ -2368,11 +2368,13 @@ async fn session(
                 if first_frame == usize::MAX {
                     cap_tool_records(&mut page.turns, cap, &capped);
                 }
-                // **The page's own cost is measured before the cron read.**
-                // The pairing is annotating the page, not building it, and the
-                // standing watch reads this number.
-                let page_ms = at.elapsed().as_secs_f64() * 1000.0;
                 let names = cron_names_of(&surface, &capped, &page.turns);
+                // **The page's cost is the whole subscribe's**, the cron read
+                // included: the standing watch reads this number against the
+                // record it explains, so a read it excludes reads as cheaper
+                // than the record. The row is annotating the page, but it is
+                // part of building the answer.
+                let page_ms = at.elapsed().as_secs_f64() * 1000.0;
                 (page.turns, page.cursor, count, page_ms, covered, handoff, names)
             })
             .await
