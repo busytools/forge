@@ -208,3 +208,48 @@ describe('the shell listeners', () => {
     },
   );
 });
+
+/**
+ * **The overlay's two key doors, as the shell wires them.** Both names are
+ * literals on each side of the language boundary, so a rename on either side
+ * kills desktop dictation silently; the payload comes from a native half with
+ * no type link to this page, so its narrowing is pinned here too.
+ */
+describe("the overlay's key doors", () => {
+  it('registers both events and ignores a malformed modifier payload', async () => {
+    vi.resetModules();
+    listen.mockReset();
+    listen.mockResolvedValue(() => undefined);
+    installShellInternals();
+
+    const { shellLink } = await import('./shell');
+    const presses: { code: number; down: boolean }[] = [];
+    const chords: number[] = [];
+    await shellLink().onModifier?.((press) => presses.push(press));
+    await shellLink().onModifierChord?.(() => chords.push(1));
+
+    expect(registered(), 'the two names the Rust half emits').toEqual([
+      'browser_modifier',
+      'browser_modifier_chord',
+    ]);
+
+    const modifier = listen.mock.calls[0]?.[1] as (event: { payload: unknown }) => void;
+    modifier({ payload: { code: 54, down: true } });
+    expect(presses, 'a complete payload is the press').toEqual([{ code: 54, down: true }]);
+    for (const payload of [
+      null,
+      undefined,
+      'x',
+      { code: '54', down: true },
+      { code: 54 },
+      { code: 54, down: 'true' },
+    ]) {
+      modifier({ payload });
+    }
+    expect(presses, 'a malformed payload is ignored').toHaveLength(1);
+
+    const chord = listen.mock.calls[1]?.[1] as (event: { payload: unknown }) => void;
+    chord({ payload: null });
+    expect(chords, 'the chord carries no payload and is passed on').toEqual([1]);
+  });
+});

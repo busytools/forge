@@ -39,6 +39,8 @@
     dictation = false,
     takeline = null,
     opening = false,
+    open = $bindable(false),
+    field = () => {},
     ondismiss = () => {},
     ondone = null,
     onnotnow = null,
@@ -98,6 +100,18 @@
      * no way, so the press reads as dead.
      */
     opening?: boolean;
+    /**
+     * Whether the feedback line is open.
+     *
+     * **The composer opens it too**, when the push-to-talk key begins a take
+     * from anywhere under the takeover: the line is the only box on this
+     * surface, so a begin that needed a click first is the click the key exists
+     * to spare.
+     */
+    open?: boolean;
+    /** The feedback field, so the composer can put the keyboard in it when the
+     *  key opens the line. */
+    field?: (el: HTMLElement | null) => void;
     /** The reader typed in the row, which dismisses the line above it the way
      *  the same typing dismisses the composer's own notice. */
     ondismiss?: () => void;
@@ -114,7 +128,6 @@
     onretry?: (() => void) | null;
   } = $props();
 
-  let feedbackOpen = $state(false);
   /** The ask's words, or `null` when there are none: an empty reason draws no row. */
   const askWords = $derived(reason === null || reason.trim() === '' ? null : reason);
   /** The tab picker's own select: **its value is set here rather than by the
@@ -330,8 +343,8 @@
           <button
             class="tb-btn d"
             type="button"
-            aria-expanded={feedbackOpen}
-            onclick={() => (feedbackOpen = !feedbackOpen)}
+            aria-expanded={open}
+            onclick={() => (open = !open)}
           >
             something's wrong…
           </button>
@@ -346,7 +359,7 @@
          this is the only place the person can read what is asked. -->
     <div class="tb-ask">{askWords}</div>
   {/if}
-  {#if feedbackOpen && onfeedback !== null}
+  {#if open && onfeedback !== null}
     {#if opening}
       <!-- The open, in the bar and only past the wait the props doc names:
            until this page's own take exists there is nothing else on the
@@ -368,6 +381,7 @@
           editor="bar"
           class="tb-field"
           bind:value={notes}
+          {field}
           rows={1}
           placeholder="what did not work? the agent reads this"
           oninput={() => ondismiss()}
