@@ -452,7 +452,7 @@ const COMPRESSED_JSON_TAG = 3;
  * them, so both halves stop one byte past the limit rather than grow without
  * bound.
  */
-const MAX_INFLATED_BYTES = 256 << 20;
+export const MAX_INFLATED_BYTES = 256 << 20;
 
 /**
  * The address this page dials, with the compression capability declared.
@@ -480,10 +480,7 @@ function declaringCompression(url: string): string {
  * caller awaits it inside the one ordered queue, so the frames behind it are
  * delivered after it.
  */
-export async function inflate(
-  bytes: Uint8Array,
-  limit: number = MAX_INFLATED_BYTES,
-): Promise<string> {
+export async function inflate(bytes: Uint8Array, limit: number): Promise<string> {
   const body = new Blob([bytes as BlobPart]).stream().pipeThrough(new DecompressionStream('gzip'));
   const reader = body.getReader();
   const decoder = new TextDecoder();
@@ -1141,8 +1138,16 @@ export function connect(
       if (queued === 0) pending = null;
     };
     const enqueue = (work: () => void | Promise<void>): void => {
+      // **Queued work belongs to the socket that carried it** (#2560): a
+      // reconnect replaces `socket` while frames still wait behind an
+      // inflate, and the queue outlives the drop. The check is at run time
+      // because that is when the socket can have changed.
+      const guarded = (): void | Promise<void> => {
+        if (next !== socket) return;
+        return work();
+      };
       if (pending === null) {
-        const outcome = work();
+        const outcome = guarded();
         if (outcome instanceof Promise) {
           queued = 1;
           pending = outcome.then(release, (why: unknown) => {
@@ -1153,7 +1158,7 @@ export function connect(
         return;
       }
       queued += 1;
-      const step = pending.then(work, work);
+      const step = pending.then(guarded, guarded);
       pending = step.then(release, (why: unknown) => {
         release();
         report('an inbound frame could not be read', why);
@@ -1165,7 +1170,7 @@ export function connect(
       if (data instanceof ArrayBuffer) {
         const bytes = new Uint8Array(data);
         if (bytes[0] === COMPRESSED_JSON_TAG) {
-          return inflate(bytes.subarray(1)).then(
+          return inflate(bytes.subarray(1), MAX_INFLATED_BYTES).then(
             (text) => {
               // **A frame that outlived its socket is not the new one's to
               // deliver** (#2560): the inflate is the one async step on the
@@ -1188,6 +1193,10 @@ export function connect(
                 bytes: bytes.byteLength,
                 why,
               });
+              // The socket is closed before the drop, as the dial bound does:
+              // `dropped` schedules the retry but leaves the socket itself
+              // open.
+              next.close();
               dropped();
             },
           );

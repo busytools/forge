@@ -17,6 +17,7 @@ import {
   inflate,
   LIVENESS_DEAD_MS,
   LIVENESS_EVERY_MS,
+  MAX_INFLATED_BYTES,
   RETRY_MS,
   type BrowserFrame,
   type Connection,
@@ -340,6 +341,7 @@ describe('the connection', () => {
    * decoder without a stop is the unbounded read the shell refuses.
    */
   it('bounds what a compressed frame may inflate to', async () => {
+    expect(MAX_INFLATED_BYTES, 'the bound the shell documents').toBe(256 << 20);
     const body = gzipSync(Buffer.from('0123456789'));
     await expect(inflate(new Uint8Array(body), 10)).resolves.toBe('0123456789');
     await expect(inflate(new Uint8Array(body), 9)).rejects.toThrow(
@@ -386,12 +388,12 @@ describe('the connection', () => {
   });
 
   /**
-   * **A compressed frame that outlives its socket is not delivered to the
-   * next one** (#2560): the inflate is the one async step on the inbound
-   * path, so a reconnect can land while it runs. The frame belongs to the
-   * connection that asked for it.
+   * **A compressed frame and the frames queued behind it belong to the
+   * connection that carried them** (#2560): the inflate is the one async
+   * step on the inbound path, so a reconnect can land while it and a text
+   * frame behind it still wait. Both are the old socket's to lose.
    */
-  it('drops a compressed frame that outlived its socket', async () => {
+  it('drops the frames queued behind a compressed frame whose socket was replaced', async () => {
     const held = globalThis.DecompressionStream;
     let began: () => void = () => {};
     const started = new Promise<void>((resolve) => {
@@ -427,6 +429,10 @@ describe('the connection', () => {
       });
       server.sendBinary(Buffer.from([3, 9, 9, 9]));
       await started;
+      // A text frame that arrived while the inflate was pending: the queue
+      // holds it behind the same socket, not the next connection's.
+      server.send({ kind: 'update', update: 'catalog_loaded' });
+      await quiet(20);
       server.drop();
       await until(() => server.dials.length === 2, 'the reconnect dial');
       release();
