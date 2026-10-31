@@ -15,8 +15,14 @@ pub enum Error {
         /// The devices that are present, as `id (name)` pairs.
         available: String,
     },
-    /// The device offers no stream this crate can open.
-    #[error("the input device cannot serve {wanted} Hz (it offers: {offered})")]
+    /// The device offers no stream in a format this crate can open.
+    ///
+    /// The sentence leads with the FORMATS and names the rate second: an
+    /// I16-only device refused by a rate sentence sent a reader after a
+    /// sample-rate problem that was never there (#2362).
+    #[error(
+        "the input device offers no F32 or I16 stream for {wanted} Hz input (it offers: {offered})"
+    )]
     UnsupportedInput {
         /// The rate the caller needed.
         wanted: u32,

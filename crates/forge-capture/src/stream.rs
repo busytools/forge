@@ -9,7 +9,7 @@ use cpal::traits::{DeviceTrait, StreamTrait};
 use crate::Error;
 use crate::SAMPLE_RATE;
 use crate::convert::InputConverter;
-use crate::device::{Device, describe, input_config, open_device};
+use crate::device::{Device, InputFormat, describe, input_config, open_device};
 
 /// One block of the device's audio, as it arrived.
 pub struct Block<'a> {
@@ -88,6 +88,7 @@ pub fn open(
         event_name = "input_stream_opened",
         channels,
         rate = SAMPLE_RATE,
+        format = ?plan.sample_format,
         resample_from = ?plan.resample_from,
         "input open"
     );
@@ -98,21 +99,47 @@ pub fn open(
     let reader = std::thread::Builder::new()
         .name("forge-capture".into())
         .spawn(move || {
-            let stream = device.build_input_stream(
-                plan.config,
-                move |block: &[f32], _: &cpal::InputCallbackInfo| {
-                    converter.push(block, &mut |samples, peak| on_block(Block { samples, peak }));
-                },
-                |error| tracing::warn!(event_name = "input_stream_error", %error, "input stream error"),
-                None,
-            );
-            let stream = match stream.and_then(|stream| stream.play().map(|()| stream)) {
+            // The stream is built in the format the device negotiated: I16 is
+            // converted on the way in, because everything downstream reads
+            // f32.
+            let stream = match plan.sample_format {
+                InputFormat::F32 => device.build_input_stream(
+                    plan.config,
+                    move |block: &[f32], _: &cpal::InputCallbackInfo| {
+                        converter.push(block, &mut |samples, peak| on_block(Block { samples, peak }));
+                    },
+                    |error| tracing::warn!(event_name = "input_stream_error", %error, "input stream error"),
+                    None,
+                ),
+                InputFormat::I16 => {
+                    let mut scaled: Vec<f32> = Vec::new();
+                    device.build_input_stream(
+                        plan.config,
+                        move |block: &[i16], _: &cpal::InputCallbackInfo| {
+                            scaled.clear();
+                            scaled.extend(
+                                block.iter().map(|sample| f32::from(*sample) / 32_768.0),
+                            );
+                            converter.push(&scaled, &mut |samples, peak| {
+                                on_block(Block { samples, peak });
+                            });
+                        },
+                        |error| tracing::warn!(event_name = "input_stream_error", %error, "input stream error"),
+                        None,
+                    )
+                }
+            };
+            let stream = match stream {
                 Ok(stream) => stream,
                 Err(error) => {
                     let _ = ready.send(Err(Error::Capture { message: error.to_string() }));
                     return;
                 }
             };
+            if let Err(error) = stream.play() {
+                let _ = ready.send(Err(Error::Capture { message: error.to_string() }));
+                return;
+            }
             let _ = ready.send(Ok(()));
             while !reader_stop.load(Ordering::Relaxed) {
                 std::thread::sleep(Duration::from_millis(20));
