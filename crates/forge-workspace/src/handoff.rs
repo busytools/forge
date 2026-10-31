@@ -1135,6 +1135,11 @@ pub(crate) struct HeldPrompt {
     pub text: String,
     pub attachments: Vec<forge_primitives::ImageAttachment>,
     pub source: crate::protocol::PromptSource,
+    /// The id the prompt was dispatched under. The successor dispatches under
+    /// the same id, because the delivery frame and the transcript row already
+    /// share it - a fresh one at drain leaves a cron row with nothing to pair
+    /// its schedule to (#1815).
+    pub uuid: String,
     /// The seat that sent it, when a peer message has one: a handoff that
     /// never reaches a successor answers that sender, the way the parked
     /// bucket does, rather than only telling the seat.
@@ -1283,6 +1288,7 @@ impl crate::Workspace {
             text: text.clone(),
             attachments: Vec::new(),
             source: crate::protocol::PromptSource::Peer,
+            uuid: uuid.clone(),
             sender: Some(caller.clone()),
         };
         if self.hold_prompt(key, held) {

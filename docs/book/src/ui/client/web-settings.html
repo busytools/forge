@@ -50,9 +50,9 @@
   .settings-meta { margin-left: auto; display: flex; flex-direction: column;
     align-items: flex-end; gap: 3px; }
   .settings-mode { font-family: var(--mono); font-size: 11px; color: var(--muted);
-    border: 1px solid var(--line); border-radius: 99px; padding: 2px 9px; white-space: nowrap; }
+    border: 1px solid var(--ctl); border-radius: 99px; padding: 2px 9px; white-space: nowrap; }
   .back { font-family: var(--mono); font-size: var(--fs-label); color: var(--muted);
-    text-decoration: none; border: 1px solid var(--line); border-radius: 9px; padding: 6px 11px; }
+    text-decoration: none; border: 1px solid var(--ctl); border-radius: 9px; padding: 6px 11px; }
 
   /* the effect classes: one shape per class, the word beside it, in the
      global `.chip` pill the page's mark component wears */
@@ -133,7 +133,7 @@
   .phone .settings-rail { flex: none; width: 100%; padding: 0 0 10px; display: flex;
     flex-wrap: wrap; gap: 6px; }
   .phone .settings-rail-item { width: auto; flex: 0 0 auto; margin-bottom: 0;
-    border: 1px solid var(--line); padding: 6px 11px; }
+    border: 1px solid var(--ctl); padding: 6px 11px; }
   .phone .settings-rail-count { margin-left: 2px; }
   .phone .settings-pane { padding-left: 0; border-left: 0; width: 100%; }
   .phone .settings-keys { margin-left: 0; }
@@ -143,7 +143,9 @@
 
   /* ---------- the editor ---------- */
   .editor-demo { margin-top: 44px; }
-  button.settings-mode { font-family: var(--mono); font-size: 11px; color: var(--hot);
+  /* The editor demo's pill is the EDITING state, so only that specimen takes
+     the hot tone; the header's own button rests in the control mark. */
+  .editor-demo button.settings-mode { font-family: var(--mono); font-size: 11px; color: var(--hot);
     border: 1px solid rgba(244,118,0,.45); border-radius: 99px; padding: 2px 9px;
     white-space: nowrap; background: var(--sel); cursor: pointer; }
   .settings-restart { display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
@@ -152,7 +154,7 @@
   .settings-restart .t { font-family: var(--mono); font-size: var(--fs-label); color: var(--warn); }
   .settings-restart .keys { font-family: var(--mono); font-size: var(--fs-label); color: var(--muted); }
   .settings-add, .settings-row-action { font-family: var(--mono); font-size: 11px;
-    color: var(--muted); background: none; border: 1px solid var(--line); border-radius: 99px;
+    color: var(--muted); background: none; border: 1px solid var(--ctl); border-radius: 99px;
     padding: 3px 10px; cursor: pointer; white-space: nowrap; }
   .settings-row-action.danger { color: var(--bad); border-color: rgba(224,104,62,.4); }
   .settings-required { font-family: var(--mono); font-size: 10px; color: var(--warn);
@@ -163,13 +165,13 @@
   .list-editor { display: flex; flex-direction: column; gap: 5px; }
   .list-item { display: flex; align-items: center; gap: 6px; }
   .list-x { font-family: var(--mono); font-size: 13px; color: var(--muted);
-    background: none; border: 1px solid var(--line); border-radius: 6px; padding: 2px 8px;
+    background: none; border: 1px solid var(--ctl); border-radius: 6px; padding: 2px 8px;
     cursor: pointer; }
   .list-add { align-self: flex-start; font-family: var(--mono); font-size: 11px;
-    color: var(--muted); background: none; border: 1px dashed var(--line); border-radius: 7px;
+    color: var(--muted); background: none; border: 1px dashed var(--ctl); border-radius: 7px;
     padding: 3px 10px; cursor: pointer; }
   .settings-rows input, .settings-rows select { font-family: var(--mono); font-size: 13px;
-    color: var(--text); background: var(--bg); border: 1px solid var(--line);
+    color: var(--text); background: var(--bg); border: 1px solid var(--ctl);
     border-radius: 7px; padding: 5px 8px; min-width: 0; width: 100%; }
   .settings-rows input[type="number"] { max-width: 160px; }
   .settings-rows select { max-width: 260px; }
@@ -192,7 +194,7 @@
     font-size: 12.5px; border-radius: 9px; padding: 7px 14px; }
   .settings-btn.go { background: var(--accent); color: var(--bg); font-weight: 640; }
   .settings-btn.ghost { background: transparent; color: var(--muted);
-    box-shadow: inset 0 0 0 1px var(--line); }
+    box-shadow: inset 0 0 0 1px var(--ctl); }
   .settings-btn.bad { background: var(--bad); color: var(--bg); font-weight: 640; }
   .settings-dialog { width: min(460px, 100%); background: var(--s1); border: 1px solid var(--line);
     border-radius: 14px; padding: 20px 22px 18px; margin: 18px 0 0; }
