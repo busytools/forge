@@ -2763,6 +2763,21 @@ details.leaf.nrow details.raw pre { margin: 4px 0 2px; padding: 6px 9px; border:
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 55%, transparent); }
 .live-row .live-chip.bad .sg-tog, .live-row .live-chip.bad .bz-tog { color: var(--bad);
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--bad) 50%, transparent); }
+/* The row's own doors: what waits in the body, and the reader's draft when
+   the ask holds it. Both are buttons in the row's pill dress, and the ask
+   that is waiting takes the attention tone. */
+.live-row .live-door { flex: none; display: inline-flex; align-items: center; gap: 6px;
+  font-family: var(--mono); font-size: var(--fs-label); color: var(--muted);
+  background: none; border: 1px solid transparent; border-radius: 999px;
+  padding: 3px 8px; cursor: pointer; white-space: nowrap; }
+.live-row .live-door:hover, .live-row .live-door:focus-visible {
+  color: var(--text); background: var(--s3); }
+.live-row .live-door.att { color: var(--hot);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 55%, transparent); }
+.live-row .live-door.bad { color: var(--bad);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--bad) 50%, transparent); }
+.live-row .live-door .show { color: var(--dim); }
 /* A chip that did not fit stays in the DOM so the row can measure it, out of
    the flow and out of the reader's reach. */
 .live-row .live-chip.off { position: absolute; visibility: hidden; pointer-events: none; }
@@ -2774,7 +2789,8 @@ details.leaf.nrow details.raw pre { margin: 4px 0 2px; padding: 6px 9px; border:
   color: var(--hot); border-color: var(--accent); }
 .live-row .live-more.idle { visibility: hidden; }
 @media (pointer: coarse) {
-  .live-row .live-more, .live-row .sg-tog, .live-row .bz-tog { min-height: 44px; }
+  .live-row .live-more, .live-row .live-door,
+  .live-row .sg-tog, .live-row .bz-tog { min-height: 44px; }
 }
 /* The panel the +N opens: the chips the row could not hold, stacked as rows. */
 .live-panel { position: absolute; z-index: 30; overflow-y: auto;
@@ -2864,6 +2880,10 @@ details.leaf.nrow details.raw pre { margin: 4px 0 2px; padding: 6px 9px; border:
    an ask, a take's card or a blocked line. The row carries the padding,
    because the row is the only thing in it that draws edge to edge. */
 .slot { display: flex; flex-direction: column; }
+/* The ask hidden under the reader's draft: still mounted, so nothing it holds
+   is lost, and out of the page for the keyboard and the eye alike. */
+.ask-body { display: flex; flex-direction: column; }
+.ask-body.covered { display: none; }
 /* The draft's own row: the field or the take's card, the controls, and the
    keys a pointer can read. */
 .line { display: flex; align-items: center; gap: 8px; padding: 10px 12px 10px 14px; }

@@ -329,6 +329,64 @@
   );
 
   /**
+   * The ask, said on the live row while it holds the body: its kind, the mark
+   * it wears there, and the tone of something the reader owes an answer.
+   */
+  const askChip = $derived.by(() => {
+    const held = dockAsk;
+    if (held === null) return null;
+    if (held.kind === 'question') {
+      return {
+        mark: 'question',
+        label: `question ${String(held.request.index + 1)} of ${String(held.request.total)}`,
+        tone: 'att' as const,
+      };
+    }
+    if (held.kind === 'permission') {
+      return { mark: 'warning', label: 'approval', tone: 'att' as const };
+    }
+    if (held.kind === 'slack_draft') {
+      return { mark: 'plane', label: 'post waiting', tone: 'att' as const };
+    }
+    if (held.kind === 'document_hand_off') {
+      return { mark: 'file', label: 'document waiting', tone: 'att' as const };
+    }
+    return { mark: 'bell', label: 'browser waiting', tone: 'att' as const };
+  });
+
+  /**
+   * The reader's draft, as the live row's chip: how many lines they have
+   * written. Only while an ask holds the body - with the field in the body the
+   * words are already on screen, and a chip saying so would be a second copy
+   * of the row.
+   */
+  const draftChip = $derived(
+    dockAsk !== null && !box.draftOpen && box.draft.trim() !== ''
+      ? { lines: box.draft.split('\n').length }
+      : null,
+  );
+
+  /** Swap the body for the reader's draft, with the caret in it. */
+  function swapToDraft(): void {
+    if (dockAsk === null) return;
+    box.draftOpen = true;
+    void tick().then(() => field?.focus({ preventScroll: true }));
+  }
+
+  /** Give the body back to the ask; the dock's own effect takes the keyboard. */
+  function swapToAsk(): void {
+    box.draftOpen = false;
+  }
+
+  // **The swap belongs to the ask that offered it.** A new prompt, or none,
+  // is the field's body again; a flag left standing would hide the next ask
+  // behind a draft the reader was typing for the one before.
+  $effect(() => {
+    void ownKeyOf(dockAsk);
+    box.draftOpen = false;
+  });
+
+  /**
    * What the table needs to say which box holds the keyboard.
    *
    * This is the session route's box, so the connect screen's is never up beside
@@ -338,9 +396,9 @@
   const where = $derived({
     editor: 'composer',
     remember: 'composer',
-    pending: dockAsk !== null,
-    composerPresent: dockAsk === null,
-    dockPresent: dockOpen,
+    pending: dockAsk !== null && !box.draftOpen,
+    composerPresent: dockAsk === null || box.draftOpen,
+    dockPresent: dockOpen && !box.draftOpen,
   } satisfies Where);
 
   const blocker = $derived(
@@ -653,6 +711,9 @@
     // the bar's, so a take started at it belongs there - the same `notes` the
     // dock binds.
     if (barLineHolds) return true;
+    // **The draft has the body**: a take begun in the field is the field's,
+    // even with an ask parked behind it.
+    if (box.draftOpen) return false;
     const asking = dockAsk;
     if (asking === null || blocker !== null) return false;
     if (asking.kind === 'question') return true;
@@ -1580,41 +1641,59 @@
          The seat's figures and its segments stay on screen while a prompt, a
          take or a blocked line holds the slot below, so the context is never
          something the reader has to press for. -->
-    <LiveRow info={pinnedRow.of(seatKey)} {slot} />
+    <LiveRow
+      info={pinnedRow.of(seatKey)}
+      {slot}
+      ask={askChip}
+      draft={draftChip}
+      onask={swapToAsk}
+      ondraft={swapToDraft}
+    />
     <div class="slot">
       {#if blocker !== null}
         <Hold line={blocker.line} sub={blocker.sub} bad={blocker.bad} shimmer={blocker.shimmer} />
       {:else if dockAsk !== null}
-        <!-- Keyed on the prompt, so a batch's next question is a fresh dock:
-           the wire's option ids are positional, so a mark or a toggle left over
-           from the question before is a valid answer to the one after, and the
-           core accepts it. A repaint of the same prompt keeps its key, so a
-           frame arriving clears nothing the reader has turned on. -->
-        {#key ownKeyOf(dockAsk)}
-          <Dock
-            ask={dockAsk}
-            ownKey={ownKeyOf(dockAsk)}
-            {slot}
-            {connection}
-            depth={seat.pendingDepth}
-            notice={box.refusal}
-            take={composer.take}
-            {wire}
-            bind:notes={box.dockDraft}
-            bind:ownOpen={dockOpen}
-            land={box.dockLanded}
-            carried={box.carried}
-            onanswer={remember}
-            onabandon={abandon}
-            onmic={() => dictate.toggle()}
-            {dictation}
-            silent={silentLine}
-            takeline={box.dictateLine}
-            answered={box.answeredKey !== null &&
-              box.answeredKey === ownKeyOf(dockAsk) &&
-              box.refusal === null}
-          />
-        {/key}
+        <!-- **The ask stays mounted under the reader's draft.** The chip on
+           the live row swaps the body; the dock is hidden rather than
+           unmounted, because its toggled set and marked row are its own state
+           and a remount would lose what the reader had already chosen. -->
+        <div class="ask-body" class:covered={box.draftOpen}>
+          <!-- Keyed on the prompt, so a batch's next question is a fresh dock:
+             the wire's option ids are positional, so a mark or a toggle left
+             over from the question before is a valid answer to the one after,
+             and the core accepts it. A repaint of the same prompt keeps its
+             key, so a frame arriving clears nothing the reader has turned
+             on. -->
+          {#key ownKeyOf(dockAsk)}
+            <Dock
+              ask={dockAsk}
+              ownKey={ownKeyOf(dockAsk)}
+              {slot}
+              {connection}
+              depth={seat.pendingDepth}
+              notice={box.refusal}
+              take={composer.take}
+              {wire}
+              bind:notes={box.dockDraft}
+              bind:ownOpen={dockOpen}
+              land={box.dockLanded}
+              carried={box.carried}
+              onanswer={remember}
+              onabandon={abandon}
+              onmic={() => dictate.toggle()}
+              {dictation}
+              silent={silentLine}
+              takeline={box.dictateLine}
+              visible={!box.draftOpen}
+              answered={box.answeredKey !== null &&
+                box.answeredKey === ownKeyOf(dockAsk) &&
+                box.refusal === null}
+            />
+          {/key}
+        </div>
+        {#if box.draftOpen}
+          {@render fieldBody()}
+        {/if}
       {:else}
         {#if seat.lifecycle === 'AuthRequired'}
           <div class="hint login">
@@ -1627,7 +1706,7 @@
     </div>
     <!-- The list is the card's own popover, not a lane of the bar: it hangs
          above the card, so opening one never moves the band's height. -->
-    {#if list !== null && blocker === null && dockAsk === null}
+    {#if list !== null && blocker === null && (dockAsk === null || box.draftOpen)}
       <Autocomplete offer={list} marked={box.marked} onpick={pick} />
     {/if}
   </div>

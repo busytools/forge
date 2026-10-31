@@ -4142,7 +4142,7 @@ describe('the one body slot', () => {
     });
     const harness = open({ record: record({ pending_asks: [questionAsk()] }) });
 
-    expect(document.querySelector('.surf .slot > .dock'), 'the ask holds the body').not.toBeNull();
+    expect(document.querySelector('.surf .slot .dock'), 'the ask holds the body').not.toBeNull();
     expect(document.querySelector('.surf .slot > .line'), 'and the field stands down').toBeNull();
 
     harness.page.record = record({ composer: { take: take(), notice: null, machine: null } });
@@ -4151,7 +4151,7 @@ describe('the one body slot', () => {
       document.querySelector('.surf .slot > .line .tc'),
       'the take holds the body',
     ).not.toBeNull();
-    expect(document.querySelector('.surf .slot > .dock'), 'and the ask is gone').toBeNull();
+    expect(document.querySelector('.surf .slot .dock'), 'and the ask is gone').toBeNull();
 
     harness.page.seat = seatRead({ lifecycle: null, waking: true });
     flushSync();
@@ -9665,6 +9665,107 @@ describe("the dock's settled shape", () => {
       document.querySelector('.dock .queue'),
       'the pending line did not come back with the body',
     ).not.toBeNull();
+  });
+
+  it('folds every kind to its bar, and the bar unwraps it', () => {
+    // **The body is one slot, so any ask gives it back.** A question, a
+    // permission, a held post, a document hand-off and a browser hand-off all
+    // fold to one line carrying the kind's mark and its subject.
+    const cases = [
+      ['question', questionAsk(), 'Pick the environments to deploy to.'],
+      ['permission', permissionAsk(), 'Bash'],
+      ['slack_draft', slackDraftAsk(), 'Trust Machines'],
+      ['document_hand_off', documentHandOffAsk(), '/proj/docs/plan.md'],
+      ['browser_hand_off', browserHandOffAsk(), 'browser hand-off'],
+    ] as const;
+    for (const [kind, ask, subject] of cases) {
+      open({ record: record({ pending_asks: [ask] }) });
+      const chev = document.querySelector<HTMLElement>('.dock .chevb');
+      if (chev === null) throw new Error(`${kind} drew no fold control`);
+      chev.click();
+      flushSync();
+
+      const bar = document.querySelector<HTMLElement>('.dock .qbar');
+      expect(bar, `${kind} did not fold`).not.toBeNull();
+      expect(bar?.querySelector('.ic'), `${kind}'s bar carries no mark`).not.toBeNull();
+      expect(bar?.textContent, `${kind}'s bar lost its subject`).toContain(subject);
+
+      bar?.click();
+      flushSync();
+      expect(document.querySelector('.dock .qbar'), `${kind} did not unwrap`).toBeNull();
+
+      void unmount(app as Record<string, unknown>);
+      app = null;
+      document.body.innerHTML = '';
+    }
+  });
+
+  it('keeps a refusal on the folded bar', () => {
+    const harness = open({
+      record: record({ pending_asks: [questionAsk('tu-q', { multi_select: false })] }),
+    });
+    options()[1]?.click();
+    flushSync();
+    harness.say({ kind: 'error', what: 'dispatch', why: 'the prompt was already answered' });
+    flushSync();
+    expect(
+      document.querySelector('.dock .refusal'),
+      'precondition: the refusal drew',
+    ).not.toBeNull();
+
+    const chev = document.querySelector<HTMLElement>('.dock .chevb');
+    if (chev === null) throw new Error('the head drew no fold control');
+    chev.click();
+    flushSync();
+
+    expect(document.querySelector('.dock .qbar'), 'precondition: folded').not.toBeNull();
+    expect(
+      document.querySelector('.dock .refusal')?.textContent,
+      'the fold hid the reason the answer was refused',
+    ).toContain('already answered');
+  });
+
+  it("swaps the ask for the reader's draft and back, keeping what they chose", () => {
+    const harness = open();
+    type('a draft');
+    // The ask lands on a box that already holds words: the draft is the
+    // reader's, and the ask takes the body.
+    harness.page.record = record({ pending_asks: [questionAsk()] });
+    flushSync();
+
+    // A choice made in the ask before the swap: one row toggled, another marked.
+    press(' ');
+    press('ArrowDown');
+    flushSync();
+    const markedAt = () =>
+      document.querySelector('.dock .opt[aria-selected="true"] .lbl')?.textContent;
+    expect(
+      document.querySelectorAll('.dock .box2.on'),
+      'precondition: one row toggled',
+    ).toHaveLength(1);
+    expect(markedAt(), 'precondition: the second row is marked').toBe('Production');
+
+    const chip = document.querySelector<HTMLElement>('[data-draft]');
+    if (chip === null) throw new Error('the row drew no draft chip');
+    expect(chip.textContent, 'the chip says how many lines').toContain('draft 1 line');
+    chip.click();
+    flushSync();
+
+    expect(document.querySelector('.ask-body.covered'), 'the ask was not hidden').not.toBeNull();
+    const field = document.querySelector<HTMLTextAreaElement>('.comp .line textarea');
+    expect(field?.value, "the reader's draft did not come back").toBe('a draft');
+
+    const back = document.querySelector<HTMLElement>('.live-row .live-door.att');
+    if (back === null) throw new Error('the row drew no ask chip to go back with');
+    back.click();
+    flushSync();
+
+    expect(document.querySelector('.ask-body.covered'), 'the ask did not come back').toBeNull();
+    expect(
+      document.querySelectorAll('.dock .box2.on'),
+      'the toggled set was lost to the swap',
+    ).toHaveLength(1);
+    expect(markedAt(), 'the marked row was lost to the swap').toBe('Production');
   });
 
   it('keeps the bar folded across a repaint of the same prompt', () => {

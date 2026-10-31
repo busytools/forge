@@ -87,6 +87,14 @@ export class Box {
   askKey: string | null = null;
   /** What the reader wrote in the dock's or the bar's line. */
   dockDraft = $state('');
+  /**
+   * Whether the reader has swapped the ask's body for their own draft.
+   *
+   * The ask stays mounted and hidden rather than unmounted, because its
+   * toggled set and marked row are its own state; the chip that swaps back is
+   * on the live row, and the flag goes when the ask does.
+   */
+  draftOpen = $state(false);
   /** A take's words that landed in the dock, which is what brings its box the keyboard. */
   dockLanded = $state<string | null>(null);
   /** A landing the bar's line took, which the carry hands over if the line goes. */

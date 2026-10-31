@@ -1,6 +1,7 @@
 <script lang="ts">
   import { untrack } from 'svelte';
 
+  import Icon from '../components/Icon.svelte';
   import BrowserSegment from '../chat/BrowserSegment.svelte';
   import ConnectorsSegment from '../chat/ConnectorsSegment.svelte';
   import FilesSegment from '../chat/FilesSegment.svelte';
@@ -50,9 +51,27 @@
   let {
     info,
     slot = null,
+    ask = null,
+    draft = null,
+    onask = () => {},
+    ondraft = () => {},
   }: {
     info: TurnInfo | null;
     slot?: SessionSlot | null;
+    /**
+     * What waits in the body, said on the row: the ask's kind, the mark it
+     * wears, and whether it is something the reader owes an answer.
+     */
+    ask?: { label: string; mark: string; tone: 'att' | 'bad' | null } | null;
+    /**
+     * The reader's own draft, when an ask holds the body: the chip that swaps
+     * the field in, one click back to the ask.
+     */
+    draft?: { lines: number } | null;
+    /** Bring the ask back into the body. */
+    onask?: () => void;
+    /** Swap the body for the reader's draft. */
+    ondraft?: () => void;
   } = $props();
 
   /** Whether any segment has anything to state, which is the row's own gate. */
@@ -112,8 +131,10 @@
     const gap =
       Number.parseFloat(track === null ? '' : getComputedStyle(track).columnGap) || GAP_FLOOR;
     const lead = [
+      row.querySelector<HTMLElement>('[data-ask]'),
       row.querySelector<HTMLElement>('[data-fig]'),
       row.querySelector<HTMLElement>('[data-div]'),
+      row.querySelector<HTMLElement>('[data-draft]'),
     ];
     let used = 0;
     for (const el of lead) if (el !== null) used += el.offsetWidth + gap;
@@ -252,8 +273,23 @@
   {/if}
 {/snippet}
 
-{#if info !== null || rows}
+{#if info !== null || rows || ask !== null || draft !== null}
   <div class="live-row" bind:this={rowEl}>
+    <!-- What waits sorts to the front and takes its tone: an ask the body is
+         parked on is the first thing a reader needs to see. -->
+    {#if ask !== null}
+      <button
+        class="live-door"
+        class:att={ask.tone === 'att'}
+        class:bad={ask.tone === 'bad'}
+        type="button"
+        data-ask
+        onclick={onask}
+      >
+        <Icon name={ask.mark} />
+        {ask.label}
+      </button>
+    {/if}
     {#if info !== null}
       <span class="live-fig" data-fig><Strip {info} /></span>
       <span class="live-div" data-div aria-hidden="true"></span>
@@ -347,6 +383,15 @@
         {@render segment('monitors')}
       </span>
     </div>
+    <!-- The reader's own words are a chip, not a second text bar: one click
+         gives the field the body, and the ask chip above brings it back. -->
+    {#if draft !== null}
+      <button class="live-door" type="button" data-draft onclick={ondraft}>
+        <Icon name="file" />
+        {`draft ${String(draft.lines)} ${draft.lines === 1 ? 'line' : 'lines'}`}
+        <span class="show">&#183; show</span>
+      </button>
+    {/if}
     <button
       class="live-more"
       class:idle={hidden.length === 0}

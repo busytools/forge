@@ -385,6 +385,61 @@ describe('the live row', () => {
     expect(document.querySelector('[data-panel-chip]'), 'the panel closed').toBeNull();
   });
 
+  it('says what waits in the body: the ask chip in its tone, the draft chip beside it', () => {
+    const onask = vi.fn();
+    const ondraft = vi.fn();
+    app = mount(LiveRow, {
+      target: document.body,
+      props: {
+        info: null,
+        ask: { label: 'question 1 of 2', mark: 'question', tone: 'att' },
+        draft: { lines: 2 },
+        onask,
+        ondraft,
+      },
+    });
+    flushSync();
+
+    const ask = document.querySelector<HTMLElement>('.live-row .live-door.att');
+    expect(ask, 'the ask drew no chip in the attention tone').not.toBeNull();
+    expect(ask?.textContent, 'the ask chip says what waits').toContain('question 1 of 2');
+    const draft = document.querySelector<HTMLElement>('.live-row [data-draft]');
+    expect(draft?.textContent, 'the draft chip says how many lines').toContain('draft 2 lines');
+
+    ask?.click();
+    draft?.click();
+    expect(onask, 'the ask chip is not a door back to the ask').toHaveBeenCalledTimes(1);
+    expect(ondraft, 'the draft chip is not a door to the field').toHaveBeenCalledTimes(1);
+  });
+
+  it('gives the draft one line its own word, and stands down while the field shows', async () => {
+    app = mount(LiveRow, {
+      target: document.body,
+      props: { info: null, ask: null, draft: { lines: 1 } },
+    });
+    flushSync();
+    expect(
+      document.querySelector('[data-draft]')?.textContent,
+      'one line reads as a line',
+    ).toContain('draft 1 line');
+
+    await unmount(app);
+    app = mount(LiveRow, {
+      target: document.body,
+      props: {
+        info: null,
+        ask: { label: 'post waiting', mark: 'plane', tone: 'att' },
+        draft: null,
+      },
+    });
+    flushSync();
+    expect(
+      document.querySelector('[data-draft]'),
+      'the draft chip drew with the field shown',
+    ).toBeNull();
+    expect(document.querySelector('.live-row .live-door.att')).not.toBeNull();
+  });
+
   it('draws the row as a list with a real button in every chip', () => {
     subagent('a');
     tree();
