@@ -18,6 +18,56 @@ function declares(unit: string, said: string): boolean {
   return [...rules].some((rule) => rule[1]?.includes(said) ?? false);
 }
 
+/** One style rule of a sheet, with the at-rules wrapping it. */
+interface SheetRule {
+  selector: string;
+  body: string;
+  guards: string[];
+}
+
+/**
+ * Every style rule of `sheet`, each with the `@`-rule preludes around it.
+ *
+ * **The guard is the question**, and a regex over the raw text cannot answer
+ * it: whether a rule sits inside a container query is a fact about nesting,
+ * not about the rule's own text. The scan tracks the block stack, so a rule
+ * carries the at-rules it is written inside and the test can refuse an
+ * unguarded copy.
+ */
+function rulesOf(sheet: string): SheetRule[] {
+  const rules: SheetRule[] = [];
+  type Open = { kind: 'at'; text: string } | { kind: 'rule'; rule: SheetRule };
+  const stack: Open[] = [];
+  let text = '';
+  for (const char of sheet) {
+    const current = stack[stack.length - 1];
+    if (current?.kind === 'rule') {
+      if (char === '}') {
+        current.rule.body = text;
+        stack.pop();
+        text = '';
+      } else text += char;
+      continue;
+    }
+    if (char === '{') {
+      const selector = text.trim();
+      text = '';
+      if (selector.startsWith('@')) {
+        stack.push({ kind: 'at', text: selector.replace(/\s+/g, ' ') });
+      } else {
+        const guards = stack.flatMap((entry) => (entry.kind === 'at' ? [entry.text] : []));
+        const rule: SheetRule = { selector, body: '', guards };
+        rules.push(rule);
+        stack.push({ kind: 'rule', rule });
+      }
+    } else if (char === '}') {
+      if (current?.kind === 'at') stack.pop();
+      text = '';
+    } else text += char;
+  }
+  return rules;
+}
+
 describe('the markdown a message carries, as the sheet draws it', () => {
   it('configures the two renderers as one, apart from soft breaks', () => {
     // The two differ by their options and nothing else. A rule attached to one
@@ -91,6 +141,92 @@ describe('the markdown a message carries, as the sheet draws it', () => {
   it('rules a table header and no body row', () => {
     expect(declares('th', 'border-bottom'), 'the header is ruled').toBe(true);
     expect(declares('td', 'border-bottom'), 'a body row is not ruled').toBe(false);
+  });
+
+  it('draws the cell heading in the stacked layout', () => {
+    expect(SHEET, 'the stacked cell draws the label its token carries').toContain(
+      'content: attr(data-label)',
+    );
+  });
+
+  /**
+   * **The stacking is guarded by the COLUMN's width, and only there.** The
+   * window is not the column: a folded or static projects rail narrows the
+   * conversation at a wide window too, so a viewport breakpoint leaves the
+   * filed overflow in the bands between. And a header-only table must keep
+   * its heading row: the body-row guard is what a table still streaming on a
+   * phone draws its headings from.
+   */
+  /**
+   * **The guarded surfaces must actually be containers.** A `@container` rule
+   * whose ancestor declares no `container-type` matches nothing, and the
+   * guard test above would still be green - so the declaration is pinned on
+   * the conversation wrapper and on the document body. The chat pane is
+   * pinned the other way: layout containment there would capture the browser
+   * takeover's fixed rect.
+   */
+  it('declares the container on the guarded surfaces and not on the chat pane', () => {
+    const rules = rulesOf(SHEET.replace(/\/\*[\s\S]*?\*\//g, ''));
+    const isContainer = (fragment: string): boolean =>
+      rules.some(
+        (rule) =>
+          rule.selector.includes(fragment) && /container-type:\s*inline-size/.test(rule.body),
+      );
+    expect(isContainer('.conv-body'), 'the conversation wrapper is a container').toBe(true);
+    expect(isContainer('.doc-body'), 'the document body is a container').toBe(true);
+
+    const pane = rules.filter((rule) => rule.selector.trim() === 'main.chat');
+    expect(pane.length, 'the chat pane has a rule of its own').toBeGreaterThan(0);
+    expect(
+      pane.every((rule) => !/container-type/.test(rule.body)),
+      'the chat pane must not be a container: the browser takeover is fixed inside it',
+    ).toBe(true);
+  });
+
+  it('stacks a table only inside a container-width guard, and keeps a header-only one', () => {
+    const rules = rulesOf(SHEET.replace(/\/\*[\s\S]*?\*\//g, ''));
+    const stacking = rules.filter(
+      (rule) =>
+        /display:\s*block/.test(rule.body) &&
+        /:is\(\.prose, \.doc-block\) table/.test(rule.selector),
+    );
+    expect(stacking.length, 'the sheet stacks a table at all').toBeGreaterThan(0);
+    for (const rule of stacking) {
+      expect(
+        rule.guards.join(' '),
+        `a table rule stacked outside a column-width container: ${rule.selector}`,
+      ).toMatch(/^@container .*max-width: 760px/);
+    }
+
+    const headings = rules.find((rule) => rule.selector.includes('table:has(tbody tr) thead'));
+    expect(headings, 'a header row is hidden only while a body row follows').toBeDefined();
+    expect(headings?.body, 'and hiding it is the header-only guard').toMatch(/display:\s*none/);
+    expect(
+      headings?.guards.join(' '),
+      'the header-only guard is inside the same column query',
+    ).toMatch(/^@container .*max-width: 760px/);
+  });
+
+  /**
+   * **A table too wide for the column is stacked, as the terminal stacks it.**
+   * A header keeps its own word, so a grid of multi-word headings cannot fit a
+   * phone's conversation column - and the only thing left that scrolls the
+   * conversation sideways. Each cell carries its column's heading for the
+   * stacked rule to draw above it.
+   */
+  it('names each data cell with its column heading, so a wide table can stack', () => {
+    const table = ['| Exit code | Elapsed time |', '| - | - |', '| 0 | 1m |', '| 1 | 2m |'].join(
+      '\n',
+    );
+    const html = renderProse(table);
+
+    expect(html, 'a cell names the heading above it').toContain(
+      '<td data-label="Exit code">0</td>',
+    );
+    expect(html, 'and its own column, not the first').toContain(
+      '<td data-label="Elapsed time">1m</td>',
+    );
+    expect(html, 'every data cell carries one').toContain('<td data-label="Exit code">1</td>');
   });
 
   it("gives each remaining unit a mark, on a token rather than the browser's", () => {

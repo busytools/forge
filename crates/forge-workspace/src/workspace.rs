@@ -6122,17 +6122,24 @@ impl Workspace {
                     //
                     // The nudge is the running turn's for the same reason:
                     // a queued prompt is not the turn that will fail next.
+                    //
+                    // The failure mark is the run's too. A committed prompt
+                    // spends it because the newest turn is then this one; a
+                    // prompt that only queues has committed nothing, and
+                    // clearing the mark there leaves a failure nobody has
+                    // seen drawing no rail mark.
                     if !guard.turn_in_flight() {
                         guard.pending_cancel = false;
                         guard.auto_continue = None;
+                        guard.failed_turn_at = None;
                     }
                     guard.commit_turn();
-                    guard.failed_turn_at = None;
                 }
                 // A prompt the reader's own hands sent moves the seat on: a
-                // death trace still standing is taken with it, like the
-                // failure mark above. A cron's, a peer's or forge's own
-                // prompt is not a reader looking, so none of those spends it.
+                // death trace still standing is taken with it, whether the
+                // prompt commits a turn or queues behind one - it is the
+                // reader looking, not the turn. A cron's, a peer's or
+                // forge's own prompt is not, so none of those spends it.
                 if let Command::PromptUnder { source: crate::protocol::PromptSource::You, .. } =
                     &cmd
                 {
@@ -15556,7 +15563,7 @@ provider = "anthropic"
     /// arms the exempt stamp only while a turn is in flight, and a
     /// committed prompt spends the previous failure.
     #[test]
-    fn routing_arms_cancels_in_flight_and_spends_the_failure_mark_on_a_prompt() {
+    fn routing_arms_cancels_in_flight_and_spends_the_failure_mark_on_a_committed_prompt() {
         let (workspace, _update_rx) = Workspace::testing_stub();
         let key = SessionSlot::from_str_for_test("routing-seam");
         workspace.register_domain_session(key.clone(), None);
@@ -15587,8 +15594,9 @@ provider = "anthropic"
             })
             .expect("dispatch");
         assert!(
-            workspace.session_failed_turn(&key).is_none(),
-            "a committed prompt moves past the failure: the newest turn is this one",
+            workspace.session_failed_turn(&key).is_some(),
+            "a prompt that only queues behind the busy turn keeps the failure mark - \
+             the running turn is still the one that failed",
         );
         assert!(
             domain.lock().pending_cancel,
@@ -15597,8 +15605,8 @@ provider = "anthropic"
         );
 
         // The busy turn ends, and a prompt committed with nothing in flight
-        // starts a new one: the stamp expires there, or this turn's genuine
-        // failure would go unmarked.
+        // starts a new one: the stamp and the failure mark expire there, or
+        // this turn's genuine failure would go unmarked.
         domain.lock().turn_pending = false;
         domain.lock().pending_cancel = true;
         workspace
@@ -15611,6 +15619,10 @@ provider = "anthropic"
         assert!(
             !domain.lock().pending_cancel,
             "a prompt committed with no turn in flight expires the stamp",
+        );
+        assert!(
+            workspace.session_failed_turn(&key).is_none(),
+            "and spends the previous turn's failure mark: the newest turn is this one",
         );
     }
 

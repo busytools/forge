@@ -173,6 +173,22 @@ function shellLink(): BrowserLink {
       const { listen } = await import('@tauri-apps/api/event');
       return await listen('browser_surface_remeasure', () => fn());
     },
+
+    async onModifier(fn): Promise<() => void> {
+      const { listen } = await import('@tauri-apps/api/event');
+      return await listen<unknown>('browser_modifier', (event) => {
+        const held = event.payload;
+        if (typeof held !== 'object' || held === null) return;
+        const { code, down } = held as Record<string, unknown>;
+        if (typeof code !== 'number' || typeof down !== 'boolean') return;
+        fn({ code, down });
+      });
+    },
+
+    async onModifierChord(fn): Promise<() => void> {
+      const { listen } = await import('@tauri-apps/api/event');
+      return await listen('browser_modifier_chord', () => fn());
+    },
   };
 }
 

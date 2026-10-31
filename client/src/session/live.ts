@@ -37,6 +37,7 @@ import type { Connection, ConnectionStatus } from '../socket';
 import type { Store } from '../stores';
 import type { SessionSlot } from '../wire/types';
 import { applyUpdate, REPLACES, variantOf } from './apply';
+import { markReturn } from './returns';
 import { sessionFrom, type SessionRecord } from './wire';
 
 /** What the session page has to draw from, and why it has nothing when it does not. */
@@ -114,7 +115,7 @@ interface Seat {
    * record and re-issuing it as the seat's review read would put a fetch
    * behind it that nobody asked for.
    */
-  wanted: { review?: boolean } | null;
+  wanted: { review?: boolean; returned?: boolean } | null;
   /**
    * Whether an ask of ours is in flight.
    *
@@ -206,7 +207,7 @@ interface Seat {
    */
   open: () => void;
   /** Ask for the record again: see `reread`. */
-  reread: () => void;
+  reread: (options?: { review?: boolean; returned?: boolean }) => void;
 }
 
 /**
@@ -436,12 +437,16 @@ function seats(connection: Connection): Map<string, Seat> {
 export function rereadSeat(
   connection: Connection,
   slot: SessionSlot,
-  options?: { review?: boolean },
+  options?: { review?: boolean; returned?: boolean },
 ): void {
   const seat = seats(connection).get(subjectKey({ session: slot }));
   if (seat === undefined) return;
   if (options?.review !== undefined) seat.review = options.review;
-  seat.reread();
+  // The return intent rides the ask itself, not this call: a seat with no
+  // subscription asks nothing, and a seat with one in flight defers the ask -
+  // both cases must mark the read when it actually goes out, or the answer
+  // that spends the mark is somebody else's.
+  seat.reread(options);
 }
 
 /**
@@ -846,7 +851,7 @@ function createSeat(
    * (`connect/resync.ts`), so this is the only ask a seat away from the
    * reader has.
    */
-  function reread(options?: { review?: boolean }): void {
+  function reread(options?: { review?: boolean; returned?: boolean }): void {
     // A seat never opened has nothing to ask on; its first subscribe is its
     // read, and that subscribe carries `seat.review`.
     if (seat.opened === 0) return;
@@ -861,9 +866,13 @@ function createSeat(
       // the record a notice wants as well, and served as an ordinary read the
       // notice would spend the page's ask: an ordinary record, its base line
       // hidden, until the next move.
-      const want = options ?? {};
+      const want = { ...(options ?? {}) };
       const prior = seat.wanted;
       const priorIsReview = prior !== null && (prior.review ?? seat.review);
+      // **A return's intent is not a scope and never outranked away**: the
+      // want it rides may be replaced by a newer one, and the read that goes
+      // out must still be the return's.
+      if (prior?.returned === true) want.returned = true;
       if (!(priorIsReview && want.review === false)) seat.wanted = want;
       return;
     }
@@ -875,6 +884,9 @@ function createSeat(
     // Where the stream stood when the ask left, so the answer can be read
     // against what has arrived since.
     seat.askedAt = seat.seen;
+    // **The mark rides the refresh that actually goes out**, here and in the
+    // want this path defers. Nothing is marked by a call that asked nothing.
+    if (options?.returned === true && held !== null) markReturn(connection, held);
     connection.refresh(subject, { review: scope });
   }
 

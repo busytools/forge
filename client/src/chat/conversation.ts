@@ -27,6 +27,7 @@ import { MORE_TURNS, slotOf, subjectKey } from '../protocol';
 import type { ServerMessage, SessionUpdate } from '../protocol';
 import { cannotPaint } from '../paint';
 import { inFlightOf } from '../session/apply';
+import { clearReturn, takeReturn } from '../session/returns';
 import type { Connection } from '../socket';
 import type { SessionSlot } from '../wire/types';
 import { handoffFrame, handoffKey, handoffOf, type HandoffRecord } from '../wire/handoff';
@@ -1866,6 +1867,9 @@ export class Chat {
         // so the next snapshot is the only word on those holds - `armed`
         // reads this rather than trusting every snapshot's listing.
         this.missed = true;
+        // A drop's reconnect snapshot is already the first word after the
+        // gap, so a return mark it outlived would arm a later ordinary read.
+        clearReturn(this.connection, this.slot);
         const held = this.inFlight !== null;
         this.inFlight = null;
         // **The cursor an ask went out for goes with the ask** (#2420): a
@@ -2008,6 +2012,10 @@ export class Chat {
     // A DROP is the one case that lost frames, and `missed` is what records
     // it - the status handler asks on the reconnect, and a return meeting
     // the same in-flight ask holds its want.
+    //
+    // The return's own read is marked where it is asked (`session/live.ts`,
+    // through `connect/resync.ts`), not here: a route return never leaves this
+    // page, and a background return never calls this function at all.
     if (this.missed && !this.refresh()) this.returnWanted = true;
   }
 
@@ -2671,10 +2679,17 @@ export class Chat {
         };
         const newest = healed.turns[healed.turns.length - 1];
         const continued = newest !== undefined && continues(newest) ? newest : undefined;
+        // **The newest match is the one being referred to.** `turns` is held
+        // oldest first, and two deliveries can say the same words with both
+        // turns still live - so the oldest-first walk handed a repeat's row
+        // the exchange it repeats, with the answer that exchange already had
+        // (#1443). A page is the conversation as the CLI has it now, so
+        // where two candidates are indistinguishable by content, the later
+        // one is the copy the row is talking about.
         const match =
           byName ??
-          healed.turns.find((turn) => turn.live && shares(carried, turn, !settledRow(index))) ??
-          healed.turns.find((turn) => shares(carried, turn, false)) ??
+          healed.turns.findLast((turn) => turn.live && shares(carried, turn, !settledRow(index))) ??
+          healed.turns.findLast((turn) => shares(carried, turn, false)) ??
           continued;
         if (match === undefined) {
           drawn.push(row);
@@ -2931,12 +2946,30 @@ export class Chat {
         direction === 'newest' ? newestStampMs(pageRows.flatMap((row) => messagesOf(row))) : null;
       const loose: Turn[] = [];
       const overtaken: Turn[] = [];
+      /**
+       * The in-play turns a newest page cannot place, kept in held order.
+       *
+       * **A page that stamps nothing has no `overtaken` routing.** Its rows
+       * cannot say what they ran past, and `loose` draws after every held row
+       * - which flipped a watched handoff, whose in-play judgment turn then
+       * drew BELOW the row it ends at (#2643). With no page rows to draw
+       * between them, the held order is the only order such a landing leaves
+       * standing, so the seam keeps it.
+       *
+       * **Only the empty page.** A landing with rows is drawn in the page's
+       * own order, and putting a held row above it would file the reader's
+       * own drained send above rows the page is carrying.
+       */
+      const unordered = direction === 'newest' && pageNewest === null && drawn.length === 0;
+      const restrained: Turn[] = [];
       for (const turn of healed.turns) {
         if (!inPlay(turn) || inPage.has(turn.key)) continue;
         if (absorbed(turn)) continue;
         const end = newestStampMs(turn.messages);
         if (pageNewest !== null && end !== null && end < pageNewest) {
           overtaken.push({ ...turn, live: false, running: false });
+        } else if (unordered) {
+          restrained.push(turn);
         } else {
           loose.push(turn);
         }
@@ -2954,7 +2987,9 @@ export class Chat {
       // than the page's copy (a turn past the ceiling), where the settle does
       // not fire and the live turn outlives its row. That is bounded by the
       // cap and left as the older landing's own order.
-      const keptByKey = new Map([...rest, ...overtaken].map((turn) => [turn.key, turn]));
+      const keptByKey = new Map(
+        [...rest, ...overtaken, ...restrained].map((turn) => [turn.key, turn]),
+      );
       const aboveHeld = healed.turns
         .map((turn) => keptByKey.get(turn.key))
         .filter((turn): turn is Turn => turn !== undefined);
@@ -3577,14 +3612,20 @@ export class Chat {
   private armed(data: unknown): void {
     // **Only the snapshots that are the ONLY word on a uuid reconcile it: the
     // first after a start (a fresh attacher is handed no `prompt_queued`
-    // backlog) and the first after a drop (the lifecycle frames of anything
-    // that settled in the gap died with the socket).** A later healthy
-    // snapshot can be older than the live frames it meets - a read the server
-    // built before a send can be delivered after it - and acting on its
-    // listing would undo what the frames just settled: releasing a hold draws
-    // a row the pile is still drawing, and arming one retracts a row that
-    // already started.
-    const fresh = !this.landed || this.missed;
+    // backlog), the first after a drop (the lifecycle frames of anything
+    // that settled in the gap died with the socket), and the answer to a
+    // return's own read (a prompt queued while the reader was away reached
+    // nobody here).** A later healthy snapshot can be older than the live
+    // frames it meets - a read the server built before a send can be
+    // delivered after it - and acting on its listing would undo what the
+    // frames just settled: releasing a hold draws a row the pile is still
+    // drawing, and arming one retracts a row that already started.
+    // **Spent whatever made this snapshot authoritative.** `||` would
+    // short-circuit past the spend when `landed` or `missed` already said yes,
+    // and the mark would then arm a later ordinary snapshot - a chat column
+    // mounting around a return is exactly that shape.
+    const returned = takeReturn(this.connection, this.slot);
+    const fresh = !this.landed || this.missed || returned;
     this.landed = true;
     // `state` is the wire's own record inside the snapshot, the same nesting
     // `sessionFrom` reads: the queue is a sibling of `scan_cwd` there.

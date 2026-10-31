@@ -43,6 +43,7 @@ import type { Store, StoreState, StoreValue } from '../stores';
 import { DEFAULT_SETTINGS, type SessionSlot } from '../wire/types';
 import { REPLACES } from './apply';
 import { clearReview, releaseSeat, rereadSeat, watchSession, type SessionRead } from './live';
+import { takeReturn } from './returns';
 import Session from './Session.svelte';
 import Routes from './testing/Routes.svelte';
 
@@ -3929,6 +3930,44 @@ describe('the review read', () => {
     expect(connection.refreshes.at(-1), 'a released intent asks an ordinary read').toEqual({
       review: false,
     });
+    stop();
+  });
+
+  /**
+   * **A return's read is marked when the refresh actually goes out.** The
+   * chat decides whether a snapshot's queue listing is the returner's only
+   * word from this mark, so a call that asks nothing must not leave one: a
+   * seat never opened has no ask, and a seat with one in flight defers the
+   * return's ask behind it - where the mark has to wait for the deferred
+   * refresh, or the earlier read's answer would spend it.
+   */
+  it('marks the read a return asked, when it actually goes out', () => {
+    // A seat with no subscription asks nothing and leaves no mark.
+    const idle = drivable();
+    watchSession(idle, LEAD, true, {});
+    rereadSeat(idle, LEAD, { returned: true });
+    expect(idle.refreshes, 'a seat never opened asks nothing').toEqual([]);
+    expect(takeReturn(idle, LEAD), 'and leaves no return mark').toBe(false);
+
+    const connection = drivable();
+    const view = watchSession(connection, LEAD, true, {});
+    const stop = view.subscribe(() => {});
+    connection.land(snapshotOf(LEAD, {}, { epoch: 'e1', seq: 1 }));
+
+    // An ordinary reread asks, and marks nothing.
+    rereadSeat(connection, LEAD);
+    const asked = connection.refreshes.length;
+    expect(takeReturn(connection, LEAD), 'an ordinary reread is no return').toBe(false);
+
+    // A return's reread meets that ask in flight: the want waits, unmarked.
+    rereadSeat(connection, LEAD, { returned: true });
+    expect(takeReturn(connection, LEAD), 'a deferred ask marks nothing yet').toBe(false);
+
+    // The answer lands and the deferred read goes out as the return's.
+    connection.land(snapshotOf(LEAD, {}, { epoch: 'e1', seq: 2 }));
+    expect(connection.refreshes.length, 'the return asks once the answer lands').toBe(asked + 1);
+    expect(takeReturn(connection, LEAD), "the return's ask is marked when it goes").toBe(true);
+    expect(takeReturn(connection, LEAD), 'and the mark is spent once').toBe(false);
     stop();
   });
 
