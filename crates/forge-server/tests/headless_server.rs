@@ -228,40 +228,105 @@ async fn terminate_group(pid: u32) {
     assert!(status.success(), "kill -s TERM -- -{pid} lands: {status}");
 }
 
+/// How a spawn's wait ended.
+enum Serving {
+    /// The child announced its socket on the port asked for.
+    Listening,
+    /// The boot exited because its socket would not bind: another process
+    /// took the port between [`two_free_ports`] releasing it and the child
+    /// claiming it.
+    BindFailed,
+    /// The boot failed some other way; the string is the panic.
+    Died(String),
+}
+
 /// Wait until the server logs that its socket is listening on `port`, or
-/// fail with its stderr.
+/// report how it ended.
 ///
 /// **The child's own record is the signal.** The binary writes
 /// `server_socket_listening` with the bound address once the listener is
 /// up, so the wait ends on that line instead of the test dialing the port
 /// in a loop; the port is matched in the line so a boot that announced
 /// another address cannot pass.
-async fn wait_for_serving(port: u16, log: &std::path::Path, server: &mut tokio::process::Child) {
+async fn wait_for_serving(
+    port: u16,
+    log: &std::path::Path,
+    server: &mut tokio::process::Child,
+) -> Serving {
     let deadline = std::time::Instant::now() + WEDGE;
     let bound = format!(":{port}");
     loop {
         if let Ok(Some(status)) = server.try_wait() {
             let stderr = drain_stderr(server).await;
-            panic!("the server exited before binding ({status}): {stderr}");
+            if stderr.contains("the socket could not bind") {
+                return Serving::BindFailed;
+            }
+            return Serving::Died(format!("the server exited before binding ({status}): {stderr}"));
         }
         let announced = std::fs::read_to_string(log).is_ok_and(|text| {
             text.lines()
                 .any(|line| line.contains("server_socket_listening") && line.contains(&bound))
         });
         if announced {
-            return;
+            return Serving::Listening;
         }
         if std::time::Instant::now() > deadline {
             drop(server.kill().await);
             let stderr = drain_stderr(server).await;
-            panic!(
+            return Serving::Died(format!(
                 "the server never announced its socket listening on {port} within {WEDGE:?} \
                  (log {}): {stderr}",
                 log.display()
-            );
+            ));
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
+}
+
+/// The scratch paths a fixture writes for one server launch.
+struct Scratch {
+    home: std::path::PathBuf,
+    config: std::path::PathBuf,
+    /// The PATH prefix holding the mock binaries, when the fixture writes
+    /// any.
+    bin: Option<std::path::PathBuf>,
+}
+
+/// Spawn the server until it announces its socket, retrying a lost bind.
+///
+/// The port pair comes from [`two_free_ports`], which releases its listeners
+/// before the child binds; another test's pick can take one in that window.
+/// A boot that exits without binding is that lost race rather than the
+/// property under test, so it is retried on a fresh pair. Any other failure
+/// is the boot's own and panics with it.
+async fn spawn_serving(
+    ports: impl Fn() -> (u16, u16),
+    scratch: impl Fn(u16, u16) -> Scratch,
+    configure: impl Fn(&mut tokio::process::Command),
+) -> (tokio::process::Child, u16, Scratch) {
+    for _ in 0..3 {
+        let (port, gateway) = ports();
+        let written = scratch(port, gateway);
+        let log = written.home.join("server.log");
+        let mut command = server_command(&written.home, &written.config, &log);
+        if let Some(bin) = &written.bin {
+            command.env(
+                "PATH",
+                format!("{}:{}", bin.display(), std::env::var("PATH").expect("PATH is set")),
+            );
+        }
+        configure(&mut command);
+        let mut server = command.spawn().expect("the server spawns");
+        match wait_for_serving(port, &log, &mut server).await {
+            Serving::Listening => return (server, port, written),
+            Serving::BindFailed => {
+                let _ = server.kill().await;
+                let _ = server.wait().await;
+            }
+            Serving::Died(why) => panic!("{why}"),
+        }
+    }
+    panic!("the server exited before binding on three fresh port pairs");
 }
 
 /// Whatever the server wrote to stderr, for a failure's message.
@@ -460,23 +525,23 @@ async fn a_stop_signal_takes_the_sessions_descendants_with_it() {
 
 async fn assert_stop_leaves_no_descendant(signal: &str) {
     let dir = tempfile::tempdir().expect("tempdir");
-    let (port, gateway) = two_free_ports();
     let marker = dir.path().join("session.pid");
     let child_marker = dir.path().join("child-term");
-    let (home, config, bin) = write_session_fixture(
-        dir.path(),
-        port,
-        gateway,
-        &[("forge", &marker, None)],
-        &child_marker,
-    );
-
-    let log = home.join("server.log");
-    let mut command = server_command(&home, &config, &log);
-    command
-        .env("PATH", format!("{}:{}", bin.display(), std::env::var("PATH").expect("PATH is set")));
-    let mut server = command.spawn().expect("the server spawns");
-    wait_for_serving(port, &log, &mut server).await;
+    let (mut server, _port, _) = spawn_serving(
+        two_free_ports,
+        |port, gateway| {
+            let (home, config, bin) = write_session_fixture(
+                dir.path(),
+                port,
+                gateway,
+                &[("forge", &marker, None)],
+                &child_marker,
+            );
+            Scratch { home, config, bin: Some(bin) }
+        },
+        |_| {},
+    )
+    .await;
 
     // The control: a session is live and its descendant is running before
     // the stop, so a pass below cannot come from a session that never was.
@@ -504,26 +569,27 @@ async fn assert_stop_leaves_no_descendant(signal: &str) {
 #[tokio::test]
 async fn a_group_stop_signal_does_not_reach_the_session_tools() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let (port, gateway) = two_free_ports();
     let marker = dir.path().join("session.pid");
     let child_marker = dir.path().join("child-term");
-    let (home, config, bin) = write_session_fixture(
-        dir.path(),
-        port,
-        gateway,
-        &[("forge", &marker, None)],
-        &child_marker,
-    );
-
-    let log = home.join("server.log");
-    let mut command = server_command(&home, &config, &log);
-    command
-        .env("PATH", format!("{}:{}", bin.display(), std::env::var("PATH").expect("PATH is set")));
-    // Its own group, so the signal below is aimed at forge's group alone
-    // and never at the test's.
-    command.process_group(0);
-    let mut server = command.spawn().expect("the server spawns");
-    wait_for_serving(port, &log, &mut server).await;
+    let (mut server, _port, _) = spawn_serving(
+        two_free_ports,
+        |port, gateway| {
+            let (home, config, bin) = write_session_fixture(
+                dir.path(),
+                port,
+                gateway,
+                &[("forge", &marker, None)],
+                &child_marker,
+            );
+            Scratch { home, config, bin: Some(bin) }
+        },
+        // Its own group, so the signal below is aimed at forge's group alone
+        // and never at the test's.
+        |command| {
+            command.process_group(0);
+        },
+    )
+    .await;
 
     let pid = wait_for_marker_pid(&marker).await;
     let _orphan = Orphan(pid);
@@ -557,7 +623,6 @@ async fn a_group_stop_signal_does_not_reach_the_session_tools() {
 #[tokio::test]
 async fn one_stop_takes_two_sessions_down() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let (port, gateway) = two_free_ports();
     let alpha = dir.path().join("alpha.pid");
     let beta = dir.path().join("beta.pid");
     let child_marker = dir.path().join("child-term");
@@ -565,15 +630,16 @@ async fn one_stop_takes_two_sessions_down() {
     // exit with beta's tree still running.
     let projects: [(&str, &std::path::Path, Option<&str>); 2] =
         [("alpha", &alpha, None), ("beta", &beta, Some("3"))];
-    let (home, config, bin) =
-        write_session_fixture(dir.path(), port, gateway, &projects, &child_marker);
-
-    let log = home.join("server.log");
-    let mut command = server_command(&home, &config, &log);
-    command
-        .env("PATH", format!("{}:{}", bin.display(), std::env::var("PATH").expect("PATH is set")));
-    let mut server = command.spawn().expect("the server spawns");
-    wait_for_serving(port, &log, &mut server).await;
+    let (mut server, _port, _) = spawn_serving(
+        two_free_ports,
+        |port, gateway| {
+            let (home, config, bin) =
+                write_session_fixture(dir.path(), port, gateway, &projects, &child_marker);
+            Scratch { home, config, bin: Some(bin) }
+        },
+        |_| {},
+    )
+    .await;
 
     // The control: both sessions are live, each with its own descendant.
     let alpha_pid = wait_for_marker_pid(&alpha).await;
@@ -611,23 +677,23 @@ async fn one_stop_takes_two_sessions_down() {
 #[tokio::test]
 async fn a_termination_sent_straight_at_the_child_marks_it() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let (port, gateway) = two_free_ports();
     let marker = dir.path().join("session.pid");
     let child_marker = dir.path().join("child-term");
-    let (home, config, bin) = write_session_fixture(
-        dir.path(),
-        port,
-        gateway,
-        &[("forge", &marker, None)],
-        &child_marker,
-    );
-
-    let log = home.join("server.log");
-    let mut command = server_command(&home, &config, &log);
-    command
-        .env("PATH", format!("{}:{}", bin.display(), std::env::var("PATH").expect("PATH is set")));
-    let mut server = command.spawn().expect("the server spawns");
-    wait_for_serving(port, &log, &mut server).await;
+    let (mut server, _port, _) = spawn_serving(
+        two_free_ports,
+        |port, gateway| {
+            let (home, config, bin) = write_session_fixture(
+                dir.path(),
+                port,
+                gateway,
+                &[("forge", &marker, None)],
+                &child_marker,
+            );
+            Scratch { home, config, bin: Some(bin) }
+        },
+        |_| {},
+    )
+    .await;
 
     let descendant = wait_for_marker_pid(&marker).await;
     let _orphan = Orphan(descendant);
@@ -666,12 +732,15 @@ async fn a_termination_sent_straight_at_the_child_marks_it() {
 #[tokio::test]
 async fn headless_boot_serves_the_home_and_stops_clean() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let (port, gateway) = two_free_ports();
-    let (home, config) = write_fixture(dir.path(), port, gateway);
-
-    let log = home.join("server.log");
-    let mut server = server_command(&home, &config, &log).spawn().expect("the server spawns");
-    wait_for_serving(port, &log, &mut server).await;
+    let (mut server, port, Scratch { home, config, bin: _ }) = spawn_serving(
+        two_free_ports,
+        |port, gateway| {
+            let (home, config) = write_fixture(dir.path(), port, gateway);
+            Scratch { home, config, bin: None }
+        },
+        |_| {},
+    )
+    .await;
 
     // **The boot installs the handoff skill.** The write is the boot's own
     // act, so the binary is the only instrument that proves it happens; the
@@ -734,13 +803,15 @@ async fn headless_boot_serves_the_home_and_stops_clean() {
 #[tokio::test]
 async fn a_second_instance_is_refused_with_the_holders_pid() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let (port, gateway) = two_free_ports();
-    let (home, config) = write_fixture(dir.path(), port, gateway);
-
-    let log_first = home.join("server-first.log");
-    let mut first =
-        server_command(&home, &config, &log_first).spawn().expect("the first server spawns");
-    wait_for_serving(port, &log_first, &mut first).await;
+    let (mut first, port, Scratch { home, config, bin: _ }) = spawn_serving(
+        two_free_ports,
+        |port, gateway| {
+            let (home, config) = write_fixture(dir.path(), port, gateway);
+            Scratch { home, config, bin: None }
+        },
+        |_| {},
+    )
+    .await;
     let holder = first.id().expect("the first server has a pid while it runs");
 
     let log_second = home.join("server-second.log");
@@ -776,6 +847,44 @@ async fn a_second_instance_is_refused_with_the_holders_pid() {
         .expect("the third server is reaped within the stop budget")
         .expect("the third server is reaped");
     assert!(status.success(), "and it stops clean: {status}");
+}
+
+/// **A port another process took between the pick and the bind is retried.**
+/// [`two_free_ports`] releases its listeners before the child binds, so a
+/// whole-workspace nextest run can lose that race; the boot's own bind
+/// failure must read as a lost pick, not as the property under test.
+#[tokio::test]
+async fn a_lost_port_is_retried_on_a_fresh_pair() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let held = std::net::TcpListener::bind("127.0.0.1:0").expect("hold a port");
+    let held_port = held.local_addr().expect("addr").port();
+    let picks = std::cell::Cell::new(0_u8);
+    let (mut server, port, _) = spawn_serving(
+        || {
+            picks.set(picks.get() + 1);
+            if picks.get() == 1 {
+                // The gateway must still be a real port: the config refuses
+                // 0 because the gateway's number is fixed, not OS-assigned.
+                let (_, gateway) = two_free_ports();
+                (held_port, gateway)
+            } else {
+                two_free_ports()
+            }
+        },
+        |port, gateway| {
+            let (home, config) = write_fixture(dir.path(), port, gateway);
+            Scratch { home, config, bin: None }
+        },
+        |_| {},
+    )
+    .await;
+
+    assert_ne!(port, held_port, "the retry binds a fresh port rather than the lost one");
+    terminate(server.id().expect("the server has a pid while it runs")).await;
+    let _ = tokio::time::timeout(stop_wait(), server.wait())
+        .await
+        .expect("the retried server is reaped within the stop budget")
+        .expect("the retried server is reaped");
 }
 
 /// The hidden completion flag survives the move: `scripts/install.sh` calls
