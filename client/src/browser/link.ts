@@ -84,6 +84,23 @@ export interface BrowserLink {
   onLower?: (fn: () => void) => Promise<() => void>;
   /** The shell's re-measure ask; a page's layout is its own box. */
   onRemeasure?: (fn: () => void) => Promise<() => void>;
+  /**
+   * The overlay's bare modifiers: its raw `keyCode` and whether it is now
+   * down.
+   *
+   * **Only a native overlay hears these.** While it holds the keyboard this
+   * page gets no keydown at all, so the shell forwards what AppKit delivered
+   * and the page decides which side is its key.
+   */
+  onModifier?: (fn: (press: { code: number; down: boolean }) => void) => Promise<() => void>;
+  /**
+   * A key that arrived while the overlay's Command or Control was held.
+   *
+   * **The page sees no keydown for it**, so without this a chord would leave
+   * the take its modifier's press began standing and submit it on release.
+   * The shell says only that the key arrived; the page marks its own press.
+   */
+  onModifierChord?: (fn: () => void) => Promise<() => void>;
 }
 
 /** A page with no connection: every ask answers the same refusal. */
@@ -238,5 +255,21 @@ export function onLower(fn: () => void): Promise<() => void> | null {
 /** The shell's re-measure ask, or `null` where the page's box is its own. */
 export function onRemeasure(fn: () => void): Promise<() => void> | null {
   const start = browserLink().onRemeasure;
+  return start === undefined ? null : start(fn);
+}
+
+/** The overlay's bare modifiers, or `null` where nothing native holds the
+ *  keyboard to hear them. */
+export function onModifier(
+  fn: (press: { code: number; down: boolean }) => void,
+): Promise<() => void> | null {
+  const start = browserLink().onModifier;
+  return start === undefined ? null : start(fn);
+}
+
+/** The overlay's chord signal, or `null` where nothing native holds the
+ *  keyboard to hear the other key. */
+export function onModifierChord(fn: () => void): Promise<() => void> | null {
+  const start = browserLink().onModifierChord;
   return start === undefined ? null : start(fn);
 }
