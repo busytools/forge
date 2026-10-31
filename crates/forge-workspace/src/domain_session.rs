@@ -771,12 +771,21 @@ impl DomainSession {
     /// the seat. A prompt sent while the task still reads a turn in flight
     /// but the CLI has started a new one is held busy by `prompt_queue`
     /// until its own Result serves the boundary.
-    pub fn commit_turn(&mut self) {
+    pub fn commit_turn(&mut self) -> bool {
         if self.turn_in_flight() {
-            return;
+            return false;
         }
         self.turn_commits = self.turn_commits.saturating_add(1);
         self.turn_pending = true;
+        true
+    }
+
+    /// Undo a commit whose prompt never reached its task: the send failed, so
+    /// no Result will ever serve it. Without this the seat reads a turn in
+    /// flight for the life of the session, and the header's spinner with it.
+    pub fn uncommit_turn(&mut self) {
+        self.turn_commits = self.turn_commits.saturating_sub(1);
+        self.turn_pending = self.turn_commits > self.turns_served;
     }
 
     /// One Result (or transport error) closed the oldest outstanding turn.

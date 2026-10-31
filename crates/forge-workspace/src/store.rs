@@ -1,9 +1,11 @@
 //! Machine-local embedded database (redb).
 //!
-//! A single redb file at `<app-support>/db.redb` holds forge's durable
-//! per-machine state. One forge instance runs per machine, so one DB;
-//! redb takes an exclusive file lock on open, so a second opener on the
-//! same path fails here rather than corrupting.
+//! One redb file per config dir at
+//! `<app-support>/stores/<stable-key>.redb` holds that config dir's durable
+//! per-machine state. The key is a SHA-256 of the canonicalised config-dir
+//! path, so a Rust release cannot move it; the single-instance lock keeps its
+//! own digest and is unaffected. redb takes an exclusive file lock on open,
+//! so a second opener on the same path fails here rather than corrupting.
 //!
 //! This wrapper is deliberately general - open plus the raw handle.
 //! Table logic lives per-tenant in the submodules: Gotify subscriptions
@@ -50,6 +52,15 @@ pub mod task_chases;
 pub mod task_history;
 pub mod tasks;
 pub mod token_usage;
+
+/// This config dir's store file: `<app_support>/stores/<stable-key>.redb`.
+///
+/// The key is stable across Rust releases; the single-instance lock keeps its
+/// own [`forge_sdk::config_dir_hash`], so a new binary never misses a running
+/// old process's lock.
+pub fn path_for(app_support: &Path, config_dir: &Path) -> std::path::PathBuf {
+    app_support.join("stores").join(format!("{}.redb", forge_sdk::config_dir_store_key(config_dir)))
+}
 
 /// Handle to the machine-local redb database.
 pub struct Db {

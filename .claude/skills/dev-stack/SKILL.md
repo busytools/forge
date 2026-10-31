@@ -124,14 +124,15 @@ history is the record.
      and a bare launch has also held for hours; detaching costs nothing).
      Wrap this line as `nohup script -q ... > $STACK/boot.out 2>&1 &` from a
      `launch.sh`.
-   - **The HOME redirect is mandatory, not optional**: the durable store
-     resolves under `HOME`, so without it the scratch forge points at the
-     real `db.redb`, fails redb's exclusive lock, and boots degraded with no
-     persistence (#1826 is the forge-side fix; until it lands, this is the
-     skill's rule).
+   - **The HOME redirect stays mandatory**: the durable store is keyed by the
+     config dir (`<app-support>/stores/<key>.redb`), so a scratch no longer
+     collides on the real store - but the CLI's own `$HOME/.claude.json`
+     preferences are HOME-level, and without the redirect the scratch's
+     sessions read and write the real one.
 4. **Verify the boot**: `lsof -nP -iTCP:8791 -sTCP:LISTEN` and `8788` both
-   hold the forge pid; `$STACK/home/Library/Application Support/forge/`
-   carries a fresh `db.redb`; the log has no store-failure line; the first
+   hold the forge pid; `$STACK/home/Library/Application Support/forge/stores/`
+   carries the stack config dir's `<key>.redb` (one file, named for that config
+   dir); the log has no store-failure line; the first
    session connects ~3s in (the boot spawn is held until the account's usage
    probe settles - that is normal). **Confirm it is YOUR stack**: the build
    stamp on the home (it rides the greeting too) is the invariant check, and

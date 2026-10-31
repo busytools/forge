@@ -68,7 +68,7 @@ pub use hooks::{
     UserPromptSubmitInput,
 };
 pub use options::{Options, OptionsBuilder, PermissionMode, SdkPluginConfig, SystemPromptKind};
-pub use paths::{app_support_dir, config_dir_hash, projects_dir_for};
+pub use paths::{app_support_dir, config_dir_hash, config_dir_store_key, projects_dir_for};
 pub use permissions::CanUseToolCallback;
 pub use transport::process::CLOSE_WAIT_TIMEOUT;
 

@@ -226,11 +226,40 @@ fn install_browser(
     // **A host an unclean exit left behind is reaped before any profile is
     // used.** It still holds the profile's singleton lock, and the first
     // call would wedge on it; the reaper checks the process is really this
-    // bundle's host before it signals anything.
+    // bundle's host, and that its server is gone, before it signals anything.
+    //
+    // **The prune runs after the reap.** The reaper identifies an orphan by
+    // its executable's path, and a prune that unlinked a live host's binary
+    // first would take that identity away (`proc_pidpath` returns nothing for
+    // an unlinked binary). A peer's live hosts are spared by the reaper's
+    // parent check; the prune re-asks whether the machine is shared before
+    // every removal, because a peer can take its lock after the boot's first
+    // look. Off the boot thread: each prune is a CEF tree.
     let reaper = Arc::clone(&fleet);
-    tokio::spawn(async move { reaper.reap_stale().await });
+    let prune_workspace = Arc::downgrade(workspace);
+    let reap = async move { reaper.reap_stale().await };
+    tokio::spawn(reap_then_prune(reap, move || {
+        forge_browser::host_bundle::prune_other_versions(&move || {
+            prune_workspace.upgrade().is_some_and(|workspace| workspace.sole_instance())
+        });
+    }));
     workspace.install_browser_host(Arc::new(HostedBrowser(Arc::clone(&fleet))));
     Ok(fleet)
+}
+
+/// Await the stale-host reap, then run the prune on a blocking thread.
+///
+/// **The order is the contract.** The reaper identifies an orphan by its
+/// executable's path, and `proc_pidpath` answers nothing for an unlinked
+/// binary, so a prune that removed a host's bundle first would take the
+/// identity away. Off the async workers because each prune is a CEF tree.
+#[cfg(target_os = "macos")]
+async fn reap_then_prune<F>(reap: impl std::future::Future<Output = ()>, prune: F)
+where
+    F: FnOnce() + Send + 'static,
+{
+    reap.await;
+    let _ = tokio::task::spawn_blocking(prune).await;
 }
 
 /// A platform with no CEF host: the browser tools answer the no-host refusal
@@ -405,6 +434,11 @@ fn start_subsystems(workspace: &Arc<Workspace>) {
     // is what refreshes the account snapshots from then on. Without it they
     // hold their boot values for the process's life.
     workspace.start_usage_poller();
+
+    // Rotation cooldowns change what a project row's `would_bind` answers,
+    // on a write and again on the clock that thaws them; this is the one
+    // watcher that turns both into a roster announcement.
+    workspace.start_rotation_announcer();
 
     // Bind the gateway's inference listener and open the boot gate for
     // it. Every spawned session's base URL names this port: a failed bind
@@ -642,11 +676,11 @@ pub fn stop_result(unready: &[forge_primitives::SessionSlot]) -> anyhow::Result<
 
 #[cfg(test)]
 mod tests {
-    #[cfg(target_os = "macos")]
-    use super::configure_fleet_profiles;
     use super::{
         BOOT_WAVE_WAIT, start_config_watch, start_subsystems, stop_result, wait_for_accounts,
     };
+    #[cfg(target_os = "macos")]
+    use super::{configure_fleet_profiles, reap_then_prune};
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -890,6 +924,46 @@ port = 49201
         start_subsystems(&workspace);
 
         assert!(workspace.test_usage_poller_started(), "the boot wave starts the usage poller");
+    }
+
+    /// **The prune runs after the reap.** Reversing them is invisible to
+    /// every behavioural test that does not need the identity a prune can
+    /// unlink, so the order itself is pinned.
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn the_prune_runs_after_the_reap() {
+        let order = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let reaped = Arc::clone(&order);
+        let pruned = Arc::clone(&order);
+        reap_then_prune(
+            async move {
+                reaped.lock().expect("the order").push("reap");
+            },
+            move || {
+                pruned.lock().expect("the order").push("prune");
+            },
+        )
+        .await;
+        assert_eq!(*order.lock().expect("the order"), vec!["reap", "prune"]);
+    }
+
+    /// **The wave starts the rotation announcer**: the one watcher that turns
+    /// a cooldown write and its clock-driven thaw into a roster frame. Dropping
+    /// the call leaves a home row's `would_bind` stale with every test green.
+    #[tokio::test]
+    async fn the_boot_wave_starts_the_rotation_announcer() {
+        let (workspace, _dir) = boot_fixture();
+        assert!(
+            !workspace.test_rotation_announcer_started(),
+            "the fixture starts with the announcer unstarted, or this test proves nothing",
+        );
+
+        start_subsystems(&workspace);
+
+        assert!(
+            workspace.test_rotation_announcer_started(),
+            "the boot wave starts the rotation announcer",
+        );
     }
 
     /// The wave starts the dictate prewarm, which is what keeps a take from

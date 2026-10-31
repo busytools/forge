@@ -823,6 +823,9 @@ pub struct Workspace {
     /// Set the first time [`Self::start_usage_poller`] runs. Subsequent
     /// calls early-return to avoid spawning duplicate poller tasks.
     usage_poller_started: std::sync::atomic::AtomicBool,
+    /// Set the first time [`Self::start_rotation_announcer`] runs, so a
+    /// second call cannot double every cooldown's roster frame.
+    rotation_announcer_started: std::sync::atomic::AtomicBool,
     /// Set the first time [`Self::start_dictate_preflight`] runs, so a
     /// second call cannot spawn a second prewarm over the same models. Set
     /// before the `[dictate] enabled` gate: the flag reads "the boot wave
@@ -1551,27 +1554,158 @@ fn persist_session_tag_cache(
     }
 }
 
-/// Open the machine-local redb store at `<app_support>/db.redb`,
-/// creating the app-support dir first. Returns `None` (with a warn) when
-/// the dir can't be created or the DB can't open - forge then runs
-/// without durable crons, subscriptions, tasks or dynamic workers this
-/// session (hard rule #14: no cwd fallback).
-fn open_db(app_support: &Path) -> Option<crate::store::Db> {
-    if let Err(error) = std::fs::create_dir_all(app_support) {
+/// This config dir's redb store: `<app_support>/stores/<stable-key>.redb`.
+///
+/// **The key is stable across Rust releases** ([`forge_sdk::config_dir_store_key`]),
+/// unlike the lock's `config_dir_hash`: a nightly bump must not open a new
+/// empty store and orphan every row.
+fn store_path(app_support: &Path, config_dir: &Path) -> PathBuf {
+    crate::store::path_for(app_support, config_dir)
+}
+
+/// Whether this path is the home directory's `.claude`, the default config
+/// dir.
+///
+/// The pre-split machine-wide store is the default config dir's state, so
+/// only that config dir may adopt it. A scratch or second config dir booting
+/// first must not take it; such a dir leaves the legacy file in place.
+fn is_default_config_dir(config_dir: &Path) -> bool {
+    let Some(home) = dirs::home_dir() else { return false };
+    let default = home.join(".claude");
+    match (config_dir.canonicalize(), default.canonicalize()) {
+        (Ok(ours), Ok(theirs)) => ours == theirs,
+        _ => config_dir == default,
+    }
+}
+
+/// What a boot should do with the pre-split store.
+enum Adoption {
+    /// Nothing is stranded: there is no legacy file, this config dir already
+    /// has its own store, or the legacy file belongs to another config dir.
+    Settled,
+    /// The legacy file is this default config dir's state and could not be
+    /// moved this boot. Opening a fresh store would hide the file for good -
+    /// the next boot sees a target and never looks again - so this run goes
+    /// memory-only and the next boot retries.
+    Deferred,
+}
+
+/// Adopt the pre-split machine-wide store into this config dir's own, once.
+///
+/// **Only the default config dir adopts** (see [`is_default_config_dir`]),
+/// and the file is probe-opened first: a store another forge still holds is
+/// left where it is rather than renamed behind its back.
+fn adopt_legacy_store(app_support: &Path, config_dir: &Path, path: &Path) -> Adoption {
+    let legacy = app_support.join("db.redb");
+    if path.exists() || !legacy.is_file() {
+        return Adoption::Settled;
+    }
+    if !is_default_config_dir(config_dir) {
+        tracing::info!(
+            target: "forge_workspace::workspace",
+            event_name = "store_legacy_left_in_place",
+            legacy = %legacy.display(),
+            config_dir = %config_dir.display(),
+            "the machine-wide store belongs to the home config dir, so it is left there; a \
+             custom-only install can move it under stores/ by hand to keep its rows",
+        );
+        return Adoption::Settled;
+    }
+    adopt_legacy_store_from(&legacy, path)
+}
+
+/// The adoption itself, with the default-dir verdict already decided.
+fn adopt_legacy_store_from(legacy: &Path, path: &Path) -> Adoption {
+    match crate::store::Db::open(legacy) {
+        // The probe takes the file's own lock and drops it again, so a store
+        // another process holds is refused here rather than moved under it.
+        Ok(probe) => drop(probe),
+        Err(error) => {
+            tracing::warn!(
+                target: "forge_workspace::workspace",
+                event_name = "store_legacy_in_use",
+                %error,
+                legacy = %legacy.display(),
+                "the machine-wide store is held by another process; this run has no durable \
+                 state and the next boot retries the adoption",
+            );
+            return Adoption::Deferred;
+        }
+    }
+    match std::fs::rename(legacy, path) {
+        Ok(()) => {
+            tracing::info!(
+                target: "forge_workspace::workspace",
+                event_name = "store_legacy_adopted",
+                from = %legacy.display(),
+                to = %path.display(),
+                "the machine-wide store is adopted by the default config dir",
+            );
+            Adoption::Settled
+        }
+        Err(error) => {
+            tracing::warn!(
+                target: "forge_workspace::workspace",
+                event_name = "store_legacy_adopt_failed",
+                %error,
+                from = %legacy.display(),
+                to = %path.display(),
+                "the machine-wide store could not be adopted; this run has no durable state and \
+                 the next boot retries",
+            );
+            Adoption::Deferred
+        }
+    }
+}
+
+/// Open this config dir's redb store, creating the directories first.
+/// Returns `None` (with a warn) when they can't be created or the DB can't
+/// open - forge then runs without durable crons, subscriptions, tasks or
+/// dynamic workers this session (hard rule #14: no cwd fallback).
+///
+/// **The store is keyed by the config dir, as the lock is.** A machine-wide
+/// `<app_support>/db.redb` from before the split is adopted once, by the
+/// default config dir; a second config dir starts empty, which is the
+/// isolation this keying exists for.
+fn open_db(app_support: &Path, config_dir: &Path) -> Option<crate::store::Db> {
+    // **One key space.** `config_dir_store_key` falls back to the raw path
+    // when it cannot canonicalise, so a dir that fails once and resolves
+    // later would open a second, empty store. The boot has already created
+    // the config dir; a path that still cannot canonicalise gets no durable
+    // state rather than a key that may move.
+    let Ok(canonical) = config_dir.canonicalize() else {
         tracing::warn!(
             target: "forge_workspace::workspace",
+            event_name = "store_dir_unresolved",
+            config_dir = %config_dir.display(),
+            "the config dir cannot be canonicalised, so its store key would not be stable; \
+             durable crons, subscriptions, tasks and dynamic workers will not persist",
+        );
+        return None;
+    };
+    let path = store_path(app_support, &canonical);
+    let stores = path.parent()?;
+    if let Err(error) = std::fs::create_dir_all(stores) {
+        tracing::warn!(
+            target: "forge_workspace::workspace",
+            event_name = "store_dir_create_failed",
             %error,
-            path = %app_support.display(),
-            "creating the app-support dir failed; durable crons, subscriptions, tasks and dynamic workers will not persist",
+            path = %stores.display(),
+            "creating the app-support stores dir failed; durable crons, subscriptions, tasks and dynamic workers will not persist",
         );
         return None;
     }
-    match crate::store::Db::open(&app_support.join("db.redb")) {
+    if let Adoption::Deferred = adopt_legacy_store(app_support, config_dir, &path) {
+        return None;
+    }
+    match crate::store::Db::open(&path) {
         Ok(db) => Some(db),
         Err(error) => {
             tracing::warn!(
                 target: "forge_workspace::workspace",
+                event_name = "store_open_failed",
                 %error,
+                path = %path.display(),
                 "opening the redb store failed; durable crons, subscriptions, tasks and dynamic workers will not persist",
             );
             None
@@ -1983,7 +2117,7 @@ impl Workspace {
         // subscriptions all live in it. A failure to resolve the app-
         // support dir or open the DB degrades to no durable state this run
         // (non-fatal, like the state cache) - no cwd fallback (hard rule #14).
-        let mut db = app_support.as_deref().and_then(open_db);
+        let mut db = app_support.as_deref().and_then(|base| open_db(base, &config_dir));
 
         // Load durable forge crons into the in-memory working set. Boot
         // catch-up for entries that came due while forge was down runs after
@@ -2291,6 +2425,7 @@ impl Workspace {
             review_origin: Mutex::new(HashMap::new()),
             review_activity: Mutex::new(HashMap::new()),
             usage_poller_started: std::sync::atomic::AtomicBool::new(false),
+            rotation_announcer_started: std::sync::atomic::AtomicBool::new(false),
             dictate_preflight_started: std::sync::atomic::AtomicBool::new(false),
             cron_scheduler_started: std::sync::atomic::AtomicBool::new(false),
             chase_sweep_started: std::sync::atomic::AtomicBool::new(false),
@@ -4172,6 +4307,75 @@ impl Workspace {
         });
     }
 
+    /// Whether this is the only live forge on the machine: no other config
+    /// dir's lock is held.
+    ///
+    /// **A boot may change shared app-support state only when this is true.**
+    /// The test beside the store tests pins the peer case.
+    ///
+    /// **The app-support tree is machine-wide**, so a boot that changes
+    /// something shared in it - the browser host's per-version prune - has
+    /// to establish this first, or it deletes a peer's state.
+    pub fn sole_instance(&self) -> bool {
+        match self.app_support.as_deref() {
+            Some(base) => !crate::single_instance::another_instance_running(&self.config_dir, base),
+            None => false,
+        }
+    }
+
+    /// Announce the roster on every rotation change: a cooldown a live 429
+    /// starts (a write the gateway publishes) and the clock-driven thaw
+    /// after it (which no write announces, so this task sleeps to it).
+    ///
+    /// **A project row's `would_bind` is derived from the selection walk**,
+    /// so both moments change what the home draws with nothing else to hang
+    /// an update on. Started once at boot; a second call is ignored, since a
+    /// second watcher would double every frame.
+    pub fn start_rotation_announcer(self: &Arc<Self>) {
+        if self.rotation_announcer_started.swap(true, std::sync::atomic::Ordering::AcqRel) {
+            tracing::debug!(
+                target: "forge_workspace::workspace",
+                event_name = "rotation_announcer_started_twice",
+                "start_rotation_announcer called more than once; ignoring",
+            );
+            return;
+        }
+        let weak = Arc::downgrade(self);
+        let mut rotation = self.gateway.rotation_watch();
+        tokio::spawn(async move {
+            loop {
+                let Some(workspace) = weak.upgrade() else { return };
+                let thaw = workspace.gateway.soonest_cooldown_end(std::time::SystemTime::now());
+                drop(workspace);
+                match thaw {
+                    None => {
+                        // Nothing is cooling: the next wake is a write.
+                        if rotation.changed().await.is_err() {
+                            return;
+                        }
+                    }
+                    Some(end) => {
+                        let wait = end
+                            .duration_since(std::time::SystemTime::now())
+                            .unwrap_or(std::time::Duration::ZERO);
+                        // A cooldown that started or was replaced restarts
+                        // the sleep; the thaw itself ends it.
+                        tokio::select! {
+                            () = tokio::time::sleep(wait) => {}
+                            changed = rotation.changed() => {
+                                if changed.is_err() {
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                }
+                let Some(workspace) = weak.upgrade() else { return };
+                workspace.announce_accounts_changed();
+            }
+        });
+    }
+
     /// Spawn the background account-usage poller on the interval
     /// `[usage] poll_seconds` resolves to (60 s by default). Fetches
     /// OAuth usage for every `[[accounts]]` entry via the per-
@@ -5355,6 +5559,7 @@ impl Workspace {
             attachments: Vec::new(),
             uuid,
             source,
+            origin: None,
         })
     }
 
@@ -5450,6 +5655,7 @@ impl Workspace {
             attachments: Vec::new(),
             uuid,
             source: crate::protocol::PromptSource::Forge,
+            origin: None,
         })
     }
 
@@ -5494,6 +5700,7 @@ impl Workspace {
                 attachments: Vec::new(),
                 uuid,
                 source,
+                origin: None,
             })
         };
         if result.is_ok() {
@@ -5576,11 +5783,15 @@ impl Workspace {
         self.dispatch_with_origin(cmd, PromptOrigin::View)
     }
 
-    /// Route a command, emitting the user turn a prompt draws.
+    /// Route a command, framing the user turn for the prompts answered here.
     ///
     /// A prompt is the reader's own words, and nothing else carries them: the
     /// CLI queues a prompt handed to it and never echoes it back, so a view
     /// drawing only frames shows the assistant answering something nobody saw.
+    /// The routed prompt's frame is the SESSION TASK's, so it is ordered
+    /// against everything the task does with the same prompt; only a forge
+    /// command, a misuse and an unrunnable slash name - which the task never
+    /// sees - are framed from here.
     ///
     /// NOT from `dispatch_workspace_prompt`, which is the delivery path: a
     /// delivery already draws as an envelope turn of its own, so a bare user
@@ -5591,10 +5802,14 @@ impl Workspace {
         origin: PromptOrigin,
     ) -> Result<(), DispatchError> {
         // The id is minted HERE, before the prose is taken, so the prompt, its
-        // lifecycle frames and the user turn below all carry one thing by id:
-        // a plain `Prompt` becomes the `PromptUnder` the rest of the tree
+        // lifecycle frames and the user turn it draws all carry one thing by
+        // id: a plain `Prompt` becomes the `PromptUnder` the rest of the tree
         // already treats identically, keeping the mint on one path instead of
         // two.
+        //
+        // **The origin is stamped here, never taken from the caller.** A view
+        // that could name its own origin could claim to be the process's own
+        // input handler, and every other view would skip a turn it never drew.
         let cmd = match cmd {
             Command::Prompt { key, text, attachments } => Command::PromptUnder {
                 key,
@@ -5602,19 +5817,18 @@ impl Workspace {
                 attachments,
                 uuid: forge_sdk::request_id::next_prompt_id(),
                 source: crate::protocol::PromptSource::You,
+                origin: Some(origin),
             },
+            Command::PromptUnder { key, text, attachments, uuid, source, .. } => {
+                Command::PromptUnder { key, text, attachments, uuid, source, origin: Some(origin) }
+            }
             other => other,
         };
-        // The prose is taken before the move and emitted only once the command
-        // reached a session. A refused prompt never reached a model, so no view
-        // draws it as a turn - and the frame for one would open a live turn in
-        // every view but the sender, with nothing left to close it: the refusal
-        // is written to the asking socket alone.
-        //
-        // The source rides along the words, because the frame below is the
-        // same one forge's machinery forges prose on and a view arms its
-        // follow off what it says (#2198): taking it from the command keeps
-        // the frame and the queued row's label one fact.
+        // The prose is taken before the move. The source rides along the
+        // words, because the frame is the same one forge's machinery forges
+        // prose on and a view arms its follow off what it says (#2198):
+        // taking it from the command keeps the frame and the queued row's
+        // label one fact.
         let prompt = match &cmd {
             Command::PromptUnder { key, text, uuid, source, .. } => {
                 Some((key.clone(), text.clone(), uuid.clone(), *source))
@@ -5632,40 +5846,45 @@ impl Workspace {
         // being emitted where it is decided: it has to land after the echo
         // below, because a client draws this stream in arrival order and one
         // sent first drew the answer above the prompt it answers.
-        let (outcome, answer, images) = match &cmd {
-            Command::PromptUnder { key, text, attachments, .. } => {
-                match crate::prompt::forge_invocation(text) {
-                    Some(crate::prompt::Invocation::Command(prompt)) => {
-                        let (outcome, answer) = self.run_forge_prompt(key, &prompt);
-                        (outcome, answer, Vec::new())
-                    }
-                    Some(crate::prompt::Invocation::Misuse(usage)) => {
-                        (Ok(()), Some(forge_misuse(usage)), Vec::new())
-                    }
-                    None => {
-                        if let Some(refusal) = self.unrunnable_slash_name(key, text) {
-                            (Ok(()), Some(forge_misuse(&refusal)), Vec::new())
-                        } else {
-                            // Built here, only where the prompt is handed to
-                            // the CLI: the arms above never send the
-                            // attachments, so nothing is validated or carried
-                            // for them.
-                            let images = forge_primitives::display_blocks(attachments);
-                            (self.route(cmd), None, images)
-                        }
+        //
+        // **Who draws the prompt's turn.** A prompt the session task
+        // receives draws it there, ordered against everything the task does
+        // with the same prompt; only the prompts answered HERE - a forge
+        // command, a misuse, a slash name with no door - are framed from the
+        // dispatcher, because the task never sees them.
+        let (outcome, answer, framed_here) = match &cmd {
+            Command::PromptUnder { key, text, .. } => match crate::prompt::forge_invocation(text) {
+                Some(crate::prompt::Invocation::Command(prompt)) => {
+                    let (outcome, answer) = self.run_forge_prompt(key, &prompt);
+                    (outcome, answer, true)
+                }
+                Some(crate::prompt::Invocation::Misuse(usage)) => {
+                    (Ok(()), Some(forge_misuse(usage)), true)
+                }
+                None => {
+                    if let Some(refusal) = self.unrunnable_slash_name(key, text) {
+                        (Ok(()), Some(forge_misuse(&refusal)), true)
+                    } else {
+                        (self.route(cmd), None, false)
                     }
                 }
-            }
-            _ => (self.route(cmd), None, Vec::new()),
+            },
+            _ => (self.route(cmd), None, false),
         };
-        if outcome.is_ok()
+        // A refused prompt never reached a model, so no view draws it as a
+        // turn - and the frame for one would open a live turn in every view
+        // but the sender, with nothing left to close it: the refusal is
+        // written to the asking socket alone. The task draws its own only
+        // once it has the prompt, so a route refusal never reaches it.
+        if framed_here
+            && outcome.is_ok()
             && let Some((key, text, uuid, source)) = prompt
         {
             // Stamped at the forge, like the machinery's own: the CLI never
             // echoes a prompt, so this row is the one that opens every turn a
             // person starts, and a page attaching mid-turn reads its clock
             // from the first row that carries a stamp.
-            let mut framed = Message::display_only_user_with_blocks(text, images, uuid);
+            let mut framed = Message::display_only_user_with_blocks(text, Vec::new(), uuid);
             framed.stamp_if_absent(&crate::install::rfc3339_now());
             let _ = self.update_sender().send(SessionUpdate::ChatAppended {
                 key: key.clone(),
@@ -6014,6 +6233,12 @@ impl Workspace {
         {
             let mut intercept = self.command_intercept.lock();
             if let Some(buffer) = intercept.as_mut() {
+                // **The intercept stands in for the session task's receipt**,
+                // so a prompt that draws its own turn still draws it: the
+                // frame comes from the same function the task runs.
+                if let Some(key) = cmd.key() {
+                    crate::session_task::emit_prompt_frame(&self.update_tx, key, &cmd);
+                }
                 buffer.push(cmd);
                 return Ok(());
             }
@@ -6149,6 +6374,7 @@ impl Workspace {
                 // whose wire-lagged `Running` echo hasn't landed yet. The
                 // committed turn also spends the previous turn's failure
                 // mark: the newest turn is this one now.
+                let mut committed = false;
                 if matches!(cmd, Command::Prompt { .. } | Command::PromptUnder { .. })
                     && let Some(domain) = self.domain_session_for(&key)
                 {
@@ -6167,7 +6393,7 @@ impl Workspace {
                         guard.pending_cancel = false;
                         guard.auto_continue = None;
                     }
-                    guard.commit_turn();
+                    committed = guard.commit_turn();
                     guard.failed_turn_at = None;
                 }
                 // A prompt the reader's own hands sent moves the seat on: a
@@ -6190,7 +6416,18 @@ impl Workspace {
                         guard.pending_cancel = true;
                     }
                 }
-                return sender.send(cmd).map_err(|_| DispatchError::SessionClosed(key));
+                // **A send that never reached the task spends the turn it
+                // just committed.** No Result is coming for a prompt the task
+                // never saw, so leaving `turn_pending` set draws a turn in
+                // flight on the header that nothing can close.
+                if let Err(unsent) = sender.send(cmd) {
+                    let _ = unsent;
+                    if committed && let Some(domain) = self.domain_session_for(&key) {
+                        domain.lock().uncommit_turn();
+                    }
+                    return Err(DispatchError::SessionClosed(key));
+                }
+                return Ok(());
             }
             drop(senders);
             // **`/resume` on a seat whose task has exited is the recovery
@@ -13124,11 +13361,70 @@ provider = "anthropic"
         );
     }
 
-    /// **Both rows that open a turn carry the stamp a clock is read from**:
-    /// the one a view's own send forges, and the one forge's machinery forges.
-    /// The CLI never echoes a prompt, so these rows are the only opening rows
-    /// a turn has - and a page attaching mid-turn anchors its running clock on
-    /// the first row carrying a stamp.
+    /// **A cooldown and its thaw each announce the roster.** A project row's
+    /// `would_bind` is derived from the selection walk, so a home subscriber
+    /// that hears nothing keeps drawing an account's old bindability. The
+    /// cooling start is a write the gateway publishes; the thaw is only a
+    /// clock, so the announcer sleeps to it.
+    ///
+    /// **The arrival instants are the evidence that the second frame is the
+    /// thaw and not a repeat.** A watcher announcing on every wake, or a
+    /// second watcher the duplicate-start guard failed to stop, delivers its
+    /// second frame before the reset; only the clock-driven wake lands after.
+    #[tokio::test]
+    async fn a_rotation_cool_and_its_thaw_each_announce_the_accounts() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, mut rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        assert!(
+            !ws.test_rotation_announcer_started(),
+            "premise: no announcer before the boot call",
+        );
+        ws.start_rotation_announcer();
+        ws.start_rotation_announcer();
+        assert!(
+            ws.test_rotation_announcer_started(),
+            "the boot call starts the one watcher, and a second call is a no-op",
+        );
+
+        let reset_at = SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("after the epoch")
+            .as_secs()
+            + 6;
+        let thaw = forge_gateway::rotation::reset_instant(reset_at);
+        ws.gateway.report_probe_limit(&AccountKey("Cooling".to_owned()), Some(reset_at));
+
+        let mut arrivals = Vec::new();
+        // A ~5 s window for the cool's frame, so a loaded machine does not
+        // red code that is right; the bound covers the thaw behind it.
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(20);
+        while arrivals.len() < 2 {
+            let frame = tokio::time::timeout_at(deadline, rx.recv())
+                .await
+                .expect("the cool and the thaw both announce inside the bound")
+                .expect("the update channel stays open");
+            if matches!(&*frame.update, SessionUpdate::AccountsChanged { .. }) {
+                arrivals.push(SystemTime::now());
+            }
+        }
+        assert!(
+            arrivals[0] < thaw,
+            "the cool is announced when the write lands, before the thaw: {:?}",
+            arrivals[0],
+        );
+        assert!(
+            arrivals[1] >= thaw,
+            "the second frame is the thaw the clock drives, not a repeat: {:?} vs {thaw:?}",
+            arrivals[1],
+        );
+    }
+
+    /// **The row forge's machinery forges carries the stamp a clock is read
+    /// from.** The CLI never echoes a prompt, so these rows are the only
+    /// opening rows a turn has, and a page attaching mid-turn anchors its
+    /// running clock on the first row carrying a stamp. A view's own send is
+    /// stamped by the session task that draws it now; that half is pinned
+    /// beside the frame-order test in `session_task`.
     #[test]
     fn a_forged_prompt_row_carries_the_stamp_a_clock_starts_from() {
         let dir = tempdir().expect("tempdir");
@@ -13152,12 +13448,6 @@ provider = "anthropic"
         ws.enable_test_dispatch_intercept();
 
         let before = time::OffsetDateTime::now_utc();
-        ws.dispatch(Command::Prompt {
-            key: key.clone(),
-            text: "go".to_owned(),
-            attachments: Vec::new(),
-        })
-        .expect("view dispatch");
         ws.dispatch_forged_prompt(&key, "get on with it".to_owned()).expect("forged dispatch");
         let after = time::OffsetDateTime::now_utc();
 
@@ -13171,27 +13461,25 @@ provider = "anthropic"
                 serde_json::to_value(&msg).expect("encode")["timestamp"].as_str().map(str::to_owned)
             })
             .collect();
-        assert_eq!(stamps.len(), 2, "both prompt paths forge a row: {stamps:?}");
-        let view = stamps[0].as_deref().expect("the row a view's send forges carries a stamp");
-        let forged = stamps[1].as_deref().expect("and the row forge's machinery forges does too");
+        assert_eq!(stamps.len(), 1, "the machinery's prompt forges a row: {stamps:?}");
+        let forged =
+            stamps[0].as_deref().expect("the row forge's machinery forges carries a stamp");
 
         // **The code's own clock, not merely a parseable string.** A constant
         // stamp would draw every forged row a clock years old while a
-        // parse-only pin stayed green, so each has to land where the two
-        // `now_utc`s bracket the dispatches.
+        // parse-only pin stayed green, so it has to land where the two
+        // `now_utc`s bracket the dispatch.
         let slack = time::Duration::seconds(5);
-        for (stamp, path) in [(view, "the view's send"), (forged, "the machinery's")] {
-            let at =
-                time::OffsetDateTime::parse(stamp, &time::format_description::well_known::Rfc3339)
-                    .unwrap_or_else(|error| {
-                        panic!("{path} stamped a time no client can read: {stamp} ({error})")
-                    });
-            assert!(
-                at >= before - slack && at <= after + slack,
-                "the row {path} forges carries the forge's own clock, not a constant: {stamp} \
-                 sits outside {before}..{after}",
-            );
-        }
+        let at =
+            time::OffsetDateTime::parse(forged, &time::format_description::well_known::Rfc3339)
+                .unwrap_or_else(|error| {
+                    panic!("the machinery stamped a time no client can read: {forged} ({error})")
+                });
+        assert!(
+            at >= before - slack && at <= after + slack,
+            "the row the machinery forges carries the forge's own clock, not a constant: \
+             {forged} sits outside {before}..{after}",
+        );
     }
 
     /// A forged prompt that never landed draws nothing: the words did not
@@ -13236,6 +13524,7 @@ provider = "anthropic"
             attachments: Vec::new(),
             uuid: uuid.to_owned(),
             source,
+            origin: None,
         };
 
         ws.dispatch(prompt("cron-1", crate::protocol::PromptSource::Cron)).expect("routed");
@@ -14477,7 +14766,8 @@ provider = "anthropic"
         let _workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         // The test constructor redirects redb into the config dir's own
         // tempdir, so no test ever opens the real machine store (#392).
-        let redirected = dir.path().join("app-support").join("db.redb");
+        let base = dir.path().join("app-support");
+        let redirected = store_path(&base, dir.path());
         assert!(redirected.exists(), "new_for_test opens redb under the tempdir app-support base");
     }
 
@@ -14812,7 +15102,9 @@ provider = "anthropic"
         let dir = make_workspace_dir_with_two_accounts();
         let app_support = dir.path().join("app-support");
         fs::create_dir_all(&app_support).expect("app-support dir");
-        let db = crate::store::Db::open(&app_support.join("db.redb")).expect("open db");
+        let db_path = store_path(&app_support, dir.path());
+        fs::create_dir_all(db_path.parent().expect("the stores dir")).expect("stores dir");
+        let db = crate::store::Db::open(&db_path).expect("open db");
         // The key the boot derives, so the seeded row is one it can match:
         // the config resolves the project path, so a literal from the
         // fixture is not the same string.
@@ -14864,7 +15156,9 @@ provider = "anthropic"
         let dir = make_workspace_dir_with_two_accounts();
         let app_support = dir.path().join("app-support");
         fs::create_dir_all(&app_support).expect("app-support dir");
-        let db = crate::store::Db::open(&app_support.join("db.redb")).expect("open db");
+        let db_path = store_path(&app_support, dir.path());
+        fs::create_dir_all(db_path.parent().expect("the stores dir")).expect("stores dir");
+        let db = crate::store::Db::open(&db_path).expect("open db");
         let config = crate::config::load_from_dir(dir.path()).expect("load config");
         let project_key = forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
             &config.projects[0].path.to_string_lossy(),
@@ -14967,7 +15261,9 @@ provider = "anthropic"
         let dir = make_workspace_dir_with_two_accounts();
         let app_support = dir.path().join("app-support");
         fs::create_dir_all(&app_support).expect("app-support dir");
-        let db = crate::store::Db::open(&app_support.join("db.redb")).expect("open db");
+        let db_path = store_path(&app_support, dir.path());
+        fs::create_dir_all(db_path.parent().expect("the stores dir")).expect("stores dir");
+        let db = crate::store::Db::open(&db_path).expect("open db");
         crate::store::dynamic_workers::insert_for_test(
             &db,
             &crate::store::dynamic_workers::DynamicWorker {
@@ -16096,6 +16392,32 @@ provider = "anthropic"
         let domain = workspace.register_domain_session(key.clone(), Some(arc));
         domain.lock().session_id = Some(forge_primitives::SessionId::new(key.display()));
         cmd_rx
+    }
+
+    /// **A prompt a dead task never receives spends the turn it committed.**
+    /// The send is refused, so no Result will ever serve it; leaving
+    /// `turn_pending` set draws a turn in flight on the header that nothing
+    /// can close.
+    #[test]
+    fn a_prompt_a_dead_task_never_receives_leaves_no_turn_in_flight() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
+        let key = SessionSlot::lead("TestOrg", "forge");
+        let receiver = install_fake_session_task(&ws, &key);
+        drop(receiver);
+
+        let refused = ws.dispatch(Command::Prompt {
+            key: key.clone(),
+            text: "hello".to_owned(),
+            attachments: Vec::new(),
+        });
+
+        assert!(refused.is_err(), "the dead task refuses the prompt");
+        let domain = ws.domain_session_for(&key).expect("the fixture registers the seat");
+        assert!(
+            !domain.lock().turn_in_flight(),
+            "a refused prompt leaves no turn in flight for the header",
+        );
     }
 
     /// A session's `SessionTask` exiting (agent event channel closed -
@@ -24762,6 +25084,203 @@ provider = "anthropic"
             "the title is the transcript's, not the mirror's placeholder",
         );
     }
+
+    /// **The store is the config dir's.** Two config dirs under one
+    /// app-support base open side by side, each on its own file, so neither
+    /// collides with the other's lock-backed writer nor inherits its crons,
+    /// subscriptions and worker rows.
+    #[test]
+    fn each_config_dir_opens_its_own_store() {
+        let dir = tempdir().expect("tempdir");
+        let app_support = dir.path().join("app-support");
+        let one = dir.path().join("config-one");
+        let two = dir.path().join("config-two");
+        // The boot creates the config dir before it opens the store, and the
+        // store key is a digest of the canonical path.
+        std::fs::create_dir_all(&one).expect("the first config dir");
+        std::fs::create_dir_all(&two).expect("the second config dir");
+
+        let first = open_db(&app_support, &one).expect("the first config dir's store");
+        let second = open_db(&app_support, &two).expect("the second config dir's own store");
+
+        assert_ne!(
+            store_path(&app_support, &one),
+            store_path(&app_support, &two),
+            "the path carries the config dir, like the lock's",
+        );
+        assert!(store_path(&app_support, &one).is_file(), "the first store was created");
+        assert!(store_path(&app_support, &two).is_file(), "and the second beside it");
+        drop((first, second));
+    }
+
+    /// **A machine-wide store from before the split is adopted once**, and
+    /// only from the default config dir: a scratch or second config dir
+    /// booting first must not take the user's state.
+    #[test]
+    fn the_default_config_dir_adopts_the_machine_wide_store_once() {
+        let dir = tempdir().expect("tempdir");
+        let app_support = dir.path().join("app-support");
+        std::fs::create_dir_all(&app_support).expect("the app-support dir");
+        let legacy = app_support.join("db.redb");
+        drop(crate::store::Db::open(&legacy).expect("a store at the old path"));
+        let home_config = dirs::home_dir().expect("a home dir").join(".claude");
+        let target = app_support.join("stores").join("adopted.redb");
+        std::fs::create_dir_all(target.parent().expect("the stores dir")).expect("stores dir");
+
+        let outcome = adopt_legacy_store(&app_support, &home_config, &target);
+
+        assert!(matches!(outcome, Adoption::Settled), "the home config dir adopts");
+        assert!(target.is_file(), "the default config dir took it");
+        assert!(!legacy.exists(), "and the machine-wide path is empty");
+
+        // Once: a target already present is the migration done, so a later
+        // legacy file is not looked at again.
+        let stray = app_support.join("db.redb");
+        std::fs::write(&stray, b"not a store").expect("a stray file");
+        let again = adopt_legacy_store(&app_support, &home_config, &target);
+        assert!(matches!(again, Adoption::Settled), "nothing is left to do");
+        assert!(stray.is_file(), "the once-guard leaves a later legacy file alone");
+    }
+
+    /// **A scratch config dir leaves the file alone**, and a temp dir is not
+    /// the default one: the adoption predicate answers for the home path and
+    /// nothing else.
+    #[test]
+    fn a_scratch_config_dir_leaves_the_machine_wide_store_alone() {
+        let dir = tempdir().expect("tempdir");
+        let app_support = dir.path().join("app-support");
+        std::fs::create_dir_all(&app_support).expect("the app-support dir");
+        let legacy = app_support.join("db.redb");
+        drop(crate::store::Db::open(&legacy).expect("a store at the old path"));
+        let scratch = dir.path().join("scratch-config");
+        let target = app_support.join("stores").join("scratch.redb");
+        std::fs::create_dir_all(target.parent().expect("the stores dir")).expect("stores dir");
+
+        let outcome = adopt_legacy_store(&app_support, &scratch, &target);
+
+        assert!(matches!(outcome, Adoption::Settled), "a scratch dir has nothing to adopt");
+        assert!(legacy.is_file(), "the user's store stays where it is");
+        assert!(!target.exists(), "and no copy was made");
+        assert!(!is_default_config_dir(&scratch), "a temp dir is not the default config dir");
+        assert!(
+            is_default_config_dir(&dirs::home_dir().expect("a home dir").join(".claude")),
+            "the home directory's .claude is",
+        );
+    }
+
+    /// **A store another process holds defers the boot rather than hiding
+    /// it.** Opening a fresh store would make the next boot see a target and
+    /// never look again, stranding every row; memory-only leaves the retry
+    /// for the next boot.
+    #[test]
+    fn a_machine_wide_store_in_use_defers_the_boot() {
+        let dir = tempdir().expect("tempdir");
+        let app_support = dir.path().join("app-support");
+        std::fs::create_dir_all(&app_support).expect("the app-support dir");
+        let legacy = app_support.join("db.redb");
+        let held = crate::store::Db::open(&legacy).expect("a store at the old path");
+        let home_config = dirs::home_dir().expect("a home dir").join(".claude");
+        let target = app_support.join("stores").join("adopted.redb");
+        std::fs::create_dir_all(target.parent().expect("the stores dir")).expect("stores dir");
+
+        let outcome = adopt_legacy_store(&app_support, &home_config, &target);
+
+        assert!(matches!(outcome, Adoption::Deferred), "a held store defers the boot");
+        assert!(!target.exists(), "nothing was moved in");
+        assert!(legacy.is_file(), "and the owner still has its file where it was");
+        drop(held);
+    }
+
+    /// **The boot adopts through `open_db` itself**, not only through the
+    /// helper: the home config dir's first boot moves the legacy store in
+    /// and opens it. Wiring the adoption out of `open_db` would create a
+    /// fresh target first, and every later boot would never look again.
+    #[test]
+    fn open_db_adopts_the_machine_wide_store_for_the_home_config_dir() {
+        let dir = tempdir().expect("tempdir");
+        let app_support = dir.path().join("app-support");
+        std::fs::create_dir_all(&app_support).expect("the app-support dir");
+        let legacy = app_support.join("db.redb");
+        {
+            // A row in the legacy store, so the read below proves the DATA
+            // moved and not just the file: a remove-file-and-open-fresh
+            // would pass a file-existence check.
+            let old = crate::store::Db::open(&legacy).expect("a store at the old path");
+            crate::store::cron_names::put(
+                &old,
+                "p-adopt",
+                &forge_primitives::cron::CronName {
+                    cron_id: "c1".to_owned(),
+                    description: Some("Morning summary".to_owned()),
+                },
+            )
+            .expect("seed a row in the legacy store");
+        }
+        let home_config = dirs::home_dir().expect("a home dir").join(".claude");
+        // The boot creates the config dir before opening the store; a runner
+        // without one gets an empty directory this test never writes into.
+        std::fs::create_dir_all(&home_config).expect("the home config dir");
+
+        let opened = open_db(&app_support, &home_config).expect("the adopted store opens");
+
+        assert!(!legacy.exists(), "the machine-wide file moved");
+        assert!(
+            store_path(&app_support, &home_config).is_file(),
+            "into this config dir's own store",
+        );
+        let rows = crate::store::cron_names::for_uuids(&opened, &["p-adopt"]).expect("read");
+        assert_eq!(
+            rows.get("p-adopt").and_then(|name| name.description.as_deref()),
+            Some("Morning summary"),
+            "the adopted store carries the legacy store's rows",
+        );
+        drop(opened);
+    }
+
+    /// **A held store defers the boot at the `open_db` boundary too**: no
+    /// fresh target is created, so the next boot can still adopt the legacy
+    /// file instead of finding a target and never looking again.
+    #[test]
+    fn open_db_leaves_no_target_when_the_legacy_store_is_held() {
+        let dir = tempdir().expect("tempdir");
+        let app_support = dir.path().join("app-support");
+        std::fs::create_dir_all(&app_support).expect("the app-support dir");
+        let legacy = app_support.join("db.redb");
+        let held = crate::store::Db::open(&legacy).expect("a store at the old path");
+        let home_config = dirs::home_dir().expect("a home dir").join(".claude");
+        std::fs::create_dir_all(&home_config).expect("the home config dir");
+
+        let opened = open_db(&app_support, &home_config);
+
+        assert!(opened.is_none(), "the boot runs without durable state this run");
+        assert!(
+            !store_path(&app_support, &home_config).exists(),
+            "and creates no target that would hide the legacy file for good",
+        );
+        assert!(legacy.is_file(), "the held file is still where its owner has it");
+        drop(held);
+    }
+
+    /// **A peer's lock makes the machine shared.** A boot may prune shared
+    /// app-support state only when this is false; a hardcoded true would let
+    /// it delete a live peer's CEF bundle.
+    #[test]
+    fn sole_instance_sees_a_peer_lock() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
+        assert!(ws.sole_instance(), "no peer is running in a fresh fixture");
+
+        let peer = dir.path().join("peer-config");
+        std::fs::create_dir_all(&peer).expect("peer config dir");
+        let base = dir.path().join("app-support");
+        let held = crate::single_instance::acquire(&peer, &base)
+            .expect("the peer acquires")
+            .expect("the peer holds its lock");
+
+        assert!(!ws.sole_instance(), "a peer's held lock means the machine is shared");
+        drop(held);
+        assert!(ws.sole_instance(), "and it is the lock, not the file, that says so");
+    }
 }
 
 #[cfg(test)]
@@ -24791,67 +25310,54 @@ mod prompt_frame_origin_tests {
         (ws, rx, seat)
     }
 
-    /// The UI's own entry.
+    /// The UI's own entry. The origin is stamped on the COMMAND: the frame
+    /// itself is drawn by the session task, so the command is what this layer
+    /// answers for.
     #[test]
-    fn the_uis_own_entry_marks_the_frame_as_the_uis() {
-        let (ws, mut rx, seat) = a_fleet();
+    fn the_uis_own_entry_stamps_the_prompt_as_the_uis() {
+        let (ws, _rx, seat) = a_fleet();
 
         let dispatched = ws.dispatch(a_prompt(&seat));
 
         assert!(dispatched.is_ok(), "precondition: the core took the prompt: {dispatched:?}");
+        let commands = ws.drain_test_dispatch_buffer();
         assert!(
             matches!(
-                rx.try_recv(),
-                Ok(frame)
-                    if matches!(&*frame.update, SessionUpdate::ChatAppended {
-                        origin: Some(PromptOrigin::Ui),
-                        source: Some(PromptSource::You),
-                        key,
-                        ..
-                    } if key == &seat)
+                commands.as_slice(),
+                [Command::PromptUnder {
+                    origin: Some(PromptOrigin::Ui),
+                    source: PromptSource::You,
+                    key,
+                    ..
+                }] if key == &seat
             ),
-            "the words the terminal drew at submit are marked as its own, or it draws them \
+            "the words the terminal drew at submit must be marked as its own, or it draws them \
              twice - and as a person's send, which is the only thing a reader's follow arms \
-             on (#2198)",
+             on (#2198): {commands:?}",
         );
     }
 
-    /// The frame a typed dispatch forges carries the SAME id the wired prompt
-    /// runs under.
-    ///
-    /// The lifecycle frames name only the id, so a frame minted apart from the
-    /// wire would hold a row nothing can ever settle - the pile dead for that
-    /// prompt in every view - and a page's copy of the message, which the CLI
-    /// writes under the same id, would arrive as a stranger rather than as the
-    /// row already held.
+    /// **The routed command carries the id its frame is drawn from.** The
+    /// session task builds the frame from this command, so one id here is one
+    /// id on the frame, its lifecycle frames and the CLI's own copy of the
+    /// message - a second id minted on the way would hold a row nothing can
+    /// settle.
     #[test]
-    fn a_prompt_frames_uuid_is_the_uuid_it_runs_under() {
-        let (ws, mut rx, seat) = a_fleet();
+    fn a_routed_prompt_carries_the_id_its_frame_draws_from() {
+        let (ws, _rx, seat) = a_fleet();
 
         let dispatched = ws.dispatch_from_view(a_prompt(&seat));
         assert!(dispatched.is_ok(), "precondition: the core took the prompt: {dispatched:?}");
 
         let wired = ws.drain_test_dispatch_buffer();
-        let wired_id = match wired.as_slice() {
-            [Command::PromptUnder { uuid, .. }] => uuid.clone(),
-            other => panic!("a typed dispatch wires the prompt under a minted id: {other:?}"),
+        let [Command::PromptUnder { uuid, origin, .. }] = wired.as_slice() else {
+            panic!("a typed dispatch wires the prompt under a minted id: {wired:?}");
         };
-        assert!(!wired_id.is_empty(), "and a real one, not a blank");
-
-        let mut frame_id: Option<String> = None;
-        while let Ok(frame) = rx.try_recv() {
-            if let SessionUpdate::ChatAppended {
-                msg: forge_primitives::Message::User { uuid, .. },
-                ..
-            } = std::sync::Arc::unwrap_or_clone(frame.update)
-            {
-                frame_id = uuid;
-            }
-        }
+        assert!(!uuid.is_empty(), "and a real one, not a blank");
         assert_eq!(
-            frame_id.as_deref(),
-            Some(wired_id.as_str()),
-            "the forged frame and the wired prompt are one thing by id",
+            *origin,
+            Some(PromptOrigin::View),
+            "and the socket's entry, not the UI's - the frame is drawn from that same command",
         );
     }
 
@@ -25429,28 +25935,51 @@ mod prompt_frame_origin_tests {
         );
     }
 
+    /// **A routed prompt draws once.** The dispatcher frames only the prompts
+    /// it answers itself; a routed one is framed by the session task (or by
+    /// the intercept standing in for its receipt). Framing on both draws
+    /// every send twice.
+    #[test]
+    fn a_routed_prompt_draws_exactly_once() {
+        let (ws, mut rx, seat) = a_fleet();
+
+        ws.dispatch_from_view(a_prompt(&seat)).expect("the core took the prompt");
+
+        let mut drawn = 0;
+        while let Ok(frame) = rx.try_recv() {
+            if matches!(&*frame.update, SessionUpdate::ChatAppended { .. }) {
+                drawn += 1;
+            }
+        }
+        assert_eq!(
+            drawn, 1,
+            "a routed prompt draws its turn once: the task, or the intercept standing in for it, \
+             is the one emitter",
+        );
+    }
+
     /// The socket's entry, which is what `ViewSurface::dispatch` takes.
     #[test]
-    fn a_views_entry_marks_the_frame_as_a_views() {
-        let (ws, mut rx, seat) = a_fleet();
+    fn a_views_entry_stamps_the_prompt_as_a_views() {
+        let (ws, _rx, seat) = a_fleet();
 
         let dispatched = ws.dispatch_from_view(a_prompt(&seat));
 
         assert!(dispatched.is_ok(), "precondition: the core took the prompt: {dispatched:?}");
+        let commands = ws.drain_test_dispatch_buffer();
         assert!(
             matches!(
-                rx.try_recv(),
-                Ok(frame)
-                    if matches!(&*frame.update, SessionUpdate::ChatAppended {
-                        origin: Some(PromptOrigin::View),
-                        source: Some(PromptSource::You),
-                        key,
-                        ..
-                    } if key == &seat)
+                commands.as_slice(),
+                [Command::PromptUnder {
+                    origin: Some(PromptOrigin::View),
+                    source: PromptSource::You,
+                    key,
+                    ..
+                }] if key == &seat
             ),
             "no view has drawn a send made over the socket, so every view has to - and the \
-             frame says it is a person's send, the one source a reader's follow arms on \
-             (#2198)",
+             command says it is a person's send, the one source a reader's follow arms on \
+             (#2198): {commands:?}",
         );
     }
 

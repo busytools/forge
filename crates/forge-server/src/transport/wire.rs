@@ -2683,7 +2683,10 @@ mod tests {
         let support = dir.path().join("app-support");
         std::fs::create_dir_all(&support).expect("app-support");
         {
-            let db = forge_workspace::store::Db::open(&support.join("db.redb")).expect("open db");
+            // The fleet opens this config dir's own store; seed the same path.
+            let db_path = forge_workspace::store::path_for(&support, dir.path());
+            std::fs::create_dir_all(db_path.parent().expect("stores/")).expect("stores/");
+            let db = forge_workspace::store::Db::open(&db_path).expect("open db");
             forge_workspace::store::cron_names::put(
                 &db,
                 "p-reload",
