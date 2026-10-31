@@ -576,8 +576,10 @@ describe("the takeover bar's keyboard", () => {
   it('gates the page behind the bar inert, and gives it back on close', async () => {
     const page = document.createElement('div');
     const rail = document.createElement('div');
+    const picture = document.createElement('div');
+    picture.className = 'takeover';
     const host = document.createElement('div');
-    page.append(rail, host);
+    page.append(rail, picture, host);
     document.body.append(page);
     const mounted = mount(TakeoverBar, {
       target: host,
@@ -585,6 +587,10 @@ describe("the takeover bar's keyboard", () => {
     });
     flushSync();
     expect(rail.hasAttribute('inert'), 'the page behind is inert').toBe(true);
+    expect(
+      picture.hasAttribute('inert'),
+      'the picture is kept live: its canvas and keyboard field are in there',
+    ).toBe(false);
     expect(page.hasAttribute('inert'), "the bar's own path stays live").toBe(false);
     await unmount(mounted);
     expect(rail.hasAttribute('inert'), 'and the page behind is given back').toBe(false);

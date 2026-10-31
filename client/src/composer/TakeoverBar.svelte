@@ -185,13 +185,17 @@
     bar?.focus({ preventScroll: true });
     // **Everything behind the bar is inert, and the bar is inside that page**:
     // the walk marks each sibling on the bar's own path, so the chat, rail
-    // and composer stop being tabbable while the picture covers them.
+    // and composer stop being tabbable while the picture covers them. **The
+    // picture itself is kept live**: on every client that paints its own
+    // canvas the gestures and the keyboard field are in there, and inert
+    // would make them unreachable.
     const gated: HTMLElement[] = [];
     let node: Element | null = bar;
     while (node !== null && node.parentElement !== null) {
       const parent = node.parentElement;
       for (const sibling of parent.children) {
         if (sibling === node || !(sibling instanceof HTMLElement)) continue;
+        if (sibling.classList.contains('takeover')) continue;
         if (sibling.hasAttribute('inert')) continue;
         sibling.setAttribute('inert', '');
         gated.push(sibling);

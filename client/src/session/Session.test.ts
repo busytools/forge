@@ -1,8 +1,10 @@
 import { readFileSync } from 'node:fs';
 
+import { JSDOM } from 'jsdom';
 import { render } from 'svelte/server';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
+import { surface } from '../browser/surface.svelte';
 import { homeWire } from '../dev/fixture.data';
 import { PROTOCOL_VERSION } from '../protocol';
 import { repoPath } from '../repo';
@@ -13,6 +15,16 @@ import Session from './Session.svelte';
 import SessionId from './SessionId.svelte';
 import SleeperFold from './SleeperFold.svelte';
 import { railGroups } from './view';
+
+/**
+ * The browser's link, as the surface's own gate: the takeover draws only when
+ * the link says it can, and a server render installs none. This file's one
+ * takeover render needs the gate open, and nothing else here reads the link.
+ */
+vi.mock('../browser/link', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../browser/link')>();
+  return { ...actual, drawsSurface: (): boolean => true };
+});
 
 const LEAD: SessionSlot = { org: 'TestOrg', project: 'proj', label: 'lead' };
 
@@ -768,5 +780,31 @@ describe('the app grid', () => {
     expect(body('.conv'), 'the column reserves bottom padding again').toContain(
       'padding: 2px 8px 0 0',
     );
+  });
+});
+
+/**
+ * **The takeover's picture is never inside the chat column** (#2726). The
+ * bar gates every sibling on its own path inert, and the chat column is one
+ * of them; a picture inside it would be gated with the chat, so on every
+ * client that paints its own canvas the gestures and the keyboard field
+ * would be unreachable. `.takeover` is fixed-position, so its place in the
+ * DOM costs nothing.
+ */
+describe('the browser takeover in the page', () => {
+  it('keeps the picture out of the chat column', () => {
+    surface.phase = 'live';
+    try {
+      const document = new JSDOM(draw()).window.document;
+      expect(document.querySelector('.takeover'), 'the takeover drew').not.toBeNull();
+      expect(
+        document.querySelector('main.chat .takeover'),
+        'the picture is a sibling of the chat column, never inside it',
+      ).toBeNull();
+    } finally {
+      surface.phase = 'closed';
+      surface.profile = null;
+      surface.reason = null;
+    }
   });
 });
