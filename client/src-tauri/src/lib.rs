@@ -253,11 +253,10 @@ mod commands {
     ) -> Result<Value, String> {
         let bridge = Arc::clone(bridge.inner());
         let mic = Arc::clone(mic.inner());
-        let answered = tauri::async_runtime::spawn_blocking(move || {
+        let answered = crate::mic::guarded(move || {
             mic.hold(&bridge, device, &page).map(|held| crate::mic::device_json(&held))
         })
-        .await
-        .map_err(|error| error.to_string())?;
+        .await?;
         if let Err(why) = &answered {
             // A hold that will not open is not the reader's to act on at the
             // moment it happens - the press still opens the device itself -
@@ -339,13 +338,12 @@ mod commands {
     /// device list does not know.
     #[tauri::command]
     pub async fn client_mic_devices() -> Result<Vec<Value>, String> {
-        tauri::async_runtime::spawn_blocking(|| {
+        crate::mic::guarded(|| {
             forge_capture::devices()
                 .map(|all| all.iter().map(crate::mic::device_json).collect::<Vec<Value>>())
                 .map_err(|error| error.to_string())
         })
-        .await
-        .map_err(|error| error.to_string())?
+        .await?
     }
 
     /// One commit's own diff; false means no socket is open and no answer is

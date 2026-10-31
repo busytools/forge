@@ -71,6 +71,46 @@ pub const OPEN_LIMIT: Duration = Duration::from_secs(20);
 /// caller's bound, whether the bound answered it or the device did, late.
 const NOT_COME_UP: &str = "the microphone did not come up";
 
+/// Run device work off the reactor with any unwind caught.
+///
+/// **A panic that escapes a blocking task reaches the FFI boundary and
+/// aborts the process** as `rust_foreign_exception` (#2426), so every Tauri
+/// command that reaches cpal goes through here: a panicking device layer
+/// answers the named error a caller can draw, and leaves a warning naming
+/// the panic for the log after the launch that it would otherwise have
+/// killed.
+pub(crate) async fn guarded<T, F>(work: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> T + Send + 'static,
+{
+    let joined = tokio::task::spawn_blocking(move || {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(work))
+    })
+    .await;
+    match joined {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(panic)) => {
+            let why = panic_text(panic.as_ref());
+            tauri_plugin_log::log::warn!(
+                target: LOG_TARGET,
+                "the microphone device layer panicked: {why}"
+            );
+            Err(format!("the microphone device layer panicked: {why}"))
+        }
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+/// A panic's own message, or a phrase where it carried none.
+fn panic_text(panic: &(dyn std::any::Any + Send)) -> String {
+    panic
+        .downcast_ref::<&str>()
+        .map(|said| (*said).to_owned())
+        .or_else(|| panic.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "no message".to_owned())
+}
+
 /// The caller's give-up signal on a bounded open: the flag it sets when its
 /// bound is spent, and the deadline that bound was measured from.
 ///
@@ -559,11 +599,11 @@ impl Mic {
         let mic = Arc::clone(self);
         let bridge = Arc::clone(bridge);
         let (page, take) = (page.to_owned(), take.to_owned());
-        let started = tokio::task::spawn_blocking(move || {
-            mic.start_inner(&bridge, device, &page, &take, Some(&signal))
-        });
+        let started =
+            guarded(move || mic.start_inner(&bridge, device, &page, &take, Some(&signal)));
         match tokio::time::timeout(limit, started).await {
-            Ok(joined) => joined.map_err(|error| error.to_string())?,
+            Ok(Ok(answered)) => answered,
+            Ok(Err(error)) => Err(error),
             Err(_) => {
                 flag.store(true, Ordering::Release);
                 Err(NOT_COME_UP.to_owned())
@@ -683,6 +723,34 @@ pub struct MicState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **A panicking device layer answers rather than aborting.** A Rust
+    /// unwind escaping the blocking task reaches a foreign frame and becomes
+    /// `rust_foreign_exception`/SIGABRT, which killed a boot (#2426); the
+    /// guard turns it into the named error the command returns, carrying the
+    /// panic's own words, and leaves a plain return untouched.
+    #[test]
+    fn a_panicking_device_call_answers_a_named_error() {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .expect("a runtime");
+        let err = runtime
+            .block_on(guarded(|| -> Result<(), String> { panic!("a wedged audio layer") }))
+            .expect_err("a panic is answered, not propagated");
+        assert!(
+            err.starts_with("the microphone device layer panicked"),
+            "the answer names what panicked: {err}"
+        );
+        assert!(
+            err.contains("a wedged audio layer"),
+            "the panic's own words ride the answer: {err}"
+        );
+
+        let value = runtime.block_on(guarded(|| 7)).expect("a plain answer is untouched");
+        assert_eq!(value, 7, "the guard changes nothing about what the work returned");
+    }
 
     /// The keys the page reads the default's name back by
     /// (`dictation.ts`'s `rememberDefaultDevice`): `ShellMic.open` hands this
