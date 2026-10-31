@@ -595,6 +595,107 @@ describe('the browser surface', () => {
     expect(surface.reason).toBe('the picked page died');
   });
 
+  /**
+   * **A superseded pick does not close the window the newer one is using**
+   * (#2726): `picking` is one flag, so an older pick's landing clears it only
+   * while that pick is the current move. Otherwise a failure for the newer
+   * tab is refused as another pair's and its page goes live over a server
+   * that has already dropped it.
+   */
+  it('holds a failure for the newer pick when an older one lands first', async () => {
+    const push = await pushes();
+    const seat = { org: 'Busytools', project: 'forge', label: 'lead' };
+    show.mockResolvedValueOnce({ profile: 'hunt', tab: 1 });
+    await openSurface('hunt', seat, 1);
+    push.view({ id: 3, tab: 1, profile: 'hunt' });
+
+    let landOlder: (answer: { profile: string; tab: number }) => void = () => {};
+    show.mockReturnValueOnce(
+      new Promise<{ profile: string; tab: number }>((resolve) => {
+        landOlder = resolve;
+      }),
+    );
+    const older = selectTab(2);
+
+    let landNewer: (answer: { profile: string; tab: number }) => void = () => {};
+    show.mockReturnValueOnce(
+      new Promise<{ profile: string; tab: number }>((resolve) => {
+        landNewer = resolve;
+      }),
+    );
+    const newer = selectTab(3);
+
+    landOlder({ profile: 'hunt', tab: 2 });
+    expect(await older, 'the older pick is superseded').toBeNull();
+
+    // The view names the pair, then the failure arrives while the pick is
+    // still in flight: held, and settled by the pick's own landing.
+    push.view({ id: 3, tab: 3, profile: 'hunt' });
+    push.failed({ id: 3, tab: 3, reason: 'the picked page died' });
+    // The role this dead connection held, set after the push so nothing but
+    // the pick's own failure path can clear it.
+    surface.viewer = 7;
+    surface.controller = 7;
+    landNewer({ profile: 'hunt', tab: 3 });
+
+    expect(await newer, 'the newer pick answers with the failure it found').toBe(
+      'the picked page died',
+    );
+    expect(surface.phase, 'and does not go live over the dead page').toBe('failed');
+    expect(surface.viewer, 'the dead connection role goes').toBeNull();
+    expect(surface.controller, 'and no viewer is left holding it').toBeNull();
+  });
+
+  /// **A nameless failure during a pick is the attach's**, which the pick may
+  /// have superseded: its answer settles whether the page came up.
+  it('drops a nameless failure while a pick is in flight', async () => {
+    const push = await pushes();
+    const seat = { org: 'Busytools', project: 'forge', label: 'lead' };
+    show.mockResolvedValueOnce({ profile: 'hunt', tab: 1 });
+    await openSurface('hunt', seat, 1);
+    push.view({ id: 3, tab: 1, profile: 'hunt' });
+
+    let land: (answer: { profile: string; tab: number }) => void = () => {};
+    show.mockReturnValueOnce(
+      new Promise<{ profile: string; tab: number }>((resolve) => {
+        land = resolve;
+      }),
+    );
+    const picking = selectTab(2);
+    push.failed('the shell could not re-attach the viewer');
+    expect(hide, 'a superseded attach does not lower the page').not.toHaveBeenCalled();
+    land({ profile: 'hunt', tab: 2 });
+
+    expect(await picking).toBeNull();
+    expect(surface.phase, 'the pick lands live').toBe('live');
+  });
+
+  /// **Each move starts clean**: a pick out of a failed surface must not
+  /// inherit the sentence a previous move's push settled with.
+  it('a pick out of a failed surface starts clean of the settled sentence', async () => {
+    const push = await pushes();
+    const seat = { org: 'Busytools', project: 'forge', label: 'lead' };
+
+    let landOpen: (answer: { profile: string; tab: number }) => void = () => {};
+    show.mockReturnValueOnce(
+      new Promise<{ profile: string; tab: number }>((resolve) => {
+        landOpen = resolve;
+      }),
+    );
+    const opening = openSurface('hunt', seat, 2);
+    // The failure is settled by the view push while the open is in flight.
+    push.failed({ id: 3, tab: 2, reason: 'the page stopped answering' });
+    push.view({ id: 3, tab: 2, profile: 'hunt' });
+    expect(surface.phase, 'precondition: the push failed the page').toBe('failed');
+
+    show.mockResolvedValueOnce({ profile: 'hunt', tab: 4 });
+    expect(await selectTab(4), 'the pick reports only its own landing').toBeNull();
+    expect(surface.phase, 'and brings the surface back live').toBe('live');
+
+    landOpen({ profile: 'hunt', tab: 2 });
+    await opening;
+  });
+
   /// **Every lower closes the store, whichever door asked for it.** The
   /// hardware Back dispatches the same word the dock and the strip do, and
   /// the listener is the page's own - a takeover opened from the strip has

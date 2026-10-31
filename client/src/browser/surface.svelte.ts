@@ -262,6 +262,7 @@ export async function openSurface(
   const mine = ++generation;
   openingFailure = null;
   settledFailure = null;
+  picking = false;
   const here = drawsSurface();
   if (here) {
     surface.phase = 'opening';
@@ -349,7 +350,10 @@ export async function selectTab(tab: number | null): Promise<string | null> {
   try {
     answer = await showBrowser(surface.profile, surface.seat, tab);
   } finally {
-    picking = false;
+    // **Only the move still current ends the window**: a pick superseded by
+    // a newer one must not close the flag the newer move is still using,
+    // or a failure for the newer tab is refused as another pair's (#2726).
+    if (mine === generation) picking = false;
   }
   if (typeof answer === 'string') {
     // A superseded refusal is not the current surface's to fail.
@@ -428,6 +432,7 @@ export async function closeSurface(
   const mine = ++generation;
   openingFailure = null;
   settledFailure = null;
+  picking = false;
   const answer = await hideBrowser(profile, seat);
   // **A lower superseded by a newer open is not this surface's to close.**
   if (mine !== generation) return null;
