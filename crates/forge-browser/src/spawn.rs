@@ -27,17 +27,15 @@ pub const SHOW_ACK_BOUND: Duration = Duration::from_millis(100);
 /// How often the wait asks the endpoint.
 const PROBE_EVERY: Duration = Duration::from_millis(50);
 
-/// One child this server spawned, with the write end of its parent-watch
+/// One child this server spawned, and the write end of its parent-watch
 /// pipe.
 ///
-/// **The write end is held here.** The host reads EOF on the other end only
-/// when every copy of the write end closes, and this is the copy that lives
-/// as long as the server process: dropping it at spawn would make the host
-/// read its server gone immediately. It closes when this entry goes, which is
-/// a server that has already ended the host.
+/// **The write end is kept for the host's whole life.** The host reads EOF on
+/// the other end only when every copy closes, so dropping this one at spawn
+/// would make the host read its server gone immediately. It closes when this
+/// entry goes, which is a server that has already ended the host.
 struct HostChild {
     child: std::process::Child,
-    _parent_watch: Option<std::os::fd::OwnedFd>,
 }
 
 /// The children this server spawned, so a launch failure is read from the
@@ -52,6 +50,21 @@ fn children() -> &'static std::sync::Mutex<std::collections::HashMap<u32, HostCh
 
 fn locked() -> std::sync::MutexGuard<'static, std::collections::HashMap<u32, HostChild>> {
     children().lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Each spawned host's parent-watch write end, keyed by the host's pid. One
+/// entry per child in `children()`, released wherever that entry goes.
+fn parent_watches()
+-> &'static std::sync::Mutex<std::collections::HashMap<u32, std::os::fd::OwnedFd>> {
+    static WATCHES: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<u32, std::os::fd::OwnedFd>>,
+    > = std::sync::OnceLock::new();
+    WATCHES.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+fn watches() -> std::sync::MutexGuard<'static, std::collections::HashMap<u32, std::os::fd::OwnedFd>>
+{
+    parent_watches().lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// The parent-watch pipe: the read end for the host, the write end this
@@ -96,7 +109,7 @@ fn is_ours(pid: u32) -> bool {
 /// handling from a test.
 #[cfg(any(test, feature = "testing"))]
 pub fn drop_parent_watch_for_test(pid: u32) -> bool {
-    locked().get_mut(&pid).and_then(|held| held._parent_watch.take()).is_some()
+    watches().remove(&pid).is_some()
 }
 
 /// A running host, as the server keeps it.
@@ -306,6 +319,28 @@ fn host_command(
     command
 }
 
+/// Hand `read` to the exec'd child as [`PARENT_WATCH_FD`], with close-on-exec
+/// off on that copy.
+///
+/// **A self-dup is not enough.** When `read` already is the target fd,
+/// `dup2` returns it unchanged and POSIX leaves the close-on-exec bit set, so
+/// the watch would close at exec and the host would read `EBADF` and call the
+/// server gone at its first interval. Clear the bit explicitly.
+fn inherit_parent_watch(read: std::os::fd::RawFd) -> std::io::Result<()> {
+    // SAFETY: dup2 and fcntl in the child between fork and exec, on fds this
+    // process owns.
+    unsafe {
+        if libc::dup2(read, PARENT_WATCH_FD) < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let flags = libc::fcntl(PARENT_WATCH_FD, libc::F_GETFD);
+        if flags < 0 || libc::fcntl(PARENT_WATCH_FD, libc::F_SETFD, flags & !libc::FD_CLOEXEC) < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+    }
+    Ok(())
+}
+
 /// The spawn itself, with the binary given: the server passes the bundle's
 /// executable; a test passes a stand-in. `encoding` is the `[browser]` pair:
 /// frames per second and lossy quality, and `frames` the socket the server
@@ -351,16 +386,11 @@ pub fn spawn_with(
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt as _;
-        // SAFETY: setsid and dup2 in the child between fork and exec. The
-        // read end is this process's own fd, inherited into the child, and
-        // the dup2 clears the close-on-exec flag on the copy the host reads.
+        // SAFETY: setsid and dup2 in the child between fork and exec.
         unsafe {
             command.pre_exec(move || {
                 libc::setsid();
-                if libc::dup2(parent_read_fd, PARENT_WATCH_FD) < 0 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                Ok(())
+                inherit_parent_watch(parent_read_fd)
             });
         }
     }
@@ -412,7 +442,8 @@ pub fn spawn_with(
         let _ = child.wait();
         return Err(format!("the host's event reader did not start: {why}"));
     }
-    locked().insert(pid, HostChild { child, _parent_watch: Some(parent_write) });
+    locked().insert(pid, HostChild { child });
+    watches().insert(pid, parent_write);
     Ok((pid, input, event_rx))
 }
 
@@ -533,11 +564,13 @@ pub fn exit(pid: u32) -> Option<Option<std::process::ExitStatus>> {
     match waited {
         Ok(Some(status)) => {
             held.remove(&pid);
+            drop(watches().remove(&pid));
             Some(Some(status))
         }
         Ok(None) => None,
         Err(_) => {
             held.remove(&pid);
+            drop(watches().remove(&pid));
             (!running(pid)).then_some(None)
         }
     }
@@ -705,6 +738,7 @@ pub async fn end(pid: u32) {
     if let Some(mut child) = locked().remove(&pid) {
         let _ = child.child.wait();
     }
+    drop(watches().remove(&pid));
 }
 
 /// The pid a profile's CEF singleton lock names, when it carries one.
@@ -941,6 +975,12 @@ pub fn clear_singleton(profile: &Path) {
 }
 
 /// Whether a pid names a live process.
+///
+/// **Only for a host this process did not spawn.** A host's watch on its
+/// server is the inherited pipe it reads (#2499). A host adopted from a
+/// crashed process's record has no pipe this process holds, so this is the
+/// one branch with only the process table to ask. Every pid this process
+/// spawned is answered from its `Child` handle instead.
 pub fn running(pid: u32) -> bool {
     // SAFETY: signal 0 checks existence without delivering anything.
     unsafe { libc::kill(i32::try_from(pid).unwrap_or(i32::MAX), 0) == 0 }
@@ -1003,7 +1043,61 @@ fn whole_body_len(answer: &[u8]) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::fd::AsRawFd;
     use std::sync::atomic::Ordering;
+
+    /// **A self-dup keeps close-on-exec set unless it is cleared.** When the
+    /// pipe's read end already sits on the host's number, `dup2(3, 3)` is a
+    /// no-op and POSIX leaves `FD_CLOEXEC` on it: the exec then closes the
+    /// watch and the host reads `EBADF` as "server gone" at its first
+    /// interval. The child here reports `fcntl(3, F_GETFD)` after the
+    /// inheritance step, so the assertion is about the bit and not about the
+    /// whole spawn succeeding.
+    #[test]
+    fn a_self_dup_still_clears_close_on_exec() {
+        let mut fds = [0_i32; 2];
+        assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0, "the test's pipe opens");
+        let (read, _write): (std::os::fd::OwnedFd, std::os::fd::OwnedFd) = unsafe {
+            (
+                std::os::fd::FromRawFd::from_raw_fd(fds[0]),
+                std::os::fd::FromRawFd::from_raw_fd(fds[1]),
+            )
+        };
+        let read_fd = read.as_raw_fd();
+        let probe = "import fcntl\n\
+                     try:\n\
+                     \x20   print(fcntl.fcntl(3, fcntl.F_GETFD))\n\
+                     except OSError as error:\n\
+                     \x20   print('closed', error.errno)\n";
+        let mut command = std::process::Command::new("python3");
+        command.arg("-c").arg(probe).stdout(std::process::Stdio::piped());
+        // SAFETY: the child arranges the production state (the read end on
+        // the watch's number with close-on-exec set) and then runs the same
+        // inheritance step the spawn runs.
+        unsafe {
+            use std::os::unix::process::CommandExt as _;
+            command.pre_exec(move || {
+                if libc::dup2(read_fd, PARENT_WATCH_FD) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                if libc::fcntl(PARENT_WATCH_FD, libc::F_SETFD, libc::FD_CLOEXEC) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                inherit_parent_watch(PARENT_WATCH_FD)
+            });
+        }
+        let output = command.output().expect("the probe child runs");
+        assert!(
+            output.status.success(),
+            "the child exits cleanly; stderr {:?}",
+            String::from_utf8_lossy(&output.stderr),
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).trim(),
+            "0",
+            "fd 3 survives the exec with no close-on-exec bit",
+        );
+    }
 
     /// **A ring is its writer's, and only while it reads live.** An endpoint
     /// that answers on the port proves nothing about who owns it; the pid and

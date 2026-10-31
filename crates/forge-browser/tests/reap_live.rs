@@ -249,6 +249,15 @@ async fn a_host_whose_parent_went_away_closes_itself() {
         );
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
+
+    // **The exit is the WATCH's, not some other death.** Without this the
+    // test passes on a host that exited for any reason at all; the line is
+    // written only on the `ServerGone` arm.
+    let log = std::fs::read_to_string(profile.join("cef-host.log")).expect("the host log");
+    assert!(
+        log.contains("cef_parent_gone"),
+        "the host reports the watch's stop, not an unrelated exit; log: {log}",
+    );
 }
 
 /// **A host named only by its singleton lock is not reaped while it is
