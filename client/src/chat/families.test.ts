@@ -9,11 +9,20 @@ describe('the row a call is summarised under', () => {
   });
 
   it('gives every mutation the one edit row', () => {
-    // The wire's own answer gives each of the four tools a row of its own,
+    // The wire's own answer gives each of the tools a row of its own,
     // which draws two rows both reading `edit` with the second out of order
-    // behind the first.
-    for (const name of ['Edit', 'Write', 'MultiEdit', 'NotebookEdit']) {
+    // behind the first. **`Move` is one of them** rather than a worktree
+    // call, which is the family it shared a glyph with (#1188): moving a
+    // file changes the tree the way a write does.
+    for (const name of ['Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'Move']) {
       expect(rowOf(name), `${name} is a mutation`).toEqual({ kind: 'family', family: 'edit' });
+    }
+    // The worktree tools keep their own family; only `Move`'s entry was wrong.
+    for (const name of ['EnterWorktree', 'ExitWorktree']) {
+      expect(rowOf(name), `${name} is a worktree call`).toEqual({
+        kind: 'family',
+        family: 'worktree',
+      });
     }
   });
 

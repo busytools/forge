@@ -112,8 +112,8 @@ export function browserVerb(name: string): string {
 /** A call's status, as the wire writes it. */
 export type CallStatus = 'pending' | 'in_progress' | 'completed' | 'failed' | 'killed';
 
-/** The four tools the fold draws as one `edit` row. */
-const MUTATIONS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
+/** The tools the fold draws as one `edit` row. */
+const MUTATIONS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'Move']);
 
 /** Whether a call is a mutation. */
 export function isEdit(name: string): boolean {
@@ -168,7 +168,6 @@ export function familyOf(name: string): Family {
     ExitPlanMode: 'config',
     EnterPlanMode: 'config',
     Config: 'config',
-    Move: 'worktree',
     EnterWorktree: 'worktree',
     ExitWorktree: 'worktree',
     AskUserQuestion: 'question',
