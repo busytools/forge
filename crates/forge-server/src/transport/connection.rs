@@ -4550,11 +4550,7 @@ mod tests {
         let Some(Message::Text(sent)) = held.first() else {
             panic!("a non-declaring client's frame was not text: {:?}", held.first())
         };
-        assert_eq!(
-            sent.as_str().as_ptr(),
-            address,
-            "a non-declaring client's frame was rebuilt"
-        );
+        assert_eq!(sent.as_str().as_ptr(), address, "a non-declaring client's frame was rebuilt");
     }
 
     /// The clock a measured write reads, recording the frame each start was

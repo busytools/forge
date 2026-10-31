@@ -1858,10 +1858,7 @@ pub(crate) mod tests {
             Pin::new(&mut self.inner).poll_write(cx, buf)
         }
 
-        fn poll_flush(
-            mut self: Pin<&mut Self>,
-            cx: &mut Context<'_>,
-        ) -> Poll<std::io::Result<()>> {
+        fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
             Pin::new(&mut self.inner).poll_flush(cx)
         }
 
@@ -1948,10 +1945,8 @@ pub(crate) mod tests {
                     };
                     let request =
                         String::from_utf8_lossy(&head.lock().expect("the head log")).to_string();
-                    if let Some(target) = request
-                        .lines()
-                        .next()
-                        .and_then(|line| line.split_whitespace().nth(1))
+                    if let Some(target) =
+                        request.lines().next().and_then(|line| line.split_whitespace().nth(1))
                         && let Ok(mut held) = uris.lock()
                     {
                         held.push(target.to_owned());
