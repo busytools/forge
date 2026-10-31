@@ -20,8 +20,7 @@ its connector sets. The drawing it is held against is
 | Header | the chip, the seat's own mark, org and name, and the facts: session id, model with its effort, mode, context fill, and the compaction count | `header`, `conversation.compaction_count` |
 | Conversation | the turns and everything inside them, and the handoff row where two sessions met, in the column's own scroll viewport | `conversation` |
 | Queue | the prompts waiting, drawn against what is running | `queue`, `queue_ended` |
-| Strip | the segments this seat has anything to say in, in one order, standing whenever it has something to say | the seat's record, the project's board row, the page's clock |
-| Foot | the strip lane, the dock or the box | the composer's own record |
+| Bar | the composer's one bar: a live row of the seat's segments and the running turn's figures, and a body holding the field, an ask, a take or a blocked line | the seat's record, the project's board row, the page's clock, and the composer's own record |
 
 **The chip is the one projects control, and its click is smart.** It
 counts seats that want a person - a question, a permission, a failed turn,
@@ -196,18 +195,18 @@ read as one system.
   line naming the platform the CLI saw, with the evidence in its open body;
   the CLI's emit cadence is not captured, so the line is a fact about the
   project, not a count of turns.
-- **The CLI's own repository events belong to the working-tree strip, not
+- **The CLI's own repository events belong to the working-tree chip, not
   the conversation.** A `vcs_state_changed` frame is the tree's own news: the
-  strip above the composer says what moved for a moment - the kind and, where
-  the CLI attributed it, the branch - and the tree row re-reads on the frame
-  rather than at its next staleness window, so no chat row is drawn. A
-  `code_change_published` frame keeps a chat row only for the four
+  tree's chip on the composer's live row says what moved for a moment - the
+  kind and, where the CLI attributed it, the branch - and the tree row re-reads
+  on the frame rather than at its next staleness window, so no chat row is
+  drawn. A `code_change_published` frame keeps a chat row only for the four
   transitions a reader would otherwise miss - `created`, `merged`, `closed`
   and `reopened` - naming the action, the repository and the change number,
   with the URL a reader opens as the quiet tail; every action rides the
-  strip's transient line, and the PR row carries its state after the core's
+  chip's transient line, and the PR row carries its state after the core's
   own lookup, so an edit, a comment or a checkout is not silent - and the four
-  that keep a chat row ride both. **The strip is the shown seat's**: a
+  that keep a chat row ride both. **The live row is the shown seat's**: a
   mutation on a seat you are not looking at is not drawn, its frame belonging
   to the seat but the line to the one on screen. A chat row's open lists the
   frame's own fields, so a fact the line does not spell is still reachable.
@@ -296,15 +295,17 @@ was asked with, or the newest page's own handle when the trim kept that page
 whole - so scrolling back into the trimmed stretch asks for it again and the
 column's top-edge pill says it is loading. Nothing is made unreachable.
 
-## The strip
+## The live row
 
-One lane of segments above the foot, in a fixed order: the browser, the
-agents, the processes, the connectors, the schedules, the MCP servers, the
-files, the tree, the review, the tasks, the monitors. Each segment draws
-what it has and nothing else, and the strip stands whenever anything has
+One row of segments at the top of the composer's card, in a fixed order: the
+browser, the agents, the processes, the connectors, the schedules, the MCP
+servers, the files, the tree, the review, the tasks, the monitors. Each segment
+draws what it has and nothing else, and the row stands whenever anything has
 something to say - a running turn is one of the things it may say, not the
-condition for it, because these rows are the home of what the inspector
-used to hold.
+condition for it, because these chips are the home of what the inspector
+used to hold. **The row is in the composer's own card**, not a lane above it:
+[the composer page](./composer.md) draws its shape and what the body below it
+holds, and its [drawing](./web-composer.html) shows every state.
 
 **The browser segment opens the surface, not a window** (see
 [browser.md](./browser.md)): its panel lists the tabs of the profile this
@@ -344,7 +345,7 @@ directory for a lead, and a worker a lead pointed at a tree of its own is
 named by that tree - `~/Projects/nazar` beside its project's siblings -
 rather than described. A tree that could not be read says so rather than
 drawing a blank. The account a row chips is on the rail's footer
-beside what it is costing, not on the strip: a spend-billed key shows its day,
+beside what it is costing, not on the live row: a spend-billed key shows its day,
 week, month, balance and cap, and a window-billed account shows its 5h and 7d
 rows, each with its percent, the reset that lifts it, and `at limit` on the
 window spending the plan.
