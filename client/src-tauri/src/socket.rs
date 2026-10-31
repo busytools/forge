@@ -389,6 +389,13 @@ enum Outbound {
         what: Value,
         review: bool,
     },
+    /// A batched settings save: the page's fingerprint and its edits, as the
+    /// wire's own JSON, and the page's own number for it.
+    SettingsEdit {
+        fingerprint: String,
+        edits: Value,
+        id: u64,
+    },
     More {
         conversation: Value,
         before: Option<String>,
@@ -580,6 +587,11 @@ impl Socket {
     /// anything**: no frame, no boundary - only what a reconnect re-asks with.
     pub fn declare(&self, what: Value, review: bool) {
         let _ = self.tx.send(Outbound::Declare { what, review });
+    }
+
+    /// Send a batched settings save.
+    pub fn settings_edit(&self, fingerprint: String, edits: Value, id: u64) {
+        let _ = self.tx.send(Outbound::SettingsEdit { fingerprint, edits, id });
     }
 
     /// Ask for more turns of a conversation.
@@ -840,7 +852,8 @@ fn apply_offline(next: Outbound, held: &mut Vec<Held>, awaiting: &mut Vec<String
             let _ = replied.send(Err("the socket is not open".to_owned()));
             false
         }
-        Outbound::More { .. }
+        Outbound::SettingsEdit { .. }
+        | Outbound::More { .. }
         | Outbound::CommitDiff { .. }
         | Outbound::FileContent { .. }
         | Outbound::SeatRange { .. }
@@ -1173,6 +1186,15 @@ async fn run(
                                     .send(Message::Text(json!({ "kind": "unsubscribe", "what": what.clone() }).to_string().into()))
                                     .await;
                             }
+                        }
+                        Outbound::SettingsEdit { fingerprint, edits, id } => {
+                            let _ = writer
+                                .send(Message::Text(
+                                    json!({ "kind": "settings_edit", "fingerprint": fingerprint, "edits": edits, "id": id })
+                                        .to_string()
+                                        .into(),
+                                ))
+                                .await;
                         }
                         Outbound::More { conversation, before, turns } => {
                             let _ = writer
@@ -1941,6 +1963,21 @@ pub(crate) mod tests {
         assert_eq!(heard["session"], seat, "the seat whose tree the path resolves against");
         assert_eq!(heard["path"], "docs/readme.md");
         assert_eq!(heard["reviewable"], true);
+    }
+
+    /// **A save carries the page's own id.** The acknowledgement and the
+    /// refusal are matched to it, so a save sent without one is answered as
+    /// id 0 and the page waits on its own number until the bar times out.
+    #[tokio::test]
+    async fn a_settings_save_carries_its_id() {
+        let mut stub = stub().await;
+        let (socket, _rx) = connected(&stub).await;
+
+        socket.settings_edit("abc123".to_owned(), json!([]), 7);
+
+        let heard = stub.heard_until(|v| v["kind"] == "settings_edit").await;
+        assert_eq!(heard["fingerprint"], "abc123");
+        assert_eq!(heard["id"], 7, "the page's number for the save");
     }
 
     /// The declaration rides every subscribe, and a refusal goes to the

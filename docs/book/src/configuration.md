@@ -1,7 +1,8 @@
 # forge.toml reference
 
 `forge.toml` is the only file forge reads for configuration. It is
-hand-authored, and forge never writes to it. A change is picked up while
+hand-authored; the settings page's save is the one path that writes it,
+and nothing else in forge does. A change is picked up while
 forge runs: the server watches this one file, re-reads it whole, and
 applies what can take effect without a restart. A running session keeps
 the account it spawned on, its model, mode, cwd and child environment;
@@ -1033,9 +1034,10 @@ The socket comes up on `[server] bind:port` during the same boot, unless
 
 ## Config versus state
 
-`forge.toml` is the config half. It is read-only from forge's point of
-view - forge re-reads it on a change but never writes it - which makes it
-safe to sync between machines.
+`forge.toml` is the config half. forge re-reads it on a change, and the
+settings page's save is the one writer it ever has - a temp file in the
+same directory, validated by this loader, renamed over the path. Nothing
+else in forge writes it, which keeps it safe to sync between machines.
 
 Everything mutable lives in a single embedded redb database at
 `<app-support>/db.redb`: durable crons, Gotify subscriptions, Slack

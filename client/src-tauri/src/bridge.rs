@@ -910,6 +910,20 @@ impl Bridge {
         })
     }
 
+    /// Send a batched settings save. `id` is the page's own number for it,
+    /// echoed by the acknowledgement or the refusal. False means no socket is
+    /// open and nothing went.
+    pub fn settings_edit(&self, fingerprint: String, edits: Value, id: u64) -> bool {
+        let state = self.lock();
+        if state.status != "open" {
+            return false;
+        }
+        if let Some(socket) = &state.socket {
+            socket.settings_edit(fingerprint, edits, id);
+        }
+        true
+    }
+
     /// Older turns of a conversation. False means no socket is open and no
     /// page is coming; the answer lands in the record's own conversation.
     pub fn more(&self, conversation: &Value, before: Option<String>, turns: u64) -> bool {

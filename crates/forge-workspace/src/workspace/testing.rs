@@ -398,6 +398,7 @@ impl Workspace {
             config: parking_lot::RwLock::new(Arc::new(config)),
             settings,
             settings_version: std::sync::OnceLock::new(),
+            settings_write: parking_lot::Mutex::new(()),
             reload_generation: std::sync::atomic::AtomicU64::new(0),
             reload_gate: std::sync::Mutex::new(()),
             systemone: parking_lot::RwLock::new(systemone),

@@ -1,13 +1,19 @@
 /**
  * A settings document for the page's tests: every class, dotted names in
- * both the group and the leaf, two grouped tables, an empty area, and a
- * key-major account table, which is the shape the server builds.
+ * both the group and the leaf, two grouped tables, an empty area, a
+ * key-major account table, and the edit metadata the editor draws.
  *
  * A fixture, so it lives beside the dev route's own data rather than under
  * the page it feeds: nothing the shipped app imports may reach this file.
  */
 
-import type { SettingsDocument, SettingsKey } from '../wire/settings';
+import type { SettingsDocument, SettingsEditSpec, SettingsKey } from '../wire/settings';
+
+/** A plain text control, for a fixture key the editor tests do not exercise. */
+const TEXT: SettingsEditSpec = { kind: 'string', allowed: [], required: false, group: null };
+const NUMBER: SettingsEditSpec = { kind: 'number', allowed: [], required: true, group: null };
+const BOOLEAN: SettingsEditSpec = { kind: 'bool', allowed: [], required: false, group: null };
+const LIST: SettingsEditSpec = { kind: 'list', allowed: [], required: false, group: null };
 
 function key(
   path: string,
@@ -16,13 +22,15 @@ function key(
   group: string[],
   leaf: string = path.slice(path.lastIndexOf('.') + 1),
   label: string = held,
+  edit: SettingsEditSpec = TEXT,
 ): SettingsKey {
-  return { path, leaf, group, class: held, classLabel: label, value };
+  return { path, leaf, group, pattern: path, class: held, classLabel: label, value, edit };
 }
 
 export const settingsWire: SettingsDocument = {
   version: '1.1.34+abc1234',
   source: '~/.claude/forge/forge.toml',
+  fingerprint: '0123456789abcdef',
   totals: { keys: 15, areas: 5 },
   areas: [
     {
@@ -49,7 +57,15 @@ export const settingsWire: SettingsDocument = {
           ['Granite'],
           'FLAG',
         ),
-        key('accounts.Granite.models', 'live', { kind: 'list', items: ['a', 'b'] }, ['Granite']),
+        key(
+          'accounts.Granite.models',
+          'live',
+          { kind: 'list', items: ['a', 'b'] },
+          ['Granite'],
+          'models',
+          'live',
+          LIST,
+        ),
         key(
           'accounts.OpenRouter.model_slugs.glm-5.3-flash',
           'live',
@@ -67,9 +83,33 @@ export const settingsWire: SettingsDocument = {
       name: 'server',
       note: 'the socket a client reads through, and the browser the server hosts',
       keys: [
-        key('server.port', 'restart', { kind: 'number', text: '8790' }, ['server']),
-        key('server.first_frame_cap_kb', 'live', { kind: 'number', text: '512' }, ['server']),
-        key('browser.idle_minutes', 'live', { kind: 'number', text: '30' }, ['browser']),
+        key(
+          'server.port',
+          'restart',
+          { kind: 'number', text: '8790' },
+          ['server'],
+          'port',
+          'restart',
+          NUMBER,
+        ),
+        key(
+          'server.first_frame_cap_kb',
+          'live',
+          { kind: 'number', text: '512' },
+          ['server'],
+          'first_frame_cap_kb',
+          'live',
+          NUMBER,
+        ),
+        key(
+          'browser.idle_minutes',
+          'live',
+          { kind: 'number', text: '30' },
+          ['browser'],
+          'idle_minutes',
+          'live',
+          NUMBER,
+        ),
       ],
     },
     {
@@ -77,7 +117,15 @@ export const settingsWire: SettingsDocument = {
       name: 'connectors',
       note: 'the integrations that reach outside forge',
       keys: [
-        key('plugins.auto_update', 'not_read_yet', { kind: 'bool', text: 'true' }, ['plugins']),
+        key(
+          'plugins.auto_update',
+          'not_read_yet',
+          { kind: 'bool', text: 'true' },
+          ['plugins'],
+          'auto_update',
+          'not_read_yet',
+          BOOLEAN,
+        ),
         key(
           'gotify.later',
           'other',
@@ -98,12 +146,18 @@ export const settingsWire: SettingsDocument = {
           'next_session',
           { kind: 'number', text: '983040' },
           ['deepseek-v4.1-flash'],
+          'auto_compact_window',
+          'next_session',
+          NUMBER,
         ),
         key(
           'models.claude-opus-5-5.auto_compact_window',
           'next_session',
           { kind: 'number', text: '1048576' },
           ['claude-opus-5-5'],
+          'auto_compact_window',
+          'next_session',
+          NUMBER,
         ),
       ],
     },

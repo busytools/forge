@@ -47,6 +47,60 @@ pub enum SettingKind {
     Set,
 }
 
+/// The control a key's value is edited with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EditKind {
+    String,
+    Number,
+    Bool,
+    Enum,
+    List,
+}
+
+/// One change in a batched save.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SettingsEditOp {
+    Set,
+    Add,
+    Remove,
+}
+
+/// One edit a client asks the server to apply to `forge.toml`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SettingsEditRequest {
+    /// The area the page was drawing when the edit was made.
+    pub area: String,
+    /// The key's concrete path for a set or a leaf's removal, and the
+    /// entry's path for an entry's add or removal.
+    pub key_path: String,
+    /// The catalogue pattern the key fills. Empty for an entry edit.
+    #[serde(default)]
+    pub pattern: String,
+    pub op: SettingsEditOp,
+    /// The new value: the key's value for a set, or an entry's fields for an
+    /// add. Absent for a removal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<serde_json::Value>,
+}
+
+/// What the editor needs to draw a key's control and to know which entry it
+/// belongs to.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SettingsEdit {
+    pub kind: EditKind,
+    /// The accepted names for an `enum`, empty otherwise.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed: Vec<String>,
+    /// Whether adding the owning entry requires the key.
+    pub required: bool,
+    /// The repeated entry a key belongs to: `account`, `project`, `slack`,
+    /// `model` or `org`. Absent for a table's own keys.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
+}
+
 /// One area of the config, as the page's sub-nav lists it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SettingsArea {
@@ -74,11 +128,16 @@ pub struct SettingsKey {
     /// an account, an org and a project, a Slack table and workspace, a
     /// model, a server table. Empty when the area's keys do not repeat.
     pub group: Vec<String>,
+    /// The catalogue pattern the path fills, so the writer can locate the
+    /// TOML item without re-parsing a display path: `accounts[].token`.
+    pub pattern: String,
     pub kind: SettingKind,
     /// In the shape `kind` names: a JSON string, number, bool, array of
-    /// strings, or object of string values.
+    /// strings, or object of string values. `null` for a key the file does
+    /// not set.
     pub value: serde_json::Value,
     pub class: EffectClass,
+    pub edit: SettingsEdit,
 }
 
 impl std::fmt::Debug for SettingsKey {
@@ -87,9 +146,11 @@ impl std::fmt::Debug for SettingsKey {
             .field("path", &self.path)
             .field("leaf", &self.leaf)
             .field("group", &self.group)
+            .field("pattern", &self.pattern)
             .field("kind", &self.kind)
             .field("value", &"[redacted]")
             .field("class", &self.class)
+            .field("edit", &self.edit)
             .finish()
     }
 }
@@ -110,6 +171,9 @@ pub struct SettingsDocument {
     pub version: String,
     /// The resolved `forge.toml` path.
     pub source: String,
+    /// The fingerprint of the raw file text this document was built from.
+    /// A save carries it, and a file that has moved since refuses the save.
+    pub fingerprint: String,
     pub totals: SettingsTotals,
     pub areas: Vec<SettingsArea>,
 }
@@ -138,9 +202,16 @@ mod tests {
             path: "accounts.Primary.token".to_owned(),
             leaf: "token".to_owned(),
             group: vec!["Primary".to_owned()],
+            pattern: "accounts[].token".to_owned(),
             kind: SettingKind::String,
             value: serde_json::json!("sk-a-real-token"),
             class: EffectClass::Live,
+            edit: SettingsEdit {
+                kind: EditKind::String,
+                allowed: Vec::new(),
+                required: true,
+                group: Some("account".to_owned()),
+            },
         };
         let shown = format!("{key:?}");
         assert!(!shown.contains("sk-a-real-token"), "the value printed: {shown}");

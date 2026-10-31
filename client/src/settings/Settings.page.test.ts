@@ -2,6 +2,7 @@
 import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, describe, expect, it } from 'vitest';
 
+import type { Connection } from '../socket';
 import Settings from './Settings.svelte';
 import { settingsFrame } from './frame';
 import { emptyHome, settingsWire } from '../dev/settings.fixture';
@@ -17,10 +18,15 @@ afterEach(async () => {
   document.body.innerHTML = '';
 });
 
+const connection = {
+  onMessage: () => () => {},
+  settingsEdit: () => true,
+} as unknown as Connection;
+
 function draw(): void {
   app = mount(Settings, {
     target: document.body,
-    props: { home: emptyHome, mark: null },
+    props: { connection, home: emptyHome, mark: null },
   });
   flushSync();
 }

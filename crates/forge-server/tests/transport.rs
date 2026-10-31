@@ -14,7 +14,7 @@ use forge_server::surface::SessionUpdate;
 use forge_server::surface::inspector::ContextUsage;
 use forge_server::testing::{Fleet, ViewFacts};
 use forge_server::transport::conversation::Conversation;
-use forge_server::transport::envelope::{ClientMessage, ServerMessage, Subject};
+use forge_server::transport::envelope::{ClientMessage, ServerMessage, SettingsRefusal, Subject};
 use forge_server::transport::serve;
 use forge_server::transport::wire::{self, OpenTimings};
 use forge_server::transport::{Heartbeat, TransportState};
@@ -2049,6 +2049,177 @@ async fn an_unchanged_save_pushes_no_settings_frame() {
     assert!(
         tokio::time::timeout(std::time::Duration::from_millis(500), first.next()).await.is_err(),
         "and no frame follows it",
+    );
+}
+
+/// Read the settings document a fresh connection is handed.
+async fn settings_document(url: &str) -> forge_primitives::SettingsDocument {
+    let (mut socket, _) = tokio_tungstenite::connect_async(url).await.expect("the socket opens");
+    let _greeting = socket.next().await.expect("a greeting").expect("no error");
+    let msg = socket.next().await.expect("a settings frame").expect("no error");
+    let text = msg.to_text().expect("text");
+    let ServerMessage::Settings { document } =
+        serde_json::from_str(text).expect("the settings frame decodes")
+    else {
+        panic!("the second thing the server says is the effective config, not {text}")
+    };
+    document
+}
+
+/// A save writes the candidate and the reload that follows pushes it, which
+/// is the editor's success answer.
+#[tokio::test]
+async fn a_settings_edit_writes_the_file_and_the_reload_pushes_it() {
+    let (url, fleet) = a_server().await;
+    let document = settings_document(&url).await;
+    let mut socket = connect(&url).await;
+
+    let edit = forge_primitives::settings::SettingsEditRequest {
+        area: "usage".to_owned(),
+        key_path: "usage.poll_seconds".to_owned(),
+        pattern: "usage.poll_seconds".to_owned(),
+        op: forge_primitives::settings::SettingsEditOp::Set,
+        value: Some(serde_json::json!(120)),
+    };
+    send(
+        &mut socket,
+        ClientMessage::SettingsEdit { fingerprint: document.fingerprint, edits: vec![edit], id: 7 },
+    )
+    .await;
+
+    // The saver's own acknowledgement comes first, matched by its id.
+    let msg = tokio::time::timeout(Duration::from_secs(2), socket.next())
+        .await
+        .expect("the save is acknowledged")
+        .expect("a frame")
+        .expect("no error");
+    let text = msg.to_text().expect("text");
+    let ServerMessage::SettingsSaved { id } =
+        serde_json::from_str(text).expect("the acknowledgement decodes")
+    else {
+        panic!("a written save is acknowledged, not {text}")
+    };
+    assert_eq!(id, 7, "the acknowledgement names this save");
+
+    let path = fleet.workspace().config_path();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < deadline {
+        if std::fs::read_to_string(&path).is_ok_and(|text| text.contains("poll_seconds = 120")) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let saved = std::fs::read_to_string(&path).expect("read the config");
+    assert!(saved.contains("poll_seconds = 120"), "the save wrote the file: {saved}");
+
+    // The fixture runs no config watch; the reload is what publishes.
+    fleet.workspace().reload_config().expect("the saved file loads");
+    let msg = tokio::time::timeout(Duration::from_secs(2), socket.next())
+        .await
+        .expect("the reload is pushed")
+        .expect("a frame")
+        .expect("no error");
+    let text = msg.to_text().expect("text");
+    let ServerMessage::Settings { document } =
+        serde_json::from_str(text).expect("the settings frame decodes")
+    else {
+        panic!("a reload pushes the effective config, not {text}")
+    };
+    let key = document
+        .areas
+        .iter()
+        .flat_map(|area| &area.keys)
+        .find(|key| key.path == "usage.poll_seconds")
+        .expect("the usage key is drawn");
+    assert_eq!(key.value, serde_json::json!(120), "the push carries the saved value");
+}
+
+/// A save whose fingerprint is not the file's writes nothing and is answered
+/// with the stale refusal.
+#[tokio::test]
+async fn a_stale_settings_edit_is_refused_and_writes_nothing() {
+    let (url, fleet) = a_server().await;
+    let mut socket = connect(&url).await;
+    let path = fleet.workspace().config_path();
+    let before = std::fs::read_to_string(&path).expect("read the config");
+    let edit = forge_primitives::settings::SettingsEditRequest {
+        area: "usage".to_owned(),
+        key_path: "usage.poll_seconds".to_owned(),
+        pattern: "usage.poll_seconds".to_owned(),
+        op: forge_primitives::settings::SettingsEditOp::Set,
+        value: Some(serde_json::json!(120)),
+    };
+    send(
+        &mut socket,
+        ClientMessage::SettingsEdit {
+            fingerprint: "0000000000000000".to_owned(),
+            edits: vec![edit],
+            id: 8,
+        },
+    )
+    .await;
+
+    let msg = tokio::time::timeout(Duration::from_secs(2), socket.next())
+        .await
+        .expect("the refusal arrives")
+        .expect("a frame")
+        .expect("no error");
+    let text = msg.to_text().expect("text");
+    let ServerMessage::SettingsRefused { reason, id, .. } =
+        serde_json::from_str(text).expect("the refusal decodes")
+    else {
+        panic!("a stale save is refused, not {text}")
+    };
+    assert_eq!(reason, SettingsRefusal::Stale, "the reason says the file moved");
+    assert_eq!(id, 8, "the refusal names this save");
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("read"),
+        before,
+        "a refused save writes nothing",
+    );
+}
+
+/// A candidate the loader refuses is answered with its own words, anchored at
+/// the edit, and the file is untouched.
+#[tokio::test]
+async fn an_invalid_settings_edit_is_refused_with_the_loaders_words() {
+    let (url, fleet) = a_server().await;
+    let document = settings_document(&url).await;
+    let mut socket = connect(&url).await;
+    let path = fleet.workspace().config_path();
+    let before = std::fs::read_to_string(&path).expect("read the config");
+    let edit = forge_primitives::settings::SettingsEditRequest {
+        area: "usage".to_owned(),
+        key_path: "usage.poll_seconds".to_owned(),
+        pattern: "usage.poll_seconds".to_owned(),
+        op: forge_primitives::settings::SettingsEditOp::Set,
+        value: Some(serde_json::json!("not a number")),
+    };
+    send(
+        &mut socket,
+        ClientMessage::SettingsEdit { fingerprint: document.fingerprint, edits: vec![edit], id: 9 },
+    )
+    .await;
+
+    let msg = tokio::time::timeout(Duration::from_secs(2), socket.next())
+        .await
+        .expect("the refusal arrives")
+        .expect("a frame")
+        .expect("no error");
+    let text = msg.to_text().expect("text");
+    let ServerMessage::SettingsRefused { reason, key_path, message, id } =
+        serde_json::from_str(text).expect("the refusal decodes")
+    else {
+        panic!("an invalid save is refused, not {text}")
+    };
+    assert_eq!(id, 9, "the refusal names this save");
+    assert_eq!(reason, SettingsRefusal::Invalid);
+    assert_eq!(key_path.as_deref(), Some("usage.poll_seconds"));
+    assert!(message.contains("want"), "the message names the shape: {message}");
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("read"),
+        before,
+        "a refused save writes nothing",
     );
 }
 

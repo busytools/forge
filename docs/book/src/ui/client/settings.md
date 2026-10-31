@@ -1,7 +1,8 @@
 # Settings
 
-The read-only effective config: every key `forge.toml` loaded, its value,
-and when an edit to it takes effect. The drawing is
+The effective config: every key `forge.toml` loaded, its value, and when an
+edit to it takes effect - and the editor that changes those values, adds
+and removes whole entries, and saves the batch. The drawing is
 [web-settings.html](./web-settings.html).
 
 ## Its address
@@ -19,17 +20,31 @@ from the next push, and the attach frame always reflects the current one.
 
 The document is built once per load and shared by every connection. Its
 values cross unredacted, which is the decision the WireGuard boundary
-carries.
+carries. It also carries the fingerprint of the raw file text it was built
+from, and the edit metadata for every key.
+
+A save is one `settings_edit` message: the fingerprint, the batch of edits
+(`set`, `add` or `remove`), and the page's own `id`. The server reads the
+file, compares the fingerprint, applies the edits to its text with a
+comment-preserving writer, validates the candidate with the boot loader,
+and renames a temp file over the path. `settings_saved` acknowledges the
+save by its `id`; one that wrote nothing is answered by `settings_refused`
+with the loader's or the guard's own words. The watcher's reload push
+carries the new document to every client. A save with no answer is a
+timeout the bar reports.
 
 ## What it draws
 
 | Piece | What it is |
 | --- | --- |
-| Header | The mark, `settings`, the server / socket / claude versions, the `read-only` chip, and the totals (keys, areas, the resolved `forge.toml` path). |
+| Header | The mark, `settings`, the server / socket / claude versions, the mode chip (`edit` or `editing`), and the totals (keys, areas, the resolved `forge.toml` path). |
 | Legend | The four effect classes, each as a shape and its word. |
 | Sub-nav | The twelve areas, each with its key count and every class its keys hold. |
 | Pane | The area's name and note, then its rows grouped by the instance their path names (an account, a model, an org and a project, a Slack workspace, the table a server key belongs to). |
 | A row | The key's leaf name, its value, and its class mark; the whole path is the row's title, and the group header carries the instance. |
+| The editor | The `edit` chip in the header turns every value into its control, adds the add doors and per-entry removals, and draws the save bar. |
+| Save bar | The unsaved count, Save and Discard, the saved line for a moment, and what a save that wrote nothing says: stale offers a reload, invalid is the loader's words anchored at its key, a guard names what it found, and `io` says the file could not be read or written. A foreign push while dirty draws a conflict and its own reload. |
+| Restart banner | After a save lands, exactly the restart-class keys it carried, with no restart button. |
 
 ## The rules
 
@@ -56,10 +71,30 @@ carries.
   socket speaking after the person's connection took the page; the shell
   moves the store to the taken connection, so a stale document cannot
   re-theme the page someone is reading.
-- **Read-only.** Nothing on this page writes the file. Editing is the next
-  cut.
-- **Values are ordinary.** A token is drawn as its value, like every other
-  string; there is no redaction here, and the file remains the one source.
+- **Batched saves.** Every changed value, added entry and removal is one
+  message, one validated write, one reload and one push.
+- **A stale save writes nothing.** The page carries the fingerprint it
+  loaded; a file that moved since refuses the save and offers a page
+  reload.
+- **The loader is the authority.** A candidate that would not load writes
+  nothing; the refusal is the loader's own message, anchored at the edit it
+  names where it names one.
+- **The writer preserves the file.** A value changes in place with its
+  comments and its order; a new entry is appended; a removal takes only its
+  own table.
+- **Guards live on the server.** Removing a project with live sessions is
+  refused, naming them, because the reload would leave those sessions
+  running but invisible. Removing an account whose usage probe has not
+  settled is refused until it does, because a retired entry still loading
+  would leave the pool unsettled (#2681). Removing a settled account keeps
+  its bound sessions on the retired credential until they end; removing a
+  Slack workspace leaves its pump on the old token until a restart. The
+  confirm says what each removal leaves behind.
+- **No restart button.** A landed restart-class key is named in a banner;
+  the server restart is the reader's.
+- **Values are ordinary.** A token is drawn and edited as its value, like
+  every other string; there is no redaction here, and the file remains the
+  one source.
 
 ## The states the page can be in
 
@@ -75,6 +110,22 @@ carries.
 - **No areas** - a document that declares nothing.
 - **No connection** - the route draws the connect door, as the models page
   does.
+- **Unsaved** - the bar counts the batch and Save is the one door.
+- **Saving** - the button says so and the bar waits for the save's answer.
+- **Saved** - the bar says saved for a moment, and the restart banner names
+  the restart-class keys the save carried, if any.
+- **Refused** - stale (a reload-page door), invalid (the loader's words,
+  anchored at its key), a guard's own refusal, or `io` (the file could not
+  be read or written; nothing was applied).
+- **A conflict** - another writer pushed a different file while the draft
+  was dirty; the draft is kept, saving is withheld, and the bar offers a
+  reload.
+- **A save with no answer** - the bar says no answer arrived and keeps the
+  batch.
+- **A new entry** - a skeleton in place with its required fields marked;
+  an added entry is discarded or saved with the rest.
+- **A pending removal** - the entry reads as removed on save, with Undo,
+  until the save lands.
 
 ## The pieces it takes from the pages beside it
 
@@ -90,12 +141,14 @@ surface can wear them.
 Checked at 1600 and 430. At 1600 the rail is a fixed 232px column and the
 pane takes the rest. At 430 the rail wraps into a row of bordered chips
 above the pane, the back link leads the header with the title on its own
-line and no read-only chip, and the table keeps its three columns with
-tighter key text.
+line and no mode chip, and the table keeps its three columns with tighter
+key text.
 
 ## Touch
 
-The sub-nav items, the back link and the unknown-area's link are 44px
-targets under `(pointer: coarse)`. Nothing on the page is hover-only: the
-selected area carries a background, an inset bar and `aria-pressed`, and
-every class mark is a shape plus a word.
+The sub-nav items, the back link, the mode chip, every add and remove
+action, the save bar's buttons, the toggle, the list controls and the
+editor's boxes are 44px targets under `(pointer: coarse)`. Nothing on the
+page is hover-only: the selected area carries a background, an inset bar
+and `aria-pressed`, every class mark is a shape plus a word, and every
+control has its own label.

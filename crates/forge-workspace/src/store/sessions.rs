@@ -404,6 +404,14 @@ pub fn update(db: &Db, fields: &SessionRecord) -> anyhow::Result<bool> {
     Ok(true)
 }
 
+/// Drop the id a row pinned, keeping everything else it carries.
+pub fn clear_session_id(db: &Db, org: &str, project: &str, label: &str) -> anyhow::Result<bool> {
+    let Some(mut record) = get(db, org, project, label)? else { return Ok(false) };
+    record.session_id = None;
+    put(db, &record)?;
+    Ok(true)
+}
+
 /// Delete the row at `(org, project, label)`. Returns whether one
 /// existed. This is what stops a despawned worker coming back: the row is
 /// the only thing a boot re-spawns from.

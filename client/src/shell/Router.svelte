@@ -327,7 +327,7 @@
     <!-- The page reads the settings frame the connection is handed after
          its greeting; there is no read verb, so it needs no subscription of
          its own. The header's claude version is the home read's. -->
-    <Settings {home} mark={settings.mark} />
+    <Settings {connection} {home} mark={settings.mark} />
   {:else}
     <Connect {settings} initialAddress={address} launchFailure={failure} {notice} {onconnect} />
   {/if}

@@ -185,6 +185,19 @@ mod commands {
         bridge.more(&conversation, before, turns.unwrap_or(20))
     }
 
+    /// A batched save of `forge.toml`; `id` is the page's own number for it,
+    /// echoed by the acknowledgement or the refusal. False means no socket is
+    /// open and nothing went.
+    #[tauri::command]
+    pub fn client_settings_edit(
+        bridge: tauri::State<'_, Arc<Bridge>>,
+        fingerprint: String,
+        edits: Value,
+        id: u64,
+    ) -> bool {
+        bridge.settings_edit(fingerprint, edits, id)
+    }
+
     /// One repair ask: the frames a seat's stream emitted between two numbers.
     /// False means no socket is open and no answer is coming, which costs
     /// nothing - the reconnect's snapshot is the whole record.
@@ -555,6 +568,7 @@ pub fn run() {
             commands::client_declare,
             commands::client_release,
             commands::client_more,
+            commands::client_settings_edit,
             commands::client_seat_range,
             commands::client_dispatch,
             commands::client_frame,
@@ -615,6 +629,7 @@ pub fn run() {
             commands::client_declare,
             commands::client_release,
             commands::client_more,
+            commands::client_settings_edit,
             commands::client_seat_range,
             commands::client_dispatch,
             commands::client_frame,

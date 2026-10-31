@@ -1303,6 +1303,7 @@ dependencies = [
  "time-tz",
  "tokio",
  "toml",
+ "toml_edit",
  "tracing",
  "tracing-subscriber",
  "uuid",
@@ -3947,6 +3948,7 @@ dependencies = [
  "indexmap",
  "toml_datetime",
  "toml_parser",
+ "toml_writer",
  "winnow",
 ]
 

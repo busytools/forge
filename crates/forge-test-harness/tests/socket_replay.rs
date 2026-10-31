@@ -252,7 +252,7 @@ macro_rules! assert_serde_names {
 census!(ServerMessage,
     [
         Pong unit,
-        Settings struct,
+        Settings struct, SettingsRefused struct, SettingsSaved struct,
         Greeting struct, Snapshot struct, Update struct, Page struct,
         SeatFrames struct,
         CommitDiff struct, FileContent struct, Reply struct,
@@ -355,6 +355,7 @@ census!(ClientMessage,
         DocumentRead struct,
         FileContent struct,
         ClientPerf struct,
+        SettingsEdit struct,
     ],
     client_message_census, CLIENT_MESSAGE_VARIANTS);
 
@@ -782,6 +783,7 @@ fn frames_record() -> Value {
             document: forge_primitives::SettingsDocument {
                 version: "1.2.3".to_owned(),
                 source: "~/.claude/forge/forge.toml".to_owned(),
+                fingerprint: "0123456789abcdef".to_owned(),
                 totals: forge_primitives::SettingsTotals { keys: 1, areas: 1 },
                 areas: vec![forge_primitives::SettingsArea {
                     id: "server".to_owned(),
@@ -791,9 +793,16 @@ fn frames_record() -> Value {
                         path: "server.port".to_owned(),
                         leaf: "port".to_owned(),
                         group: vec!["server".to_owned()],
+                        pattern: "server.port".to_owned(),
                         kind: forge_primitives::SettingKind::Number,
                         value: serde_json::json!(8790),
                         class: forge_primitives::EffectClass::Restart,
+                        edit: forge_primitives::SettingsEdit {
+                            kind: forge_primitives::EditKind::Number,
+                            allowed: vec!["8790".to_owned(), "8791".to_owned()],
+                            required: true,
+                            group: Some("server".to_owned()),
+                        },
                     }],
                 }],
             },
@@ -988,6 +997,7 @@ fn frames_record() -> Value {
             document: forge_primitives::SettingsDocument {
                 version: "1.2.3".to_owned(),
                 source: "~/.claude/forge/forge.toml".to_owned(),
+                fingerprint: "0123456789abcdef".to_owned(),
                 totals: forge_primitives::SettingsTotals { keys: 1, areas: 1 },
                 areas: vec![forge_primitives::SettingsArea {
                     id: "server".to_owned(),
@@ -997,12 +1007,32 @@ fn frames_record() -> Value {
                         path: "server.port".to_owned(),
                         leaf: "port".to_owned(),
                         group: vec!["server".to_owned()],
+                        pattern: "server.port".to_owned(),
                         kind: forge_primitives::SettingKind::Number,
                         value: serde_json::json!(8790),
                         class: forge_primitives::EffectClass::Restart,
+                        edit: forge_primitives::SettingsEdit {
+                            kind: forge_primitives::EditKind::Number,
+                            allowed: vec!["8790".to_owned(), "8791".to_owned()],
+                            required: true,
+                            group: Some("server".to_owned()),
+                        },
                     }],
                 }],
             },
+        }),
+    );
+    // The save's two answers: the page matches them by `id`, and a rename of
+    // that field would leave every save unanswered until its bar times out.
+    payload_sampled
+        .insert("SettingsSaved".to_owned(), shape_of(&ServerMessage::SettingsSaved { id: 7 }));
+    payload_sampled.insert(
+        "SettingsRefused".to_owned(),
+        shape_of(&ServerMessage::SettingsRefused {
+            reason: forge_server::transport::envelope::SettingsRefusal::Invalid,
+            message: "forge.toml at ... failed to parse".to_owned(),
+            id: 7,
+            key_path: Some("server.port".to_owned()),
         }),
     );
     // **The machine turn's own field path.** A rename of `machine` makes the
@@ -1820,6 +1850,22 @@ fn client_sampled() -> BTreeMap<String, BTreeMap<String, Value>> {
     sampled.insert(
         "Subscribe".to_owned(),
         sample(ClientMessage::Subscribe { what: Subject::Home, answering: false, review: false }),
+    );
+    // The editor's save, which the page writes by hand through the shell: a
+    // rename of its fields fails nothing until a save is silently dropped.
+    sampled.insert(
+        "SettingsEdit".to_owned(),
+        sample(ClientMessage::SettingsEdit {
+            fingerprint: "0123456789abcdef".to_owned(),
+            edits: vec![forge_primitives::settings::SettingsEditRequest {
+                area: "server".to_owned(),
+                key_path: "server.port".to_owned(),
+                pattern: "server.port".to_owned(),
+                op: forge_primitives::settings::SettingsEditOp::Set,
+                value: Some(serde_json::json!(8791)),
+            }],
+            id: 7,
+        }),
     );
     // The repair ask, for the subscribe's reason: a client writes these fields
     // by hand, and a rename fails nothing until a gap is never filled.

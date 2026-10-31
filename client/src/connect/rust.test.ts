@@ -113,6 +113,31 @@ describe('what the shell is told', () => {
   });
 
   /**
+   * **The save's id is what matches the answer to the request.** A desktop
+   * save that crosses without one is answered as id 0, and the page waits on
+   * its own number until the bar times out - so the id is asserted at the
+   * invoke boundary rather than left to the wire.
+   */
+  it('a settings save crosses with its own id', async () => {
+    const connection = await opened();
+    const edits = [
+      {
+        area: 'server',
+        key_path: 'server.port',
+        pattern: 'server.port',
+        op: 'set' as const,
+        value: 8791,
+      },
+    ];
+    expect(connection.settingsEdit?.('abc123', edits, 7)).toBe(true);
+    expect(invoke).toHaveBeenCalledWith('client_settings_edit', {
+      fingerprint: 'abc123',
+      edits,
+      id: 7,
+    });
+  });
+
+  /**
    * **The shown seat crosses as its own commands.** `showing` and `relist`
    * are what separate the screen from the subscription, and `release` is the
    * one door that gives a subject back entirely; a one-sided rename of any of

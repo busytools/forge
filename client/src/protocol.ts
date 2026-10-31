@@ -14,6 +14,7 @@
  * client author reads first.
  */
 
+import type { SettingsEditWire } from './wire/settings';
 import type { ClientSettings, SessionSlot } from './wire/types';
 
 /**
@@ -24,7 +25,7 @@ import type { ClientSettings, SessionSlot } from './wire/types';
  * rail footer carries both halves' build and socket numbers, and a mismatch
  * raises the notice beside it. Nothing refuses a connection over it.
  */
-export const PROTOCOL_VERSION = 20;
+export const PROTOCOL_VERSION = 21;
 
 /**
  * The release this client was built from, baked in by the build.
@@ -407,7 +408,9 @@ export type ClientMessage =
    * **The records stay as the page serialised them**: the server's part is
    * the file, written beside `forge.log`, and nothing answers the batch.
    */
-  | { kind: 'client_perf'; records: unknown[] };
+  | { kind: 'client_perf'; records: unknown[] }
+  /** A batched save of the effective config. */
+  | { kind: 'settings_edit'; fingerprint: string; edits: SettingsEditWire[]; id: number };
 
 /** What the server sends. */
 export type ServerMessage =
@@ -595,7 +598,17 @@ export type ServerMessage =
    * The viewed profile's tabs, pushed once the connection asked with
    * `browser_tabs` and then once per change.
    */
-  | ({ kind: 'browser_tabs' } & BrowserTabList);
+  | ({ kind: 'browser_tabs' } & BrowserTabList)
+  /** A settings save that wrote nothing, and why. */
+  | {
+      kind: 'settings_refused';
+      reason: 'stale' | 'invalid' | 'refused' | 'io';
+      message: string;
+      id: number;
+      key_path?: string;
+    }
+  /** A settings save that wrote, matched to its request by `id`. */
+  | { kind: 'settings_saved'; id: number };
 
 /** The modifier keys a person held for one input gesture. */
 export interface InputModifiers {

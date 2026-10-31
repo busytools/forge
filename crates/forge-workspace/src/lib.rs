@@ -81,6 +81,7 @@ mod provider_probe;
 mod review;
 mod session_task;
 pub mod settings;
+mod settings_write;
 mod single_instance;
 mod slack;
 mod spawn;
@@ -118,7 +119,7 @@ pub use views::{
 pub use workspace::testing::set_seat_ring_cap;
 pub use workspace::{
     PendingInteractionKind, PricingFetch, PricingFetcher, SessionChipInfo, SessionChipState,
-    Workspace,
+    SettingsSaveError, Workspace,
 };
 
 // MCP (agents / peers / workers) public surface. The `mcp` module

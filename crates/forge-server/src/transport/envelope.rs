@@ -380,6 +380,36 @@ pub enum ClientMessage {
     ClientPerf {
         records: Vec<serde_json::Value>,
     },
+    /// A batched save of the effective config. A save that writes is
+    /// answered with [`ServerMessage::SettingsSaved`]; one that does not is
+    /// answered with [`ServerMessage::SettingsRefused`]. A refused save
+    /// writes nothing, so no push follows it.
+    SettingsEdit {
+        /// The fingerprint of the raw file text the page loaded.
+        fingerprint: String,
+        edits: Vec<forge_primitives::settings::SettingsEditRequest>,
+        /// The page's own number for this save, echoed by
+        /// [`ServerMessage::SettingsSaved`] and
+        /// [`ServerMessage::SettingsRefused`] so a reply is matched to the
+        /// request that made it. Required: a client that forgets it is
+        /// refused rather than silently answered as id 0.
+        id: u64,
+    },
+}
+
+/// Why a settings save was refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SettingsRefusal {
+    /// The file moved since the page loaded it.
+    Stale,
+    /// The candidate failed the boot loader.
+    Invalid,
+    /// A guard refused the save.
+    Refused,
+    /// The file could not be read or written. Nothing was applied: a write
+    /// that lands and then fails its directory fsync is reported as written.
+    Io,
 }
 
 /// One chosen file on the wire: its name and its bytes, base64.
@@ -402,6 +432,23 @@ pub enum ServerMessage {
     /// why no settings read verb exists.
     Settings {
         document: forge_primitives::SettingsDocument,
+    },
+    /// A settings save that wrote nothing. `message` is the loader's own
+    /// words for an invalid candidate or the guard's own for a refusal;
+    /// `key_path` anchors it at one of the save's keys where one is known.
+    SettingsRefused {
+        reason: SettingsRefusal,
+        message: String,
+        #[serde(default)]
+        id: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        key_path: Option<String>,
+    },
+    /// A settings save that wrote. The reload push carries the new document;
+    /// this is the saver's own acknowledgement, matched by `id`, so a page
+    /// clears its draft only for its own save.
+    SettingsSaved {
+        id: u64,
     },
     Greeting {
         version: u32,

@@ -299,6 +299,16 @@ impl ViewSurface {
         self.workspace.client_config()
     }
 
+    /// Apply a batched settings save. The refusal is answered by the
+    /// connection that asked, on the settings refusal frame.
+    pub fn save_settings(
+        &self,
+        fingerprint: &str,
+        edits: &[forge_primitives::settings::SettingsEditRequest],
+    ) -> Result<(), forge_workspace::SettingsSaveError> {
+        self.workspace.save_settings(fingerprint, edits)
+    }
+
     /// One document, read out of the seat's own tree for a viewer's route.
     ///
     /// `path` resolves against the session's working directory and

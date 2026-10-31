@@ -27,8 +27,7 @@ use crate::workspace::Workspace;
 impl Workspace {
     /// The `[gotify]` server connection from forge.toml, or `None`
     /// when the section is absent. `None` keeps the Gotify subsystem
-    /// dormant and makes `gotify__subscribe` error. Read-only - forge
-    /// never writes forge.toml.
+    /// dormant and makes `gotify__subscribe` error.
     pub fn gotify_config(&self) -> Option<forge_primitives::GotifyConfig> {
         self.config_arc().gotify.clone()
     }

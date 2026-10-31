@@ -23,7 +23,9 @@ use forge_workspace::browser::BrowserAttachment;
 use serde_json::json;
 
 use super::batch::{self, Batch};
-use super::envelope::{ClientMessage, ClientSettings, SeatFrameWire, ServerMessage, Subject};
+use super::envelope::{
+    ClientMessage, ClientSettings, SeatFrameWire, ServerMessage, SettingsRefusal, Subject,
+};
 use super::frame::FrameTransport as _;
 use super::origin as origin_gate;
 use super::wire::{
@@ -1706,6 +1708,32 @@ where
     // rather than per frame.
     let cap = state.surface.tool_record_cap_bytes();
     match client {
+        ClientMessage::SettingsEdit { fingerprint, edits, id } => {
+            match state.surface.save_settings(&fingerprint, &edits) {
+                Ok(()) => send(socket, ServerMessage::SettingsSaved { id }).await?,
+                Err(error) => {
+                    let (reason, message, key_path) = match error {
+                        forge_workspace::SettingsSaveError::Stale => {
+                            (SettingsRefusal::Stale, error.to_string(), None)
+                        }
+                        forge_workspace::SettingsSaveError::Invalid { message, key_path } => {
+                            (SettingsRefusal::Invalid, message, key_path)
+                        }
+                        forge_workspace::SettingsSaveError::Refused { message, key_path } => {
+                            (SettingsRefusal::Refused, message, key_path)
+                        }
+                        // A write that failed is not a guard's refusal: the
+                        // page says the file could not be written.
+                        forge_workspace::SettingsSaveError::Io(message) => {
+                            (SettingsRefusal::Io, message, None)
+                        }
+                    };
+                    send(socket, ServerMessage::SettingsRefused { reason, message, id, key_path })
+                        .await?;
+                }
+            }
+            Ok(())
+        }
         ClientMessage::Subscribe { what, answering, review } => {
             // **The open path's own clock (#2374).** From this message being
             // read to the snapshot being written - the span a client's seat
