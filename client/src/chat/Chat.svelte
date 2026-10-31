@@ -593,6 +593,12 @@
    * layouts, or the reader below everything drawn - so a capture that finds
    * none leaves the old anchor standing and says so, which is what lets the
    * pass retry.
+   *
+   * **The debt is the caller's.** A capture from the reader's own move
+   * settles it where it is taken (`owed = null` at those call sites); a
+   * capture inside a restore pass is followed by that pass's own stamp, so
+   * clearing it here would be overwritten and would lie to the reader of
+   * this function.
    */
   function captureAnchor(): boolean {
     if (viewport === null) {
@@ -605,9 +611,6 @@
       return false;
     }
     anchor = landed;
-    // A fresh capture owes nothing until an order moves under it; the next
-    // parked run schedules against a clean slate.
-    owed = null;
     owedUnplaced = false;
     return true;
   }
@@ -1265,7 +1268,7 @@
           // step the reveal just stopped taking.
           if (box.bottom < seen.top || box.top > seen.bottom) {
             row.scrollIntoView({ behavior: 'auto', block: 'nearest' });
-            captureAnchor();
+            if (captureAnchor()) owed = null;
           }
         };
         const chase = () => {
@@ -1274,7 +1277,7 @@
           // open causes) holds this new place rather than pulling the reader
           // back to the row they left.
           if (reveal(wanted)) {
-            captureAnchor();
+            if (captureAnchor()) owed = null;
             // The first pass waits a beat for the mount's own measurements to
             // land; the rest catch whatever settled behind them.
             const settleUntil = Date.now() + 1000;
@@ -1623,7 +1626,7 @@
     // and a STREAM fold that engages the follow - a prompt frame - lands a
     // painted frame later - so a capture that read the record would depend on
     // which side of that timing it caught.
-    if (!foot) captureAnchor();
+    if (!foot && captureAnchor()) owed = null;
     if (offset < REACH) loadOlder(pageTurns());
   }
 
