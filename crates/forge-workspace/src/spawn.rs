@@ -338,12 +338,17 @@ pub(crate) fn handle_spawn_project(
 /// project to a running SessionTask (deliver immediately) or a
 /// sleeping one (buffer + auto-spawn), then dispatches the wrapped
 /// prompt as a regular `Command::Prompt`.
+///
+/// The answer is this handler's own: `Ok(())` once the prompt was accepted
+/// by the running session or parked for a spawn it kicked off, `Err(reason)`
+/// when nothing could take it. The caller's ack is built from it, so a
+/// delivery that never left forge cannot read as sent (#2342).
 pub(crate) fn handle_deliver_peer_prompt(
     workspace: &Arc<Workspace>,
     caller: &SessionSlot,
     target_project: String,
     wrapped: WrappedPrompt,
-) {
+) -> Result<(), String> {
     // Find the target project's running lead session (if any). The
     // `list_projects()` snapshot has `sessions: Vec<SessionView>` per
     // project; `is_open == true` on a session means an Agent is in
@@ -384,8 +389,9 @@ pub(crate) fn handle_deliver_peer_prompt(
                 "DeliverPeerPrompt dispatch to running target failed"
             );
             send_dispatch_turn_error(workspace, target_key, &err);
+            return Err(format!("the target's running session did not take the message ({err})"));
         }
-        return;
+        return Ok(());
     }
 
     // Target is sleeping (or unknown - defensive). If the project
@@ -397,17 +403,17 @@ pub(crate) fn handle_deliver_peer_prompt(
             target_project = %target_project,
             "DeliverPeerPrompt target not in forge.toml; dropping"
         );
-        return;
+        return Err(format!(
+            "project '{target_project}' is not in forge.toml any more, so the message went nowhere"
+        ));
     };
 
     // The lead's own first `Connected` drains the bucket, so the park
     // must land BEFORE the spawn. The sender rides beside the payload so a
     // spawn that never connects can acknowledge the message back to it.
-    workspace.park_peer_prompt(
-        &crate::SessionSlot::lead(&target.org, &target.name),
-        caller,
-        wrapped,
-    );
+    let target_key = crate::SessionSlot::lead(&target.org, &target.name);
+    let message_id = wrapped.id.clone();
+    workspace.park_peer_prompt(&target_key, caller, wrapped);
 
     // Dispatch SpawnProject. Move target_project
     // into the command rather than cloning (it's the last use).
@@ -422,7 +428,21 @@ pub(crate) fn handle_deliver_peer_prompt(
             error = ?err,
             "DeliverPeerPrompt SpawnProject dispatch failed"
         );
+        return Err(format!(
+            "the target's project could not be woken ({err}); the parked message stays with it"
+        ));
     }
+    // **The dispatch's Ok is not the wake's.** `handle_spawn_project` runs
+    // inline and can fail, and its own arm expires the bucket it just parked;
+    // a message that is no longer parked was not accepted, whatever the
+    // command returned.
+    if !workspace.peer_prompt_is_parked(&target_key, &message_id) {
+        return Err(format!(
+            "project '{}' could not be woken, so the parked message was returned to you",
+            target.org,
+        ));
+    }
+    Ok(())
 }
 
 /// Outcome of a cron fire's delivery, so `fire_due_crons` can decide the
@@ -1276,6 +1296,16 @@ pub(crate) fn handle_spawn_worker(
         args;
     let label = label.as_str();
     let resume_kick = resume_kick.as_deref();
+    // **The label rules belong to this handler, not only to the tool.** The
+    // command bus and the socket pass-through reach it without the MCP
+    // facade's own validation, and a `lead` label there collides with the
+    // lead's slot while a slash desynchronises forge's worktree path and
+    // branch from claude's rewritten pair (#1682, #1603). Nothing is minted
+    // or probed before this refusal.
+    if let Err(refusal) = crate::mcp::workers::facade::validate_worker_label(label) {
+        let _ = return_to.send(Err(refusal.message()));
+        return;
+    }
     // Verify the project exists before minting the worker's id. A worker
     // that already has a row takes its git-repo-ness from that row: it is
     // the flag the launchpad and the boot wave read to decide whether the
@@ -1745,6 +1775,7 @@ pub(crate) fn handle_spawn_worker(
             }));
         }
         Err(err) => {
+            let message = format!("agent spawn failed: {err}");
             tracing::error!(
                 target: "forge_workspace::spawn",
                 project = %project_key.as_str(),
@@ -1752,6 +1783,11 @@ pub(crate) fn handle_spawn_worker(
                 error = %err,
                 "spawn_worker: get_agent_handle failed"
             );
+            // **The reason a view reads.** The lead's arm records the same
+            // failure for its slot, and without this one the rollback's
+            // `Removed` event is all a view has: it names no cause, and the
+            // chat draws it as a close.
+            workspace.record_spawn_failure(&slot, &message);
             // A fresh spawn the caller asked for creates its row above, so
             // a failure here has to take the row with it: the caller is
             // told the spawn failed and the live entry is rolled back, and
@@ -1765,7 +1801,11 @@ pub(crate) fn handle_spawn_worker(
             }
             // Roll back the live_workers entry we just inserted.
             let removed = workspace.remove_latest_worker(&project_key, label);
-            if let Some(rolled) = removed {
+            if let Some(mut rolled) = removed {
+                // The last-known snapshot is carried for symmetry, so the
+                // reason rides it too: a view that renders the event's
+                // status has the cause even though the entry is gone.
+                rolled.diagnostic = Some(message.clone());
                 try_emit(
                     workspace,
                     "spawn_worker::WorkerStatusChanged::Removed",
@@ -1780,7 +1820,9 @@ pub(crate) fn handle_spawn_worker(
                     },
                 );
             }
-            let _ = return_to.send(Err(format!("agent spawn failed: {err}")));
+            // The caller's error is the same sentence the slot records, so
+            // the two cannot name different failures.
+            let _ = return_to.send(Err(message));
         }
     }
 }
@@ -3305,6 +3347,178 @@ provider = "anthropic"
         );
     }
 
+    /// The worker counterpart of `spawn_project_records_the_failure_it_announces`:
+    /// a synchronous worker spawn failure records the reason on the worker's
+    /// slot and carries it on the rollback's `Removed` event, so a view says
+    /// why instead of drawing the rollback as a close.
+    #[tokio::test]
+    async fn a_synchronous_worker_spawn_failure_names_its_cause() {
+        let dir = tempdir().expect("tempdir");
+        write_forge_toml(dir.path(), FIXTURE_PROJECT_PATH);
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        // A shut boot gate is the cheapest way to a spawn that never
+        // builds a task: the entry is written and then the handle
+        // construction refuses.
+        workspace.seed_test_gateway_ready(false);
+        let project =
+            workspace.list_projects().into_iter().next().expect("fixture project present").key;
+        let mut rx = workspace.subscribe_answerer();
+        let (tx, reply) = tokio::sync::oneshot::channel();
+
+        handle_spawn_worker(
+            &workspace,
+            project,
+            WorkerSpawnArgs {
+                label: "builder".to_owned(),
+                charter: "charter".to_owned(),
+                kick: None,
+                resume_kick: None,
+                interactive: false,
+                mcp_families: None,
+                cwd: None,
+            },
+            SessionSlot::from_str_for_test("lead"),
+            None,
+            false,
+            tx,
+        );
+
+        let reason = reply.await.expect("reply channel").expect_err("the shut gate refuses");
+        assert!(
+            reason.contains("agent spawn failed") && reason.contains("boot gate is shut"),
+            "the caller is told the cause, not just that it failed: {reason}",
+        );
+        let slot = SessionSlot::worker("Default", "forge", "builder");
+        let record = workspace.spawn_failure(&slot).expect("the failure is recorded on the slot");
+        assert!(
+            record.contains("boot gate is shut"),
+            "the record carries the cause itself: {record}",
+        );
+
+        let mut removed_diagnostic = None;
+        while let Ok(frame) = rx.try_recv() {
+            if let SessionUpdate::WorkerStatusChanged {
+                action: WorkerStatusAction::Removed,
+                status,
+                ..
+            } = &*frame.update
+            {
+                removed_diagnostic = status.diagnostic.clone();
+            }
+        }
+        assert!(
+            removed_diagnostic
+                .as_ref()
+                .is_some_and(|diagnostic| diagnostic.contains("agent spawn failed")),
+            "the rollback event carries the cause a view shows: {removed_diagnostic:?}",
+        );
+    }
+
+    /// The label rules are the spawn handler's, not only the MCP tool's:
+    /// the command bus and the socket pass-through reach this handler
+    /// directly. A `lead` label there collides with the lead's slot (#1682),
+    /// and a slash desynchronises forge's worktree path and branch from
+    /// claude's rewritten pair (#1603). Neither may mint anything.
+    #[tokio::test]
+    async fn the_spawn_handler_refuses_a_reserved_or_path_shaped_label() {
+        let (workspace, _rx) = Workspace::testing_stub();
+        workspace.seed_test_project("forge", "/tmp/forge");
+        let project = workspace
+            .list_projects()
+            .into_iter()
+            .find(|view| view.name == "forge")
+            .expect("seeded project")
+            .key;
+
+        for (label, expected) in [("lead", "reserved"), ("a/b", "slash")] {
+            let (tx, reply) = tokio::sync::oneshot::channel();
+            handle_spawn_worker(
+                &workspace,
+                project.clone(),
+                WorkerSpawnArgs {
+                    label: label.to_owned(),
+                    charter: "charter".to_owned(),
+                    kick: None,
+                    resume_kick: None,
+                    interactive: false,
+                    mcp_families: None,
+                    cwd: None,
+                },
+                SessionSlot::from_str_for_test("lead"),
+                None,
+                false,
+                tx,
+            );
+            let refusal = reply.await.expect("reply channel").expect_err("the label is refused");
+            assert!(
+                refusal.contains(expected),
+                "the refusal names the rule '{expected}' for '{label}': {refusal}",
+            );
+        }
+        assert!(
+            workspace.list_live_workers(&project).is_empty(),
+            "a refused label mints no worker entry",
+        );
+    }
+
+    /// A pooled handle whose session task is gone is not a session: the
+    /// spawn fast path handed it back as a success, so no child started,
+    /// the client read "no session task registered", and every later spawn
+    /// repeated it (#2683). The spawn must rebuild the task instead.
+    #[tokio::test]
+    async fn a_spawn_rebuilds_a_pooled_handle_whose_task_is_gone() {
+        let dir = tempdir().expect("tempdir");
+        write_forge_toml(dir.path(), FIXTURE_PROJECT_PATH);
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        workspace.seed_test_ready_account("Stargate");
+        let view = workspace.list_projects().into_iter().next().expect("fixture project");
+        let key = SessionSlot::lead(&view.org, &view.name);
+        // The poison is the shape a dropped task leaves: an ANSWERED
+        // teardown signal (a presence check passes it) and a command sender
+        // whose task has gone.
+        let (stale, _stale_commands) = Workspace::testing_stub_handle();
+        let stale = Arc::new(stale);
+        let teardown = workspace.mint_session_teardown(&key).expect("a teardown for the dead task");
+        teardown.send_replace(true);
+        let (stale_tx, mut stale_rx) = tokio::sync::mpsc::unbounded_channel();
+        workspace.command_senders.lock().insert(key.clone(), stale_tx);
+        workspace.pool.lock().insert(
+            key.clone(),
+            crate::workspace::PooledAgent {
+                handle: Arc::clone(&stale),
+                account: forge_gateway::AccountKey("Stargate".to_owned()),
+                permission_mode: None,
+                registration: None,
+                session_id: "stale-id".to_owned(),
+            },
+        );
+        // The cold path's stand-in, so the rebuild launches no real child.
+        let (fresh, _fresh_commands) = Workspace::testing_stub_handle();
+        workspace.install_test_spawn_handle(fresh);
+
+        let handle = workspace
+            .get_agent_handle_at_key(
+                crate::target::SessionTarget::Named(view.name.clone()),
+                SessionLaunchSettings::default(),
+                Some(key.clone()),
+                &crate::protocol::SpawnRole::Lead,
+            )
+            .expect("the spawn rebuilds rather than handing back a dead handle");
+
+        assert!(!Arc::ptr_eq(&handle, &stale), "the stale handle is not the answer");
+        assert!(
+            workspace.session_is_live(&key),
+            "and a session task now consumes the slot the stale handle held",
+        );
+        assert!(
+            matches!(
+                stale_rx.try_recv(),
+                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected)
+            ),
+            "the stale sender was replaced, so the command channel its old task reads is closed",
+        );
+    }
+
     fn fixture_wrapped() -> WrappedPrompt {
         WrappedPrompt {
             id: crate::mcp::peers::types::MessageId::mint(),
@@ -3316,30 +3530,104 @@ provider = "anthropic"
     }
 
     /// I3 - `handle_deliver_peer_prompt` for an unknown target must
-    /// not panic and must not emit a fatal envelope. The tool itself
-    /// rejects unknown targets synchronously via `DeliverError::UnknownTarget`;
-    /// the spawn path's defensive branch is the second line of defence
-    /// when an LLM races a forge.toml reload.
+    /// not panic and must not emit a fatal envelope, and its answer must be
+    /// an error naming the target: the tool's ack is this handler's own, so
+    /// a delivery that went nowhere cannot read as sent (#2342).
     #[tokio::test]
-    async fn handle_deliver_peer_prompt_unknown_target_is_no_op() {
+    async fn handle_deliver_peer_prompt_unknown_target_is_an_error() {
         let dir = tempdir().expect("tempdir");
         write_forge_toml(dir.path(), FIXTURE_PROJECT_PATH);
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         let mut rx = workspace.subscribe_answerer();
 
         let caller = SessionSlot::from_str_for_test("caller-1");
-        handle_deliver_peer_prompt(
+        let outcome = handle_deliver_peer_prompt(
             &workspace,
             &caller,
             "no-such-project".to_owned(),
             fixture_wrapped(),
         );
 
+        let refusal = outcome.expect_err("an unknown target is not a delivery");
+        assert!(
+            refusal.contains("no-such-project"),
+            "the refusal names the target that went nowhere: {refusal}",
+        );
         while let Ok(frame) = rx.try_recv() {
             assert!(
                 !matches!(&*frame.update, SessionUpdate::FatalError { .. }),
                 "unknown target must not emit FatalError"
             );
+        }
+    }
+
+    /// A wake whose spawn fails inline is not an accepted delivery: the
+    /// project handler's own arm expires the parked message, and the ack
+    /// says so rather than reading the dispatch's Ok as the wake working
+    /// (#2342).
+    #[tokio::test]
+    async fn a_delivery_whose_wake_fails_is_an_error() {
+        let dir = tempdir().expect("tempdir");
+        write_forge_toml(dir.path(), FIXTURE_PROJECT_PATH);
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        // A shut boot gate is the cheapest wake that fails with no child.
+        workspace.seed_test_gateway_ready(false);
+        let caller = SessionSlot::from_str_for_test("caller-wake");
+        let wrapped = fixture_wrapped();
+        let message_id = wrapped.id.clone();
+        let lead = SessionSlot::lead("Default", "forge");
+
+        let outcome = handle_deliver_peer_prompt(&workspace, &caller, "forge".to_owned(), wrapped);
+
+        let refusal = outcome.expect_err("a wake that never started is not a delivery");
+        assert!(
+            refusal.contains("parked message was returned to you"),
+            "the refusal is the parked-bucket read, not the dispatch error arm: {refusal}",
+        );
+        assert!(
+            !workspace.peer_prompt_is_parked(&lead, &message_id),
+            "the failed wake's arm expired the parked message",
+        );
+    }
+
+    /// The running branch's own acceptance: a live lead takes the prompt and
+    /// the handler answers Ok, routing a `PromptUnder` to its session. A
+    /// branch that answered Err unconditionally would read every peer
+    /// message to a live lead as failed.
+    #[tokio::test]
+    async fn a_delivery_a_running_lead_takes_is_ok() {
+        let (workspace, _updates) = Workspace::testing_stub();
+        workspace.seed_test_project("forge", "/tmp/forge");
+        let lead = SessionSlot::lead("TestOrg", "forge");
+        // The two facts the running branch resolves on: a pooled handle and
+        // a live command sender behind it.
+        let (handle, _commands) = Workspace::testing_stub_handle();
+        workspace.pool.lock().insert(
+            lead.clone(),
+            crate::workspace::PooledAgent {
+                handle: Arc::new(handle),
+                account: forge_gateway::AccountKey("acct-a".to_owned()),
+                permission_mode: None,
+                registration: None,
+                session_id: "lead-session".to_owned(),
+            },
+        );
+        let (commands, mut routed) = tokio::sync::mpsc::unbounded_channel();
+        workspace.command_senders.lock().insert(lead.clone(), commands);
+
+        let outcome = handle_deliver_peer_prompt(
+            &workspace,
+            &SessionSlot::from_str_for_test("caller-running"),
+            "forge".to_owned(),
+            fixture_wrapped(),
+        );
+
+        assert!(outcome.is_ok(), "a live session takes the prompt: {outcome:?}");
+        match routed.try_recv().expect("the prompt is routed to the lead's session") {
+            Command::PromptUnder { text, .. } => {
+                assert!(text.contains("fyi"), "the routed prose is the wrapped body: {text}");
+            }
+            other => panic!("expected PromptUnder; got {other:?}"),
         }
     }
 
@@ -3386,7 +3674,8 @@ provider = "anthropic"
         let caller = SessionSlot::from_str_for_test("caller-sleep");
         let w = fixture_wrapped();
 
-        handle_deliver_peer_prompt(&workspace, &caller, "gateway-backend".to_owned(), w.clone());
+        handle_deliver_peer_prompt(&workspace, &caller, "gateway-backend".to_owned(), w.clone())
+            .expect("a sleeping target's parked message is an accepted delivery");
 
         // The sleeping branch parks the envelope for the project's lead
         // under `(org, project, None)`. EXACTLY ONE bucket holds our

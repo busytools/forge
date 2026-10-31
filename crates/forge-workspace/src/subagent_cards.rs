@@ -223,6 +223,7 @@ impl CardTracker {
                     .iter()
                     .find(|(_, id)| id.as_str() == instance.id)
                     .and_then(|(task_id, _)| self.roster.get(task_id));
+                let calls = instance.children.len();
                 let any_child_open = instance.children.iter().any(|child| {
                     matches!(
                         child.status,
@@ -240,17 +241,18 @@ impl CardTracker {
                     _ if any_child_open => Liveness::Running,
                     _ if answer.is_none() => Liveness::Running,
                     _ if finished(answer) => Liveness::Settled,
-                    // Nothing says either way, which is the state a READ
-                    // conversation is in: a resume re-read the transcript,
-                    // which carries no sub-agent frames, so all it holds is
-                    // the dispatch and the acknowledgement and the rows that
-                    // would report an end are not there. A live session's
-                    // held conversation carries the frames instead, so this
-                    // arm stops at the read case. A card is drawn for what
-                    // the session knows, so this one is not drawn at all.
+                    // **Every call settled is this instance's completion
+                    // evidence where the launch ack is the only dispatch
+                    // answer.** A sidecar folded into a resumed conversation
+                    // carries each call; an instance still working has its
+                    // last call open. The frame that would name a killed or
+                    // failed end is not in the sidecar, so requiring one
+                    // dropped every resumed card. A dispatch with no frames at
+                    // all is a read of a transcript written before the fold,
+                    // and is not drawn.
+                    _ if calls > 0 => Liveness::Settled,
                     _ => return None,
                 };
-                let calls = instance.children.len();
                 let tail = instance.children[calls.saturating_sub(TAIL_CAP)..]
                     .iter()
                     .map(|child| SubagentCall {
@@ -670,6 +672,38 @@ mod tests {
         ];
 
         assert!(subagent_cards(&messages).is_empty());
+    }
+
+    /// **A dispatch whose sidecar folded all of its calls is settled.** The
+    /// sidecar carries the calls and the results that settle them, and its
+    /// dispatch answer is only the launch acknowledgement, so requiring a
+    /// roster ending dropped every card a resumed conversation has. A
+    /// dispatch with no frames at all is a read written before the fold and
+    /// stays undrawn (#1763).
+    #[test]
+    fn a_folded_sidecar_with_every_call_settled_is_a_card() {
+        let folded = [
+            dispatch("toolu_a", "map it", "Explore"),
+            result("toolu_a"),
+            call(
+                "toolu_a1",
+                "Read",
+                serde_json::json!({"file_path": "src/lib.rs"}),
+                Some("toolu_a"),
+            ),
+            result("toolu_a1"),
+        ];
+
+        let cards = subagent_cards(&folded);
+
+        assert_eq!(cards.len(), 1, "the folded instance is drawn");
+        assert!(!cards[0].running, "every call settled is the completion evidence");
+        assert_eq!(cards[0].calls, 1, "and the card carries the call");
+        assert!(
+            subagent_cards(&[dispatch("toolu_b", "empty", "Explore"), result("toolu_b")])
+                .is_empty(),
+            "a dispatch with no frames at all is not drawn",
+        );
     }
 
     /// The roster is the authority once it has spoken: an opened task with

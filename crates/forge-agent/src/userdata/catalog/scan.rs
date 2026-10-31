@@ -787,6 +787,27 @@ pub fn get_session_messages(
     session_id: &str,
     directory: Option<&str>,
 ) -> SessionHistory {
+    read_session_messages(config_dir, session_id, directory, true)
+}
+
+/// [`get_session_messages`] over the session's own rows only: no sub-agent
+/// sidecars are opened or folded. The handoff brief takes this one, so it
+/// neither pays for the sidecar parse nor carries frames it does not read. A
+/// page read does not: a dispatch row draws its sidecar frames (#1763).
+pub(crate) fn read_session_messages_main_thread(
+    config_dir: &Path,
+    session_id: &str,
+    directory: Option<&str>,
+) -> SessionHistory {
+    read_session_messages(config_dir, session_id, directory, false)
+}
+
+fn read_session_messages(
+    config_dir: &Path,
+    session_id: &str,
+    directory: Option<&str>,
+    fold_sidecars: bool,
+) -> SessionHistory {
     if !is_valid_uuid(session_id) {
         tracing::warn!(
             %session_id,
@@ -821,7 +842,128 @@ pub fn get_session_messages(
             return SessionHistory::default();
         }
     };
-    parse_session_messages(file)
+    let mut history = parse_session_messages(file);
+    if fold_sidecars {
+        fold_subagent_sidecars(&mut history.messages, subagent_sidecars(session_id, &path));
+    }
+    history
+}
+
+/// Insert each dispatch's sidecar frames where the dispatch ran: right after
+/// the row that answers its tool call. Appending them all at the end would
+/// put them at the newest edge of the window a resumed conversation is cut
+/// to, so every old sub-agent would be kept in preference to the main rows
+/// around it.
+fn fold_subagent_sidecars(
+    messages: &mut Vec<SessionMessage>,
+    sidecars: Vec<(String, Vec<SessionMessage>)>,
+) {
+    for (dispatch, rows) in sidecars {
+        // A sidecar whose dispatch is not in the transcript joins nothing:
+        // there is no card for it to belong to, and appending it at the end
+        // would put frames with no anchor in the conversation.
+        let Some(index) = messages.iter().position(|row| answers_dispatch(row, &dispatch)) else {
+            continue;
+        };
+        messages.splice((index + 1)..=index, rows);
+    }
+}
+
+/// Whether `row` is the tool result answering `dispatch`.
+fn answers_dispatch(row: &SessionMessage, dispatch: &str) -> bool {
+    row.message.get("content").and_then(Value::as_array).is_some_and(|blocks| {
+        blocks.iter().any(|block| {
+            block.get("type").and_then(Value::as_str) == Some("tool_result")
+                && block.get("tool_use_id").and_then(Value::as_str) == Some(dispatch)
+        })
+    })
+}
+
+/// How many bytes of sidecar frames one resume reads in total. A session can
+/// hold hundreds of sidecars and most of them are older than the window the
+/// conversation is cut to, so the read is bounded rather than whole
+/// (#1763).
+const SIDECAR_BUDGET_BYTES: u64 = 8 * 1024 * 1024;
+
+/// The frames a session's sub-agent sidecars hold, each stamped with the
+/// dispatch it ran under - the join the card fold reads.
+///
+/// The CLI writes a sub-agent's own frames to
+/// `<session>/subagents/agent-<id>.jsonl` and names the dispatch in the
+/// sibling `.meta.json`'s `toolUseId`; neither is in the session transcript,
+/// so a resumed conversation drew every card as its dispatch alone until
+/// this read folded them in (#1763). Newest sidecars first, up to
+/// [`SIDECAR_BUDGET_BYTES`]; a sidecar that cannot be read or named, or
+/// falls past the budget, is skipped and its card keeps the dispatch alone.
+fn subagent_sidecars(session_id: &str, transcript: &Path) -> Vec<(String, Vec<SessionMessage>)> {
+    subagent_sidecars_with_budget(session_id, transcript, SIDECAR_BUDGET_BYTES)
+}
+
+/// [`subagent_sidecars`] with the read budget given, so the cap is drivable
+/// at a size a test can build.
+fn subagent_sidecars_with_budget(
+    session_id: &str,
+    transcript: &Path,
+    budget: u64,
+) -> Vec<(String, Vec<SessionMessage>)> {
+    let Some(dir) = transcript.parent() else {
+        return Vec::new();
+    };
+    let Ok(entries) = fs::read_dir(dir.join(session_id).join("subagents")) else {
+        return Vec::new();
+    };
+    let mut metas: Vec<(PathBuf, std::time::SystemTime)> = entries
+        .flatten()
+        .filter(|entry| entry.file_name().to_str().is_some_and(|name| name.ends_with(".meta.json")))
+        .map(|entry| {
+            let modified =
+                entry.metadata().and_then(|meta| meta.modified()).unwrap_or(std::time::UNIX_EPOCH);
+            (entry.path(), modified)
+        })
+        .collect();
+    metas.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
+    let mut budget = budget;
+    let mut sidecars = Vec::new();
+    for (meta, _) in metas {
+        let Ok(body) = fs::read(&meta) else { continue };
+        let Ok(value) = serde_json::from_slice::<Value>(&body) else { continue };
+        let Some(dispatch) =
+            value.get("toolUseId").and_then(Value::as_str).filter(|id| !id.trim().is_empty())
+        else {
+            continue;
+        };
+        let Some(stem) = meta
+            .file_name()
+            .and_then(|name| name.to_str())
+            .and_then(|name| name.strip_suffix(".meta.json"))
+        else {
+            continue;
+        };
+        let sidecar = meta.with_file_name(format!("{stem}.jsonl"));
+        let Ok(size) = fs::metadata(&sidecar).map(|info| info.len()) else {
+            continue;
+        };
+        if size > budget {
+            tracing::debug!(
+                target: "forge_agent::userdata::catalog",
+                event_name = "subagent_sidecar_budget_skipped",
+                session = %session_id,
+                sidecar = %sidecar.display(),
+                "subagent sidecar skipped: the resume read's budget is spent",
+            );
+            continue;
+        }
+        budget -= size;
+        let Ok(file) = fs::File::open(&sidecar) else {
+            continue;
+        };
+        let mut rows = parse_session_messages(file).messages;
+        for row in &mut rows {
+            row.parent_tool_use_id = Some(dispatch.to_owned());
+        }
+        sidecars.push((dispatch.to_owned(), rows));
+    }
+    sidecars
 }
 
 /// The rows a transcript's messages convert to, typed as the wire sends them
@@ -2977,6 +3119,224 @@ mod tests {
         assert_eq!(
             info.storage_key, storage_key,
             "the scanned session reports the projects/<KEY>/ dir it lives in",
+        );
+    }
+
+    /// A sub-agent's own frames live only in the CLI's sidecar
+    /// (`<session>/subagents/agent-*.jsonl`), which nothing read: after a
+    /// resume the dispatch's card held no calls (#1763). The transcript read
+    /// folds each sidecar in under the dispatch its meta names - where the
+    /// dispatch ran, not at the end - which is the join the card fold reads.
+    #[test]
+    fn get_session_messages_folds_subagent_sidecars_under_their_dispatch() {
+        let config_dir = tempfile::tempdir().unwrap();
+        let session_id = "550e8400-e29b-41d4-a716-446655440000";
+        let directory = "/Users/me/Projects/playground";
+        let dir = project_dir_for(config_dir.path(), directory);
+        fs::create_dir_all(&dir).unwrap();
+        write_session_jsonl(
+            &dir,
+            session_id,
+            "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"toolu_dispatch\",\"name\":\"Agent\",\"input\":{\"prompt\":\"explore\"}}]},\"uuid\":\"a1\"}\n\
+             {\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_dispatch\",\"content\":\"done\"}]},\"uuid\":\"u1\"}\n\
+             {\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"after\"}]},\"uuid\":\"a2\"}\n",
+        );
+        // The CLI's own layout: one sidecar per sub-agent, the dispatch it
+        // ran under named in the sibling meta file.
+        let sidecars = dir.join(session_id).join("subagents");
+        fs::create_dir_all(&sidecars).unwrap();
+        fs::write(
+            sidecars.join("agent-abc.meta.json"),
+            "{\"agentType\":\"Explore\",\"description\":\"map it\",\"toolUseId\":\"toolu_dispatch\"}",
+        )
+        .unwrap();
+        fs::write(
+            sidecars.join("agent-abc.jsonl"),
+            "{\"type\":\"assistant\",\"isSidechain\":true,\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"toolu_child\",\"name\":\"Bash\",\"input\":{\"command\":\"ls\"}}]},\"uuid\":\"c1\"}\n\
+             {\"type\":\"user\",\"isSidechain\":true,\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_child\",\"content\":\"out\"}]},\"uuid\":\"c2\"}\n",
+        )
+        .unwrap();
+        // Two sidecars can share one dispatch, and both join under it.
+        fs::write(
+            sidecars.join("agent-def.meta.json"),
+            "{\"agentType\":\"Explore\",\"description\":\"more\",\"toolUseId\":\"toolu_dispatch\"}",
+        )
+        .unwrap();
+        fs::write(
+            sidecars.join("agent-def.jsonl"),
+            "{\"type\":\"assistant\",\"isSidechain\":true,\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"second\"}]},\"uuid\":\"d1\"}\n",
+        )
+        .unwrap();
+        // A sidecar whose dispatch is not in the transcript joins nothing;
+        // a meta with no sidecar file is skipped rather than failing the read.
+        fs::write(
+            sidecars.join("agent-zzz.meta.json"),
+            "{\"agentType\":\"Explore\",\"toolUseId\":\"toolu_absent\"}",
+        )
+        .unwrap();
+        fs::write(
+            sidecars.join("agent-zzz.jsonl"),
+            "{\"type\":\"assistant\",\"isSidechain\":true,\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"orphan\"}]},\"uuid\":\"x1\"}\n",
+        )
+        .unwrap();
+        fs::write(
+            sidecars.join("agent-nofile.meta.json"),
+            "{\"agentType\":\"Explore\",\"toolUseId\":\"toolu_dispatch\"}",
+        )
+        .unwrap();
+        // A sidecar with no meta at all, a meta that does not parse, and a
+        // meta whose dispatch id is empty are each dropped rather than
+        // failing the read or joining anything.
+        for (stem, frame) in [("agent-lone", "y1"), ("agent-bad", "y2"), ("agent-empty", "y3")] {
+            if stem != "agent-lone" {
+                let meta = if stem == "agent-bad" {
+                    "not json".to_owned()
+                } else {
+                    "{\"agentType\":\"Explore\",\"toolUseId\":\"\"}".to_owned()
+                };
+                fs::write(sidecars.join(format!("{stem}.meta.json")), meta).unwrap();
+            }
+            fs::write(
+                sidecars.join(format!("{stem}.jsonl")),
+                format!(
+                    "{{\"type\":\"assistant\",\"isSidechain\":true,\"message\":{{\"role\":\"assistant\",\"content\":[{{\"type\":\"text\",\"text\":\"{frame}\"}}]}},\"uuid\":\"{frame}\"}}\n"
+                ),
+            )
+            .unwrap();
+        }
+
+        let messages =
+            get_session_messages(config_dir.path(), session_id, Some(directory)).messages;
+
+        let uuids: Vec<_> = messages.iter().map(|message| message.uuid.as_str()).collect();
+        assert_eq!(uuids.len(), 6, "the transcript's three rows plus three sidecar frames");
+        assert_eq!(&uuids[..2], &["a1", "u1"], "the dispatch and its result come first");
+        assert_eq!(uuids[5], "a2", "and the conversation's later row stays last");
+        let mut folded = uuids[2..5].to_vec();
+        folded.sort_unstable();
+        assert_eq!(
+            folded,
+            vec!["c1", "c2", "d1"],
+            "every sidecar sharing the dispatch sits where it ran, not at the end",
+        );
+        for absent in ["x1", "y1", "y2", "y3"] {
+            assert!(
+                !uuids.contains(&absent),
+                "'{absent}' has no joinable dispatch and must not be folded",
+            );
+        }
+        assert_eq!(
+            messages.iter().filter(|message| message.parent_tool_use_id.is_none()).count(),
+            3,
+            "the transcript's own rows stay the main thread's",
+        );
+        for message in messages.iter().filter(|message| message.parent_tool_use_id.is_some()) {
+            assert_eq!(
+                message.parent_tool_use_id.as_deref(),
+                Some("toolu_dispatch"),
+                "each folded frame names the dispatch id itself, not the stem or the agent id",
+            );
+        }
+        // The chat-row read takes the session's own rows only: a folded
+        // sidecar frame here would be drawn as a chat row no card owns.
+        let main_thread =
+            read_session_messages_main_thread(config_dir.path(), session_id, Some(directory))
+                .messages;
+        let main_uuids: Vec<_> = main_thread.iter().map(|message| message.uuid.as_str()).collect();
+        assert_eq!(
+            main_uuids,
+            vec!["a1", "u1", "a2"],
+            "the main-thread read leaves every sub-agent frame out",
+        );
+    }
+
+    /// The read budget bounds the parse: a sidecar larger than the budget is
+    /// skipped while a smaller one is still read. A resume otherwise opens
+    /// and parses every sidecar the session ever wrote, and most are older
+    /// than the window the conversation keeps (#1763).
+    #[test]
+    fn subagent_sidecars_stop_at_the_read_budget() {
+        let config_dir = tempfile::tempdir().unwrap();
+        let session_id = "550e8400-e29b-41d4-a716-446655440001";
+        let directory = "/Users/me/Projects/playground";
+        let dir = project_dir_for(config_dir.path(), directory);
+        fs::create_dir_all(&dir).unwrap();
+        write_session_jsonl(&dir, session_id, "");
+        let transcript = dir.join(format!("{session_id}.jsonl"));
+        let sidecars = dir.join(session_id).join("subagents");
+        fs::create_dir_all(&sidecars).unwrap();
+        let write_sidecar = |stem: &str, uuid: &str, pad: usize| {
+            fs::write(
+                sidecars.join(format!("{stem}.meta.json")),
+                "{\"agentType\":\"Explore\",\"toolUseId\":\"toolu_a\"}",
+            )
+            .unwrap();
+            fs::write(
+                sidecars.join(format!("{stem}.jsonl")),
+                format!(
+                    "{{\"type\":\"assistant\",\"isSidechain\":true,\"message\":{{\"role\":\"assistant\",\"content\":[{{\"type\":\"text\",\"text\":\"x\"}}]}},\"uuid\":\"{uuid}\"}}\n{}",
+                    " ".repeat(pad)
+                ),
+            )
+            .unwrap();
+        };
+        write_sidecar("agent-small", "s1", 0);
+        write_sidecar("agent-large", "l1", 400);
+
+        let groups = subagent_sidecars_with_budget(session_id, &transcript, 200);
+        let uuids: Vec<_> =
+            groups.iter().flat_map(|(_, rows)| rows.iter().map(|row| row.uuid.clone())).collect();
+
+        assert!(uuids.iter().any(|uuid| uuid == "s1"), "a sidecar inside the budget is read");
+        assert!(
+            !uuids.iter().any(|uuid| uuid == "l1"),
+            "a sidecar past the budget is skipped rather than parsed",
+        );
+    }
+
+    /// **The budget spends on the newest sidecars first.** A sidecar past
+    /// the budget keeps its dispatch alone, and the sidecars beyond the
+    /// conversation window are the oldest ones - so a read that kept the
+    /// oldest would bring back exactly the #1763 symptom at the newest edge.
+    #[test]
+    fn subagent_sidecars_spend_the_budget_on_the_newest_first() {
+        let config_dir = tempfile::tempdir().unwrap();
+        let session_id = "550e8400-e29b-41d4-a716-446655440002";
+        let directory = "/Users/me/Projects/playground";
+        let dir = project_dir_for(config_dir.path(), directory);
+        fs::create_dir_all(&dir).unwrap();
+        write_session_jsonl(&dir, session_id, "");
+        let transcript = dir.join(format!("{session_id}.jsonl"));
+        let sidecars = dir.join(session_id).join("subagents");
+        fs::create_dir_all(&sidecars).unwrap();
+        let write_sidecar = |stem: &str, uuid: &str| {
+            fs::write(
+                sidecars.join(format!("{stem}.meta.json")),
+                "{\"agentType\":\"Explore\",\"toolUseId\":\"toolu_a\"}",
+            )
+            .unwrap();
+            fs::write(
+                sidecars.join(format!("{stem}.jsonl")),
+                format!(
+                    "{{\"type\":\"assistant\",\"isSidechain\":true,\"message\":{{\"role\":\"assistant\",\"content\":[{{\"type\":\"text\",\"text\":\"x\"}}]}},\"uuid\":\"{uuid}\"}}\n"
+                ),
+            )
+            .unwrap();
+        };
+        write_sidecar("agent-older", "old");
+        write_sidecar("agent-newer", "new");
+        set_age(&sidecars.join("agent-older.meta.json"), 600);
+        set_age(&sidecars.join("agent-newer.meta.json"), 60);
+        let one = fs::metadata(sidecars.join("agent-newer.jsonl")).unwrap().len();
+
+        let groups = subagent_sidecars_with_budget(session_id, &transcript, one);
+        let uuids: Vec<_> =
+            groups.iter().flat_map(|(_, rows)| rows.iter().map(|row| row.uuid.clone())).collect();
+
+        assert!(uuids.iter().any(|uuid| uuid == "new"), "the newest sidecar is read");
+        assert!(
+            !uuids.iter().any(|uuid| uuid == "old"),
+            "an older sidecar past the budget is skipped, not kept in place of the newest",
         );
     }
 

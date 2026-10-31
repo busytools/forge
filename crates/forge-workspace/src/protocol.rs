@@ -249,10 +249,10 @@ impl WorktreeDisposition {
 /// session task. `Workspace::dispatch` fans the variant into the
 /// matching task's command receiver.
 ///
-/// A reply channel cannot cross a socket, so the seven fields carrying one
-/// are `Option` and skipped on the wire: `#[serde(skip)]` reconstructs a
-/// field on deserialize, which needs a `Default`, and a bare
-/// `oneshot::Sender` has none while an `Option` does.
+/// A reply channel cannot cross a socket, so the fields carrying one are
+/// `Option` and skipped on the wire: `#[serde(skip)]` reconstructs a field
+/// on deserialize, which needs a `Default`, and a bare `oneshot::Sender` has
+/// none while an `Option` does.
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Command {
@@ -581,6 +581,13 @@ pub enum Command {
         caller: SessionSlot,
         target_project: String,
         wrapped: WrappedPrompt,
+        /// What happened to the prompt: `Ok(())` once it was accepted -
+        /// handed to the target's running session, or parked for a spawn
+        /// this handler kicked off - and `Err(reason)` when nothing could
+        /// take it. The sender's ack is built from this answer alone, the
+        /// way the worker engine's is (#2342).
+        #[serde(skip)]
+        respond: Option<oneshot::Sender<Result<(), String>>>,
     },
     /// Spawn a new worker session in `project_key`. Dispatched by
     /// the `agents__spawn` MCP Tool impl after caller-tag validation,
