@@ -18,9 +18,12 @@
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use tauri::Manager as _;
+
+/// The record schema, shared with the page that writes the same lines.
+const SCHEMA: &str = "forge-perf/v1";
 
 /// One append at a time.
 ///
@@ -51,7 +54,7 @@ const MAX_BYTES: u64 = 10 * 1024 * 1024;
 /// frame carries `ms` and its counter, a long task a `name`, a summary the
 /// window's counts. Unknown fields are tolerated, so a page that learns a
 /// field reaches a shell that predates it rather than being refused.
-#[derive(Debug, serde::Deserialize, serde::Serialize)]
+#[derive(Debug, Default, serde::Deserialize, serde::Serialize)]
 pub struct ClientPerfRecord {
     pub schema: String,
     pub kind: String,
@@ -143,6 +146,131 @@ pub struct ClientPerfRecord {
     pub subscribe_rate: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub snapshot_chars_per_s: Option<f64>,
+    /// A browser mark's page: the profile it belongs to and the tab's own
+    /// number. **The pair is what a gesture and the frame that answers it
+    /// are paired by** (#2645).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tab: Option<u16>,
+    /// A `paint`: the frame's own sequence on its tab.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seq: Option<u32>,
+}
+
+/// Every field the kinds do not fill, for a record built here rather than
+/// parsed from the page.
+fn bare(kind: &str, run: &str, ts_ms: u64) -> ClientPerfRecord {
+    ClientPerfRecord {
+        schema: SCHEMA.to_owned(),
+        kind: kind.to_owned(),
+        run_id: run.to_owned(),
+        ts_ms,
+        ..ClientPerfRecord::default()
+    }
+}
+
+/// One gesture's mark, as it leaves the shell (#2645).
+fn browser_input_record(
+    name: &str,
+    profile: Option<&str>,
+    tab: u16,
+    run: &str,
+    ts_ms: u64,
+) -> ClientPerfRecord {
+    ClientPerfRecord {
+        name: Some(name.to_owned()),
+        profile: profile.map(str::to_owned),
+        tab: Some(tab),
+        surface: Some("browser".to_owned()),
+        ..bare("input", run, ts_ms)
+    }
+}
+
+/// One frame's mark, where it is handed to the layer that draws it (#2645).
+fn browser_paint_record(
+    profile: Option<&str>,
+    tab: u16,
+    seq: u32,
+    run: &str,
+    ts_ms: u64,
+) -> ClientPerfRecord {
+    ClientPerfRecord {
+        profile: profile.map(str::to_owned),
+        tab: Some(tab),
+        seq: Some(seq),
+        surface: Some("browser".to_owned()),
+        ..bare("paint", run, ts_ms)
+    }
+}
+
+/// Whether this frame is the round trip a gesture is waiting on: **the first
+/// frame on the gesture's own tab, and only that one** (#2645).
+pub(crate) fn paint_owed(awaiting: &mut Option<u16>, tab: u16) -> bool {
+    if *awaiting != Some(tab) {
+        return false;
+    }
+    *awaiting = None;
+    true
+}
+
+/// The page run the shell's own browser marks belong to.
+///
+/// **The page's `run_started` is the only line that names it**, and it is
+/// what groups a mark with the frames measured against it; before one has
+/// arrived the marks read as the shell's own run.
+static PAGE_RUN: Mutex<Option<String>> = Mutex::new(None);
+
+fn page_run() -> String {
+    PAGE_RUN
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone()
+        .unwrap_or_else(|| "shell".to_owned())
+}
+
+fn now_ms() -> u64 {
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis())
+        .unwrap_or_default();
+    u64::try_from(millis).unwrap_or_default()
+}
+
+/// One gesture's mark into the perf log, off the thread that sent it.
+///
+/// **The shell's own measurement**: the desktop overlay's gestures never pass
+/// through the page that writes the rest, so a round trip has no other end
+/// (#2645).
+pub(crate) fn note_browser_input(
+    app: &tauri::AppHandle,
+    name: &str,
+    profile: Option<&str>,
+    tab: u16,
+) {
+    write(app, browser_input_record(name, profile, tab, &page_run(), now_ms()));
+}
+
+/// One frame's mark into the perf log, where it is handed to the drawing layer.
+pub(crate) fn note_browser_paint(
+    app: &tauri::AppHandle,
+    profile: Option<&str>,
+    tab: u16,
+    seq: u32,
+) {
+    write(app, browser_paint_record(profile, tab, seq, &page_run(), now_ms()));
+}
+
+/// Append one record off the caller's thread: a gesture's path and the
+/// socket's frame reader must not do file IO themselves.
+fn write(app: &tauri::AppHandle, record: ClientPerfRecord) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let Ok(dir) = app.path().app_log_dir() else { return };
+        if let Err(why) = append(&dir, &[record], MAX_BYTES) {
+            tauri_plugin_log::log::warn!("perf write failed: {why}");
+        }
+    });
 }
 
 /// One batch of the page's records into the perf log.
@@ -155,6 +283,12 @@ pub struct ClientPerfRecord {
 /// thread, and these appends are file IO on the path the log measures.
 #[tauri::command(async)]
 pub fn client_perf(app: tauri::AppHandle, records: Vec<ClientPerfRecord>) -> Result<(), String> {
+    // **The page's run line is the only place its id is said.** The shell's
+    // own browser marks join that run, so a reader pairs them with the
+    // records measured against them.
+    if let Some(started) = records.iter().find(|record| record.kind == "run_started") {
+        *PAGE_RUN.lock().unwrap_or_else(PoisonError::into_inner) = Some(started.run_id.clone());
+    }
     let dir = app.path().app_log_dir().map_err(|err| err.to_string())?;
     append(&dir, &records, MAX_BYTES).map_err(|err| {
         tauri_plugin_log::log::warn!("perf write failed: {err}");
@@ -233,6 +367,9 @@ mod tests {
             snapshot_chars: None,
             subscribe_rate: None,
             snapshot_chars_per_s: None,
+            profile: None,
+            tab: None,
+            seq: None,
         }
     }
 
@@ -528,6 +665,69 @@ mod tests {
         let text = std::fs::read_to_string(dir.path().join(PERF_LOG_NAME)).expect("read back");
         let parsed: serde_json::Value = serde_json::from_str(text.trim()).expect("a JSON line");
         assert!(parsed.get("state").is_none(), "no state on a frame: {text}");
+    }
+
+    /// **A browser mark names its surface and the page it happened on**
+    /// (#2645): the profile and tab are what a gesture and the frame that
+    /// answers it are paired by, and the run is what groups them with the
+    /// page's own records.
+    #[test]
+    fn a_browser_mark_names_its_surface_and_page() {
+        let input =
+            browser_input_record("mouse:press", Some("Busytools/default"), 2, "run-7", 1_700_000);
+        assert_eq!(input.schema, "forge-perf/v1");
+        assert_eq!(input.kind, "input");
+        assert_eq!(input.run_id, "run-7");
+        assert_eq!(input.ts_ms, 1_700_000);
+        assert_eq!(input.surface.as_deref(), Some("browser"));
+        assert_eq!(input.tab, Some(2));
+        assert_eq!(input.profile.as_deref(), Some("Busytools/default"));
+        assert_eq!(input.name.as_deref(), Some("mouse:press"));
+        assert!(input.seq.is_none(), "an input carries no frame sequence");
+
+        let paint = browser_paint_record(None, 2, 41, "run-7", 1_700_040);
+        assert_eq!(paint.kind, "paint");
+        assert_eq!(paint.seq, Some(41));
+        assert_eq!(paint.tab, Some(2));
+        assert_eq!(paint.surface.as_deref(), Some("browser"));
+        assert!(paint.profile.is_none(), "a page with no name still marks");
+        assert!(paint.name.is_none(), "a paint carries no gesture name");
+    }
+
+    /// **Only the first frame after a gesture is the round trip**, and only
+    /// the gesture's own tab's: another tab's frame answers nothing, and a
+    /// second one is the picture moving on rather than the answer.
+    #[test]
+    fn a_paint_is_owed_once_to_the_gestures_tab() {
+        let mut awaiting: Option<u16> = None;
+        assert!(!paint_owed(&mut awaiting, 2), "no gesture, no round trip");
+        awaiting = Some(2);
+        assert!(!paint_owed(&mut awaiting, 3), "another tab's frame answers nothing");
+        assert_eq!(awaiting, Some(2), "and the gesture is still waiting");
+        assert!(paint_owed(&mut awaiting, 2), "its own tab's frame is the answer");
+        assert!(!paint_owed(&mut awaiting, 2), "and only the first one");
+    }
+
+    /// **The browser's fields are named here or lost**: this struct is the
+    /// boundary the page's records and the shell's own pass through, and a
+    /// field it does not know is parsed away before the write.
+    #[test]
+    fn the_browser_marks_carry_their_page_into_the_log() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let input =
+            browser_input_record("mouse:press", Some("Busytools/default"), 2, "run-7", 1_700_000);
+        let paint = browser_paint_record(Some("Busytools/default"), 2, 41, "run-7", 1_700_040);
+        append(dir.path(), &[input, paint], MAX_BYTES).expect("append");
+
+        let text = std::fs::read_to_string(dir.path().join(PERF_LOG_NAME)).expect("read back");
+        assert!(text.contains("\"surface\":\"browser\""), "the surface reaches the log: {text}");
+        assert!(text.contains("\"tab\":2"), "and the page's tab: {text}");
+        assert!(text.contains("\"seq\":41"), "and the frame's sequence: {text}");
+        assert!(text.contains("\"name\":\"mouse:press\""), "and the gesture: {text}");
+        assert!(
+            text.contains("\"profile\":\"Busytools/default\""),
+            "and the profile it happened on: {text}",
+        );
     }
 
     /// The cap is armed at its own boundary: a file exactly AT the cap

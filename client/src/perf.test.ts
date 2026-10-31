@@ -1183,3 +1183,53 @@ describe('the switch gap marks (#2513)', () => {
     expect(connection?.snapshot_chars_per_s).toBe(2_200_000);
   });
 });
+
+/**
+ * **The browser's round trip is a gesture and the first frame it draws**
+ * (#2645): the takeover paints through a native layer or a canvas, and
+ * neither leaves a mark anywhere else. Each gesture is marked, and only the
+ * frame that answers it - one line per frame would drown a file nobody reads
+ * until something is wrong.
+ */
+describe('the browser surface marks (#2645)', () => {
+  it('writes an input and the first frame drawn after it', () => {
+    const h = harness();
+    h.probe.setSurface('session', 'forge/lead');
+    h.probe.noteBrowserInput('mouse:press', 2, 'Busytools/default');
+    h.probe.noteBrowserPaint(7, 2, 'Busytools/default');
+    h.probe.noteBrowserPaint(8, 2, 'Busytools/default');
+
+    const [input] = h.records.flat().filter((record) => record.kind === 'input');
+    const painted = h.records.flat().filter((record) => record.kind === 'paint');
+    expect(input?.surface, 'the record names the surface it was measured on').toBe('browser');
+    expect(input?.name, 'and the gesture, as it was sent').toBe('mouse:press');
+    expect(input?.tab).toBe(2);
+    expect(input?.profile).toBe('Busytools/default');
+    expect(input?.session, 'the seat the takeover belongs to').toBe('forge/lead');
+    expect(painted, 'only the first frame answers the gesture').toHaveLength(1);
+    expect(painted[0]?.seq, 'the frame its own sequence').toBe(7);
+    expect(painted[0]?.tab).toBe(2);
+    expect(painted[0]?.surface).toBe('browser');
+  });
+
+  it('writes no paint the gesture did not wait for', () => {
+    const h = harness();
+    h.probe.noteBrowserPaint(3, 2, 'Busytools/default');
+    expect(h.records.flat().filter((record) => record.kind === 'paint')).toHaveLength(0);
+  });
+
+  it('does not pair a frame on another tab with the gesture', () => {
+    const h = harness();
+    h.probe.noteBrowserInput('key', 2, 'Busytools/default');
+    h.probe.noteBrowserPaint(4, 3, 'Busytools/default');
+    expect(
+      h.records.flat().filter((record) => record.kind === 'paint'),
+      "another tab's frame is not this gesture's answer",
+    ).toHaveLength(0);
+    h.probe.noteBrowserPaint(5, 2, 'Busytools/default');
+    expect(
+      h.records.flat().filter((record) => record.kind === 'paint'),
+      'the gesture waits for its own tab',
+    ).toHaveLength(1);
+  });
+});

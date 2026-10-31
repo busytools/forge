@@ -10615,7 +10615,7 @@ async fn a_chooser_and_a_download_for_another_tab_are_not_delivered() {
     assert_eq!((id, tab), (9, 1));
 
     let download = |tab, name: &str| forge_primitives::browser::BrowserDownload {
-        tab,
+        tab: Some(tab),
         name: name.to_owned(),
         bytes: b"x".to_vec(),
         error: None,
@@ -10630,8 +10630,25 @@ async fn a_chooser_and_a_download_for_another_tab_are_not_delivered() {
     let ServerMessage::BrowserDownload { tab, name, dropped, .. } = saved else {
         panic!("this tab's save is sent, got {saved:?}")
     };
-    assert_eq!((tab, name.as_str()), (1, "mine.txt"));
+    assert_eq!((tab, name.as_str()), (Some(1), "mine.txt"));
     assert!(!dropped, "a delivered save is not a dropped offer");
+
+    // **A notice that names no tab is the profile's**, so it is this
+    // viewer's to read rather than another tab's to filter out.
+    let _ = stub.downloads.send(forge_primitives::browser::BrowserDownload {
+        tab: None,
+        name: "download".to_owned(),
+        bytes: Vec::new(),
+        error: Some("a finished download was dropped".to_owned()),
+    });
+    let notice = next_server_within(&mut socket, 2000)
+        .await
+        .expect("a profile-level notice reaches the controller");
+    let ServerMessage::BrowserDownload { tab, name, .. } = notice else {
+        panic!("a profile-level notice is sent to the controller, got {notice:?}")
+    };
+    assert_eq!(tab, None, "the notice names no tab");
+    assert_eq!(name, "download");
 }
 
 /// **Only the controller can answer, and only the outstanding ask.** An

@@ -99,7 +99,9 @@ export interface PerfRecord {
     | 'click'
     | 'subscribe'
     | 'snapshot'
-    | 'connection';
+    | 'connection'
+    | 'input'
+    | 'paint';
   run_id: string;
   ts_ms: number;
   version?: string;
@@ -217,6 +219,15 @@ export interface PerfRecord {
    *  read at (#2513). */
   subscribe_rate?: number;
   snapshot_chars_per_s?: number;
+  /**
+   * A browser mark's page: the profile its tab belongs to and the tab's own
+   * number. **The pair is what a gesture and the frame that answers it are
+   * paired by**, since a tab number alone is one per profile.
+   */
+  profile?: string | null;
+  tab?: number;
+  /** A `paint`: the frame's own sequence on its tab. */
+  seq?: number;
 }
 
 interface PerfProbe {
@@ -246,6 +257,10 @@ interface PerfProbe {
   /** A snapshot frame, after its JSON.parse: the frame's length and how long
    *  the parse took (#2513). */
   noteSnapshot(seat: string | null, chars: number, parseMs: number): void;
+  /** One gesture handed to the browser, as it leaves this side (#2645). */
+  noteBrowserInput(kind: string, tab: number, profile: string | null): void;
+  /** One browser frame drawn for `tab`, with its own sequence (#2645). */
+  noteBrowserPaint(seq: number, tab: number, profile: string | null): void;
 }
 
 /** The clock and sources, injectable so a test can produce a known frame. */
@@ -575,6 +590,13 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
    */
   let connSurface: string | null = null;
   let connSession: string | null = null;
+  /**
+   * The tab a gesture is waiting on a frame from: **the round trip is the
+   * first frame drawn after the input**, so the later ones are not written
+   * (#2645). One line per frame would drown a file nobody reads until
+   * something is wrong.
+   */
+  let awaitingPaint: number | null = null;
 
   function emit(record: PerfRecord): void {
     sink([record]);
@@ -778,6 +800,7 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
       connStart = now();
       connSubscribes = 0;
       connSnapshotChars = 0;
+      awaitingPaint = null;
       // Boot's own reading: the router has usually not wired a route yet,
       // so null here is the honest answer rather than a gap.
       windowSurface = surface;
@@ -966,6 +989,34 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
         surface,
       });
     },
+    noteBrowserInput(kind: string, tab: number, profile: string | null): void {
+      awaitingPaint = tab;
+      emit({
+        schema: SCHEMA,
+        kind: 'input',
+        run_id: runId,
+        ts_ms: Date.now(),
+        name: kind,
+        tab,
+        profile,
+        ...(session === null ? {} : { session }),
+        surface: 'browser',
+      });
+    },
+    noteBrowserPaint(seq: number, tab: number, profile: string | null): void {
+      if (awaitingPaint === null || awaitingPaint !== tab) return;
+      awaitingPaint = null;
+      emit({
+        schema: SCHEMA,
+        kind: 'paint',
+        run_id: runId,
+        ts_ms: Date.now(),
+        seq,
+        tab,
+        profile,
+        surface: 'browser',
+      });
+    },
   };
 }
 
@@ -1058,6 +1109,16 @@ export function noteSnapshot(subject: Subject, chars: number, parseMs: number): 
     chars,
     parseMs,
   );
+}
+
+/** One gesture on its way to the browser, as the page's or the shell's path sends it (#2645). */
+export function noteBrowserInput(kind: string, tab: number, profile: string | null): void {
+  running?.noteBrowserInput(kind, tab, profile);
+}
+
+/** One browser frame drawn for `tab`; only the first after a gesture is written (#2645). */
+export function noteBrowserPaint(seq: number, tab: number, profile: string | null): void {
+  running?.noteBrowserPaint(seq, tab, profile);
 }
 
 /**

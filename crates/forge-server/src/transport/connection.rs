@@ -267,6 +267,9 @@ enum ViewEvent {
         /// The offer was dropped before a viewer read it, so its words name a
         /// loss rather than a save that failed.
         dropped: bool,
+        /// How many offers the backlog dropped: the shell's title says one
+        /// loss or many from it.
+        lost: Option<u64>,
     },
     Audio(forge_primitives::browser::BrowserAudio),
 }
@@ -277,6 +280,14 @@ enum ViewEvent {
 /// rather than ending the loop - the same shape [`next_update`] uses. The
 /// watch holds one value per source, so a viewer that falls behind is
 /// served the newest frame rather than a queue.
+/// **The drop notice says "four" in words**, and the backlog that decides it
+/// lives in forge-browser: a change there must change the words, so the
+/// mismatch is a compile error rather than a notice that lies.
+const _: () = assert!(
+    forge_primitives::browser::DOWNLOAD_BACKLOG == 4,
+    "the drop notice says 'four' finished downloads; change the words with the backlog"
+);
+
 async fn next_view_event(viewing: &mut Option<Viewing>) -> ViewEvent {
     let Some(viewing) = viewing.as_mut() else { return std::future::pending().await };
     loop {
@@ -291,7 +302,9 @@ async fn next_view_event(viewing: &mut Option<Viewing>) -> ViewEvent {
             changed = viewing.nav.changed() => changed.map(|()| 3_u8).map_err(|_| 13_u8),
             changed = viewing.files.changed() => changed.map(|()| 4_u8).map_err(|_| 14_u8),
             download = viewing.downloads.recv() => match download {
-                Ok(download) => return ViewEvent::Download { download, dropped: false },
+                Ok(download) => {
+                    return ViewEvent::Download { download, dropped: false, lost: None };
+                }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(lost)) => {
                     tracing::warn!(
                         event_name = "browser_download_lagged",
@@ -308,17 +321,31 @@ async fn next_view_event(viewing: &mut Option<Viewing>) -> ViewEvent {
                     // case is machinery this cut does not add. `dropped`
                     // tells the shell to title it as a loss rather than as a
                     // save that failed.
+                    //
+                    // **The loss is the profile's, not the viewer's tab's**:
+                    // the broadcast carries every tab's offers, so the words
+                    // name the backlog and never a tab, and `tab: None` is
+                    // what says so on the wire.
+                    let why = if lost == 1 {
+                        "a finished download was dropped before this viewer read it: the \
+                         profile's backlog holds at most four finished downloads at a time"
+                            .to_owned()
+                    } else {
+                        format!(
+                            "{lost} finished downloads were dropped before this viewer read \
+                             them: the profile's backlog holds at most four finished downloads \
+                             at a time"
+                        )
+                    };
                     return ViewEvent::Download {
                         download: forge_primitives::browser::BrowserDownload {
-                            tab: viewing.tab,
+                            tab: None,
                             name: "download".to_owned(),
                             bytes: Vec::new(),
-                            error: Some(format!(
-                                "{lost} finished download(s) were dropped before this viewer \
-                                 read them: the browser held at most the profile's backlog"
-                            )),
+                            error: Some(why),
                         },
                         dropped: true,
+                        lost: Some(lost),
                     };
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => {
@@ -1220,11 +1247,13 @@ where
                     // **A finished download goes to the person driving.** A
                     // watcher's connection receives the broadcast and drops
                     // it; the save door is the controller's.
-                    ViewEvent::Download { download, dropped } => {
+                    ViewEvent::Download { download, dropped, lost } => {
                         let Some(viewing) = browser.viewing.as_ref() else { continue };
                         // **A save is the tab's too**: a controller watching
-                        // another tab is not offered this file.
-                        if download.tab != viewing.tab {
+                        // another tab is not offered this file. A notice
+                        // that names no tab is the profile's, and it is this
+                        // viewer's to read.
+                        if download.tab.is_some_and(|tab| tab != viewing.tab) {
                             continue;
                         }
                         if viewing.view.borrow().controller != Some(me) {
@@ -1241,6 +1270,7 @@ where
                                 data,
                                 error: download.error,
                                 dropped,
+                                lost,
                             },
                         )
                         .await?;
@@ -6659,8 +6689,9 @@ mod tests {
     /// **A viewer that fell behind the download backlog is told why.**
     ///
     /// The offer is gone, so the save door hears a download whose own error
-    /// names the loss rather than a write failure; the tab is the viewer's,
-    /// so the notice stays on the tab it belongs to. This is the one branch
+    /// names the loss rather than a write failure. **The loss is the
+    /// profile's**: the broadcast carries every tab's offers, so the notice
+    /// names no tab and carries the count. This is the one branch
     /// the browser retention drops a person can feel, and it is driven here
     /// rather than left to the constants' own tests.
     #[tokio::test]
@@ -6699,7 +6730,7 @@ mod tests {
         // Two offers land while the viewer reads none: the first is evicted.
         for n in 0..2 {
             let offer = BrowserDownload {
-                tab: 3,
+                tab: Some(3),
                 name: format!("file-{n}"),
                 bytes: Vec::new(),
                 error: None,
@@ -6708,18 +6739,86 @@ mod tests {
         }
 
         match next_view_event(&mut viewing).await {
-            ViewEvent::Download { download, dropped } => {
+            ViewEvent::Download { download, dropped, lost } => {
                 assert!(
                     dropped,
                     "the shell is told this is a dropped offer, so it can title it as a loss",
                 );
-                assert_eq!(download.tab, 3, "the notice stays on the viewer's own tab");
+                assert_eq!(
+                    download.tab, None,
+                    "the loss is the profile's, so the notice names no tab",
+                );
+                assert_eq!(lost, Some(1), "and the count the title is read from");
                 let why = download.error.expect("a lag is answered with its own reason");
-                assert!(
-                    why.contains("dropped") && why.contains("backlog"),
-                    "the words name the loss rather than a failed write: {why}",
+                assert_eq!(
+                    why,
+                    "a finished download was dropped before this viewer read it: the profile's \
+                     backlog holds at most four finished downloads at a time",
+                    "the words name one profile-level loss in plain words",
                 );
                 assert!(download.bytes.is_empty(), "there are no bytes to save");
+            }
+            _ => panic!("a lagged download is answered as a download with a reason"),
+        }
+    }
+
+    /// **A viewer further behind hears the count in words**: the title the
+    /// shell draws is pluralized from it, so the body has to say the same
+    /// number, and the backlog sentence has to name the real ceiling.
+    #[tokio::test]
+    async fn a_viewer_two_offers_behind_hears_the_count() {
+        use forge_primitives::browser::{BrowserDownload, BrowserTabList, BrowserViewState};
+
+        let (downloads, downloads_rx) = tokio::sync::broadcast::channel(1);
+        let (_frames, frames_rx) = tokio::sync::watch::channel(None);
+        let (_view, view_rx) = tokio::sync::watch::channel(BrowserViewState::default());
+        let (_nav, nav_rx) = tokio::sync::watch::channel(None);
+        let (_failures, failures_rx) = tokio::sync::watch::channel(None::<String>);
+        let (_files, files_rx) = tokio::sync::watch::channel(None);
+        let (_audio, audio_rx) = tokio::sync::broadcast::channel(4);
+        let (_tabs, tabs_rx) = tokio::sync::watch::channel(BrowserTabList {
+            profile: "O/default".to_owned(),
+            id: 1,
+            up: true,
+            connected: true,
+            closing_at_ms: None,
+            rows: Vec::new(),
+        });
+        let attachment = forge_workspace::browser::BrowserAttachment {
+            key: "O/default".to_owned(),
+            id: 1,
+            tab: 3,
+            frames: frames_rx,
+            view: view_rx,
+            tabs: tabs_rx,
+            nav: nav_rx,
+            failures: failures_rx,
+            files: files_rx,
+            downloads: downloads_rx,
+            audio: audio_rx,
+        };
+        let mut viewing = Some(Viewing::new(attachment));
+        for n in 0..3 {
+            let offer = BrowserDownload {
+                tab: Some(3),
+                name: format!("file-{n}"),
+                bytes: Vec::new(),
+                error: None,
+            };
+            downloads.send(offer).expect("the viewer is attached");
+        }
+
+        match next_view_event(&mut viewing).await {
+            ViewEvent::Download { download, lost, .. } => {
+                assert_eq!(lost, Some(2), "two offers went before the viewer read one");
+                assert_eq!(
+                    download.error.as_deref(),
+                    Some(
+                        "2 finished downloads were dropped before this viewer read them: the \
+                         profile's backlog holds at most four finished downloads at a time"
+                    ),
+                    "the counted body says the same number and the same ceiling",
+                );
             }
             _ => panic!("a lagged download is answered as a download with a reason"),
         }

@@ -238,7 +238,11 @@ clipboard and context menus are not part of this cut.
 the file beside the profile and announces it as a `browser_download`; the
 shell opens the platform's own save door and writes the bytes there, or says
 why it could not. A file past 32 MiB is refused in words rather than handed
-over, and **only the controller of that tab is sent one**.
+over, and **only the controller of that tab is sent one**. **A drop the
+backlog lost names the profile rather than a tab**: that notice carries no
+tab, says how many finished downloads were dropped and that the profile's
+backlog holds at most four at a time, and its title reads one loss or many
+from the count.
 
 **The page's sound plays at the controlling client, for the viewed tab.** The
 host relays what the page plays as PCM packets beside the frames, each

@@ -21,7 +21,7 @@ use forge_primitives::SessionSlot;
 use forge_primitives::browser::{
     BrowserAudio, BrowserDownload, BrowserFileAsk, BrowserFrame, BrowserInputEvent,
     BrowserNavState, BrowserPart, BrowserTabList, BrowserUpload, BrowserViewState,
-    MAX_UPLOAD_BYTES, MAX_UPLOAD_FILES, MouseAction, ProfileKey,
+    DOWNLOAD_BACKLOG, MAX_UPLOAD_BYTES, MAX_UPLOAD_FILES, MouseAction, ProfileKey,
 };
 use serde_json::{Value, json};
 use tokio::sync::{Mutex as AsyncMutex, broadcast, mpsc, watch};
@@ -3695,17 +3695,6 @@ pub struct Profile {
 /// The most a finished download may carry to a viewer.
 const MAX_DOWNLOAD_BYTES: u64 = 32 * 1024 * 1024;
 
-/// How many finished downloads one profile may hold for a lagging viewer.
-///
-/// **The backlog is memory, and a download is bytes.** Every reader that is
-/// behind keeps up to this many `BrowserDownload`s, each up to
-/// [`MAX_DOWNLOAD_BYTES`], so the ceiling is this times 32 MiB per profile -
-/// 128 MiB here, against 512 at the sixteen this used to keep. A viewer that
-/// lags past it loses the oldest offers, which is already what a broadcast
-/// does; what it must not do is hold half a gigabyte per open profile for a
-/// page that saved sixteen files while nobody looked.
-const DOWNLOAD_BACKLOG: usize = 4;
-
 /// What the host last said about a recording: whether the writer opened, and -
 /// once it stopped - how the take ended.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -3732,7 +3721,7 @@ fn read_download(dir: &Path, tab: u16, name: &str, path: &str, size: u64) -> Bro
             path.display()
         );
         return BrowserDownload {
-            tab,
+            tab: Some(tab),
             name: name.to_owned(),
             bytes: Vec::new(),
             error: Some("the downloaded file could not be read on the server".to_owned()),
@@ -3741,7 +3730,7 @@ fn read_download(dir: &Path, tab: u16, name: &str, path: &str, size: u64) -> Bro
     if size > MAX_DOWNLOAD_BYTES {
         let _ = std::fs::remove_file(path);
         return BrowserDownload {
-            tab,
+            tab: Some(tab),
             name: name.to_owned(),
             bytes: Vec::new(),
             error: Some("this file is larger than 32 MiB, so the viewer cannot save it".to_owned()),
@@ -3750,14 +3739,14 @@ fn read_download(dir: &Path, tab: u16, name: &str, path: &str, size: u64) -> Bro
     let bytes = std::fs::read(path);
     let _ = std::fs::remove_file(path);
     match bytes {
-        Ok(bytes) => BrowserDownload { tab, name: name.to_owned(), bytes, error: None },
+        Ok(bytes) => BrowserDownload { tab: Some(tab), name: name.to_owned(), bytes, error: None },
         Err(why) => {
             tracing::warn!(
                 "a finished download could not be read (event_name browser_download_unreadable, \
                  tab {tab}, name {name}): {why}"
             );
             BrowserDownload {
-                tab,
+                tab: Some(tab),
                 name: name.to_owned(),
                 bytes: Vec::new(),
                 error: Some("the downloaded file could not be read on the server".to_owned()),
@@ -5992,14 +5981,16 @@ fn device_pixels(css: u32, scale: f64) -> u32 {
 
 #[cfg(test)]
 mod tests {
+    use forge_primitives::browser::DOWNLOAD_BACKLOG;
+
     use super::{
-        BrowserService, Call, ChooserAnswer, ChooserFuture, ChooserLedger, DOWNLOAD_BACKLOG,
-        DeadDriverOutcome, DeadHost, DeadPageOutcome, Driven, HostEnd, Profile, ReconcilePass,
-        State, UploadRequest, agent_upload_paths, agent_upload_refused, begin_upload,
-        captured_generation, clear_if_dead, dead_driver_answer, dead_host_answer, dead_page_answer,
-        death_cause, device_pixels, file_name, installed_generation, note_agent_answered,
-        note_surfaced_opened, note_upload_finished, owner_size, pair_tab_events,
-        stage_agent_uploads, upload_request, window_dimension, write_uploads,
+        BrowserService, Call, ChooserAnswer, ChooserFuture, ChooserLedger, DeadDriverOutcome,
+        DeadHost, DeadPageOutcome, Driven, HostEnd, Profile, ReconcilePass, State, UploadRequest,
+        agent_upload_paths, agent_upload_refused, begin_upload, captured_generation, clear_if_dead,
+        dead_driver_answer, dead_host_answer, dead_page_answer, death_cause, device_pixels,
+        file_name, installed_generation, note_agent_answered, note_surfaced_opened,
+        note_upload_finished, owner_size, pair_tab_events, stage_agent_uploads, upload_request,
+        window_dimension, write_uploads,
     };
     use forge_primitives::SessionSlot;
     use forge_primitives::browser::BrowserDownload;
@@ -6114,7 +6105,7 @@ mod tests {
         let small = downloads.join("1-small.txt");
         std::fs::write(&small, b"hello").expect("a small file");
         let read = read_download(dir.path(), 2, "small.txt", small.to_str().expect("a path"), 5);
-        assert_eq!(read.tab, 2, "the tab comes with the file");
+        assert_eq!(read.tab, Some(2), "the tab comes with the file");
         assert_eq!(read.bytes, b"hello", "the bytes are handed on");
         assert!(read.error.is_none());
         assert!(!small.exists(), "the server's copy goes once it is read");
@@ -10210,7 +10201,12 @@ mod tests {
 
     /// **Two calls on one profile take turns.** The driver's current page is
     /// a single slot, so overlapping calls would swap it under each other.
-    #[tokio::test]
+    ///
+    /// **The clock is paused so the wait is the code's, not the runner's**:
+    /// the driver's 80 ms sleep and the queue's test bound are virtual, so a
+    /// loaded machine cannot spend the headroom and refuse the second call
+    /// as busy (#2579).
+    #[tokio::test(start_paused = true)]
     async fn two_calls_on_one_profile_take_turns() {
         let dir = tempfile::tempdir().expect("a temp dir");
         let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
@@ -10749,7 +10745,7 @@ mod tests {
             tokio::sync::broadcast::channel::<BrowserDownload>(DOWNLOAD_BACKLOG);
         for n in 0..5 {
             let offer = BrowserDownload {
-                tab: 0,
+                tab: Some(0),
                 name: format!("file-{n}"),
                 bytes: Vec::new(),
                 error: None,
