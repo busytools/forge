@@ -57,11 +57,11 @@ pub(super) const START_TIMEOUT: Duration = Duration::from_secs(15);
 /// fake in the profile's driver slot without a child process.
 #[async_trait::async_trait]
 pub trait TabDriver: Send + Sync {
-    /// The driver's tabs: each page's guid, its live target id and its row.
+    /// The driver's tabs: each page's CDP target id and its row.
     async fn tabs_within(&self, bound: Duration) -> Result<Vec<DriverTab>, String>;
 
-    /// Bring one tab to the front by its Playwright index.
-    async fn select(&self, index: usize, bound: Duration) -> Result<(), String>;
+    /// Bring one tab to the front by its CDP target id.
+    async fn select(&self, target: &str, bound: Duration) -> Result<(), String>;
 
     /// Run one tool under a bound of its own.
     async fn call_within(
@@ -81,8 +81,8 @@ impl TabDriver for Driver {
         Driver::tabs_within(self, bound).await
     }
 
-    async fn select(&self, index: usize, bound: Duration) -> Result<(), String> {
-        Driver::select(self, index, bound).await
+    async fn select(&self, target: &str, bound: Duration) -> Result<(), String> {
+        Driver::select(self, target, bound).await
     }
 
     async fn call_within(
@@ -315,11 +315,11 @@ impl Driver {
         Ok(tabs)
     }
 
-    /// Bring one tab to the front by its Playwright index.
-    pub async fn select(&self, index: usize, bound: Duration) -> Result<(), String> {
+    /// Bring one tab to the front by its CDP target id.
+    pub async fn select(&self, target: &str, bound: Duration) -> Result<(), String> {
         self.call_raw(
             "browser_tabs",
-            serde_json::json!({ "action": "select", "index": index }),
+            serde_json::json!({ "action": "select", "target": target }),
             bound,
         )
         .await
@@ -640,7 +640,6 @@ pub fn node_path(stack: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tabs::index_of;
     use rmcp::model::CallToolResult;
 
     /// **An attach that never finished is the host's failure, not the
@@ -870,18 +869,16 @@ mod tests {
         assert!(browser_tabs_of("no tabs here").is_empty());
     }
 
-    /// **A page call selects the session's tab first.** The index comes from a
-    /// fresh listing, so a close by another session since the last call cannot
-    /// leave the selection one tab off.
+    /// **A listing carries the target id a call selects by**, and nothing
+    /// else names a page: the driver's own position renumbers on every close.
     #[test]
-    fn a_listing_gives_the_index_of_a_known_page() {
-        let listing = "FORGE-TABS [{\"i\":0,\"id\":\"A\",\"target\":\"tA\",\"title\":\"x\",\
-                       \"url\":\"u\",\"current\":false},{\"i\":1,\"id\":\"B\",\"target\":\"tB\",\
+    fn a_listing_carries_the_target_a_call_selects_by() {
+        let listing = "FORGE-TABS [{\"i\":0,\"target\":\"tA\",\"title\":\"x\",\
+                       \"url\":\"u\",\"current\":false},{\"i\":1,\"target\":\"tB\",\
                        \"title\":\"y\",\"url\":\"v\",\"current\":true}]\n";
         let tabs = crate::tabs::parse_export(listing).expect("the export parses");
-        assert_eq!(index_of(&tabs, "B"), Some(1), "the page guid names the tab");
-        assert_eq!(index_of(&tabs, "tB"), None, "a target id is not the name");
-        assert_eq!(index_of(&tabs, "C"), None);
+        assert_eq!(tabs[1].target, "tB", "the target is the page's name");
+        assert!(tabs[1].current, "and the row says whether it is the current tab");
     }
 
     #[test]

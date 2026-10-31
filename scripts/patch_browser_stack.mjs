@@ -77,11 +77,95 @@ const TABLIST_NEEDLE = readFileSync(
   "utf8",
 ).replace(/\n$/, "");
 
-// **A page guid survives a navigation; a CEF target id does not.** The
-// service keys its tabs by the guid and reads the target id afresh on every
-// listing, because CEF swaps it when the page navigates and CDP input is
-// addressed by it.
+const TABSELECT_NEEDLE = readFileSync(
+  new URL("./playwright-mcp-0.0.83-tabselect.txt", import.meta.url),
+  "utf8",
+).replace(/\n$/, "");
+
+const TABSCHEMA_NEEDLE = readFileSync(
+  new URL("./playwright-mcp-0.0.83-tabschema.txt", import.meta.url),
+  "utf8",
+).replace(/\n$/, "");
+
+// **A tab is selected by its target, never by its position.** The position
+// renumbers on every close and can only be learned from a listing; the CDP
+// target is what the browser names every page by and what forge's registry
+// already holds, so a call selects its tab with no listing at all (#2732).
+const TABSELECT_REPLACEMENT = [
+  "          case \"select\": {",
+  "            // FORGE_SELECT_TARGET 1: a target names the page, not a position.",
+  "            if (params2.target !== void 0) {",
+  "              const forgeAt = context.tabs().findIndex((tab2) => tab2.forgeTarget === params2.target);",
+  "              if (forgeAt < 0)",
+  '                throw new Error(`Tab ${params2.target} is not one the driver can name`);',
+  "              await context.selectTab(forgeAt);",
+  "              break;",
+  "            }",
+  "            if (params2.index === void 0)",
+  '              throw new Error("Tab index is required");',
+  "            await context.selectTab(params2.index);",
+  "            break;",
+  "          }",
+].join("\n");
+
+const TABSCHEMA_REPLACEMENT = [
+  '          index: z25.number().optional().describe("Tab index, used for close/select. If omitted for close, current tab is closed."),',
+  "          // FORGE_SELECT_TARGET_SCHEMA 1: forge names a tab by its CDP target.",
+  '          target: z25.string().optional().describe("CDP target id of the tab to select."),',
+  '          url: z25.string().optional().describe("URL to navigate to in the new tab, used for new.")',
+].join("\n");
+
+// **A listing is a read of memory, never of a renderer.** `Target.getTargetInfo`
+// is a page-domain call: a page paused on a `confirm()` (or a page whose script
+// stopped) holds it for ever, and the old listing attached a CDP session to
+// every tab on every call (#2732). The target id is therefore read once per
+// page and cached on the tab, bounded on both legs, and the row itself is
+// built from what the driver already holds.
 const TAB_REPLACEMENT = [
+  "        const forgeOpenTabs = context.tabs();",
+  "        // FORGE_TAB_IDS_PATCH 3: the target id is cached per page, and a",
+  "        // listing reads no renderer. A fill that timed out is retried after",
+  "        // a window, so a page that was paused when the driver attached heals.",
+  "        const forgeRows = [];",
+  "        for (let i = 0; i < forgeOpenTabs.length; i++) {",
+  "          const forgeTab = forgeOpenTabs[i];",
+  "          const forgeStale =",
+  "            forgeTab.forgeTarget === void 0 ||",
+  '            (forgeTab.forgeTarget === "" && Date.now() - (forgeTab.forgeTargetAt || 0) > 5000);',
+  "          if (forgeStale) {",
+  "            let forgeTarget = null;",
+  "            try {",
+  "              const forgeTimeout = () =>",
+  '                new Promise((_, reject) => setTimeout(() => reject(new Error("forge target read timed out")), 1000));',
+  "              const forgeSession = await Promise.race([",
+  "                forgeTab.page.context().newCDPSession(forgeTab.page),",
+  "                forgeTimeout()",
+  "              ]);",
+  "              const forgeInfo = await Promise.race([",
+  '                forgeSession.send("Target.getTargetInfo"),',
+  "                forgeTimeout()",
+  "              ]);",
+  '              forgeTarget = (forgeInfo && forgeInfo.targetInfo && forgeInfo.targetInfo.targetId) || "";',
+  "              await forgeSession.detach().catch(() => {});",
+  "            } catch (forgeWhy) {",
+  '              forgeTarget = "";',
+  "            }",
+  "            forgeTab.forgeTarget = forgeTarget;",
+  "            forgeTab.forgeTargetAt = Date.now();",
+  "          }",
+  "          forgeRows.push({",
+  "            i,",
+  "            target: forgeTab.forgeTarget,",
+  "            title: (forgeTab._lastHeader && forgeTab._lastHeader.title) || \"\",",
+  "            url: forgeTab.page.url(),",
+  "            current: forgeTab.isCurrentTab()",
+  "          });",
+  "        }",
+  '        response2.addTextResult("FORGE-TABS " + JSON.stringify(forgeRows) + "\\n");',
+].join("\n");
+
+/// The version-2 replacement, rewritten in place on an existing stack.
+const OLD_TAB_REPLACEMENT_V2 = [
   "        const forgeOpenTabs = context.tabs();",
   "        const tabHeaders = await Promise.all(forgeOpenTabs.map((tab2) => tab2.headerSnapshot()));",
   "        const result2 = renderTabsMarkdown(tabHeaders);",
@@ -185,15 +269,34 @@ const PATCHES = [
   },
   {
     label: "tab ids",
-    marker: "FORGE_TAB_IDS_PATCH 2",
+    marker: "FORGE_TAB_IDS_PATCH 3",
     needle: TAB_NEEDLE,
     replacement: TAB_REPLACEMENT,
-    old: OLD_TAB_REPLACEMENT,
+    old: [OLD_TAB_REPLACEMENT_V2, OLD_TAB_REPLACEMENT],
     missing:
       "the pinned Playwright bundle does not carry the tab listing this patch " +
-      "expects (page._guid and a Target.getTargetInfo session). Bump " +
-      "scripts/patch_browser_stack.mjs with the @playwright/mcp version.",
+      "expects. Bump scripts/patch_browser_stack.mjs with the @playwright/mcp version.",
     twice: "the tab listing appears more than once; refusing to guess.",
+  },
+  {
+    label: "tab select by target",
+    marker: "FORGE_SELECT_TARGET 1",
+    needle: TABSELECT_NEEDLE,
+    replacement: TABSELECT_REPLACEMENT,
+    missing:
+      "the pinned Playwright bundle does not carry the select arm this patch " +
+      "expects. Bump scripts/patch_browser_stack.mjs with the @playwright/mcp version.",
+    twice: "the select arm appears more than once; refusing to guess.",
+  },
+  {
+    label: "tab select target field",
+    marker: "FORGE_SELECT_TARGET_SCHEMA 1",
+    needle: TABSCHEMA_NEEDLE,
+    replacement: TABSCHEMA_REPLACEMENT,
+    missing:
+      "the pinned Playwright bundle does not carry the tab schema this patch " +
+      "expects. Bump scripts/patch_browser_stack.mjs with the @playwright/mcp version.",
+    twice: "the tab schema appears more than once; refusing to guess.",
   },
   {
     label: "tab list reads",
@@ -219,6 +322,14 @@ if (args[0] === "--print-tabs-needle") {
 }
 if (args[0] === "--print-tablist-needle") {
   process.stdout.write(`${TABLIST_NEEDLE}\n`);
+  process.exit(0);
+}
+if (args[0] === "--print-tabselect-needle") {
+  process.stdout.write(`${TABSELECT_NEEDLE}\n`);
+  process.exit(0);
+}
+if (args[0] === "--print-tabschema-needle") {
+  process.stdout.write(`${TABSCHEMA_NEEDLE}\n`);
   process.exit(0);
 }
 if (args[0] === "--print-old") {
@@ -257,8 +368,10 @@ for (const patch of PATCHES) {
     console.log(`[..] the ${patch.label} patch is already applied (${bundle})`);
     continue;
   }
-  if (patch.old !== undefined && patched.includes(patch.old)) {
-    patched = patched.replace(patch.old, patch.replacement);
+  const olds = patch.old === undefined ? [] : [patch.old].flat();
+  const old = olds.find((old) => patched.includes(old));
+  if (old !== undefined) {
+    patched = patched.replace(old, patch.replacement);
     pending.push(`[OK] the ${patch.label} patch is updated (${bundle})`);
     continue;
   }
