@@ -1506,42 +1506,52 @@ pub(crate) async fn sweep_scope(
             // A parent the window still shows says whether the thread moved
             // at all, and one that did not costs no call. A parent the
             // window has lost has to be fetched to find out - which is the
-            // one call per sweep the aged-out case has always cost.
-            if let Some(latest) = latest_replies.get(thread.parent_ts.as_str())
+            // one call per sweep the aged-out case has always cost. A
+            // thread the user is in is read regardless: `latest_reply` does
+            // not move when a reply is edited, so the window cannot say a
+            // correction arrived.
+            // A parent the window still shows says whether the thread moved
+            // at all, and one that did not costs no call. A parent the
+            // window has lost has to be fetched to find out - which is the
+            // one call per sweep the aged-out case has always cost. A
+            // thread the user is in is read regardless: `latest_reply` does
+            // not move when a reply is edited, so the window cannot say a
+            // correction arrived.
+            if !thread.participating
+                && let Some(latest) = latest_replies.get(thread.parent_ts.as_str())
                 && cursor.as_deref().is_some_and(|cursor| *latest <= cursor)
             {
                 continue;
             }
-            // Past the cursor for a thread the user is already known to be
-            // in; the whole thread for one he is not, since whether he is in
-            // it is read off the replies and his own reply can sit behind
-            // the anchor's seed. Read once, and remembered.
-            let read_from = if thread.participating { cursor.as_deref() } else { None };
-            let replies =
-                match fetch_replies(api, &conversation.id, &thread.parent_ts, read_from).await {
-                    Ok(replies) => replies,
-                    Err(SlackError::RateLimited { retry_after, .. }) => {
-                        return Ok(SweepOutcome {
-                            delivered,
-                            rate_limited: Some(retry_after),
-                            ..Default::default()
-                        });
-                    }
-                    // One thread's failure is not the workspace's: the
-                    // walk continues with the threads after it, and the
-                    // cursor stays where it was.
-                    Err(error) => {
-                        tracing::warn!(
-                            target: "forge_connectors::slack",
-                            workspace,
-                            conversation = %conversation.id,
-                            parent = %thread.parent_ts,
-                            %error,
-                            "walking a followed thread failed; skipping it this tick",
-                        );
-                        continue;
-                    }
-                };
+            // **The whole thread, every tick.** A correction keeps its
+            // reply's `ts`, so a read past the cursor never sees one, and
+            // whether the user is in the thread is read off the replies -
+            // his own reply can sit behind the anchor's seed.
+            let replies = match fetch_replies(api, &conversation.id, &thread.parent_ts, None).await
+            {
+                Ok(replies) => replies,
+                Err(SlackError::RateLimited { retry_after, .. }) => {
+                    return Ok(SweepOutcome {
+                        delivered,
+                        rate_limited: Some(retry_after),
+                        ..Default::default()
+                    });
+                }
+                // One thread's failure is not the workspace's: the
+                // walk continues with the threads after it, and the
+                // cursor stays where it was.
+                Err(error) => {
+                    tracing::warn!(
+                        target: "forge_connectors::slack",
+                        workspace,
+                        conversation = %conversation.id,
+                        parent = %thread.parent_ts,
+                        %error,
+                        "walking a followed thread failed; skipping it this tick",
+                    );
+                    continue;
+                }
+            };
             let participated = thread.participating || participating(&replies, &user_id);
             if participated && !thread.participating {
                 host.mark_thread_participating(workspace, &conversation.id, &thread.parent_ts);
@@ -1553,10 +1563,8 @@ pub(crate) async fn sweep_scope(
             // cost no call at all - held back only by a failed hand-off.
             let newest_seen: Option<String> = replies
                 .iter()
-                .filter(|reply| {
-                    reply.ts != thread.parent_ts && is_newer(&reply.ts, cursor.as_deref())
-                })
-                .map(|reply| reply.ts.clone())
+                .filter(|reply| reply.ts != thread.parent_ts && is_news(reply, cursor.as_deref()))
+                .map(|reply| newest_stamp(reply).to_owned())
                 .max();
             if !participated {
                 if let Some(newest) = newest_seen {
@@ -1576,7 +1584,7 @@ pub(crate) async fn sweep_scope(
             for reply in &replies {
                 // Slack repeats the parent on every page of the walk.
                 if reply.ts == thread.parent_ts
-                    || !is_newer(&reply.ts, cursor.as_deref())
+                    || !is_news(reply, cursor.as_deref())
                     || !seen.insert(reply.ts.clone())
                 {
                     continue;
@@ -1784,7 +1792,9 @@ pub(crate) async fn sweep_mentions(
             // own posts, where that handle can be the Slack app's name.
             let author = if hit.user.as_deref() == Some(own.id) {
                 match own_name(host, api, workspace, &mut own).await {
-                    Ok(name) => name.or_else(|| hit.username.clone().filter(|name| !name.is_empty())),
+                    Ok(name) => {
+                        name.or_else(|| hit.username.clone().filter(|name| !name.is_empty()))
+                    }
                     Err(SlackError::RateLimited { retry_after, .. }) => {
                         return Ok(SweepOutcome {
                             delivered,
@@ -5023,6 +5033,66 @@ mod tests {
         );
     }
 
+    /// A correction in a thread the user is in, with its parent never news
+    /// again. An edit keeps the reply's `ts`, so `latest_reply` does not
+    /// move: the window's unchanged check must not leave a participating
+    /// thread unread, and the walk must judge a reply by its edit as well
+    /// as its `ts`. Neither half is what the conversation path does - it
+    /// re-reads the thread only when its parent is redelivered.
+    #[tokio::test]
+    async fn a_corrected_reply_in_a_participating_thread_arrives_without_its_parent() {
+        let host = FakeHost::with_subscriptions(vec![sub_conversation_owned_by(
+            "acme",
+            "forge",
+            Some("tester"),
+            "C1",
+        )]);
+        let parent = parent_with_latest_reply("100.0", 2, "150.0");
+        host.set_watermark("acme", "C1", "050.0");
+        host.seed_history("C1", vec![parent.clone()]);
+        host.seed_replies(
+            "C1",
+            "100.0",
+            vec![
+                parent.clone(),
+                history_message("105.0", "U1", "the user's own reply"),
+                reply("150.0", "100.0", "U8", "the answer"),
+            ],
+        );
+        sweep(&host, &host, "acme").await.expect("trigger sweep");
+        assert!(
+            host.delivered().iter().any(|message| message.ts == "150.0"),
+            "the trigger sweep delivers the reply: {:?}",
+            host.delivered(),
+        );
+
+        // The parent is still in the newest page and never moves; the reply
+        // below the thread cursor is corrected.
+        let mut corrected = reply("150.0", "100.0", "U8", "the answer, corrected");
+        corrected.edited = Some("990.0".to_owned());
+        host.seed_history("C1", vec![parent_with_latest_reply("100.0", 2, "150.0")]);
+        host.seed_replies(
+            "C1",
+            "100.0",
+            vec![parent, history_message("105.0", "U1", "the user's own reply"), corrected],
+        );
+
+        sweep(&host, &host, "acme").await.expect("the correction's sweep");
+
+        let delivered = host.delivered();
+        assert!(
+            delivered
+                .iter()
+                .any(|message| message.ts == "150.0" && message.text == "the answer, corrected"),
+            "the corrected reply arrives though its parent never moved: {delivered:?}",
+        );
+        assert_eq!(
+            host.thread_cursor("acme", "C1", "100.0").as_deref(),
+            Some("990.0"),
+            "and the thread cursor clears the edit, so the next tick does not re-offer it",
+        );
+    }
+
     /// The pin that would have caught the original Critical: the trigger
     /// sweep delivers a parent, and a reply that arrives on a LATER sweep
     /// still reaches the owning session - the parent has aged past the
@@ -5084,8 +5154,9 @@ mod tests {
         );
         assert_eq!(
             host.thread_cursor("acme", "C1", "100.0"),
-            Some("150.0".to_owned()),
-            "the thread cursor advances over the delivered reply",
+            Some("160.0".to_owned()),
+            "the thread cursor clears the delivered reply's edit too, so the next tick does not \
+             re-offer it",
         );
     }
 
@@ -5519,15 +5590,17 @@ mod tests {
             host.delivered(),
         );
 
-        // And a thread that has not moved since is not fetched again: the
-        // window already said so.
+        // A thread the user is in is read on every tick, even when the
+        // window says it has not moved: an edit moves nothing, so the read
+        // is the only way a correction reaches him. The window's skip still
+        // spares a thread he is NOT in, which its own test pins.
         let calls = host.replies_calls();
         sweep(&host, &host, "acme").await.expect("a quiet sweep");
-        assert_eq!(host.replies_calls(), calls, "a thread that has not moved costs no call");
+        assert_eq!(host.replies_calls(), calls + 1, "a participating thread is read every tick");
 
-        // A later reply still arrives. The read now starts past the cursor,
-        // so his own reply is not in what comes back - the thread is known
-        // to be one he is in, and that has to be what decides.
+        // A later reply still arrives. The whole thread comes back, his own
+        // reply included - the thread is known to be one he is in, and that
+        // has to be what decides.
         let parent = parent_with_latest_reply("100.0", 3, "170.0");
         host.seed_history("C1", vec![parent.clone()]);
         host.seed_replies(
