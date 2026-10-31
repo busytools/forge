@@ -99,8 +99,10 @@ step.
 
 - **Clippy runs at `pedantic`, denied.** `unwrap`, `expect`, `panic`,
   `exit`, `todo` and `unimplemented` are denied, and `unsafe_code` is
-  forbidden workspace-wide. `clippy.toml` relaxes `unwrap`, `expect`
-  and `panic` in tests; the other three stay denied everywhere.
+  forbidden workspace-wide. The client shell crate, a workspace root of
+  its own, mirrors the table and denies `unsafe_code` with scoped
+  allows in the three FFI modules. `clippy.toml` relaxes `unwrap`,
+  `expect` and `panic` in tests; the other three stay denied everywhere.
 - **No `mod.rs`.** `foo.rs` sits next to `foo/`.
 - **`WARN` and `ERROR` are for forge's own problems.** A session's own
   work, its tool call failing or its command exiting non-zero, is

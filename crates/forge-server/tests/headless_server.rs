@@ -15,6 +15,85 @@ use std::time::Duration;
 
 use serde_json::Value;
 
+/// A wedge bound for a wait on the child's own delivery - the line it logs
+/// once its socket is listening. The wait itself ends when the delivery
+/// lands, so this is reached only by a stuck child or a delivery slower
+/// still; `the_nextest_kill_stays_above_every_wait_stack` keeps the kill this
+/// binary runs with above the largest stack, so the failure names its
+/// property instead of dying as a bare timeout.
+const WEDGE: Duration = Duration::from_secs(100);
+
+/// The session spawn's own budget plus a settle margin, the same derivation
+/// forge-workspace's `spawn_wait` uses: a wait shorter than the budget under
+/// it fails a machine that is merely slow.
+fn spawn_wait() -> Duration {
+    forge_sdk::INIT_HANDSHAKE_TIMEOUT + Duration::from_secs(5)
+}
+
+/// A marker the mock writes once its spawn has run: the boot wave may hold
+/// its own [`BOOT_WAVE_WAIT`] for the accounts before dispatching, and the
+/// spawn then has [`spawn_wait`] of its own.
+///
+/// [`BOOT_WAVE_WAIT`]: forge_server::boot::BOOT_WAVE_WAIT
+fn marker_wait() -> Duration {
+    forge_server::boot::BOOT_WAVE_WAIT + spawn_wait()
+}
+
+/// A stop's own budget plus a settle margin. The workspace's `TEARDOWN_WAIT`
+/// is `CLOSE_WAIT_TIMEOUT` plus 5 s, and the process then exits; this adds
+/// the exit's own 5 s on top of that sum.
+fn stop_wait() -> Duration {
+    forge_sdk::CLOSE_WAIT_TIMEOUT + Duration::from_secs(10)
+}
+
+/// **The kill and the waits it has to clear live in two files and nothing
+/// wires them together.** A budget that grows past the kill's sum would show
+/// up only as a bare nextest timeout with no property named, so this reads
+/// the override and checks the arithmetic its comment states.
+#[test]
+fn the_nextest_kill_stays_above_every_wait_stack() {
+    let config =
+        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../.config/nextest.toml"))
+            .expect("read the nextest config");
+    let ours = config
+        .split("[[profile.default.overrides]]")
+        .find(|block| block.contains("binary(headless_server)"))
+        .expect("the headless server override is present");
+    let period: u64 = ours
+        .split("period = \"")
+        .nth(1)
+        .and_then(|rest| rest.split('s').next())
+        .and_then(|seconds| seconds.parse().ok())
+        .expect("the override names its period in whole seconds");
+    let after: u64 = ours
+        .split("terminate-after = ")
+        .nth(1)
+        .and_then(|rest| rest.split(|char: char| !char.is_ascii_digit()).next())
+        .and_then(|count| count.parse().ok())
+        .expect("the override names its terminate-after");
+    let kill = Duration::from_secs(period * after);
+
+    // One entry per test that holds waits, in the shape it is written.
+    let stacks = [
+        // The stop scenario runs once per signal.
+        (WEDGE + marker_wait() + stop_wait() + stop_wait()) * 2,
+        // One marker, one stop, one descendant.
+        WEDGE + marker_wait() + stop_wait() + stop_wait(),
+        // The direct-signal test: the pid marker and the TERM trap.
+        WEDGE + marker_wait() + marker_wait() + stop_wait() + stop_wait(),
+        // Two sessions' markers and both descendants.
+        WEDGE + marker_wait() + marker_wait() + stop_wait() + stop_wait() + stop_wait(),
+        // Two boots around one walk.
+        (WEDGE + stop_wait()) * 2 + Duration::from_secs(3),
+        // Two listening waits around a refused boot.
+        (WEDGE * 3) + stop_wait(),
+    ];
+    for stack in stacks {
+        assert!(stack < kill, "a legitimate stack of {stack:?} must stay under the {kill:?} kill");
+    }
+    assert!(WEDGE < kill, "one listening wedge of {WEDGE:?} must stay under the {kill:?} kill");
+}
+
 /// Two ports the OS just handed out.
 ///
 /// Both are bound at once before either is released, so they cannot be the
@@ -81,10 +160,28 @@ port = {gateway_port}
     (home, config)
 }
 
-/// The server binary over one scratch tree.
-fn server_command(home: &std::path::Path, config: &std::path::Path) -> tokio::process::Command {
+/// The server binary over one scratch tree, logging to `log`.
+///
+/// **The log is named rather than defaulted**: the tests wait on the line the
+/// binary writes once its socket is listening, and a restart in the same
+/// scratch home must not read the previous run's line. The flag beats the
+/// default path, so no test depends on where the host's data dir resolves.
+fn server_command(
+    home: &std::path::Path,
+    config: &std::path::Path,
+    log: &std::path::Path,
+) -> tokio::process::Command {
     let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_forge"));
     command
+        .arg("--log-file")
+        .arg(log)
+        // **The listening line must not depend on the developer's shell.** The
+        // filter falls back to `RUST_LOG` when the flag is absent, so a
+        // `RUST_LOG=warn` would hide the record every wait reads and turn
+        // these tests into 100 s wedges naming the wrong thing.
+        .arg("--log-filter")
+        .arg("info,app.lifecycle=debug")
+        .env_remove("RUST_LOG")
         .env("HOME", home)
         // The data dir too: on a Linux runner with XDG_DATA_HOME exported,
         // the store and the single-instance lock would resolve outside the
@@ -131,21 +228,37 @@ async fn terminate_group(pid: u32) {
     assert!(status.success(), "kill -s TERM -- -{pid} lands: {status}");
 }
 
-/// Wait until the server answers on `port`, or fail with its stderr.
-async fn wait_for_port(port: u16, server: &mut tokio::process::Child) {
-    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+/// Wait until the server logs that its socket is listening on `port`, or
+/// fail with its stderr.
+///
+/// **The child's own record is the signal.** The binary writes
+/// `server_socket_listening` with the bound address once the listener is
+/// up, so the wait ends on that line instead of the test dialing the port
+/// in a loop; the port is matched in the line so a boot that announced
+/// another address cannot pass.
+async fn wait_for_serving(port: u16, log: &std::path::Path, server: &mut tokio::process::Child) {
+    let deadline = std::time::Instant::now() + WEDGE;
+    let bound = format!(":{port}");
     loop {
         if let Ok(Some(status)) = server.try_wait() {
             let stderr = drain_stderr(server).await;
             panic!("the server exited before binding ({status}): {stderr}");
         }
-        if tokio::net::TcpStream::connect(("127.0.0.1", port)).await.is_ok() {
+        let announced = std::fs::read_to_string(log).is_ok_and(|text| {
+            text.lines()
+                .any(|line| line.contains("server_socket_listening") && line.contains(&bound))
+        });
+        if announced {
             return;
         }
         if std::time::Instant::now() > deadline {
             drop(server.kill().await);
             let stderr = drain_stderr(server).await;
-            panic!("the server never bound port {port}: {stderr}");
+            panic!(
+                "the server never announced its socket listening on {port} within {WEDGE:?} \
+                 (log {}): {stderr}",
+                log.display()
+            );
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
@@ -271,7 +384,7 @@ port = {gateway_port}
 
 /// The pid the session's mock child wrote, or a failure naming the tree.
 async fn wait_for_marker_pid(marker: &std::path::Path) -> u32 {
-    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    let deadline = std::time::Instant::now() + marker_wait();
     loop {
         if let Ok(text) = std::fs::read_to_string(marker)
             && let Ok(pid) = text.trim().parse()
@@ -280,16 +393,21 @@ async fn wait_for_marker_pid(marker: &std::path::Path) -> u32 {
         }
         assert!(
             std::time::Instant::now() <= deadline,
-            "the session's child never wrote its descendant's pid to {}",
-            marker.display()
+            "the session's child never wrote its descendant's pid to {} within {:?}",
+            marker.display(),
+            marker_wait(),
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }
 
-/// Wait for a file to appear, or answer false once the deadline passes.
-async fn wait_for_file(path: &std::path::Path) -> bool {
-    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+/// Wait for a file the mock child writes, or answer false once `bound`
+/// passes. Each caller hands the budget for its own step: the pid marker is
+/// written by the spawn and carries [`marker_wait`], while the TERM trap
+/// fires as the signal lands and carries [`stop_wait`] like every other
+/// signal-driven step.
+async fn wait_for_file(path: &std::path::Path, bound: Duration) -> bool {
+    let deadline = std::time::Instant::now() + bound;
     while std::time::Instant::now() < deadline {
         if path.exists() {
             return true;
@@ -311,7 +429,7 @@ fn is_running(pid: u32) -> bool {
 }
 
 async fn wait_until_gone(pid: u32) -> bool {
-    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    let deadline = std::time::Instant::now() + stop_wait();
     while std::time::Instant::now() < deadline {
         if !is_running(pid) {
             return true;
@@ -353,11 +471,12 @@ async fn assert_stop_leaves_no_descendant(signal: &str) {
         &child_marker,
     );
 
-    let mut command = server_command(&home, &config);
+    let log = home.join("server.log");
+    let mut command = server_command(&home, &config, &log);
     command
         .env("PATH", format!("{}:{}", bin.display(), std::env::var("PATH").expect("PATH is set")));
     let mut server = command.spawn().expect("the server spawns");
-    wait_for_port(port, &mut server).await;
+    wait_for_serving(port, &log, &mut server).await;
 
     // The control: a session is live and its descendant is running before
     // the stop, so a pass below cannot come from a session that never was.
@@ -366,7 +485,7 @@ async fn assert_stop_leaves_no_descendant(signal: &str) {
     assert!(is_running(pid), "the session's descendant must be running before {signal}: pid {pid}");
 
     send_signal(server.id().expect("the server has a pid while it runs"), signal).await;
-    let exit = tokio::time::timeout(Duration::from_secs(30), server.wait())
+    let exit = tokio::time::timeout(stop_wait(), server.wait())
         .await
         .expect("the server finishes its stop within the deadline")
         .expect("the server is reaped");
@@ -396,14 +515,15 @@ async fn a_group_stop_signal_does_not_reach_the_session_tools() {
         &child_marker,
     );
 
-    let mut command = server_command(&home, &config);
+    let log = home.join("server.log");
+    let mut command = server_command(&home, &config, &log);
     command
         .env("PATH", format!("{}:{}", bin.display(), std::env::var("PATH").expect("PATH is set")));
     // Its own group, so the signal below is aimed at forge's group alone
     // and never at the test's.
     command.process_group(0);
     let mut server = command.spawn().expect("the server spawns");
-    wait_for_port(port, &mut server).await;
+    wait_for_serving(port, &log, &mut server).await;
 
     let pid = wait_for_marker_pid(&marker).await;
     let _orphan = Orphan(pid);
@@ -411,7 +531,7 @@ async fn a_group_stop_signal_does_not_reach_the_session_tools() {
 
     let server_pid = server.id().expect("the server has a pid while it runs");
     terminate_group(server_pid).await;
-    let exit = tokio::time::timeout(Duration::from_secs(30), server.wait())
+    let exit = tokio::time::timeout(stop_wait(), server.wait())
         .await
         .expect("the server finishes its stop within the deadline")
         .expect("the server is reaped");
@@ -448,11 +568,12 @@ async fn one_stop_takes_two_sessions_down() {
     let (home, config, bin) =
         write_session_fixture(dir.path(), port, gateway, &projects, &child_marker);
 
-    let mut command = server_command(&home, &config);
+    let log = home.join("server.log");
+    let mut command = server_command(&home, &config, &log);
     command
         .env("PATH", format!("{}:{}", bin.display(), std::env::var("PATH").expect("PATH is set")));
     let mut server = command.spawn().expect("the server spawns");
-    wait_for_port(port, &mut server).await;
+    wait_for_serving(port, &log, &mut server).await;
 
     // The control: both sessions are live, each with its own descendant.
     let alpha_pid = wait_for_marker_pid(&alpha).await;
@@ -466,7 +587,7 @@ async fn one_stop_takes_two_sessions_down() {
 
     let started = std::time::Instant::now();
     terminate(server.id().expect("the server has a pid while it runs")).await;
-    let exit = tokio::time::timeout(Duration::from_secs(30), server.wait())
+    let exit = tokio::time::timeout(stop_wait(), server.wait())
         .await
         .expect("the server finishes its stop within the deadline")
         .expect("the server is reaped");
@@ -477,10 +598,10 @@ async fn one_stop_takes_two_sessions_down() {
         wait_until_gone(alpha_pid).await && wait_until_gone(beta_pid).await,
         "both sessions' trees die with the stop: {alpha_pid}, {beta_pid}"
     );
-    assert!(
-        elapsed < Duration::from_secs(10),
-        "the stop finishes well inside one teardown budget: {elapsed:?}"
-    );
+    // `stop_wait` is the workspace's one `TEARDOWN_WAIT` plus the exit's
+    // margin: passing it means the drain spent one shared budget, not one per
+    // session.
+    assert!(elapsed < stop_wait(), "the stop finishes inside one stop budget: {elapsed:?}");
 }
 
 /// The positive control for the marker: SIGTERM sent straight at the
@@ -501,16 +622,21 @@ async fn a_termination_sent_straight_at_the_child_marks_it() {
         &child_marker,
     );
 
-    let mut command = server_command(&home, &config);
+    let log = home.join("server.log");
+    let mut command = server_command(&home, &config, &log);
     command
         .env("PATH", format!("{}:{}", bin.display(), std::env::var("PATH").expect("PATH is set")));
     let mut server = command.spawn().expect("the server spawns");
-    wait_for_port(port, &mut server).await;
+    wait_for_serving(port, &log, &mut server).await;
 
     let descendant = wait_for_marker_pid(&marker).await;
     let _orphan = Orphan(descendant);
     let pid_marker = dir.path().join("child-term.pid");
-    assert!(wait_for_file(&pid_marker).await, "the fixture never wrote its own pid");
+    let marker_bound = marker_wait();
+    assert!(
+        wait_for_file(&pid_marker, marker_bound).await,
+        "the fixture never wrote its own pid within {marker_bound:?}"
+    );
     let child_pid: u32 = std::fs::read_to_string(&pid_marker)
         .expect("read the child's pid")
         .trim()
@@ -519,14 +645,15 @@ async fn a_termination_sent_straight_at_the_child_marks_it() {
 
     send_signal(child_pid, "-TERM").await;
 
+    let trap_bound = stop_wait();
     assert!(
-        wait_for_file(&child_marker).await,
-        "the child's TERM trap did not fire on a signal sent straight at it, so the group \
-         test's absent marker would prove nothing"
+        wait_for_file(&child_marker, trap_bound).await,
+        "the child's TERM trap did not fire within {trap_bound:?} of a signal sent straight at \
+         it, so the group test's absent marker would prove nothing"
     );
 
     terminate(server.id().expect("the server has a pid while it runs")).await;
-    let exit = tokio::time::timeout(Duration::from_secs(30), server.wait())
+    let exit = tokio::time::timeout(stop_wait(), server.wait())
         .await
         .expect("the server finishes its stop within the deadline")
         .expect("the server is reaped");
@@ -542,8 +669,9 @@ async fn headless_boot_serves_the_home_and_stops_clean() {
     let (port, gateway) = two_free_ports();
     let (home, config) = write_fixture(dir.path(), port, gateway);
 
-    let mut server = server_command(&home, &config).spawn().expect("the server spawns");
-    wait_for_port(port, &mut server).await;
+    let log = home.join("server.log");
+    let mut server = server_command(&home, &config, &log).spawn().expect("the server spawns");
+    wait_for_serving(port, &log, &mut server).await;
 
     // **The boot installs the handoff skill.** The write is the boot's own
     // act, so the binary is the only instrument that proves it happens; the
@@ -583,13 +711,21 @@ async fn headless_boot_serves_the_home_and_stops_clean() {
     // so it is asserted rather than assumed - by the next boot taking it.
     let holder = server.id().expect("the server has a pid while it runs");
     terminate(holder).await;
-    let status = server.wait().await.expect("the server is reaped");
+    let status = tokio::time::timeout(stop_wait(), server.wait())
+        .await
+        .expect("the server is reaped within the stop budget")
+        .expect("the server is reaped");
     assert!(status.success(), "the signal path exits clean: {status}");
 
-    let mut again = server_command(&home, &config).spawn().expect("the server boots again");
-    wait_for_port(port, &mut again).await;
+    let log_again = home.join("server-again.log");
+    let mut again =
+        server_command(&home, &config, &log_again).spawn().expect("the server boots again");
+    wait_for_serving(port, &log_again, &mut again).await;
     terminate(again.id().expect("the restarted server has a pid")).await;
-    let status = again.wait().await.expect("the restarted server is reaped");
+    let status = tokio::time::timeout(stop_wait(), again.wait())
+        .await
+        .expect("the restarted server is reaped within the stop budget")
+        .expect("the restarted server is reaped");
     assert!(status.success(), "and stops clean in turn: {status}");
 }
 
@@ -601,11 +737,17 @@ async fn a_second_instance_is_refused_with_the_holders_pid() {
     let (port, gateway) = two_free_ports();
     let (home, config) = write_fixture(dir.path(), port, gateway);
 
-    let mut first = server_command(&home, &config).spawn().expect("the first server spawns");
-    wait_for_port(port, &mut first).await;
+    let log_first = home.join("server-first.log");
+    let mut first =
+        server_command(&home, &config, &log_first).spawn().expect("the first server spawns");
+    wait_for_serving(port, &log_first, &mut first).await;
     let holder = first.id().expect("the first server has a pid while it runs");
 
-    let second = server_command(&home, &config).output().await.expect("the second boot runs");
+    let log_second = home.join("server-second.log");
+    let second = tokio::time::timeout(WEDGE, server_command(&home, &config, &log_second).output())
+        .await
+        .expect("the refused boot answers within the wedge")
+        .expect("the second boot runs");
     assert!(!second.status.success(), "the second boot is refused rather than served");
     let refusal = String::from_utf8_lossy(&second.stderr);
     assert!(
@@ -620,12 +762,19 @@ async fn a_second_instance_is_refused_with_the_holders_pid() {
     // SIGKILL frees the lock too: the flock lives with the process, so the
     // next boot takes it rather than being refused.
     drop(first.kill().await);
-    let _ = first.wait().await.expect("the first server is reaped");
+    let _ = tokio::time::timeout(stop_wait(), first.wait())
+        .await
+        .expect("the killed server is reaped within the stop budget")
+        .expect("the first server is reaped");
 
-    let mut third = server_command(&home, &config).spawn().expect("a third boot runs");
-    wait_for_port(port, &mut third).await;
+    let log_third = home.join("server-third.log");
+    let mut third = server_command(&home, &config, &log_third).spawn().expect("a third boot runs");
+    wait_for_serving(port, &log_third, &mut third).await;
     terminate(third.id().expect("the third server has a pid")).await;
-    let status = third.wait().await.expect("the third server is reaped");
+    let status = tokio::time::timeout(stop_wait(), third.wait())
+        .await
+        .expect("the third server is reaped within the stop budget")
+        .expect("the third server is reaped");
     assert!(status.success(), "and it stops clean: {status}");
 }
 
