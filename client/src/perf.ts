@@ -26,6 +26,7 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
 
 import { HEARTBEAT_TICK_MS } from './heartbeat';
+import { cannotPaint } from './paint';
 import { CLIENT_VERSION } from './protocol';
 import type { Subject } from './protocol';
 import type { Route } from './routes';
@@ -202,6 +203,9 @@ export interface PerfRecord {
   /** A `subscribe`: ms since the click that preceded it; absent when no
    *  click did, so a reconnect never invents one. */
   since_click_ms?: number;
+  /** A slow `frame`: whether the document was hidden when the record was
+   *  written - a visibility gate rather than a blocked thread (#2569). */
+  hidden?: boolean;
   /**
    * A `snapshot`'s frame length in string units (UTF-16 code units). The
    * wire is JSON and its non-ASCII arrives escaped, so this tracks the
@@ -642,6 +646,10 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
       ts_ms: Date.now(),
       frame: waiting.frame,
       ms: waiting.gap,
+      // **What tells a gap on an occluded window from a stuck thread**, the
+      // same fact `paint.ts` reads: a hidden page is producing no frames at
+      // all, so its gap is the visibility gate rather than blocked work.
+      hidden: cannotPaint(),
       // The evidence: beats that reached the page across this gap, the
       // WORST lateness among them, when the last one landed, and how many
       // the gap WOULD carry at the tick. **Both axes are needed to read it**:

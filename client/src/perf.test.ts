@@ -333,6 +333,44 @@ describe('the frame probe', () => {
   });
 
   /**
+   * **A gap without the window's visibility reads as a freeze either way.**
+   * A hidden document is not being painted at all - WebKit stops producing
+   * frames - and `client/src/paint.ts` already reads `document.hidden` for
+   * exactly that reason. The slow-frame record says which it was, so a
+   * multi-second gap on an occluded window is not read as a stuck thread.
+   */
+  it('says whether the document was hidden when the slow frame was written', () => {
+    const h = harness();
+    const held = Object.getOwnPropertyDescriptor(globalThis, 'document');
+    const setHidden = (hidden: boolean): void => {
+      Object.defineProperty(globalThis, 'document', { value: { hidden }, configurable: true });
+    };
+    try {
+      setHidden(true);
+      // The first frame has no gap to measure: the baseline frame is the one
+      // the slow one is read against.
+      h.frame(16);
+      h.frame(120);
+      h.settle();
+      const hidden = h.records.flat().find((record) => record.kind === 'frame');
+      expect(hidden?.hidden, 'a gap on a hidden window is named as one').toBe(true);
+
+      setHidden(false);
+      h.frame(16);
+      h.frame(120);
+      h.settle();
+      const shown = h.records.flat().filter((record) => record.kind === 'frame')[1];
+      expect(shown?.hidden, 'and a gap on a painting window says it was not hidden').toBe(false);
+    } finally {
+      if (held === undefined) {
+        delete (globalThis as { document?: unknown }).document;
+      } else {
+        Object.defineProperty(globalThis, 'document', held);
+      }
+    }
+  });
+
+  /**
    * **The ticks that arrived BEFORE the slow frame keep their worst
    * lateness.** A last-wins reading survives the post-frame burst alone; a
    * descending pre-frame burst (2,400 then 2) fails it.
