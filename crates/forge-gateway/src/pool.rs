@@ -349,4 +349,27 @@ mod tests {
             "a retired account is not offered to a new selection",
         );
     }
+
+    /// An account retired mid-probe never reaches a terminal loading state,
+    /// so the loaded gate must read the retirement itself as settled. Without
+    /// it `all_loaded` stays false for the process lifetime and every cron
+    /// fire stays deferred.
+    #[test]
+    fn a_retired_loading_account_does_not_hold_the_loaded_gate_closed() {
+        let pool = AccountPool::new(&[account("Kept"), account("Gone")]);
+        let kept = AccountKey("Kept".to_owned());
+        pool.set_loading(&kept, crate::LoadingState::Ready);
+        assert_eq!(
+            pool.loading_state(&AccountKey("Gone".to_owned())),
+            crate::LoadingState::Loading,
+            "premise: the removed account is retired while still loading",
+        );
+
+        pool.replace_accounts(&[account("Kept")]);
+
+        assert!(
+            pool.all_loaded(),
+            "a retired account can never load, so it must not keep the gate closed",
+        );
+    }
 }
