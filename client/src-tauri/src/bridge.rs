@@ -32,6 +32,12 @@
 //! rather than handed back: the home roster is copied here for the ask
 //! rule's own fold, not as a record to restore.
 
+#![allow(
+    clippy::unused_async,
+    reason = "answer_paths waits only on Android, where the content-URI name is read; the \
+              desktop keeps the one async shape the picker awaits"
+)]
+
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -422,13 +428,17 @@ impl Bridge {
         id: u64,
         paths: Vec<tauri_plugin_fs::FilePath>,
     ) {
+        use base64::Engine as _;
         use tauri_plugin_fs::{FsExt as _, OpenOptions};
 
         let cap = forge_primitives::browser::MAX_UPLOAD_BYTES;
         let mut files = Vec::new();
         let mut total = 0_u64;
         for path in paths {
+            #[cfg(target_os = "android")]
             let name = Self::uploaded_name(app, &path).await;
+            #[cfg(not(target_os = "android"))]
+            let name = local_name(&path);
             // **The size is checked before the bytes are read** when the path
             // gives one: a huge file is refused without loading it, and the
             // running total is checked the same way for every file.
@@ -480,7 +490,6 @@ impl Bridge {
                 return;
             }
             total = total.saturating_add(size);
-            use base64::Engine as _;
             let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
             files.push(json!({ "name": name, "data": data }));
         }
@@ -497,10 +506,13 @@ impl Bridge {
     /// **A path keeps its basename; a URI asks Android for the document's own
     /// name**, because a content URI carries an opaque id rather than a file
     /// name - the page used to see `0-file` where the person chose a resume.
-    async fn uploaded_name(_app: &tauri::AppHandle, path: &tauri_plugin_fs::FilePath) -> String {
-        #[cfg(target_os = "android")]
+    ///
+    /// **Android only, and async only there**: every other target takes the
+    /// basename and has nothing to wait on.
+    #[cfg(target_os = "android")]
+    async fn uploaded_name(app: &tauri::AppHandle, path: &tauri_plugin_fs::FilePath) -> String {
         if let tauri_plugin_fs::FilePath::Url(url) = path
-            && let Some(name) = android_uri_name(_app, url.as_str()).await
+            && let Some(name) = android_uri_name(app, url.as_str()).await
         {
             return name;
         }
@@ -661,16 +673,13 @@ impl Bridge {
             return;
         }
         let mut state = self.lock();
-        match state.held.get_mut(&key) {
-            Some(watch) => {
-                watch.readers += 1;
-                watch.answering |= answering;
-                watch.review = review;
-            }
-            None => {
-                state.order.push(key.clone());
-                state.held.insert(key, Watch { what: what.clone(), readers: 1, answering, review });
-            }
+        if let Some(watch) = state.held.get_mut(&key) {
+            watch.readers += 1;
+            watch.answering |= answering;
+            watch.review = review;
+        } else {
+            state.order.push(key.clone());
+            state.held.insert(key, Watch { what: what.clone(), readers: 1, answering, review });
         }
         if let Some(socket) = &state.socket {
             socket.subscribe(what, answering, review);
@@ -732,7 +741,7 @@ impl Bridge {
     pub fn relist(&self, what: Value, answering: bool, review: bool) {
         let mut state = self.lock();
         let key = records::subject_key(&what);
-        let held_answering = state.held.get(&key).map(|watch| watch.answering).unwrap_or(false);
+        let held_answering = state.held.get(&key).is_some_and(|watch| watch.answering);
         // **The declaration is the held one, with this ask's own review
         // scope**: the role only rises while the connection lives, and the
         // review read follows the page that last held the seat.
@@ -799,8 +808,7 @@ impl Bridge {
         let (answering, held_review) = state
             .held
             .get(&key)
-            .map(|watch| (watch.answering, watch.review))
-            .unwrap_or((false, review.unwrap_or(false)));
+            .map_or((false, review.unwrap_or(false)), |watch| (watch.answering, watch.review));
         let sent = match &state.socket {
             Some(socket) => {
                 records::refresh(socket, what, answering, held_review);
@@ -839,7 +847,7 @@ impl Bridge {
         let State { records, asks, shown, .. } = &mut *state;
         records
             .read("home")
-            .and_then(|held| held.ok())
+            .and_then(Result::ok)
             .map(|data| asks.rising(data, shown.as_ref(), focused))
             .unwrap_or_default()
     }
@@ -1028,15 +1036,15 @@ impl Bridge {
     /// all still needs its reconcile (the webview may have dropped clauses
     /// this side cannot see), and a copy of the records is cheap.
     pub fn heartbeat(&self) {
-        let stale = {
+        let parked = {
             let mut state = self.lock();
-            let stale =
+            let idle =
                 state.last_beat.is_some_and(|at| at.elapsed() >= Duration::from_millis(FRESH_MS));
             state.last_beat = Some(Instant::now());
             state.suppressed = 0;
-            stale
+            idle
         };
-        if stale {
+        if parked {
             self.reconcile();
         }
     }
@@ -1128,7 +1136,7 @@ impl Bridge {
         match event {
             SocketEvent::Status(status) => self.status_moved(status),
             SocketEvent::Message { value, bytes, parse_ms } => {
-                self.message(value, bytes, parse_ms);
+                self.message(&value, bytes, parse_ms);
             }
             SocketEvent::Written { key, declared, waited_ms } => {
                 self.emit(ClientEvent::Written { key, declared, waited_ms });
@@ -1222,7 +1230,7 @@ impl Bridge {
                 };
                 if current {
                     self.message(
-                        json!({ "kind": "browser_surface_failed", "reason": why }),
+                        &json!({ "kind": "browser_surface_failed", "reason": why }),
                         0,
                         0.0,
                     );
@@ -1245,13 +1253,13 @@ impl Bridge {
         }
     }
 
-    fn message(self: &Arc<Self>, message: Value, bytes: usize, parse_ms: f64) {
+    fn message(self: &Arc<Self>, message: &Value, bytes: usize, parse_ms: f64) {
         let kind = message.get("kind").and_then(Value::as_str).unwrap_or_default();
         match kind {
             "greeting" => {
                 self.lock().greeting = Some(message.clone());
                 self.emit(ClientEvent::Connection);
-                self.forward(&message, None);
+                self.forward(message, None);
             }
             "snapshot" => {
                 let Some(subject) = message.get("subject") else { return };
@@ -1264,7 +1272,7 @@ impl Bridge {
                 // **A forwarded snapshot's own frame facts (#2513).** The
                 // page cannot see the raw length - this half parsed it - so
                 // the size and the parse travel beside the frame.
-                self.forward(&message, Some((bytes, parse_ms)));
+                self.forward(message, Some((bytes, parse_ms)));
                 // **The home roster is where an ask is announced.** A page
                 // parked with the display off runs no timer of its own, and
                 // this half has the frame either way.
@@ -1276,7 +1284,7 @@ impl Bridge {
             "update" => {
                 let Some(update) = message.get("update") else { return };
                 let refresh = self.lock().records.apply(update);
-                self.forward(&message, None);
+                self.forward(message, None);
                 self.acted(refresh);
                 // **An ask's own frame is the door to a read**, whether or
                 // not the page is awake to ask for one: the roster's pending
@@ -1302,7 +1310,7 @@ impl Bridge {
                     }
                     let _ = app.emit("browser_view", message.clone());
                 }
-                self.forward(&message, None);
+                self.forward(message, None);
             }
             // **The strip follows the pushed tab list**: the page listens for
             // this as a shell event, and every change the connection asked
@@ -1311,7 +1319,7 @@ impl Bridge {
                 if let Some(app) = &self.app {
                     let _ = app.emit("browser_tabs", message.clone());
                 }
-                self.forward(&message, None);
+                self.forward(message, None);
             }
             // The page's surface store listens for these as shell events:
             // the history is the browser's, not something a frame reader
@@ -1326,7 +1334,7 @@ impl Bridge {
                         }),
                     );
                 }
-                self.forward(&message, None);
+                self.forward(message, None);
             }
             // **A finished download is the shell's save door.** The bytes
             // come from the server's temp file; the person chooses where
@@ -1335,22 +1343,22 @@ impl Bridge {
                 // **A save is the tab's.** The server already filters by the
                 // attachment; this is the shell's own guard on a stale or
                 // retargeted connection.
-                if !self.for_viewed_tab(&message) {
-                    self.forward(&message, None);
+                if !self.for_viewed_tab(message) {
+                    self.forward(message, None);
                     return;
                 }
                 let name =
                     message.get("name").and_then(Value::as_str).unwrap_or("download").to_owned();
                 let data = message.get("data").and_then(Value::as_str).map(str::to_owned);
                 let error = message.get("error").and_then(Value::as_str).map(str::to_owned);
-                let dropped = dropped_of(&message);
+                let dropped = dropped_of(message);
                 if let Some(app) = self.app.as_ref() {
                     let app = app.clone();
                     tauri::async_runtime::spawn(async move {
                         save_download(&app, name, data, error, dropped).await;
                     });
                 }
-                self.forward(&message, None);
+                self.forward(message, None);
             }
             // **A page's file chooser is the shell's own panel.** The host
             // is a windowless process on the server; the person is here, so
@@ -1359,15 +1367,21 @@ impl Bridge {
             "browser_file_dialog" => {
                 // **A picker is the tab's.** A dialog raised on a tab this
                 // viewer is not watching is never opened here.
-                if !self.for_viewed_tab(&message) {
-                    self.forward(&message, None);
+                if !self.for_viewed_tab(message) {
+                    self.forward(message, None);
                     return;
                 }
                 let id = message.get("id").and_then(Value::as_u64);
                 let multiple = message.get("multiple").and_then(Value::as_bool).unwrap_or(false);
                 if let (Some(app), Some(id)) = (self.app.as_ref(), id) {
                     let previous = self.live_file.swap(id, std::sync::atomic::Ordering::AcqRel);
-                    if !claim_picker(&self.picking) {
+                    if claim_picker(&self.picking) {
+                        let bridge = Arc::clone(self);
+                        let app = app.clone();
+                        tauri::async_runtime::spawn(async move {
+                            bridge.pick_files(&app, multiple).await;
+                        });
+                    } else {
                         // **The open panel answers this ask.** The host
                         // cancelled the callback the panel was opened for as
                         // soon as this one arrived, so cancelling this ask
@@ -1377,15 +1391,9 @@ impl Bridge {
                             "a new file chooser supersedes the open picker (event_name \
                              client_browser_file_superseded, was {previous}, id {id})"
                         );
-                    } else {
-                        let bridge = Arc::clone(self);
-                        let app = app.clone();
-                        tauri::async_runtime::spawn(async move {
-                            bridge.pick_files(&app, multiple).await;
-                        });
                     }
                 }
-                self.forward(&message, None);
+                self.forward(message, None);
             }
             // **A refused attach is a failed surface, not a dark one.** The
             // server answers an unattachable `browser_view` with an `error`,
@@ -1424,7 +1432,7 @@ impl Bridge {
                     );
                     crate::browser::lost(app);
                 }
-                self.forward(&message, None);
+                self.forward(message, None);
             }
             // The browser stopped: the overlay comes down at once rather than
             // leaving the last frame standing over a dead page, and the
@@ -1451,9 +1459,9 @@ impl Bridge {
                     );
                     crate::browser::lost_for(app, id, tab);
                 }
-                self.forward(&message, None);
+                self.forward(message, None);
             }
-            _ => self.forward(&message, None),
+            _ => self.forward(message, None),
         }
     }
 
@@ -1565,14 +1573,15 @@ async fn save_download(
     error: Option<String>,
     dropped: bool,
 ) {
+    use base64::Engine as _;
     use tauri_plugin_dialog::DialogExt as _;
+    use tauri_plugin_fs::FsExt as _;
 
     if let Some(error) = error {
         say_download_refused(app, &error, dropped);
         return;
     }
     let Some(data) = data else { return };
-    use base64::Engine as _;
     let bytes = match base64::engine::general_purpose::STANDARD.decode(data) {
         Ok(bytes) => bytes,
         Err(why) => {
@@ -1589,7 +1598,6 @@ async fn save_download(
         let _ = tx.send(path);
     });
     let Some(path) = rx.await.ok().flatten() else { return };
-    use tauri_plugin_fs::FsExt as _;
     let mut options = tauri_plugin_fs::OpenOptions::new();
     options.write(true).create(true).truncate(true);
     let written = app.fs().open(path, options).and_then(|mut file| {
@@ -1869,8 +1877,9 @@ mod tests {
         let kept = window().expect("the first refusal stamped the window");
         assert!(!bridge.refusal_is_new(), "the next in the same second is not");
         assert_eq!(window(), Some(kept), "and the suppressed call left the window alone");
-        *bridge.refusal_logged.lock().unwrap_or_else(PoisonError::into_inner) =
-            Some(Instant::now() - Duration::from_millis(1_500));
+        *bridge.refusal_logged.lock().unwrap_or_else(PoisonError::into_inner) = Some(
+            Instant::now().checked_sub(Duration::from_millis(1_500)).expect("the clock has run"),
+        );
         assert!(bridge.refusal_is_new(), "a later refusal is a new record");
     }
 
@@ -1954,7 +1963,9 @@ mod tests {
 
     /// The home subject's snapshot, carrying `data` as the roster.
     fn home_snapshot(data: Value) -> Value {
-        json!({ "kind": "snapshot", "subject": "home", "data": data })
+        let mut message = json!({ "kind": "snapshot", "subject": "home" });
+        message["data"] = data;
+        message
     }
 
     /// One seat's row carrying an ask.
@@ -2010,7 +2021,11 @@ mod tests {
 
     /// Park the page: nothing has heartbeated for longer than `FRESH_MS`.
     fn park(bridge: &Arc<Bridge>) {
-        bridge.lock().last_beat = Some(Instant::now() - Duration::from_millis(FRESH_MS + 1_000));
+        bridge.lock().last_beat = Some(
+            Instant::now()
+                .checked_sub(Duration::from_millis(FRESH_MS + 1_000))
+                .expect("the clock has run"),
+        );
     }
 
     /// Wait until the socket is up, so a stub push lands on a connection that
@@ -2026,7 +2041,9 @@ mod tests {
     }
 
     fn snapshot(data: Value) -> Value {
-        json!({ "kind": "snapshot", "subject": seat(), "data": data })
+        let mut message = json!({ "kind": "snapshot", "subject": seat() });
+        message["data"] = data;
+        message
     }
 
     fn context_usage(percentage: f64) -> Value {
@@ -2089,9 +2106,8 @@ mod tests {
     async fn the_review_scope_survives_every_bridge_ask() {
         let (bridge, _rx) = bridge();
         let key = crate::records::subject_key(&seat());
-        let review = |bridge: &Arc<Bridge>| {
-            bridge.lock().held.get(&key).map(|watch| watch.review).unwrap_or(false)
-        };
+        let review =
+            |bridge: &Arc<Bridge>| bridge.lock().held.get(&key).is_some_and(|watch| watch.review);
 
         bridge.subscribe(seat(), true, true);
         assert!(review(&bridge), "a subscribe carries the page's scope");
@@ -2707,7 +2723,7 @@ mod tests {
             .invoke_handler(tauri::generate_handler![crate::commands::client_showing])
             .build(mock_context(noop_assets()))
             .expect("a mock app builds");
-        let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+        let webview = tauri::WebviewWindowBuilder::new(&app, "main", tauri::WebviewUrl::default())
             .build()
             .expect("a mock window builds")
             .as_ref()
@@ -2731,7 +2747,7 @@ mod tests {
                     error: tauri::ipc::CallbackFn(1),
                     url: "tauri://localhost".parse().expect("a local url"),
                     body: tauri::ipc::InvokeBody::Json(json!({ "seat": seat })),
-                    headers: Default::default(),
+                    headers: tauri::http::HeaderMap::default(),
                     invoke_key: tauri::test::INVOKE_KEY.to_string(),
                 },
                 responder,
@@ -2770,7 +2786,7 @@ mod tests {
         bridge.relist(seat(), false, false);
         let again = server.heard_until(|v| v["kind"] == "subscribe").await;
         assert_eq!(again["what"], seat(), "the relist asked for the same subject");
-        assert_eq!(again["answering"], true, "the held declaration was not raised into the relist",);
+        assert_eq!(again["answering"], true, "the held declaration was not raised into the relist");
 
         let key = records::subject_key(&seat());
         assert_eq!(
@@ -2844,7 +2860,7 @@ mod tests {
                 Ok(Some(ClientEvent::Inbound(message))) => {
                     panic!("a record copy on a beat that found the page alive: {message}");
                 }
-                Ok(Some(_)) => continue,
+                Ok(Some(_)) => {}
                 Ok(None) | Err(_) => break,
             }
         }
@@ -3058,7 +3074,7 @@ mod tests {
         bridge.lock().attach = Some(Attach { seat: seat(), tab: Some(2) });
         assert!(bridge.for_viewed_tab(&json!({ "tab": 2 })), "the viewed tab's message");
         assert!(!bridge.for_viewed_tab(&json!({ "tab": 3 })), "another tab's is not the page's");
-        assert!(bridge.for_viewed_tab(&json!({})), "a message that names no tab is not filtered",);
+        assert!(bridge.for_viewed_tab(&json!({})), "a message that names no tab is not filtered");
         bridge.lock().attach = Some(Attach { seat: seat(), tab: None });
         assert!(
             bridge.for_viewed_tab(&json!({ "tab": 3 })),

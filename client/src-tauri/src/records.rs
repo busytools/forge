@@ -642,7 +642,7 @@ fn header_from(header: &mut Value, message: &Value) -> bool {
 /// the CLI gives up with. One rule, read by both folds.
 fn in_flight_of(held: bool, message: &Value) -> bool {
     match message.get("type").and_then(Value::as_str) {
-        Some("result") | Some("error") => false,
+        Some("result" | "error") => false,
         Some("system") if message.get("subtype").and_then(Value::as_str) == Some("init") => true,
         _ => held,
     }
@@ -706,9 +706,7 @@ fn parked(record: &mut Map<String, Value>, kind: &str, request: Option<&Value>) 
     }
     let leads = kind == "slack_draft" || kind == "browser_hand_off";
     let mut asks = asks;
-    if !leads {
-        asks.push(ask);
-    } else {
+    if leads {
         // Behind the leaders already there, ahead of everything else.
         let first_other = asks
             .iter()
@@ -718,6 +716,8 @@ fn parked(record: &mut Map<String, Value>, kind: &str, request: Option<&Value>) 
             })
             .unwrap_or(asks.len());
         asks.insert(first_other, ask);
+    } else {
+        asks.push(ask);
     }
     record.insert("pending_asks".to_owned(), Value::Array(asks));
     true
@@ -816,7 +816,9 @@ mod tests {
     }
 
     fn update(payload: Value) -> Value {
-        json!({ "chat_appended": payload })
+        let mut update = Map::new();
+        update.insert("chat_appended".to_owned(), payload);
+        update.into()
     }
 
     fn seated(variant: &str, mut payload: Value) -> Value {

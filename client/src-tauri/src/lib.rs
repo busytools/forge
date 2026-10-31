@@ -49,6 +49,12 @@ pub mod socket;
 /// through these, and hears their moves as `client://*` events. Thin by
 /// design - the logic is `bridge.rs`'s, and its tests are there.
 mod commands {
+    #![allow(
+        clippy::needless_pass_by_value,
+        reason = "tauri's IPC macro hands every command argument by value; a reference is not a \
+                  CommandArg"
+    )]
+
     use std::sync::Arc;
 
     use serde_json::Value;
@@ -453,6 +459,13 @@ mod commands {
     pub fn client_close(bridge: tauri::State<'_, Arc<Bridge>>, id: u64) {
         bridge.close(id);
     }
+
+    /// Restart into the installed update.
+    #[cfg(desktop)]
+    #[tauri::command]
+    pub fn restart_app(app: tauri::AppHandle) {
+        app.restart()
+    }
 }
 
 /// The client logger's default directives, as data: `Info` for the crate, and
@@ -512,8 +525,13 @@ fn client_logger() -> tauri_plugin_log::Builder {
 
 /// The app, as a library: the Android target links it as a native library, and
 /// the desktop binary in `main.rs` runs the same builder.
+///
+/// The return is the process status a start failure carries, which `main.rs`
+/// turns into its [`std::process::ExitCode`]. It is a `u8` rather than the
+/// `ExitCode` itself because the mobile entry point discards the value, and an
+/// `ExitCode` there would be an unused `#[must_use]`.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub fn run() {
+pub fn run() -> u8 {
     let context = tauri::generate_context!();
     let log_file = log_file(&context.config().identifier);
 
@@ -556,7 +574,7 @@ pub fn run() {
             commands::client_browser_input,
             check_update,
             install_update,
-            restart_app,
+            commands::restart_app,
             commands::client_connect,
             commands::client_state,
             commands::client_subscribe,
@@ -678,7 +696,7 @@ pub fn run() {
             let line = format!("forge client failed to start: {err}");
             record(log_file.as_deref(), &line);
             eprintln!("{line}");
-            std::process::exit(1);
+            return 1;
         }
     };
 
@@ -712,6 +730,7 @@ pub fn run() {
             }
         }
     });
+    0
 }
 
 /// Whether this event is a mobile resume: the person coming back, which the
@@ -814,13 +833,6 @@ async fn install_update(app: tauri::AppHandle) -> Result<String, String> {
         err.to_string()
     })?;
     Ok(STAGE_RESTART.to_string())
-}
-
-/// Restart into the installed update.
-#[cfg(desktop)]
-#[tauri::command]
-fn restart_app(app: tauri::AppHandle) {
-    app.restart()
 }
 
 /// The plugin name each Android class is registered under - one name per class,
