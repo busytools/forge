@@ -523,13 +523,31 @@ fn client_logger() -> tauri_plugin_log::Builder {
         .filter(|record| keeps(record.level(), record.target()))
 }
 
+/// The mobile entry point discards `run`'s status, so a failed start ends the
+/// process directly: the desktop's exit code becomes an explicit exit here,
+/// which is what this half always did.
+#[cfg(mobile)]
+mod mobile_failure {
+    #![allow(
+        clippy::exit,
+        reason = "the mobile entry point has no caller to hand a status to; a failed start must \
+                  not leave a windowless process running"
+    )]
+
+    /// End the process the way the desktop's exit code does.
+    pub fn exit() -> ! {
+        std::process::exit(1)
+    }
+}
+
 /// The app, as a library: the Android target links it as a native library, and
 /// the desktop binary in `main.rs` runs the same builder.
 ///
 /// The return is the process status a start failure carries, which `main.rs`
 /// turns into its [`std::process::ExitCode`]. It is a `u8` rather than the
 /// `ExitCode` itself because the mobile entry point discards the value, and an
-/// `ExitCode` there would be an unused `#[must_use]`.
+/// `ExitCode` there would be an unused `#[must_use]`; a failed start on mobile
+/// exits through [`mobile_failure::exit`] instead.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() -> u8 {
     let context = tauri::generate_context!();
@@ -696,6 +714,9 @@ pub fn run() -> u8 {
             let line = format!("forge client failed to start: {err}");
             record(log_file.as_deref(), &line);
             eprintln!("{line}");
+            #[cfg(mobile)]
+            mobile_failure::exit();
+            #[cfg(desktop)]
             return 1;
         }
     };
