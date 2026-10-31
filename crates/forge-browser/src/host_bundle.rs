@@ -39,8 +39,8 @@ pub fn prune_other_versions() {
     let removed = prune_other_versions_in(&dir.join("browser-host"), env!("CARGO_PKG_VERSION"));
     if !removed.is_empty() {
         tracing::info!(
-            "the browser host bundles of other versions are removed (event_name \
-             browser_host_versions_pruned, removed {:?})",
+            event_name = "browser_host_versions_pruned",
+            "the browser host bundles of other versions are removed: {:?}",
             removed,
         );
     }

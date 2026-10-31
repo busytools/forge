@@ -592,17 +592,17 @@ impl Workspace {
     /// drain via `drain_test_dispatch_buffer`. No-op if already
     /// enabled. Test-only - tests use this to assert what would
     /// have been dispatched without spinning up real subprocesses.
-    /// Whether the rotation announcer was started, so a test pins that the
-    /// boot call actually reaches the one watcher.
-    pub fn rotation_announcer_started_for_test(&self) -> bool {
-        self.rotation_announcer_started.load(std::sync::atomic::Ordering::Acquire)
-    }
-
     pub fn enable_test_dispatch_intercept(&self) {
         let mut intercept = self.command_intercept.lock();
         if intercept.is_none() {
             *intercept = Some(Vec::new());
         }
+    }
+
+    /// Whether the rotation announcer was started, so a test pins that the
+    /// boot call actually reaches the one watcher.
+    pub fn test_rotation_announcer_started(&self) -> bool {
+        self.rotation_announcer_started.load(std::sync::atomic::Ordering::Acquire)
     }
 
     /// Drain every app-level `Command` captured since the last call.

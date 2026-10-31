@@ -4909,7 +4909,7 @@ mod tests {
         let mut stamp = None;
         while let Ok(frame) = update_rx.try_recv() {
             match &*frame.update {
-                SessionUpdate::ChatAppended { msg, origin, .. } => {
+                SessionUpdate::ChatAppended { msg, origin, source, .. } => {
                     let uuid = match msg {
                         forge_primitives::Message::User { uuid, .. } => uuid.clone(),
                         other => panic!("the prompt frame is a user turn, got {other:?}"),
@@ -4918,6 +4918,11 @@ mod tests {
                         *origin,
                         Some(crate::protocol::PromptOrigin::View),
                         "the frame carries the origin the dispatch entry stamped",
+                    );
+                    assert_eq!(
+                        *source,
+                        Some(crate::protocol::PromptSource::You),
+                        "and the source a reader's follow arms on survives the task's own emit",
                     );
                     stamp = serde_json::to_value(msg).expect("encode")["timestamp"]
                         .as_str()
@@ -4942,6 +4947,51 @@ mod tests {
             at >= before - time::Duration::seconds(5) && at <= after + time::Duration::seconds(5),
             "the row carries the task's own clock, not a constant: {stamp} sits outside \
              {before}..{after}",
+        );
+    }
+
+    /// **A prompt held by a swap still draws its words, once.** The frame is
+    /// emitted before the hold, so the views have the words while the prompt
+    /// waits; moving the emit below the hold loses them outright - the
+    /// re-delivery carries no origin, so neither path would draw it.
+    #[tokio::test]
+    async fn a_prompt_held_by_a_swap_still_draws_its_words_once() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (workspace, _rx) =
+            crate::Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
+        let slot = SessionSlot::worker("TestOrg", "forge", "held-frame");
+        let (mut task, mut update_rx, mut agent_rx) = nudge_task_for(&workspace, &slot);
+        workspace.begin_swap(&slot);
+        assert!(workspace.swap_in_progress(&slot), "premise: the swap gate holds prompts");
+
+        task.execute_command(Command::PromptUnder {
+            key: slot.clone(),
+            text: "held words".to_owned(),
+            attachments: Vec::new(),
+            uuid: "held-frame-uuid".to_owned(),
+            source: crate::protocol::PromptSource::You,
+            origin: Some(crate::protocol::PromptOrigin::View),
+        });
+
+        let mut drawn = Vec::new();
+        while let Ok(frame) = update_rx.try_recv() {
+            if let SessionUpdate::ChatAppended {
+                msg: forge_primitives::Message::User { uuid, .. },
+                origin: Some(origin),
+                ..
+            } = &*frame.update
+            {
+                drawn.push((uuid.clone(), *origin));
+            }
+        }
+        assert_eq!(
+            drawn,
+            vec![(Some("held-frame-uuid".to_owned()), crate::protocol::PromptOrigin::View)],
+            "the held prompt draws exactly one frame, and it is the dispatched one",
+        );
+        assert!(
+            agent_rx.try_recv().is_err(),
+            "and nothing was handed to the agent: the swap is holding it",
         );
     }
 

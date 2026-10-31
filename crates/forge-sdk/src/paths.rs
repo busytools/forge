@@ -126,5 +126,13 @@ mod tests {
         let key = config_dir_store_key(one);
         assert_eq!(key.len(), 16, "16 hex chars, the width the lock uses: {key}");
         assert!(key.chars().all(|c| c.is_ascii_hexdigit()), "the key is hex: {key}");
+        // **Not the lock's digest.** Swapping the store key back to
+        // `config_dir_hash` is the regression that orphans every row on a
+        // Rust release, and it is invisible unless the two are compared.
+        assert_ne!(
+            key,
+            config_dir_hash(one),
+            "the store key is its own digest, not the lock's DefaultHasher value",
+        );
     }
 }

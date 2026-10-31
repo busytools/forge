@@ -904,6 +904,25 @@ port = 49201
         assert!(workspace.test_usage_poller_started(), "the boot wave starts the usage poller");
     }
 
+    /// **The wave starts the rotation announcer**: the one watcher that turns
+    /// a cooldown write and its clock-driven thaw into a roster frame. Dropping
+    /// the call leaves a home row's `would_bind` stale with every test green.
+    #[tokio::test]
+    async fn the_boot_wave_starts_the_rotation_announcer() {
+        let (workspace, _dir) = boot_fixture();
+        assert!(
+            !workspace.test_rotation_announcer_started(),
+            "the fixture starts with the announcer unstarted, or this test proves nothing",
+        );
+
+        start_subsystems(&workspace);
+
+        assert!(
+            workspace.test_rotation_announcer_started(),
+            "the boot wave starts the rotation announcer",
+        );
+    }
+
     /// The wave starts the dictate prewarm, which is what keeps a take from
     /// paying the model load: started at boot rather than at the first press,
     /// on a task of its own so the fetch, the verify and the load are not on

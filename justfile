@@ -810,9 +810,9 @@ client-web-release version: client-release-deps
 # The web image's own gate. Neither `just check` nor the cargo jobs reach any
 # of it: the scripts run inside the image, and the image workflow builds and
 # exercises it on a pull request that touches client/docker. This is the same
-# pair of scripts for a local run - the poller test wants jq, curl and
-# python3, and the image half wants docker, so a machine without a daemon is
-# told what did not run rather than being told a pass.
+# scripts for a local run - the poller test wants jq, curl and python3, and
+# the image half wants docker, so a machine without a daemon is told what did
+# not run rather than being told a pass.
 #
 # Run the web image's checks.
 web-image-check:
@@ -820,6 +820,7 @@ web-image-check:
     set -euo pipefail
 
     ./client/docker/test_poller.sh
+    ./client/docker/test_entrypoint.sh
 
     if ! docker info > /dev/null 2>&1; then
         echo "[WARN] no docker daemon - the image build and its serving test did not run" >&2

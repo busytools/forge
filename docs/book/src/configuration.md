@@ -1040,9 +1040,10 @@ same directory, validated by this loader, renamed over the path. Nothing
 else in forge writes it, which keeps it safe to sync between machines.
 
 Everything mutable lives in one embedded redb database per config dir, at
-`<app-support>/stores/<hash-of-config-dir>.redb` (the same key the
-single-instance lock uses, so a second config dir on the machine owns its
-own state): durable crons, Gotify subscriptions, Slack
+`<app-support>/stores/<hash-of-config-dir>.redb` (a SHA-256 of the config
+dir's path, so a second config dir on the machine owns its own state; the
+single-instance lock keys on a separate digest): durable crons, Gotify
+subscriptions, Slack
 subscriptions, the sweep watermarks and the own-post ledger beside them,
 the session
 identity per project and label - the lead's and every worker's, which is

@@ -248,8 +248,9 @@ impl Tool for List {
     fn description(&self) -> &'static str {
         "List the durable crons you registered, in your project. Returns a JSON array of {id, \
          project, schedule, prompt, next_fire}. Use an id with cron__delete. An empty array means \
-         you have no crons registered, or that this run opened no durable store (the boot log \
-         names it); an unresolvable caller is an error rather than an empty list. Takes no \
+         you have no crons registered, or that this run could not load its durable crons (the \
+         boot log names it); an unresolvable caller is an error rather than an empty list. \
+         Takes no \
          arguments. Any session in the project may call this."
     }
 
@@ -665,11 +666,11 @@ mod tests {
             );
         }
         // The one condition that still lists nothing without being an error:
-        // a run whose store did not open has an empty in-memory set, so the
-        // description keeps that caveat - and only that one.
+        // a run whose durable crons could not be loaded has an empty
+        // in-memory set, so the description keeps that caveat - and only it.
         assert!(
-            list_desc.contains("opened no durable store"),
-            "an empty list must own up to a run with no durable store: {list_desc}",
+            list_desc.contains("could not load its durable crons"),
+            "an empty list must own up to a run that could not load its crons: {list_desc}",
         );
     }
 

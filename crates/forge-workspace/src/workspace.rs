@@ -1526,12 +1526,12 @@ fn store_path(app_support: &Path, config_dir: &Path) -> PathBuf {
     crate::store::path_for(app_support, config_dir)
 }
 
-/// Whether `config_dir` is the default one, `~/.claude`.
+/// Whether this path is the home directory's `.claude`, the default config
+/// dir.
 ///
 /// The pre-split machine-wide store is the default config dir's state, so
 /// only that config dir may adopt it. A scratch or second config dir booting
-/// first must not take it; such a dir leaves the legacy file in place and
-/// says so.
+/// first must not take it; such a dir leaves the legacy file in place.
 fn is_default_config_dir(config_dir: &Path) -> bool {
     let Some(home) = dirs::home_dir() else { return false };
     let default = home.join(".claude");
@@ -1541,31 +1541,44 @@ fn is_default_config_dir(config_dir: &Path) -> bool {
     }
 }
 
+/// What a boot should do with the pre-split store.
+enum Adoption {
+    /// Nothing is stranded: there is no legacy file, this config dir already
+    /// has its own store, or the legacy file belongs to another config dir.
+    Settled,
+    /// The legacy file is this default config dir's state and could not be
+    /// moved this boot. Opening a fresh store would hide the file for good -
+    /// the next boot sees a target and never looks again - so this run goes
+    /// memory-only and the next boot retries.
+    Deferred,
+}
+
 /// Adopt the pre-split machine-wide store into this config dir's own, once.
 ///
 /// **Only the default config dir adopts** (see [`is_default_config_dir`]),
 /// and the file is probe-opened first: a store another forge still holds is
 /// left where it is rather than renamed behind its back.
-fn adopt_legacy_store(app_support: &Path, config_dir: &Path, path: &Path) {
+fn adopt_legacy_store(app_support: &Path, config_dir: &Path, path: &Path) -> Adoption {
     let legacy = app_support.join("db.redb");
     if path.exists() || !legacy.is_file() {
-        return;
+        return Adoption::Settled;
     }
     if !is_default_config_dir(config_dir) {
-        tracing::warn!(
+        tracing::info!(
             target: "forge_workspace::workspace",
             event_name = "store_legacy_left_in_place",
             legacy = %legacy.display(),
             config_dir = %config_dir.display(),
-            "the machine-wide store belongs to the default config dir; leaving it there",
+            "the machine-wide store belongs to the home config dir, so it is left there; a \
+             custom-only install can move it under stores/ by hand to keep its rows",
         );
-        return;
+        return Adoption::Settled;
     }
-    adopt_legacy_store_from(&legacy, path);
+    adopt_legacy_store_from(&legacy, path)
 }
 
 /// The adoption itself, with the default-dir verdict already decided.
-fn adopt_legacy_store_from(legacy: &Path, path: &Path) {
+fn adopt_legacy_store_from(legacy: &Path, path: &Path) -> Adoption {
     match crate::store::Db::open(legacy) {
         // The probe takes the file's own lock and drops it again, so a store
         // another process holds is refused here rather than moved under it.
@@ -1576,27 +1589,35 @@ fn adopt_legacy_store_from(legacy: &Path, path: &Path) {
                 event_name = "store_legacy_in_use",
                 %error,
                 legacy = %legacy.display(),
-                "the machine-wide store is held by another process; this run starts with an empty store",
+                "the machine-wide store is held by another process; this run has no durable \
+                 state and the next boot retries the adoption",
             );
-            return;
+            return Adoption::Deferred;
         }
     }
-    match std::fs::rename(&legacy, path) {
-        Ok(()) => tracing::info!(
-            target: "forge_workspace::workspace",
-            event_name = "store_legacy_adopted",
-            from = %legacy.display(),
-            to = %path.display(),
-            "the machine-wide store is adopted by the default config dir",
-        ),
-        Err(error) => tracing::warn!(
-            target: "forge_workspace::workspace",
-            event_name = "store_legacy_adopt_failed",
-            %error,
-            from = %legacy.display(),
-            to = %path.display(),
-            "the machine-wide store could not be adopted; this run starts with an empty store",
-        ),
+    match std::fs::rename(legacy, path) {
+        Ok(()) => {
+            tracing::info!(
+                target: "forge_workspace::workspace",
+                event_name = "store_legacy_adopted",
+                from = %legacy.display(),
+                to = %path.display(),
+                "the machine-wide store is adopted by the default config dir",
+            );
+            Adoption::Settled
+        }
+        Err(error) => {
+            tracing::warn!(
+                target: "forge_workspace::workspace",
+                event_name = "store_legacy_adopt_failed",
+                %error,
+                from = %legacy.display(),
+                to = %path.display(),
+                "the machine-wide store could not be adopted; this run has no durable state and \
+                 the next boot retries",
+            );
+            Adoption::Deferred
+        }
     }
 }
 
@@ -1622,7 +1643,9 @@ fn open_db(app_support: &Path, config_dir: &Path) -> Option<crate::store::Db> {
         );
         return None;
     }
-    adopt_legacy_store(app_support, config_dir, &path);
+    if let Adoption::Deferred = adopt_legacy_store(app_support, config_dir, &path) {
+        return None;
+    }
     match crate::store::Db::open(&path) {
         Ok(db) => Some(db),
         Err(error) => {
@@ -4232,6 +4255,9 @@ impl Workspace {
     /// Whether this is the only live forge on the machine: no other config
     /// dir's lock is held.
     ///
+    /// **A boot may change shared app-support state only when this is true.**
+    /// The test beside the store tests pins the peer case.
+    ///
     /// **The app-support tree is machine-wide**, so a boot that changes
     /// something shared in it - the browser host's per-version prune - has
     /// to establish this first, or it deletes a peer's state.
@@ -5701,11 +5727,15 @@ impl Workspace {
         self.dispatch_with_origin(cmd, PromptOrigin::View)
     }
 
-    /// Route a command, emitting the user turn a prompt draws.
+    /// Route a command, framing the user turn for the prompts answered here.
     ///
     /// A prompt is the reader's own words, and nothing else carries them: the
     /// CLI queues a prompt handed to it and never echoes it back, so a view
     /// drawing only frames shows the assistant answering something nobody saw.
+    /// The routed prompt's frame is the SESSION TASK's, so it is ordered
+    /// against everything the task does with the same prompt; only a forge
+    /// command, a misuse and an unrunnable slash name - which the task never
+    /// sees - are framed from here.
     ///
     /// NOT from `dispatch_workspace_prompt`, which is the delivery path: a
     /// delivery already draws as an envelope turn of its own, so a bare user
@@ -13272,13 +13302,13 @@ provider = "anthropic"
         let dir = tempdir().expect("tempdir");
         let (ws, mut rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
         assert!(
-            !ws.rotation_announcer_started_for_test(),
+            !ws.test_rotation_announcer_started(),
             "premise: no announcer before the boot call",
         );
         ws.start_rotation_announcer();
         ws.start_rotation_announcer();
         assert!(
-            ws.rotation_announcer_started_for_test(),
+            ws.test_rotation_announcer_started(),
             "the boot call starts the one watcher, and a second call is a no-op",
         );
 
@@ -13286,12 +13316,14 @@ provider = "anthropic"
             .duration_since(std::time::UNIX_EPOCH)
             .expect("after the epoch")
             .as_secs()
-            + 3;
+            + 6;
         let thaw = forge_gateway::rotation::reset_instant(reset_at);
         ws.gateway.report_probe_limit(&AccountKey("Cooling".to_owned()), Some(reset_at));
 
         let mut arrivals = Vec::new();
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
+        // A ~5 s window for the cool's frame, so a loaded machine does not
+        // red code that is right; the bound covers the thaw behind it.
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(20);
         while arrivals.len() < 2 {
             let frame = tokio::time::timeout_at(deadline, rx.recv())
                 .await
@@ -24887,46 +24919,99 @@ provider = "anthropic"
     /// only from the default config dir: a scratch or second config dir
     /// booting first must not take the user's state.
     #[test]
-    fn a_machine_wide_store_is_adopted_once_and_only_by_the_default_config_dir() {
+    fn the_default_config_dir_adopts_the_machine_wide_store_once() {
         let dir = tempdir().expect("tempdir");
         let app_support = dir.path().join("app-support");
         std::fs::create_dir_all(&app_support).expect("the app-support dir");
         let legacy = app_support.join("db.redb");
         drop(crate::store::Db::open(&legacy).expect("a store at the old path"));
+        let home_config = dirs::home_dir().expect("a home dir").join(".claude");
         let target = app_support.join("stores").join("adopted.redb");
         std::fs::create_dir_all(target.parent().expect("the stores dir")).expect("stores dir");
 
-        adopt_legacy_store_from(&legacy, &target);
+        let outcome = adopt_legacy_store(&app_support, &home_config, &target);
 
+        assert!(matches!(outcome, Adoption::Settled), "the home config dir adopts");
         assert!(target.is_file(), "the default config dir took it");
         assert!(!legacy.exists(), "and the machine-wide path is empty");
+
+        // Once: a target already present is the migration done, so a later
+        // legacy file is not looked at again.
+        let stray = app_support.join("db.redb");
+        std::fs::write(&stray, b"not a store").expect("a stray file");
+        let again = adopt_legacy_store(&app_support, &home_config, &target);
+        assert!(matches!(again, Adoption::Settled), "nothing is left to do");
+        assert!(stray.is_file(), "the once-guard leaves a later legacy file alone");
     }
 
-    /// **A store another process holds is left alone.** Renaming it would
-    /// move the file out from under a live writer; this run starts empty
-    /// instead, and the file stays where its owner has it.
+    /// **A scratch config dir leaves the file alone**, and a temp dir is not
+    /// the default one: the adoption predicate answers for the home path and
+    /// nothing else.
     #[test]
-    fn a_machine_wide_store_in_use_is_not_adopted() {
+    fn a_scratch_config_dir_leaves_the_machine_wide_store_alone() {
+        let dir = tempdir().expect("tempdir");
+        let app_support = dir.path().join("app-support");
+        std::fs::create_dir_all(&app_support).expect("the app-support dir");
+        let legacy = app_support.join("db.redb");
+        drop(crate::store::Db::open(&legacy).expect("a store at the old path"));
+        let scratch = dir.path().join("scratch-config");
+        let target = app_support.join("stores").join("scratch.redb");
+        std::fs::create_dir_all(target.parent().expect("the stores dir")).expect("stores dir");
+
+        let outcome = adopt_legacy_store(&app_support, &scratch, &target);
+
+        assert!(matches!(outcome, Adoption::Settled), "a scratch dir has nothing to adopt");
+        assert!(legacy.is_file(), "the user's store stays where it is");
+        assert!(!target.exists(), "and no copy was made");
+        assert!(!is_default_config_dir(&scratch), "a temp dir is not the default config dir");
+        assert!(
+            is_default_config_dir(&dirs::home_dir().expect("a home dir").join(".claude")),
+            "the home directory's .claude is",
+        );
+    }
+
+    /// **A store another process holds defers the boot rather than hiding
+    /// it.** Opening a fresh store would make the next boot see a target and
+    /// never look again, stranding every row; memory-only leaves the retry
+    /// for the next boot.
+    #[test]
+    fn a_machine_wide_store_in_use_defers_the_boot() {
         let dir = tempdir().expect("tempdir");
         let app_support = dir.path().join("app-support");
         std::fs::create_dir_all(&app_support).expect("the app-support dir");
         let legacy = app_support.join("db.redb");
         let held = crate::store::Db::open(&legacy).expect("a store at the old path");
+        let home_config = dirs::home_dir().expect("a home dir").join(".claude");
         let target = app_support.join("stores").join("adopted.redb");
+        std::fs::create_dir_all(target.parent().expect("the stores dir")).expect("stores dir");
 
-        adopt_legacy_store_from(&legacy, &target);
+        let outcome = adopt_legacy_store(&app_support, &home_config, &target);
 
+        assert!(matches!(outcome, Adoption::Deferred), "a held store defers the boot");
         assert!(!target.exists(), "nothing was moved in");
         assert!(legacy.is_file(), "and the owner still has its file where it was");
         drop(held);
     }
 
-    /// A temp config dir is not the default one, so it has no claim on the
-    /// machine-wide file.
+    /// **A peer's lock makes the machine shared.** A boot may prune shared
+    /// app-support state only when this is false; a hardcoded true would let
+    /// it delete a live peer's CEF bundle.
     #[test]
-    fn a_scratch_config_dir_is_not_the_default_one() {
+    fn sole_instance_sees_a_peer_lock() {
         let dir = tempdir().expect("tempdir");
-        assert!(!is_default_config_dir(dir.path()), "{}", dir.path().display());
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
+        assert!(ws.sole_instance(), "no peer is running in a fresh fixture");
+
+        let peer = dir.path().join("peer-config");
+        std::fs::create_dir_all(&peer).expect("peer config dir");
+        let base = dir.path().join("app-support");
+        let held = crate::single_instance::acquire(&peer, &base)
+            .expect("the peer acquires")
+            .expect("the peer holds its lock");
+
+        assert!(!ws.sole_instance(), "a peer's held lock means the machine is shared");
+        drop(held);
+        assert!(ws.sole_instance(), "and it is the lock, not the file, that says so");
     }
 }
 
@@ -24984,16 +25069,13 @@ mod prompt_frame_origin_tests {
         );
     }
 
-    /// The prompt, and therefore the frame the task draws from it, runs under
-    /// ONE id.
-    ///
-    /// The lifecycle frames name only the id, so a frame minted apart from the
-    /// wire would hold a row nothing can ever settle - the pile dead for that
-    /// prompt in every view - and a page's copy of the message, which the CLI
-    /// writes under the same id, would arrive as a stranger rather than as the
-    /// row already held.
+    /// **The routed command carries the id its frame is drawn from.** The
+    /// session task builds the frame from this command, so one id here is one
+    /// id on the frame, its lifecycle frames and the CLI's own copy of the
+    /// message - a second id minted on the way would hold a row nothing can
+    /// settle.
     #[test]
-    fn a_prompt_frames_uuid_is_the_uuid_it_runs_under() {
+    fn a_routed_prompt_carries_the_id_its_frame_draws_from() {
         let (ws, _rx, seat) = a_fleet();
 
         let dispatched = ws.dispatch_from_view(a_prompt(&seat));
@@ -25582,6 +25664,29 @@ mod prompt_frame_origin_tests {
                     if text == "/newer please"
             ),
             "a near miss is prose: {commands:?}",
+        );
+    }
+
+    /// **A routed prompt draws once.** The dispatcher frames only the prompts
+    /// it answers itself; a routed one is framed by the session task (or by
+    /// the intercept standing in for its receipt). Framing on both draws
+    /// every send twice.
+    #[test]
+    fn a_routed_prompt_draws_exactly_once() {
+        let (ws, mut rx, seat) = a_fleet();
+
+        ws.dispatch_from_view(a_prompt(&seat)).expect("the core took the prompt");
+
+        let mut drawn = 0;
+        while let Ok(frame) = rx.try_recv() {
+            if matches!(&*frame.update, SessionUpdate::ChatAppended { .. }) {
+                drawn += 1;
+            }
+        }
+        assert_eq!(
+            drawn, 1,
+            "a routed prompt draws its turn once: the task, or the intercept standing in for it, \
+             is the one emitter",
         );
     }
 

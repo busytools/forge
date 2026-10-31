@@ -12,6 +12,13 @@ here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 scratch=$(mktemp -d)
 trap 'rm -rf "$scratch"' EXIT
 
+# The image writes the version file where the entrypoint reads it by default;
+# the test overrides both paths, so this is what keeps the pair from drifting.
+grep -q 'FORGE_VERSION_FILE:-/usr/share/forge-web-version' "$here/entrypoint.sh" \
+    || fail "the entrypoint's default version file is not the path the image writes"
+grep -q '/usr/share/forge-web-version' "$here/Dockerfile" \
+    || fail "the Dockerfile does not write the version file the entrypoint reads"
+
 seed="$scratch/seed"
 served="$scratch/served"
 mkdir -p "$seed"

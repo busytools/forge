@@ -1,10 +1,11 @@
 //! Machine-local embedded database (redb).
 //!
 //! One redb file per config dir at
-//! `<app-support>/stores/<hex-hash-of-config-dir>.redb` holds that config
-//! dir's durable per-machine state, keyed the way the single-instance lock
-//! is. redb takes an exclusive file lock on open, so a second opener on the
-//! same path fails here rather than corrupting.
+//! `<app-support>/stores/<stable-key>.redb` holds that config dir's durable
+//! per-machine state. The key is a SHA-256 of the canonicalised config-dir
+//! path, so a Rust release cannot move it; the single-instance lock keeps its
+//! own digest and is unaffected. redb takes an exclusive file lock on open,
+//! so a second opener on the same path fails here rather than corrupting.
 //!
 //! This wrapper is deliberately general - open plus the raw handle.
 //! Table logic lives per-tenant in the submodules: Gotify subscriptions
