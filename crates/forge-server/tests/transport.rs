@@ -4325,6 +4325,108 @@ async fn a_zero_more_page_cap_serves_the_asked_turns() {
     assert_eq!(page_words(&turns).len(), 8, "a 0 cap serves every turn the client asked for");
 }
 
+/// The next JSON frame, inflated when it crossed compressed.
+///
+/// The shape is reported beside it, because "a declaring client is served a
+/// compressed frame and a plain one is not" is a claim about the frame, not
+/// about its content.
+async fn next_json_frame(socket: &mut Client) -> (ServerMessage, bool) {
+    loop {
+        let msg = tokio::time::timeout(Duration::from_secs(5), socket.next())
+            .await
+            .expect("the server answered rather than leaving the client waiting")
+            .expect("a message")
+            .expect("no error");
+        match msg {
+            Message::Text(text) => {
+                return (serde_json::from_str(&text).expect("decode"), false);
+            }
+            Message::Binary(bytes) if bytes.first() == Some(&3) => {
+                use std::io::Read as _;
+                let mut text = String::new();
+                flate2::read::GzDecoder::new(&bytes[1..])
+                    .read_to_string(&mut text)
+                    .expect("a compressed frame inflates");
+                return (serde_json::from_str(&text).expect("decode"), true);
+            }
+            // A browser frame or its audio: not this test's to read.
+            _ => continue,
+        }
+    }
+}
+
+/// **A frame over the threshold crosses compressed only for a client that
+/// declared it** (#2560).
+///
+/// The declaration is a `deflate=1` query on the dial: a server that predates
+/// it ignores the query, and a client that does not send it is served the
+/// text frames it has always parsed. Both directions are pinned here, on the
+/// same seat and the same page.
+#[tokio::test]
+async fn a_large_frame_crosses_compressed_only_for_a_declaring_client() {
+    let (url, fleet, state) = a_server_with_state().await;
+    let rows: Vec<String> = (0..8).map(|turn| a_turns_rows_padded(turn, 100_000)).collect();
+    let borrowed: Vec<&str> = rows.iter().map(String::as_str).collect();
+    fleet.seed_transcript("TestOrg", "proj", "lead", &borrowed).expect("the transcript seeds");
+    fleet
+        .hold_conversation(&state, "TestOrg", "proj", "lead")
+        .expect("the seat's conversation is held");
+    let seat = lead_seat();
+
+    // A declaring client: the answer is a binary kind-3 frame, and inflating
+    // it gives back the same answer a text frame would have carried.
+    let mut declaring = connect(&format!("{url}?deflate=1")).await;
+    send(
+        &mut declaring,
+        ClientMessage::Subscribe {
+            what: Subject::Session(seat.clone()),
+            answering: false,
+            review: false,
+        },
+    )
+    .await;
+    let (snapshot, compressed) = loop {
+        let (message, compressed) = next_json_frame(&mut declaring).await;
+        if matches!(message, ServerMessage::Snapshot { .. }) {
+            break (message, compressed);
+        }
+    };
+    assert!(compressed, "a page over the threshold crossed as text to a declaring client");
+    let ServerMessage::Snapshot { data, .. } = &snapshot else {
+        unreachable!("the loop broke on a snapshot")
+    };
+    let turns = data["conversation"]["turns"].as_array().map_or(0, Vec::len);
+    assert!(turns > 0, "the inflated answer carries the page: {data}");
+    let page = serde_json::to_string(data).expect("the answer encodes");
+    assert!(
+        page.len() > 64 * 1024,
+        "precondition: the page is over the compression threshold: {} bytes",
+        page.len(),
+    );
+
+    // A client that declared nothing: the same seat and page, as text.
+    let mut plain = connect(&url).await;
+    send(
+        &mut plain,
+        ClientMessage::Subscribe { what: Subject::Session(seat), answering: false, review: false },
+    )
+    .await;
+    let (snapshot, compressed) = loop {
+        let (message, compressed) = next_json_frame(&mut plain).await;
+        if matches!(message, ServerMessage::Snapshot { .. }) {
+            break (message, compressed);
+        }
+    };
+    assert!(!compressed, "a frame reached a client that never declared the capability compressed");
+    let ServerMessage::Snapshot { data, .. } = &snapshot else {
+        unreachable!("the loop broke on a snapshot")
+    };
+    assert!(
+        data["conversation"]["turns"].as_array().is_some_and(|turns| !turns.is_empty()),
+        "and the plain client's answer carries the same page",
+    );
+}
+
 /// `turn N` as `N`, so an order check compares the numbers rather than the
 /// words ("turn 10" sorts before "turn 9" as text).
 fn turn_number(word: &str) -> u32 {

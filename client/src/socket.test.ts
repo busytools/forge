@@ -2,6 +2,8 @@
 // import lands on ws's browser shim, which throws, which is why the shell's
 // test requires it through node instead. Do not set this file's environment
 // to jsdom, and do not write the directive that would: that breaks this line.
+import { gzipSync } from 'node:zlib';
+
 import { type AddressInfo, type RawData, WebSocketServer } from 'ws';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -53,7 +55,10 @@ async function stubServer() {
   const { port } = server.address() as AddressInfo;
 
   const sockets = new Set<import('ws').WebSocket>();
-  server.on('connection', (socket) => {
+  /** The URL each dial carried, so a test can read what the page declared. */
+  const dials: string[] = [];
+  server.on('connection', (socket, request) => {
+    dials.push(request.url ?? '');
     sockets.add(socket);
     socket.on('close', () => sockets.delete(socket));
   });
@@ -84,6 +89,7 @@ async function stubServer() {
     received,
     binary,
     arrivals,
+    dials,
     /** Say something to every client attached. */
     send(message: ServerMessage) {
       for (const socket of sockets) socket.send(JSON.stringify(message));
@@ -286,6 +292,45 @@ describe('the connection', () => {
     expect(store?.snapshot()).toEqual({ projects: [] });
     expect(store?.updates()).toEqual(['catalog_loaded', 'cli_version_changed']);
     expect(store?.state()).toEqual({ kind: 'ready' });
+  });
+
+  /**
+   * **A compressed frame is inflated in the inbound queue, and the frames
+   * behind it keep the socket's order** (#2560). A frame over the server's
+   * threshold crosses as binary kind 3 carrying a gzipped JSON body; the page
+   * declares the capability on its dial, before it can receive one.
+   */
+  it('inflates a compressed frame before the frames behind it', async () => {
+    const { server, conn } = await connected();
+    expect(server.dials, 'the dial declared the capability').toEqual(['/socket?deflate=1']);
+
+    const seen: { kind: string; projects: string[] | undefined }[] = [];
+    conn.onMessage((message) => {
+      if (message.kind === 'snapshot') {
+        seen.push({
+          kind: 'snapshot',
+          projects: (message.data as { projects?: string[] }).projects,
+        });
+      } else if (message.kind === 'update') {
+        seen.push({ kind: 'update', projects: undefined });
+      }
+    });
+
+    server.send({ kind: 'snapshot', subject: HOME, data: { projects: ['one'] } });
+    const body = JSON.stringify({
+      kind: 'snapshot',
+      subject: HOME,
+      data: { projects: ['two'] },
+    });
+    server.sendBinary(Buffer.concat([Buffer.from([3]), gzipSync(Buffer.from(body))]));
+    server.send({ kind: 'update', update: 'catalog_loaded' });
+
+    await until(() => seen.length === 3, 'all three frames');
+    expect(seen, 'the compressed frame was delivered where the socket put it').toEqual([
+      { kind: 'snapshot', projects: ['one'] },
+      { kind: 'snapshot', projects: ['two'] },
+      { kind: 'update' },
+    ]);
   });
 
   /**

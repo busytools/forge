@@ -63,6 +63,9 @@ rustls-native-certs = "0.8"
 futures-util = "0.3"
 # The driver's image parts cross as base64; the wire wants the raw bytes.
 base64 = "0.22"
+# A frame the server compressed crosses as binary kind 3; the shell inflates
+# it here, in the same read loop, so order is the socket's and not a task's.
+flate2 = "1"
 # The desktop's own microphone: the server workspace's capture leaf, so a
 # take opens the device natively instead of through the webview's audio
 # pipeline. Deliberately NOT `forge-dictate`: that crate carries the speech

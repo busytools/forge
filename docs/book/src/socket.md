@@ -702,6 +702,23 @@ watcher is looking at the page, not driving its sound. A packet that arrives
 after the player has fallen behind is dropped rather than queued, so the sound
 stays beside the picture.
 
+**`3` is one compressed JSON frame, and only the server sends one.** A
+connection that dialled its socket URL with `deflate=1` declared that it can
+inflate one; from then on a `ServerMessage` body of 64 KiB or more crosses
+gzipped behind the tag, and a smaller frame is the text frame it has always
+been, byte for byte. The declaration is made at the upgrade, and a server
+that predates the kind ignores a query it does not read - so a client that
+never asked never meets a frame it cannot read.
+
+| bytes | field | value                                                 |
+| ----- | ----- | ----------------------------------------------------- |
+| 1     | kind  | `3` = one gzipped `ServerMessage`                     |
+| rest  | body  | gzip of the frame's JSON text                         |
+
+**Order is the socket's.** Each transport inflates the frame in its own read
+path before the frames behind it are delivered, so a compressed snapshot and
+the updates that follow it keep the sequence the server wrote.
+
 **A binary frame from a client is audio or it is not a frame this server
 takes.** The browser frames and the page's sound are the server's alone, so
 one arriving from a client is refused by its kind tag; nothing is waiting on

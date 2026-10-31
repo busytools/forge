@@ -431,6 +431,7 @@ pub async fn upgrade(
     State(state): State<Arc<TransportState>>,
     ConnectInfo(peer): ConnectInfo<std::net::SocketAddr>,
     headers: HeaderMap,
+    uri: axum::http::Uri,
 ) -> Response {
     // A browser always sends one Origin; a second header, or one that is not
     // text, is nothing a client forge ships produces.
@@ -452,10 +453,16 @@ pub async fn upgrade(
         );
         return (StatusCode::FORBIDDEN, "origin refused").into_response();
     }
+    // **The compression capability is declared at the dial, not claimed
+    // mid-stream.** A `deflate=1` query on the socket URL is ignored by every
+    // server that predates it, so a new client reaching an old one keeps the
+    // text frames it knows, and a client that says nothing (every installed
+    // build before this one) never receives a frame it cannot read.
+    let deflate = uri.query().is_some_and(|query| query.split('&').any(|pair| pair == "deflate=1"));
     let limit = MAX_CLIENT_MESSAGE_BYTES;
     ws.max_frame_size(limit)
         .max_message_size(limit)
-        .on_upgrade(move |socket| greet(socket, state, peer))
+        .on_upgrade(move |socket| greet(socket, state, peer, deflate))
 }
 
 /// The frame that tells a client it is speaking to a forge and carries the
@@ -493,13 +500,14 @@ struct Arrival {
 /// than to whatever else holds the port, and it carries the settings the
 /// client draws with - so the client is configured before it draws anything
 /// rather than discovering a theme later.
-async fn greet<S>(mut socket: S, state: Arc<TransportState>, peer: std::net::SocketAddr)
+async fn greet<S>(socket: S, state: Arc<TransportState>, peer: std::net::SocketAddr, deflate: bool)
 where
     S: futures_util::Stream<Item = Result<Message, axum::Error>>
         + futures_util::Sink<Message, Error = axum::Error>
         + Unpin
         + Send,
 {
+    let mut socket = ClientSocket::new(socket, deflate);
     let client = state.surface.client_config();
     let greeting = greeting_for(&client, &state);
     let Ok(text) = serde_json::to_string(&greeting) else {
@@ -548,7 +556,7 @@ where
 /// `Unsubscribe`, `BrowserDetach` and `BrowserResize` are statements the
 /// server books, not requests.
 async fn drive<S>(
-    socket: &mut S,
+    socket: &mut ClientSocket<S>,
     state: &Arc<TransportState>,
     peer: std::net::SocketAddr,
     settings: tokio::sync::watch::Receiver<Option<Arc<str>>>,
@@ -902,7 +910,7 @@ struct SettingsPush {
 }
 
 async fn run_connection<S>(
-    socket: &mut S,
+    socket: &mut ClientSocket<S>,
     state: &Arc<TransportState>,
     watching: &mut Watching,
     holds: &mut Holds<'_>,
@@ -1437,7 +1445,7 @@ struct OpenReport {
 /// client hears and what the trace records must not depend on which side the
 /// record was built.
 async fn write_snapshot<S>(
-    socket: &mut S,
+    socket: &mut ClientSocket<S>,
     state: &Arc<TransportState>,
     watching: &mut Watching,
     subject: Subject,
@@ -1552,7 +1560,7 @@ fn log_open(report: &OpenReport, write: &FrameWrite) {
 /// Answer a subscribe read that ran off the loop: its record, its refusal, or
 /// nothing when the client let the seat go while it ran.
 async fn finish_read<S>(
-    socket: &mut S,
+    socket: &mut ClientSocket<S>,
     state: &Arc<TransportState>,
     watching: &mut Watching,
     holds: &mut Holds<'_>,
@@ -1616,7 +1624,7 @@ where
 
 /// Answer one client message.
 async fn handle_client<S>(
-    socket: &mut S,
+    socket: &mut ClientSocket<S>,
     state: &Arc<TransportState>,
     watching: &mut Watching,
     holds: &mut Holds<'_>,
@@ -1685,7 +1693,7 @@ where
 /// [`handle_client`] with the message already read, so a subscribe that
 /// queued behind a read off the loop takes the same path the socket's own did.
 async fn handle_message<S>(
-    socket: &mut S,
+    socket: &mut ClientSocket<S>,
     state: &Arc<TransportState>,
     watching: &mut Watching,
     holds: &mut Holds<'_>,
@@ -2842,7 +2850,7 @@ fn released_subscribe(what: &Subject) -> ServerMessage {
 /// answer is whether anything was spent, which is what the home it holds is
 /// owed a re-encode for.
 async fn set_showing<S>(
-    socket: &mut S,
+    socket: &mut ClientSocket<S>,
     state: &Arc<TransportState>,
     watching: &mut Watching,
     seat: Option<SessionSlot>,
@@ -2884,7 +2892,7 @@ where
 ///
 /// **Called once per showing, from whichever half completes the pair.**
 async fn spend_showing<S>(
-    socket: &mut S,
+    socket: &mut ClientSocket<S>,
     state: &Arc<TransportState>,
     watching: &mut Watching,
     slot: &SessionSlot,
@@ -3192,7 +3200,124 @@ fn take_frame(surface: &ViewSurface, dictate: &Streaming, me: u64, route: FrameR
     }
 }
 
-async fn send<S>(socket: &mut S, message: ServerMessage) -> anyhow::Result<()>
+/// The binary kind a compressed JSON frame crosses as.
+///
+/// Kinds 0, 1 and 2 are dictation, a browser frame and its audio; this one is
+/// a whole `ServerMessage` body, gzipped, for a client that declared it can
+/// inflate one.
+const COMPRESSED_JSON_TAG: u8 = 3;
+
+/// The JSON bytes at which a frame crosses compressed, for a connection that
+/// declared the capability.
+///
+/// **A frame under it is byte-identical to what the socket has always
+/// carried.** The threshold is where the write stops being cheap: a 2 KB
+/// frame gains nothing from a gzip header, and a multi-MB snapshot is the
+/// case this exists for.
+const COMPRESSED_MIN_BYTES: usize = 64 * 1024;
+
+/// This connection's socket, with the one fact the write path needs from the
+/// upgrade: whether the client declared it can inflate a compressed frame.
+///
+/// **The declaration is made at the dial**, as a `deflate=1` query on the
+/// socket URL: an older server ignores a query it does not read, and a
+/// client that says nothing keeps every frame as text. The flag rides the
+/// Sink so every frame to a client goes through one encoder rather than the
+/// answer paths each deciding.
+struct ClientSocket<S> {
+    inner: S,
+    deflate: bool,
+}
+
+impl<S> ClientSocket<S> {
+    fn new(inner: S, deflate: bool) -> Self {
+        Self { inner, deflate }
+    }
+}
+
+impl<S> futures_util::Stream for ClientSocket<S>
+where
+    S: futures_util::Stream<Item = Result<Message, axum::Error>> + Unpin,
+{
+    type Item = Result<Message, axum::Error>;
+
+    fn poll_next(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        std::pin::Pin::new(&mut self.inner).poll_next(cx)
+    }
+}
+
+impl<S> futures_util::Sink<Message> for ClientSocket<S>
+where
+    S: futures_util::Sink<Message, Error = axum::Error> + Unpin,
+{
+    type Error = axum::Error;
+
+    fn poll_ready(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), axum::Error>> {
+        std::pin::Pin::new(&mut self.inner).poll_ready(cx)
+    }
+
+    fn start_send(mut self: std::pin::Pin<&mut Self>, item: Message) -> Result<(), axum::Error> {
+        std::pin::Pin::new(&mut self.inner).start_send(item)
+    }
+
+    fn poll_flush(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), axum::Error>> {
+        std::pin::Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_close(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), axum::Error>> {
+        std::pin::Pin::new(&mut self.inner).poll_close(cx)
+    }
+}
+
+/// The bytes a frame carries, which is what the write's own record reports.
+fn frame_bytes(frame: &Message) -> usize {
+    match frame {
+        Message::Text(text) => text.len(),
+        Message::Binary(bytes) => bytes.len(),
+        _ => 0,
+    }
+}
+
+/// One message as the frame this connection sends: text as it always was, or
+/// a gzipped body behind [`COMPRESSED_JSON_TAG`] when the client declared the
+/// capability and the body is over the threshold.
+fn frame_for<S>(socket: &ClientSocket<S>, text: &str) -> Message {
+    if !socket.deflate || text.len() < COMPRESSED_MIN_BYTES {
+        return Message::Text(text.to_owned().into());
+    }
+    match gzipped(text.as_bytes()) {
+        Ok(body) => {
+            let mut frame = Vec::with_capacity(body.len() + 1);
+            frame.push(COMPRESSED_JSON_TAG);
+            frame.extend_from_slice(&body);
+            Message::Binary(frame.into())
+        }
+        // A body that cannot be compressed still crosses as the text frame
+        // the client knows; a failed gzip is no reason to drop an answer.
+        Err(_) => Message::Text(text.to_owned().into()),
+    }
+}
+
+fn gzipped(bytes: &[u8]) -> std::io::Result<Vec<u8>> {
+    use std::io::Write as _;
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+    encoder.write_all(bytes)?;
+    encoder.finish()
+}
+
+async fn send<S>(socket: &mut ClientSocket<S>, message: ServerMessage) -> anyhow::Result<()>
 where
     S: futures_util::Sink<Message, Error = axum::Error> + Unpin,
 {
@@ -3202,20 +3327,18 @@ where
 /// Write an already-encoded frame. The settings document is encoded once per
 /// reload and shared, so a connection writes its bytes rather than building
 /// the frame again.
-async fn send_text<S>(socket: &mut S, text: &str) -> anyhow::Result<()>
+async fn send_text<S>(socket: &mut ClientSocket<S>, text: &str) -> anyhow::Result<()>
 where
     S: futures_util::Sink<Message, Error = axum::Error> + Unpin,
 {
-    write_within(WRITE_BOUND, async {
-        socket.send(Message::Text(text.into())).await.map_err(anyhow::Error::from)
-    })
-    .await
+    let frame = frame_for(socket, text);
+    write_within(WRITE_BOUND, async { socket.send(frame).await.map_err(anyhow::Error::from) }).await
 }
 
 /// Answer one strip ask: through the reply it carried, or as the error frame
 /// when it carried none.
 async fn answer_ask<S>(
-    socket: &mut S,
+    socket: &mut ClientSocket<S>,
     reply_to: Option<u64>,
     what: &str,
     outcome: Result<serde_json::Value, String>,
@@ -3251,7 +3374,7 @@ where
 /// Answer a refused attach: through the client's reply when it sent one, and
 /// as the protocol's error frame otherwise.
 async fn refuse_attach<S>(
-    socket: &mut S,
+    socket: &mut ClientSocket<S>,
     reply_to: Option<u64>,
     why: &str,
     seat: SessionSlot,
@@ -3287,16 +3410,18 @@ where
 /// **Only the open path reports a size** (#2374), and a return every other
 /// caller would drop is noise in thirty of them - so the size is answered
 /// here and the plain write wraps it.
-async fn send_frame<S>(socket: &mut S, message: ServerMessage) -> anyhow::Result<usize>
+async fn send_frame<S>(
+    socket: &mut ClientSocket<S>,
+    message: ServerMessage,
+) -> anyhow::Result<usize>
 where
     S: futures_util::Sink<Message, Error = axum::Error> + Unpin,
 {
     let text = serde_json::to_string(&message)?;
-    let bytes = text.len();
-    write_within(WRITE_BOUND, async {
-        socket.send(Message::Text(text.into())).await.map_err(anyhow::Error::from)
-    })
-    .await?;
+    let frame = frame_for(socket, &text);
+    let bytes = frame_bytes(&frame);
+    write_within(WRITE_BOUND, async { socket.send(frame).await.map_err(anyhow::Error::from) })
+        .await?;
     Ok(bytes)
 }
 
@@ -3317,7 +3442,7 @@ struct FrameWrite {
 /// it, and the test's fake records its length - which is what proves the read
 /// happens after the message is serialised (#2506).
 trait WriteClock {
-    fn start(&self, frame: &str) -> Instant;
+    fn start(&self, frame: &Message) -> Instant;
 
     fn end(&self) -> Instant;
 }
@@ -3326,7 +3451,7 @@ trait WriteClock {
 struct SystemClock;
 
 impl WriteClock for SystemClock {
-    fn start(&self, _frame: &str) -> Instant {
+    fn start(&self, _frame: &Message) -> Instant {
         Instant::now()
     }
 
@@ -3342,7 +3467,7 @@ impl WriteClock for SystemClock {
 /// and a write that yielded is otherwise indistinguishable from the fold, the
 /// record's reads and the serialisation before it.
 async fn send_frame_timed<S, C>(
-    socket: &mut S,
+    socket: &mut ClientSocket<S>,
     message: ServerMessage,
     clock: &C,
 ) -> anyhow::Result<FrameWrite>
@@ -3352,13 +3477,15 @@ where
 {
     let prep_at = Instant::now();
     let text = serde_json::to_string(&message)?;
+    // **The prep slice covers the compression too**, and `bytes` is what the
+    // socket is actually handed: a compressed frame's win has to be readable
+    // off the line that reports it.
+    let frame = frame_for(socket, &text);
     let prep_ms = prep_at.elapsed().as_secs_f64() * 1000.0;
-    let bytes = text.len();
+    let bytes = frame_bytes(&frame);
     let waited = AtomicBool::new(false);
-    let at = clock.start(&text);
-    let mut write = std::pin::pin!(async {
-        socket.send(Message::Text(text.into())).await.map_err(anyhow::Error::from)
-    });
+    let at = clock.start(&frame);
+    let mut write = std::pin::pin!(async { socket.send(frame).await.map_err(anyhow::Error::from) });
     write_within(WRITE_BOUND, async {
         std::future::poll_fn(|cx| {
             let poll = std::future::Future::poll(write.as_mut(), cx);
@@ -4274,8 +4401,8 @@ mod tests {
     }
 
     impl WriteClock for FakeClock {
-        fn start(&self, frame: &str) -> Instant {
-            self.starts.borrow_mut().push(frame.len());
+        fn start(&self, frame: &Message) -> Instant {
+            self.starts.borrow_mut().push(frame_bytes(frame));
             self.base
         }
 
@@ -4431,7 +4558,8 @@ mod tests {
 
         let (inbound, peer_in) = mpsc::unbounded_channel();
         let (writing, stuck) = oneshot::channel();
-        let mut peer = StoppedReading { inbound: peer_in, writing: Some(writing) };
+        let mut peer =
+            ClientSocket::new(StoppedReading { inbound: peer_in, writing: Some(writing) }, false);
         let settings = crate::transport::settings_channel();
         let driven = tokio::spawn({
             let state = Arc::clone(&state);
@@ -4512,9 +4640,12 @@ mod tests {
         let (_keep, inbound) = mpsc::unbounded_channel();
         let mut peer = StoppedReading { inbound, writing: None };
 
-        tokio::time::timeout(WRITE_BOUND * 2, greet(&mut peer, state, attached_from()))
-            .await
-            .expect("the greeting ends at the write bound rather than never");
+        tokio::time::timeout(
+            WRITE_BOUND * 2,
+            greet(ClientSocket::new(&mut peer, false), state, attached_from(), false),
+        )
+        .await
+        .expect("the greeting ends at the write bound rather than never");
     }
 
     /// A frame for the write tests, whose encoded length is what the record
@@ -4537,8 +4668,9 @@ mod tests {
         let bytes = serde_json::to_string(&a_frame()).expect("the frame encodes").len();
         let clock = FakeClock { starts: std::cell::RefCell::new(Vec::new()), base: Instant::now() };
 
-        let write =
-            send_frame_timed(&mut NullSink, a_frame(), &clock).await.expect("the write lands");
+        let write = send_frame_timed(&mut ClientSocket::new(NullSink, false), a_frame(), &clock)
+            .await
+            .expect("the write lands");
         assert!(!write.waited, "a sink that never yields is reported as not waiting");
         assert_eq!(write.bytes, bytes, "the record carries the frame's own size");
         assert_eq!(write.write_ms, 1000.0, "the record's elapsed is the clock's, exactly");
@@ -4549,6 +4681,39 @@ mod tests {
         );
     }
 
+    /// **The write's record reports the bytes the socket was handed (#2560).**
+    /// A frame over the threshold to a declaring connection crosses
+    /// compressed, and the line that exists to make the win measurable must
+    /// carry the compressed size; under the threshold the same connection
+    /// still writes the text frame it always did.
+    #[tokio::test]
+    async fn a_compressed_write_reports_the_bytes_it_wrote() {
+        let large = ServerMessage::Snapshot {
+            subject: Subject::Home,
+            data: json!({ "padding": "x".repeat(100_000) }),
+        };
+        let text = serde_json::to_string(&large).expect("the frame encodes").len();
+        let clock = FakeClock { starts: std::cell::RefCell::new(Vec::new()), base: Instant::now() };
+        let mut socket = ClientSocket::new(NullSink, true);
+
+        let write = send_frame_timed(&mut socket, large, &clock).await.expect("the write lands");
+        assert!(
+            write.bytes < text / 4,
+            "the record carries the compressed size, not the text's: {} of {text}",
+            write.bytes,
+        );
+        assert_eq!(
+            clock.starts.borrow().as_slice(),
+            &[write.bytes],
+            "the clock is handed the frame actually written",
+        );
+
+        let small = serde_json::to_string(&a_frame()).expect("the frame encodes").len();
+        let write =
+            send_frame_timed(&mut socket, a_frame(), &clock).await.expect("the write lands");
+        assert_eq!(write.bytes, small, "a frame under the threshold stays the text frame it was",);
+    }
+
     /// **`waited` is not a constant (#2506).** A write that yields says so;
     /// the false case is pinned beside it.
     #[tokio::test]
@@ -4556,7 +4721,7 @@ mod tests {
         let bytes = serde_json::to_string(&a_frame()).expect("the frame encodes").len();
         let clock = FakeClock { starts: std::cell::RefCell::new(Vec::new()), base: Instant::now() };
 
-        let mut yielding = YieldsOnce { yielded: false };
+        let mut yielding = ClientSocket::new(YieldsOnce { yielded: false }, false);
         let write =
             send_frame_timed(&mut yielding, a_frame(), &clock).await.expect("the write lands");
         assert!(write.waited, "a flush that yielded once is reported as having waited");
@@ -6003,7 +6168,7 @@ mod tests {
     fn connection(state: &Arc<TransportState>) -> Driven {
         let (to_server, inbound) = mpsc::unbounded_channel();
         let (outbound, mut from_server) = mpsc::unbounded_channel();
-        let mut peer = Peer { inbound, outbound };
+        let mut peer = ClientSocket::new(Peer { inbound, outbound }, false);
         let written = Arc::new(Mutex::new(Vec::new()));
         let seen = Arc::clone(&written);
         // The frames are recorded rather than dropped, so a test can wait on

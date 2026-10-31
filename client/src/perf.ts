@@ -207,9 +207,10 @@ export interface PerfRecord {
    *  written - a visibility gate rather than a blocked thread (#2569). */
   hidden?: boolean;
   /**
-   * A `snapshot`'s frame length in string units (UTF-16 code units). The
-   * wire is JSON and its non-ASCII arrives escaped, so this tracks the
-   * server's bytes closely without walking a multi-MB string (#2513).
+   * A `snapshot`'s JSON length in string units (UTF-16 code units), which is
+   * what the boundary parse walked without a second pass over it (#2513). A
+   * frame that crossed compressed reports its inflated length here; the
+   * bytes it cost on the wire are the server's `frame_write` line.
    */
   chars?: number;
   /** A `snapshot`: how long its JSON.parse took, at the boundary. */

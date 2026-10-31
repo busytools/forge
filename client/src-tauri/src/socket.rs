@@ -97,6 +97,42 @@ pub(crate) const NO_REPLY: &str = "the server did not answer the command";
 /// itself is #1637's work, not this half's.
 const MAX_FRAME_BYTES: usize = 256 << 20;
 
+/// The binary kind a compressed JSON frame crosses as.
+///
+/// Kind 1 is a relayed browser frame and kind 2 its audio; this one is a
+/// whole message body, gzipped, for a client that declared `deflate=1` on
+/// its socket URL. A server that predates it never sends one, and this half
+/// only ever receives what it declared.
+const COMPRESSED_JSON_TAG: u8 = 3;
+
+/// The URL this half dials, with the compression capability declared.
+///
+/// **A query on the address is the declaration.** An older server ignores a
+/// parameter it does not read, so the frames it sends stay the text this
+/// half has always parsed, and a client that says nothing keeps receiving
+/// exactly what it knew.
+fn declaring_compression(url: &str) -> String {
+    match url.split_once('?') {
+        Some((head, query)) if !query.is_empty() => format!("{head}?{query}&deflate=1"),
+        Some((head, _)) => format!("{head}?deflate=1"),
+        None => format!("{url}?deflate=1"),
+    }
+}
+
+/// One compressed frame's JSON body, inflated in place in the read loop.
+///
+/// **Synchronous on purpose**: the loop is the order this connection has
+/// always had, and a decompression spawned beside it would let the frames
+/// after it overtake it.
+fn inflate(bytes: &[u8]) -> Result<String, String> {
+    use std::io::Read as _;
+    let mut text = String::new();
+    flate2::read::GzDecoder::new(bytes)
+        .read_to_string(&mut text)
+        .map_err(|why| format!("a compressed frame did not inflate: {why}"))?;
+    Ok(text)
+}
+
 /// The TCP stream under the socket, counting every byte the peer sends.
 ///
 /// **The counter sits under TLS and the WebSocket both**, so a handshake
@@ -892,6 +928,9 @@ async fn run(
     frames: FrameSink,
     audio: AudioSink,
 ) {
+    // Declared once, on the address: every dial and every retry after it
+    // carries the capability this half can read back.
+    let url = declaring_compression(&url);
     let mut held: Vec<Held> = Vec::new();
     // The subscribes sent over the wire and not yet answered, oldest first -
     // what a refusal from the core is attributed to.
@@ -1065,6 +1104,30 @@ async fn run(
                     // not this half's to read.
                     Some(Ok(Message::Binary(bytes))) => {
                         match bytes.first() {
+                            Some(&COMPRESSED_JSON_TAG) => {
+                                // **A frame over the server's threshold, for a
+                                // client that declared it can inflate one.**
+                                // Inflated here, in the read loop, so the
+                                // frames after it are delivered after it.
+                                let at = tokio::time::Instant::now();
+                                match inflate(&bytes[1..]) {
+                                    Ok(text) => match serde_json::from_str::<Value>(&text) {
+                                        Ok(value) => receive(
+                                            &value,
+                                            text.len(),
+                                            at.elapsed().as_secs_f64() * 1000.0,
+                                            &mut pending,
+                                            &mut attaches,
+                                            &mut awaiting,
+                                            &events,
+                                        ),
+                                        Err(why) => {
+                                            say(&events, SocketEvent::Malformed(why.to_string()))
+                                        }
+                                    },
+                                    Err(why) => say(&events, SocketEvent::Malformed(why)),
+                                }
+                            }
                             Some(&1) => frames(&bytes[1..]),
                             Some(&2) => audio(&bytes[1..]),
                             // **A binary frame of another kind is said**, not
@@ -1649,6 +1712,61 @@ pub(crate) mod tests {
         assert!(waited_ms.is_finite(), "the wait is measured, not a placeholder");
     }
 
+    /// **A compressed frame is decoded by this half, in the socket's order**
+    /// (#2560). A text frame, a gzip body behind the compressed kind, then
+    /// another text frame: the page's events carry all three in the order
+    /// the server wrote them, the middle one decoded as the message it
+    /// stands for.
+    #[tokio::test]
+    async fn a_compressed_frame_is_inflated_in_the_read_order() {
+        let mut stub = stub().await;
+        let (socket, mut rx) = connected(&stub).await;
+        socket.subscribe(json!("home"), true, false);
+        // The subscribe reaching the stub is the barrier: the frames below
+        // are written to a connection already open, not raced against it.
+        stub.heard_until(|value| value["kind"] == "subscribe").await;
+
+        let _ = stub.say.send(json!({ "kind": "update", "update": "one" }));
+        let middle = json!({ "kind": "update", "update": "two" });
+        let mut frame = vec![3_u8];
+        frame.extend_from_slice(&gzipped(middle.to_string().as_bytes()));
+        stub.send_binary(frame);
+        let _ = stub.say.send(json!({ "kind": "update", "update": "three" }));
+
+        let mut seen = Vec::new();
+        while seen.len() < 3 {
+            if let SocketEvent::Message { value, .. } = next_event(&mut rx).await
+                && let Some(update) = value.get("update").and_then(Value::as_str)
+            {
+                seen.push(update.to_owned());
+            }
+        }
+        assert_eq!(
+            seen,
+            ["one", "two", "three"],
+            "the compressed frame was delivered out of the socket's order",
+        );
+    }
+
+    /// The bytes a stub's marked binary push stands for.
+    fn binary_body(value: &Value) -> Vec<u8> {
+        value
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_u64)
+            .map(|byte| u8::try_from(byte).unwrap_or(0))
+            .collect()
+    }
+
+    /// One gzip body, as the server writes a compressed frame's tail.
+    fn gzipped(text: &[u8]) -> Vec<u8> {
+        use std::io::Write as _;
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        encoder.write_all(text).expect("write");
+        encoder.finish().expect("finish")
+    }
+
     /// A stub forge: accepts connections, forwards every text frame it hears,
     /// and broadcasts whatever the test pushes. `kill` drops the live
     /// connections while the listener lives on, which is what a reconnect
@@ -1724,9 +1842,13 @@ pub(crate) mod tests {
                             },
                             pushed = said.recv() => match pushed {
                                 Ok(value) => {
-                                    let _ = writer
-                                        .send(Message::Text(value.to_string().into()))
-                                        .await;
+                                    let reply = match value.get("__binary") {
+                                        Some(bytes) => {
+                                            Message::Binary(binary_body(bytes).into())
+                                        }
+                                        None => Message::Text(value.to_string().into()),
+                                    };
+                                    let _ = writer.send(reply).await;
                                 }
                                 Err(_) => break,
                             },
@@ -1748,6 +1870,13 @@ pub(crate) mod tests {
     }
 
     impl Stub {
+        /// Push one binary frame, in the same order the text pushes take:
+        /// both kinds ride one channel, so a compressed frame cannot overtake
+        /// the text frame written before it.
+        pub(crate) fn send_binary(&self, frame: Vec<u8>) {
+            let _ = self.say.send(json!({ "__binary": frame }));
+        }
+
         pub(crate) async fn next_heard(&mut self) -> Value {
             tokio::time::timeout(Duration::from_secs(2), self.heard.recv())
                 .await
