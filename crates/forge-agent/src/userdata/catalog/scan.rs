@@ -673,12 +673,13 @@ pub enum Workers {
 
 /// List sessions. When `directory` is `Some`, scans that project dir;
 /// when `None`, scans every project directory under `config_dir`'s
-/// `projects/` tree. Per-file lite reads run on the tokio blocking
-/// pool with bounded concurrency (capped at 16 concurrent reads);
-/// results are sorted by `last_modified` descending and pagination
-/// applies at the end. `workers` decides which worker-tagged rows may
-/// appear, and it lands BEFORE the cap: a listing is never shortened by
-/// rows it would not have carried.
+/// `projects/` tree. A capped listing stats each candidate for its mtime,
+/// reads newest first on the tokio blocking pool (at most 16 at once), and
+/// stops once the rows the cap serves are in hand - a short batch is filled
+/// by the next, so the cap bounds the reads without shortening the listing.
+/// An uncapped listing (the boot scan) reads every candidate. `workers`
+/// decides which worker-tagged rows may appear, and it lands before the
+/// cap: a listing is never shortened by rows it would not have carried.
 ///
 /// # Panics
 ///
@@ -686,7 +687,10 @@ pub enum Workers {
 ///
 /// `tag_cache` carries the previous run's tag scans so an unchanged
 /// transcript is not re-read end to end. `None` reads every byte of
-/// every file, which is what a caller with no store must do.
+/// every file, which is what a caller with no store must do. A worker's
+/// listing also skips the READ of a transcript that cache tags for another
+/// seat: its tag cannot match, and the head-and-tail read is the cost a
+/// non-git worker on a large project paid on every seat open (#2567).
 pub async fn list_sessions(
     config_dir: &Path,
     directory: Option<&str>,
@@ -724,19 +728,98 @@ pub async fn list_sessions(
         }
     }
 
-    let mut entries: Vec<SDKSessionInfo> = Vec::with_capacity(candidates.len());
-    let mut paths = candidates.into_iter();
+    // **A worker's listing does not read what its own tag already rules out**
+    // (#2567). The head-and-tail read of every transcript in the directory is
+    // the whole cost of a `/resume` list on a non-git worker, which shares
+    // the project root with its lead; an unchanged file the cache tags for
+    // another seat (or for none) is dropped here instead. The answer is the
+    // same rows either way, so the skip names itself on the log.
+    if let (Workers::Only(label), Some(cache)) = (&workers, tag_cache) {
+        let wanted = worker_tag(label);
+        let before = candidates.len();
+        // `None` is a tag this cache cannot vouch for, and that file is read.
+        candidates.retain(|path| cache.carries_tag(path, &wanted).unwrap_or(true));
+        if before > candidates.len() {
+            // **No explicit target: the shipped directive names this module's
+            // own path**, and a record under another target is filtered out
+            // before it ever reaches `forge.log` (#2567).
+            tracing::debug!(
+                event_name = "session_scan_narrowed",
+                dir = directory.unwrap_or("<every project>"),
+                label = %label,
+                skipped = before - candidates.len(),
+                to_read = candidates.len(),
+                "transcripts whose cached tag rules them out were not read",
+            );
+        }
+    }
+
+    // **A capped listing reads newest first and stops when it is full**
+    // (#2567). Reading every candidate and cutting afterwards made a
+    // long-lived worker label pay a head-and-tail read per file however few
+    // rows it served; the stat here is the mtime the final order already
+    // reads, so nothing is paid for an order the answer did not need.
+    let mut ordered: Vec<(PathBuf, u64)> = candidates
+        .into_iter()
+        .map(|path| {
+            let mtime = std::fs::metadata(&path)
+                .and_then(|meta| meta.modified())
+                .ok()
+                .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                .map_or(0, |age| u64::try_from(age.as_millis()).unwrap_or(u64::MAX));
+            (path, mtime)
+        })
+        .collect();
+    ordered.sort_by_key(|(path, mtime)| (std::cmp::Reverse(*mtime), path.clone()));
+
+    let wanted_tag = match &workers {
+        Workers::Only(label) => Some(worker_tag(label)),
+        Workers::Hidden => None,
+    };
+    let matches = |info: &SDKSessionInfo| match &wanted_tag {
+        Some(wanted) => info.tag.as_deref() == Some(wanted.as_str()),
+        None => !should_exclude_worker_tag(info),
+    };
+    // `None` is no cap: the boot scan reads the whole tree, which is what
+    // its catalog is.
+    let wanted_rows = limit.map(|l| offset.saturating_add(l));
+
+    let mut entries: Vec<SDKSessionInfo> = Vec::new();
+    let mut paths = ordered.into_iter();
     let mut set: tokio::task::JoinSet<Option<SDKSessionInfo>> = tokio::task::JoinSet::new();
     let spawn_read = |set: &mut tokio::task::JoinSet<Option<SDKSessionInfo>>, path: PathBuf| {
         let cache = tag_cache.cloned();
         set.spawn_blocking(move || read_session_info(&path, cache.as_deref()));
     };
-    for path in paths.by_ref().take(LIST_SESSIONS_MAX_CONCURRENT) {
-        spawn_read(&mut set, path);
-    }
-    while let Some(res) = set.join_next().await {
+    // **The reads stay pipelined, and the cap is counted rather than
+    // re-counted.** The boot scan is uncapped and reads the whole tree, so
+    // recounting the kept rows on every pass would multiply its cost by the
+    // number of batches, and draining the set before refilling would leave
+    // the pool idle between them.
+    let mut kept = 0usize;
+    loop {
+        let owed = wanted_rows.map_or(usize::MAX, |wanted| wanted.saturating_sub(kept));
+        if owed == 0 {
+            break;
+        }
+        // **A batch is no wider than the rows still owed**, so a cap reads
+        // the cap and not a pool's width past it. A short batch - a
+        // transcript gone, or one the seat's own tag rules out - is filled by
+        // the next, so the read is bounded without the listing coming up
+        // short.
+        let width = owed.min(LIST_SESSIONS_MAX_CONCURRENT);
+        while set.len() < width {
+            let Some((path, _)) = paths.next() else { break };
+            spawn_read(&mut set, path);
+        }
+        let Some(res) = set.join_next().await else { break };
         match res {
-            Ok(Some(info)) => entries.push(info),
+            Ok(Some(info)) => {
+                if matches(&info) {
+                    kept += 1;
+                }
+                entries.push(info);
+            }
             Ok(None) => {}
             Err(err) => {
                 tracing::debug!(
@@ -746,24 +829,19 @@ pub async fn list_sessions(
                 );
             }
         }
-        if let Some(path) = paths.next() {
-            spawn_read(&mut set, path);
-        }
+    }
+    if let Some(wanted) = wanted_rows {
+        tracing::debug!(
+            event_name = "session_scan_read",
+            dir = directory.unwrap_or("<every project>"),
+            read = entries.len(),
+            wanted,
+            "the listing read the rows its cap serves, newest first",
+        );
     }
 
     entries.sort_by_key(|e| std::cmp::Reverse(e.last_modified));
-    let entries: Vec<SDKSessionInfo> = match &workers {
-        Workers::Hidden => {
-            entries.into_iter().filter(|info| !should_exclude_worker_tag(info)).collect()
-        }
-        Workers::Only(label) => {
-            let wanted = worker_tag(label);
-            entries
-                .into_iter()
-                .filter(|info| info.tag.as_deref() == Some(wanted.as_str()))
-                .collect()
-        }
-    };
+    let entries: Vec<SDKSessionInfo> = entries.into_iter().filter(|info| matches(info)).collect();
     let end = limit.map_or(entries.len(), |l| offset.saturating_add(l));
     entries.into_iter().skip(offset).take(end.saturating_sub(offset)).collect()
 }
@@ -1585,6 +1663,18 @@ impl SessionTagCache {
 
     fn get(&self, path: &Path) -> Option<SessionTagScan> {
         self.prior.get(path.to_str()?).cloned()
+    }
+
+    /// Whether this transcript carried `wanted` at its last scan, when the
+    /// file has not changed since. `None` when the tag is not known - nothing
+    /// is cached, or the entry is behind the file on disk, where a `/new`
+    /// re-tag can land - so the caller reads the file rather than deciding.
+    fn carries_tag(&self, path: &Path, wanted: &str) -> Option<bool> {
+        // The cache first: a path it has never seen costs no metadata call on
+        // a cold listing.
+        let held = self.get(path)?;
+        let size = std::fs::metadata(path).ok()?.len();
+        (held.scanned_len == size).then(|| held.tag.as_deref() == Some(wanted))
     }
 
     fn put(&self, path: &Path, scan: SessionTagScan) {
@@ -2885,6 +2975,160 @@ mod tests {
             vec!["alpha-own"],
             "a worker's listing is the sessions its own label ran, not its prefix kin's"
         );
+    }
+
+    /// **A worker's listing does not read what its cached tags already rule
+    /// out** (#2567). The head-and-tail read of every transcript in the
+    /// directory was the whole cost of a `/resume` list on a non-git worker,
+    /// which shares the project root with its lead. The answer is the same
+    /// rows either way, so the skip is read off its own log line.
+    #[tokio::test]
+    async fn a_workers_listing_skips_what_its_cached_tags_rule_out() {
+        let logs = LogCapture::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::DEBUG)
+            .with_ansi(false)
+            .with_writer(logs.clone())
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let tmp = tempfile::tempdir().unwrap();
+        let cwd = tmp.path().join("project");
+        fs::create_dir_all(&cwd).unwrap();
+        let cwd = cwd.to_string_lossy().into_owned();
+        let dir = dir_for(tmp.path(), &cwd);
+        fs::create_dir_all(&dir).unwrap();
+        write_session_jsonl(&dir, "lead-own", &transcript(None));
+        write_session_jsonl(&dir, "beta-own", &transcript(Some("forge:worker:beta")));
+        write_session_jsonl(&dir, "alpha-own", &transcript(Some("forge:worker:alpha")));
+
+        // A boot scan's cache: one full pass, then exactly what it learned.
+        let first = std::sync::Arc::new(SessionTagCache::new(std::collections::HashMap::new()));
+        let read =
+            list_sessions(tmp.path(), Some(&cwd), None, 0, Workers::Hidden, Some(&first)).await;
+        assert_eq!(read.len(), 1, "precondition: a lead's listing hides its workers");
+        let prior: std::collections::HashMap<String, SessionTagScan> =
+            first.updates().into_iter().collect();
+        assert_eq!(prior.len(), 3, "and the pass still read every transcript's tag");
+        let warm = std::sync::Arc::new(SessionTagCache::new(prior));
+
+        let worker = list_sessions(
+            tmp.path(),
+            Some(&cwd),
+            None,
+            0,
+            Workers::Only("alpha".to_owned()),
+            Some(&warm),
+        )
+        .await;
+        assert_eq!(
+            session_ids(&worker),
+            vec!["alpha-own"],
+            "the listing is still the label's own sessions",
+        );
+        let logged = String::from_utf8(logs.0.lock().clone()).unwrap();
+        assert!(
+            logged.contains("session_scan_narrowed") && logged.contains("skipped=2"),
+            "the two transcripts the cache ruled out are named as skipped: {logged}",
+        );
+
+        // **A transcript that grew is read, not skipped.** The bytes since the
+        // last scan can carry a `/new` re-tag, so a cache entry behind its
+        // file proves nothing - and here the new tag makes the file the
+        // worker's own.
+        let mut retagged = transcript(Some("forge:worker:beta"));
+        retagged.push_str("{\"type\":\"tag\",\"tag\":\"forge:worker:alpha\"}\n");
+        write_session_jsonl(&dir, "beta-own", &retagged);
+        let again = list_sessions(
+            tmp.path(),
+            Some(&cwd),
+            None,
+            0,
+            Workers::Only("alpha".to_owned()),
+            Some(&warm),
+        )
+        .await;
+        assert_eq!(
+            session_ids(&again),
+            vec!["beta-own", "alpha-own"],
+            "a transcript that changed after its scan must be read, not skipped",
+        );
+
+        // **A path the cache has never seen is read, not skipped.** The cache
+        // cannot vouch for a transcript created after its scan.
+        write_session_jsonl(&dir, "gamma-own", &transcript(Some("forge:worker:alpha")));
+        let fresh = list_sessions(
+            tmp.path(),
+            Some(&cwd),
+            None,
+            0,
+            Workers::Only("alpha".to_owned()),
+            Some(&warm),
+        )
+        .await;
+        let fresh_ids = session_ids(&fresh);
+        assert!(
+            fresh_ids.iter().any(|id| id.as_str() == "gamma-own"),
+            "a transcript the cache has not scanned must be read: {fresh_ids:?}",
+        );
+    }
+
+    /// **The cap bounds the reads, not only the answer** (#2567). A label
+    /// with more runs than a page serves must not pay a head-and-tail read
+    /// per transcript: the newest are read first and the scan stops when the
+    /// answer is full.
+    #[tokio::test]
+    async fn a_capped_listing_reads_only_the_rows_it_serves() {
+        let logs = LogCapture::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::DEBUG)
+            .with_ansi(false)
+            .with_writer(logs.clone())
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let tmp = tempfile::tempdir().unwrap();
+        let cwd = tmp.path().join("project");
+        fs::create_dir_all(&cwd).unwrap();
+        let cwd = cwd.to_string_lossy().into_owned();
+        let dir = dir_for(tmp.path(), &cwd);
+        fs::create_dir_all(&dir).unwrap();
+        // **Created oldest-first, so directory order and mtime order
+        // disagree.** run-7 is written first and run-0 last; a scan that
+        // trusts readdir's order answers the oldest rows and the assertion
+        // below fails.
+        for at in (0..8).rev() {
+            let path = write_session_jsonl(
+                &dir,
+                &format!("run-{at}"),
+                &transcript(Some("forge:worker:alpha")),
+            );
+            // run-0 is the newest, run-7 the oldest.
+            set_age(&path, at + 1);
+        }
+
+        let listed = list_sessions(
+            tmp.path(),
+            Some(&cwd),
+            Some(2),
+            0,
+            Workers::Only("alpha".to_owned()),
+            None,
+        )
+        .await;
+        assert_eq!(session_ids(&listed), vec!["run-0", "run-1"], "the two newest rows");
+
+        let logged = String::from_utf8(logs.0.lock().clone()).unwrap();
+        assert!(
+            logged.contains("session_scan_read") && logged.contains("read=2"),
+            "the scan read every transcript for a two-row page: {logged}",
+        );
+
+        // The control: no cap still reads the whole directory.
+        let all =
+            list_sessions(tmp.path(), Some(&cwd), None, 0, Workers::Only("alpha".to_owned()), None)
+                .await;
+        assert_eq!(all.len(), 8, "an uncapped listing reads every transcript");
     }
 
     /// The worker filter lands BEFORE the cap, so a listing is never

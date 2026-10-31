@@ -844,8 +844,7 @@ function attachedFile(block: Block): AttachedFile | null {
   if (block.type !== 'image' && block.type !== 'document') return null;
   // Both kinds nest their mime and their bytes under `source`, the shape a
   // tool result's image is read in too. Bytes come from the payload where it
-  // rides, or the size a read turn measured in its place; a queued prompt's
-  // nested payload is not stripped on replay, and #2440 covers that cost.
+  // rides, or the size a read turn measured in its place.
   const source = obj(block.source);
   return {
     kind: block.type,

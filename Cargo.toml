@@ -54,6 +54,9 @@ hound = "3.5"
 ignore = "0.4"
 notify = "8"
 base64 = "0.23"
+# The socket's compressed frame kind: a frame over the threshold is gzipped
+# for a client that declared it can inflate one.
+flate2 = "1"
 sysinfo = { version = "0.38", default-features = false, features = ["system"] }
 futures = "0.3.31"
 which = "8.0.2"
