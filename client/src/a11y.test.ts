@@ -14,6 +14,7 @@ import { schedules } from './chat/schedules.svelte';
 import { subagents } from './chat/subagents.svelte';
 import { tasks } from './chat/tasks.svelte';
 import Composer from './composer/Composer.svelte';
+import LiveRow from './composer/LiveRow.svelte';
 import type { ComposerProps, ComposerRecord } from './composer/view';
 import { surface } from './browser/surface.svelte';
 import type { FileEntry } from './composer/wire';
@@ -760,6 +761,45 @@ describe('axe over the rendered pages', () => {
         ['i-monitors', 'the monitors row'],
       ] as const) {
         expect(html, `${what} drew, so axe saw it`).toContain(mark);
+      }
+      expect(await idsOf(`<main>${html}</main>`)).toEqual([]);
+    } finally {
+      seedStrip(false);
+    }
+  });
+
+  /**
+   * **The live row** is the strip's successor, and it draws the same segments
+   * as a list of doors. Rendered with NO turn, which is also the shape an idle
+   * seat draws - the case the row would otherwise have no rendering for.
+   */
+  it('draws the live row with every chip, with no violations', async () => {
+    seedStrip(true);
+    try {
+      const html = render(LiveRow, { props: { info: null, slot: SLOT } }).body;
+      for (const [mark, what] of [
+        ['i-subagents', 'the agents chip'],
+        ['i-processes', 'the processes chip'],
+        ['i-gotify', 'the connectors chip'],
+        ['i-schedules', 'the schedules chip'],
+        ['i-mcp', 'the servers chip'],
+        ['i-git', 'the tree chip'],
+        ['i-tasks', 'the tasks chip'],
+        ['i-monitors', 'the monitors chip'],
+      ] as const) {
+        expect(html, `${what} drew, so axe saw it`).toContain(mark);
+      }
+      const page = new JSDOM(`<main>${html}</main>`).window.document;
+      const list = page.querySelector('[role="list"]');
+      expect(list, 'the chips are not a list').not.toBeNull();
+      for (const item of page.querySelectorAll('[data-chip]')) {
+        if (item.firstElementChild === null) continue;
+        // A chip is a door: a button that opens its panel, or a real link
+        // where the segment's own read lives on a page.
+        const door = item.querySelector('button, a');
+        expect(door, 'a drawn chip carries no door').not.toBeNull();
+        const name = (door?.getAttribute('aria-label') ?? door?.textContent ?? '').trim();
+        expect(name, 'a drawn chip has no readable name').not.toBe('');
       }
       expect(await idsOf(`<main>${html}</main>`)).toEqual([]);
     } finally {

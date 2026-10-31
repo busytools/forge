@@ -82,4 +82,15 @@ describe("the band's open", () => {
       'the separator rule takes the hidden status line for a lane, so the open grows the band a pixel and draws a hairline',
     ).toContain(':not(.sr) + :not(.sr)');
   });
+
+  it('keeps the live row one line, with the chips collapsing rather than wrapping', () => {
+    // The ragged wrap this replaced grew the band to three rows between 780
+    // and 860px (Ved, in the #2159 look). `wrap` returning here is that band
+    // coming back; a figure allowed to break is the same failure inside a
+    // token pair - `18.4k` on one line and its arrow on the next.
+    expect(rule('.live-row'), 'the live row wraps again').toContain('flex-wrap: nowrap');
+    expect(rule('.live-row .live-fig'), 'a turn figure is allowed to break its own line').toContain(
+      'white-space: nowrap',
+    );
+  });
 });

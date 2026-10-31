@@ -2724,6 +2724,69 @@ details.leaf.nrow details.raw pre { margin: 4px 0 2px; padding: 6px 9px; border:
 .strip .ti .sep { opacity: .5; }
 .strip .ti .st.err { color: var(--bad); }
 
+/* ---------- the composer's live row ---------- */
+
+/* What this seat is holding, one line, above the body: the turn's own figures
+   and the seat's segments. It NEVER wraps - a chip that does not fit collapses
+   behind +N - because the ragged wrap is what grew the band to three rows
+   between 780 and 860px (Ved, in the #2159 look). `overflow-x` is the fallback
+   for the frame before the row is measured, not an affordance: once measured,
+   nothing on the row is out of reach. */
+.live-row { position: relative; display: flex; align-items: center; gap: 2px;
+  flex-wrap: nowrap; padding: 5px 10px 5px 8px;
+  border-bottom: 1px solid var(--line); overflow-x: auto; scrollbar-width: none;
+  font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
+.live-row::-webkit-scrollbar { display: none; }
+/* The turn's figures lead, in the strip's own order and its own component. */
+.live-row .live-fig { display: inline-flex; align-items: center; gap: 6px; flex: none;
+  white-space: nowrap; padding: 3px 8px 3px 6px; color: var(--muted); }
+.live-row .live-fig > span { white-space: nowrap; }
+.live-row .live-fig .sep { color: var(--dim); opacity: .6; }
+.live-row .live-fig .st.err { color: var(--bad); }
+.live-row .live-div { flex: none; width: 1px; height: 14px; background: var(--line);
+  margin: 0 4px; }
+/* The chips share one list: one copy of each segment, in the strip's order. */
+.live-row .live-segs { display: flex; align-items: center; gap: 2px; flex: none; }
+.live-row .live-chip { position: relative; display: inline-flex; flex: none; }
+/* The row draws the same chips the strip does, in the row's own dress: a pill
+   rather than the strip's hover box, so a dozen of them read as one line of
+   doors. */
+.live-row .sg-seg, .live-row .bz-seg { margin-left: 0; }
+.live-row .sg-seg .sg-tog, .live-row .bz-seg .bz-tog {
+  gap: 6px; padding: 3px 8px; border-radius: 999px; color: var(--dim); }
+.live-row .sg-seg .sg-tog:hover, .live-row .sg-seg.open .sg-tog,
+.live-row .bz-seg .bz-tog:hover, .live-row .bz-seg.open .bz-tog {
+  border-color: transparent; background: var(--s3); color: var(--text); }
+/* Where a thing waits behind it, the chip says so in its tone: the review
+   answer in the accent, a failed process in the bad red. */
+.live-row .live-chip.att .sg-tog, .live-row .live-chip.att .bz-tog { color: var(--hot);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 55%, transparent); }
+.live-row .live-chip.bad .sg-tog, .live-row .live-chip.bad .bz-tog { color: var(--bad);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--bad) 50%, transparent); }
+/* A chip that did not fit stays in the DOM so the row can measure it, out of
+   the flow and out of the reader's reach. */
+.live-row .live-chip.off { position: absolute; visibility: hidden; pointer-events: none; }
+.live-row .live-more { flex: none; margin-left: 2px; padding: 2px 8px;
+  font-family: var(--mono); font-size: var(--fs-label); color: var(--muted);
+  background: none; border: 1px solid var(--line); border-radius: 999px;
+  cursor: pointer; }
+.live-row .live-more:hover, .live-row .live-more[aria-expanded="true"] {
+  color: var(--hot); border-color: var(--accent); }
+.live-row .live-more.idle { visibility: hidden; }
+@media (pointer: coarse) {
+  .live-row .live-more, .live-row .sg-tog, .live-row .bz-tog { min-height: 44px; }
+}
+/* The panel the +N opens: the chips the row could not hold, stacked as rows. */
+.live-panel { position: absolute; z-index: 30; overflow-y: auto;
+  background: var(--s2); outline: 1px solid var(--line); outline-offset: -1px;
+  border-radius: 11px; box-shadow: 0 14px 38px rgba(0,0,0,.5); }
+.live-panel .lp-seg { display: flex; align-items: center; padding: 0 4px; }
+.live-panel .lp-seg + .lp-seg { border-top: 1px solid var(--line); }
+.live-panel .sg-seg, .live-panel .bz-seg { display: flex; width: 100%; }
+.live-panel .sg-tog, .live-panel .bz-tog {
+  width: 100%; justify-content: flex-start; padding: 7px 9px; }
+
 /* ---------- the composer ----------
    Taken from the mock at docs/book/src/ui/client/web-composer.html: the box, the list
    that opens over it, the dictation row inside it, the states that replace
@@ -3172,6 +3235,12 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
 .ac .it.sel { background: var(--sel); }
 .ac .it.sel .p { color: var(--text); }
 .ac .it .g { width: 20px; flex: 0 0 20px; text-align: center; }
+/* The list is a popover over the conversation, not a lane of the bar: mounted
+   as the card's own child it hangs above the card, so opening a list never
+   moves the band (it took the band from 121px to 557px while it sat in the
+   box's flow). */
+.surf > .ac { position: absolute; left: 12px; right: 12px;
+  bottom: calc(100% + 8px); z-index: 5; }
 
 /* ---------- the dock: the prompt's lane of the surface ---------- */
 
