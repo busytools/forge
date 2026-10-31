@@ -270,6 +270,10 @@ interface ProbeOptions {
     cb: (lateMs: number) => void,
     failed: (why: string) => void,
   ) => (() => void) | null;
+  /** Reports the page's visibility as it changes; returns its own disconnect,
+   *  or null where there is no document - which keeps the flag a fact rather
+   *  than a claim (#2569). */
+  observeVisibility?: (cb: (hidden: boolean) => void) => (() => void) | null;
   /** Where finished records go; the shell write by default. */
   sink?: (records: PerfRecord[]) => void;
   version?: string;
@@ -287,6 +291,22 @@ interface ProbeOptions {
 function nextFrame(cb: () => void): () => void {
   const id = requestAnimationFrame(cb);
   return () => cancelAnimationFrame(id);
+}
+
+/**
+ * Reports the page's visibility as it changes; returns its own disconnect,
+ * or null where there is no document.
+ *
+ * **The event, not a poll**: a hidden window produces no frames at all, so
+ * the only way to know a gap overlapped one is to hear it end. Reading
+ * `document.hidden` at the deferred write would read the state AFTER the
+ * return - the opposite of the diagnosis (#2569).
+ */
+function observeVisibility(cb: (hidden: boolean) => void): (() => void) | null {
+  if (typeof document === 'undefined') return null;
+  const report = (): void => cb(cannotPaint());
+  document.addEventListener('visibilitychange', report);
+  return () => document.removeEventListener('visibilitychange', report);
 }
 
 function observeLongTasks(cb: (ms: number, name: string) => void): () => void {
@@ -532,9 +552,31 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
     sinceBeat: number | null;
     beats: number;
     beatLate: number;
+    /** Whether this gap overlapped a hidden period, sampled at measurement. */
+    hidden: boolean;
     surface: string | null;
     session: string | null;
   } | null = null;
+  let cancelVisibility: (() => void) | null = null;
+  /**
+   * Whether the page is hidden now, and when it last stopped being hidden.
+   *
+   * **A hidden window produces no frames**, so the gap it causes is measured
+   * on the first frame after the page returns, when visibility has already
+   * flipped back. The end of the hidden period is what says the gap
+   * overlapped it; the deferred write cannot (#2569).
+   */
+  let hiddenNow = typeof document !== 'undefined' && document.hidden;
+  let hiddenEndedAt: number | null = null;
+  const noteVisibility = (hidden: boolean): void => {
+    if (hidden === hiddenNow) return;
+    hiddenNow = hidden;
+    if (!hidden) hiddenEndedAt = now();
+  };
+  /** Whether the gap that opened at `from` overlapped a hidden period. */
+  function gapHidden(from: number): boolean {
+    return hiddenNow || (hiddenEndedAt !== null && hiddenEndedAt >= from);
+  }
   let postBeats = 0;
   let postLate = 0;
   let flushArmed = false;
@@ -648,9 +690,10 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
       frame: waiting.frame,
       ms: waiting.gap,
       // **What tells a gap on an occluded window from a stuck thread**, the
-      // same fact `paint.ts` reads: a hidden page is producing no frames at
-      // all, so its gap is the visibility gate rather than blocked work.
-      hidden: cannotPaint(),
+      // same fact `paint.ts` reads, sampled when the gap was measured: a
+      // hidden page is producing no frames at all, so its gap is the
+      // visibility gate rather than blocked work.
+      hidden: waiting.hidden,
       // The evidence: beats that reached the page across this gap, the
       // WORST lateness among them, when the last one landed, and how many
       // the gap WOULD carry at the tick. **Both axes are needed to read it**:
@@ -722,6 +765,7 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
           sinceBeat: lastBeatAt === null ? null : at - lastBeatAt,
           beats,
           beatLate,
+          hidden: gapHidden(last),
           surface,
           session,
         };
@@ -814,6 +858,9 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
           session,
         });
       });
+      hiddenNow = typeof document !== 'undefined' && document.hidden;
+      hiddenEndedAt = null;
+      cancelVisibility = (options.observeVisibility ?? observeVisibility)?.(noteVisibility) ?? null;
       cancelHeartbeat = heartbeat(
         (lateMs) => {
           beats += 1;
@@ -871,9 +918,11 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
       cancelFrame?.();
       cancelObserver?.();
       cancelHeartbeat?.();
+      cancelVisibility?.();
       cancelFrame = null;
       cancelObserver = null;
       cancelHeartbeat = null;
+      cancelVisibility = null;
     },
     setSurface(next: string | null, seat: string | null): void {
       surface = next;
@@ -960,11 +1009,7 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
       connSubscribes += 1;
       connSurface = surface;
       connSession = session;
-      // **A click is spent by the first subscribe of its OWN seat.** A
-      // subscribe for another subject - the automatic home loop included -
-      // reports nothing, and the click does not outlive it: a timestamp that
-      // survived a click that opened nothing was handed to an unrelated read
-      // as its gap (#2513, #2708).
+      // **A click is spent by the first subscribe of its OWN seat** (#2708).
       const clicked = clickAt;
       clickAt = null;
       const sinceClick =

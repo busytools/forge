@@ -23,6 +23,7 @@ function harness(options: { summaryIntervalMs?: number } = {}) {
   let longTask: ((ms: number, name: string) => void) | null = null;
   let heartbeat: ((lateMs: number) => void) | null = null;
   let heartbeatFailed: ((why: string) => void) | null = null;
+  let visibility: ((hidden: boolean) => void) | null = null;
   const deferred: (() => void)[] = [];
   let stopped = false;
 
@@ -46,6 +47,12 @@ function harness(options: { summaryIntervalMs?: number } = {}) {
       return () => {
         heartbeat = null;
         heartbeatFailed = null;
+      };
+    },
+    observeVisibility: (cb) => {
+      visibility = cb;
+      return () => {
+        visibility = null;
       };
     },
     // The record for a slow frame is written one macrotask after it, so a
@@ -85,6 +92,8 @@ function harness(options: { summaryIntervalMs?: number } = {}) {
     longTask: (ms: number, name = 'self') => longTask?.(ms, name),
     beat: (lateMs = 5) => heartbeat?.(lateMs),
     failHeartbeat: (why = '') => heartbeatFailed?.(why),
+    /** The page's visibility changing, as the browser reports it. */
+    hidden: (hidden: boolean) => visibility?.(hidden),
     /** The macrotask turn the slow frame's record is written on. */
     settle: () => {
       for (let cb = deferred.shift(); cb !== undefined; cb = deferred.shift()) cb();
@@ -339,35 +348,29 @@ describe('the frame probe', () => {
    * exactly that reason. The slow-frame record says which it was, so a
    * multi-second gap on an occluded window is not read as a stuck thread.
    */
-  it('says whether the document was hidden when the slow frame was written', () => {
+  it("says whether the slow frame's gap overlapped a hidden period", () => {
     const h = harness();
-    const held = Object.getOwnPropertyDescriptor(globalThis, 'document');
-    const setHidden = (hidden: boolean): void => {
-      Object.defineProperty(globalThis, 'document', { value: { hidden }, configurable: true });
-    };
-    try {
-      setHidden(true);
-      // The first frame has no gap to measure: the baseline frame is the one
-      // the slow one is read against.
-      h.frame(16);
-      h.frame(120);
-      h.settle();
-      const hidden = h.records.flat().find((record) => record.kind === 'frame');
-      expect(hidden?.hidden, 'a gap on a hidden window is named as one').toBe(true);
+    // The first frame has no gap to measure: the baseline frame is the one
+    // the slow one is read against.
+    h.frame(16);
+    h.hidden(true);
+    // **No frames land while hidden - that is the shape being recorded.** The
+    // page returns and the first frame after it measures the whole gap, by
+    // which time `document.hidden` already reads false.
+    h.advance(5_000);
+    h.hidden(false);
+    h.advance(16);
+    h.frame(16);
+    h.settle();
+    const hidden = h.records.flat().find((record) => record.kind === 'frame');
+    expect(hidden?.hidden, 'a gap that overlapped a hidden window is named as one').toBe(true);
 
-      setHidden(false);
-      h.frame(16);
-      h.frame(120);
-      h.settle();
-      const shown = h.records.flat().filter((record) => record.kind === 'frame')[1];
-      expect(shown?.hidden, 'and a gap on a painting window says it was not hidden').toBe(false);
-    } finally {
-      if (held === undefined) {
-        delete (globalThis as { document?: unknown }).document;
-      } else {
-        Object.defineProperty(globalThis, 'document', held);
-      }
-    }
+    // A gap that stayed visible says so.
+    h.frame(16);
+    h.frame(120);
+    h.settle();
+    const shown = h.records.flat().filter((record) => record.kind === 'frame')[1];
+    expect(shown?.hidden, 'and a gap on a painting window says it was not hidden').toBe(false);
   });
 
   /**
@@ -1163,7 +1166,8 @@ describe('the switch gap marks (#2513)', () => {
    */
   it('does not hand a click to a subscribe for another subject', () => {
     const h = harness();
-    h.probe.setSurface('session', 'forge/lead');
+    // The reader is on another seat and clicks this one: a real switch.
+    h.probe.setSurface('session', 'forge/agent');
     h.probe.noteSeatClick('forge/lead');
     h.advance(18_006);
     h.probe.noteSubscribe(null, false);
@@ -1190,7 +1194,8 @@ describe('the switch gap marks (#2513)', () => {
    */
   it('clears the click when the switch opens no subscribe', () => {
     const h = harness();
-    h.probe.setSurface('session', 'forge/lead');
+    // The reader is on another seat and clicks this one: a real switch.
+    h.probe.setSurface('session', 'forge/agent');
     h.probe.noteSeatClick('forge/lead');
     h.probe.noteConversationOpened('forge/lead');
     h.probe.noteDrawn('conversation');
