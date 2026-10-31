@@ -39,10 +39,15 @@ depends on the SEAT, not only the project. Ask `agents__whoami` when that tool i
 
 The content and shape below are the same for both. Only the address differs.
 
+**The project index is the lead's as well.** Step 1's "update the memory index in the same edit"
+is the lead's duty; a worker records its learnings in its own file and leaves `MEMORY.md` alone,
+so the index never lists a seat that has gone.
+
 ## Step 2 - Write the handoff
 
 **Location: the session's project memory directory** - the one whose `MEMORY.md` auto-loads for
-this project. The file is `handoff.md` in that directory; rewrite it in place each time. Never
+this project. **The file is `handoff.md` in that directory** for a lead; a worker writes
+`workers/<label>.md` as the seat section says. Rewrite it in place each time. Never
 write it to /tmp (invisible to a fresh session and wiped on reboot) and never into the
 workspace's tracked tree (it is a generated doc; committing it pollutes git - the memory dir is
 the gitignored home for exactly this).
@@ -88,7 +93,8 @@ open - with the reason it stopped and where its context lives. The next session 
 where this one stopped; anything left out is lost when the turn ends.
 
 **Exit through the tool.** Forge takes the note as you wrote it - there are no headings to fill
-in, and your Step 2 document is the note. Write it where Step 2 says, then pass the same text to
+in, and your Step 2 document is the note. Write it where the seat section and Step 2 say, then
+pass the same text to
 `agents__handoff` as `brief` as the turn's last act. Memory first, then close out what is
 running, then the note. Do not call `agents__handoff` for any other reason - a handoff starts at
 `/handoff` or at the automatic trigger (fill or compaction).
