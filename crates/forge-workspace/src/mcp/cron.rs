@@ -27,7 +27,7 @@ use forge_sdk::mcp::tool::{Tool, ToolInput, ToolOutput};
 use forge_primitives::cron::{CronEntry, CronId, CronKind};
 
 use crate::SessionSlot;
-use crate::mcp::cron::facade::{CronCreateError, CronDeleteError, CronFacade};
+use crate::mcp::cron::facade::{CronCreateError, CronDeleteError, CronFacade, CronListError};
 
 pub(crate) mod facade;
 pub(crate) mod schedule;
@@ -248,9 +248,8 @@ impl Tool for List {
     fn description(&self) -> &'static str {
         "List the durable crons you registered, in your project. Returns a JSON array of {id, \
          project, schedule, prompt, next_fire}. Use an id with cron__delete. An empty array means \
-         you have no crons registered, or that your project could not be resolved, or that this \
-         run could not read its stored crons. Takes no arguments. Any session in the project may \
-         call this."
+         you have no crons registered; any other failure is an error rather than an empty list. \
+         Takes no arguments. Any session in the project may call this."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -262,7 +261,12 @@ impl Tool for List {
     }
 
     async fn call(&self, _input: ToolInput) -> ToolOutput {
-        let crons = self.facade.list_crons(&self.slot);
+        let crons = match self.facade.list_crons(&self.slot) {
+            Ok(crons) => crons,
+            Err(CronListError::UnknownCallerProject) => {
+                return tool_error("couldn't resolve your project".to_owned());
+            }
+        };
         let arr: Vec<serde_json::Value> = crons.iter().map(cron_to_json).collect();
         match serde_json::to_string_pretty(&serde_json::Value::Array(arr)) {
             Ok(json) => ToolOutput::text(json),
@@ -511,6 +515,25 @@ mod tests {
         assert!(text_of(&out).contains("\"a\"") && text_of(&out).contains("\"b\""));
     }
 
+    /// `[]` names exactly one state - the caller has no crons registered. A
+    /// caller that cannot be mapped to a project is a different answer, and
+    /// the delete beside it already gives that answer, so a list that folded
+    /// the two together left a live cron invisible.
+    #[tokio::test]
+    async fn list_refuses_an_unresolvable_caller_instead_of_answering_empty() {
+        let mock = Arc::new(MockCronFacade::new());
+        *mock.list_result.lock() = Some(Err(CronListError::UnknownCallerProject));
+        let tool = List { facade: mock.clone(), slot: caller_slot() };
+
+        let out = tool.call(input(serde_json::json!({}))).await;
+        assert!(
+            out.is_error,
+            "an unresolvable caller must not read as an empty registry: {}",
+            text_of(&out),
+        );
+        assert_eq!(text_of(&out), "couldn't resolve your project");
+    }
+
     #[tokio::test]
     async fn delete_removes_by_id() {
         let mock = Arc::new(MockCronFacade::new());
@@ -629,16 +652,17 @@ mod tests {
             "an empty list must read as the caller having none, never as the project having \
              none: {list_desc}",
         );
-        assert!(
-            list_desc.contains("or that your project could not be resolved"),
-            "an empty list must not rule out the caller that could not be resolved, which also \
-             lists nothing: {list_desc}",
-        );
-        assert!(
-            list_desc.contains("or that this run could not read its stored crons"),
-            "an empty list must own up to a run that could not read the store, which starts with \
-             none: {list_desc}",
-        );
+        // `[]` names exactly one state: the caller has no crons. The two
+        // conditions that used to share it are errors on the same verb now,
+        // so a description that warns about them again re-opens the ambiguity
+        // the error channel closed.
+        for stale in ["could not be resolved", "could not read its stored crons"] {
+            assert!(
+                !list_desc.contains(stale),
+                "an empty list means one thing; the description must not carry the old \
+                 '{stale}' caveat: {list_desc}",
+            );
+        }
     }
 
     /// A worker's directory can be gone with its row kept, and then
