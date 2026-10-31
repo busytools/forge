@@ -20,6 +20,31 @@ use parking_lot::Mutex;
 use tokio::sync::mpsc;
 use tracing::Instrument;
 
+/// `path` with its longest existing prefix resolved through symlinks and the
+/// rest kept as spelled: `canonicalize` fails wholesale once the last
+/// component is gone, and the two sides of a comparison then use different
+/// spellings of the same directory.
+fn resolve_existing_prefix(path: &Path) -> PathBuf {
+    if let Ok(resolved) = std::fs::canonicalize(path) {
+        return resolved;
+    }
+    let mut missing = Vec::new();
+    let mut head = path.to_path_buf();
+    while let Some(parent) = head.parent().map(Path::to_path_buf) {
+        let Some(name) = head.file_name() else { break };
+        missing.push(name.to_owned());
+        if let Ok(resolved) = std::fs::canonicalize(&parent) {
+            let mut out = resolved;
+            for part in missing.iter().rev() {
+                out.push(part);
+            }
+            return out;
+        }
+        head = parent;
+    }
+    path.to_path_buf()
+}
+
 /// Why a settings save did not write.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SettingsSaveError {
@@ -980,6 +1005,18 @@ pub struct Workspace {
     /// `(workspace, user id)` pairs whose failed lookup has been reported, so
     /// a persistent failure says so once rather than on every tick.
     pub(crate) slack_author_failures: Mutex<std::collections::HashSet<(String, String)>>,
+    /// When each followed thread was last read whole, keyed
+    /// `(workspace, conversation, parent ts)`. In memory: a restart costs one
+    /// extra whole read per thread, which is cheaper than a schema.
+    pub(crate) slack_thread_full_reads:
+        Mutex<std::collections::HashMap<(String, String, String), std::time::Instant>>,
+    /// Followed threads whose next walk is their first since the row was
+    /// created, keyed the same way.
+    pub(crate) slack_thread_first_walks: Mutex<std::collections::HashSet<(String, String, String)>>,
+    /// The newest edit stamp a whole read has judged, keyed the same way: an
+    /// edit is measured against this, never against the reply cursor.
+    pub(crate) slack_thread_edit_watermarks:
+        Mutex<std::collections::HashMap<(String, String, String), String>>,
     /// Conversations whose own-post ledger could not be read this run,
     /// keyed `(workspace, conversation)`. The read is retried on every
     /// message; this only decides whether the failure is worth a line a
@@ -2287,6 +2324,9 @@ impl Workspace {
             slack_user_ids: Mutex::new(std::collections::BTreeMap::new()),
             slack_user_names: Mutex::new(std::collections::BTreeMap::new()),
             slack_author_failures: Mutex::new(std::collections::HashSet::new()),
+            slack_thread_full_reads: Mutex::new(std::collections::HashMap::new()),
+            slack_thread_first_walks: Mutex::new(std::collections::HashSet::new()),
+            slack_thread_edit_watermarks: Mutex::new(std::collections::HashMap::new()),
             slack_ledger_failures: Mutex::new(std::collections::HashSet::new()),
             slack_drafts: Mutex::new(HashMap::new()),
             browser_handoffs: Mutex::new(HashMap::new()),
@@ -5301,6 +5341,7 @@ impl Workspace {
                 text: text.clone(),
                 attachments: Vec::new(),
                 source,
+                uuid: uuid.clone(),
                 sender: None,
             },
         ) {
@@ -7287,9 +7328,15 @@ impl Workspace {
     /// `run_dir`: the directory their worker runs in, or the sanitised
     /// key that directory is stored under.
     fn projects_composing(&self, run_dir: &std::path::Path, label: &str) -> Vec<(String, String)> {
-        let composed = std::fs::canonicalize(run_dir).unwrap_or_else(|_| run_dir.to_path_buf());
+        // **One spelling per path, resolved the same way on both sides.** A
+        // worker directory that is gone cannot be canonicalised at all, so
+        // `resolve_existing_prefix` resolves the part that exists and keeps
+        // the rest; the key is then built from that same spelling rather than
+        // resolved a second time, or a directory removed between the two
+        // resolutions would compare under a different key than its path.
+        let composed = resolve_existing_prefix(run_dir);
         let key = forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
-            &run_dir.to_string_lossy(),
+            &composed.to_string_lossy(),
         ));
         let key_of = |dir: &std::path::Path| {
             forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
@@ -7304,9 +7351,9 @@ impl Workspace {
                     .ok()
                     .flatten()
                     .unwrap_or_else(|| forge_agent::env::worktree::is_git_repo(&view.path));
-                let root = std::fs::canonicalize(&view.path).unwrap_or_else(|_| view.path.clone());
+                let root = resolve_existing_prefix(&view.path);
                 let dir = crate::mcp::workers::types::worker_tag_dir(&root, label, is_git);
-                let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
+                let dir = resolve_existing_prefix(&dir);
                 dir == composed || key_of(&dir) == key
             })
             .map(|view| (view.org, view.name))
@@ -20890,6 +20937,100 @@ provider = "anthropic"
             ws.projects_composing(&a_dir, "shared"),
             vec![("TestOrg".to_owned(), "proj-a".to_owned())],
             "the git checkout that only shares the sanitised key is not counted",
+        );
+    }
+
+    /// A worker directory that is gone still names the project whose
+    /// worktree it was, even when the tag row spells the root through a
+    /// symlink: nothing below the root exists, so nothing can be
+    /// canonicalised, and both sides have to resolve the same existing
+    /// prefix to compare equal.
+    #[tokio::test]
+    async fn a_gone_worker_dir_behind_a_symlink_still_names_its_project() {
+        let holder = tempfile::tempdir().expect("holder");
+        let real = holder.path().join("real");
+        let project = real.join("proj");
+        std::fs::create_dir_all(&project).expect("project dir");
+        run_git_in(&project, &["init", "-q"]);
+        let link = holder.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).expect("symlink");
+
+        let cfg = tempfile::tempdir().expect("cfg");
+        let forge_dir = cfg.path().join("forge");
+        std::fs::create_dir_all(&forge_dir).expect("forge dir");
+        std::fs::write(
+            forge_dir.join("forge.toml"),
+            format!(
+                "[[orgs]]\nname = \"TestOrg\"\naccounts = [\"acct-a\"]\n\
+                 [[orgs.projects]]\nname = \"proj-a\"\npath = \"{}\"\n\
+                 [[accounts]]\ndisplay_name = \"acct-a\"\ntoken = \"t\"\n\
+                 models = [\"claude-sonnet-5\"]\nprovider = \"anthropic\"\n",
+                project.display()
+            ),
+        )
+        .expect("write forge.toml");
+        let ws = Arc::new(Workspace::new_for_test(cfg.path().to_owned()).expect("boot"));
+        let store = tempfile::tempdir().expect("store dir");
+        ws.install_db_for_test(
+            crate::store::Db::open(&store.path().join("db.redb")).expect("open db"),
+        );
+
+        let gone = link.join("proj").join(".claude/worktrees/shared");
+        assert!(!gone.exists(), "the worker's tree is gone, which is the case under test");
+        assert_eq!(
+            ws.projects_composing(&gone, "shared"),
+            vec![("TestOrg".to_owned(), "proj-a".to_owned())],
+            "a gone worker dir behind a symlink names its project",
+        );
+    }
+
+    /// The other comparison is the sanitised key, and it is built from the
+    /// resolved spelling: a run directory that resolves to a different path
+    /// from the project's worker directory but sanitises to the same key
+    /// still names the project.
+    #[tokio::test]
+    async fn a_sanitised_key_names_its_project_from_the_resolved_spelling() {
+        let holder = tempfile::tempdir().expect("holder");
+        let real = holder.path().join("real");
+        let project = real.join("a-b");
+        std::fs::create_dir_all(&project).expect("project dir");
+        run_git_in(&project, &["init", "-q"]);
+        // The run dir's existing ancestor: its last components are gone, so
+        // only the prefix can be canonicalised.
+        std::fs::create_dir_all(real.join("a")).expect("the run dir's existing ancestor");
+        let link = holder.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).expect("symlink");
+
+        let cfg = tempfile::tempdir().expect("cfg");
+        let forge_dir = cfg.path().join("forge");
+        std::fs::create_dir_all(&forge_dir).expect("forge dir");
+        std::fs::write(
+            forge_dir.join("forge.toml"),
+            format!(
+                "[[orgs]]\nname = \"TestOrg\"\naccounts = [\"acct-a\"]\n\
+                 [[orgs.projects]]\nname = \"proj-a\"\npath = \"{}\"\n\
+                 [[accounts]]\ndisplay_name = \"acct-a\"\ntoken = \"t\"\n\
+                 models = [\"claude-sonnet-5\"]\nprovider = \"anthropic\"\n",
+                project.display()
+            ),
+        )
+        .expect("write forge.toml");
+        let ws = Arc::new(Workspace::new_for_test(cfg.path().to_owned()).expect("boot"));
+        let store = tempfile::tempdir().expect("store dir");
+        ws.install_db_for_test(
+            crate::store::Db::open(&store.path().join("db.redb")).expect("open db"),
+        );
+
+        // Resolves to `real/a/b/.claude/worktrees/shared`, which sanitises to
+        // the same key as the project's `real/a-b/.claude/worktrees/shared`.
+        // Both paths are far under the 200-character sanitise cap, so the key
+        // is the plain substitution rather than a truncated-and-hashed one.
+        let gone = link.join("a/b").join(".claude/worktrees/shared");
+        assert!(!gone.exists(), "the run directory is gone, which is the case under test");
+        assert_eq!(
+            ws.projects_composing(&gone, "shared"),
+            vec![("TestOrg".to_owned(), "proj-a".to_owned())],
+            "a sanitised key from the resolved spelling names its project",
         );
     }
 

@@ -24,6 +24,17 @@
 //! recording instead of failing against it: a reload discards the page that
 //! held the stop, so the page that comes back is what ends the orphaned take.
 
+#![allow(
+    clippy::cast_possible_truncation,
+    reason = "encode_frame clamps each sample to the i16 range one line before the cast; it is \
+              the codec's own conversion"
+)]
+#![allow(
+    clippy::needless_pass_by_value,
+    reason = "hold and start take the device owned because start_within moves it onto the \
+              capture thread; the sync entry points keep one shape with it"
+)]
+
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
@@ -70,6 +81,100 @@ pub const OPEN_LIMIT: Duration = Duration::from_secs(20);
 /// What the take's line says when the open has not answered within the
 /// caller's bound, whether the bound answered it or the device did, late.
 const NOT_COME_UP: &str = "the microphone did not come up";
+
+/// Run device work off the reactor with any unwind caught and answered.
+///
+/// **What this buys, and what it cannot.** `spawn_blocking` already turns a
+/// panic in its task into a `JoinError`, so this is not what stops an abort:
+/// the `rust_foreign_exception` in #2426's report is an unwind crossing a
+/// NON-Rust frame, which no catch at this layer can reach (the audio
+/// callback's own guard in `forge-capture` is the one that can). What the
+/// guard buys is the part the issue asked for - a named error the command
+/// answers with, and a warning carrying the operation, the requested device
+/// and a backtrace, logged from INSIDE the blocking task. That last point is
+/// load-bearing: a take's open abandoned at `OPEN_LIMIT` is still running its
+/// blocking task, and a panic after the timeout would otherwise leave no
+/// line at all.
+pub(crate) async fn guarded<T, F>(
+    operation: &'static str,
+    device: Option<String>,
+    work: F,
+) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> T + Send + 'static,
+{
+    record_panic_sites();
+    let joined = tokio::task::spawn_blocking(move || {
+        // Clear this thread's slot first: what the hook records must be this
+        // call's panic, not an earlier one on a reused thread.
+        take_panic_site();
+        let answered = std::panic::catch_unwind(std::panic::AssertUnwindSafe(work));
+        match answered {
+            Ok(value) => Ok(value),
+            Err(panic) => {
+                let why = panic_text(panic.as_ref());
+                // **At the raise, not at the catch**: the hook's backtrace
+                // names the frames that panicked; the fallback is the catch
+                // site, and says so by being the fallback.
+                let backtrace =
+                    take_panic_site().unwrap_or_else(std::backtrace::Backtrace::force_capture);
+                tauri_plugin_log::log::warn!(
+                    target: LOG_TARGET,
+                    "the microphone device layer panicked during {operation} (device {device:?}): \
+                     {why}\n{backtrace}"
+                );
+                Err(format!("the microphone device layer panicked during {operation}: {why}"))
+            }
+        }
+    })
+    .await;
+    match joined {
+        Ok(answered) => answered,
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+/// A panic's own message, or a phrase where it carried none.
+fn panic_text(panic: &(dyn std::any::Any + Send)) -> String {
+    panic
+        .downcast_ref::<&str>()
+        .map(|said| (*said).to_owned())
+        .or_else(|| panic.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "no message".to_owned())
+}
+
+std::thread_local! {
+    /// The backtrace a panic hook took on this thread.
+    static PANIC_SITE: std::cell::RefCell<Option<std::backtrace::Backtrace>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Install the hook that records a panic's OWN backtrace.
+///
+/// **Taken at the catch, a backtrace names the catch site, not the raise** -
+/// the frames that panicked are already unwound away. The hook runs where the
+/// panic is raised, so a guarded thread marks its slot and reads what was
+/// recorded, and a hook already installed is chained rather than replaced.
+fn record_panic_sites() {
+    static HOOK: std::sync::Once = std::sync::Once::new();
+    HOOK.call_once(|| {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            PANIC_SITE.with(|slot| {
+                if let Ok(mut slot) = slot.try_borrow_mut() {
+                    *slot = Some(std::backtrace::Backtrace::force_capture());
+                }
+            });
+            previous(info);
+        }));
+    });
+}
+
+/// The backtrace this thread's panic hook took, if it took one.
+fn take_panic_site() -> Option<std::backtrace::Backtrace> {
+    PANIC_SITE.with(|slot| slot.try_borrow_mut().ok().and_then(|mut slot| slot.take()))
+}
 
 /// The caller's give-up signal on a bounded open: the flag it sets when its
 /// bound is spent, and the deadline that bound was measured from.
@@ -356,7 +461,7 @@ fn log_press(
     hold: Option<&Warm>,
     found: &Found,
 ) {
-    let session = session.map(SessionSlot::display).unwrap_or_else(|| "none".to_owned());
+    let session = session.map_or_else(|| "none".to_owned(), SessionSlot::display);
     tauri_plugin_log::log::debug!(
         target: LOG_TARGET,
         "a press asks for the microphone (event_name client_mic_press, session {session}, \
@@ -559,15 +664,15 @@ impl Mic {
         let mic = Arc::clone(self);
         let bridge = Arc::clone(bridge);
         let (page, take) = (page.to_owned(), take.to_owned());
-        let started = tokio::task::spawn_blocking(move || {
+        let logged = device.clone();
+        let started = guarded("the take's open", logged, move || {
             mic.start_inner(&bridge, device, &page, &take, Some(&signal))
         });
-        match tokio::time::timeout(limit, started).await {
-            Ok(joined) => joined.map_err(|error| error.to_string())?,
-            Err(_) => {
-                flag.store(true, Ordering::Release);
-                Err(NOT_COME_UP.to_owned())
-            }
+        if let Ok(joined) = tokio::time::timeout(limit, started).await {
+            joined?
+        } else {
+            flag.store(true, Ordering::Release);
+            Err(NOT_COME_UP.to_owned())
         }
     }
 
@@ -683,6 +788,67 @@ pub struct MicState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **A panicking device layer answers rather than aborting.** A Rust
+    /// unwind escaping the blocking task reaches a foreign frame and becomes
+    /// `rust_foreign_exception`/SIGABRT, which killed a boot (#2426); the
+    /// guard turns it into the named error the command returns, carrying the
+    /// panic's own words, and leaves a plain return untouched.
+    #[test]
+    fn a_panicking_device_call_answers_a_named_error() {
+        // **The line the issue asked for, level and content.** A named error
+        // alone is not enough: the WARN is what survives the launch and names
+        // the panic, so its level, operation, device and backtrace are pinned.
+        let kept = crate::log_capture::capture();
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .expect("a runtime");
+        let err = runtime
+            .block_on(guarded(
+                "the take's open",
+                Some("coreaudio:builtin".to_owned()),
+                || -> Result<(), String> { panic!("a wedged audio layer") },
+            ))
+            .expect_err("a panic is answered, not propagated");
+        assert!(
+            err.starts_with("the microphone device layer panicked during the take's open"),
+            "the answer names what panicked and where: {err}"
+        );
+        assert!(
+            err.contains("a wedged audio layer"),
+            "the panic's own words ride the answer: {err}"
+        );
+
+        let warned = crate::log_capture::records()
+            .into_iter()
+            .find(|line| line.message.contains("the microphone device layer panicked"))
+            .expect("the panic leaves a line the shipped filter keeps");
+        assert_eq!(
+            warned.level,
+            tauri_plugin_log::log::Level::Warn,
+            "the line is a WARN, which the baseline filter keeps: {:?}",
+            warned.level,
+        );
+        assert!(
+            warned.message.contains("during the take's open")
+                && warned.message.contains("coreaudio:builtin"),
+            "the line names the operation and the device a reader acts on: {}",
+            warned.message,
+        );
+        assert!(
+            warned.message.lines().any(|line| line.trim_start().starts_with("0: ")),
+            "the line carries the backtrace taken at the raise, not just the message: {}",
+            warned.message,
+        );
+        drop(kept);
+
+        let value = runtime
+            .block_on(guarded("the take's open", None, || 7))
+            .expect("a plain answer is untouched");
+        assert_eq!(value, 7, "the guard changes nothing about what the work returned");
+    }
 
     /// The keys the page reads the default's name back by
     /// (`dictation.ts`'s `rememberDefaultDevice`): `ShellMic.open` hands this
@@ -856,7 +1022,9 @@ mod tests {
         fn staled(rig: &Rig) {
             let warm = rig.mic.warm.lock().unwrap();
             let held = warm.as_ref().expect("a held capture");
-            held.held.carry().held.lock().unwrap().at = Instant::now() - SILENT_LIMIT * 4;
+            held.held.carry().held.lock().unwrap().at = Instant::now()
+                .checked_sub(SILENT_LIMIT * 4)
+                .expect("the clock has run past four silent limits");
         }
 
         #[test]
@@ -1138,7 +1306,9 @@ mod tests {
             {
                 let warm = mic.warm.lock().unwrap();
                 let held = warm.as_ref().expect("a held capture");
-                held.held.carry().held.lock().unwrap().at = Instant::now() - SILENT_LIMIT * 4;
+                held.held.carry().held.lock().unwrap().at = Instant::now()
+                    .checked_sub(SILENT_LIMIT * 4)
+                    .expect("the clock has run past four silent limits");
             }
             // The capture the hold keeps, by identity: a fresh open of the
             // same input would carry the same id, so only the pointer proves
@@ -1813,6 +1983,42 @@ mod tests {
             }
         }
 
+        /// A stand-in device whose open panics: the device layer the bounded
+        /// take's guard has to answer.
+        struct Panicking {
+            mic: Arc<Mic>,
+            bridge: Arc<Bridge>,
+        }
+
+        impl Panicking {
+            fn new() -> Self {
+                let mic = Arc::new(Mic {
+                    warm: Mutex::new(None),
+                    opener: Box::new(|_, _| panic!("a wedged audio layer")),
+                });
+                let (events, _frames) = tokio::sync::mpsc::unbounded_channel();
+                Self { mic, bridge: Bridge::new(None, events) }
+            }
+        }
+
+        /// **The take's own open is guarded too.** `start_within` runs the
+        /// open under `guarded`, so a panicking device layer answers the named
+        /// error on the take's line rather than reclaiming the take in
+        /// silence or crossing the FFI boundary (#2426).
+        #[test]
+        fn a_panicking_open_is_answered_by_the_bounded_take() {
+            let rig = Panicking::new();
+            let runtime = runtime();
+            let err = runtime
+                .block_on(rig.mic.start_within(&rig.bridge, None, "page", "take-1", SETTLE))
+                .expect_err("a panicking open is answered");
+            assert!(
+                err.starts_with("the microphone device layer panicked during the take's open"),
+                "the take's line names the panicking operation: {err}"
+            );
+            assert!(err.contains("a wedged audio layer"), "and the panic's own words: {err}");
+        }
+
         #[test]
         fn an_open_that_answers_neither_way_is_reported_and_leaves_no_take() {
             let rig = Wedged::new();
@@ -1898,7 +2104,9 @@ mod tests {
         fn spent_signal() -> GivenUp {
             GivenUp {
                 flag: Arc::new(AtomicBool::new(false)),
-                deadline: Instant::now() - Duration::from_secs(1),
+                deadline: Instant::now()
+                    .checked_sub(Duration::from_secs(1))
+                    .expect("the clock has run past a second"),
             }
         }
 

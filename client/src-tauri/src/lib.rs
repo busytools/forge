@@ -49,6 +49,12 @@ pub mod socket;
 /// through these, and hears their moves as `client://*` events. Thin by
 /// design - the logic is `bridge.rs`'s, and its tests are there.
 mod commands {
+    #![allow(
+        clippy::needless_pass_by_value,
+        reason = "tauri's IPC macro hands every command argument by value; a reference is not a \
+                  CommandArg"
+    )]
+
     use std::sync::Arc;
 
     use serde_json::Value;
@@ -253,11 +259,11 @@ mod commands {
     ) -> Result<Value, String> {
         let bridge = Arc::clone(bridge.inner());
         let mic = Arc::clone(mic.inner());
-        let answered = tauri::async_runtime::spawn_blocking(move || {
+        let logged = device.clone();
+        let answered = crate::mic::guarded("the hold", logged, move || {
             mic.hold(&bridge, device, &page).map(|held| crate::mic::device_json(&held))
         })
-        .await
-        .map_err(|error| error.to_string())?;
+        .await?;
         if let Err(why) = &answered {
             // A hold that will not open is not the reader's to act on at the
             // moment it happens - the press still opens the device itself -
@@ -339,13 +345,12 @@ mod commands {
     /// device list does not know.
     #[tauri::command]
     pub async fn client_mic_devices() -> Result<Vec<Value>, String> {
-        tauri::async_runtime::spawn_blocking(|| {
+        crate::mic::guarded("the device listing", None, || {
             forge_capture::devices()
                 .map(|all| all.iter().map(crate::mic::device_json).collect::<Vec<Value>>())
                 .map_err(|error| error.to_string())
         })
-        .await
-        .map_err(|error| error.to_string())?
+        .await?
     }
 
     /// One commit's own diff; false means no socket is open and no answer is
@@ -453,6 +458,13 @@ mod commands {
     pub fn client_close(bridge: tauri::State<'_, Arc<Bridge>>, id: u64) {
         bridge.close(id);
     }
+
+    /// Restart into the installed update.
+    #[cfg(desktop)]
+    #[tauri::command]
+    pub fn restart_app(app: tauri::AppHandle) {
+        app.restart()
+    }
 }
 
 /// The client logger's default directives, as data: `Info` for the crate, and
@@ -510,10 +522,33 @@ fn client_logger() -> tauri_plugin_log::Builder {
         .filter(|record| keeps(record.level(), record.target()))
 }
 
+/// The mobile entry point discards `run`'s status, so a failed start ends the
+/// process directly: the desktop's exit code becomes an explicit exit here,
+/// which is what this half always did.
+#[cfg(mobile)]
+mod mobile_failure {
+    #![allow(
+        clippy::exit,
+        reason = "the mobile entry point has no caller to hand a status to; a failed start must \
+                  not leave a windowless process running"
+    )]
+
+    /// End the process the way the desktop's exit code does.
+    pub fn exit() -> ! {
+        std::process::exit(1)
+    }
+}
+
 /// The app, as a library: the Android target links it as a native library, and
 /// the desktop binary in `main.rs` runs the same builder.
+///
+/// The return is the process status a start failure carries, which `main.rs`
+/// turns into its [`std::process::ExitCode`]. It is a `u8` rather than the
+/// `ExitCode` itself because the mobile entry point discards the value, and an
+/// `ExitCode` there would be an unused `#[must_use]`; a failed start on mobile
+/// exits through [`mobile_failure::exit`] instead.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub fn run() {
+pub fn run() -> u8 {
     let context = tauri::generate_context!();
     let log_file = log_file(&context.config().identifier);
 
@@ -556,7 +591,7 @@ pub fn run() {
             commands::client_browser_input,
             check_update,
             install_update,
-            restart_app,
+            commands::restart_app,
             commands::client_connect,
             commands::client_state,
             commands::client_subscribe,
@@ -678,7 +713,10 @@ pub fn run() {
             let line = format!("forge client failed to start: {err}");
             record(log_file.as_deref(), &line);
             eprintln!("{line}");
-            std::process::exit(1);
+            #[cfg(mobile)]
+            mobile_failure::exit();
+            #[cfg(desktop)]
+            return 1;
         }
     };
 
@@ -712,6 +750,7 @@ pub fn run() {
             }
         }
     });
+    0
 }
 
 /// Whether this event is a mobile resume: the person coming back, which the
@@ -814,13 +853,6 @@ async fn install_update(app: tauri::AppHandle) -> Result<String, String> {
         err.to_string()
     })?;
     Ok(STAGE_RESTART.to_string())
-}
-
-/// Restart into the installed update.
-#[cfg(desktop)]
-#[tauri::command]
-fn restart_app(app: tauri::AppHandle) {
-    app.restart()
 }
 
 /// The plugin name each Android class is registered under - one name per class,
@@ -1134,6 +1166,7 @@ mod tests {
     fn the_shipped_logger_keeps_the_press_line_and_drops_its_neighbours() {
         use tauri::test::{mock_builder, mock_context, noop_assets};
         use tauri_plugin_log::log::{Level, Log as _, Metadata};
+        use tauri_plugin_log::{Target, TargetKind};
 
         use super::{LOG_MAX, client_logger, mic};
 
@@ -1143,8 +1176,20 @@ mod tests {
         }
 
         let app = mock_builder().build(mock_context(noop_assets())).expect("a mock app builds");
-        let (_plugin, max, logger) =
-            client_logger().split(app.handle()).expect("the logger builds");
+        // **The plugin's default target is the OS log directory**, which for
+        // this mock is `~/Library/Logs/test.log`: a gate run would litter the
+        // home directory. A scratch folder keeps a file target exercised -
+        // the shape the shipped logger writes through - while leaving
+        // nothing outside the test.
+        let log_dir = tempfile::tempdir().expect("a scratch log dir");
+        let (_plugin, max, logger) = client_logger()
+            .clear_targets()
+            .target(Target::new(TargetKind::Folder {
+                path: log_dir.path().to_path_buf(),
+                file_name: Some("test".to_owned()),
+            }))
+            .split(app.handle())
+            .expect("the logger builds");
         assert_eq!(max, LOG_MAX, "the facade allows what the filter keeps");
         assert!(
             logger.enabled(&metadata(Level::Debug, mic::LOG_TARGET)),

@@ -497,6 +497,11 @@ pub enum ServerMessage {
         conversation: SessionSlot,
         turns: Vec<crate::transport::wire::TurnWire>,
         cursor: Option<String>,
+        /// The schedules the fired prompts in `turns` came from, keyed by the
+        /// prompt's own id: what titles a cron row a page carries long after
+        /// its delivery frame is gone.
+        #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+        cron_names: std::collections::BTreeMap<String, forge_primitives::cron::CronName>,
     },
     /// The answer to `seat_range`: the frames numbered in `from..=to`, each
     /// with the number it was minted under, oldest first.
@@ -993,6 +998,41 @@ mod tests {
             panic!("a bare subscribe is still a subscribe")
         };
         assert!(!answering, "a client that says nothing cannot answer");
+    }
+
+    /// **A page carries the schedules its fired prompts came from.** The
+    /// delivery frame names a schedule once; a row replayed from a transcript
+    /// afterwards has only the read, so the pairing crosses here - typed, and
+    /// keyed by the prompt's own id (#1815).
+    #[test]
+    fn a_page_carries_the_cron_pairing_it_serves() {
+        let seat = SessionSlot::lead("TestOrg", "proj");
+        let page = ServerMessage::Page {
+            conversation: seat,
+            turns: vec![crate::transport::wire::TurnWire {
+                key: Some("t1".to_owned()),
+                messages: vec![serde_json::json!({ "type": "user", "uuid": "p-1" })],
+            }],
+            cursor: None,
+            cron_names: std::collections::BTreeMap::from([(
+                "p-1".to_owned(),
+                forge_primitives::cron::CronName {
+                    cron_id: "c1".to_owned(),
+                    description: Some("Morning summary".to_owned()),
+                },
+            )]),
+        };
+        let json = serde_json::to_string(&page).expect("encode");
+        assert!(json.contains("\"cron_names\":{\"p-1\":{\"cron_id\":\"c1\""), "{json}");
+        let ServerMessage::Page { cron_names, .. } = serde_json::from_str(&json).expect("decode")
+        else {
+            panic!("{json} decoded into another message")
+        };
+        assert_eq!(
+            cron_names.get("p-1").and_then(|name| name.description.as_deref()),
+            Some("Morning summary"),
+            "the schedule a reloaded row titles itself by",
+        );
     }
 
     /// The document read a viewer's route makes, and the answer it gets.

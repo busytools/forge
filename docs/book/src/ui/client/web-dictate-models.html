@@ -88,7 +88,7 @@
     color: var(--dim); }
   header.top.pagetop .back { margin-left: auto; font-family: var(--mono);
     font-size: var(--fs-label); color: var(--muted); text-decoration: none;
-    border: 1px solid var(--line); border-radius: 9px; padding: 6px 11px; }
+    border: 1px solid var(--ctl); border-radius: 9px; padding: 6px 11px; }
   header.top.pagetop .back:hover { border-color: var(--ctl); color: var(--text); }
   /* The two one-line states the route draws before a read: the loading line,
      and the server's own words for a refused subscription. */
@@ -119,9 +119,10 @@
     font-family: var(--mono); font-size: var(--fs-label); padding: 4px 10px;
     border: 1px solid var(--line); border-radius: 9px; color: var(--muted);
     background: none; white-space: nowrap; }
-  /* A chip is a state when it is a span and an action when it is a button. */
-  .models-page button.chip { cursor: pointer; }
-  .models-page button.chip:hover { border-color: var(--ctl); color: var(--text); }
+  /* A chip is a state when it is a span and an action when it is a button:
+     only the button form carries the control mark on its pill. */
+  .models-page button.chip { cursor: pointer; border-color: var(--ctl); }
+  .models-page button.chip:hover { border-color: var(--text); color: var(--text); }
   /* One download and one activation run at a time, so a second control is
      disabled rather than offered and then refused; a disabled one still says
      what it would do. */
@@ -156,7 +157,7 @@
 
   .models-page .find { display: block; width: 100%; min-width: 0; font-family: var(--mono);
     font-size: var(--fs-data); color: var(--text); background: var(--s1);
-    border: 1px solid var(--line); border-radius: 9px; padding: 8px 11px; }
+    border: 1px solid var(--ctl); border-radius: 9px; padding: 8px 11px; }
   .models-page .find::placeholder { color: var(--dim); }
   .models-page .note { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); margin-top: 10px; }
   /* What can be searched before a reader knows a name: the feed's families as

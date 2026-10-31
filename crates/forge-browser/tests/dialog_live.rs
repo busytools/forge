@@ -53,11 +53,9 @@ function go() { \
 #[test]
 fn an_unanswered_dialog_is_dismissed_at_its_deadline() {
     let mut live = Live::start(PAGE);
-    let Live { host, runtime, cdp, page_port, .. } = &mut live;
+    let Live { host, runtime, cdp, .. } = &mut live;
 
     runtime.block_on(async {
-        navigate(cdp, *page_port).await;
-
         // **The host says a dialog is open**, and nobody answers it.
         wait_for_dialog(host, "confirm", JsDialogState::Shown);
         let shown_at = Instant::now();
@@ -82,10 +80,9 @@ fn an_unanswered_dialog_is_dismissed_at_its_deadline() {
 #[test]
 fn an_answered_dialog_is_not_dismissed_at_the_deadline() {
     let mut live = Live::start(PAGE);
-    let Live { host, runtime, cdp, page_port, .. } = &mut live;
+    let Live { host, runtime, cdp, .. } = &mut live;
 
     runtime.block_on(async {
-        navigate(cdp, *page_port).await;
         wait_for_dialog(host, "confirm", JsDialogState::Shown);
 
         // **The answer comes from the agent's tool**, which hands it to the
@@ -115,11 +112,9 @@ fn an_answered_dialog_is_not_dismissed_at_the_deadline() {
 #[test]
 fn a_before_unload_dialog_is_dismissed_at_its_deadline() {
     let mut live = Live::start(LEAVING);
-    let Live { host, runtime, cdp, page_port, .. } = &mut live;
+    let Live { host, runtime, cdp, .. } = &mut live;
 
     runtime.block_on(async {
-        navigate(cdp, *page_port).await;
-
         // **The gesture is the page's own**, so the navigation counts as
         // user-initiated and the browser asks before leaving.
         cdp.call("Runtime.evaluate", json!({ "expression": "go()", "userGesture": true }), None)
@@ -150,18 +145,18 @@ fn a_before_unload_dialog_is_dismissed_at_its_deadline() {
     });
 }
 
-/// Bring the served page in and wait for its navigation to commit.
-async fn navigate(cdp: &mut Cdp, page_port: u16) {
-    let url = format!("http://127.0.0.1:{page_port}/");
-    cdp.call("Page.navigate", json!({ "url": url }), None).await.expect("the page navigates");
-}
-
 /// One host, one served page and one DevTools connection, ended together.
 struct Live {
     host: support::Host,
+    /// The scratch dir holding the profile and the host log; **alive for the
+    /// test**, so the running host never loses its cache under it.
+    _scratch: tempfile::TempDir,
     runtime: tokio::runtime::Runtime,
     cdp: Cdp,
     ring: String,
+    /// The host's DevTools port and log, for reconnecting a page target.
+    port: u16,
+    log: std::path::PathBuf,
     page_port: u16,
     _server: std::thread::JoinHandle<()>,
 }
@@ -184,7 +179,39 @@ impl Live {
         let runtime =
             tokio::runtime::Builder::new_current_thread().enable_all().build().expect("a runtime");
         let (cdp, _events) = runtime.block_on(connect(port, &format!("/devtools/page/{page}")));
-        Self { host, runtime, cdp, ring, page_port, _server: server }
+        let mut live = Self {
+            host,
+            _scratch: scratch,
+            runtime,
+            cdp,
+            ring,
+            port,
+            log,
+            page_port,
+            _server: server,
+        };
+        live.open_page();
+        live
+    }
+
+    /// Bring the served page in. **A page target that closes between the
+    /// attach and the navigation is the fresh session, not the host**: the
+    /// connection is remade against the page the endpoint lists now, and the
+    /// navigation retried.
+    fn open_page(&mut self) {
+        let url = format!("http://127.0.0.1:{}/", self.page_port);
+        for attempt in 0..3 {
+            let result =
+                self.runtime.block_on(self.cdp.call("Page.navigate", json!({ "url": url }), None));
+            if result.is_ok() {
+                return;
+            }
+            let page = support::wait_for_page(self.port, &self.log, BOUND);
+            let (cdp, _events) =
+                self.runtime.block_on(connect(self.port, &format!("/devtools/page/{page}")));
+            self.cdp = cdp;
+            assert!(attempt < 2, "the page never navigated: {result:?}");
+        }
     }
 }
 
