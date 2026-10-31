@@ -822,8 +822,36 @@ pub fn get_session_messages(
         }
     };
     let mut history = parse_session_messages(file);
-    history.messages.extend(subagent_sidecar_rows(session_id, &path));
+    fold_subagent_sidecars(&mut history.messages, subagent_sidecars(session_id, &path));
     history
+}
+
+/// Insert each dispatch's sidecar frames where the dispatch ran: right after
+/// the row that answers its tool call. Appending them all at the end would
+/// put them at the newest edge of the window a resumed conversation is cut
+/// to, so every old sub-agent would be kept in preference to the main rows
+/// around it.
+fn fold_subagent_sidecars(
+    messages: &mut Vec<SessionMessage>,
+    sidecars: Vec<(String, Vec<SessionMessage>)>,
+) {
+    for (dispatch, rows) in sidecars {
+        let at = messages
+            .iter()
+            .position(|row| answers_dispatch(row, &dispatch))
+            .map_or(messages.len(), |index| index + 1);
+        messages.splice(at..at, rows);
+    }
+}
+
+/// Whether `row` is the tool result answering `dispatch`.
+fn answers_dispatch(row: &SessionMessage, dispatch: &str) -> bool {
+    row.message.get("content").and_then(Value::as_array).is_some_and(|blocks| {
+        blocks.iter().any(|block| {
+            block.get("type").and_then(Value::as_str) == Some("tool_result")
+                && block.get("tool_use_id").and_then(Value::as_str) == Some(dispatch)
+        })
+    })
 }
 
 /// The frames a session's sub-agent sidecars hold, each stamped with the
@@ -835,7 +863,7 @@ pub fn get_session_messages(
 /// so a resumed conversation drew every card as its dispatch alone until
 /// this read folded them in (#1763). A sidecar that cannot be read or named
 /// is skipped: the card falls back to the dispatch it already had.
-fn subagent_sidecar_rows(session_id: &str, transcript: &Path) -> Vec<SessionMessage> {
+fn subagent_sidecars(session_id: &str, transcript: &Path) -> Vec<(String, Vec<SessionMessage>)> {
     let Some(dir) = transcript.parent() else {
         return Vec::new();
     };
@@ -852,7 +880,7 @@ fn subagent_sidecar_rows(session_id: &str, transcript: &Path) -> Vec<SessionMess
         })
         .collect();
     metas.sort();
-    let mut rows = Vec::new();
+    let mut sidecars = Vec::new();
     for meta in metas {
         let Ok(body) = fs::read(&meta) else { continue };
         let Ok(value) = serde_json::from_slice::<Value>(&body) else { continue };
@@ -871,12 +899,13 @@ fn subagent_sidecar_rows(session_id: &str, transcript: &Path) -> Vec<SessionMess
         let Ok(file) = fs::File::open(meta.with_file_name(format!("{stem}.jsonl"))) else {
             continue;
         };
-        for mut row in parse_session_messages(file).messages {
+        let mut rows = parse_session_messages(file).messages;
+        for row in &mut rows {
             row.parent_tool_use_id = Some(dispatch.to_owned());
-            rows.push(row);
         }
+        sidecars.push((dispatch.to_owned(), rows));
     }
-    rows
+    sidecars
 }
 
 /// The rows a transcript's messages convert to, typed as the wire sends them
@@ -3035,11 +3064,11 @@ mod tests {
         );
     }
 
-    /// A resumed git worker anchors its history read at the worktree run
-    /// dir (`claude --resume` receives that cwd via `worker_tag_dir`), so
-    /// the JSONL is read from the worktree project key, not the repo-root
-    /// key. The same session id under the repo-root key is invisible -
-    /// which is why the resume-map must pick a worktree-scoped session.
+    /// A sub-agent's own frames live only in the CLI's sidecar
+    /// (`<session>/subagents/agent-*.jsonl`), which nothing read: after a
+    /// resume the dispatch's card held no calls (#1763). The transcript read
+    /// folds each sidecar in under the dispatch its meta names - where the
+    /// dispatch ran, not at the end - which is the join the card fold reads.
     #[test]
     fn get_session_messages_folds_subagent_sidecars_under_their_dispatch() {
         let config_dir = tempfile::tempdir().unwrap();
@@ -3051,7 +3080,8 @@ mod tests {
             &dir,
             session_id,
             "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"toolu_dispatch\",\"name\":\"Agent\",\"input\":{\"prompt\":\"explore\"}}]},\"uuid\":\"a1\"}\n\
-             {\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_dispatch\",\"content\":\"done\"}]},\"uuid\":\"u1\"}\n",
+             {\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_dispatch\",\"content\":\"done\"}]},\"uuid\":\"u1\"}\n\
+             {\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"after\"}]},\"uuid\":\"a2\"}\n",
         );
         // The CLI's own layout: one sidecar per sub-agent, the dispatch it
         // ran under named in the sibling meta file.
@@ -3072,7 +3102,12 @@ mod tests {
         let messages =
             get_session_messages(config_dir.path(), session_id, Some(directory)).messages;
 
-        assert_eq!(messages.len(), 4, "the transcript's two rows plus the sidecar's two");
+        assert_eq!(messages.len(), 5, "the transcript's three rows plus the sidecar's two");
+        assert_eq!(
+            messages.iter().map(|message| message.uuid.as_str()).collect::<Vec<_>>(),
+            vec!["a1", "u1", "c1", "c2", "a2"],
+            "the sidecar's frames sit where their dispatch ran, not at the conversation's end",
+        );
         let folded: Vec<_> = messages
             .iter()
             .filter(|message| message.parent_tool_use_id.as_deref() == Some("toolu_dispatch"))
@@ -3084,7 +3119,7 @@ mod tests {
         );
         assert_eq!(
             messages.iter().filter(|message| message.parent_tool_use_id.is_none()).count(),
-            2,
+            3,
             "the transcript's own rows stay the main thread's",
         );
     }
