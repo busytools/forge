@@ -3046,7 +3046,10 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
   background: var(--s2); cursor: pointer; color: var(--dim); }
 .pop .dev:hover { border-color: var(--ctl); }
 .pop .dev .nm { font-size: var(--fs-base); color: var(--text); }
-.pop .dev .chev { margin-left: auto; color: var(--dim); }
+/* The shared arrow, shown on a button the way the row links show it, and
+   turned by the state the button announces (#1504). */
+.pop .dev .arw { margin-left: auto; color: var(--dim); opacity: 1; }
+.pop .dev[aria-expanded="true"] .arw { transform: rotate(90deg); color: var(--accent); }
 .pop .list { margin-top: 6px; border: 1px solid var(--line); border-radius: 11px;
   overflow: hidden; }
 .pop .drow { display: flex; align-items: center; gap: 9px; width: 100%; padding: 8px 10px;
