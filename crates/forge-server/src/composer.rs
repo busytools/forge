@@ -137,7 +137,7 @@ impl Composer {
     /// them (#2283).
     pub fn sent(&mut self, slot: &SessionSlot, words: &[String]) {
         let Some(landed) = self.landed.get(slot) else { return };
-        if words.iter().any(|word| *word == landed.text) {
+        if words.contains(&landed.text) {
             self.landed.remove(slot);
         }
     }
