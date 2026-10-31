@@ -22,6 +22,15 @@ pub use stream::{Block, Capture, open};
 /// Sample rate every model in forge reads, and the rate [`open`] delivers.
 pub const SAMPLE_RATE: u32 = 16_000;
 
+/// A panic payload's own message, or a phrase where it carried none.
+pub(crate) fn panic_message(panic: &(dyn std::any::Any + Send)) -> String {
+    panic
+        .downcast_ref::<&str>()
+        .map(|said| (*said).to_owned())
+        .or_else(|| panic.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "no message".to_owned())
+}
+
 #[cfg(test)]
 mod tests_leaf_invariant {
     /// This crate is a leaf, and depending on a forge-* crate is the one

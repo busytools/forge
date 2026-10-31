@@ -114,7 +114,16 @@ permission whose prompt never surfaced, a device another process holds -
 answers neither way. Past twenty seconds the line above the box says the
 microphone did not come up, and the take the open began is left nobody's:
 when it answers late it is ended, so the next press records rather than
-being refused as busy.
+being refused as busy. A device layer that fails by panicking during the
+take's open is answered the same way: the shell catches it, names it on that
+line (`the microphone device layer panicked during the take's open: ...`),
+and writes the operation, the device and a backtrace to the client log. The
+audio callback has its own guard, in the capture crate: a panic in the
+pipeline body forge calls from cpal's frame is caught there before it
+crosses the C boundary, and the capture stops delivering - though that line
+is a `tracing` record the desktop client does not sink yet (#2730), so it is
+readable server-side only. A panic that unwinds through a foreign frame
+still aborts; no catch at either layer can reach it.
 
 ## The states the surface can be in
 
@@ -130,7 +139,7 @@ being refused as busy.
 | A command in flight | `Running <name>` for the slash command the turn is still working on, the sweep |
 | Waking | `Waking up agent...` while the lead's seat comes up, the sweep |
 | Not running | `not running` and the seat's own reason: a worker's seat has no spawn coming, and says so |
-| A take that does not come up | the box stays, with the line above it: the microphone did not come up |
+| A take that does not come up | the box stays, with the line above it: the microphone did not come up, or the device layer's own named failure |
 | Failed | `Input disabled due to error` and what to do: quit and start forge again |
 
 **A blocked state replaces the box entirely and always says why.** The
