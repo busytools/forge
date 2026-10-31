@@ -31,6 +31,7 @@ import { clearReturn, takeReturn } from '../session/returns';
 import type { Connection } from '../socket';
 import type { SessionSlot } from '../wire/types';
 import { handoffFrame, handoffKey, handoffOf, type HandoffRecord } from '../wire/handoff';
+import { cronNames } from './cron-names.svelte';
 import { echoes } from './echoes.svelte';
 import { outputs } from './outputs.svelte';
 import { stripEscapes } from './text';
@@ -1783,7 +1784,9 @@ export class Chat {
       turns?: unknown;
       cursor?: unknown;
       handoff?: unknown;
+      cron_names?: unknown;
     };
+    cronNames.seed(conversation.cron_names);
     const record = handoffOf(conversation.handoff);
     if (record !== null) this.seedHandoffJoin(record, 'ahead');
     const rows = pageTurns(conversation.turns);
@@ -2207,6 +2210,10 @@ export class Chat {
           this.inFlight = null;
           this.askedBefore = null;
         }
+        // The read's half of the cron pairing: rows this page carries keep
+        // their schedule's name after a reload, as they did while the
+        // delivery frames landed.
+        cronNames.seed(message.cron_names);
         this.takePage(
           message.turns,
           message.cursor,
@@ -2298,7 +2305,9 @@ export class Chat {
             turns?: unknown;
             cursor?: unknown;
             handoff?: unknown;
+            cron_names?: unknown;
           };
+          cronNames.seed(conversation.cron_names);
           // **A client attaching after the swap draws the row the record
           // carries**, because the successor's transcript never holds it and
           // the live frame it arrived on is long gone.

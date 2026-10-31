@@ -367,7 +367,7 @@
   .needchip .ch-ic { width: 13px; height: 13px; }
   .needchip.bad { color: var(--bad); border-color: rgba(224,104,62,.4);
     background: rgba(224,104,62,.08); }
-  .needchip.calm { color: var(--muted); border-color: var(--line); background: none; }
+  .needchip.calm { color: var(--muted); border-color: var(--ctl); background: none; }
   /* The two touch doors, hidden at this drawing's fine pointer: the palette's
      (Cmd+K's stand-in) and the projects pane's (hover's and Cmd+Left's).
      Their rules mirror web.css rule for rule. */
@@ -421,7 +421,7 @@
     background: var(--s3); overflow: hidden; vertical-align: middle; margin-right: 6px; }
   .sess .mfacts .fl { display: block; height: 100%; background: var(--accent); }
   .sess .cp { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
-    background: none; border: 1px solid var(--line); border-radius: 5px;
+    background: none; border: 1px solid var(--ctl); border-radius: 5px;
     padding: 2px 5px; cursor: pointer; display: flex; align-items: center; }
   /* The copy affordance: the mark alone, sized with the row's other marks, so
      the id reads as data rather than the pair reading as a form - in the row
@@ -524,9 +524,9 @@
     font-family: var(--mono); font-size: var(--fs-data); color: var(--bad); }
   .mine .why .ic { width: 12px; height: 12px; flex: 0 0 12px; color: var(--bad); }
   .mine .retry { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
-    background: transparent; border: 1px solid #2a3244; border-radius: 6px;
+    background: transparent; border: 1px solid var(--ctl); border-radius: 6px;
     padding: 1px 7px; cursor: pointer; }
-  .mine .retry:hover { color: var(--muted); border-color: #2e3850; }
+  .mine .retry:hover { color: var(--muted); }
 
   /* ---------- the column's read wait, drawn as specimens ---------- */
   /* Below the page mock, in the document's own flow: the mock is one screen,
@@ -1027,7 +1027,7 @@
   .handoff .sessions, .handoff .sid, .handoff .fact { display: contents; }
   .handoff .sid .v { display: flex; align-items: center; gap: 8px; min-width: 0;
     overflow-wrap: anywhere; color: var(--muted); }
-  .handoff .sessions .cp { color: var(--dim); background: none; border: 1px solid var(--line);
+  .handoff .sessions .cp { color: var(--dim); background: none; border: 1px solid var(--ctl);
     border-radius: 5px; padding: 2px 5px; display: inline-flex; align-items: center; }
   .handoff .hint { color: var(--dim); font-size: 12px; margin: 6px 0 0; }
   .handoff .lbl { color: var(--accent); font-size: 11px; letter-spacing: .08em; margin: 10px 0 6px 0; }
@@ -1139,7 +1139,7 @@
     border: 1px solid var(--dim); }
   /* A task that moved since the last read: the reveal's own tint for a beat. */
   .sg-list .sg-it.hit { animation: sg-flash 6s ease-out 1; }
-  @keyframes sg-flash { 0% { background: rgba(244,118,0,.16); } 100% { background: transparent; } }
+  @keyframes sg-flash { 0% { background: color-mix(in srgb, var(--accent) 16%, var(--bg)); } 100% { background: transparent; } }
   .tibody { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 26px;
     padding: 6px 0 0 18px; width: max-content;
     font-family: var(--mono); font-size: var(--fs-data); }
@@ -3028,13 +3028,14 @@ uncommitted: 1 paths
           <!-- The external deliveries: each row of its own kind, the same shape
                every other row draws - a glyph, a name, a row that opens. -->
           <details class="leaf inboundrow">
-            <!-- A cron fire is titled by the SCHEDULE that fired it, read off
-                 the same update the prompt arrives with. The tail is the
-                 prompt's first line - the invariant the row hangs on - so a
-                 fire the frame named reads `Morning summary` over its prompt.
-                 A fire falls back to that first line as its TITLE in two
-                 cases: a frame the page never saw, and a schedule registered
-                 with no description, which names nothing to draw. -->
+            <!-- A cron fire is titled by the SCHEDULE that fired it: the
+                 pairing arrives on the delivery frame while it lands, and the
+                 conversation read carries the same pair for a page that
+                 reloads. The tail is the prompt's first line - the invariant
+                 the row hangs on - so a fire the pairing named reads
+                 `Morning summary` over its prompt. A fire falls back to that
+                 first line as its TITLE when its schedule was registered with
+                 no description, which names nothing to draw. -->
             <summary><svg class="ic gl"><use href="#i-schedules"/></svg><span class="tn">Morning summary</span>
               <span class="ev">summarise overnight CI and open PRs</span>
               <svg class="ic arw"><use href="#i-chev"/></svg></summary>

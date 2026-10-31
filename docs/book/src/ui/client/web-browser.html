@@ -66,7 +66,7 @@
      them: the mic dim, the send accent, both a 26px box for the glyph. */
   .micb, .sendb { flex: none; width: 26px; height: 26px; border-radius: 8px;
     background: none; display: grid; place-items: center; cursor: pointer; }
-  .micb { border: 1px solid var(--line); color: var(--dim); }
+  .micb { border: 1px solid var(--ctl); color: var(--dim); }
   .sendb { border: 1px solid rgba(244,118,0,.45); color: var(--accent); }
   .micb .ic, .sendb .ic { width: 15px; height: 15px; display: block; }
   /* The take's card is the dock's own, drawn as the composer draws it. */
@@ -150,7 +150,8 @@
   .bz-it .nm { color: var(--text); }
   .bz-it .tx { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
   .bz-it .owner { color: var(--dim); font-size: var(--fs-label); margin-left: auto; white-space: nowrap; }
-  .bz-it .show { border: 1px solid var(--line); border-radius: 7px; padding: 2px 8px;
+  .bz-it .show { border: 1px solid color-mix(in srgb, var(--ctl) 90%, var(--text));
+    border-radius: 7px; padding: 2px 8px;
     color: var(--text); background: var(--s3); font-size: var(--fs-label); }
   /* The bar's tab picker: the profile's tabs, one row per tab. */
   .bpick { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); }

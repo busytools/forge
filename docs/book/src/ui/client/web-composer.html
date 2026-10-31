@@ -247,7 +247,7 @@
   .pop .lbl .src { letter-spacing: 0; color: var(--hot); }
   .pop .chips { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; }
   .pop .chip { font-family: var(--mono); font-size: var(--fs-label); padding: 4px 10px;
-    border: 1px solid var(--line); border-radius: 9px; color: var(--muted);
+    border: 1px solid var(--ctl); border-radius: 9px; color: var(--muted);
     background: none; white-space: nowrap; }
   .pop .chip.on { border-color: rgba(244,118,0,.5); background: var(--s3); color: var(--text);
     box-shadow: inset 0 0 0 1px rgba(244,118,0,.22); }
@@ -262,13 +262,14 @@
   .pop .drow { display: flex; align-items: center; gap: 9px; width: 100%; padding: 8px 10px;
     border: 0; border-bottom: 1px solid var(--line); background: none; text-align: left; }
   .pop .drow:last-child { border-bottom: 0; }
-  .pop .drow.on { background: rgba(244,118,0,.08); }
+  .pop .drow.on { background: color-mix(in srgb, var(--accent) 8%, var(--s1)); }
   .pop .drow .nm { font-size: var(--fs-base); color: var(--text); }
   .pop .drow.on .nm { color: var(--accent); }
   .pop .drow .def { margin-left: auto; font-family: var(--mono); font-size: var(--fs-label);
     color: var(--dim); }
+  .pop .drow.on .def { color: var(--muted); }
   .pop .dev { margin-top: 9px; width: 100%; display: flex; align-items: center; gap: 9px;
-    padding: 8px 10px; border: 1px solid var(--line); border-radius: 11px;
+    padding: 8px 10px; border: 1px solid var(--ctl); border-radius: 11px;
     background: var(--s2); color: var(--dim); }
   .pop .dev .nm { font-size: var(--fs-base); color: var(--text); }
   .pop .dev .chev { margin-left: auto; color: var(--dim); }
@@ -349,7 +350,7 @@
     color: var(--text); }
   .dock .qrow .notes.ph { color: var(--dim); }
   .dock .qrow .micb { flex: none; margin-left: auto; width: 26px; height: 26px;
-    border-radius: 8px; border: 1px solid var(--line); color: var(--dim);
+    border-radius: 8px; border: 1px solid var(--ctl); color: var(--dim);
     display: grid; place-items: center; }
   .dock .qrow.on .micb { border-color: rgba(244,118,0,.45); color: var(--hot); }
   .dock .qrow .sendb { flex: none; width: 26px; height: 26px; border-radius: 8px;
@@ -375,7 +376,7 @@
      primary and LEADING (the settled redesign), the refusal last, and the row
      left-aligned under the body. */
   .dock .acts { display: flex; gap: 8px; justify-content: flex-start; flex-wrap: wrap; }
-  .dock .btn { border: 1px solid var(--line); border-radius: 9px; color: var(--muted);
+  .dock .btn { border: 1px solid var(--ctl); border-radius: 9px; color: var(--muted);
     font-family: var(--mono); font-size: var(--fs-label); padding: 7px 13px; }
   .dock .btn.p { border-color: rgba(244,118,0,.5); color: var(--hot);
     background: rgba(244,118,0,.1); }

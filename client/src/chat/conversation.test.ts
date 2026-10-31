@@ -19,6 +19,7 @@ import {
 } from './conversation';
 import { PRE_RESUME, PRE_RESUME_OPEN, RESUME, RESUME_KEY } from './testing/resume-2503';
 import type { ToolLeaf } from './leaves';
+import { cronNames } from './cron-names.svelte';
 import { echoes } from './echoes.svelte';
 import { outputs } from './outputs.svelte';
 import { markReturn } from '../session/returns';
@@ -86,12 +87,33 @@ const ended = (): unknown => ({
   is_error: false,
 });
 
+/**
+ * The schedules a page's fired prompts came from, as the wire pairs them.
+ *
+ * The server carries these so a reloaded row titles itself; a page that
+ * carries none is the shape every other test here sends.
+ */
+type CronNames = Record<string, { cron_id: string; description: string | null }>;
+
+/** One turn carrying a fired prompt under the id its delivery named. */
+const cronTurn = (uuid: string, text: string): PageTurn => ({
+  key: 't1',
+  messages: [
+    {
+      type: 'user',
+      uuid,
+      message: { role: 'user', content: [{ type: 'text', text }] },
+    },
+  ],
+});
+
 /** A page of whole turns, as the server answers `more`. */
-const page = (turns: PageTurn[], cursor: string | null): ServerMessage => ({
+const page = (turns: PageTurn[], cursor: string | null, cronNames?: CronNames): ServerMessage => ({
   kind: 'page',
   conversation: LEAD,
   turns,
   cursor,
+  ...(cronNames === undefined ? {} : { cron_names: cronNames }),
 });
 
 /**
@@ -104,10 +126,20 @@ const record = (
   turns: PageTurn[],
   cursor: string | null = null,
   handoff: unknown = null,
+  cronNames?: CronNames,
 ): ServerMessage => ({
   kind: 'snapshot',
   subject: { session: LEAD },
-  data: { header: {}, conversation: { turns, cursor, compaction_count: 0, handoff } },
+  data: {
+    header: {},
+    conversation: {
+      turns,
+      cursor,
+      compaction_count: 0,
+      handoff,
+      ...(cronNames === undefined ? {} : { cron_names: cronNames }),
+    },
+  },
 });
 
 /** One handoff record, as the wire carries it. */
@@ -482,7 +514,10 @@ const typed = (text: string): unknown => ({
  * needs from it is three things - what it asked for, the frames it was sent,
  * and the store it subscribed to - so that is what this answers with.
  */
-function fakeConnection() {
+function fakeConnection(
+  store?: () =>
+    { snapshot: () => unknown; dropped: () => number; updates: () => unknown[] } | undefined,
+) {
   const asks: ClientMessage[] = [];
   const listeners = new Set<(message: ServerMessage) => void>();
   const statuses = new Set<(status: ConnectionStatus) => void>();
@@ -505,7 +540,7 @@ function fakeConnection() {
       statuses.add(fn);
       return () => statuses.delete(fn);
     },
-    store: () => undefined,
+    store: store ?? (() => undefined),
     settings: () => null,
     status: () => 'open' as const,
     close: () => undefined,
@@ -578,6 +613,62 @@ describe('the conversation the chat draws', () => {
 
     chat.showing();
     expect(words(chat), 'and the return draws it').toContain('while away');
+    stop();
+  });
+
+  /**
+   * **The read carries the delivery's pairing.** While the frame lands, a
+   * fired cron's row is titled by its schedule; a page that reloads after the
+   * delivery reads the row from a transcript, which carries the prompt alone.
+   * The record and the page therefore carry the pairing for their own rows,
+   * and the store takes it from there (#1815).
+   */
+  it('titles a reloaded cron row from the pairing its read carried', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+
+    const inRecord = 'p-reload-record';
+    server.send(
+      record([cronTurn(inRecord, '[Cron]\n\nsummarise overnight CI')], null, null, {
+        [inRecord]: { cron_id: 'c1', description: 'Morning summary' },
+      }),
+    );
+    expect(
+      cronNames.nameFor(inRecord),
+      'the record seeds the schedule its rows were delivered from',
+    ).toBe('Morning summary');
+
+    const inPage = 'p-reload-page';
+    server.send(page([], 'above', { [inPage]: { cron_id: 'c2', description: 'Nightly sweep' } }));
+    expect(cronNames.nameFor(inPage), 'an older page seeds its own rows').toBe('Nightly sweep');
+    stop();
+  });
+
+  /**
+   * **A return to a visited seat reads its pairing from the store.** A
+   * visited seat keeps its subscription, so no snapshot follows a column
+   * mounting on it; the record the frames kept current is all there is, and
+   * that path seeds the cron store too (#1815).
+   */
+  it('seeds a visited seat cron pairing from the record it already holds', () => {
+    const uuid = 'p-store-seed';
+    const server = fakeConnection(() => ({
+      snapshot: () => ({
+        conversation: {
+          turns: [cronTurn(uuid, '[Cron]\n\novernight CI')],
+          cursor: null,
+          handoff: null,
+          cron_names: { [uuid]: { cron_id: 'c1', description: 'Morning summary' } },
+        },
+      }),
+      dropped: () => 0,
+      updates: () => [],
+    }));
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+
+    expect(cronNames.nameFor(uuid), 'the held record seeds the schedule').toBe('Morning summary');
     stop();
   });
 

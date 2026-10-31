@@ -206,6 +206,14 @@ function outOfBand(pairs: readonly Pair[], palette: Readonly<Record<string, stri
  * at 3.25 and 3.02 - 3.02 being the tightest margin the table carries, and the
  * pair to watch if `--ctl` or a raised ground moves.
  *
+ * **`.qcard.cur`'s `--ctl` over `--s3` is the one control pair that stays off
+ * this table, deliberately** (#2306): it measures 2.77:1, but its border is
+ * not what says the card is a card. The stack gives it position (it is the
+ * front card of the arc), a shadow, `aria-selected`, and the brighter words
+ * the other cards above it do not draw, so the boundary is decoration rather
+ * than the 1.4.11 mark. A card that loses any of those carriers owes this
+ * pair a row and a ground that holds 3:1.
+ *
  * `--violet`'s rule is the pile card's own: `.m .src.forge` in `Queue.svelte`
  * paints it on the card's raised ground, and it is paired there so the token
  * cannot sit in the palette with no answer for where a surface would put it.
@@ -234,6 +242,13 @@ const LIFTED = (token: string): string => `color-mix(in srgb, var(${token}) 70%,
  */
 const DIMMED = (token: string): string => `color-mix(in srgb, var(${token}) 75%, var(--s2))`;
 
+/**
+ * The control mark lifted toward the prose tone. The tab bar's pick and
+ * buttons fill with `--s3`, where plain `--ctl` measures 2.77:1; lifted 90/10
+ * it measures 3.24 on that fill and 3.53 on `--s2`.
+ */
+const CTL_LIFTED = 'color-mix(in srgb, var(--ctl) 90%, var(--text))';
+
 const DRAWN: readonly Pair[] = [
   ['--text', '--bg', PROSE_FLOOR, PROSE_CEILING],
   ['--text', '--s1', TEXT],
@@ -255,6 +270,9 @@ const DRAWN: readonly Pair[] = [
   // on `--s1` and its `button` on `--s2`.
   ['--ctl', '--s1', MARK],
   ['--ctl', '--s2', MARK],
+  // The `--s3`-filled controls: the tab bar's pick and buttons draw a mark
+  // lifted a step, because plain `--ctl` on `--s3` measures 2.77.
+  [CTL_LIFTED, '--s3', MARK],
   ['--accent', '--bg', TEXT],
   ['--accent', '--s1', TEXT],
   ['--accent', '--s2', TEXT],
@@ -313,6 +331,12 @@ const DRAWN: readonly Pair[] = [
   // rather than the dim rows' minima.
   ['--muted', 'color-mix(in srgb, #f85149 13%, var(--s2))', TEXT],
   ['--muted', 'color-mix(in srgb, #2ea043 16%, var(--s2))', TEXT],
+  // Two accent tints that carry text: the dictate popover's in-force row over
+  // its `--s1` ground, and the reveal's six-second flash over the page. Both
+  // draw `--muted` detail text while the tint is under it, because `--dim`
+  // measured 4.48 and 4.43 on them.
+  ['--muted', 'color-mix(in srgb, var(--accent) 8%, var(--s1))', TEXT],
+  ['--muted', 'color-mix(in srgb, var(--accent) 16%, var(--bg))', TEXT],
 ];
 
 /**
@@ -322,12 +346,13 @@ const DRAWN: readonly Pair[] = [
  * rule that inks it, `.sess .facts .sep`, is a middot at 1.42:1.
  *
  * A border that identifies a control is a different job: it takes the 3:1 of
- * 1.4.11, and the connect screen's field and its button carry it in `--ctl`,
- * over `--s1` and `--s2` - the two rows above. Which token a rule NAMES is not
- * this file's to check, so those two rules are pinned where they are, in
- * `connect/controls.test.ts`; the controls still drawing `--line` over a
- * ground that does not separate them are #2306's sweep. Named rather than left
- * out, so a token arriving without a pair still fails.
+ * 1.4.11, and every control that drew the `--line` hairline as its only mark
+ * now draws `--ctl` over the ground it encloses - the two rows above for the
+ * connect screen, and the rest pinned where each rule lives, in
+ * `assets/control-ink.test.ts`. Which token a rule NAMES is not this file's to
+ * check. Tone-tinted state borders (accent, warn, bad) are a separate class,
+ * named with their measurements in that same file; they are not claimed here.
+ * Named rather than left out, so a token arriving without a pair still fails.
  */
 const NOT_INK = ['--line'];
 
@@ -410,17 +435,18 @@ describe('the palette', () => {
     expect(sheet, 'and the dim composites are that sheet value').toContain(
       '.ansi-dim { opacity: .75; }',
     );
+    expect(sheet, "the s3 controls' lifted mark is the sheet's own").toContain(CTL_LIFTED);
     expect(sheet, "bare dim draws the body's own tone").toContain(
       '.bodytext { font-family: var(--mono); font-size: var(--fs-prose); color: var(--muted);',
     );
-    // The markdown diff grounds are drawn by the sheet too, derived from the
-    // table's own rows: a one-sided edit here would keep measuring a mix the
-    // sheet had stopped drawing.
-    const diffGrounds = DRAWN.map(([, ground]) => ground).filter((ground) =>
-      ground.startsWith('color-mix(in srgb, #'),
+    // The mixed grounds are drawn by the sheet too, derived from the table's
+    // own rows: a one-sided edit here would keep measuring a mix the sheet
+    // had stopped drawing.
+    const mixedGrounds = DRAWN.map(([, ground]) => ground).filter((ground) =>
+      ground.startsWith('color-mix('),
     );
-    expect(diffGrounds.length, 'the diff grounds are rows of the table').toBe(2);
-    for (const ground of diffGrounds) {
+    expect(mixedGrounds.length, 'the mixed grounds are rows of the table').toBe(4);
+    for (const ground of mixedGrounds) {
       expect(sheet, `the sheet draws ${ground}`).toContain(ground);
     }
   });

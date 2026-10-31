@@ -214,6 +214,65 @@ impl Workspace {
         self.crons.lock().clone()
     }
 
+    /// Remember the schedule a fired prompt came from, so its row can name
+    /// the schedule after a reload the delivery frame does not survive.
+    ///
+    /// Best-effort: a store that will not write costs a reloaded row its
+    /// title, which is exactly what it had before the pairing existed.
+    pub(crate) fn remember_cron_name(
+        &self,
+        slot: &forge_primitives::SessionSlot,
+        uuid: &str,
+        cron_id: &str,
+        description: Option<&str>,
+    ) {
+        let guard = self.db.lock();
+        let Some(db) = guard.as_ref() else {
+            return;
+        };
+        let name = forge_primitives::cron::CronName {
+            cron_id: cron_id.to_owned(),
+            description: description.map(str::to_owned),
+        };
+        if let Err(error) = crate::store::cron_names::put(db, uuid, &name) {
+            tracing::warn!(
+                event_name = "cron_name_store_failed",
+                org = slot.org(),
+                project = slot.project(),
+                label = slot.label(),
+                cron = %cron_id,
+                prompt = %uuid,
+                %error,
+                "the fired prompt's schedule was not recorded; a reload falls back to the prompt"
+            );
+        }
+    }
+
+    /// The schedules the given fired prompts came from, keyed by the prompt's
+    /// own id: the read half of the pairing the delivery frame carries.
+    pub fn cron_names(
+        &self,
+        slot: &forge_primitives::SessionSlot,
+        uuids: &[&str],
+    ) -> std::collections::BTreeMap<String, forge_primitives::cron::CronName> {
+        let guard = self.db.lock();
+        let Some(db) = guard.as_ref() else {
+            return std::collections::BTreeMap::new();
+        };
+        crate::store::cron_names::for_uuids(db, uuids).unwrap_or_else(|error| {
+            tracing::warn!(
+                event_name = "cron_names_read_failed",
+                org = slot.org(),
+                project = slot.project(),
+                label = slot.label(),
+                prompts = uuids.len(),
+                %error,
+                "the fired prompts' schedules could not be read; their rows fall back to the prompt"
+            );
+            std::collections::BTreeMap::new()
+        })
+    }
+
     /// Advance a fired cron and persist: a recurring cron records
     /// `last_fire` and moves `next_fire` to the next future slot (removed
     /// if it somehow has none); a run-once is removed. A direct state
@@ -1203,6 +1262,11 @@ mod tests {
     fn deliver_cron_prompt_to_running_lead_emits_cron_prompt_appended() {
         let dir = tempdir().expect("tempdir");
         let (ws, mut rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        // The fire's schedule pairing is a store write, so this test needs
+        // the durable layer the shipped workspace always has.
+        ws.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
         ws.seed_test_project("cronlead", "/tmp/cron-lead");
         // Seed the catalog + pool so the project has a running (open) lead:
         // list_projects derives `is_open` from pool membership.
@@ -1266,6 +1330,23 @@ mod tests {
         assert!(!wired_id.is_empty(), "and the id is real, not a blank");
         assert_eq!(cron_id, "c1", "the echo names the entry that fired");
         assert_eq!(description.as_deref(), Some("Morning summary"), "and its description");
+        // **And the pairing is kept for the read half.** The frame names the
+        // schedule once; a row replayed from a transcript afterwards has no
+        // frame to read it from, so the fire is remembered under the prompt's
+        // own id - the id the transcript row carries (#1815).
+        let stored = crate::store::cron_names::for_uuids(
+            ws.db.lock().as_ref().expect("db installed"),
+            &[wired_id.as_str()],
+        )
+        .expect("read the stored pairing");
+        assert_eq!(
+            stored.get(wired_id.as_str()),
+            Some(&forge_primitives::cron::CronName {
+                cron_id: "c1".to_owned(),
+                description: Some("Morning summary".to_owned()),
+            }),
+            "the fired prompt's schedule is readable after the frame is gone"
+        );
     }
 
     #[test]

@@ -3043,10 +3043,10 @@ export function fold(
               // of its own kind, the way a family's calls do - one shape for
               // every row, so a new external kind is a row and a glyph.
               //
-              // A cron fire is titled by the SCHEDULE when the frame that
-              // delivered it named one: the prose carries the prompt alone, so
-              // the name is the one thing only the frame's own pairing can
-              // say.
+              // A cron fire is titled by the SCHEDULE: the prose carries the
+              // prompt alone, and the pairing arrives either on the delivery
+              // frame while it lands or on the conversation read after a
+              // reload, which seeds the same store.
               const named = envelope.inbound === 'cron' ? cronNames.nameFor(frame.uuid) : null;
               pending.push({
                 tag: 'inbound',
