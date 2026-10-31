@@ -2,6 +2,8 @@
 // import lands on ws's browser shim, which throws, which is why the shell's
 // test requires it through node instead. Do not set this file's environment
 // to jsdom, and do not write the directive that would: that breaks this line.
+import { gzipSync } from 'node:zlib';
+
 import { type AddressInfo, type RawData, WebSocketServer } from 'ws';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -12,8 +14,10 @@ import { ownSettingsFrame, settingsFrame } from './settings/frame';
 import {
   connect,
   DIAL_BOUND_MS,
+  inflate,
   LIVENESS_DEAD_MS,
   LIVENESS_EVERY_MS,
+  MAX_INFLATED_BYTES,
   RETRY_MS,
   type BrowserFrame,
   type Connection,
@@ -53,7 +57,10 @@ async function stubServer() {
   const { port } = server.address() as AddressInfo;
 
   const sockets = new Set<import('ws').WebSocket>();
-  server.on('connection', (socket) => {
+  /** The URL each dial carried, so a test can read what the page declared. */
+  const dials: string[] = [];
+  server.on('connection', (socket, request) => {
+    dials.push(request.url ?? '');
     sockets.add(socket);
     socket.on('close', () => sockets.delete(socket));
   });
@@ -84,6 +91,7 @@ async function stubServer() {
     received,
     binary,
     arrivals,
+    dials,
     /** Say something to every client attached. */
     send(message: ServerMessage) {
       for (const socket of sockets) socket.send(JSON.stringify(message));
@@ -286,6 +294,157 @@ describe('the connection', () => {
     expect(store?.snapshot()).toEqual({ projects: [] });
     expect(store?.updates()).toEqual(['catalog_loaded', 'cli_version_changed']);
     expect(store?.state()).toEqual({ kind: 'ready' });
+  });
+
+  /**
+   * **A compressed frame is inflated in the inbound queue, and the frames
+   * behind it keep the socket's order** (#2560). A frame over the server's
+   * threshold crosses as binary kind 3 carrying a gzipped JSON body; the page
+   * declares the capability on its dial, before it can receive one.
+   */
+  it('inflates a compressed frame before the frames behind it', async () => {
+    const { server, conn } = await connected();
+    expect(server.dials, 'the dial declared the capability').toEqual(['/socket?deflate=1']);
+
+    const seen: { kind: string; projects: string[] | undefined }[] = [];
+    conn.onMessage((message) => {
+      if (message.kind === 'snapshot') {
+        seen.push({
+          kind: 'snapshot',
+          projects: (message.data as { projects?: string[] }).projects,
+        });
+      } else if (message.kind === 'update') {
+        seen.push({ kind: 'update', projects: undefined });
+      }
+    });
+
+    server.send({ kind: 'snapshot', subject: HOME, data: { projects: ['one'] } });
+    const body = JSON.stringify({
+      kind: 'snapshot',
+      subject: HOME,
+      data: { projects: ['two'] },
+    });
+    server.sendBinary(Buffer.concat([Buffer.from([3]), gzipSync(Buffer.from(body))]));
+    server.send({ kind: 'update', update: 'catalog_loaded' });
+
+    await until(() => seen.length === 3, 'all three frames');
+    expect(seen, 'the compressed frame was delivered where the socket put it').toEqual([
+      { kind: 'snapshot', projects: ['one'] },
+      { kind: 'snapshot', projects: ['two'] },
+      { kind: 'update' },
+    ]);
+  });
+
+  /**
+   * **The inflate is bounded exactly as the shell's is** (#2560): a gzip body
+   * can inflate past the socket's frame bound, and a page that reads the
+   * decoder without a stop is the unbounded read the shell refuses.
+   */
+  it('bounds what a compressed frame may inflate to', async () => {
+    expect(MAX_INFLATED_BYTES, 'the bound the shell documents').toBe(256 << 20);
+    const body = gzipSync(Buffer.from('0123456789'));
+    await expect(inflate(new Uint8Array(body), 10)).resolves.toBe('0123456789');
+    await expect(inflate(new Uint8Array(body), 9)).rejects.toThrow(
+      'past the 9 byte bound this socket documents',
+    );
+  });
+
+  /**
+   * **A browser without `DecompressionStream` must not declare the
+   * capability** (#2560): it could not honour it, every large frame would
+   * fail to inflate, and the seat would load forever. The dial carries no
+   * query at all.
+   */
+  it('declares compression only where the platform can inflate it', async () => {
+    const held = globalThis.DecompressionStream;
+    try {
+      Object.defineProperty(globalThis, 'DecompressionStream', {
+        value: undefined,
+        configurable: true,
+      });
+      const { server } = await connected();
+      expect(server.dials, 'a browser that cannot inflate declared it anyway').toEqual(['/socket']);
+    } finally {
+      Object.defineProperty(globalThis, 'DecompressionStream', {
+        value: held,
+        configurable: true,
+        writable: true,
+      });
+    }
+  });
+
+  /**
+   * **A compressed frame that will not inflate drops the socket** (#2560):
+   * whatever asked for it would wait on an answer that died in the decoder,
+   * so the connection is re-dialled and every ask re-made. A seat left
+   * loading forever is the failure this prevents.
+   */
+  it('drops the socket when a compressed frame will not inflate', async () => {
+    const { server } = await connected();
+    expect(server.dials, 'precondition: one dial so far').toHaveLength(1);
+    server.sendBinary(Buffer.from([3, 0, 1, 2, 3, 4]));
+    await until(() => server.dials.length === 2, 'the reconnect dial');
+    expect(server.dials, 'a broken compressed frame left the socket standing').toHaveLength(2);
+  });
+
+  /**
+   * **A compressed frame and the frames queued behind it belong to the
+   * connection that carried them** (#2560): the inflate is the one async
+   * step on the inbound path, so a reconnect can land while it and a text
+   * frame behind it still wait. Both are the old socket's to lose.
+   */
+  it('drops the frames queued behind a compressed frame whose socket was replaced', async () => {
+    const held = globalThis.DecompressionStream;
+    let began: () => void = () => {};
+    const started = new Promise<void>((resolve) => {
+      began = resolve;
+    });
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const encoder = new TextEncoder();
+    class SlowDecompressionStream {
+      constructor() {
+        return new TransformStream<Uint8Array, Uint8Array>({
+          async transform(_chunk, controller) {
+            began();
+            await gate;
+            controller.enqueue(
+              encoder.encode(JSON.stringify({ kind: 'update', update: 'catalog_loaded' })),
+            );
+          },
+        });
+      }
+    }
+    try {
+      Object.defineProperty(globalThis, 'DecompressionStream', {
+        value: SlowDecompressionStream,
+        configurable: true,
+      });
+      const { server, conn } = await connected();
+      let updates = 0;
+      conn.onMessage((message) => {
+        if (message.kind === 'update') updates += 1;
+      });
+      server.sendBinary(Buffer.from([3, 9, 9, 9]));
+      await started;
+      // A text frame that arrived while the inflate was pending: the queue
+      // holds it behind the same socket, not the next connection's.
+      server.send({ kind: 'update', update: 'catalog_loaded' });
+      await quiet(20);
+      server.drop();
+      await until(() => server.dials.length === 2, 'the reconnect dial');
+      release();
+      await quiet(50);
+      expect(updates, 'the replaced socket delivered a frame nobody asked for').toBe(0);
+    } finally {
+      Object.defineProperty(globalThis, 'DecompressionStream', {
+        value: held,
+        configurable: true,
+        writable: true,
+      });
+    }
   });
 
   /**
