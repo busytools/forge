@@ -205,6 +205,15 @@ export async function takeControl(take: boolean): Promise<void> {
 /** The request that is current; a result from an older one is dropped. */
 let generation = 0;
 
+/**
+ * A failure that named a surface while this page was still opening, held
+ * until the pair proves it was the surface this open lands on (#2575). **A
+ * failure in that window is otherwise dropped** - the page is `opening` with
+ * no pair of its own - and the store then went live over a page the shell
+ * had already lowered.
+ */
+let openingFailure: { id: number; tab: number; why: string } | null = null;
+
 /** The newest mount token. **A mount claims one**, so only a newer mount
  *  makes an older instance's teardown stale; a retry or a tab pick is not a
  *  new mount and must not. */
@@ -237,6 +246,7 @@ export async function openSurface(
   // the strip's row, not to a full-screen error.
   if (!canAttach()) return 'this page is not the client';
   const mine = ++generation;
+  openingFailure = null;
   const here = drawsSurface();
   if (here) {
     surface.phase = 'opening';
@@ -273,18 +283,25 @@ export async function openSurface(
   if (typeof answer === 'string') {
     surface.phase = 'failed';
     surface.reason = answer;
+    openingFailure = null;
     return answer;
   }
   // **The shell's answer is the profile and tab it attached**, which a
   // hand-off with no tab resolves to the asking seat's current one.
   surface.profile = answer.profile;
   surface.tab = answer.tab;
-  surface.phase = 'live';
-  surface.reason = null;
-  pushHistory();
-  // **The picker is an aid, not the open**: a slow read must not delay the
-  // caller that is waiting to hear the raise landed.
-  void readSurfaceTabs(seat);
+  const lost = failureOnLanding();
+  if (lost !== null) return lost;
+  // **An already-failed phase stays failed**: the view push can settle a
+  // remembered failure while this answer is still in flight.
+  if (surface.phase === 'opening') {
+    surface.phase = 'live';
+    surface.reason = null;
+    pushHistory();
+    // **The picker is an aid, not the open**: a slow read must not delay the
+    // caller that is waiting to hear the raise landed.
+    void readSurfaceTabs(seat);
+  }
   return null;
 }
 
@@ -305,6 +322,7 @@ export async function selectTab(tab: number | null): Promise<string | null> {
   // an answer that lands after a close, a newer open or a later pick is not
   // this call's to apply.
   const mine = ++generation;
+  openingFailure = null;
   const answer = await showBrowser(surface.profile, surface.seat, tab);
   if (typeof answer === 'string') {
     // A superseded refusal is not the current surface's to fail.
@@ -366,6 +384,7 @@ export async function closeSurface(
   seat: SessionSlot | null = null,
 ): Promise<string | null> {
   const mine = ++generation;
+  openingFailure = null;
   const answer = await hideBrowser(profile, seat);
   // **A lower superseded by a newer open is not this surface's to close.**
   if (mine !== generation) return null;
@@ -529,33 +548,8 @@ async function installOnce(): Promise<void> {
   }
 }
 
-/** **A failure after the surface closed is nobody's.** It must not re-mount
- *  the store as failed. */
-function failed(payload: unknown): void {
-  if (surface.phase === 'closed') return;
-  let why = 'the browser stopped answering';
-  if (typeof payload === 'string' && payload !== '') {
-    why = payload;
-  } else if (typeof payload === 'object' && payload !== null) {
-    const fields = payload as Record<string, unknown>;
-    const id = typeof fields['id'] === 'number' ? fields['id'] : null;
-    const tab = typeof fields['tab'] === 'number' ? fields['tab'] : null;
-    if (id !== null && tab !== null) {
-      if (surface.id !== null && surface.tab !== null) {
-        // **A failure that names another surface is not this one's**: a late
-        // frame for a superseded attach must not fail the tab now up.
-        if (id !== surface.id || tab !== surface.tab) return;
-      } else if (surface.phase !== 'live') {
-        // **An unknown pair is unfilterable only on a live surface.** While
-        // opening, the pair is still the previous attach's, and this frame may
-        // be that one's to fail.
-        return;
-      }
-    }
-    if (typeof fields['reason'] === 'string' && fields['reason'] !== '') {
-      why = fields['reason'];
-    }
-  }
+/** **A failed page says why, and has no page left to move.** */
+function markFailed(why: string): void {
   surface.phase = 'failed';
   surface.reason = why;
   // There is no page left to move: the arrows go back to disabled.
@@ -563,6 +557,77 @@ function failed(payload: unknown): void {
   // The shell's surface is gone with the host; the page's keeps the sentence
   // up until the person answers the hand-off.
   void hideBrowser(surface.profile);
+}
+
+/**
+ * Settle a failure held during the open against the pair its answer landed
+ * on. **An answer that beats the view push cannot prove the id**, so the
+ * failure stays held for the push rather than failing a same-tab page from
+ * another profile.
+ */
+function failureOnLanding(): string | null {
+  const held = openingFailure;
+  if (held === null || held.tab !== surface.tab) {
+    openingFailure = null;
+    return null;
+  }
+  if (surface.id === null) return null;
+  openingFailure = null;
+  if (held.id !== surface.id) return null;
+  markFailed(held.why);
+  return held.why;
+}
+
+/** Apply a failure held during the open once the push names the surface it belongs to. */
+function settleOpeningFailure(): void {
+  const held = openingFailure;
+  if (held === null || surface.id === null || surface.tab === null) return;
+  openingFailure = null;
+  if (held.id === surface.id && held.tab === surface.tab) markFailed(held.why);
+}
+
+/** **A failure after the surface closed is nobody's.** It must not re-mount
+ *  the store as failed. */
+function failed(payload: unknown): void {
+  if (surface.phase === 'closed') return;
+  let why = 'the browser stopped answering';
+  let named: { id: number; tab: number } | null = null;
+  if (typeof payload === 'string' && payload !== '') {
+    why = payload;
+  } else if (typeof payload === 'object' && payload !== null) {
+    const fields = payload as Record<string, unknown>;
+    const id = typeof fields['id'] === 'number' ? fields['id'] : null;
+    const tab = typeof fields['tab'] === 'number' ? fields['tab'] : null;
+    if (id !== null && tab !== null) named = { id, tab };
+    if (typeof fields['reason'] === 'string' && fields['reason'] !== '') {
+      why = fields['reason'];
+    }
+  }
+  if (named !== null) {
+    // **An open in flight cannot say whose pair this is**: the answer and the
+    // view push are what name the surface this page lands on, so the failure
+    // is held for them rather than failing a page that may already be gone.
+    if (surface.phase === 'opening') {
+      openingFailure = { ...named, why };
+      return;
+    }
+    if (
+      surface.id !== null &&
+      surface.tab !== null &&
+      (named.id !== surface.id || named.tab !== surface.tab)
+    ) {
+      // **A failure that names another surface is not this one's**: a late
+      // frame for a superseded attach must not fail the tab now up.
+      return;
+    }
+  } else if (surface.phase === 'opening') {
+    // **A nameless failure during an open belongs to the attach that sent
+    // it**, which this open may have superseded: the answer settles whether
+    // this page came up, and applying it here would lower the shell's page
+    // under an open that then lands live.
+    return;
+  }
+  markFailed(why);
 }
 
 /** **The arrows are the server's reading of the page's history**, pushed on
@@ -589,6 +654,7 @@ function viewed(state: Record<string, unknown>): void {
   // **The server resolves the name**, so a null request reads as the seat's
   // own profile.
   if (typeof state['profile'] === 'string') surface.attachedProfile = state['profile'];
+  settleOpeningFailure();
 }
 
 /**
