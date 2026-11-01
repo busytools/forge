@@ -380,7 +380,7 @@ mod tests {
         let out = tool.call(ToolInput { value: json!({ "path": "docs/readme.md" }) }).await;
         assert!(out.is_error, "an abandoned hand-off is not a success: {:?}", out.blocks);
         let text = crate::mcp::test_support::block_text(&out.blocks[0]);
-        assert!(text.contains("ended without an answer"), "{text}");
+        assert_eq!(text, "The hand-off ended without an answer.", "{text}");
     }
 
     /// `reviewable` is off unless asked for: everything the agent did not
