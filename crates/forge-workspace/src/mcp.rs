@@ -857,6 +857,7 @@ mod tests {
                     slack: MockSlackFacade::new().into_arc(),
                     tasks: MockTasksFacade::new().into_arc(),
                     systemone: None,
+                    voice: silent_voice(),
                 },
                 &families,
                 fake_key("test"),
