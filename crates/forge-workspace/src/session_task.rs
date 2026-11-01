@@ -1177,6 +1177,7 @@ impl SessionTask {
                     if matches!(&msg, forge_primitives::Message::CompactBoundary { .. }) {
                         self.compaction_count = self.compaction_count.saturating_add(1);
                     }
+                    let msg = self.attribute_denial(msg);
                     // `None` either way: a frame off the wire is the CLI's
                     // own, and carries neither a prompt origin nor a sender.
                     self.emit(SessionUpdate::ChatAppended {
@@ -1783,6 +1784,46 @@ impl SessionTask {
                 );
             }
         });
+    }
+
+    /// The same frame, naming the dispatch a sub-agent's refusal belongs
+    /// under.
+    ///
+    /// **The CLI's refusal is session-scoped.** It names the refused call and,
+    /// for a sub-agent's call, the agent that made it - never the dispatch it
+    /// ran under - so a chat drew a sub-agent's refusal as a row the session
+    /// itself had made (#2767). The agent id is the `task_id` the roster
+    /// opened the dispatch with, which is the link back to the `Task` call its
+    /// row belongs under.
+    ///
+    /// **The read path needs no such repair.** The transcript keeps no
+    /// `permission_denied` row at all; the sub-agent's own sidecar keeps the
+    /// refused call as its errored result, and the resume read already stamps
+    /// every sidecar row with the dispatch it ran under.
+    fn attribute_denial(&self, msg: forge_primitives::Message) -> forge_primitives::Message {
+        let forge_primitives::Message::PermissionDenied { extras, .. } = &msg else {
+            return msg;
+        };
+        if forge_primitives::names_a_dispatch(
+            extras.get("parent_tool_use_id").and_then(serde_json::Value::as_str),
+        ) {
+            return msg;
+        }
+        let Some(agent) = extras.get("agent_id").and_then(serde_json::Value::as_str) else {
+            return msg;
+        };
+        let dispatch = {
+            let domain = self.domain.lock();
+            domain.card_tracker.dispatch_of(agent).map(str::to_owned)
+        };
+        let Some(dispatch) = dispatch else {
+            return msg;
+        };
+        let mut msg = msg;
+        if let forge_primitives::Message::PermissionDenied { extras, .. } = &mut msg {
+            extras.insert("parent_tool_use_id".to_owned(), serde_json::Value::String(dispatch));
+        }
+        msg
     }
 
     /// Hold the assistant text of a running judgment turn.
@@ -8583,6 +8624,85 @@ provider = "anthropic"
         assert_eq!(announced.len(), 1, "the ending announces the list once");
         assert!(!announced[0][0].running, "and the card is settled");
         assert_eq!(announced[0][0].ended_at_ms, Some(1_700_000_000_123));
+    }
+
+    /// **A sub-agent's refusal names the dispatch it belongs under.**
+    ///
+    /// The CLI's `permission_denied` frame is session-scoped: it names the
+    /// refused call and the sub-agent that made it (`agent_id`, which is the
+    /// `task_id` the roster opened the dispatch with) and carries no
+    /// `parent_tool_use_id` at all - so the chat drew a sub-agent's refusal as
+    /// a row the session itself had made. The transcript keeps no such row, so
+    /// a resume draws the refusal from the sub-agent's own sidecar instead,
+    /// where it survives as the call's errored result.
+    #[test]
+    fn a_subagents_refusal_names_the_dispatch_it_belongs_under() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (workspace, _rx) =
+            crate::Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
+        let slot = SessionSlot::lead("TestOrg", "forge");
+        let (mut task, _agent_rx) = command_task_for(&workspace, &slot);
+        let mut updates = task.update_tx.subscribe(SubscriberRole::Answering);
+
+        task.translate_event(sdk_message(forge_primitives::Message::TaskStarted {
+            task_id: "agent-1".to_owned(),
+            description: "review the fold".to_owned(),
+            uuid: "u-start".to_owned(),
+            session_id: "s".to_owned(),
+            tool_use_id: Some("call-dispatch".to_owned()),
+            task_type: Some("local_agent".to_owned()),
+            extras: serde_json::Map::new(),
+        }));
+        task.translate_event(sdk_message(refusal(Some("agent-1"))));
+
+        let drawn = drawn_refusals(&mut updates);
+        assert_eq!(drawn.len(), 1, "the refusal is drawn: {drawn:?}");
+        assert_eq!(
+            drawn[0].get("parent_tool_use_id").and_then(serde_json::Value::as_str),
+            Some("call-dispatch"),
+            "under the Task call whose instance it refused",
+        );
+
+        task.translate_event(sdk_message(refusal(None)));
+        let drawn = drawn_refusals(&mut updates);
+        assert_eq!(drawn.len(), 1, "a session's own refusal is drawn too");
+        assert_eq!(
+            drawn[0].get("parent_tool_use_id"),
+            None,
+            "and it stays the session's own row, named by no dispatch",
+        );
+    }
+
+    /// A `permission_denied` frame as the CLI sends it: the refused call, the
+    /// agent that made it when a sub-agent did, and never a dispatch.
+    fn refusal(agent: Option<&str>) -> forge_primitives::Message {
+        let mut frame = serde_json::json!({
+            "type": "system",
+            "subtype": "permission_denied",
+            "tool_name": "Bash",
+            "tool_use_id": "call-refused",
+            "decision_reason_type": "subcommandResults",
+            "message": "Permission to use Bash with command rm -rf /tmp/x has been denied.",
+            "uuid": "u-denied",
+            "session_id": "s",
+        });
+        if let Some(agent) = agent {
+            frame["agent_id"] = serde_json::Value::String(agent.to_owned());
+        }
+        serde_json::from_value(frame).expect("a permission_denied frame")
+    }
+
+    /// The refusals the task drew, as the wire spells them.
+    fn drawn_refusals(updates: &mut mpsc::UnboundedReceiver<SeatUpdate>) -> Vec<serde_json::Value> {
+        drain_updates(updates)
+            .into_iter()
+            .filter_map(|update| match update {
+                SessionUpdate::ChatAppended { msg, .. } => Some(msg),
+                _ => None,
+            })
+            .filter(|msg| matches!(msg, forge_primitives::Message::PermissionDenied { .. }))
+            .map(|msg| serde_json::to_value(&msg).expect("encode a refusal"))
+            .collect()
     }
 
     /// **A connect seeds the list from its history and announces nothing**,

@@ -172,6 +172,11 @@ read as one system.
   the row's face is the facts. The frame is seen the day it arrives and can
   be given a real face later, rather than being dropped. A refusal also
   settles the call it names, which no result frame will ever settle. **A
+  refusal a sub-agent made draws inside that dispatch's expansion**, on the
+  call row it names, and never at the session's level: the frame is
+  session-scoped and names the agent, so the server stamps the dispatch it
+  belongs under. A resumed page draws the same refusal from the sub-agent's
+  own sidecar, so the live and read pages agree. **A
   question draws nothing here while it waits**: the dock is its row. It draws
   as a card instead - the words the reader was asked, marked `unanswered`,
   with nothing picked or typed under them - the moment its own result lands

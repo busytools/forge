@@ -475,7 +475,9 @@ pub enum Message {
         /// Machine-readable reason category (e.g. `"other"`).
         decision_reason_type: String,
         /// Reason token the CLI recorded (e.g. `"Contains simple_expansion"`).
-        decision_reason: String,
+        /// Absent on a `subcommandResults` denial, which names the decision
+        /// class and carries no token.
+        decision_reason: Option<String>,
         /// Text of the refusal shown to the session.
         message: String,
         /// Unique identifier for this event.
@@ -1555,7 +1557,8 @@ enum TypedSystemRepr {
         tool_name: String,
         tool_use_id: String,
         decision_reason_type: String,
-        decision_reason: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        decision_reason: Option<String>,
         message: String,
         uuid: String,
         session_id: String,
@@ -3550,7 +3553,52 @@ mod tests_message_extras {
         };
         assert_eq!(tool_name, "Bash");
         assert_eq!(tool_use_id, "toolu_01FCzjj9ZBDd3HA6HF1LaBGE");
-        assert_eq!(decision_reason, "Contains simple_expansion");
+        assert_eq!(decision_reason.as_deref(), Some("Contains simple_expansion"));
+    }
+
+    #[test]
+    fn a_denial_without_a_reason_token_still_decodes_typed() {
+        // A `subcommandResults` refusal names the decision class and no
+        // token, and carries the agent a sub-agent's refusal belongs to -
+        // measured on 2.1.280. Requiring the token dropped the whole frame to
+        // the generic system bucket, where nothing could read its fields.
+        let raw = json!({
+            "type": "system",
+            "subtype": "permission_denied",
+            "tool_name": "Bash",
+            "tool_use_id": "call_ea708f6c475448e193a787b0",
+            "agent_id": "a942e0767f027631a",
+            "decision_reason_type": "subcommandResults",
+            "message": "Permission to use Bash with command rm -rf /tmp/x has been denied.",
+            "uuid": "5b03282c-f2fe-4795-93a8-b56f61822725",
+            "session_id": "f1492219-e1a5-4c39-8cec-ff692498cbc8",
+        });
+        let msg: Message = serde_json::from_value(raw.clone()).expect("decode");
+        let Message::PermissionDenied { decision_reason, extras, .. } = msg else {
+            panic!("expected PermissionDenied, got {msg:?}");
+        };
+        assert_eq!(decision_reason, None, "the token is absent, and absent is not a failure");
+        assert_eq!(
+            extras.get("agent_id").and_then(serde_json::Value::as_str),
+            Some("a942e0767f027631a"),
+            "and the agent stays reachable through the unmodelled fields",
+        );
+        assert_eq!(
+            serde_json::to_value(serde_json::from_value::<Message>(raw).expect("decode"))
+                .expect("encode"),
+            json!({
+                "type": "system",
+                "subtype": "permission_denied",
+                "tool_name": "Bash",
+                "tool_use_id": "call_ea708f6c475448e193a787b0",
+                "agent_id": "a942e0767f027631a",
+                "decision_reason_type": "subcommandResults",
+                "message": "Permission to use Bash with command rm -rf /tmp/x has been denied.",
+                "uuid": "5b03282c-f2fe-4795-93a8-b56f61822725",
+                "session_id": "f1492219-e1a5-4c39-8cec-ff692498cbc8",
+            }),
+            "and it round-trips byte for byte: no key the CLI omitted is invented",
+        );
     }
 
     #[test]

@@ -4166,6 +4166,31 @@ describe('the frames the fold had no row for', () => {
     expect(notice?.raw, 'and the frame itself stays reachable').toContain('toolu_denied');
   });
 
+  it("keeps a sub-agent's refusal out of the session's rows", () => {
+    // The server stamps the dispatch on the refusal's frame, which the wire
+    // scopes to the session. A row here would draw the same refusal a second
+    // time at the session's level, where it reads as a call the session
+    // itself made (#2767). The dispatch's own expansion draws the call.
+    const refusal = {
+      type: 'system',
+      subtype: 'permission_denied',
+      tool_name: 'Bash',
+      tool_use_id: 'toolu_denied',
+      decision_reason_type: 'subcommandResults',
+      message: 'Permission to use Bash has been denied.',
+      uuid: 'pd2',
+    };
+
+    expect(
+      fold([{ ...refusal, parent_tool_use_id: 'toolu_dispatch' }]),
+      'the dispatch draws it, not the session',
+    ).toHaveLength(0);
+    const control = fold([refusal]);
+    const notice = noticeOf(control[0]);
+    expect(notice?.severity, "control: the session's own refusal still draws").toBe('error');
+    expect(notice?.text, 'with the refusal the arm words it as').toContain('refused');
+  });
+
   it('draws an api error with its status and retry, and an informational line at its level', () => {
     const units = fold([
       {

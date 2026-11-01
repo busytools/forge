@@ -641,7 +641,7 @@
               {/if}
             {:else if line.kind === 'thought'}
               <Thought text={line.text} />
-            {:else if line.kind === 'hook'}
+            {:else if line.kind === 'hook' || line.kind === 'notice'}
               <div class="sg-pr">{line.text}</div>
             {:else}
               <div class="sg-pr"><Prose text={line.text} /></div>

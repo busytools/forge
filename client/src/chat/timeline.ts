@@ -24,7 +24,9 @@ type SubLine =
   | { kind: 'call'; leaf: ToolLeaf }
   | { kind: 'prose'; text: string }
   | { kind: 'thought'; text: string }
-  | { kind: 'hook'; text: string };
+  | { kind: 'hook'; text: string }
+  /** A notice with no call on the page to attach it to. */
+  | { kind: 'notice'; text: string };
 
 /** Everything the row's expansion reads off a dispatch's frames. */
 interface DispatchFrames {
@@ -55,6 +57,10 @@ interface Frame {
   subtype?: unknown;
   parent_tool_use_id?: unknown;
   tool_use_id?: unknown;
+  /** `system/permission_denied`'s refused tool. Its words ride `message`,
+   * which every other shape nests an envelope in, so they are read off the
+   * raw record below. */
+  tool_name?: unknown;
   task_id?: unknown;
   spawn_depth?: unknown;
   task_type?: unknown;
@@ -172,11 +178,20 @@ export function dispatchTimeline(
  * conversation's and a dispatched agent's frames are not in them.
  */
 export function dispatchFrames(messages: Iterable<unknown>, dispatchId: string): DispatchFrames {
-  const lines: (CallDraft | { kind: 'prose' | 'thought' | 'hook'; text: string })[] = [];
+  const lines: (CallDraft | { kind: 'prose' | 'thought' | 'hook' | 'notice'; text: string })[] = [];
   const at = new Map<string, CallDraft>();
   const beats = new Set<string>();
   /** The task id the CLI assigned a child call, so its ending can be placed. */
   const owners = new Map<string, string>();
+  /**
+   * The calls the CLI refused on permission grounds.
+   *
+   * **A refusal is not a result**, so no frame settles the call it names -
+   * the mark has to be taken here. It settles the call rather than drawing a
+   * line of its own, because the call's own row carries the refusal's words
+   * and a second row would repeat them.
+   */
+  const denied = new Set<string>();
   /** What the roster said about each child call, by call id. */
   const tasks = new Map<string, TaskFact>();
   let brief: string | null = null;
@@ -207,6 +222,24 @@ export function dispatchFrames(messages: Iterable<unknown>, dispatchId: string):
           text:
             actions === null ? 'hooks ran' : `hooks · ${actions} action${actions === 1 ? '' : 's'}`,
         });
+      }
+      // **A refusal draws through the call it names.** The call's own row
+      // carries the refusal's words, so a line here would say them twice; a
+      // refusal whose call is not on the page draws as itself, because a
+      // frame that draws nothing is indistinguishable from one that never
+      // arrived (rule 25).
+      if (frame.subtype === 'permission_denied') {
+        const call = str(frame.tool_use_id);
+        if (call === null || !at.has(call)) {
+          const tool = str(frame.tool_name) ?? 'a tool';
+          const reason = str(obj(frame)['message']);
+          lines.push({
+            kind: 'notice',
+            text: `${tool} refused${reason === null ? '' : `: ${reason}`}`,
+          });
+        } else {
+          denied.add(call);
+        }
       }
       continue;
     }
@@ -345,6 +378,9 @@ export function dispatchFrames(messages: Iterable<unknown>, dispatchId: string):
               line.result,
               line.record,
               tasks.get(line.id),
+              // A refused call is settled by the refusal, which no result
+              // frame will ever answer.
+              denied.has(line.id),
             ),
           }
         : line,

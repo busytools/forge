@@ -41,6 +41,18 @@ const answer = (id: string, text: string, isError = false) => ({
   },
 });
 
+/** The CLI's refusal of one call, under the dispatch the server stamped it
+ * with: the frame itself names only the call and the agent that made it. */
+const refusal = (id: string, text = 'Permission to use Bash has been denied.') => ({
+  type: 'system',
+  subtype: 'permission_denied',
+  tool_name: 'Bash',
+  tool_use_id: id,
+  decision_reason_type: 'subcommandResults',
+  message: text,
+  parent_tool_use_id: 'tu-task',
+});
+
 /** What the instance wrote between calls. */
 const said = (text: string) => ({
   type: 'assistant',
@@ -72,6 +84,55 @@ describe('a dispatch read into its timeline', () => {
       'the matches it came back with, on the leaf the session own row draws',
     ).toContain('3 matches');
     expect(first?.kind === 'call' && first.leaf.status).toBe('completed');
+  });
+
+  it('settles the call a refusal names, and draws it once', () => {
+    // The refusal is session-scoped on the wire and the server stamps it with
+    // the dispatch; a timeline that drew it as its own line would show the
+    // same refusal twice, beside the call row that already carries it.
+    const frames = dispatchFrames(
+      [
+        dispatch(),
+        call('c1', 'Bash', { command: 'rm -rf /tmp/x' }),
+        refusal('c1'),
+        answer('c1', 'Permission to use Bash has been denied.', true),
+      ],
+      'tu-task',
+    );
+
+    expect(frames.lines, 'one row, not a call and a refusal').toHaveLength(1);
+    const first = frames.lines[0];
+    expect(first?.kind === 'call' && first.leaf.status).toBe('failed');
+    expect(
+      first?.kind === 'call' ? JSON.stringify(first.leaf.body) : '',
+      'the call row carries the refusal words',
+    ).toContain('has been denied');
+  });
+
+  it('settles a refused call whose result never arrives', () => {
+    // A refusal is not a result, so nothing else will settle the call.
+    const frames = dispatchFrames(
+      [dispatch(), call('c1', 'Bash', { command: 'rm -rf /tmp/x' }), refusal('c1')],
+      'tu-task',
+    );
+
+    const first = frames.lines[0];
+    expect(first?.kind === 'call' && first.leaf.status).toBe('failed');
+  });
+
+  it('draws a refusal that names no call on the page as itself', () => {
+    // Rule 25: a frame whose call has been paged out still draws, rather
+    // than reading as a frame that never arrived.
+    const frames = dispatchFrames(
+      [dispatch(), refusal('c-gone', 'Permission to use Bash has been denied.')],
+      'tu-task',
+    );
+
+    const first = frames.lines[0];
+    expect(first?.kind).toBe('notice');
+    expect(first?.kind === 'notice' && first.text).toBe(
+      'Bash refused: Permission to use Bash has been denied.',
+    );
   });
 
   it('marks an errored answer as the failure it is', () => {

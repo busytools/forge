@@ -746,6 +746,69 @@ mod tests {
         );
     }
 
+    /// **A sub-agent's refusal is drawn from its sidecar on a resume.** The
+    /// transcript keeps no `permission_denied` row for a sub-agent's call -
+    /// the frame is live-only - and keeps the refused call itself only in the
+    /// instance's own sidecar, as its errored result. The read folds that
+    /// sidecar under its dispatch, so a resumed page draws the refusal inside
+    /// the dispatch's expansion exactly where the live page does (#2767).
+    #[test]
+    fn conversation_carries_a_subagents_denied_result() {
+        let (workspace, _dir) = crate::surface::testing::workspace();
+        let lead = SessionSlot::lead("TestOrg", "forge");
+        workspace.seed_test_running_session_id(&lead, SESSION_A);
+        let projects = workspace.config_dir().join("projects").join(
+            forge_workspace::userdata::catalog::scan::project_key_for_directory(Some("/tmp")),
+        );
+        std::fs::create_dir_all(&projects).expect("projects dir");
+        std::fs::write(
+            projects.join(format!("{SESSION_A}.jsonl")),
+            "{\"type\":\"assistant\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-sonnet-5\",\"content\":[{\"type\":\"tool_use\",\"id\":\"toolu_a\",\"name\":\"Agent\",\"input\":{\"prompt\":\"x\"}}]},\"uuid\":\"a1\"}\n\
+             {\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_a\",\"content\":\"done\"}]},\"uuid\":\"u1\"}\n",
+        )
+        .expect("write");
+        let sidecars = projects.join(SESSION_A).join("subagents");
+        std::fs::create_dir_all(&sidecars).expect("subagents dir");
+        std::fs::write(
+            sidecars.join("agent-abc.meta.json"),
+            "{\"agentType\":\"general-purpose\",\"toolUseId\":\"toolu_a\"}",
+        )
+        .expect("meta");
+        std::fs::write(
+            sidecars.join("agent-abc.jsonl"),
+            "{\"type\":\"assistant\",\"agentId\":\"agent-abc\",\"message\":{\"id\":\"msg_2\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-sonnet-5\",\"content\":[{\"type\":\"tool_use\",\"id\":\"call_refused\",\"name\":\"Bash\",\"input\":{\"command\":\"rm -rf /tmp/x\"}}]},\"uuid\":\"c1\"}\n\
+             {\"type\":\"user\",\"agentId\":\"agent-abc\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"content\":\"Permission to use Bash with command rm -rf /tmp/x has been denied.\",\"is_error\":true,\"tool_use_id\":\"call_refused\"}]},\"uuid\":\"c2\"}\n",
+        )
+        .expect("sidecar");
+
+        let read = ViewSurface::new(Arc::clone(&workspace)).conversation(&lead, Path::new(""));
+
+        let denied = read
+            .messages
+            .iter()
+            .find_map(|message| match message {
+                forge_primitives::Message::User { parent_tool_use_id, message, .. }
+                    if parent_tool_use_id.as_deref() == Some("toolu_a") =>
+                {
+                    message.content.iter().find_map(|block| match block {
+                        forge_primitives::ContentBlock::ToolResult {
+                            tool_use_id,
+                            is_error,
+                            content,
+                            ..
+                        } if tool_use_id == "call_refused" && *is_error => Some(content.clone()),
+                        _ => None,
+                    })
+                }
+                _ => None,
+            })
+            .expect("the sidecar's refused result, under the dispatch it ran under");
+        assert!(
+            format!("{denied:?}").contains("has been denied"),
+            "and it carries the refusal's own words: {denied:?}",
+        );
+    }
+
     /// A slot whose cwd no record places reads as empty, and not as whatever
     /// a walk of every project happened to find: given no directory, the scan
     /// answers with the first `<session_id>.jsonl` on disk, which here is

@@ -282,6 +282,15 @@ impl CardTracker {
             .collect()
     }
 
+    /// The dispatch a task id names, when the roster linked it to one.
+    ///
+    /// The CLI's `permission_denied` frame names the agent a refusal belongs
+    /// to and never the dispatch it ran under, and the agent is the task id
+    /// the roster opened the dispatch with.
+    pub(crate) fn dispatch_of(&self, task_id: &str) -> Option<&str> {
+        self.task_ids.get(task_id).map(String::as_str).filter(|id| !id.trim().is_empty())
+    }
+
     /// Note which task a dispatch's tool call was assigned.
     fn link_task(&mut self, task_id: &str, tool_use_id: Option<&str>) {
         if let Some(id) = tool_use_id.filter(|id| !id.trim().is_empty()) {
