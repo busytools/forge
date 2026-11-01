@@ -949,6 +949,8 @@ fn read_session_messages(
 /// chain the transcript answers, and its rows are stamped with that card's
 /// id. Resolving before any splice is what makes the fold order-independent:
 /// the child may be read before the parent whose sidecar holds its answer.
+/// Blocks are then emitted as a tree, each inside the row that fired it, so
+/// the expansion reads in the order the work ran.
 fn fold_subagent_sidecars(
     messages: &mut Vec<SessionMessage>,
     sidecars: Vec<(String, Vec<SessionMessage>)>,
@@ -981,16 +983,15 @@ fn fold_subagent_sidecars(
     // expansion, which is the shape no card owns.
     let answered: HashSet<String> =
         messages.iter().flat_map(answered_dispatches).map(str::to_owned).collect();
-    // Group by owner so siblings splice as one block: splicing each sidecar
-    // at the anchor in turn would put the newest sibling's calls first and
-    // make the card's tail order depend on the meta mtimes.
-    let mut folded: HashMap<String, Vec<(usize, Vec<SessionMessage>)>> = HashMap::new();
+    // Group by owner, then splice each owner's tree in the order it ran: a
+    // nested agent's block is emitted at the row carrying its dispatch, so a
+    // depth band cannot flatten it and the order does not ride the mtimes.
+    let mut folded: HashMap<String, Vec<Block>> = HashMap::new();
     for (dispatch, mut rows) in sidecars {
         let Some(owner) = owning_dispatch(&dispatch, &answered, &made_under) else {
             // No row of the transcript answers the dispatch or any dispatch
             // it was nested under: there is no expansion for these frames.
             tracing::debug!(
-                target: "forge_agent::userdata::catalog",
                 event_name = "subagent_sidecar_unresolved",
                 session = %session_id,
                 dispatch = %dispatch,
@@ -998,41 +999,98 @@ fn fold_subagent_sidecars(
             );
             continue;
         };
-        let depth = chain_depth(&dispatch, owner, &made_under);
         for row in &mut rows {
             row.parent_tool_use_id = Some(owner.to_owned());
         }
-        folded.entry(owner.to_owned()).or_default().push((depth, rows));
+        folded.entry(owner.to_owned()).or_default().push(Block { dispatch, rows });
     }
     for (owner, mut blocks) in folded {
-        // Newest-first arrival, then the stable depth sort: a parent's block
-        // always precedes the children it fired, whatever the meta mtimes say.
+        // The sidecars arrive newest-first; emit the roots oldest-first.
         blocks.reverse();
-        blocks.sort_by_key(|(depth, _)| *depth);
         let Some(index) = messages.iter().position(|row| answers_dispatch(row, &owner)) else {
+            tracing::debug!(
+                event_name = "subagent_sidecar_unanchored",
+                session = %session_id,
+                owner = %owner,
+                "subagent sidecar blocks skipped: no transcript row answers their owner",
+            );
             continue;
         };
-        let rows: Vec<SessionMessage> = blocks.into_iter().flat_map(|(_, rows)| rows).collect();
+        let rows = emit_sidecar_tree(blocks);
         messages.splice((index + 1)..=index, rows);
     }
 }
 
-/// How many links `dispatch` sits from `owner` in the nesting chain.
-fn chain_depth<'a>(
-    mut dispatch: &'a str,
-    owner: &str,
-    made_under: &'a HashMap<String, String>,
-) -> usize {
-    for depth in 0..=made_under.len() {
-        if dispatch == owner {
-            return depth;
-        }
-        match made_under.get(dispatch) {
-            Some(parent) => dispatch = parent,
-            None => return made_under.len(),
+/// One sidecar's frames and the dispatch it ran as.
+struct Block {
+    dispatch: String,
+    rows: Vec<SessionMessage>,
+}
+
+/// One owner's blocks, flattened in the order the work ran.
+///
+/// A block is emitted at the row inside another block that carries its
+/// dispatch's tool_use, so a nested agent's frames sit where it was fired
+/// rather than after all of its parent's frames. A block no other block
+/// names - its parent body was past the read budget, or the link is missing -
+/// is a root and follows the owner's other roots.
+fn emit_sidecar_tree(mut blocks: Vec<Block>) -> Vec<SessionMessage> {
+    let by_dispatch: HashMap<String, usize> =
+        blocks.iter().enumerate().map(|(at, block)| (block.dispatch.clone(), at)).collect();
+    // A block whose dispatch names another block's row is a child; the rest
+    // are roots.
+    let mut inline = vec![false; blocks.len()];
+    for (at, block) in blocks.iter().enumerate() {
+        for row in &block.rows {
+            for id in tool_use_ids(row) {
+                if let Some(&kid) = by_dispatch.get(id)
+                    && kid != at
+                {
+                    inline[kid] = true;
+                }
+            }
         }
     }
-    made_under.len()
+    let mut out = Vec::new();
+    let mut emitted = vec![false; blocks.len()];
+    for at in (0..blocks.len()).filter(|at| !inline[*at]) {
+        emit_block(&mut blocks, at, &by_dispatch, &mut emitted, &mut out);
+    }
+    // A malformed link pair can make a block its own ancestor; it still
+    // draws, once, after the roots rather than vanishing.
+    for at in 0..blocks.len() {
+        emit_block(&mut blocks, at, &by_dispatch, &mut emitted, &mut out);
+    }
+    out
+}
+
+/// Append one block, with each child block inserted after the row that
+/// carries its dispatch.
+fn emit_block(
+    blocks: &mut [Block],
+    at: usize,
+    by_dispatch: &HashMap<String, usize>,
+    emitted: &mut [bool],
+    out: &mut Vec<SessionMessage>,
+) {
+    if emitted[at] {
+        return;
+    }
+    emitted[at] = true;
+    for row in std::mem::take(&mut blocks[at].rows) {
+        let mut kids = Vec::new();
+        for id in tool_use_ids(&row) {
+            if let Some(&kid) = by_dispatch.get(id)
+                && kid != at
+            {
+                kids.push(kid);
+            }
+        }
+        out.push(row);
+        for kid in kids {
+            emit_block(blocks, kid, by_dispatch, emitted, out);
+        }
+    }
 }
 
 /// The dispatch whose row a sidecar's frames belong under: the first dispatch
@@ -1110,9 +1168,10 @@ type SidecarRead = (Vec<(String, Vec<SessionMessage>)>, HashMap<String, SidecarL
 /// parent agent in the sibling `.meta.json`; neither is in the session
 /// transcript, so a resumed conversation drew every card as its dispatch
 /// alone until this read folded them in (#1763). Newest sidecars first, up
-/// to [`SIDECAR_BUDGET_BYTES`]; a sidecar that cannot be read or named, or
-/// falls past the budget, keeps the dispatch alone, but its meta still
-/// resolves a nested child whose body is inside the budget.
+/// to [`SIDECAR_BUDGET_BYTES`]; a sidecar whose body cannot be read, or
+/// falls past the budget, keeps the dispatch alone, while its meta still
+/// links a nested child whose body is inside the budget. A meta that cannot
+/// be parsed records no link.
 fn subagent_sidecars(session_id: &str, transcript: &Path) -> SidecarRead {
     subagent_sidecars_with_budget(session_id, transcript, SIDECAR_BUDGET_BYTES)
 }
@@ -1140,11 +1199,33 @@ fn subagent_sidecars_with_budget(session_id: &str, transcript: &Path, budget: u6
     let mut sidecars = Vec::new();
     let mut links = HashMap::new();
     for (meta, _) in metas {
-        let Ok(body) = fs::read(&meta) else { continue };
-        let Ok(value) = serde_json::from_slice::<Value>(&body) else { continue };
+        let Ok(body) = fs::read(&meta) else {
+            tracing::debug!(
+                event_name = "subagent_sidecar_meta_unreadable",
+                session = %session_id,
+                meta = %meta.display(),
+                "subagent sidecar meta skipped: it could not be read",
+            );
+            continue;
+        };
+        let Ok(value) = serde_json::from_slice::<Value>(&body) else {
+            tracing::debug!(
+                event_name = "subagent_sidecar_meta_unreadable",
+                session = %session_id,
+                meta = %meta.display(),
+                "subagent sidecar meta skipped: it is not JSON",
+            );
+            continue;
+        };
         let Some(dispatch) =
             value.get("toolUseId").and_then(Value::as_str).filter(|id| !id.trim().is_empty())
         else {
+            tracing::debug!(
+                event_name = "subagent_sidecar_meta_unreadable",
+                session = %session_id,
+                meta = %meta.display(),
+                "subagent sidecar meta skipped: it names no dispatch",
+            );
             continue;
         };
         let Some(stem) = meta
@@ -1152,6 +1233,12 @@ fn subagent_sidecars_with_budget(session_id: &str, transcript: &Path, budget: u6
             .and_then(|name| name.to_str())
             .and_then(|name| name.strip_suffix(".meta.json"))
         else {
+            tracing::debug!(
+                event_name = "subagent_sidecar_meta_unreadable",
+                session = %session_id,
+                meta = %meta.display(),
+                "subagent sidecar meta skipped: no sidecar name derives from it",
+            );
             continue;
         };
         let agent = stem.strip_prefix("agent-").unwrap_or(stem);
@@ -1164,11 +1251,16 @@ fn subagent_sidecars_with_budget(session_id: &str, transcript: &Path, budget: u6
         );
         let sidecar = meta.with_file_name(format!("{stem}.jsonl"));
         let Ok(size) = fs::metadata(&sidecar).map(|info| info.len()) else {
+            tracing::debug!(
+                event_name = "subagent_sidecar_body_missing",
+                session = %session_id,
+                sidecar = %sidecar.display(),
+                "subagent sidecar skipped: its body is missing",
+            );
             continue;
         };
         if size > budget {
             tracing::debug!(
-                target: "forge_agent::userdata::catalog",
                 event_name = "subagent_sidecar_budget_skipped",
                 session = %session_id,
                 sidecar = %sidecar.display(),
@@ -1178,6 +1270,12 @@ fn subagent_sidecars_with_budget(session_id: &str, transcript: &Path, budget: u6
         }
         budget -= size;
         let Ok(file) = fs::File::open(&sidecar) else {
+            tracing::debug!(
+                event_name = "subagent_sidecar_body_unreadable",
+                session = %session_id,
+                sidecar = %sidecar.display(),
+                "subagent sidecar skipped: its body could not be opened",
+            );
             continue;
         };
         let mut rows = parse_session_messages(file).messages;
@@ -3650,8 +3748,9 @@ mod tests {
     ///
     /// The read is taken twice with the meta mtimes swapped: the child may
     /// sort before or after its parent, and neither order may move a row.
-    /// Siblings splice as one block in chain order, so a parent's block
-    /// precedes the children it fired.
+    /// Each block is emitted inside the row that fired it, so the outer
+    /// agent's first frame, then the nested agent's work, then the outer
+    /// agent's result read in the order they ran.
     #[test]
     fn get_session_messages_folds_a_nested_sidecar_under_its_owner() {
         let config_dir = tempfile::tempdir().unwrap();
@@ -3712,8 +3811,8 @@ mod tests {
             let uuids: Vec<_> = messages.iter().map(|message| message.uuid.as_str()).collect();
             assert_eq!(
                 uuids,
-                vec!["a1", "u1", "o1", "o2", "n1", "n2", "d1", "a2"],
-                "the transcript's rows with each sidecar block spliced where the outer dispatch ran",
+                vec!["a1", "u1", "o1", "n1", "d1", "n2", "o2", "a2"],
+                "the transcript's rows with each block emitted inside the row that fired it",
             );
             for message in messages.iter().filter(|message| message.parent_tool_use_id.is_some()) {
                 assert_eq!(
@@ -3731,8 +3830,9 @@ mod tests {
         set_age(&sidecars.join("agent-deep.meta.json"), 30);
         assert_folded(&read());
 
-        // And the reverse, the six-in-159 anomaly where the old fold joined
-        // the child against its parent's spliced rows and stamped the nested id.
+        // And the reverse, the measured anomaly (6 of 162 nested sidecars) where
+        // the old fold joined the child against its parent's spliced rows and
+        // stamped the nested id.
         set_age(&sidecars.join("agent-outer.meta.json"), 30);
         set_age(&sidecars.join("agent-nested.meta.json"), 60);
         set_age(&sidecars.join("agent-deep.meta.json"), 600);
@@ -3805,6 +3905,52 @@ mod tests {
             messages.last().and_then(|message| message.parent_tool_use_id.as_deref()),
             Some("toolu_dispatch"),
             "stamped with the dispatch the transcript answers",
+        );
+    }
+
+    /// **A chain that loops, or loses its parent meta, joins nothing.** Both
+    /// shapes are read off disk and either could be torn by a sync; the walk
+    /// must terminate and the rows must not land under an id nothing draws.
+    #[test]
+    fn a_sidecar_chain_with_a_cycle_or_a_missing_parent_joins_nothing() {
+        let config_dir = tempfile::tempdir().unwrap();
+        let session_id = "550e8400-e29b-41d4-a716-446655440005";
+        let directory = "/Users/me/Projects/playground";
+        let dir = project_dir_for(config_dir.path(), directory);
+        fs::create_dir_all(&dir).unwrap();
+        write_session_jsonl(
+            &dir,
+            session_id,
+            "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"before\"}]},\"uuid\":\"a1\"}\n",
+        );
+        let sidecars = dir.join(session_id).join("subagents");
+        fs::create_dir_all(&sidecars).unwrap();
+        let write = |stem: &str, meta: &str| {
+            fs::write(sidecars.join(format!("agent-{stem}.meta.json")), meta).unwrap();
+            fs::write(
+                sidecars.join(format!("agent-{stem}.jsonl")),
+                format!(
+                    "{{\"type\":\"assistant\",\"isSidechain\":true,\"message\":{{\"role\":\"assistant\",\"content\":[{{\"type\":\"text\",\"text\":\"{stem}\"}}]}},\"uuid\":\"{stem}\"}}\n"
+                ),
+            )
+            .unwrap();
+        };
+        // Two sidecars that name each other: neither chain reaches an answer.
+        write("a", "{\"agentType\":\"Explore\",\"toolUseId\":\"toolu_a\",\"parentAgentId\":\"b\"}");
+        write("b", "{\"agentType\":\"Explore\",\"toolUseId\":\"toolu_b\",\"parentAgentId\":\"a\"}");
+        // A child whose parent meta is absent.
+        write(
+            "c",
+            "{\"agentType\":\"Explore\",\"toolUseId\":\"toolu_c\",\"parentAgentId\":\"ghost\"}",
+        );
+
+        let messages =
+            get_session_messages(config_dir.path(), session_id, Some(directory)).messages;
+
+        assert_eq!(
+            messages.iter().map(|message| message.uuid.as_str()).collect::<Vec<_>>(),
+            vec!["a1"],
+            "a cycle and a missing parent both resolve to nothing, and nothing loops",
         );
     }
 
