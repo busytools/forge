@@ -1,6 +1,6 @@
 ---
 name: dev-stack
-description: Invoke for feature-scale web work - client, server, or both - when the result needs the maintainer's eyes before merge: it stands up the depth the change needs - a per-feature scratch forge under /tmp with its own config, ports and store plus a dev client pointed at it, or, for a pure client change, the dev client alone - so the feature is built and verified live without touching the maintainer's config. Not for one-line fixes; those take the ordinary PR loop.
+description: Invoke for feature-scale web work - client, server, or both - when the result needs the maintainer's eyes before merge: it stands up the depth the change needs - a per-feature scratch forge under /tmp with its own config, ports and store plus a dev client pointed at it, or, for a pure client change the live forge admits, the dev client alone - so the feature is built and verified live without touching the maintainer's config. Not for one-line fixes; those take the ordinary PR loop.
 ---
 
 # dev-stack
@@ -18,7 +18,9 @@ client, server, or both - that needs the maintainer's eyes before merge runs
 this loop; one-line fixes take the ordinary PR loop instead. It runs at one of
 two depths, set by what the change touches: a pure client change takes the
 shallow path (recipe step 5) - the dev client alone, no scratch forge - while
-anything touching server behaviour takes the full stack. Firing it is the
+anything touching server behaviour takes the full stack. One environmental
+exception, decided at plan time: when the live forge cannot admit the dev
+client's origin, a pure client change runs DEEP (step 5). Firing it is the
 LEAD's act at plan time, not the worker's discovery: the lead reads this file
 and threads its loop into the worker's charter, so the charter already carries
 the depth, the verification steps and the teardown.
@@ -144,16 +146,19 @@ history is the record.
    own address - no scratch forge, no `/tmp` tree, the change in front of the
    maintainer as fast as vite starts. **The origin must be allowed first, or
    shallow fails.** The socket admits a page only when it accepts that page's
-   origin, and the dev client's is `http://localhost:1420` (or
-   `127.0.0.1:1420`). A binary carrying the loopback rule (#2743 and the
-   release that ships it) admits any http or https loopback origin at any
-   port, in every build. An older binary admits the dev origins only in a
-   debug build, and a release refuses them unless the live
-   `[server] allowed_origins` already lists the one in use - read the live
-   config to check, and **never edit it or restart the live forge to make
-   shallow work; when the origin is not admitted, run DEEP.** The cost,
-   named: that tab is another answering client on the live forge, so a turn
-   can park on it. Anything
+   origin, and the dev client's origin is `http://localhost:1420`. **Check
+   the live forge's build first**: its stamp carries the short SHA (the
+   home's header draws it). A binary at or after #2743
+   (`git merge-base --is-ancestor 11b8cd848 <sha>`), or a release whose tag
+   contains it, admits any http or https loopback origin at any port in
+   every build, so the shallow path needs nothing done. On a binary before
+   it, the dev origins are a debug-only allowance and a release build
+   refuses them unless the live `[server] allowed_origins` already lists
+   `http://localhost:1420`. **Read the live config to check; never edit it
+   or restart the live forge to make shallow work. When the origin is not
+   admitted, that is the plan-time exception above: the change runs DEEP.**
+   The cost, named: the dev client tab is another answering client on the
+   live forge, so a turn can park on it. Anything
    that touches server behaviour runs DEEP - the full stack - with the client
    pointed at the stack:
    - Browser tab (the deep default): the dev client from the worktree - hot
