@@ -1804,6 +1804,8 @@ interface Driveable extends Omit<Connection, 'status'> {
   status(): ConnectionStatus;
   /** Every range ask the seat made, in order. */
   ranges: { slot: SessionSlot; epoch: string | null; from: number; to: number }[];
+  /** Make every range ask from here on fail, as a closed socket does. */
+  failRanges(): void;
 }
 
 /** A seat the server holds no session for, worded as it words the refusal. */
@@ -1817,6 +1819,7 @@ function drivable(refusedAtFirst = false, rangeAskFails = false): Driveable {
   let subscribed = 0;
   let unsubscribed = 0;
   let refused = refusedAtFirst;
+  let askFails = rangeAskFails;
   let status: ConnectionStatus = 'open';
   const ranges: { slot: SessionSlot; epoch: string | null; from: number; to: number }[] = [];
   const opens: { answering?: boolean; review?: boolean }[] = [];
@@ -1882,7 +1885,7 @@ function drivable(refusedAtFirst = false, rangeAskFails = false): Driveable {
     readDocument: () => false,
     seatRange: (slot, epoch, from, to) => {
       ranges.push({ slot, epoch, from, to });
-      return !rangeAskFails;
+      return !askFails;
     },
     frame: () => false,
     browserInput: () => false,
@@ -1925,6 +1928,9 @@ function drivable(refusedAtFirst = false, rangeAskFails = false): Driveable {
     },
     refuse: () => {
       refused = true;
+    },
+    failRanges: () => {
+      askFails = true;
     },
     ranges,
   };
@@ -4097,6 +4103,47 @@ describe('the seat sequence', () => {
     expect(spoken(page), 'the frame a closed socket could not repair was held forever').toContain(
       'three',
     );
+    page.stop();
+  });
+
+  /**
+   * **A held frame the accepted answer already carried is dropped.** The
+   * answer's record holds every number below its encode point, so a held
+   * frame under it is a row the record already has - and the closed-socket
+   * fallback draws whatever is still held without the apply-time reach check,
+   * so a frame left in the hold there draws a second time.
+   */
+  it('drops a held frame the accepted answer already carried', () => {
+    const connection = drivable();
+    const page = watch(connection);
+    page.land(snapshotOf(LEAD, {}, { epoch: 'one', seq: 1 }));
+    page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke('row 1', 'u1') } }, 1));
+    // A frame at 11 books [2,10] and waits.
+    page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke('row 11', 'u11') } }, 11));
+    expect(connection.ranges, 'precondition: the hole is asked for').toEqual([
+      { slot: LEAD, epoch: 'one', from: 2, to: 10 },
+    ]);
+
+    // An accepted answer carrying 1..14: the held frame 11 is inside it.
+    const carried = Array.from({ length: 14 }, (_, at) => spoke(`row ${at + 1}`, `u${at + 1}`));
+    page.land(
+      snapshotOf(
+        LEAD,
+        { conversation: { turns: [{ key: 'streamed', messages: carried }], compaction_count: 0 } },
+        { epoch: 'one', seq: 15 },
+      ),
+    );
+    paint();
+
+    // A later hole whose ask cannot go out: the fallback draws what is held.
+    connection.failRanges();
+    page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke('row 20', 'u20') } }, 20));
+    paint();
+
+    expect(
+      spoken(page).filter((word) => word === 'row 11'),
+      'the answer-carried row was drawn again from the hold',
+    ).toHaveLength(1);
     page.stop();
   });
 
