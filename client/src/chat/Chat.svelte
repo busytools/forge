@@ -737,6 +737,9 @@
     // rather than on the newest turn's wrapper because the wrapper itself is
     // re-created with the list's window; a key already in `arrived` is a row
     // the reader has seen, whoever draws it again.
+    /** Rows waiting for their first paint before they enter. */
+    const pending: HTMLElement[] = [];
+    let pendingFrame: number | null = null;
     const arrivals = new MutationObserver((records) => {
       // **A turn still being written takes arrivals.** `live` alone is not
       // that state: a seat opened mid-flight has its newest row from a page
@@ -760,8 +763,18 @@
             return key !== null && !hasArrived(at, key);
           });
           for (const key of keys) recordArrival(at, key);
-          for (const row of entering) enter(row);
+          for (const row of entering) pending.push(row);
         }
+      }
+      // **A row pulled back into the queue before it paints never enters.**
+      // A prompt sent during a turn draws its row and the queue retracts it a
+      // frame or two later; the rise in between reads as a gap over a row that
+      // is already leaving.
+      if (pending.length > 0 && pendingFrame === null) {
+        pendingFrame = requestAnimationFrame(() => {
+          pendingFrame = null;
+          for (const row of pending.splice(0)) if (row.isConnected) enter(row);
+        });
       }
     });
     arrivals.observe(node, { childList: true, subtree: true });
