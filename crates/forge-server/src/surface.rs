@@ -746,13 +746,14 @@ mod tests {
         );
     }
 
-    /// **A sub-agent's refused result survives the read with its error mark.**
-    /// The sidecar fold itself is #1763's, and this pins the half a resumed
-    /// page needs from it: the denial comes through as an errored
+    /// **A top-level sub-agent's refused result survives the read with its
+    /// error mark.** The sidecar fold itself is #1763's; this pins the half a
+    /// resumed page needs: the denial comes through as an errored
     /// `tool_result` whose content still carries the refusal's words, under
-    /// the dispatch that ran it. The transcript keeps no `permission_denied`
-    /// row for a sub-agent's call, so that sidecar row is the only thing a
-    /// reload has to draw the refusal from.
+    /// the dispatch that ran it. No measured capture keeps a
+    /// `permission_denied` row for a sub-agent's call, so the sidecar row is
+    /// the only thing a reload can draw it from - and a nested dispatch's
+    /// sidecar joins no transcript row, so that case draws live only.
     #[test]
     fn conversation_carries_a_subagents_denied_result() {
         let (workspace, _dir) = crate::surface::testing::workspace();

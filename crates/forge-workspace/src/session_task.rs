@@ -1788,9 +1788,10 @@ impl SessionTask {
 
     /// The same frame, naming the dispatch a sub-agent's refusal belongs
     /// under: the CLI names the agent and never the dispatch, so the refusal
-    /// drew as a row the session itself had made (#2767). The read path needs
-    /// no repair, because the transcript keeps no refusal row and the
-    /// sub-agent's sidecar carries it as the call's errored result.
+    /// drew as a row the session itself had made. A top-level dispatch's read
+    /// needs no repair - its sidecar carries the refusal as the call's
+    /// errored result - while a nested dispatch's sidecar joins no transcript
+    /// row, so a nested refusal draws live only.
     fn attribute_denial(&self, msg: forge_primitives::Message) -> forge_primitives::Message {
         let forge_primitives::Message::PermissionDenied { extras, .. } = &msg else {
             return msg;
@@ -8693,7 +8694,27 @@ provider = "anthropic"
         assert_eq!(
             drawn[0].get("parent_tool_use_id"),
             None,
-            "and it stays the session's own row, named by no dispatch",
+            "and an unlinked task's refusal stays the session's own row",
+        );
+
+        // A task linked to a call that opened no row at either level is
+        // unplaceable too: a stamp naming that call would draw it nowhere.
+        task.translate_event(sdk_message(forge_primitives::Message::TaskStarted {
+            task_id: "agent-orphan".to_owned(),
+            description: "orphan".to_owned(),
+            uuid: "u-start-orphan".to_owned(),
+            session_id: "s".to_owned(),
+            tool_use_id: Some("call-orphan".to_owned()),
+            task_type: Some("local_agent".to_owned()),
+            extras: serde_json::Map::new(),
+        }));
+        task.translate_event(sdk_message(refusal(Some("agent-orphan"))));
+        let drawn = drawn_refusals(&mut updates);
+        assert_eq!(drawn.len(), 1, "an orphaned task's refusal is drawn too");
+        assert_eq!(
+            drawn[0].get("parent_tool_use_id"),
+            None,
+            "and it stays the session's own row: no row owns that call",
         );
 
         task.translate_event(sdk_message(refusal(None)));
@@ -8702,7 +8723,7 @@ provider = "anthropic"
         assert_eq!(
             drawn[0].get("parent_tool_use_id"),
             None,
-            "and it stays the session's own row, named by no dispatch",
+            "and the session's own refusal names no dispatch",
         );
     }
 
