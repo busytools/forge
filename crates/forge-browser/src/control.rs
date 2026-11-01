@@ -10,15 +10,16 @@ use std::io::Write as _;
 
 use serde::{Deserialize, Serialize};
 
-/// Where a JavaScript dialog stands: raised, answered, or closed by the
-/// host's deadline. **An answer and an expiry are different facts**, and the
-/// server tells them apart by this.
+/// Where a JavaScript dialog stands. **The host holds one until it is
+/// answered**, so these are the facts there are: it was raised, someone
+/// answered it, or the page took it away without an answer (a navigation, or
+/// the tab closing). **`Closed` is not `Answered`**: nobody decided.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum JsDialogState {
     Shown,
     Answered,
-    Expired,
+    Closed,
 }
 
 /// One thing the host needs the server to route.
@@ -41,9 +42,10 @@ pub enum HostEvent {
     /// A page's file chooser: the client's picker answers with the files'
     /// bytes, and the host is handed server-local paths.
     FileDialog { id: u64, tab: u16, multiple: bool },
-    /// A page's JavaScript dialog. **The host answers every one**: a `shown`
-    /// line is followed by `answered` when the agent's answer arrives, or by
-    /// `expired` when the deadline dismissed it.
+    /// A page's JavaScript dialog. **The host holds it until it is answered**:
+    /// a `shown` line is followed by `answered` when the agent's answer
+    /// arrives, or by `closed` when the page takes the dialog away itself,
+    /// and by nothing until one of those.
     JsDialog { tab: u16, dialog: String, message: String, state: JsDialogState },
     /// A download finished on the server: the tab it started from, the file's
     /// name, its path beside the profile, and how many bytes it holds.
@@ -59,7 +61,7 @@ pub fn emit(event: &HostEvent) {
     let mut out = std::io::stdout().lock();
     // **A server that stopped reading is a broken pipe, not a panic.** The
     // host keeps painting its ring for whoever is watching; the event is
-    // lost with the connection and the dialog is answered by its timeout.
+    // lost with the connection.
     let _ = writeln!(out, "{line}");
     let _ = out.flush();
 }
@@ -85,11 +87,11 @@ mod tests {
         assert!(parse("{\"kind\":\"other\"}").is_none());
     }
 
-    /// **A dialog's raise, answer and expiry are three lines of one shape**, so
-    /// a server can tell an answered dialog from one the deadline closed.
+    /// **A dialog's raise and its answer are two lines of one shape**, so a
+    /// server can tell a held dialog from one someone answered.
     #[test]
     fn a_js_dialog_round_trips_its_line() {
-        for state in [JsDialogState::Shown, JsDialogState::Answered, JsDialogState::Expired] {
+        for state in [JsDialogState::Shown, JsDialogState::Answered, JsDialogState::Closed] {
             let event = HostEvent::JsDialog {
                 tab: 2,
                 dialog: "confirm".to_owned(),
@@ -105,10 +107,10 @@ mod tests {
                 tab: 2,
                 dialog: "confirm".to_owned(),
                 message: String::new(),
-                state: JsDialogState::Expired,
+                state: JsDialogState::Answered,
             })
             .expect("a line")
-            .contains("\"expired\""),
+            .contains("\"answered\""),
             "the state is spelled in the line",
         );
     }

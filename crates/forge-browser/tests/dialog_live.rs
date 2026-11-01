@@ -1,9 +1,9 @@
-//! Page dialogs on a deadline: one nobody answers is dismissed by the host,
-//! one the agent answers is not, and both leave the page running.
+//! Page dialogs are held until someone answers them: nothing dismisses one on
+//! a clock, and the agent's answer is what lets the page run again.
 //!
-//! **The measured defect was a `confirm()` no one answered**: the host had no
-//! JS dialog handler, so the dialog never closed, the page's own thread
-//! stopped, and every page-domain CDP call on it waited for ever (#2732).
+//! **The measured defect was a `confirm()` nobody answered** (#2732) and then
+//! a host that answered it behind the person's back after five seconds
+//! (#2754). The host now holds every dialog until it is answered.
 //!
 //! **These need the real bundle**: they stage the workspace's own host the
 //! way the server ships it, then drive it as the server does.
@@ -18,17 +18,16 @@ use std::time::{Duration, Instant};
 
 use forge_browser::control::{HostEvent, JsDialogState};
 use forge_browser::input::HostInput;
-use forge_browser::jsdialog::DEADLINE_MS;
 use forge_browser::window::{Backlog, Cdp};
 use serde_json::{Value, json};
 
 /// How long CEF is given to create, paint and answer.
 const BOUND: Duration = Duration::from_secs(30);
 const POLL: Duration = Duration::from_millis(50);
-/// The deadline plus the polish a loaded machine may add to the pump. **The
-/// pin is a stretch of the real five seconds**: a deadline of twenty-five
-/// seconds lands outside it.
-const DEADLINE_AND_POLISH: Duration = Duration::from_millis(DEADLINE_MS + 10_000);
+/// Longer than the five seconds the host used to wait before answering an
+/// unanswered dialog itself. **A held dialog outlives it**: that is the pin
+/// this file exists for.
+const HELD_PAST: Duration = Duration::from_secs(9);
 
 /// A page that opens a dialog on its own, then records what the answer was.
 /// **The title is the page's own proof that its thread ran again**: it is set
@@ -56,34 +55,39 @@ document.title = 'ready';\
 </script>";
 
 #[test]
-fn an_unanswered_dialog_is_dismissed_at_its_deadline() {
+fn an_unanswered_dialog_is_held_past_the_deadline() {
     let mut live = Live::start(PAGE);
     let Live { host, runtime, cdp, .. } = &mut live;
 
     runtime.block_on(async {
         // **The host says a dialog is open**, and nobody answers it.
         wait_for_dialog(host, "confirm", JsDialogState::Shown);
-        let shown_at = Instant::now();
 
-        // **The dismissal is the host's deadline**, not the page's: it
-        // arrives on its own. **Only the upper bound is the clock's**: the
-        // raise is read from the host's pipe, so when this test first sees it
-        // can lag the host's own deadline.
-        let dismissed = wait_for_dialog(host, "confirm", JsDialogState::Expired);
-        let elapsed = shown_at.elapsed();
+        // **Nothing answers it, and nothing may**: the host used to give up
+        // after five seconds and the page resumed as if the person had said
+        // no (#2754). The dialog is still there when that time has passed.
+        std::thread::sleep(HELD_PAST);
         assert!(
-            elapsed <= DEADLINE_AND_POLISH,
-            "the dialog outlived its deadline by too much: {elapsed:?} ({dismissed})",
+            !saw_state(host, "confirm", JsDialogState::Answered),
+            "an unanswered dialog was answered behind the person: {:?}",
+            host.events(),
         );
 
-        // **The page's own thread runs again**: only the dismissal can have
-        // set the title, because the page never answers its own dialog.
-        wait_for_title(cdp, "after", BOUND).await;
+        // **The agent's answer is the way out**, and it reaches the page:
+        // only the answer can set the title, because the page never answers
+        // its own dialog.
+        host.input(&forge_browser::input::host_line(&HostInput::Dialog {
+            tab: 1,
+            accept: true,
+            prompt: None,
+        }));
+        wait_for_dialog(host, "confirm", JsDialogState::Answered);
+        wait_for_title(cdp, "accepted", BOUND).await;
     });
 }
 
 #[test]
-fn an_answered_dialog_is_not_dismissed_at_the_deadline() {
+fn an_answered_dialog_is_answered_once() {
     let mut live = Live::start(PAGE);
     let Live { host, runtime, cdp, .. } = &mut live;
 
@@ -91,7 +95,7 @@ fn an_answered_dialog_is_not_dismissed_at_the_deadline() {
         wait_for_dialog(host, "confirm", JsDialogState::Shown);
 
         // **The answer comes from the agent's tool**, which hands it to the
-        // host over the driver's socket. **CDP cannot answer a CEF dialog**:
+        // host over the worker's socket. **CDP cannot answer a CEF dialog**:
         // `Page.handleJavaScriptDialog` reports "No dialog is showing"
         // whether or not a host handler exists (measured 2026-11-01), so this
         // is the only path an agent's answer can take.
@@ -103,19 +107,25 @@ fn an_answered_dialog_is_not_dismissed_at_the_deadline() {
         wait_for_dialog(host, "confirm", JsDialogState::Answered);
         wait_for_title(cdp, "accepted", BOUND).await;
 
-        // **The deadline is cancelled by that answer.** A second dismissal
-        // after the deadline would be the host answering a dialog twice.
-        std::thread::sleep(Duration::from_millis(DEADLINE_MS + 3_000));
-        assert!(
-            !saw_state(host, "confirm", JsDialogState::Expired),
-            "an answered dialog was dismissed at the deadline: {:?}",
+        // **A second answer has nothing to answer**: the host took the entry
+        // on the first one, so nothing reaches the page a second time.
+        host.input(&forge_browser::input::host_line(&HostInput::Dialog {
+            tab: 1,
+            accept: true,
+            prompt: None,
+        }));
+        std::thread::sleep(Duration::from_millis(750));
+        assert_eq!(
+            count_state(host, JsDialogState::Answered),
+            1,
+            "a second answer answered the dialog again: {:?}",
             host.events(),
         );
     });
 }
 
 #[test]
-fn a_before_unload_dialog_is_dismissed_at_its_deadline() {
+fn a_before_unload_dialog_is_held_until_answered() {
     let mut live = Live::start(LEAVING);
     let Live { host, runtime, cdp, .. } = &mut live;
 
@@ -127,10 +137,24 @@ fn a_before_unload_dialog_is_dismissed_at_its_deadline() {
         // activating the app, so it is retried until the host reports the
         // prompt.
         click_until_dialog(host, "beforeunload", JsDialogState::Shown, BOUND);
-        wait_for_dialog(host, "beforeunload", JsDialogState::Expired);
 
-        // **The page stays and runs again**: a dismissal is "do not leave",
-        // and the renderer is not paused behind it any more.
+        // **Held, not dismissed**: a leaving prompt is the same hold as any
+        // other, and only an answer moves the page.
+        std::thread::sleep(HELD_PAST);
+        assert!(
+            !saw_state(host, "beforeunload", JsDialogState::Answered),
+            "a held beforeunload was answered on a clock: {:?}",
+            host.events(),
+        );
+
+        // **Dismissing it leaves the page where it was**, and the renderer
+        // runs again because the answer closed the modal.
+        host.input(&forge_browser::input::host_line(&HostInput::Dialog {
+            tab: 1,
+            accept: false,
+            prompt: None,
+        }));
+        wait_for_dialog(host, "beforeunload", JsDialogState::Answered);
         let still = tokio::time::timeout(
             Duration::from_secs(5),
             cdp.call(
@@ -294,6 +318,19 @@ fn wait_for_dialog(host: &support::Host, wanted: &str, state: JsDialogState) -> 
         );
         std::thread::sleep(POLL);
     }
+}
+
+/// How many dialogs the host reported in `state`.
+fn count_state(host: &support::Host, state: JsDialogState) -> usize {
+    host.events()
+        .into_iter()
+        .filter(|line| {
+            matches!(
+                forge_browser::control::parse(line),
+                Some(HostEvent::JsDialog { state: event_state, .. }) if event_state == state
+            )
+        })
+        .count()
 }
 
 /// Whether this dialog ever reached `state`.

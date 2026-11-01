@@ -94,7 +94,7 @@ pub(crate) fn specs() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "browser_handle_dialog",
-            description: "Handle a dialog",
+            description: "Handle a dialog. A page's dialog is held until it is answered, and every call that would drive that tab is refused until then; this is the way to answer or dismiss it.",
             schema: json!({
                 "$schema": "https://json-schema.org/draft/2020-12/schema",
                 "type": "object",

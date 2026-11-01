@@ -224,7 +224,10 @@ read as one system.
 The conversation is cut by the server into turns, and the client folds
 each turn's frames into its rows; a compaction boundary draws where it
 happened, collapsed, with the header's count saying how many and the mark
-saying where.
+saying where. **A settled turn ends on its turn row**, and a failed turn
+on the failure line just under it; a message that arrives at the turn's
+end, a peer message among them, draws below either, where the next turn
+starts.
 
 **A handoff draws a row between two conversations.** When forge replaces a
 session with a fresh one that continues from a brief - at a turn boundary
