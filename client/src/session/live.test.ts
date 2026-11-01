@@ -3815,6 +3815,44 @@ describe('the seat sequence', () => {
   });
 
   /**
+   * **The hold cap must not swallow the hole it is waiting on** (#2564). The
+   * frames above a hole draw unordered at the cap, which pushes the record's
+   * newest number past the hole; the late answer's frames are the hole's own
+   * and were never drawn, so the already-drawn rule must let them land or the
+   * row vanishes with nothing left to ask for it.
+   */
+  it('draws the hole a hold-cap flush crossed, when its answer lands', () => {
+    const connection = drivable();
+    const page = watch(connection);
+    page.land(snapshotOf(LEAD, {}, { seq: 1 }));
+    page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke('one') } }, 1));
+    // Two ahead opens the hole [2,2]; the frame waits.
+    page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke('three', 'u3') } }, 3));
+    expect(connection.ranges, 'the hole is asked for').toEqual([
+      { slot: LEAD, epoch: null, from: 2, to: 2 },
+    ]);
+
+    // Enough frames above the hole to trip the hold cap: they draw unordered.
+    for (let at = 4; at <= 4 + 300; at += 1) {
+      page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke(`row ${at}`, `u${at}`) } }, at));
+    }
+    paint();
+
+    // The answer lands late, after the record was carried past it.
+    page.land(repaired({ seq: 2, text: 'two' }));
+    paint();
+
+    const words = spoken(page);
+    expect(words, 'the hole the cap crossed was never drawn').toContain('two');
+    expect(
+      words.filter((word) => word === 'two'),
+      'the hole row was drawn twice',
+    ).toHaveLength(1);
+    expect(words, 'the frames the cap released were lost').toContain('three');
+    page.stop();
+  });
+
+  /**
    * **An occupant change is a new epoch, and the count starts again at 1.**
    * A `/new` or a `/resume` replays an old transcript under a new occupant, so
    * every number the record holds belongs to a stream that is gone: the record

@@ -181,6 +181,16 @@ interface Seat {
    */
   repairFrom: number | null;
   /**
+   * The newest number the repair in flight is asking for, `null` when none
+   * is.
+   *
+   * The hole is `repairFrom..repairTo`, and its frames are the ones the
+   * record never applied - even after the hold cap has drawn what crossed
+   * above them, which is why the already-drawn rule reads them as a hole and
+   * not as numbers `lastSeq` has passed (#2564).
+   */
+  repairTo: number | null;
+  /**
    * Frames that arrived above a hole while its repair was on the way.
    *
    * **Held rather than drawn.** A repaired user row applied after the
@@ -553,6 +563,7 @@ function createSeat(
     seen: 0,
     askedAt: 0,
     repairFrom: null,
+    repairTo: null,
     repairHeld: [],
     end,
     open,
@@ -982,7 +993,29 @@ function createSeat(
   function flushRepaired(): void {
     const waiting = seat.repairHeld.splice(0).sort((a, b) => a.seq - b.seq);
     seat.repairFrom = null;
+    seat.repairTo = null;
     for (const frame of waiting) applyFrame(frame, true);
+  }
+
+  /**
+   * Draw the frames that crossed the hole, leaving the hole itself owed.
+   *
+   * **The hold cap must not swallow the hole it is waiting on** (#2564). A
+   * held frame inside `repairFrom..repairTo` stands for numbers the record
+   * never applied; drawing it here as though it had would make the late
+   * answer's copy read as already drawn, and the row would vanish with
+   * nothing left to ask for it. What crossed above the hole draws unordered;
+   * the hole's own frames wait for their answer.
+   */
+  function flushHeldAbove(): void {
+    const above: Seat['repairHeld'] = [];
+    const inside: Seat['repairHeld'] = [];
+    for (const frame of seat.repairHeld) {
+      if (seat.repairTo === null || frame.seq > seat.repairTo) above.push(frame);
+      else inside.push(frame);
+    }
+    seat.repairHeld = inside;
+    for (const frame of above.sort((a, b) => a.seq - b.seq)) applyFrame(frame, true);
   }
 
   /**
@@ -1001,10 +1034,12 @@ function createSeat(
     const above = seat.seen;
     seat.repairHeld.length = 0;
     seat.repairFrom = null;
+    seat.repairTo = null;
     seat.lastSeq = from - 1;
     answeredRead();
     if (above < from) return;
     seat.repairFrom = from;
+    seat.repairTo = above;
     if (!askRange(from, above)) flushRepaired();
   }
 
@@ -1047,11 +1082,12 @@ function createSeat(
      * Whether this frame arrived in a repaired stretch rather than live.
      *
      * **A repaired frame is exempt from the hold and the hole, not from the
-     * number rule.** It is the answer to a range ask, so it fills the gap
-     * rather than opening one - but a range can start below what this record
-     * already applied, because a stale whole-read answer rewinds the ordering
-     * gate's count, and a repaired row the record carries must not be drawn a
-     * second time (#2564).
+     * number rule.** It fills the gap rather than opening one - but a range
+     * can start below what this record already applied, because a stale
+     * whole-read answer rewinds the ordering gate's count, and a repaired row
+     * the record carries must not be drawn a second time (#2564). The one
+     * exception is the seat's own pending hole: those frames were never
+     * drawn, even when a hold-cap flush carried the record past them.
      */
     repaired = false,
   ): void {
@@ -1074,6 +1110,7 @@ function createSeat(
         // Frames held under the old epoch are not the new one's to draw.
         seat.repairHeld.length = 0;
         seat.repairFrom = null;
+        seat.repairTo = null;
       }
       reread();
       return;
@@ -1120,8 +1157,16 @@ function createSeat(
       // A number this record already holds is already drawn: a repeat, a
       // replay, a reorder - or a repaired range which starts below the
       // record's newest number, which a stale answer's rewound count can ask
-      // for. Such a row is never drawn a second time (#2564).
-      if (reach <= seat.lastSeq) return;
+      // for. Such a row is never drawn a second time (#2564). **The pending
+      // hole is the exception**: its frames were never drawn, even when a
+      // hold-cap flush has carried the record past them.
+      const inHole =
+        repaired &&
+        seat.repairFrom !== null &&
+        seat.repairTo !== null &&
+        reach >= seat.repairFrom &&
+        reach <= seat.repairTo;
+      if (reach <= seat.lastSeq && !inHole) return;
       if (!repaired) {
         // **A hole holds everything above it until its repair lands.** Drawn
         // at once, a repaired user row would land below the assistant frames
@@ -1129,13 +1174,20 @@ function createSeat(
         // the stretch draws in sequence - the hole, then what crossed it.
         if (seat.repairFrom !== null) {
           seat.repairHeld.push({ seq, span, update: frame.update });
-          if (seat.repairHeld.length >= REPAIR_HELD_CAP) flushRepaired();
+          if (seat.repairHeld.length >= REPAIR_HELD_CAP) {
+            // What crossed the hole draws; the hole itself stays owed.
+            flushHeldAbove();
+            // A hold that is all hole is still released rather than growing
+            // without bound - the fallback the cap has always been.
+            if (seat.repairHeld.length >= REPAIR_HELD_CAP) flushRepaired();
+          }
           return;
         }
         if (seq > seat.lastSeq + 1) {
           seat.repairFrom = seat.lastSeq + 1;
+          seat.repairTo = seq - 1;
           seat.repairHeld.push({ seq, span, update: frame.update });
-          if (!askRange(seat.repairFrom, seq - 1)) {
+          if (!askRange(seat.repairFrom, seat.repairTo)) {
             // A socket that is not open cannot ask, so nothing is coming:
             // the held frames draw rather than waiting forever.
             flushRepaired();
@@ -1214,6 +1266,7 @@ function createSeat(
           // just ended; the whole read that follows answers for the new one.
           seat.repairHeld.length = 0;
           seat.repairFrom = null;
+          seat.repairTo = null;
           reread();
         }
         return;
@@ -1249,11 +1302,10 @@ function createSeat(
         // loop.
         const moved = seat.seen !== seat.askedAt;
         if (reach.seq !== null && reach.seq - 1 < seat.lastSeq && moved && seat.wire !== null) {
-          // **The record the frames carried forward IS the record** - every
-          // slice has a frame - so a stale answer of the SAME occupant is
-          // dropped and nothing is asked for: one more encode would be
-          // outrun too, and a whole read is 2.4-3.7 MB on a slow link
-          // (#1472, #2563).
+          // **The record the frames carried forward IS the record**, so a
+          // stale answer of the SAME occupant is dropped rather than asked
+          // for again: one more encode would be outrun too, and a whole read
+          // is 2.4-3.7 MB on a slow link (#1472, #2563).
           //
           // **A swap's answer is the exception, and taking it is the fix.**
           // The wipe restarts the count WITHOUT clearing the record, so the
