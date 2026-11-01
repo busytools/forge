@@ -44,6 +44,7 @@ impl<S: Subscriber> Layer<S> for Bridge {
             .file(metadata.file())
             .line(metadata.line())
             .build();
+        // Synchronous here: a block-rate keep-level event needs a non-blocking sink first.
         log::logger().log(&record);
     }
 }
