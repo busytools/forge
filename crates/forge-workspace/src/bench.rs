@@ -115,15 +115,23 @@ impl Drop for StoreCopy {
 /// forge.
 ///
 /// redb takes an exclusive lock, so a running forge holds the live store; the
-/// rows are read off a copy, the way forge's own live probes read one. A
-/// role whose config key names a variant this machine has not installed is
-/// an error rather than a feed lookup: the caller is a bench, and a bench
-/// fetches nothing.
+/// rows are read off a copy. On macOS the copy is an APFS clone, so it is a
+/// point-in-time snapshot; a plain byte copy racing a commit can land on the
+/// previous one, which is why this answers what a fresh boot would resolve
+/// rather than what a running engine holds mid-activation. A role whose
+/// config key names a variant this machine has not installed is an error
+/// rather than a feed lookup: the caller is a bench, and a bench fetches
+/// nothing.
 #[cfg(any(test, feature = "testing"))]
 pub fn resolved_live_roles(config_dir: &Path, app_support: &Path) -> Result<LiveRoles, String> {
     let loaded = crate::config::load_from_dir(config_dir)
         .map_err(|error| format!("forge.toml could not be read: {error}"))?;
     let settings = &loaded.dictate;
+    if !settings.enabled {
+        return Err("[dictate] enabled = false: dictation runs no role on this machine, so the \
+                    bench has nothing to measure"
+            .to_owned());
+    }
     let Some(models_dir) = settings.models_dir() else {
         return Err("no models directory resolves: [dictate] models_dir is unset and there is no \
                     platform cache directory"

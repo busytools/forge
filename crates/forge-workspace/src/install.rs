@@ -126,7 +126,8 @@ fn spec_from_record(installed: &InstalledModel) -> ModelSpec {
     }
 }
 
-/// What the rows that outlive a run say one role runs.
+/// What resolving one role answers: a model, or the feed lookup a config key
+/// needs.
 pub(crate) enum RoleResolution {
     Chosen(ActiveModel),
     /// A config key names a variant no install on this machine recorded, so
@@ -581,7 +582,9 @@ impl Workspace {
                 DictateRole::Normalization => settings.cleanup_model.as_deref(),
             };
             let installed = self.installed_models();
-            let pick = self.active_choice(role);
+            // Read the pick only when the key does not decide: reading it
+            // unconditionally logs a warning about a row that cannot matter.
+            let pick = if configured.is_none() { self.active_choice(role) } else { None };
             match resolve_role(role, pin, configured, &installed, pick) {
                 RoleResolution::Chosen(model) => resolved.push((role, model)),
                 RoleResolution::NeedsFeed { key, variant } => {
