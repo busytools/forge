@@ -16,6 +16,9 @@ model = "Mac16,9"
 cpu = "Apple M4 Max"
 os = "macOS 26.5.2"
 
+[engine]
+language = "unset"
+
 [corpus]
 clips = 15
 audio_seconds = 156

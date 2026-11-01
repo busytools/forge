@@ -165,6 +165,7 @@ fn same_run(
     existing: Option<&str>,
     machine: (&str, &str, &str),
     corpus_sha: &str,
+    language: &str,
     asr: (&str, &str),
     normalizer: (&str, &str),
 ) -> Result<bool, String> {
@@ -172,6 +173,7 @@ fn same_run(
         ("machine", "model", machine.0),
         ("machine", "cpu", machine.1),
         ("machine", "os", machine.2),
+        ("engine", "language", language),
         ("corpus", "manifest_sha256", corpus_sha),
         ("asr", "model", asr.0),
         ("asr", "sha256", asr.1),
@@ -440,6 +442,50 @@ fn a_config_key_beats_the_pick_in_the_bench_resolution() {
             && matches!(&model.from, ActiveFrom::Config { .. })),
         "and the resolution names the key as the source",
     );
+    assert_eq!(
+        live.config.normalizer.map(|spec| spec.file),
+        Some(ModelSpec::s1_mini_f16().file),
+        "and the cleanup role still runs the compiled pin",
+    );
+}
+
+/// **A cleanup key resolves the normalizer in the bench too.** The bench has
+/// its own role-to-key match; a copy-pasted transcribe arm would resolve the
+/// ASR weights as the normalizer.
+#[test]
+fn a_cleanup_key_resolves_the_normalizer_in_the_bench() {
+    let clean = "cleanup-model.gguf";
+    let machine =
+        Machine::with_store("cleanup_model = \"clean\"\n", Some(("clean", clean, 200)), None);
+
+    let live = machine.resolve().expect("the cleanup key resolves");
+
+    let normalizer = live.config.normalizer.expect("the normalizer role is on");
+    assert_eq!(normalizer.file, clean, "the cleanup key's model runs");
+    assert!(
+        live.models.iter().any(|(role, model)| *role == DictateRole::Normalization
+            && matches!(&model.from, ActiveFrom::Config { key, .. } if key == "cleanup_model")),
+        "and the resolution names cleanup_model as the source",
+    );
+}
+
+/// **A fresh machine resolves the compiled pins.** The bench must succeed
+/// with nothing installed or picked, naming each role's pin.
+#[test]
+fn an_empty_store_resolves_the_compiled_pins() {
+    let machine = Machine::with_store("", None, None);
+
+    let live = machine.resolve().expect("a fresh machine resolves the pins");
+
+    assert_eq!(
+        live.config.asr_model.file,
+        ModelSpec::cohere_transcribe_q4_k_m().file,
+        "the transcribing role runs its pin",
+    );
+    assert!(
+        live.models.iter().all(|(_, model)| matches!(model.from, ActiveFrom::Pin)),
+        "and every role names the compiled pin as its source",
+    );
 }
 
 /// **A store the bench cannot read is a failure, not a fall back to the
@@ -483,46 +529,71 @@ fn a_machine_with_dictation_off_fails_by_name() {
 #[test]
 fn a_changed_run_re_anchors_the_trend() {
     let committed = "[machine]\nmodel = \"Mac16,9\"\ncpu = \"M4\"\nos = \"macOS\"\n\n\
+                     [engine]\nlanguage = \"en\"\n\n\
                      [corpus]\nmanifest_sha256 = \"corpus1\"\n\n\
                      [asr]\nmodel = \"a.gguf\"\nsha256 = \"sha256:aa\"\n\n\
                      [normalizer]\nmodel = \"n.gguf\"\nsha256 = \"size-10\"\n";
     let machine = ("Mac16,9", "M4", "macOS");
     let asr = ("a.gguf", "sha256:aa");
     let normalizer = ("n.gguf", "size-10");
-    let same =
-        |machine: (&str, &str, &str), corpus: &str, asr: (&str, &str), norm: (&str, &str)| {
-            same_run(Some(committed), machine, corpus, asr, norm).expect("a valid file")
-        };
-    assert!(same(machine, "corpus1", asr, normalizer), "the same run keeps its anchors");
+    let same = |machine: (&str, &str, &str),
+                corpus: &str,
+                language: &str,
+                asr: (&str, &str),
+                norm: (&str, &str)| {
+        same_run(Some(committed), machine, corpus, language, asr, norm).expect("a valid file")
+    };
+    assert!(same(machine, "corpus1", "en", asr, normalizer), "the same run keeps its anchors");
     assert!(
-        !same(machine, "corpus1", ("b.gguf", "sha256:aa"), normalizer),
+        !same(machine, "corpus1", "en", ("b.gguf", "sha256:aa"), normalizer),
         "a different asr file re-anchors",
     );
     assert!(
-        !same(machine, "corpus1", ("a.gguf", "size-279"), normalizer),
+        !same(machine, "corpus1", "en", ("a.gguf", "size-279"), normalizer),
         "the same asr file with a new identity re-anchors",
     );
     assert!(
-        !same(machine, "corpus1", asr, ("m.gguf", "size-10")),
+        !same(machine, "corpus1", "en", asr, ("m.gguf", "size-10")),
         "a different normalizer file re-anchors",
     );
     assert!(
-        !same(machine, "corpus1", asr, ("n.gguf", "size-99")),
+        !same(machine, "corpus1", "en", asr, ("n.gguf", "size-99")),
         "a normalizer identity change re-anchors",
     );
-    assert!(!same(machine, "corpus2", asr, normalizer), "a different corpus re-anchors");
+    assert!(!same(machine, "corpus2", "en", asr, normalizer), "a different corpus re-anchors");
+    assert!(!same(machine, "corpus1", "de", asr, normalizer), "a different language re-anchors");
     assert!(
-        !same(("Mac16,9", "M3", "macOS"), "corpus1", asr, normalizer),
-        "a different machine re-anchors",
+        !same(("Mac16,9", "M3", "macOS"), "corpus1", "en", asr, normalizer),
+        "a different cpu re-anchors",
     );
     assert!(
-        !same_run(None, machine, "corpus1", asr, normalizer).expect("no file"),
+        !same(("Mac17,1", "M4", "macOS"), "corpus1", "en", asr, normalizer),
+        "a different machine model re-anchors",
+    );
+    assert!(
+        !same(("Mac16,9", "M4", "macOS 27"), "corpus1", "en", asr, normalizer),
+        "a different os re-anchors",
+    );
+    assert!(
+        !same_run(None, machine, "corpus1", "en", asr, normalizer).expect("no file"),
         "a first run re-anchors",
     );
+    // Matching values, one key absent: the reader must reach the missing key.
+    let missing_os = "[machine]\nmodel = \"Mac16,9\"\ncpu = \"M4\"\n\n\
+                      [engine]\nlanguage = \"en\"\n\n\
+                      [corpus]\nmanifest_sha256 = \"corpus1\"\n\n\
+                      [asr]\nmodel = \"a.gguf\"\nsha256 = \"sha256:aa\"\n\n\
+                      [normalizer]\nmodel = \"n.gguf\"\nsha256 = \"size-10\"\n";
     assert!(
-        !same_run(Some("[machine]\nmodel = \"Mac\"\n"), machine, "corpus1", asr, normalizer)
-            .expect("a file without the sections"),
-        "a file without the sections is a first run",
+        !same_run(Some(missing_os), machine, "corpus1", "en", asr, normalizer)
+            .expect("a file missing one key"),
+        "a missing identity key is a first run",
+    );
+    // A present field of the wrong type is an error, not a first run.
+    assert!(
+        same_run(Some("[machine]\nmodel = 5\n"), machine, "corpus1", "en", asr, normalizer)
+            .is_err(),
+        "a malformed identity field refuses the run",
     );
     assert_eq!(
         prior_for(Some(682), true),
@@ -530,6 +601,55 @@ fn a_changed_run_re_anchors_the_trend() {
         "an unchanged run keeps the committed anchor",
     );
     assert_eq!(prior_for(Some(682), false), None, "a changed run re-anchors every figure");
+}
+
+/// **The header writes the identity the reader compares.** A renamed key or a
+/// changed source would make every run look like a first run and silently
+/// disable the deadband.
+#[test]
+fn the_header_round_trips_the_run_identity() {
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let models = dir.path().to_path_buf();
+    let asr = ModelSpec {
+        file: "asr.gguf".to_owned(),
+        url: "https://weights.invalid/asr.gguf".to_owned(),
+        size: 3,
+        sha256: Some("sha256:aa".to_owned()),
+        facts: forge_dictate::ModelFacts::default(),
+    };
+    let normalizer = ModelSpec {
+        file: "norm.gguf".to_owned(),
+        url: "https://weights.invalid/norm.gguf".to_owned(),
+        size: 2,
+        sha256: None,
+        facts: forge_dictate::ModelFacts::default(),
+    };
+    std::fs::write(models.join("asr.gguf"), b"abc").expect("the asr file");
+    std::fs::write(models.join("norm.gguf"), b"de").expect("the normalizer file");
+    let out = header(
+        "Mac16,9",
+        "corpus1",
+        "en",
+        &[],
+        Duration::from_secs(156),
+        &asr,
+        &normalizer,
+        &models,
+    );
+    let cpu = sysctl("machdep.cpu.brand_string");
+    let os = os_version();
+    assert!(
+        same_run(
+            Some(&out),
+            ("Mac16,9", &cpu, &os),
+            "corpus1",
+            "en",
+            (&asr.file, &model_identity(&asr, &models.join(&asr.file))),
+            (&normalizer.file, &model_identity(&normalizer, &models.join(&normalizer.file))),
+        )
+        .expect("the header is valid TOML"),
+        "the header's own fields are the identity the reader compares",
+    );
 }
 
 /// **A config key the machine has not installed fails, rather than reaching
@@ -693,10 +813,12 @@ fn bench_corpus() {
     let normalizer_identity = model_identity(&normalizer, &models.join(&normalizer.file));
     let cpu = sysctl("machdep.cpu.brand_string");
     let os = os_version();
-    let same_model = same_run(
+    let language = live.config.language.as_deref().unwrap_or("unset").to_owned();
+    let same_run = same_run(
         existing.as_deref(),
         (&model, &cpu, &os),
         &manifest_sha,
+        &language,
         (&asr.file, &asr_identity),
         (&normalizer.file, &normalizer_identity),
     )
@@ -717,7 +839,7 @@ fn bench_corpus() {
             let name = format!("speed.{key}");
             let prior = committed(existing.as_deref(), &name, "ms")
                 .expect("an unreadable results file must not be silently overwritten");
-            let prior = prior_for(prior, same_model);
+            let prior = prior_for(prior, same_run);
             Section {
                 name,
                 key: "ms",
@@ -732,6 +854,7 @@ fn bench_corpus() {
     out.push_str(&header(
         &model,
         &manifest_sha,
+        &language,
         &manifest,
         total.audio,
         &asr,
@@ -835,6 +958,7 @@ fn model_load_cold_warm() {
 fn header(
     model: &str,
     manifest_sha: &str,
+    language: &str,
     manifest: &[Entry],
     audio: Duration,
     asr: &ModelSpec,
@@ -858,6 +982,8 @@ fn header(
          model = \"{model}\"\n\
          cpu = \"{}\"\n\
          os = \"{}\"\n\n\
+         [engine]\n\
+         language = \"{language}\"\n\n\
          [corpus]\n\
          clips = {}\n\
          audio_seconds = {}\n\

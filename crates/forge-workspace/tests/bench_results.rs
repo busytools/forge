@@ -7,9 +7,8 @@
 //! shows up" on its own. Neither test alone distinguishes a working writer
 //! from a degenerate one.
 //!
-//! Resolutions here are the measured spreads `tests/bench.rs` documents,
-//! kept local because these tests pin the writer's behaviour rather than the
-//! measurement.
+//! Resolutions here are the writer's inputs, chosen to exercise its
+//! boundaries; they are not the trend bench's measured spreads.
 
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
