@@ -102,7 +102,8 @@ file under `profiles/` is not a profile.
 
 **A hand-off names a tab.** `browser_hand_off` requires the page id of one of
 the session's own tabs, as `browser_tabs` prints it, and **Open** raises that
-tab. The tab is held while the ask is parked: the idle clock and the
+tab. A page id no tab carries is refused with the tabs as they stand. The tab
+is held while the ask is parked: the idle clock and the
 dead-seat sweep both leave it alone, the strip marks it **held**, and the
 hand-off's card names it. Any answer releases it - Done, Not now or feedback
 - and a session that went while the tab was held takes it with it when the

@@ -416,9 +416,10 @@ refused attach drops whatever the connection was viewing and is recorded too
 (`browser_attach_refused` with the tab asked for, what was left and why). A
 connection that goes is detached with it. **A hand-off's tab is the tool
 call's own**:
-`browser_hand_off` names it by the page id its listing printed, the ask
-crosses as the seat's parked ask carrying the tab that id resolved to, and
-the surface's Open is this message naming that tab.
+`browser_hand_off` names it by the page id its listing printed, an id no tab
+carries is refused before any ask is parked, the ask crosses as the seat's
+parked ask carrying the tab that id resolved to, and the surface's Open is
+this message naming that tab.
 
 **`browser_detach`** - stop viewing the attached tab. Lowering the takeover
 sends this: an attached viewer counts as a use, so a lowered surface gives

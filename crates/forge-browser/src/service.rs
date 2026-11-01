@@ -1110,7 +1110,19 @@ impl BrowserService {
                     parts = challenge_result(parts);
                 }
                 if created {
-                    parts.push(BrowserPart::Text { text: format!("tab {tab}") });
+                    // **The tab a first call made is named by its page id**,
+                    // the one address a caller may keep: its number is the
+                    // host's and means nothing after a replacement.
+                    let target = profile
+                        .tabs
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .target(tab)
+                        .map(str::to_owned)
+                        .unwrap_or_default();
+                    if !target.is_empty() {
+                        parts.push(BrowserPart::Text { text: format!("tab {target}") });
+                    }
                 }
                 Ok(parts)
             }
@@ -5901,9 +5913,13 @@ fn tool_tab(args: &Value) -> Result<&str, String> {
         return Err("browser_tabs takes `tab`, the page id its list prints first; `index` is gone"
             .to_owned());
     }
-    args.get("tab").and_then(Value::as_str).map(str::trim).filter(|tab| !tab.is_empty()).ok_or_else(
-        || "browser_tabs needs `tab`: the page id of one of the tabs in its list".to_owned(),
-    )
+    match args.get("tab") {
+        Some(Value::String(tab)) if !tab.trim().is_empty() => Ok(tab),
+        Some(_) => Err("browser_tabs needs `tab` as a page id string, not a number".to_owned()),
+        None => {
+            Err("browser_tabs needs `tab`, the page id string its list prints first".to_owned())
+        }
+    }
 }
 
 /// The view a resize asks for, when the caller owns the tab's layout: its
@@ -10412,8 +10428,8 @@ mod tests {
         }
     }
 
-    /// **A session's first page call creates its tab, and the answer names the
-    /// number.** The call then drives that tab and no other.
+    /// **A session's first page call adopts its tab, and the answer names its
+    /// page id.** The call then drives that tab and no other.
     #[tokio::test]
     async fn the_first_page_call_creates_a_named_tab() {
         let dir = tempfile::tempdir().expect("a temp dir");
@@ -10433,11 +10449,16 @@ mod tests {
             .call(&seat, "browser_navigate", json!({"url": "http://a/"}))
             .await
             .expect("the call runs");
-        assert!(
-            parts
-                .iter()
-                .any(|part| matches!(part, forge_primitives::browser::BrowserPart::Text { text } if text.contains("tab 1"))),
-        );
+        let text = parts
+            .iter()
+            .filter_map(|part| match part {
+                forge_primitives::browser::BrowserPart::Text { text } => Some(text.as_str()),
+                forge_primitives::browser::BrowserPart::Image { .. } => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("tab T1"), "the answer names the page id: {text}");
+        assert!(!text.contains("tab 1"), "and never the host's number: {text}");
         let tabs = service.tabs(&seat).await.expect("the rows");
         assert_eq!(tabs.rows.len(), 1);
         assert_eq!(tabs.rows[0].owner, seat);
@@ -11048,6 +11069,72 @@ mod tests {
         assert!(closed.contains("The tabs open now:"), "{closed}");
     }
 
+    /// **A page id selects its tab**, the positive half of the refusal above:
+    /// the id the listing prints moves the seat's current tab back to it.
+    #[tokio::test]
+    async fn a_page_id_selects_its_tab() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let lead = SessionSlot::lead("O", "p");
+        let driver = FakeDriver::with_blank("T1");
+        service.install_fake(&lead, driver.clone()).await;
+        service.call(&lead, "browser_snapshot", json!({})).await.expect("the first tab");
+        driver.push_target("T2");
+        service
+            .call(&lead, "browser_tabs", json!({ "action": "new" }))
+            .await
+            .expect("the second tab");
+
+        let selected = service
+            .call(&lead, "browser_tabs", json!({ "action": "select", "tab": "T1" }))
+            .await
+            .expect("the page id selects its tab");
+        let text = selected
+            .iter()
+            .find_map(|part| match part {
+                forge_primitives::browser::BrowserPart::Text { text } => Some(text.clone()),
+                forge_primitives::browser::BrowserPart::Image { .. } => None,
+            })
+            .unwrap_or_default();
+        assert!(
+            text.lines().any(|line| line.starts_with("- T1: (current) ")),
+            "the selected tab is the current one: {text}",
+        );
+    }
+
+    /// **A page id closes its tab**, the positive half of the close refusal:
+    /// the row the listing printed goes and the others stay.
+    #[tokio::test]
+    async fn a_page_id_closes_its_tab() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let lead = SessionSlot::lead("O", "p");
+        let driver = FakeDriver::with_blank("T1");
+        service.install_fake(&lead, driver.clone()).await;
+        service.call(&lead, "browser_snapshot", json!({})).await.expect("the first tab");
+        driver.push_target("T2");
+        service
+            .call(&lead, "browser_tabs", json!({ "action": "new" }))
+            .await
+            .expect("the second tab");
+
+        let closed = service
+            .call(&lead, "browser_tabs", json!({ "action": "close", "tab": "T2" }))
+            .await
+            .expect("the page id closes its tab");
+        let text = closed
+            .iter()
+            .find_map(|part| match part {
+                forge_primitives::browser::BrowserPart::Text { text } => Some(text.clone()),
+                forge_primitives::browser::BrowserPart::Image { .. } => None,
+            })
+            .unwrap_or_default();
+        assert!(!text.contains("T2"), "the closed tab is gone from the listing: {text}");
+        assert!(text.contains("T1"), "and the other tab stays: {text}");
+        let rows = service.tabs(&lead).await.expect("rows").rows;
+        assert_eq!(rows.len(), 1, "one tab is left: {rows:?}");
+    }
+
     /// **The field an upgrade retired is named rather than read as missing.**
     /// A resumed seat holds the catalogue it started with, so its first call
     /// after the upgrade still says `index`.
@@ -11065,6 +11152,15 @@ mod tests {
             .expect_err("a number is not an address");
         assert!(refused.contains("`index` is gone"), "{refused}");
         assert!(refused.contains("`tab`"), "and names what replaced it: {refused}");
+
+        // **The new name with the old type is the same refusal**: a number
+        // under `tab` is named as the mismatch rather than read as an id.
+        let numeric = service
+            .call(&lead, "browser_tabs", json!({ "action": "select", "tab": 1 }))
+            .await
+            .expect_err("a number is not a page id");
+        assert!(numeric.contains("page id string"), "{numeric}");
+        assert!(numeric.contains("not a number"), "{numeric}");
     }
 
     /// **An idle pass forgets a restarted profile's parks.** A dead host's

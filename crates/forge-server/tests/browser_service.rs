@@ -716,6 +716,10 @@ async fn a_driver_rebuild_keeps_a_sessions_page() {
         .await
         .expect("the first seat's page opens");
     let tab = service.tabs(&one).await.expect("rows").rows[0].number;
+    // **The id is the one the first seat was shown**, captured before the
+    // rebuild the second seat's call causes; a listing after it proves only
+    // that a freshly printed id works.
+    let listed = listed_page_id(&service, &one).await;
 
     // **A second seat's first call creates a tab**, and creating one rebuilds
     // the driver, renaming every page the first seat holds.
@@ -744,11 +748,10 @@ async fn a_driver_rebuild_keeps_a_sessions_page() {
         rows.iter().any(|row| row.number == tab),
         "the seat keeps the tab it was shown: {rows:?}",
     );
-    let page = listed_page_id(&service, &one).await;
     let held = service
-        .hand_off_started(&one, &page)
+        .hand_off_started(&one, &listed)
         .await
-        .expect("the page id a tool printed is accepted");
+        .expect("the page id it was shown, not a fresh one, is accepted");
     service.hand_off_finished(&one, held).await;
 
     service.close(&one).await.expect("the profile closes");

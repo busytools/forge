@@ -133,14 +133,20 @@ impl BrowserTool {
         else {
             return Err("browser_hand_off needs `reason`: what the person should do".to_owned());
         };
-        let Some(tab) =
-            args.get("tab").and_then(Value::as_str).filter(|tab| !tab.trim().is_empty())
-        else {
-            return Err(
-                "browser_hand_off needs `tab`: the page id of one of this session's tabs, from \
-                 browser_tabs list"
-                    .to_owned(),
-            );
+        let tab = match args.get("tab") {
+            Some(Value::String(tab)) if !tab.trim().is_empty() => tab,
+            Some(_) => {
+                return Err(
+                    "browser_hand_off needs `tab` as a page id string, not a number".to_owned()
+                );
+            }
+            None => {
+                return Err(
+                    "browser_hand_off needs `tab`, the page id string of one of this session's \
+                     tabs, from browser_tabs list"
+                        .to_owned(),
+                );
+            }
         };
         match self.facade.hand_off(&self.slot, reason, tab).await? {
             HandOffEnding::Done => Ok(vec![BrowserPart::Text {
