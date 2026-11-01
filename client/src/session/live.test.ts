@@ -3306,6 +3306,60 @@ describe('the read, and the answer a frame has outrun', () => {
   });
 
   /**
+   * **An outrun answer still hands over the slices a frame cannot carry.**
+   * `diff`, `reviews`, `tree_reviews` and `resume_sessions` have no update
+   * handler: a whole read is the only way they move. A drop that took nothing
+   * would lose a review page's base and a review notice's strip while the
+   * seat streamed, so the answer's four slices are taken and the record the
+   * frames carried stays.
+   */
+  it('keeps the read-only slices of an answer the frames outran', () => {
+    const connection = drivable();
+    const page = watch(connection);
+    page.land(
+      snapshotOf(
+        LEAD,
+        { conversation: { turns: [], compaction_count: 0 } },
+        { epoch: 'one', seq: 1 },
+      ),
+    );
+    page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke('hello') } }, 1));
+    paint();
+
+    // The review page's own read goes out, and a frame carries the record
+    // past the answer's encode point.
+    rereadSeat(connection, LEAD, { review: true });
+    const asked = page.reads();
+    page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke('more', 'u2') } }, 2));
+    paint();
+
+    page.land(
+      snapshotOf(
+        LEAD,
+        {
+          conversation: { turns: [], compaction_count: 0 },
+          diff: { truncated: true },
+          reviews: { threads: { outcome: 'read', value: [] } },
+          tree_reviews: { threads: { outcome: 'read', value: [] } },
+          resume_sessions: ['a-session'],
+        },
+        { epoch: 'one', seq: 1 },
+      ),
+    );
+    paint();
+
+    expect(page.reads(), 'the outrun answer bought a whole re-read').toBe(asked);
+    expect(spoken(page), "the frames' rows were lost to the answer").toEqual(['hello', 'more']);
+    const held = page.read().wire;
+    expect(held?.diff.truncated, 'the diff slice was not taken').toBe(true);
+    expect(held?.reviews.threads.outcome, 'the reviews slice was not taken').toBe('read');
+    expect(held?.tree_reviews.threads.outcome, 'the tree reviews slice was not taken').toBe('read');
+    expect(held?.resume_sessions, 'the resume list was not taken').toEqual(['a-session']);
+    expect(page.read().review, 'the review read was not marked on the record').toBe(true);
+    page.stop();
+  });
+
+  /**
    * **A swap's outrun answer is taken, and the frames above it fetched**
    * (#2276, #2563). A wipe starts the count again without clearing the
    * record, so the new epoch's frames merge onto the PREVIOUS occupant's

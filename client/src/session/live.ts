@@ -8,7 +8,9 @@
  * answering every update with a read is a full encode on the server - the
  * transcript re-folded into turns, the process tree walked, the working tree
  * scanned - so the page ran further behind the busier the seat was. A read is
- * for a cold load, a reconnect and a seat swap: every slice has a frame.
+ * for a cold load, a reconnect and a seat swap. Four slices have no frame -
+ * `diff`, `reviews`, `tree_reviews` and `resume_sessions` - and a whole read
+ * is the only thing that moves them.
  *
  * The subject is the SEAT, and the connection routes an update to it by the
  * slot the update carries, so a store's contents are this seat's and nothing
@@ -800,6 +802,32 @@ function createSeat(
   }
 
   /**
+   * Take an outrun answer's read-only slices, keeping the record the frames
+   * carry.
+   *
+   * **Four slices have no frame**: `diff`, `reviews`, `tree_reviews` and
+   * `resume_sessions` move only by a whole read. An answer the frames outran
+   * is stale for everything they carry, but it is the only carrier these have
+   * - dropping it takes a review page's base and a review notice's strip with
+   * it - so the drop keeps the frames' record and takes the four (#2563).
+   */
+  function absorbReadOnly(): void {
+    const data = seat.held?.snapshot();
+    if (data === null || data === undefined || seat.wire === null) return;
+    const answer = sessionFrom(data);
+    publish(
+      {
+        ...seat.wire,
+        diff: answer.diff,
+        reviews: answer.reviews,
+        tree_reviews: answer.tree_reviews,
+        resume_sessions: answer.resume_sessions,
+      },
+      null,
+    );
+  }
+
+  /**
    * Take the answer in flight, then ask again for a read wanted while it was
    * on its way.
    *
@@ -1302,10 +1330,12 @@ function createSeat(
         // loop.
         const moved = seat.seen !== seat.askedAt;
         if (reach.seq !== null && reach.seq - 1 < seat.lastSeq && moved && seat.wire !== null) {
-          // **The record the frames carried forward IS the record**, so a
-          // stale answer of the SAME occupant is dropped rather than asked
-          // for again: one more encode would be outrun too, and a whole read
-          // is 2.4-3.7 MB on a slow link (#1472, #2563).
+          // **The record the frames carried forward IS the record for
+          // everything a frame carries**, so a stale answer of the SAME
+          // occupant is dropped rather than asked for again: one more encode
+          // would be outrun too, and a whole read is 2.4-3.7 MB on a slow
+          // link (#1472, #2563). Its four read-only slices have no frame and
+          // are taken anyway (#2563).
           //
           // **A swap's answer is the exception, and taking it is the fix.**
           // The wipe restarts the count WITHOUT clearing the record, so the
@@ -1314,6 +1344,7 @@ function createSeat(
           // the replace the wipe was waiting for (#2276). What the answer does
           // not carry is fetched by number rather than by a whole record.
           if (seat.wire.header.session_id === reach.epoch) {
+            absorbReadOnly();
             // A read wanted while the answer was in flight is still owed.
             serveWanted();
             return;
