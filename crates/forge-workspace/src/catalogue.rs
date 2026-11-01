@@ -462,7 +462,8 @@ impl crate::Workspace {
         let state = self.dictate_catalogue.lock();
         let entries: &[CatalogueEntry] =
             state.catalogue.as_ref().map_or(&[], |catalogue| catalogue.entries.as_slice());
-        let mut in_use = if settings.enabled { in_use(entries, &active, &preflight) } else { Vec::new() };
+        let mut in_use =
+            if settings.enabled { in_use(entries, &active, &preflight) } else { Vec::new() };
         if config.tts.enabled {
             let pin = config.tts.pin();
             for row in &self.voices().snapshot.models {

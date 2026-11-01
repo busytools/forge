@@ -93,6 +93,7 @@ mod tasks;
 pub mod tts;
 mod update_fanout;
 mod views;
+pub mod voice;
 pub mod work;
 mod workspace;
 
