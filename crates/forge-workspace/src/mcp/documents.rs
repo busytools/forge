@@ -77,6 +77,26 @@ to open it or not, and **this call waits for them**: it answers when \
 they finish - with the review their comments were filed as - or when \
 they say not now.";
 
+/// What a session spawned without `review` reads instead, before it calls:
+/// the hand-off works and the reader may still review, but the review is
+/// the lead's to read, so the plain description would promise it back.
+const DESCRIPTION_WITHOUT_REVIEW: &str = "\
+Hand the reader a document from this session's working tree, or from one of \
+the project's vault roots, opened in their own viewer. Use it when a \
+document is the thing the reader should see - a plan, a report, a spec - \
+rather than part of the conversation; a document the reader is meant to \
+review goes here with `reviewable: true`, never as a path or link in \
+chat. `path` is relative to the working directory, or absolute under \
+one of the project's `vault_roots` in `forge.toml`. Set `reviewable` \
+to ask the reader for a review of it: they open it, comment on lines \
+and finish, and their review is filed under the document's own scope. \
+This session was spawned without the `review` MCP family, so you cannot \
+read it back; the answer names the review's scope, which your lead \
+reads with review__get. A PDF always opens read-only. The reader is \
+asked to open it or not, and **this call waits for them**: it answers \
+when they finish - with the review their comments were filed as - or \
+when they say not now.";
+
 /// The one tool: the hand-off itself.
 pub(crate) struct HandOffTool {
     facade: Arc<dyn DocumentFacade>,
@@ -97,7 +117,7 @@ impl Tool for HandOffTool {
     }
 
     fn description(&self) -> &'static str {
-        DESCRIPTION
+        if self.review_available { DESCRIPTION } else { DESCRIPTION_WITHOUT_REVIEW }
     }
 
     fn input_schema(&self) -> Value {
@@ -176,17 +196,7 @@ impl HandOffTool {
                 }
             }
             DocumentHandOffEnding::Done { review_id: None } => {
-                let finished =
-                    format!("The reader finished at {resolved} without leaving comments.");
-                if self.review_available {
-                    finished
-                } else {
-                    format!(
-                        "{finished} This session was spawned without the `review` MCP family, \
-                         so a review left under this document is your lead's to read, not this \
-                         session's."
-                    )
-                }
+                format!("The reader finished at {resolved} without leaving comments.")
             }
             DocumentHandOffEnding::NotNow => {
                 return Err("the reader said not now, so nothing opened".to_owned());
@@ -331,19 +341,24 @@ mod tests {
             !text.contains("read them back with review__get and pass that scope"),
             "it must not send a session without review to read them itself: {text}",
         );
+    }
 
-        *mock.answer.lock() = Ok((
-            "/proj/docs/readme.md".to_owned(),
-            DocumentHandOffEnding::Done { review_id: None },
-        ));
-        let out = tool
-            .call(ToolInput { value: json!({ "path": "docs/readme.md", "reviewable": true }) })
-            .await;
-        assert!(!out.is_error, "{:?}", out.blocks);
-        let text = crate::mcp::test_support::block_text(&out.blocks[0]);
+    /// The description is the surface read before the call, so a session
+    /// spawned without `review` learns the review will not come back to it
+    /// there, not only once the park releases.
+    #[test]
+    fn the_description_names_the_review_gap_before_the_call() {
+        let without = tool_with_review(MockDocumentFacade::new().into_arc(), false);
         assert!(
-            text.contains("spawned without the `review` MCP family"),
-            "the gap is named at hand-off time even when nothing was commented: {text}",
+            without.description().contains("spawned without the `review` MCP family"),
+            "the pre-call text names the family this session lacks: {}",
+            without.description(),
+        );
+        let with = tool(MockDocumentFacade::new().into_arc());
+        assert!(
+            !with.description().contains("spawned without the `review` MCP family"),
+            "and a session that has it is not told otherwise: {}",
+            with.description(),
         );
     }
 
