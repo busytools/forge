@@ -207,6 +207,19 @@ back to chat does, and Cmd+[ and Cmd+] move through the page's history. With
 the bar's own feedback field focused, the menu keeps its editing as it does
 everywhere else, and every other Command chord belongs to the app.
 
+**The keyboard moves between the page and the bar on the pane chords.**
+Cmd+Option+Down takes it out of the page and into the bar, and Cmd+Option+Up
+hands it back - the two macOS Chrome moves between its toolbar and its page.
+The bar is a document above the picture, not part of it, so with the keyboard
+there Tab stays inside the bar (it wraps at both ends), its buttons take
+Enter and Space, and the feedback field types as any field does. **The bar
+holds the DOM focus only while it has the keys**: on open the native page
+keeps them, so no ring sits on a control the keyboard cannot reach, and
+clicking the picture takes them back the way the chord does. A focus that
+lands in the bar - the push-to-talk key's line, a take's landing - brings
+the keys with it too. A failed page has no picture to hold them, so the bar
+takes them.
+
 **The arrows are the page's own history.** The server reads
 `Page.getNavigationHistory` over the same CDP connection that carries the
 input - on attach, on every re-open, and after every navigation the page

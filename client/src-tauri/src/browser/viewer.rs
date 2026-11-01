@@ -130,6 +130,19 @@ impl Viewer {
         }
     }
 
+    /// **The keyboard goes to the page or to the bar's document**, whichever
+    /// the page asked for: the overlay's view holds it for the picture, and
+    /// the webview it was attached with holds the bar's.
+    pub fn focus(&self, holder: &str) {
+        match holder {
+            "bar" => super::cef::surface::focus_bar(&self.app),
+            "page" => super::cef::surface::focus_page(&self.app),
+            other => tauri_plugin_log::log::warn!(
+                "the page asked for a keyboard holder this shell does not have ({other})"
+            ),
+        }
+    }
+
     /// One relayed frame, as the socket carried it: the host's own frame
     /// wire - profile id, tab, sequence, view size, format, key flag and the
     /// page's viewport, then the encoded pixels.
@@ -229,6 +242,12 @@ fn undecodable_frame(profile: u16, tab: u16, width: u16, height: u16, bytes: usi
 #[tauri::command]
 pub fn browser_surface_rect(viewer: tauri::State<'_, Arc<Viewer>>, rect: Rect, viewport: Viewport) {
     viewer.set_rect(rect, viewport);
+}
+
+/// Hand the keyboard to the pane the page names: `bar` or `page`.
+#[tauri::command]
+pub fn browser_surface_focus(viewer: tauri::State<'_, Arc<Viewer>>, holder: String) {
+    viewer.focus(&holder);
 }
 
 #[cfg(test)]

@@ -30,6 +30,7 @@ import {
   listTabs,
   onConnection,
   onFailed,
+  onKeyboard,
   onLower,
   onNav,
   onRemeasure,
@@ -499,6 +500,16 @@ const STEPS: Step[] = [
   { what: 'the history', start: () => onNav(nav) },
   { what: 'the viewer state', start: () => onView(viewed) },
   { what: 'the tabs', start: () => onTabs(tabs) },
+  {
+    what: "the keyboard's holder",
+    start: () =>
+      onKeyboard((holder) => {
+        // **The pane chords are the shell's, and the bar is the listener**:
+        // the window event keeps the store from reaching into the composer,
+        // the same way the remeasure ask reaches the surface's own component.
+        window.dispatchEvent(new Event(holder === 'bar' ? 'forge-bar-focus' : 'forge-page-focus'));
+      }),
+  },
   { what: 'the connection', start: () => onConnection(reconnect) },
 ];
 

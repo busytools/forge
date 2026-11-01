@@ -133,6 +133,9 @@ struct OverlayIvars {
     app: Mutex<Option<tauri::AppHandle>>,
     /// The picture this view is drawing: a gesture is mapped through it.
     picture: Mutex<Option<Picture>>,
+    /// The webview the page's DOM lives in, so the pane chord can give it
+    /// the keyboard. It lives for the window's own lifetime.
+    webview: Mutex<Option<usize>>,
     /// Each forwarded modifier side's own state.
     ///
     /// **The aggregate `Command`/`Control` flag cannot tell the sides apart**:
@@ -158,6 +161,32 @@ const RIGHT_CONTROL: ModifierMask = 1 << 3;
 /// own listeners back.
 const MODIFIER_EVENT: &str = "browser_modifier";
 const MODIFIER_CHORD_EVENT: &str = "browser_modifier_chord";
+
+/// Whose keyboard it is, pushed to the page when the pane chords move it:
+/// the overlay's picture holds it, or the bar's DOM does.
+const KEYBOARD_EVENT: &str = "browser_keyboard";
+
+/// The two panes the keyboard moves between, as the page hears them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+enum KeyboardHolder {
+    Bar,
+    Page,
+}
+
+/// [`KEYBOARD_EVENT`]'s payload: the holder alone, so a page narrows one
+/// field rather than guessing a state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+struct Keyboard {
+    holder: KeyboardHolder,
+}
+
+/// **The pane chords are the platform's own**: exactly Command+Option with
+/// an arrow, the two macOS Chrome moves between its toolbar and its page.
+/// They are key equivalents, so the remote page never sees them.
+fn pane_key(keycode: u16, command: bool, shift: bool, option: bool, control: bool) -> bool {
+    command && option && !shift && !control && matches!(keycode, 125 | 126)
+}
 
 /// The drawn picture's two spaces: the frame's own pixels, and the page's
 /// viewport they were painted from.
@@ -227,7 +256,12 @@ fn picture_of(frame: &Frame) -> Picture {
 
 impl Default for OverlayIvars {
     fn default() -> Self {
-        Self { app: Mutex::new(None), picture: Mutex::new(None), modifiers: Mutex::new(0) }
+        Self {
+            app: Mutex::new(None),
+            picture: Mutex::new(None),
+            webview: Mutex::new(None),
+            modifiers: Mutex::new(0),
+        }
     }
 }
 
@@ -263,7 +297,13 @@ define_class!(
         #[unsafe(method(mouseDown:))]
         unsafe fn mouse_down(&self, event: &objc2_app_kit::NSEvent) {
             if let Some(window) = self.window() {
+                let held = self.holds_keyboard();
                 window.makeFirstResponder(Some(self as &NSResponder));
+                // **A click on the picture takes the keyboard back**, so a
+                // ring the bar still draws is one the keys cannot reach.
+                if !held {
+                    self.emit(KEYBOARD_EVENT, Keyboard { holder: KeyboardHolder::Page });
+                }
             }
             self.mouse(MouseAction::Press, event);
         }
@@ -313,6 +353,21 @@ define_class!(
             let flags = event.modifierFlags();
             if chord_arrived(flags) {
                 self.chord_signal();
+            }
+            // **The pane chords move the keyboard, not the page.** Claimed
+            // here, while this view holds it, so the remote page never sees
+            // the two keys macOS Chrome keeps for the same move.
+            if self.holds_keyboard()
+                && pane_key(
+                    event.keyCode(),
+                    flags.contains(objc2_app_kit::NSEventModifierFlags::Command),
+                    flags.contains(objc2_app_kit::NSEventModifierFlags::Shift),
+                    flags.contains(objc2_app_kit::NSEventModifierFlags::Option),
+                    flags.contains(objc2_app_kit::NSEventModifierFlags::Control),
+                )
+            {
+                self.hand_keyboard_to_bar();
+                return true.into();
             }
             let route = route_equivalent(
                 character_of(event).unwrap_or('\0'),
@@ -508,6 +563,34 @@ impl OverlayView {
     /// surface and the page's bar then carries back-to-chat, Done and Not now.
     fn lower_surface(&self) {
         self.emit("browser_surface_lower", ());
+    }
+
+    /// **The keyboard moves into the bar's document.** The webview is where
+    /// the page's DOM lives, so making it first responder is what lets the
+    /// bar take the keys; the page is told in the same breath, because a
+    /// focus ring it cannot reach is worse than none.
+    fn hand_keyboard_to_bar(&self) {
+        let webview = self.webview();
+        let Some(webview) = webview else { return };
+        if let Some(window) = self.window() {
+            // SAFETY: main thread, and the webview lives for the window's
+            // own lifetime.
+            let view = unsafe { &*(webview as *const NSView) };
+            window.makeFirstResponder(Some(view));
+        }
+        self.emit(KEYBOARD_EVENT, Keyboard { holder: KeyboardHolder::Bar });
+    }
+
+    fn set_webview(&self, webview: usize) {
+        if let Ok(mut slot) = self.ivars().webview.lock() {
+            *slot = Some(webview);
+        }
+    }
+
+    /// The webview the page's DOM lives in, as the address it was attached
+    /// with.
+    fn webview(&self) -> Option<usize> {
+        self.ivars().webview.lock().ok().and_then(|slot| *slot)
     }
 
     /// **The page marks its own press from this**, exactly as the DOM route
@@ -946,11 +1029,15 @@ pub fn attach(app: &tauri::AppHandle, rect: Rect, viewport: super::super::Viewpo
                         // **The surface takes the keyboard on Open.** Waiting
                         // for the first mouseDown left the keys going to the
                         // hidden composer: a CAPTCHA code typed after Open
-                        // landed in an invisible draft.
+                        // landed in an invisible draft. **And the bar is told
+                        // the page has it**, so a focus it still holds from
+                        // before this attach is given up with the keys.
+                        overlay.set_webview(webview as *const NSView as usize);
                         if let Some(window) = overlay.window() {
                             let responder: &NSResponder = &overlay;
                             window.makeFirstResponder(Some(responder));
                         }
+                        overlay.emit(KEYBOARD_EVENT, Keyboard { holder: KeyboardHolder::Page });
                         let view = &*overlay as *const OverlayView as usize;
                         *overlay_slot() = Some(Overlay {
                             view,
@@ -989,6 +1076,44 @@ pub fn draw(app: &tauri::AppHandle, frame: &Arc<Frame>) {
             view.draw_frame(&frame);
         }
     });
+}
+
+/// **Hand the keyboard to one of the two panes.** The bar's DOM lives in the
+/// webview; the picture is this module's own view. With no overlay there is
+/// nothing to move, which is a failed surface: the webview already has the
+/// keys.
+fn focus(app: &tauri::AppHandle, holder: KeyboardHolder) {
+    let _ = app.run_on_main_thread(move || {
+        let slot = overlay_slot();
+        let Some(overlay) = slot.as_ref() else { return };
+        // SAFETY: main thread, and both views live for the window's lifetime.
+        unsafe {
+            let view = &*(overlay.view as *const OverlayView);
+            let Some(window) = view.window() else { return };
+            match holder {
+                KeyboardHolder::Bar => {
+                    if let Some(webview) = view.webview() {
+                        let page = &*(webview as *const NSView);
+                        window.makeFirstResponder(Some(page));
+                    }
+                }
+                KeyboardHolder::Page => {
+                    window.makeFirstResponder(Some(view as &NSResponder));
+                }
+            }
+        }
+    });
+}
+
+/// Give the keyboard back to the page: the bar's pane chord's ask.
+pub fn focus_page(app: &tauri::AppHandle) {
+    focus(app, KeyboardHolder::Page);
+}
+
+/// Bring the keyboard into the bar's document: the page asks when focus
+/// lands on one of its controls while the picture still holds the keys.
+pub fn focus_bar(app: &tauri::AppHandle) {
+    focus(app, KeyboardHolder::Bar);
 }
 
 /// Close the surface: stop drawing and take the overlay down.
@@ -1189,17 +1314,55 @@ mod tests {
         );
     }
 
-    /// **The two overlay events cross a language boundary as literals.** A
-    /// rename on either side alone kills desktop dictation with every other
-    /// test green, so the page's own listeners are read back out of the file.
+    /// **The overlay's events cross a language boundary as literals.** A
+    /// rename on either side alone kills desktop dictation, or leaves the
+    /// pane chord blind to the keyboard, with every other test green, so the
+    /// page's own listeners are read back out of the file.
     #[test]
     fn the_overlay_events_are_the_names_the_page_listens_for() {
         let page = include_str!("../../../../src/browser/shell.ts");
-        for name in [MODIFIER_EVENT, MODIFIER_CHORD_EVENT] {
+        for name in [MODIFIER_EVENT, MODIFIER_CHORD_EVENT, KEYBOARD_EVENT] {
             let listens = page.contains(&format!("listen('{name}'"))
                 || page.contains(&format!("listen<unknown>('{name}'"));
             assert!(listens, "the page no longer listens for {name}");
         }
+    }
+
+    /// **The page moves the keyboard between the panes by a command name**,
+    /// and the shell's handler list is where it has to exist. A rename on
+    /// either side leaves the pane chord silently doing nothing.
+    #[test]
+    fn the_page_asks_for_the_page_keyboard_by_a_registered_command() {
+        let page = include_str!("../../../../src/browser/shell.ts");
+        let shell = include_str!("../../lib.rs");
+        let command = "browser_surface_focus";
+        assert!(
+            page.contains(&format!("invokeShell('{command}'")),
+            "the page no longer asks for {command}"
+        );
+        assert!(
+            shell.contains(&format!("viewer::{command}")),
+            "the shell's handler list lost {command}"
+        );
+    }
+
+    /// **The pane chords are exactly Command+Option with an arrow**, so a
+    /// page's Cmd+Option+letter, an arrow alone, or a third modifier stays
+    /// the page's own keys.
+    #[test]
+    fn only_an_exact_command_option_arrow_moves_the_panes() {
+        for keycode in [125, 126] {
+            assert!(pane_key(keycode, true, false, true, false), "Cmd+Option and an arrow");
+            assert!(
+                !pane_key(keycode, true, false, true, true),
+                "a Control in the chord makes it somebody else's"
+            );
+            assert!(!pane_key(keycode, true, true, true, false), "nor does Shift");
+            assert!(!pane_key(keycode, true, false, false, false), "Command alone is the page's");
+            assert!(!pane_key(keycode, false, false, true, false), "Option alone is too");
+        }
+        assert!(!pane_key(123, true, false, true, false), "the left arrow moves no panes");
+        assert!(!pane_key(124, true, false, true, false), "nor the right");
     }
 
     /// **A chord is any key under a held Command or Control.** The page's

@@ -107,6 +107,7 @@ describe('the shell listeners', () => {
         'browser_nav_state',
         'browser_view',
         'browser_tabs',
+        'browser_keyboard',
         'client://connection',
       ]);
 
@@ -124,6 +125,26 @@ describe('the shell listeners', () => {
       viewed({
         payload: { id: 7, profile: 'browser-stack-lead', tab: 3, viewer: 3, controller: 4 },
       });
+
+      // **The shell says whose keyboard it is**, and the page relays the
+      // holder as the window event its bar listens for. A payload this page
+      // cannot read is no holder at all, rather than a guessed one.
+      const keyboard = listen.mock.calls.find((entry) => entry[0] === 'browser_keyboard')?.[1] as
+        ((event: { payload: unknown }) => void) | undefined;
+      const holders: string[] = [];
+      const heard = (event: Event): void => {
+        holders.push(event.type);
+      };
+      window.addEventListener('forge-bar-focus', heard);
+      window.addEventListener('forge-page-focus', heard);
+      keyboard?.({ payload: { holder: 'bar' } });
+      keyboard?.({ payload: { holder: 'page' } });
+      keyboard?.({ payload: null });
+      keyboard?.({ payload: { holder: 'sideways' } });
+      expect(holders, 'the two holders, and nothing from a payload it cannot read').toEqual([
+        'forge-bar-focus',
+        'forge-page-focus',
+      ]);
 
       // **A failure that names another surface is not this one's.** A late
       // frame for a superseded attach must not fail the tab now viewed.

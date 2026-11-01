@@ -41,6 +41,8 @@ function wireLink(connection: Connection & BrowserWire): BrowserLink {
     sizesAsWatcher: true,
     /** **The attach lived on the socket that dropped**, so the page re-asks. */
     reattachesOnReconnect: true,
+    /** The picture is this document's canvas, so its keyboard is too. */
+    pageHoldsKeyboard: false,
     /** A tab's Back would leave the seat; it lowers the takeover instead. */
     usesPageHistory: true,
 

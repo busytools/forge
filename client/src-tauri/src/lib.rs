@@ -582,6 +582,7 @@ pub fn run() -> u8 {
         .invoke_handler(
         tauri::generate_handler![
             browser::viewer::browser_surface_rect,
+            browser::viewer::browser_surface_focus,
             browser::browser_takeover,
             browser::browser_kept_frame,
             commands::client_browser_view,
@@ -644,6 +645,7 @@ pub fn run() -> u8 {
         .plugin(launch::init())
         .invoke_handler(tauri::generate_handler![
             browser::viewer::browser_surface_rect,
+            browser::viewer::browser_surface_focus,
             browser::browser_takeover,
             browser::browser_kept_frame,
             commands::client_browser_view,
