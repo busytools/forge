@@ -7,8 +7,9 @@
 //! done releases it with what the finish filed; a review the reader leaves
 //! is filed under the document's own scope and named in the answer, so the
 //! agent reads it back like any review. A session spawned without the
-//! `review` family still hands off, but its answer names the family it
-//! lacks instead of the tool it cannot call. `NotNow` ends the call with
+//! `review` family still hands off, but its description and answer name the
+//! family it lacks instead of telling it to call a tool it does not have.
+//! `NotNow` ends the call with
 //! the reader's decline, and a client that goes away ends it abandoned.
 //!
 //! **Any-caller and not toggleable, like the browser**: every session may
@@ -189,7 +190,7 @@ impl HandOffTool {
                 } else {
                     format!(
                         "{filed}. This session was spawned without the `review` MCP family, so \
-                         it cannot read them back - hand that scope to your lead, which can \
+                         you cannot read them back - hand that scope to your lead, which can \
                          read them with review__get."
                     )
                 }
