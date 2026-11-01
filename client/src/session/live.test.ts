@@ -3512,6 +3512,47 @@ describe('the read, and the answer a frame has outrun', () => {
   });
 
   /**
+   * **The swap's take is the other path a latched want rides** (#2276). A
+   * review read wanted during a swap's whole-record flight is served by the
+   * answer that lands, because the take spends the ask - left latched, it
+   * would have no ask outstanding and would fire later as a stray read.
+   */
+  it('serves a read wanted while a swap answer the frames outran landed', () => {
+    const connection = drivable();
+    const page = watch(connection);
+    page.land(
+      snapshotOf(LEAD, {
+        conversation: { turns: [], compaction_count: 0 },
+        work: { branch: 'old' },
+      }),
+    );
+    // The swap asks for the whole record, and a review read is wanted behind
+    // it.
+    page.land(frameOf(occupant('new'), 2));
+    const asked = page.reads();
+    rereadSeat(connection, LEAD, { review: true });
+
+    // The new epoch's first frame carries the record past the answer's
+    // encode point.
+    page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke('the new row', 'n1') } }, 1));
+    page.land(
+      snapshotOf(
+        LEAD,
+        { conversation: { turns: [], compaction_count: 0 }, work: { branch: 'new' } },
+        { epoch: 'new', seq: 1 },
+      ),
+    );
+
+    expect(page.reads(), 'the want latched behind the swap answer was never served').toBe(
+      asked + 1,
+    );
+    expect(connection.refreshes.at(-1), 'the want was served as the scope it asked for').toEqual({
+      review: true,
+    });
+    page.stop();
+  });
+
+  /**
    * **The drop's premise is a record of the answer's OWN occupant, and a
    * swap's read is not one** (#2276). A wipe starts the count again without
    * clearing the record, so the new epoch's frames merge onto the PREVIOUS

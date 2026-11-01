@@ -220,32 +220,52 @@ async function until(what: () => boolean, why: string, deadlineMs = WAIT_MS): Pr
 }
 
 /**
+ * The slow-link seat, open and drawing: the rig both bound cases share.
+ *
+ * The seat's answer is ten cadences away and the seat keeps streaming, so the
+ * frames outrun it by construction - the shape #2561, #2563 and #2564 all
+ * live in.
+ */
+async function atBound() {
+  const server = await slowLink(ANSWER_MS, 15);
+  const connection = connect(server.url, BOUND_MS);
+  const view = watchSession(connection, LEAD, true);
+  // A reader is what makes the store show the seat, and its subscription is
+  // what opens the seat's own.
+  const stop = view.subscribe(() => undefined);
+  return {
+    server,
+    view,
+    close: () => {
+      stop();
+      connection.close();
+      server.stop();
+    },
+  };
+}
+
+/**
  * **A slow first record must not draw the repaired stretch twice** (#2564).
  */
 describe('a first whole record slower than the frames', () => {
   it('draws every streamed row once', async () => {
-    const server = await slowLink(ANSWER_MS, 15);
-    const connection = connect(server.url, BOUND_MS);
-    const view = watchSession(connection, LEAD, true);
-    const stop = view.subscribe(() => undefined);
-
+    const rig = await atBound();
     try {
-      await until(() => get(view).wire !== null, 'the seat to draw its record');
+      await until(() => get(rig.view).wire !== null, 'the seat to draw its record');
       await wait(QUIET_MS);
 
-      const emitted = server.emitted();
+      const emitted = rig.server.emitted();
       await until(
-        () => streamed(get(view)).length >= emitted,
+        () => streamed(get(rig.view)).length >= emitted,
         'the emitted frames to reach the record',
       );
-      const words = streamed(get(view));
-      expect(words, 'a streamed row was drawn more than once').toEqual(
-        Array.from({ length: words.length }, (_, at) => `u${at + 1}`),
-      );
+      const words = streamed(get(rig.view));
+      expect(
+        words,
+        'the record is not u1..uN once each: a duplicate, a hole, or a row out of turn',
+      ).toEqual(Array.from({ length: words.length }, (_, at) => `u${at + 1}`));
     } finally {
-      stop();
-      connection.close();
-      server.stop();
+      rig.close();
     }
   });
 });
@@ -262,16 +282,11 @@ describe('a first whole record slower than the frames', () => {
  */
 describe('a whole-record answer slower than the bound', () => {
   it('is re-asked once, not on every cadence', async () => {
-    const server = await slowLink(ANSWER_MS, 15);
-    const connection = connect(server.url, BOUND_MS);
-    const view = watchSession(connection, LEAD, true);
-    // A reader is what makes the store show the seat, and its subscription is
-    // what opens the seat's own.
-    const stop = view.subscribe(() => undefined);
+    const rig = await atBound();
 
     try {
       // The first answer lands and the seat draws its record.
-      await until(() => get(view).wire !== null, 'the seat to draw its record');
+      await until(() => get(rig.view).wire !== null, 'the seat to draw its record');
 
       // And every ask the answer's own arrival could have bought has had its
       // window.
@@ -283,7 +298,7 @@ describe('a whole-record answer slower than the bound', () => {
       // retry, and the outrun path's up to three re-asks; with the outrun
       // answer dropped rather than re-read (#2563), the retry is the last
       // ask. The cadence amplifier measured thirteen in this window.
-      const asked = server.seatSubscribes().length;
+      const asked = rig.server.seatSubscribes().length;
       expect(asked, 'the read was either not retried or re-read again past the bound').toBe(2);
 
       // **The frames that crossed the answer reach the record, whole and in
@@ -291,13 +306,13 @@ describe('a whole-record answer slower than the bound', () => {
       // on, so a frame emitted while this runs only lengthens the tail and the
       // check is race-safe. Without the repair the carried rows stop at the
       // answer's encode point and the record never catches up to the count.
-      const emitted = server.emitted();
+      const emitted = rig.server.emitted();
       await until(
-        () => streamed(get(view)).length >= emitted,
+        () => streamed(get(rig.view)).length >= emitted,
         'the emitted frames to reach the record',
       );
-      const words = streamed(get(view));
-      expect(words, 'the repaired stretch has a hole or arrived out of order').toEqual(
+      const words = streamed(get(rig.view));
+      expect(words, 'the repaired stretch has a duplicate, a hole, or a row out of turn').toEqual(
         Array.from({ length: words.length }, (_, at) => `u${at + 1}`),
       );
       expect(
@@ -305,9 +320,7 @@ describe('a whole-record answer slower than the bound', () => {
         "the rows above the answer's encode point never reached the record",
       ).toBeGreaterThanOrEqual(emitted);
     } finally {
-      stop();
-      connection.close();
-      server.stop();
+      rig.close();
     }
   });
 });

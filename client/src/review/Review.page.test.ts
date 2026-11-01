@@ -1565,9 +1565,9 @@ describe('the steppers', () => {
   /**
    * **The page opens the seat as its own read.** The record it opens on may
    * have been read for whichever page asked last, so the intent is handed to
-   * the seat at open - which is where every later ask (an outrun, a
-   * reconnect, a replacement frame) reads it from - and taken back when the
-   * page lets the seat go.
+   * the seat at open - which is where every later ask (a reconnect, a
+   * replacement frame) reads it from - and taken back when the page lets the
+   * seat go.
    */
   it('opens the seat as a review read, and takes the intent back on leaving', async () => {
     await draw();

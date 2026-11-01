@@ -93,10 +93,10 @@ interface Seat {
    * Whether the reads this seat wants are the review page's own.
    *
    * **Held on the seat rather than asked once**, because a want is not one
-   * ask: a read dropped for one in flight, an outrun the frames caused, and a
-   * reconnect's own re-subscribe are all asks the page did not get to choose,
-   * and each must carry the same kind of read or the page ends up reporting a
-   * refresh that never ran. Keyed to the seat (and so to its slot), so a
+   * ask: a read dropped for one in flight, a reconnect's own re-subscribe and
+   * a want served when an answer lands are all asks the page did not get to
+   * choose, and each must carry the same kind of read or the page ends up
+   * reporting a refresh that never ran. Keyed to the seat (and so to its slot), so a
    * review page moving to another seat does not find its predecessor's want.
    *
    * A page that stops holding the seat clears it: the next ordinary ask then
@@ -369,9 +369,9 @@ export function watchSession(
   answering: boolean,
   /**
    * `review` holds the seat's reads as the review page's own for as long as
-   * this page does: the first subscribe carries it, every re-ask re-issues it
-   * (an outrun, a reconnect, a replacement frame), and the page's own cleanup
-   * takes it back with `clearReview`.
+   * this page does: the first subscribe carries it, every later read re-issues
+   * it (a reconnect, a replacement frame), and the page's own cleanup takes it
+   * back with `clearReview`.
    */
   options?: { review?: boolean },
 ): { subscribe: Readable<SessionRead>['subscribe'] } {
@@ -424,8 +424,8 @@ function seats(connection: Connection): Map<string, Seat> {
  * checked at the moment it was drawn.
  *
  * The intent is set on the seat, not spent on this one ask: a read that has
- * to wait for one in flight, an outrun the frames caused and a reconnect's
- * own re-subscribe all carry it too. A seat never opened has nothing to ask
+ * to wait for one in flight, a reconnect's own re-subscribe and a replacement
+ * frame's read all carry it too. A seat never opened has nothing to ask
  * on; its first subscribe carries the intent instead.
  */
 export function rereadSeat(
@@ -1054,7 +1054,9 @@ function createSeat(
    * occupant's** (#2276), and then the stretch above its encode point is what
    * the frames had already carried into that record: one range ask reads it
    * back - the ring answers what it still holds, the transcript the rest - a
-   * stretch rather than a whole server encode (#2563).
+   * stretch rather than a whole server encode (#2563). The taken answer
+   * stands for one range round trip, so a fact its frames carried since (a
+   * settled turn) reads as its encode-point value until they land.
    */
   function takeOutrun(from: number): void {
     // The newest number the stream has shown, applied or held. Everything
