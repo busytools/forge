@@ -282,7 +282,7 @@ describe('the finish', () => {
       'the nudge goes to the seat the review belongs to',
     ).toEqual(WORKER);
     expect(nudge?.prompt_under?.['text'], 'the words are the view this client replaced sent').toBe(
-      'Review #4 ready - address it via the review MCP (`review__list`).',
+      'Review #4 ready - scope work/review-nudge. Read it back under that scope, or hand the scope to your lead if you do not have the review tools.',
     );
     expect(nudge?.prompt_under?.['source'], 'the bubble reads as the reader own words').toBe('you');
     expect(nudge?.prompt_under?.['attachments'], 'a nudge carries no images').toEqual([]);
@@ -377,7 +377,7 @@ describe('the reopen', () => {
       'the nudge goes to the seat the review belongs to',
     ).toEqual(WORKER);
     expect(nudge?.prompt_under?.['text'], 'the words are the view this client replaced sent').toBe(
-      'Reopened a comment in review #2 - take another look via the review MCP (`review__get`).',
+      'Reopened a comment in review #2 - scope work/review-nudge. Take another look under that scope, or hand the scope to your lead if you do not have the review tools.',
     );
     expect(nudge?.prompt_under?.['source'], 'the line reads as the reader own words').toBe('you');
   });
@@ -390,7 +390,7 @@ describe('the reopen', () => {
 
     const nudge = sent[1] as { prompt_under?: Record<string, unknown> } | undefined;
     expect(nudge?.prompt_under?.['text'], 'the words are the view this client replaced sent').toBe(
-      'Reopened a review comment - take another look via the review MCP (`review__list`).',
+      'Reopened a review comment - scope work/review-nudge. Take another look under that scope, or hand the scope to your lead if you do not have the review tools.',
     );
   });
 

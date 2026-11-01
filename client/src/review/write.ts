@@ -417,7 +417,7 @@ export async function finishRound(
     sendNudge(
       sends,
       slot,
-      `Review #${number} ready - address it via the review MCP (\`review__list\`).`,
+      `Review #${number} ready - scope ${branch}. Read it back under that scope, or hand the scope to your lead if you do not have the review tools.`,
     );
   }
   return true;
@@ -442,8 +442,8 @@ export async function reopenThread(
   if (!flipped.went) return false;
   const line =
     round === null
-      ? 'Reopened a review comment - take another look via the review MCP (`review__list`).'
-      : `Reopened a comment in review #${round} - take another look via the review MCP (\`review__get\`).`;
+      ? `Reopened a review comment - scope ${branch}. Take another look under that scope, or hand the scope to your lead if you do not have the review tools.`
+      : `Reopened a comment in review #${round} - scope ${branch}. Take another look under that scope, or hand the scope to your lead if you do not have the review tools.`;
   sendNudge(sends, slot, line);
   return true;
 }
