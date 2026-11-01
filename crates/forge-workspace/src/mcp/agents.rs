@@ -668,7 +668,7 @@ impl Tool for Spawn {
          MCP families this worker gets: any family the argument lists \
          (the agents__* verbs are always on and cannot be listed). \
          Omit it, or pass an empty list, and the \
-         worker gets every family. Pass a list and it gets exactly \
+         worker gets every family on a fresh spawn. Pass a list and it gets exactly \
          those; each withheld family is named in the worker's own prompt \
          so it knows what it does not have - a worker without systemone \
          is told to route decisions to you. The choice is stored on the \
@@ -720,7 +720,7 @@ impl Tool for Spawn {
                 "mcp_families": {
                     "type": "array",
                     "items": { "type": "string", "enum": families },
-                    "description": "The MCP families this worker gets, exactly those listed. Omit or pass an empty list for every family. `agents__*` is always on and cannot be listed. Each withheld family is named in the worker's own prompt. What each gives the worker: `review` - read and answer reviews filed on its branch or under a document it handed off; give it to any worker that implements or whose deliverable is a reviewable document. `cron` - schedule and manage durable work of its own; give it to any worker that needs a recurring or deferred task. `tasks` - claim, file and update rows on the project board; give it to any worker whose work is on the board. `gotify` - subscribe to and read Gotify notifications; give it to any worker that acts on them. `slack` - read Slack, subscribe, and post through held approval; give it to any worker that works in Slack. `systemone` - put a yes/no, a choice or a score to the decision model; give it to any worker that weighs decisions itself.",
+                    "description": "The MCP families this worker gets, exactly those listed. Omit or pass an empty list for every family on a fresh spawn; a resume adopts the stored selection. `agents__*` is always on and cannot be listed. Each withheld family is named in the worker's own prompt. What each gives the worker: `review` - read and answer reviews filed on its branch or under a document it handed off; give it to any worker that implements or whose deliverable is a reviewable document. `cron` - schedule and manage durable work of its own; give it to any worker that needs a recurring or deferred task. `tasks` - claim, file and update rows on the project board; give it to any worker whose work is on the board. `gotify` - subscribe to and read Gotify notifications; give it to any worker that acts on them. `slack` - read Slack, subscribe, and post through held approval; give it to any worker that works in Slack. `systemone` - put a yes/no, a choice or a score to the decision model; give it to any worker that weighs decisions itself.",
                 },
                 "cwd": {
                     "type": "string",
@@ -1364,6 +1364,14 @@ mod tests {
             required.iter().any(|v| v == "charter"),
             "charter is required - there is no file to fall back to"
         );
+        // The empty-list default is a FRESH SPAWN's: a resume adopts the
+        // stored selection, so the unconditional wording promises a reset
+        // the spawn does not perform.
+        assert!(
+            tool.description().contains("the worker gets every family on a fresh spawn"),
+            "the top-level text scopes the default to a fresh spawn: {}",
+            tool.description(),
+        );
         // `review` reads as review-pass tooling, so a lead withholding it
         // from an implementing worker leaves that worker unable to answer
         // a review on its own branch (#2510) - or to read the review a
@@ -1372,6 +1380,13 @@ mod tests {
         let families = schema["properties"]["mcp_families"]["description"]
             .as_str()
             .expect("mcp_families carries a description");
+        assert!(
+            families.contains(
+                "Omit or pass an empty list for every family on a fresh spawn; a resume \
+                 adopts the stored selection"
+            ),
+            "the argument text scopes the empty-list default to a fresh spawn: {families}",
+        );
         // Drive the list from the enum, not a hand-written copy: a family
         // added to `McpFamily::ALL` fails the exhaustive match below, and
         // the shipped description then has to carry its purpose too.
