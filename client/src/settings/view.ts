@@ -11,7 +11,6 @@ import { DEFAULT_MARK, DEFAULT_THEME } from '../wire/types';
  *  Slack table and workspace, a model, a server table. */
 export interface SettingsGroup {
   label: string;
-  class: SettingsClass | null;
   rows: SettingsKey[];
   /** The entry's path for a removal or an add, `null` for a table's own keys. */
   entryPath: string | null;
@@ -34,15 +33,6 @@ export function selectedArea(
   if (selected === null) return { area: document.areas[0] ?? null, missing: false };
   const held = document.areas.find((area) => area.id === selected);
   return held === undefined ? { area: null, missing: true } : { area: held, missing: false };
-}
-
-/** How hard an area or a group is to apply: the furthest class it holds. */
-export function strongest(keys: SettingsKey[]): SettingsClass | null {
-  let strongest: SettingsClass | null = null;
-  for (const key of keys) {
-    if (strongest === null || classRank(key.class) > classRank(strongest)) strongest = key.class;
-  }
-  return strongest;
 }
 
 /**
@@ -92,7 +82,6 @@ export function groupsOf(area: SettingsArea): SettingsGroup[] {
       return {
         label,
         rows,
-        class: strongest(rows),
         entryPath: entry.path,
         entryGroup: entry.group,
         parent: entry.parent,

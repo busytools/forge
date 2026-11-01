@@ -52,8 +52,8 @@
     connection,
     waking = false,
     spawning = false,
-    reason = null,
     queue = undefined,
+    onloaded = () => {},
   }: {
     slot: SessionSlot;
     connection: Connection;
@@ -61,11 +61,12 @@
     waking?: boolean;
     /** Whether the core is bringing the seat up, the waking line's other half. */
     spawning?: boolean;
-    /** Why, when it does. */
-    reason?: string | null;
     /** The waiting prompts, drawn above the pinned row: the page owns the
      *  queue's data, and its place is the column's foot. */
     queue?: Snippet | undefined;
+    /** Report of the column's own `loaded` flag, which the band's read wait
+     *  is drawn from. */
+    onloaded?: (loaded: boolean) => void;
   } = $props();
 
   /** How near the top the reader has to be before the turns above are asked for. */
@@ -112,6 +113,13 @@
    * of every message a proxy call on each frame's re-derivation.
    */
   let held = $state.raw<Conversation>(NOTHING);
+
+  // **The column reports its own `loaded` flag.** The band draws the read
+  // wait from it, and this column is the only thing that knows when the first
+  // page landed.
+  $effect(() => {
+    onloaded(held.loaded);
+  });
   /**
    * The element that scrolls, which is the list's own viewport.
    *
@@ -1785,23 +1793,17 @@
        column's own rules: without them the copy is the one thing on the page
        drawn at no padding and no gutter, while the list beside it is not. -->
   <div class="conv">
-    <!-- **The waking line is the composer band's.** Every narrative hold draws
-         there, one draw with only the text changing, so this column draws
-         nothing for a seat coming up - either side of the roster noticing: a
-         spawn the core is running, or the lead's own this page dispatched.
-         The worker's line stays: its seat has no spawn coming, which is a
-         stop rather than a wait.
+    <!-- **Every narrative hold is the composer band's**, one draw with only
+         the text changing: a seat coming up says so there, on either side of
+         the roster noticing (a spawn the core is running, or the lead's own
+         this page dispatched), and a worker's seat with no spawn coming says
+         `not running` there too. This column draws nothing for either state.
          **A wake with history in hand draws the history instead** (Ved,
          2026-10-12): the server answers a sleeping seat's own transcript, so
          the page lands while the spawn is still in flight - and the waking
          line is for a seat with nothing to draw yet, not a cover over a
-         conversation already loaded. -->
-    {#if !(spawning || slot.label === 'lead')}
-      <div class="hold off">
-        not running
-        <span class="sub">{reason ?? 'this seat has no session behind it'}</span>
-      </div>
-    {/if}
+         conversation already loaded, which is why this branch is empty-turns
+         only. -->
   </div>
 {:else if held.refused !== null && held.turns.length === 0}
   <!-- A refusal with nothing drawn under it is the column in that state. With
@@ -1816,15 +1818,11 @@
     {/if}
   </div>
 {:else if !held.loaded}
-  <!-- Connected, and the first page has not come back. **The column says so
-       itself**: it used to draw an empty box and leave the words to the
-       composer's band, which read as a dead column wherever the band's line
-       was not there yet. The same hold the band draws, on the column's own
-       ground - and the reader's own words ride under it, because the box
-       stays live while the page is out and a send whose row is nowhere is a
-       send the reader cannot see. -->
-  <div class="conv" role="status">
-    <div class="hold"><span class="shimmer">Reading the conversation...</span></div>
+  <!-- Connected, and the first page has not come back. **The band says the
+       wait** - every narrative state speaks there - so the column draws no
+       line of its own; the reader's own words still ride here, because a send
+       whose row is nowhere is a send the reader cannot see. -->
+  <div class="conv">
     {#if echo !== undefined}
       <Echo {echo} onretry={retry} />
     {/if}

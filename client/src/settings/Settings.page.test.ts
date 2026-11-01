@@ -56,4 +56,16 @@ describe('the settings route', () => {
     );
     expect(document.body.textContent, 'and the key total').toContain('15');
   });
+
+  it('draws the edit door in the ready state and toggles editing', () => {
+    settingsFrame.set({ status: 'ready', document: settingsWire });
+    draw();
+    const door = document.querySelector<HTMLButtonElement>('.settings-mode');
+    expect(door, 'the edit door is drawn').not.toBeNull();
+    expect(door?.getAttribute('aria-pressed')).toBe('false');
+    door?.click();
+    flushSync();
+    expect(door?.getAttribute('aria-pressed'), 'the one door toggles edit mode').toBe('true');
+    expect(document.querySelector('.settings-card'), 'the cards stay drawn').not.toBeNull();
+  });
 });

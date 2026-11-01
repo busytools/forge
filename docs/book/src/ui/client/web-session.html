@@ -1215,15 +1215,32 @@
     border: 1.5px solid var(--ctl); border-radius: 16px;
     background: linear-gradient(180deg, rgba(20,25,38,.72), rgba(13,17,26,.78));
     backdrop-filter: blur(10px); box-shadow: 0 14px 38px rgba(0,0,0,.42);
-    display: flex; flex-direction: column; overflow: hidden;
+    display: flex; flex-direction: column;
     transition: border-color .3s ease; }
-  .surf > :not(.sr) + :not(.sr) { border-top: 1px solid var(--line); }
+  /* The card's one body slot, below the live row. */
+  .slot { display: flex; flex-direction: column; }
+  .line { display: flex; align-items: center; gap: 10px; padding: 10px 12px 10px 14px; }
   /* The state rides the shown specimen's own class, so the ring follows the
      chip that is on rather than decorating every state at once. */
-  .surf:has(.cst.on .mbox.rec) { border-color: color-mix(in srgb, var(--accent) 35%, var(--hot)); }
-  .surf:has(.cst.on .mbox.tr) { border-color: var(--blue); }
-  .mbox { padding: 11px 14px; display: flex; flex-direction: column; gap: 8px; }
-  .mline { display: flex; align-items: flex-start; gap: 10px; }
+  .surf:has(.cst.on .slot.rec) { border-color: color-mix(in srgb, var(--accent) 35%, var(--hot)); }
+  .surf:has(.cst.on .slot.tr) { border-color: var(--blue); }
+  /* The live row: the turn's figures and the seat's chips, one line, never
+     wrapping - what does not fit collapses behind +N. */
+  .live-row { position: relative; display: flex; align-items: center; gap: 2px;
+    flex-wrap: nowrap; padding: 5px 10px 5px 8px;
+    border-bottom: 1px solid var(--line); overflow: hidden;
+    font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
+  .live-fig { display: inline-flex; align-items: center; gap: 6px; flex: none;
+    white-space: nowrap; padding: 3px 8px 3px 6px; color: var(--muted); }
+  .live-fig .sep { opacity: .5; }
+  .live-row .div { flex: none; width: 1px; height: 14px; background: var(--line);
+    margin: 0 4px; }
+  .live-segs { display: flex; align-items: center; gap: 2px; flex: none; }
+  .live-chip { flex: none; display: inline-flex; align-items: center; gap: 6px;
+    color: var(--dim); padding: 3px 8px; white-space: nowrap; }
+  .live-chip .n { color: var(--text); }
+  .live-more { flex: none; margin-left: 2px; padding: 2px 8px; color: var(--muted);
+    border: 1px solid var(--line); border-radius: 999px; }
   .mtxt { flex: 1; min-width: 0; font-size: var(--fs-prose); line-height: 1.5;
     white-space: pre-wrap; word-break: break-word; }
   .mph { color: var(--dim); font-style: italic; }
@@ -1231,8 +1248,10 @@
   .mcaret { display: inline-block; width: 7px; height: 1.05em; background: var(--accent);
     vertical-align: text-bottom; animation: blink 1s steps(1) infinite; }
   .msend { color: var(--accent); padding-top: 3px; }
-  .mfoot { display: flex; align-items: center; gap: 8px; font-family: var(--mono);
-    font-size: var(--fs-label); color: var(--dim); }
+  /* The keys the field honours, a pointer's own detail on the body's row. */
+  .hints { display: inline-flex; align-items: center; gap: 4px; flex: none;
+    font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
+    white-space: nowrap; }
   .mk { border: 1px solid var(--line); border-radius: 5px; padding: 0 6px; }
 
   /* The take on the draft's own line: the card's readings - dot or spinner,
@@ -1264,12 +1283,14 @@
   .tc .ticks { display: flex; gap: 3px; flex: none; }
   .tc .ticks i { width: 18px; height: 6px; border-radius: 999px; background: var(--s3); }
   .tc .ticks i.on { background: var(--blue); }
-  .mline.takeline { align-items: center; }
+  .line.takeline { align-items: center; }
   .mnotice { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); }
 
-  .mac { border: 1px solid var(--line); border-radius: 12px; overflow: hidden;
-    background: rgba(13,17,26,.96); box-shadow: 0 18px 44px rgba(0,0,0,.5);
-    margin-bottom: 8px; }
+  /* The list is a popover over the conversation, not a lane of the bar: it
+     hangs above the card and the bar's height does not move with it. */
+  .mac { position: absolute; left: 12px; right: 12px; bottom: calc(100% + 8px);
+    z-index: 5; border: 1px solid var(--line); border-radius: 12px; overflow: hidden;
+    background: rgba(13,17,26,.96); box-shadow: 0 18px 44px rgba(0,0,0,.5); }
   .mah { display: flex; align-items: center; padding: 8px 13px;
     border-bottom: 1px solid var(--line); font-family: var(--mono);
     font-size: var(--fs-label); color: var(--dim); letter-spacing: .06em;
@@ -3318,232 +3339,67 @@ branch main, nothing to commit</div>
         <button class="cs" data-cs="notice">notice</button>
         <button class="cs" data-cs="ask">permission</button>
       </div>
-      <!-- **The foot is one surface.** The strip lane and the composer lane (or
-           the prompt's, when one waits) are children of one `.surf`, split by
-           hairlines: the strip's chips, the question and the field are one
-           thing that changes state rather than three rows competing for the
-           same pixels.
+      <!-- **The foot is one bar.** A live row of the turn's figures and the
+           seat's chips at the top of one card, and one body slot below it
+           holding exactly one of the field, a take or the prompt's dock. The
+           state switcher above changes the body only; the row stands.
 
-           The strip stands for as long as it has anything to say - an idle
-           seat's tree, tasks and watchers included, not only a running turn -
-           and its figures lead the lane while a turn is written, outside the
-           scroll, so a reader who has scrolled up can still see whether the
-           turn is working.
-
-           One row of a turn, never two: while the row is pinned the turn above
-           draws none of it, and when the turn ends the finished row holds here
-           for a beat - the check and the cumulative - before it goes back into
-           the turn. Early in a turn it carries only what has arrived: the mark
-           and the clock at the barest, then thinking, the token pair, cached
-           and written as their frames land. An absent field is dropped rather
-           than dashed, because a dash is a claim that a value exists.
-
-           The terminal draws these figures inside the turn and pins nothing
-           above its input; the client has a scroll position the terminal does
-           not, and that is the whole reason for the row. -->
+           The row never wraps: a chip past the width collapses behind +N. Its
+           figures lead while a turn is written, outside the scroll, so a
+           reader who has scrolled up can still see whether the turn is
+           working. One row of a turn, never two: while the row is pinned the
+           turn above draws none of it, and when the turn ends the finished row
+           holds here for a beat - the check and the cumulative - before it
+           goes back into the turn. An absent field is dropped rather than
+           dashed, because a dash is a claim that a value exists. A repository
+           event with no tree row to ride draws its note on the git chip. -->
       <div class="surf">
-      <div class="strip" id="pin">
-        <div class="ti">
-          <span id="lv-mark"><span class="ring"></span></span>
+      <div class="live-row" id="pin">
+        <span class="live-fig"><span class="ring"></span>
           <span id="lv-time">0.4s</span><span class="sep" id="lv-think-sep">&#183;</span>
           <span id="lv-think">thinking 434</span><span class="sep">&#183;</span>
           <span id="lv-tok">1.1k&#8593; 62&#8595;</span><span class="sep">&#183;</span>
           <span>93% cached</span><span class="sep">&#183;</span>
           <span>3.1k written</span>
-          <!-- The cumulative cost is the one figure only the Result carries,
-               so the running row has no segment for it at all: it appears with
-               the check when the turn ends, and a slot held empty for a figure
-               that has not arrived is the thing this row never draws. -->
           <span class="sep" id="lv-cost-sep" style="display:none">&#183;</span>
-          <span id="lv-cost" style="display:none">$4.82 cumulative</span>
-          <!-- The browser row, beside the agents row: the tabs of the profile
-               this seat's project resolves to, drawn as a count while closed.
-               Opened, its list carries each tab's number, title, owner and
-               state (in use, idle or held), each row's show/hide for the
-               takeover, and the profile's own line - its key, whether the
-               host is connected, and when the idle clock closes it. A tab is
-               created by the session whose calls drive it and closes with
-               that session; there is nothing to close or delete here.
-               Drawn CLOSED here: the open list is runtime state. -->
-          <span class="bz-seg">
-            <button type="button" class="bz-tog">
-              <svg class="ic"><use href="#i-web"/></svg>
-              browser <span class="n">3 tabs</span></button>
-          </span>
-          <!-- The agents row, at the strip's right: the seat's instances, the
-               count it has out and the count it has finished. It is where a
-               subagent is announced outside the chat, and the way into each
-               one - a hover opens the list, a click reveals that dispatch's
-               chat row. The inspector has no subagents section. Drawn CLOSED
-               here: the open list is runtime state, and the specimen draws
-               the resting row. -->
-          <span class="sg-fill">
-          <span class="sg-seg">
-            <button type="button" class="sg-tog">
-              <svg class="ic"><use href="#i-subagents"/></svg>
-              <span class="ring"></span>2 running &#183; 1 finished</button>
-          </span>
-          <!-- The processes row, beside it: the seat's running calls -
-               backgrounded, or a long foreground one the CLI tracks while
-               it runs. Running is the whole live side - the count and the
-               combined memory of every call's process family, phrased like
-               the agents' own count. A hover opens the list; a click on a
-               row reveals that call's chat row. The inspector has no
-               processes section any more: this row is its home. -->
-          <span class="sg-seg">
-            <button type="button" class="sg-tog">
-              <svg class="ic"><use href="#i-processes"/></svg>
-              <span class="ring"></span>
-              2 running &#183; 1.8 GB</button>
-          </span>
-          <!-- The connectors row, third: this seat's OWN subscriptions -
-               both marks lead the toggle, each listed row wears its
-               connector's own glyph, and a row reads its stream's state
-               where the stream is not up. The inspector has no gotify or
-               slack section any more: this row is their home. -->
-          <span class="sg-seg">
-            <button type="button" class="sg-tog">
-              <svg class="ic"><use href="#i-gotify"/></svg>
-              <svg class="ic"><use href="#i-slack"/></svg>
-              3 subscriptions</button>
-          </span>
-          <!-- The schedules row, fourth: this SEAT's crons with their
-               countdowns - a cron names the seat that created it (`team_role`,
-               None for the lead), so the row keeps its own set, like the
-               connectors row beside it. The rows are inert, and the inspector
-               has no schedules section any more. A row leading with a long key
-               elides (the sheet's own `.nm.lead`), so a sentence-length
-               description never buries the countdown. -->
-          <span class="sg-seg">
-            <button type="button" class="sg-tog">
-              <svg class="ic"><use href="#i-schedules"/></svg>
-              2 schedules</button>
-          </span>
-          <!-- The MCP row, fifth: this SESSION's servers, the count in the
-               toggle. The open list carries the status depth the inspector's
-               section used to hold - each server's tools, the command or URL
-               backing it, a failure's reason, and a failed refresh of the
-               list itself - and the run-a-command page hangs off these rows
-               later. The inspector has no mcp servers section any more.
-               Drawn CLOSED here, like its siblings. -->
-          <span class="sg-seg">
-            <button type="button" class="sg-tog">
-              <svg class="ic"><use href="#i-mcp"/></svg>
-              3 MCPs</button>
-          </span>
-          <!-- The files slip, sixth, before the tree: the seat's whole tree -
-               a worker's own worktree, the lead's checkout (Ved's ruling,
-               2026-10-17). MANDATORY: it draws for every seat with a record,
-               where the tree row beside it keeps its rule of staying away
-               when nothing has moved. THE SLIP IS THE DOOR, WITH NO PANEL
-               (Ved's second and third rulings the same day): a press opens
-               the page that reads the tree; it reads `walk · files` for a
-               seat in a worktree of its own and plain `files` for the
-               project's checkout, with the browser's own mark beside it and
-               no count. No hover dialog - there is nothing here but the way
-               in. -->
-          <span class="sg-seg">
-            <a class="sg-tog" href="/session/DevOrg/scratch/walk/files">
-              <svg class="ic"><use href="#i-files"/></svg>
-              walk &#183; files</a>
-          </span>
-          <!-- The tree row, seventh: this seat's branch and what moved in it.
-               The hover opens on what the tree IS (the project's, a
-               worker's worktree, or - when a lead pointed the worker at a
-               tree of its own - that tree's name), then the pull request
-               as a link with its
-               state and what it closes, then the branch's run against its
-               default with the range's totals, the uncommitted files - a
-               status mark, the path, and signed counts - and the commit
-               chain below them, newest first, each with when it landed and
-               its own files on hover, focus or a tap. On the default branch
-               with nothing on it the row does not draw at all: that is where
-               work lands, not work. The segment does not go with it - a
-               repository event with no tree row to ride draws a note-only
-               line for the event's window, and nothing when no event is
-               live. The toggle reads branch, commits, PR and
-               `dirty`, and for a moment the CLI's last repository event -
-               figures live in the open list. Drawn CLOSED here, like its
-               siblings. -->
-          <span class="sg-seg">
-            <button type="button" class="sg-tog">
-              <svg class="ic"><use href="#i-git"/></svg>
-              web-home-layout &#183; 3 commits &#183; PR #1203 &#183; dirty
-              <span class="note">committed on main</span></button>
-          </span>
-          <!-- The review row, eighth: this seat's branch under review - the
-               answers waiting to be read on the toggle, the thread count
-               otherwise - and the hover panel lists `open review` as its
-               door onto the page, then the filed ROUNDS oldest first with
-               the latest at the bottom, each with its summary and tally,
-               and each thread by its file and line with its state - a click
-               expands a thread to its commented code and its whole thread.
-               It draws wherever the tree row draws, with no sets when
-               nothing is filed; a sets read that did not land draws as
-               itself. Drawn CLOSED here, like its siblings. -->
-          <span class="sg-seg">
-            <button type="button" class="sg-tog">
-              <svg class="ic"><use href="#i-review"/></svg>
-              2 threads</button>
-          </span>
-          <!-- The tasks row, ninth: the seat's own slice of the set - a
-               lead's top-level board, a worker's own rows, the terminal's
-               own scoping - how much of it is done on the toggle, a mark per
-               state in the open list, a running row leading with its active
-               form. A task that moved lights its row for a beat - the
-               reveal's own tint - so the change is known without the list
-               being watched. -->
-          <span class="sg-seg">
-            <button type="button" class="sg-tog">
-              <svg class="ic"><use href="#i-tasks"/></svg>
-              1 of 3</button>
-          </span>
-          <!-- The monitors row, tenth: the commands this session is
-               watching. A monitor's call draws in the chat as the call row
-               it is; this row is the live watcher's surface - and the tail
-               under a monitor stays uncarried, because a tail is read off
-               the machine running forge and this client does not read the
-               server's disk. -->
-          <span class="sg-seg">
-            <button type="button" class="sg-tog">
-              <svg class="ic"><use href="#i-monitors"/></svg>
-              1 running</button>
-          </span>
-          </span>
-        </div>
+          <span id="lv-cost" style="display:none">$4.82 cumulative</span></span>
+        <span class="div"></span>
+        <span class="live-segs">
+          <span class="live-chip"><svg class="ic"><use href="#i-web"/></svg>browser
+            <span class="n">3 tabs</span></span>
+          <span class="live-chip"><svg class="ic"><use href="#i-subagents"/></svg>subagents
+            <span class="n">2 running</span></span>
+          <span class="live-chip"><svg class="ic"><use href="#i-processes"/></svg>processes
+            <span class="n">2 running</span></span>
+          <span class="live-chip"><svg class="ic"><use href="#i-mcp"/></svg>MCPs
+            <span class="n">3</span></span>
+          <span class="live-chip"><svg class="ic"><use href="#i-git"/></svg>web-home-layout
+            <span class="n">&#183; dirty</span></span>
+          <span class="live-chip"><svg class="ic"><use href="#i-review"/></svg>review
+            <span class="n">2 threads</span></span>
+          <span class="live-chip"><svg class="ic"><use href="#i-tasks"/></svg>tasks
+            <span class="n">1 of 3</span></span>
+          <span class="live-chip"><svg class="ic"><use href="#i-monitors"/></svg>monitors
+            <span class="n">1 running</span></span>
+        </span>
+        <span class="live-more">+2</span>
       </div>
-      <!-- The tree segment's other state, named beside the specimen rather
-           than only in the comment: a repository event on a clean default
-           branch has no tree row to ride, so the segment draws a note-only
-           line for the event's window and no toggle at all. It is a
-           status, not a control - no pointer ground, no hover. -->
-      <div class="annot">
-        <span class="dim">an event on a clean default branch &#183; a note-only line, no tree row</span>
-      </div>
-      <div class="strip">
-        <div class="ti">
-          <span class="sg-seg">
-            <span class="sg-note" role="status">
-              <svg class="ic"><use href="#i-git"/></svg>
-              <span class="note">committed on main</span>
-            </span>
-          </span>
-        </div>
-      </div>
+      <div class="slot">
       <div class="comp" id="comp">
         <!-- idle -->
         <div class="cst" data-cs="idle">
-          <div class="mbox">
-            <div class="mline"><span class="mtxt mph">Type a message...</span></div>
+          <div class="slot">
+            <div class="line"><span class="mtxt mph">Type a message...</span></div>
           </div>
         </div>
 
         <!-- typing -->
         <div class="cst" data-cs="typing">
-          <div class="mbox">
-            <div class="mline"><span class="mtxt">Fix the flaky retry test and run the gate<span class="mcaret"></span></span>
+          <div class="slot">
+            <div class="line"><span class="mtxt">Fix the flaky retry test and run the gate<span class="mcaret"></span></span>
+              <span class="hints"><span class="mk">&#8679;&#9166;</span> newline
+                <span class="mk">&#9166;</span> send</span>
               <span class="msend"><svg class="ic"><use href="#i-send"/></svg></span></div>
-            <div class="mfoot"><span class="mk">&#8679;&#9166;</span> newline<span class="mk">&#9166;</span> send</div>
           </div>
         </div>
 
@@ -3555,16 +3411,16 @@ branch main, nothing to commit</div>
             <div class="mai"><span class="cur"></span><span class="p">/co<em>m</em>pact</span><span class="d">Compact conversation context</span></div>
             <div class="mai"><span class="cur"></span><span class="p">/co<em>m</em>poser</span><span class="d">Show composer states</span></div>
           </div>
-          <div class="mbox">
-            <div class="mline"><span class="mtxt"><span class="mslash">/m</span><span class="mcaret"></span></span>
+          <div class="slot">
+            <div class="line"><span class="mtxt"><span class="mslash">/m</span><span class="mcaret"></span></span>
               <span class="msend"><svg class="ic"><use href="#i-send"/></svg></span></div>
           </div>
         </div>
 
         <!-- recording &middot; the take takes the draft's own line -->
         <div class="cst" data-cs="rec">
-          <div class="mbox rec">
-            <div class="mline takeline">
+          <div class="slot rec">
+            <div class="line takeline">
               <span class="tc"><span class="dot"></span><span class="clock">0:07</span>
                 <svg class="wave" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
                   <path class="area" d="M 0 82 C 8 82, 12 58, 20 58 C 28 58, 32 12, 42 12 C 52 12, 54 66, 63 66 C 72 66, 76 30, 85 30 C 94 30, 96 52, 100 52 L 100 100 L 0 100 Z"></path>
@@ -3582,8 +3438,8 @@ branch main, nothing to commit</div>
 
         <!-- transcribing &middot; the same row, its readings turned to the bar -->
         <div class="cst" data-cs="tr">
-          <div class="mbox tr">
-            <div class="mline takeline">
+          <div class="slot tr">
+            <div class="line takeline">
               <span class="tc tr"><span class="spin"></span><span class="clock">0:07</span>
                 <span class="ticks"><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i></span>
                 <span class="count">2 of 6</span>
@@ -3596,9 +3452,9 @@ branch main, nothing to commit</div>
 
         <!-- a dictation notice, which wins the row -->
         <div class="cst" data-cs="notice">
-          <div class="mbox">
+          <div class="slot">
             <div class="mnotice">nothing above -50 dBFS in 4s &#183; loudest was -38.2 &#183; try again</div>
-            <div class="mline"><span class="mtxt mph">Type a message...</span></div>
+            <div class="line"><span class="mtxt mph">Type a message...</span></div>
           </div>
         </div>
 
@@ -3666,36 +3522,37 @@ branch main, nothing to commit</div>
         </div>
       </div>
       </div>
+      </div>
     </div>
   </main>
 
-  <!-- The inspector is gone. Its sections live on the strip's rows now -
-       see the git, tasks and monitors rows in `.sg-fill` above - and the
-       panel it was has no replacement to draw. -->
+  <!-- The inspector is gone. Its sections live on the live row's chips above -
+       the git, tasks and monitors chips - and the panel it was has no
+       replacement to draw. -->
 </div>
 
-<!-- ============ THE COLUMN'S READ WAIT ============ -->
+<!-- ============ THE BAND'S READ WAIT ============ -->
 <div class="piece">
-  <h2>The column's read wait</h2>
-  <p class="note">A seat whose first page is still out says so in the column itself, in the same
-  sweep the composer's band uses for every other narrative hold. <b>The box under it
-  stays live</b>: the seat is up and takes a prompt, and the words a send puts there
-  are drawn as the reader's own row under the line rather than waiting for the page.
-  A seat nothing has started draws no such line - the band's waking line covers it -
-  and a conversation the server turned down keeps its refusal in the column's own
-  words.</p>
+  <h2>The band's read wait</h2>
+  <p class="note"><b>Every narrative state speaks in the composer's band.</b> A seat coming up,
+  its first page still out, a command in flight, a compaction, a handoff and a worker's
+  <span class="mono">not running</span> all draw one line there, with the same sweep and only
+  the text changing; the column draws none of them.
+  A send made before the page arrived is still drawn in the column as the reader's own row,
+  so words already on their way are never invisible.</p>
   <div class="stage">
     <div class="row">
       <div class="col">
         <div class="lab">reading the conversation</div>
-        <div class="readwait"><div class="conv">
-          <div class="hold"><span class="shimmer">Reading the conversation...</span></div>
+        <div class="surf"><div class="slot">
+          <div class="hold" style="padding:8px 14px 0">
+            <span class="shimmer">Reading the conversation...</span></div>
+          <div class="line"><span class="mtxt mph">Type a message...</span></div>
         </div></div>
       </div>
       <div class="col">
         <div class="lab">a send while the page is out</div>
         <div class="readwait"><div class="conv">
-          <div class="hold"><span class="shimmer">Reading the conversation...</span></div>
           <div class="mine"><div class="prose"><p>sent during the read</p></div>
             <div class="st"><span class="ring"></span>sending</div></div>
         </div></div>

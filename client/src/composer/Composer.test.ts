@@ -867,15 +867,13 @@ describe('the box', () => {
   });
 
   /**
-   * **The second row stays while a take runs over a draft.** The card takes
-   * the draft's own line and the keys foot stays under it, so the box's height
-   * is the same before, during and after a press - a foot that went with the
-   * take made the whole page jump on every press (Ved, 2026-10-15). Every
-   * other take-row case above runs over an EMPTY draft, which is why
-   * `secondRow` could go back to `filled && composer.take === null` and leave
-   * this suite green (the gate's minor, 2026-10-15).
+   * **A take is the body's row, so the controls ride it.** The card takes the
+   * draft's own line, the controls ride that line, and the band's height is the
+   * same before, during and after a press. The hints stand down with the field
+   * they name: the take unmounted it, and a hint about keys that do nothing is
+   * worse than a row without them.
    */
-  it('keeps the foot under a take over a draft, with the controls drawn once', async () => {
+  it('keeps the controls on the take row over a draft, drawn once', async () => {
     const harness = open({ dictation: true });
     type('fix the');
 
@@ -887,14 +885,14 @@ describe('the box', () => {
     showTake(harness);
 
     expect(document.querySelector('.line .tc'), "the card takes the draft's line").not.toBeNull();
-    expect(document.querySelector('.foot'), 'the foot went with the take').not.toBeNull();
-    expect(document.querySelector('.foot .mic'), 'and the controls are drawn in it').not.toBeNull();
+    expect(document.querySelector('.line .ctls .mic'), 'the controls ride the row').not.toBeNull();
     expect(
-      document.querySelector('.line .ctls'),
-      'the inline controls stand down, so the buttons are drawn once',
-    ).toBeNull();
+      document.querySelectorAll('.comp .ctls'),
+      'the controls are drawn once, not beside a second row',
+    ).toHaveLength(1);
+    expect(document.querySelector('.foot'), 'a second row came back under the take').toBeNull();
     expect(
-      document.querySelector('.foot .hints'),
+      document.querySelector('.line .hints'),
       'the key hints promise keys a field the take unmounted cannot take',
     ).toBeNull();
   });
@@ -1754,36 +1752,40 @@ describe('the box', () => {
     expect(document.activeElement?.className, 'the caret fell off the mic').toContain('mic');
   });
 
-  it('gives a draft the second row, so its controls keep off the field', () => {
+  /**
+   * **The body is one row, so a draft never grows a second one.** The controls
+   * ride the field's own line at every width; the keys are a pointer's detail
+   * on that same line. A foot returning here is the band growing for a draft,
+   * which is the height this cut removes.
+   */
+  it('keeps the controls on the field row, so a draft grows no second row', () => {
     open({ dictation: true, record: record({ header: { turn_in_flight: true } }) });
     type('a draft');
 
     for (const control of ['.line .mic', '.line .stop', '.line .send']) {
       expect(
         document.querySelector(control),
-        `${control} sits on the field's line beside a draft`,
-      ).toBeNull();
-    }
-    for (const control of ['.foot .mic', '.foot .stop', '.foot .send']) {
-      expect(
-        document.querySelector(control),
-        `${control} left the box rather than moving to its footer`,
+        `${control} left the field's line for a row of its own`,
       ).not.toBeNull();
     }
+    expect(
+      document.querySelector('.foot'),
+      'the band grew a second row under the draft',
+    ).toBeNull();
   });
 
   /**
-   * The footer draws for a draft alone: an install that cannot dictate has no
-   * mic, and a gate tightened to `dictation || running` would take the send and
-   * both hints with it - the reachable case, since the router makes dictation
-   * false whenever the wire omits it.
+   * The field's row draws for a draft alone: an install that cannot dictate
+   * has no mic, and a gate tightened to `dictation || running` would take the
+   * send and both hints with it - the reachable case, since the router makes
+   * dictation false whenever the wire omits it.
    */
   it('draws the send and the keys for a draft alone, with no dictation', () => {
     open();
     type('a draft');
 
-    expect(document.querySelector('.foot .send'), 'a draft drew no way to send it').not.toBeNull();
-    expect(document.querySelector('.foot'), 'the keys went with the mic').not.toBeNull();
+    expect(document.querySelector('.line .send'), 'a draft drew no way to send it').not.toBeNull();
+    expect(document.querySelector('.line .hints'), 'the keys went with the mic').not.toBeNull();
     expect(document.querySelector('.mic'), 'an install that cannot dictate drew a mic').toBeNull();
   });
 
@@ -2016,7 +2018,7 @@ describe('the key', () => {
         'no row claims a take that does not exist yet',
       ).toBeNull();
       expect(
-        document.querySelector('.comp .box > .notice'),
+        document.querySelector('.comp .slot > .notice'),
         'and the press writes no line into the composer',
       ).toBeNull();
 
@@ -2246,7 +2248,7 @@ describe('the key', () => {
       const harness = open({ dictation: true });
       harness.page.record = bound('right_cmd', 'auto');
       flushSync();
-      expect(document.querySelector('.comp .box > .notice'), 'nothing is said yet').toBeNull();
+      expect(document.querySelector('.comp .slot > .notice'), 'nothing is said yet').toBeNull();
 
       key('ControlRight', 'keydown');
       flushSync();
@@ -2266,12 +2268,12 @@ describe('the key', () => {
       expect(document.querySelector('.comp .sr')?.textContent, 'and a screen reader hears it').toBe(
         'opening the microphone',
       );
-      expect(document.querySelector('.comp .box > .notice'), 'and no line is added').toBeNull();
+      expect(document.querySelector('.comp .slot > .notice'), 'and no line is added').toBeNull();
 
       mic.held.release?.();
       await opened();
       expect(
-        document.querySelector('.comp .box > .notice'),
+        document.querySelector('.comp .slot > .notice'),
         'and none once the open is over either',
       ).toBeNull();
     } finally {
@@ -3911,12 +3913,16 @@ describe('the frame', () => {
    * the widest set needs 371px with a mouse's glyphs and 431px with a finger's
    * - so the keys go and the controls keep the row, the finger's set first.
    */
-  it('drops the key hints rather than the controls when the box is narrow', () => {
-    expect(sheet, 'the foot wraps its hints instead of giving them up').toMatch(
-      /@container \(max-width: 400px\) \{ \.foot \.hints \{ display: none; \} \}/,
+  it('keeps the key hints a pointer-only detail on the field row', () => {
+    // The band cannot spare a row for the keys, and a finger has no use for
+    // them, so they are the pointer's own detail on the field's line. Drawn
+    // under a finger they cost the row its width; gone entirely, the rules
+    // are a promise the field does not keep.
+    expect(sheet, 'the hints are drawn under a finger').toMatch(
+      /\.line \.hints \{ display: none; \}/,
     );
-    expect(sheet, "the foot keeps the key hints at a finger's width that cannot hold them").toMatch(
-      /@media \(pointer: coarse\) \{\n {2}@container \(max-width: 470px\) \{ \.foot \.hints \{ display: none; \} \}/,
+    expect(sheet, 'the hints never come back for a pointer that can see them').toMatch(
+      /@media \(pointer: fine\) \{\n {2}\.line \.hints \{ display: inline-flex;/,
     );
   });
 
@@ -3944,9 +3950,10 @@ describe('the frame', () => {
     );
     // The fold control's floor lives in the dock's own multiline coarse block,
     // where the one-line pattern above cannot reach it: read from the media
-    // query to the control's own line, the lines between allowed.
-    expect(sheet, 'the fold control lost its width floor on a finger').toMatch(
-      /@media \(pointer: coarse\) \{\n(?: {2}[^\n]*\n)*? {2}\.dock \.chevb \{ min-width: 44px; \}/,
+    // query to the control's own line, the lines between allowed. **Both
+    // floors**: a width-only rule leaves a finger a 44 by 15 sliver.
+    expect(sheet, 'the fold control lost its size floors on a finger').toMatch(
+      /@media \(pointer: coarse\) \{\n(?: {2}[^\n]*\n)*? {2}\.dock \.chevb \{ min-width: 44px; min-height: 44px; \}/,
     );
     expect(sheetRule('.mic:hover'), 'the mic lost its accent hover').toContain(
       'color: var(--accent)',
@@ -4019,19 +4026,20 @@ describe('the strip lane', () => {
     pinnedRow.set(SEAT, null);
   });
 
-  it("draws as the surface's first lane, above the box", () => {
+  it("draws as the card's own first row, above the body", () => {
     pinnedRow.set(SEAT, running);
     open({});
 
-    const strip = document.querySelector('.strip');
+    const row = document.querySelector('.live-row');
     const surf = document.querySelector('.surf');
-    expect(strip, 'the strip lane did not draw').not.toBeNull();
+    expect(row, 'the live row did not draw').not.toBeNull();
     expect(surf, 'the surface did not draw').not.toBeNull();
-    if (strip === null || surf === null) return;
-    expect(surf.firstElementChild === strip, "the strip is not the surface's first lane").toBe(
-      true,
-    );
-    expect(strip.textContent, 'the row the pin published').toContain('700');
+    if (row === null || surf === null) return;
+    expect(
+      row.nextElementSibling?.classList.contains('slot'),
+      'the live row is not above the body slot',
+    ).toBe(true);
+    expect(row.textContent, 'the row the pin published').toContain('700');
   });
 
   it('stands on a seat with no conversation state to speak of', () => {
@@ -4040,20 +4048,23 @@ describe('the strip lane', () => {
     pinnedRow.set(SEAT, running);
     open({});
 
-    expect(document.querySelector('.strip'), 'no strip lane on a bare seat').not.toBeNull();
+    expect(document.querySelector('.live-row'), 'no strip lane on a bare seat').not.toBeNull();
   });
 
   it("shows one seat's pin only", () => {
     pinnedRow.set('session:somebody-else', running);
     open({});
 
-    expect(document.querySelector('.strip'), "another seat's pin drew on this surface").toBeNull();
+    expect(
+      document.querySelector('.live-row'),
+      "another seat's pin drew on this surface",
+    ).toBeNull();
   });
 
   it('draws no lane at all when nothing is pinned and no rows hold anything', () => {
     open({});
 
-    expect(document.querySelector('.strip'), 'a lane drew with nothing to say').toBeNull();
+    expect(document.querySelector('.live-row'), 'a lane drew with nothing to say').toBeNull();
   });
 
   it('follows the seat when the page moves', () => {
@@ -4065,7 +4076,7 @@ describe('the strip lane', () => {
     pinnedRow.set(otherKey, { ...running, input_tokens: 42 });
     const harness = open({});
 
-    expect(document.querySelector('.strip')?.textContent, "the first seat's figures").toContain(
+    expect(document.querySelector('.live-row')?.textContent, "the first seat's figures").toContain(
       '700',
     );
 
@@ -4073,7 +4084,7 @@ describe('the strip lane', () => {
     flushSync();
 
     expect(
-      document.querySelector('.strip')?.textContent,
+      document.querySelector('.live-row')?.textContent,
       'the figures did not follow the shown seat',
     ).toContain('42');
     pinnedRow.set(otherKey, null);
@@ -4085,7 +4096,10 @@ describe('the strip lane', () => {
     // normal box, the prompt's lane, and the blocked line.
     pinnedRow.set(SEAT, running);
     const harness = open({ record: record({ pending_asks: [questionAsk()] }) });
-    expect(document.querySelector('.surf .strip'), 'no strip lane under a prompt').not.toBeNull();
+    expect(
+      document.querySelector('.surf .live-row'),
+      'no strip lane under a prompt',
+    ).not.toBeNull();
 
     harness.page.record = record();
     harness.page.seat = seatRead({ lifecycle: null, waking: true });
@@ -4094,9 +4108,145 @@ describe('the strip lane', () => {
     expect(document.querySelector('.dock'), 'precondition: the prompt is gone').toBeNull();
     expect(document.querySelector('.blocked'), 'precondition: the seat is blocked').not.toBeNull();
     expect(
-      document.querySelector('.surf .strip'),
+      document.querySelector('.surf .live-row'),
       'no strip lane on a blocked seat',
     ).not.toBeNull();
+  });
+});
+
+/**
+ * **The card's body is one slot.** Exactly one of the field, an ask, a take's
+ * card or a blocked line draws there, and the live row stands above it in
+ * every one of those states. Two drawing at once is the stack this cut
+ * removes.
+ */
+describe('the one body slot', () => {
+  const KEY = subjectKey({ session: SLOT });
+  afterEach(() => pinnedRow.set(KEY, null));
+
+  it('draws exactly one of the field, an ask, a take and a blocked line', () => {
+    // A pinned turn, so the row has something to say in every state below;
+    // whether the row draws with nothing to say is its own test.
+    pinnedRow.set(KEY, {
+      running: true,
+      failed: false,
+      duration_ms: 0,
+      api_ms: null,
+      ended_at_utc: null,
+      model: null,
+      thinking_tokens: null,
+      input_tokens: 1,
+      output_tokens: null,
+      cache_read_tokens: null,
+      cache_written_tokens: null,
+      session_cost_usd: null,
+    });
+    const harness = open({ record: record({ pending_asks: [questionAsk()] }) });
+
+    expect(document.querySelector('.surf .slot .dock'), 'the ask holds the body').not.toBeNull();
+    expect(document.querySelector('.surf .slot > .line'), 'and the field stands down').toBeNull();
+
+    harness.page.record = record({ composer: { take: take(), notice: null, machine: null } });
+    flushSync();
+    expect(
+      document.querySelector('.surf .slot > .line .tc'),
+      'the take holds the body',
+    ).not.toBeNull();
+    expect(document.querySelector('.surf .slot .dock'), 'and the ask is gone').toBeNull();
+
+    harness.page.seat = seatRead({ lifecycle: null, waking: true });
+    flushSync();
+    expect(
+      document.querySelector('.surf .slot > .blocked'),
+      'the blocked line holds the body',
+    ).not.toBeNull();
+    expect(document.querySelector('.surf .slot > .line'), 'and nothing else does').toBeNull();
+    expect(
+      document.querySelector('.surf .live-row'),
+      'the live row stands above every one of them',
+    ).not.toBeNull();
+  });
+
+  it('draws no ask chip over a blocked line', () => {
+    // The blocker outranks the ask, so a chip for the ask would be a door onto
+    // nothing. The row is pinned here so its absence is the chip's, not the
+    // row's.
+    pinnedRow.set(KEY, {
+      running: true,
+      failed: false,
+      duration_ms: 0,
+      api_ms: null,
+      ended_at_utc: null,
+      model: null,
+      thinking_tokens: null,
+      input_tokens: 1,
+      output_tokens: null,
+      cache_read_tokens: null,
+      cache_written_tokens: null,
+      session_cost_usd: null,
+    });
+    const harness = open({ record: record({ pending_asks: [questionAsk()] }) });
+    expect(
+      document.querySelector('.live-row .live-door.att'),
+      'precondition: the ask chip drew',
+    ).not.toBeNull();
+
+    harness.page.seat = seatRead({ lifecycle: null, waking: true });
+    flushSync();
+
+    expect(document.querySelector('.live-row'), 'precondition: the row stands').not.toBeNull();
+    expect(document.querySelector('.slot > .blocked'), 'precondition: blocked').not.toBeNull();
+    expect(
+      document.querySelector('.live-row .live-door.att'),
+      'the ask chip drew over a line the body is not showing',
+    ).toBeNull();
+  });
+
+  it('says the read wait on the band above the field', () => {
+    // **One place for every narrative state.** The read wait was the column's
+    // own line; it is the band's now, above the field rather than in its
+    // place - the seat is up and takes a prompt while the page is out.
+    open({ reading: true });
+
+    expect(
+      document.querySelector('.surf .slot > .notice')?.textContent,
+      'the band does not say it is reading',
+    ).toContain('Reading the conversation');
+    expect(
+      document.querySelector('.slot > .notice')?.getAttribute('role'),
+      'the read wait lost the live region the column carried',
+    ).toBe('status');
+    expect(document.querySelector('.comp .line'), 'the read wait took the field').not.toBeNull();
+  });
+
+  it('keeps a parked ask ahead of the read wait', () => {
+    // The dock is the body when an ask waits: the read line belongs to the
+    // field's body and would be a second thing in the slot.
+    open({ reading: true, record: record({ pending_asks: [questionAsk()] }) });
+
+    expect(document.querySelector('.slot .dock'), 'the wait covered the ask').not.toBeNull();
+    expect(
+      document.querySelector('.slot > .notice'),
+      'the read wait drew beside a parked ask',
+    ).toBeNull();
+  });
+
+  it("opens the autocomplete as the card's own popover, not a lane of the body", () => {
+    // The list took the band from 121px to 557px while it sat in the box's
+    // flow. It is a child of the card now, placed by a rule of its own: a
+    // static child there is the menu back in the flow and the band growing
+    // again.
+    open();
+    type('/');
+
+    expect(
+      document.querySelector('.surf > .ac'),
+      "the list is not the card's child",
+    ).not.toBeNull();
+    expect(document.querySelector('.slot .ac'), 'the list went back into the body').toBeNull();
+    expect(sheetRule('.surf > .ac'), 'the popover is back in the flow').toContain(
+      'position: absolute',
+    );
   });
 });
 
@@ -9231,7 +9381,9 @@ describe('the dictation panel', () => {
         observed.length,
         'nothing watches the input row, so a box growing under the panel re-clips it',
       ).toBeGreaterThan(0);
-      expect(observed[0]?.classList.contains('box'), 'the input row is what is watched').toBe(true);
+      expect(observed[0]?.classList.contains('line'), 'the input row is what is watched').toBe(
+        true,
+      );
     } finally {
       Reflect.set(globalThis, 'ResizeObserver', original);
     }
@@ -9266,7 +9418,7 @@ describe('the dictation panel', () => {
 
       const pop = document.querySelector('.pop');
       const comp = document.querySelector('.comp');
-      const box = document.querySelector('.comp .box');
+      const box = document.querySelector('.comp .line');
       if (!(pop instanceof HTMLElement)) throw new Error('the panel drew nothing to cap');
       if (!(comp instanceof Element)) throw new Error('the composer drew no surface');
       if (!(box instanceof Element)) throw new Error('the composer drew no input row');
@@ -9357,7 +9509,7 @@ describe('the dictation panel', () => {
 
       const pop = document.querySelector('.pop');
       const comp = document.querySelector('.comp');
-      const box = document.querySelector('.comp .box');
+      const box = document.querySelector('.comp .line');
       if (!(pop instanceof HTMLElement)) throw new Error('the panel drew nothing to place');
       if (!(comp instanceof Element)) throw new Error('the composer drew no surface');
       if (!(box instanceof Element)) throw new Error('the composer drew no input row');
@@ -9422,7 +9574,7 @@ describe('the dictation panel', () => {
 
       const pop = document.querySelector('.pop');
       const comp = document.querySelector('.comp');
-      const box = document.querySelector('.comp .box');
+      const box = document.querySelector('.comp .line');
       if (!(pop instanceof HTMLElement)) throw new Error('the panel drew nothing to place');
       if (!(comp instanceof Element)) throw new Error('the composer drew no surface');
       if (!(box instanceof Element)) throw new Error('the composer drew no input row');
@@ -9466,7 +9618,7 @@ describe('the dictation panel', () => {
       // An ask lands: the dock takes the box's place and the row detaches.
       harness.page.record = record({ pending_asks: [permissionAsk()] });
       flushSync();
-      expect(document.querySelector('.comp .box'), 'the dock did not take the box').toBeNull();
+      expect(document.querySelector('.comp .line'), 'the dock did not take the box').toBeNull();
       expect(box.isConnected, 'the row is still attached').toBe(false);
 
       // The detached row's observer fires once more, as the browser does.
@@ -9481,7 +9633,7 @@ describe('the dictation panel', () => {
       // must be measured rather than inheriting the place the old one left.
       harness.page.record = record();
       flushSync();
-      const again = document.querySelector('.comp .box');
+      const again = document.querySelector('.comp .line');
       if (!(again instanceof Element)) throw new Error('the box did not come back');
       rectAt(again, 550, 607);
       const rebind = callbacks.at(-1);
@@ -9578,6 +9730,163 @@ describe("the dock's settled shape", () => {
       document.querySelector('.dock .queue'),
       'the pending line did not come back with the body',
     ).not.toBeNull();
+  });
+
+  it('folds every kind to its bar, and the bar unwraps it', () => {
+    // **The body is one slot, so any ask gives it back.** A question, a
+    // permission, a held post, a document hand-off and a browser hand-off all
+    // fold to one line carrying the kind's mark and its subject.
+    const cases = [
+      ['question', questionAsk(), 'Pick the environments to deploy to.'],
+      ['permission', permissionAsk(), 'Bash'],
+      ['slack_draft', slackDraftAsk(), 'Trust Machines'],
+      ['document_hand_off', documentHandOffAsk(), '/proj/docs/plan.md'],
+      ['browser_hand_off', browserHandOffAsk(), 'browser hand-off'],
+    ] as const;
+    for (const [kind, ask, subject] of cases) {
+      open({ record: record({ pending_asks: [ask] }) });
+      const chev = document.querySelector<HTMLElement>('.dock .chevb');
+      if (chev === null) throw new Error(`${kind} drew no fold control`);
+      chev.click();
+      flushSync();
+
+      const bar = document.querySelector<HTMLElement>('.dock .qbar');
+      expect(bar, `${kind} did not fold`).not.toBeNull();
+      expect(bar?.querySelector('.ic'), `${kind}'s bar carries no mark`).not.toBeNull();
+      expect(bar?.textContent, `${kind}'s bar lost its subject`).toContain(subject);
+
+      bar?.click();
+      flushSync();
+      expect(document.querySelector('.dock .qbar'), `${kind} did not unwrap`).toBeNull();
+
+      void unmount(app as Record<string, unknown>);
+      app = null;
+      document.body.innerHTML = '';
+    }
+  });
+
+  it('keeps a refusal on the folded bar', () => {
+    const harness = open({
+      record: record({ pending_asks: [questionAsk('tu-q', { multi_select: false })] }),
+    });
+    options()[1]?.click();
+    flushSync();
+    harness.say({ kind: 'error', what: 'dispatch', why: 'the prompt was already answered' });
+    flushSync();
+    expect(
+      document.querySelector('.dock .refusal'),
+      'precondition: the refusal drew',
+    ).not.toBeNull();
+
+    const chev = document.querySelector<HTMLElement>('.dock .chevb');
+    if (chev === null) throw new Error('the head drew no fold control');
+    chev.click();
+    flushSync();
+
+    expect(document.querySelector('.dock .qbar'), 'precondition: folded').not.toBeNull();
+    expect(
+      document.querySelector('.dock .refusal')?.textContent,
+      'the fold hid the reason the answer was refused',
+    ).toContain('already answered');
+  });
+
+  it("swaps the ask for the reader's draft and back, keeping what they chose", () => {
+    const harness = open();
+    type('a draft');
+    // The ask lands on a box that already holds words: the draft is the
+    // reader's, and the ask takes the body.
+    harness.page.record = record({ pending_asks: [questionAsk()] });
+    flushSync();
+
+    // A choice made in the ask before the swap: one row toggled, another marked.
+    press(' ');
+    press('ArrowDown');
+    flushSync();
+    const markedAt = () =>
+      document.querySelector('.dock .opt[aria-selected="true"] .lbl')?.textContent;
+    expect(
+      document.querySelectorAll('.dock .box2.on'),
+      'precondition: one row toggled',
+    ).toHaveLength(1);
+    expect(markedAt(), 'precondition: the second row is marked').toBe('Production');
+
+    const chip = document.querySelector<HTMLElement>('[data-draft]');
+    if (chip === null) throw new Error('the row drew no draft chip');
+    expect(chip.textContent, 'the chip says how many lines').toContain('draft 1 line');
+    chip.click();
+    flushSync();
+
+    expect(document.querySelector('.ask-body.covered'), 'the ask was not hidden').not.toBeNull();
+    const field = document.querySelector<HTMLTextAreaElement>('.comp .line textarea');
+    expect(field?.value, "the reader's draft did not come back").toBe('a draft');
+
+    // **A frame is not a new prompt.** The record is replaced on every frame,
+    // and the prompt with it; keyed on the object, the swap would clear under
+    // the reader's caret on the next one.
+    harness.page.record = record({ pending_asks: [questionAsk()] });
+    flushSync();
+    expect(
+      document.querySelector('.ask-body.covered'),
+      'a record frame cleared the swap',
+    ).not.toBeNull();
+
+    const back = document.querySelector<HTMLElement>('.live-row .live-door.att');
+    if (back === null) throw new Error('the row drew no ask chip to go back with');
+    back.click();
+    flushSync();
+
+    expect(document.querySelector('.ask-body.covered'), 'the ask did not come back').toBeNull();
+    expect(
+      document.querySelectorAll('.dock .box2.on'),
+      'the toggled set was lost to the swap',
+    ).toHaveLength(1);
+    expect(markedAt(), 'the marked row was lost to the swap').toBe('Production');
+  });
+
+  it('lands a take begun in the draft under an ask in the draft, not the hidden dock', async () => {
+    // **The draft has the body, so a take begun there is the draft's.** With
+    // the ask parked and its chip showing the field, routing the words to the
+    // dock would put them in a row the reader cannot see.
+    const harness = open({ dictation: true });
+    type('a draft');
+    harness.page.record = record({ pending_asks: [questionAsk()] });
+    flushSync();
+    const chip = document.querySelector<HTMLElement>('[data-draft]');
+    if (chip === null) throw new Error('the row drew no draft chip');
+    chip.click();
+    flushSync();
+    expect(
+      document.querySelector('.ask-body.covered'),
+      'precondition: the draft has the body',
+    ).not.toBeNull();
+    expect(
+      document.querySelector<HTMLTextAreaElement>('.comp .line textarea')?.value,
+      'precondition: the field carries the draft',
+    ).toBe('a draft');
+
+    await beginTake(harness);
+    harness.page.record = record({
+      pending_asks: [questionAsk()],
+      composer: {
+        take: null,
+        notice: { kind: 'landed', text: 'spoken words', truncated: false },
+        machine: null,
+      },
+    });
+    flushSync();
+
+    expect(
+      document.querySelector('.ask-body.covered'),
+      'the swap cleared during the take',
+    ).not.toBeNull();
+    expect(
+      document.querySelector('.comp .line'),
+      'the field row is not the body after the landing',
+    ).not.toBeNull();
+    const field = document.querySelector<HTMLTextAreaElement>('.comp .line textarea');
+    expect(field?.value ?? '', 'the words did not land in the draft').toContain('spoken words');
+    const notes = document.querySelector<HTMLTextAreaElement>('.dock textarea.notes');
+    expect(notes?.value ?? '', 'the words landed in the hidden dock').toBe('');
   });
 
   it('keeps the bar folded across a repaint of the same prompt', () => {

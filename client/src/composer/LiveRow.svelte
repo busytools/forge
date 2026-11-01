@@ -1,0 +1,460 @@
+<script lang="ts">
+  import { untrack } from 'svelte';
+
+  import Icon from '../components/Icon.svelte';
+  import BrowserSegment from '../chat/BrowserSegment.svelte';
+  import ConnectorsSegment from '../chat/ConnectorsSegment.svelte';
+  import FilesSegment from '../chat/FilesSegment.svelte';
+  import GitSegment from '../chat/GitSegment.svelte';
+  import McpSegment from '../chat/McpSegment.svelte';
+  import MonitorsSegment from '../chat/MonitorsSegment.svelte';
+  import ProcessesSegment from '../chat/ProcessesSegment.svelte';
+  import ReviewSegment from '../chat/ReviewSegment.svelte';
+  import SchedulesSegment from '../chat/SchedulesSegment.svelte';
+  import Strip from '../chat/Strip.svelte';
+  import SubagentSegment from '../chat/SubagentSegment.svelte';
+  import TasksSegment from '../chat/TasksSegment.svelte';
+  import { connectors } from '../chat/connectors.svelte';
+  import { files } from '../chat/files.svelte';
+  import { git } from '../chat/git.svelte';
+  import { mcp } from '../chat/mcp.svelte';
+  import { monitors } from '../chat/monitors.svelte';
+  import { processes } from '../chat/processes.svelte';
+  import { review } from '../chat/review.svelte';
+  import { schedules } from '../chat/schedules.svelte';
+  import { panelStyle, portal } from '../chat/strip-panel';
+  import { subagents } from '../chat/subagents.svelte';
+  import { tasks } from '../chat/tasks.svelte';
+  import { hrefFor } from '../routes';
+  import type { TurnInfo } from '../chat/units';
+  import type { SessionSlot } from '../wire/types';
+
+  /**
+   * The live row: what this seat is doing, on one line, at the top of the bar.
+   *
+   * **The strip outlives the turn, and so does this row.** It used to draw only
+   * while a turn was being written, which left an idle seat with no way at all
+   * into its tree, its tasks or its watchers; the segments are the home for
+   * what the inspector used to hold. So the row stands whenever it has anything
+   * to say, the running turn being one of the things it may say.
+   *
+   * **It mounts the segments rather than re-drawing them.** Every chip is the
+   * same component the strip draws, in the strip's fixed order, so a segment
+   * gaining a state gains it here for free - and a row that re-implemented one
+   * would be the second copy of it.
+   *
+   * **It never wraps.** The chips that do not fit are collapsed behind `+N`,
+   * which lists them in a panel; the ragged wrap this replaced grew the band to
+   * three rows between 780 and 860px (Ved, in the #2159 look).
+   */
+
+  let {
+    info,
+    slot = null,
+    ask = null,
+    draft = null,
+    onask = () => {},
+    ondraft = () => {},
+  }: {
+    info: TurnInfo | null;
+    slot?: SessionSlot | null;
+    /**
+     * What waits in the body, said on the row: the ask's kind, the mark it
+     * wears, and whether it is something the reader owes an answer.
+     */
+    ask?: { label: string; mark: string; tone: 'att' | 'bad' | null } | null;
+    /**
+     * The reader's own draft, when an ask holds the body: the chip that swaps
+     * the field in, one click back to the ask.
+     */
+    draft?: { lines: number } | null;
+    /** Bring the ask back into the body. */
+    onask?: () => void;
+    /** Swap the body for the reader's draft. */
+    ondraft?: () => void;
+  } = $props();
+
+  /** Whether any segment has anything to state, which is the row's own gate. */
+  const rows = $derived(
+    subagents.all().length > 0 ||
+      files.anything() ||
+      processes.anything() ||
+      connectors.anything() ||
+      schedules.anything() ||
+      mcp.anything() ||
+      git.anything() ||
+      tasks.anything() ||
+      review.anything() ||
+      monitors.anything(),
+  );
+
+  /** The row's own element, which is what its width is measured on. */
+  let rowEl: HTMLElement | null = $state(null);
+  /** The `+N` button, which the panel hangs off and the measurement reserves. */
+  let moreEl: HTMLButtonElement | null = $state(null);
+  /** The chips that do not fit, in the row's order: empty while they all do. */
+  let hidden = $state<string[]>([]);
+  /** Whether the panel lists the hidden chips. */
+  let open = $state(false);
+  /** The panel's measured caps, remeasured every frame while open. */
+  let limits = $state('');
+  let panelEl: HTMLElement | null = $state(null);
+
+  /** The gap the sheet draws when no layout has computed one (jsdom, a row not yet painted). */
+  const GAP_FLOOR = 2;
+  /** What the +N takes before it is drawn, so the first measurement reserves it. */
+  const MORE_FLOOR = 36;
+
+  /**
+   * Which chips fit, measured from the row and the chips themselves.
+   *
+   * **The measurement reads the live layout, not a guess**: the turn figures
+   * and divider lead, then each chip that is actually drawn adds its own width,
+   * and the last chip that still leaves room for the `+N` stays on the row. A
+   * chip whose store says nothing draws no element, so it costs nothing here.
+   *
+   * **With no layout there is no answer**, so every chip stays on the row:
+   * a zero width is a row that has not been painted yet, not a row that cannot
+   * hold one chip.
+   */
+  function measure(): void {
+    const row = rowEl;
+    if (row === null) return;
+    const width = row.clientWidth;
+    if (width <= 0) {
+      if (hidden.length > 0) hidden = [];
+      return;
+    }
+    const style = getComputedStyle(row);
+    const pad =
+      (Number.parseFloat(style.paddingLeft) || 0) + (Number.parseFloat(style.paddingRight) || 0);
+    const content = width - pad;
+    // The row's own gap between items, and the chips' gap inside their track:
+    // two different spaces, and a sum that uses one for both is a row that
+    // clips its last chip by a few pixels at every width.
+    const gap = Number.parseFloat(style.columnGap) || GAP_FLOOR;
+    const track = row.querySelector<HTMLElement>('.live-segs');
+    const segGap =
+      Number.parseFloat(track === null ? '' : getComputedStyle(track).columnGap) || GAP_FLOOR;
+    const fixed: HTMLElement[] = [];
+    for (const el of [
+      row.querySelector<HTMLElement>('[data-ask]'),
+      row.querySelector<HTMLElement>('[data-fig]'),
+      row.querySelector<HTMLElement>('[data-div]'),
+      row.querySelector<HTMLElement>('[data-draft]'),
+    ]) {
+      if (el !== null) fixed.push(el);
+    }
+    // The divider carries its own side margins, which no gap accounts for.
+    const margin = (el: HTMLElement): number => {
+      const cs = getComputedStyle(el);
+      return (Number.parseFloat(cs.marginLeft) || 0) + (Number.parseFloat(cs.marginRight) || 0);
+    };
+    let fixedWidth = 0;
+    for (const el of fixed) {
+      // The figures may be shrunk by the row; the measurement uses the width
+      // they want, so hiding a chip cannot make the fit flip back and forth.
+      const width = el === row.querySelector('[data-fig]') ? el.scrollWidth : el.offsetWidth;
+      fixedWidth += width + margin(el);
+    }
+    const chips = [...row.querySelectorAll<HTMLElement>('[data-chip]')].filter(
+      (el) => el.firstElementChild !== null,
+    );
+    const chipsWidth = (count: number): number => {
+      let sum = 0;
+      for (let at = 0; at < count; at += 1) {
+        const el = chips[at];
+        if (el === undefined) break;
+        sum += el.offsetWidth + (at === 0 ? 0 : segGap);
+      }
+      return sum;
+    };
+    // The +N is the last item whenever it is drawn, and it carries a margin
+    // of its own. Items: the fixed ones, the chips' track, and the button.
+    const more = moreEl;
+    const moreWidth = more === null ? MORE_FLOOR : more.offsetWidth + margin(more);
+    const all = fixedWidth + chipsWidth(chips.length) + gap * fixed.length;
+    if (all <= content) {
+      if (hidden.length > 0) hidden = [];
+      return;
+    }
+    const fits = (count: number): boolean =>
+      fixedWidth + chipsWidth(count) + moreWidth + gap * (fixed.length + 1) <= content;
+    let shown = 0;
+    for (let at = 1; at <= chips.length; at += 1) {
+      if (fits(at)) shown = at;
+      else break;
+    }
+    const names = chips.slice(shown).map((el) => el.dataset.chip ?? '');
+    const same = names.length === hidden.length && names.every((name, at) => name === hidden[at]);
+    if (!same) hidden = names;
+  }
+
+  /**
+   * Watch the row, every chip, and the window, and measure on each change.
+   *
+   * **The row's own size is not the whole trigger**: a chip's label growing as
+   * its counts tick moves the fit without moving the row, so every chip is
+   * watched too. `untrack` keeps the measurement out of the effect's own
+   * dependencies - it writes the hidden set, and an effect that reads what it
+   * writes is an update loop.
+   */
+  function watch(row: HTMLElement): () => void {
+    const run = () => untrack(measure);
+    run();
+    const watching = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(run);
+    watching?.observe(row);
+    for (const el of row.querySelectorAll('[data-chip]')) watching?.observe(el);
+    if (moreEl !== null) watching?.observe(moreEl);
+    window.addEventListener('resize', run);
+    return () => {
+      watching?.disconnect();
+      window.removeEventListener('resize', run);
+    };
+  }
+
+  $effect(() => {
+    const row = rowEl;
+    void rows;
+    // The +N is drawn and observed only once there is something behind it.
+    void hidden.length;
+    if (row === null) return;
+    return watch(row);
+  });
+
+  /** The panel goes with the reason it existed. */
+  $effect(() => {
+    if (hidden.length === 0) open = false;
+  });
+
+  /** The panel's caps, remeasured every frame while open: the row moves under it. */
+  $effect(() => {
+    if (!open) return;
+    let raf = requestAnimationFrame(function tick() {
+      limits = panelStyle(moreEl);
+      raf = requestAnimationFrame(tick);
+    });
+    return () => cancelAnimationFrame(raf);
+  });
+
+  /** A pointer landing outside the button and its panel closes it. */
+  function away(event: Event): void {
+    const at = event.target;
+    if (!(at instanceof Node)) return;
+    if (moreEl?.contains(at) === true || panelEl?.contains(at) === true) return;
+    open = false;
+  }
+
+  $effect(() => {
+    if (!open) return;
+    document.addEventListener('pointerdown', away);
+    return () => document.removeEventListener('pointerdown', away);
+  });
+
+  /** Escape closes the panel from anywhere inside it, not only from the button. */
+  $effect(() => {
+    if (!open) return;
+    const key = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') close();
+    };
+    document.addEventListener('keydown', key);
+    return () => document.removeEventListener('keydown', key);
+  });
+
+  function toggle(): void {
+    if (open) {
+      close();
+      return;
+    }
+    if (hidden.length === 0) return;
+    limits = panelStyle(moreEl);
+    open = true;
+  }
+
+  /** Give the keyboard back to the button that opened the panel. */
+  function close(): void {
+    open = false;
+    moreEl?.focus();
+  }
+</script>
+
+{#snippet segment(name: string)}
+  {#if name === 'browser'}
+    <BrowserSegment {slot} />
+  {:else if name === 'subagents'}
+    <SubagentSegment />
+  {:else if name === 'processes'}
+    <ProcessesSegment />
+  {:else if name === 'connectors'}
+    <ConnectorsSegment />
+  {:else if name === 'schedules'}
+    <SchedulesSegment />
+  {:else if name === 'mcp'}
+    <McpSegment />
+  {:else if name === 'files'}
+    <FilesSegment href={slot === null ? null : hrefFor({ name: 'files', slot })} />
+  {:else if name === 'git'}
+    <GitSegment />
+  {:else if name === 'review'}
+    <ReviewSegment href={slot === null ? null : hrefFor({ name: 'review', slot })} />
+  {:else if name === 'tasks'}
+    <TasksSegment
+      href={slot === null ? null : hrefFor({ name: 'board', org: slot.org, project: slot.project })}
+    />
+  {:else if name === 'monitors'}
+    <MonitorsSegment />
+  {/if}
+{/snippet}
+
+{#if info !== null || rows || ask !== null || draft !== null}
+  <div class="live-row" bind:this={rowEl}>
+    <!-- What waits sorts to the front and takes its tone: an ask the body is
+         parked on is the first thing a reader needs to see. -->
+    {#if ask !== null}
+      <button
+        class="live-door"
+        class:att={ask.tone === 'att'}
+        class:bad={ask.tone === 'bad'}
+        type="button"
+        data-ask
+        onclick={onask}
+      >
+        <Icon name={ask.mark} />
+        {ask.label}
+      </button>
+    {/if}
+    {#if info !== null}
+      <span class="live-fig" data-fig><Strip {info} /></span>
+      <span class="live-div" data-div aria-hidden="true"></span>
+    {/if}
+    <!-- The chips share one list, in the strip's fixed order. Each is the
+         segment component itself; the wrapper carries only what the row adds -
+         the collapse, and the tone of a thing waiting behind it. -->
+    <div class="live-segs" role="list" aria-label="what this seat is holding">
+      <span
+        class="live-chip"
+        class:off={hidden.includes('browser')}
+        data-chip="browser"
+        role="listitem"
+      >
+        {@render segment('browser')}
+      </span>
+      <span
+        class="live-chip"
+        class:off={hidden.includes('subagents')}
+        data-chip="subagents"
+        role="listitem"
+      >
+        {@render segment('subagents')}
+      </span>
+      <!-- The processes row is the one segment whose failure is a verdict the
+           row can read: a settled call the CLI marked failed. -->
+      <span
+        class="live-chip"
+        class:off={hidden.includes('processes')}
+        class:bad={processes.rows().some((row) => row.failed)}
+        data-chip="processes"
+        role="listitem"
+      >
+        {@render segment('processes')}
+      </span>
+      <span
+        class="live-chip"
+        class:off={hidden.includes('connectors')}
+        data-chip="connectors"
+        role="listitem"
+      >
+        {@render segment('connectors')}
+      </span>
+      <span
+        class="live-chip"
+        class:off={hidden.includes('schedules')}
+        data-chip="schedules"
+        role="listitem"
+      >
+        {@render segment('schedules')}
+      </span>
+      <span class="live-chip" class:off={hidden.includes('mcp')} data-chip="mcp" role="listitem">
+        {@render segment('mcp')}
+      </span>
+      <span
+        class="live-chip"
+        class:off={hidden.includes('files')}
+        data-chip="files"
+        role="listitem"
+      >
+        {@render segment('files')}
+      </span>
+      <span class="live-chip" class:off={hidden.includes('git')} data-chip="git" role="listitem">
+        {@render segment('git')}
+      </span>
+      <!-- The review answer waiting is the live fact a reviewer is looking
+           for, so its chip wears the accent. -->
+      <span
+        class="live-chip"
+        class:off={hidden.includes('review')}
+        class:att={review.waiting() > 0}
+        data-chip="review"
+        role="listitem"
+      >
+        {@render segment('review')}
+      </span>
+      <span
+        class="live-chip"
+        class:off={hidden.includes('tasks')}
+        data-chip="tasks"
+        role="listitem"
+      >
+        {@render segment('tasks')}
+      </span>
+      <span
+        class="live-chip"
+        class:off={hidden.includes('monitors')}
+        data-chip="monitors"
+        role="listitem"
+      >
+        {@render segment('monitors')}
+      </span>
+    </div>
+    <!-- The reader's own words are a chip, not a second text bar: one click
+         gives the field the body, and the ask chip above brings it back. -->
+    {#if draft !== null}
+      <button class="live-door" type="button" data-draft onclick={ondraft}>
+        <Icon name="file" />
+        {`draft ${String(draft.lines)} ${draft.lines === 1 ? 'line' : 'lines'}`}
+        <span class="show">&#183; show</span>
+      </button>
+    {/if}
+    {#if hidden.length > 0}
+      <button
+        class="live-more"
+        bind:this={moreEl}
+        type="button"
+        aria-expanded={open}
+        aria-label={`${hidden.length} more`}
+        onclick={toggle}
+        onkeydown={(event) => {
+          if (event.key !== 'Escape') return;
+          close();
+        }}
+      >
+        +{hidden.length}
+      </button>
+    {/if}
+  </div>
+{/if}
+
+{#if open && hidden.length > 0}
+  <div
+    class="live-panel"
+    style={limits}
+    use:portal
+    bind:this={panelEl}
+    role="group"
+    aria-label="the rest of what this seat is holding"
+  >
+    {#each hidden as name (name)}
+      <span class="lp-seg" data-panel-chip={name}>{@render segment(name)}</span>
+    {/each}
+  </div>
+{/if}
