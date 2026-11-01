@@ -47,9 +47,10 @@ raise lands as the dock's card; **Not now** answers the parked call - the
 agent is told the reader declined and moves on - while **Open** is the
 client's own route and answers nothing. The call releases on the viewer's
 **done**, carrying the review the finish filed, so the agent hears what the
-reading produced rather than merely that the document opened. A client that
-goes away ends the call abandoned, and a forge with no client attached never
-parks at all: the tool answers that nothing can open.
+reading produced rather than merely that the document opened. A detached
+client leaves the call parked, and the ask is re-readable when a client
+returns; only the waiter's own drop abandons it. A forge with no client
+attached never parks at all: the tool answers that nothing can open.
 
 **The answer is matched by seat AND document.** A client holding two seats
 can have two viewers' reads in flight; the answer names both back, and a

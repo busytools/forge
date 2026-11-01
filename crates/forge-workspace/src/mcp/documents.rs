@@ -10,7 +10,9 @@
 //! `review` family still hands off, but its description and answer name the
 //! family it lacks instead of telling it to call a tool it does not have.
 //! `NotNow` ends the call with
-//! the reader's decline, and a client that goes away ends it abandoned.
+//! the reader's decline. A detached client leaves the call parked, and the
+//! ask is re-readable when a client returns; only the waiter's own drop
+//! abandons it.
 //!
 //! **Any-caller and not toggleable, like the browser**: every session may
 //! hand a document out of its own tree, and the read resolves against that
