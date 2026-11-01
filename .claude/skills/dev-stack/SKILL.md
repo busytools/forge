@@ -18,7 +18,8 @@ client, server, or both - that needs the maintainer's eyes before merge runs
 this loop; one-line fixes take the ordinary PR loop instead. It runs at one of
 two depths, set by what the change touches: a pure client change takes the
 shallow path (recipe step 5) - the dev client alone, no scratch forge - while
-anything touching server behaviour takes the full stack. Firing it is the
+anything touching server behaviour takes the full stack; step 5 names the
+one client cut that needs the stack too. Firing it is the
 LEAD's act at plan time, not the worker's discovery: the lead reads this file
 and threads its loop into the worker's charter, so the charter already carries
 the depth, the verification steps and the teardown.
@@ -156,7 +157,10 @@ history is the record.
    `[server] allowed_origins` already lists `http://localhost:1420`. **Read
    the live config to check; never edit it or restart the live forge to make
    the shallow path work. When the tab's origin is not admitted, take the
-   look in the desktop dev window (`just client-dev`).**
+   look in the desktop dev window (`just client-dev`) - except on a cut that
+   changes the browser socket itself (`client/src/socket.ts`), which the
+   window never runs: that cut takes the stack, whose debug server admits
+   the dev origin.**
    The cost, named: the dev client is another answering client on the
    live forge, so a turn can park on it. Anything
    that touches server behaviour runs DEEP - the full stack - with the client
