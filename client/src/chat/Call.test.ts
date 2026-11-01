@@ -963,6 +963,7 @@ describe('the dispatch row, joined to its instance', () => {
     expect(drawn, 'the refusal draws').toContain('Bash refused');
     expect(drawn, 'with the error level glyph').toContain('#i-error');
     expect(drawn, "and the wire's own subtype as the chip").toContain('permission_denied');
+    expect(drawn, 'on the notice row face, not a bare line').toContain('sg-pr sg-refusal');
 
     subagents.sync(null);
   });
