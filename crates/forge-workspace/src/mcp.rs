@@ -333,8 +333,15 @@ pub fn build_forge_server(
     builder = browser::add_tools(builder, browser, slot.clone());
     // Unconditional for the same reason: a hand-off reads the caller's own
     // tree, so every session may hand a document and no project has anything
-    // to withhold.
-    builder = documents::add_tools(builder, documents, slot.clone());
+    // to withhold. The review family still rides along: a session without it
+    // can hand a document off but cannot read the review back, so its answer
+    // says so (#2787).
+    builder = documents::add_tools(
+        builder,
+        documents,
+        slot.clone(),
+        families.contains(&McpFamily::Review),
+    );
     if families.contains(&McpFamily::Review) {
         builder = review::add_tools(builder, review, slot.clone());
     }
@@ -786,6 +793,60 @@ mod tests {
             }),
             "no toggleable family registers for a lead with everything withheld: {lead:?}"
         );
+    }
+
+    /// The hand-off tool is built with the caller's own family set: a
+    /// session spawned without `review` is told the family it lacks at
+    /// hand-off time, while a session with it is sent to `review__get`
+    /// (#2787). The documents tool's own tests inject the flag, so only a
+    /// built server proves the flag comes from the caller's families.
+    #[tokio::test]
+    async fn the_document_hand_off_knows_whether_the_session_has_review() {
+        let withheld: std::collections::BTreeSet<McpFamily> =
+            McpFamily::all().into_iter().filter(|family| *family != McpFamily::Review).collect();
+        for (families, expected) in [
+            (McpFamily::all(), "read them back with review__get"),
+            (withheld, "spawned without the `review` MCP family"),
+        ] {
+            let documents = MockDocumentFacade::new();
+            *documents.answer.lock() = Ok((
+                "/proj/docs/plan.md".to_owned(),
+                forge_primitives::document::DocumentHandOffEnding::Done {
+                    review_id: Some("r-9".to_owned()),
+                },
+            ));
+            let server = build_forge_server(
+                ForgeServerFacades {
+                    workspace: MockWorkspaceFacade::new().into_arc(),
+                    worker: MockWorkerFacade::new().into_arc(),
+                    browser: MockBrowserFacade::new().into_arc(),
+                    documents: documents.into_arc(),
+                    review: MockReviewFacade::new().into_arc(),
+                    cron: MockCronFacade::new().into_arc(),
+                    gotify: MockGotifyFacade::new().into_arc(),
+                    slack: MockSlackFacade::new().into_arc(),
+                    tasks: MockTasksFacade::new().into_arc(),
+                    systemone: None,
+                },
+                &families,
+                fake_key("test"),
+                SessionKind::Worker,
+            );
+            let answer = server
+                .dispatch(&forge_sdk::mcp::protocol::JsonRpcRequest {
+                    jsonrpc: "2.0".to_owned(),
+                    id: Some(serde_json::json!(1)),
+                    method: "tools/call".to_owned(),
+                    params: Some(serde_json::json!({
+                        "name": "documents__hand_off",
+                        "arguments": { "path": "docs/plan.md", "reviewable": true },
+                    })),
+                })
+                .await
+                .expect("a tools/call is answered");
+            let encoded = format!("{answer:?}");
+            assert!(encoded.contains(expected), "expected '{expected}' in {encoded}");
+        }
     }
 
     /// A narrow selection registers exactly the core plus the chosen

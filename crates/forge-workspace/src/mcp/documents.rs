@@ -6,8 +6,10 @@
 //! The call parks on the ask - **open** or **not now** - and the viewer's
 //! done releases it with what the finish filed; a review the reader leaves
 //! is filed under the document's own scope and named in the answer, so the
-//! agent reads it back like any review. `NotNow` ends the call with the
-//! reader's decline, and a client that goes away ends it abandoned.
+//! agent reads it back like any review. A session spawned without the
+//! `review` family still hands off, but its answer names the family it
+//! lacks instead of the tool it cannot call. `NotNow` ends the call with
+//! the reader's decline, and a client that goes away ends it abandoned.
 //!
 //! **Any-caller and not toggleable, like the browser**: every session may
 //! hand a document out of its own tree, and the read resolves against that
@@ -35,18 +37,27 @@ pub mod facade;
 pub fn build_server(
     facade: Arc<dyn DocumentFacade>,
     slot: SessionSlot,
+    review_available: bool,
 ) -> forge_sdk::mcp::server::McpServer {
-    add_tools(McpServerBuilder::new("forge", env!("CARGO_PKG_VERSION")), facade, slot).build()
+    add_tools(
+        McpServerBuilder::new("forge", env!("CARGO_PKG_VERSION")),
+        facade,
+        slot,
+        review_available,
+    )
+    .build()
 }
 
 /// Attach the hand-off tool to an existing builder, so it shares the `forge`
-/// server name with every other family.
+/// server name with every other family. `review_available` is whether the
+/// calling session's family selection includes `review`.
 pub(crate) fn add_tools(
     builder: McpServerBuilder,
     facade: Arc<dyn DocumentFacade>,
     slot: SessionSlot,
+    review_available: bool,
 ) -> McpServerBuilder {
-    builder.tool(HandOffTool { facade, slot })
+    builder.tool(HandOffTool { facade, slot, review_available })
 }
 
 /// What the model reads about the tool before calling it: what it hands
@@ -70,6 +81,9 @@ they say not now.";
 pub(crate) struct HandOffTool {
     facade: Arc<dyn DocumentFacade>,
     slot: SessionSlot,
+    /// Whether this session was built with the `review` family, which
+    /// decides whether its answer can send it to `review__get`.
+    review_available: bool,
 }
 
 #[async_trait::async_trait]
@@ -145,14 +159,34 @@ impl HandOffTool {
         };
         let (resolved, ending) = self.facade.hand_off(&self.slot, path, reviewable).await?;
         Ok(match ending {
-            DocumentHandOffEnding::Done { review_id: Some(review_id) } => format!(
-                "The reader finished at {resolved}, and their comments are filed as the review \
-                 {review_id} under the document's own scope, {} - read them back with \
-                 review__get and pass that scope.",
-                doc_scope_ref(&resolved),
-            ),
+            DocumentHandOffEnding::Done { review_id: Some(review_id) } => {
+                let filed = format!(
+                    "The reader finished at {resolved}, and their comments are filed as the \
+                     review {review_id} under the document's own scope, {}",
+                    doc_scope_ref(&resolved),
+                );
+                if self.review_available {
+                    format!("{filed} - read them back with review__get and pass that scope.")
+                } else {
+                    format!(
+                        "{filed}. This session was spawned without the `review` MCP family, so \
+                         it cannot read them back - hand that scope to your lead, which can \
+                         read them with review__get."
+                    )
+                }
+            }
             DocumentHandOffEnding::Done { review_id: None } => {
-                format!("The reader finished at {resolved} without leaving comments.")
+                let finished =
+                    format!("The reader finished at {resolved} without leaving comments.");
+                if self.review_available {
+                    finished
+                } else {
+                    format!(
+                        "{finished} This session was spawned without the `review` MCP family, \
+                         so a review left under this document is your lead's to read, not this \
+                         session's."
+                    )
+                }
             }
             DocumentHandOffEnding::NotNow => {
                 return Err("the reader said not now, so nothing opened".to_owned());
@@ -183,7 +217,11 @@ mod tests {
     }
 
     fn tool(facade: Arc<dyn DocumentFacade>) -> HandOffTool {
-        HandOffTool { facade, slot: seat() }
+        tool_with_review(facade, true)
+    }
+
+    fn tool_with_review(facade: Arc<dyn DocumentFacade>, review_available: bool) -> HandOffTool {
+        HandOffTool { facade, slot: seat(), review_available }
     }
 
     /// The whole call: the path and the reviewable flag cross to the
@@ -250,6 +288,10 @@ mod tests {
         let text = crate::mcp::test_support::block_text(&with_review.blocks[0]);
         assert!(text.contains("r-7"), "the answer names the review: {text}");
         assert!(text.contains("doc:/proj/docs/readme.md"), "and the scope: {text}");
+        assert!(
+            text.contains("read them back with review__get and pass that scope"),
+            "and the call that reads them back, for a session that has it: {text}",
+        );
 
         *mock.answer.lock() = Ok((
             "/proj/docs/readme.md".to_owned(),
@@ -259,6 +301,50 @@ mod tests {
         assert!(!without.is_error, "{:?}", without.blocks);
         let text = crate::mcp::test_support::block_text(&without.blocks[0]);
         assert!(!text.contains("doc:"), "nothing commented, so no scope to name: {text}");
+    }
+
+    /// A session spawned without the `review` family can hand a reviewable
+    /// document off, but it cannot read the review back. Its answer names
+    /// the family it lacks and routes the scope to its lead instead of
+    /// sending it to a `review__get` it does not have (#2787).
+    #[tokio::test]
+    async fn a_hand_off_from_a_session_without_review_names_the_family_it_lacks() {
+        let mock = Arc::new(MockDocumentFacade::new());
+        let tool = tool_with_review(Arc::clone(&mock) as Arc<dyn DocumentFacade>, false);
+
+        *mock.answer.lock() = Ok((
+            "/proj/docs/readme.md".to_owned(),
+            DocumentHandOffEnding::Done { review_id: Some("r-7".to_owned()) },
+        ));
+        let out = tool
+            .call(ToolInput { value: json!({ "path": "docs/readme.md", "reviewable": true }) })
+            .await;
+        assert!(!out.is_error, "{:?}", out.blocks);
+        let text = crate::mcp::test_support::block_text(&out.blocks[0]);
+        assert!(text.contains("r-7"), "the review is still named: {text}");
+        assert!(
+            text.contains("spawned without the `review` MCP family"),
+            "the answer names the family the session lacks: {text}",
+        );
+        assert!(text.contains("your lead"), "and routes the scope to the lead: {text}");
+        assert!(
+            !text.contains("read them back with review__get and pass that scope"),
+            "it must not send a session without review to read them itself: {text}",
+        );
+
+        *mock.answer.lock() = Ok((
+            "/proj/docs/readme.md".to_owned(),
+            DocumentHandOffEnding::Done { review_id: None },
+        ));
+        let out = tool
+            .call(ToolInput { value: json!({ "path": "docs/readme.md", "reviewable": true }) })
+            .await;
+        assert!(!out.is_error, "{:?}", out.blocks);
+        let text = crate::mcp::test_support::block_text(&out.blocks[0]);
+        assert!(
+            text.contains("spawned without the `review` MCP family"),
+            "the gap is named at hand-off time even when nothing was commented: {text}",
+        );
     }
 
     /// The reader's decline and an abandoned client are the call's failures,
@@ -337,7 +423,7 @@ mod tests {
     /// it by.
     #[test]
     fn the_family_registers_one_tool_named_documents_hand_off() {
-        let server = build_server(MockDocumentFacade::new().into_arc(), seat());
+        let server = build_server(MockDocumentFacade::new().into_arc(), seat(), true);
         let debug = format!("{server:?}");
         let (_, tools) = debug.split_once("tools: [").expect("debug lists the tool names");
         let (tools, _) = tools.split_once(']').expect("the tool list is closed");

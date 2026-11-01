@@ -720,7 +720,7 @@ impl Tool for Spawn {
                 "mcp_families": {
                     "type": "array",
                     "items": { "type": "string", "enum": families },
-                    "description": "The MCP families this worker gets, exactly those listed. Omit or pass an empty list for every family. `agents__*` is always on and cannot be listed. Each withheld family is named in the worker's own prompt. What each gives the worker: `review` - read and answer reviews filed on its branch; give it to any worker that implements. `cron` - schedule and manage durable work of its own; give it to any worker that needs a recurring or deferred task. `tasks` - claim, file and update rows on the project board; give it to any worker whose work is on the board. `gotify` - subscribe to and read Gotify notifications; give it to any worker that acts on them. `slack` - read Slack, subscribe, and post through held approval; give it to any worker that works in Slack. `systemone` - put a yes/no, a choice or a score to the decision model; give it to any worker that weighs decisions itself.",
+                    "description": "The MCP families this worker gets, exactly those listed. Omit or pass an empty list for every family. `agents__*` is always on and cannot be listed. Each withheld family is named in the worker's own prompt. What each gives the worker: `review` - read and answer reviews filed on its branch or under a document it handed off; give it to any worker that implements or whose deliverable is a reviewable document. `cron` - schedule and manage durable work of its own; give it to any worker that needs a recurring or deferred task. `tasks` - claim, file and update rows on the project board; give it to any worker whose work is on the board. `gotify` - subscribe to and read Gotify notifications; give it to any worker that acts on them. `slack` - read Slack, subscribe, and post through held approval; give it to any worker that works in Slack. `systemone` - put a yes/no, a choice or a score to the decision model; give it to any worker that weighs decisions itself.",
                 },
                 "cwd": {
                     "type": "string",
@@ -1366,8 +1366,9 @@ mod tests {
         );
         // `review` reads as review-pass tooling, so a lead withholding it
         // from an implementing worker leaves that worker unable to answer
-        // a review on its own branch (#2510). Each family names what a
-        // worker gets from it and who should have it.
+        // a review on its own branch (#2510) - or to read the review a
+        // handed-off document comes back with (#2787). Each family names
+        // what a worker gets from it and who should have it.
         let families = schema["properties"]["mcp_families"]["description"]
             .as_str()
             .expect("mcp_families carries a description");
@@ -1393,8 +1394,10 @@ mod tests {
         for family in crate::mcp::McpFamily::ALL {
             let (purpose, guidance) = match family {
                 crate::mcp::McpFamily::Review => (
-                    "read and answer reviews filed on its branch",
-                    "give it to any worker that implements",
+                    "read and answer reviews filed on its branch or under a document it handed \
+                     off",
+                    "give it to any worker that implements or whose deliverable is a reviewable \
+                     document",
                 ),
                 crate::mcp::McpFamily::Cron => (
                     "schedule and manage durable work of its own",
