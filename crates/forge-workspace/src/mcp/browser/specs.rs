@@ -655,9 +655,9 @@ pub(crate) fn specs() -> Vec<ToolSpec> {
                         "enum": ["list", "new", "close", "select"],
                         "description": "Operation to perform"
                     },
-                    "index": {
-                        "description": "The tab's number, from browser_tabs list. Used for close/select; another session's tab is refused.",
-                        "type": "number"
+                    "tab": {
+                        "description": "The tab's page id, printed first in its row by browser_tabs list. Used for close/select; another session's tab is refused, and an id no tab carries answers with the tabs open now.",
+                        "type": "string"
                     },
                     "url": {
                         "description": "URL to navigate to in the new tab, used for new.",
@@ -766,8 +766,8 @@ pub(crate) fn specs() -> Vec<ToolSpec> {
                         "description": "What needs doing, in the session's own words. It is shown on the prompt, so name the page and the act rather than the tool."
                     },
                     "tab": {
-                        "type": "number",
-                        "description": "The number of one of this session's tabs, from browser_tabs list: the tab the person is asked to look at."
+                        "type": "string",
+                        "description": "The page id of one of this session's tabs, from browser_tabs list: the tab the person is asked to look at."
                     }
                 },
                 "required": ["reason", "tab"],
@@ -818,8 +818,8 @@ mod tests {
     }
 
     /// **A hand-off's tab is what the person is shown**, so the tool requires
-    /// it and says where the number comes from - and profiles being
-    /// config-owned, there is no delete verb.
+    /// it and says which id it comes from - and profiles being config-owned,
+    /// there is no delete verb.
     #[test]
     fn a_hand_off_names_the_tab_it_wants_seen() {
         let spec =
@@ -832,9 +832,27 @@ mod tests {
                 .expect("a description")
                 .contains("one of this session's tabs")
         );
+        assert_eq!(
+            spec.schema["properties"]["tab"]["type"], "string",
+            "the page id names the tab, not a host number",
+        );
         assert!(
             !specs().iter().any(|spec| spec.name == "browser_profile_delete"),
             "profiles are config-owned; there is no delete verb",
+        );
+    }
+
+    /// **The tabs tool addresses a tab by its page id.** The host numbers
+    /// restart with every host, so the schema offers no number to keep.
+    #[test]
+    fn the_tabs_tool_addresses_a_tab_by_its_page_id() {
+        let spec = specs().into_iter().find(|spec| spec.name == "browser_tabs").expect("the tool");
+        let properties = spec.schema["properties"].as_object().expect("a schema");
+        assert!(!properties.contains_key("index"), "the host's number is not an address");
+        assert_eq!(properties["tab"]["type"], "string", "the page id is");
+        assert!(
+            properties["tab"]["description"].as_str().expect("a description").contains("page id"),
+            "and the description says which id it is",
         );
     }
 

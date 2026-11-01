@@ -238,6 +238,34 @@ impl TabRegistry {
         self.tabs.get(&tab).map(|tab| tab.target.as_str())
     }
 
+    /// A tab's title and url, for the listing the tools answer with.
+    pub fn title_url(&self, tab: u16) -> Option<(&str, &str)> {
+        self.tabs.get(&tab).map(|tab| (tab.title.as_str(), tab.url.as_str()))
+    }
+
+    /// The tab whose page is `target`, if this session owns it. **The page id
+    /// is the tab's address**: the host's number restarts with every host, so
+    /// an id no row carries is refused rather than resolved to whatever holds
+    /// that number today.
+    pub fn owned_target(&self, session: &SessionSlot, target: &str) -> Result<u16, String> {
+        if target.is_empty() {
+            return Err("a tab is addressed by its page id, and this one is empty".to_owned());
+        }
+        let (number, tab) = self
+            .tabs
+            .iter()
+            .find(|(_, tab)| tab.target == target)
+            .map(|(number, tab)| (*number, tab))
+            .ok_or_else(|| format!("no tab has the page id '{target}'"))?;
+        if &tab.owner != session {
+            return Err(format!(
+                "the tab with page id '{target}' belongs to {}",
+                tab.owner.display()
+            ));
+        }
+        Ok(number)
+    }
+
     pub fn owner(&self, tab: u16) -> Option<&SessionSlot> {
         self.tabs.get(&tab).map(|tab| &tab.owner)
     }
@@ -498,6 +526,35 @@ mod tests {
             url: String::new(),
             current: false,
         }
+    }
+
+    /// **A tab is addressed by its page id, never its number.** The host's
+    /// numbers restart with every host, so only the page id names one tab for
+    /// its whole life; an id no row carries is refused rather than resolved
+    /// to whatever holds that number today.
+    #[test]
+    fn a_tab_is_addressed_by_its_page_id() {
+        let lead = SessionSlot::lead("O", "p");
+        let worker = SessionSlot::worker("O", "p", "w");
+        let mut registry = TabRegistry::default();
+        let mine = registry.adopt(1, lead.clone(), "T1", "one", "http://a/").expect("the tab");
+        registry.adopt(2, worker.clone(), "T2", "two", "http://b/").expect("the worker's tab");
+
+        assert_eq!(registry.owned_target(&lead, "T1"), Ok(mine), "the id finds its own tab");
+        assert_eq!(
+            registry.owned_target(&lead, "T2"),
+            Err(format!("the tab with page id 'T2' belongs to {}", worker.display())),
+            "another session's id is refused by name",
+        );
+        assert_eq!(
+            registry.owned_target(&lead, "gone"),
+            Err("no tab has the page id 'gone'".to_owned()),
+            "an id no row carries is a refusal, never the tab that holds that number now",
+        );
+        assert!(
+            registry.owned_target(&lead, "").is_err(),
+            "an empty id addresses nothing: a row whose page is unnamed is not a wildcard",
+        );
     }
 
     #[test]
