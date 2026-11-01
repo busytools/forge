@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/forge-sdk", "crates/forge-primitives", "crates/forge-capture", "crates/forge-dictate", "crates/forge-system-one", "crates/forge-gateway", "crates/forge-connectors", "crates/forge-browser", "crates/forge-agent", "crates/forge-workspace", "crates/forge-server", "crates/forge-test-harness"]
 
 [workspace.package]
-version = "1.1.37"
+version = "1.1.38"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/busytools/forge"
@@ -92,17 +92,17 @@ transcribe-cpp = "0.2.2"
 cpal = "0.18"
 
 # Workspace-internal crates
-forge-primitives = { path = "crates/forge-primitives", version = "=1.1.37" }
-forge-capture = { path = "crates/forge-capture", version = "=1.1.37" }
-forge-gateway = { path = "crates/forge-gateway", version = "=1.1.37" }
-forge-connectors = { path = "crates/forge-connectors", version = "=1.1.37" }
-forge-sdk = { path = "crates/forge-sdk", version = "=1.1.37" }
-forge-agent = { path = "crates/forge-agent", version = "=1.1.37" }
-forge-dictate = { path = "crates/forge-dictate", version = "=1.1.37" }
-forge-system-one = { path = "crates/forge-system-one", version = "=1.1.37" }
-forge-workspace = { path = "crates/forge-workspace", version = "=1.1.37" }
-forge-browser = { path = "crates/forge-browser", version = "=1.1.37" }
-forge-server = { path = "crates/forge-server", version = "=1.1.37" }
+forge-primitives = { path = "crates/forge-primitives", version = "=1.1.38" }
+forge-capture = { path = "crates/forge-capture", version = "=1.1.38" }
+forge-gateway = { path = "crates/forge-gateway", version = "=1.1.38" }
+forge-connectors = { path = "crates/forge-connectors", version = "=1.1.38" }
+forge-sdk = { path = "crates/forge-sdk", version = "=1.1.38" }
+forge-agent = { path = "crates/forge-agent", version = "=1.1.38" }
+forge-dictate = { path = "crates/forge-dictate", version = "=1.1.38" }
+forge-system-one = { path = "crates/forge-system-one", version = "=1.1.38" }
+forge-workspace = { path = "crates/forge-workspace", version = "=1.1.38" }
+forge-browser = { path = "crates/forge-browser", version = "=1.1.38" }
+forge-server = { path = "crates/forge-server", version = "=1.1.38" }
 
 # Dev-only
 tempfile = "3"
