@@ -49,8 +49,7 @@ pub fn build_server(
 }
 
 /// Attach the hand-off tool to an existing builder, so it shares the `forge`
-/// server name with every other family. `review_available` is whether the
-/// calling session's family selection includes `review`.
+/// server name with every other family.
 pub(crate) fn add_tools(
     builder: McpServerBuilder,
     facade: Arc<dyn DocumentFacade>,
