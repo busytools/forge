@@ -26,7 +26,7 @@ use forge_primitives::browser::{
 use serde_json::{Value, json};
 use tokio::sync::{Mutex as AsyncMutex, broadcast, mpsc, watch};
 
-use crate::control::HostEvent;
+use crate::control::{HostEvent, JsDialogState};
 use crate::driver::{self, Driver, TabDriver};
 use crate::idle::{self, Step, Touch};
 use crate::input;
@@ -87,6 +87,52 @@ fn driver_call(tool: &str, args: Value) -> Result<DriverCall<'_>, String> {
             args: json!({ "code": code }),
         }),
     }
+}
+
+/// Apply one dialog event to a profile's holds.
+///
+/// **A raise takes the tab; an answer or a close gives it back**, which is the
+/// whole state a refusal reads (#2754). **A line read from a host that has
+/// since gone is dropped**: a successor numbers its tabs from one again, so an
+/// old-numbered hold would refuse the new host's tab of that number for ever
+/// (#2763 review).
+fn note_dialog(
+    profile: &Profile,
+    generation: u64,
+    tab: u16,
+    dialog: &str,
+    message: &str,
+    state: JsDialogState,
+) {
+    // **The lock comes first, and the generation is read under it**: a check
+    // outside the lock could pass, the host could go and clear, and this line
+    // would then insert a dead host's hold after the clear (#2763 review).
+    let mut dialogs = profile.dialogs.lock().unwrap_or_else(PoisonError::into_inner);
+    if generation != profile.host_generation.load(Ordering::Acquire) {
+        return;
+    }
+    match state {
+        JsDialogState::Shown => {
+            dialogs
+                .insert(tab, OpenDialog { dialog: dialog.to_owned(), message: message.to_owned() });
+        }
+        // **A closed dialog releases the tab like an answer does**: nobody
+        // decided, but the page is free and the hold must go with it.
+        JsDialogState::Answered | JsDialogState::Closed => {
+            dialogs.remove(&tab);
+        }
+    }
+}
+
+/// Whether `tool` leaves a page alone while a dialog holds its tab.
+///
+/// **The listing reads the host's own table**, both closes end the host's tab
+/// through `orphan_tab` - the `browser_tabs` close straight there, and
+/// `browser_close` by way of `close_owned_tab` - and `browser_handle_dialog`
+/// is the answer itself. Everything else drives the page through the driver,
+/// which would wait on a renderer a dialog has paused.
+fn dialog_exempt(tool: &str) -> bool {
+    matches!(tool, "browser_tabs" | "browser_close" | "browser_handle_dialog")
 }
 
 /// One browser call's tool and deadline.
@@ -589,6 +635,7 @@ impl BrowserService {
             launch: Arc::clone(&self.launch),
             stopped: Arc::clone(&self.stopped),
             tabs: Mutex::new(TabRegistry::default()),
+            dialogs: Mutex::new(HashMap::new()),
             boot: Mutex::new(None),
             focused: Mutex::new(None),
             controls: Mutex::new(HashMap::new()),
@@ -956,6 +1003,16 @@ impl BrowserService {
         // underneath would name a tool the session never called.
         let DriverCall { tool: driver_tool, reported, args } = driver_call(tool, args)?;
         let profile = self.open(seat).await?;
+        // **A dialog nobody has answered holds its tab** (#2754): the host
+        // no longer dismisses one on a deadline, so a call that would drive
+        // that tab is refused here, before it reaches the driver. Nothing
+        // attaches to the paused renderer, which is what keeps #2732's
+        // stalled attach out.
+        if !dialog_exempt(tool)
+            && let Some(refusal) = profile.dialog_refusal(seat)
+        {
+            return Err(refusal);
+        }
         // **A queued call is a call the session is waiting on.** The wait for
         // the profile's turn is bounded by its own constant, and a session
         // that spent it in the queue is refused in words instead of silently
@@ -3502,6 +3559,13 @@ impl ChooserAnswer for Driver {
 }
 
 /// One open profile: its identity, its hot state and its frames.
+/// A page's dialog the host is holding, as a refusal names it.
+#[derive(Clone)]
+struct OpenDialog {
+    dialog: String,
+    message: String,
+}
+
 pub struct Profile {
     key: String,
     /// The id the frames and the wire carry for this profile.
@@ -3569,6 +3633,10 @@ pub struct Profile {
     resize: AsyncMutex<()>,
     /// The tab this profile's tabs are, keyed by the host's own numbers.
     tabs: Mutex<TabRegistry>,
+    /// A page's JavaScript dialog standing open on a tab. **The host holds one
+    /// until someone answers it** (#2754), so a call that would drive that tab
+    /// is refused from here rather than left to hang on a paused renderer.
+    dialogs: Mutex<HashMap<u16, OpenDialog>>,
     /// The host's boot tab, until a session's first page call adopts it.
     boot: Mutex<Option<(u16, String)>>,
     /// The tab the driver's current page is, so a chooser and the history
@@ -4013,6 +4081,47 @@ fn death_cause(status: Option<std::process::ExitStatus>) -> String {
 }
 
 impl Profile {
+    /// The refusal a call gets while the tab `seat` would drive is held by a
+    /// dialog nobody has answered, or `None` when no dialog stands there.
+    ///
+    /// **It names the seat that owns the tab**, because two seats share a
+    /// profile and the caller may not be the one that raised it (#2754).
+    fn dialog_refusal(&self, seat: &SessionSlot) -> Option<String> {
+        let current = self.tabs.lock().unwrap_or_else(PoisonError::into_inner).current(seat);
+        // **The boot tab is what a seat's first page call adopts**, so a
+        // dialog already raised on it is that call's to be refused for. The
+        // check runs before `ensure_tab`, which is the only thing that would
+        // otherwise have adopted the tab first.
+        let boot = match current {
+            Some(_) => None,
+            None => self
+                .boot
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .as_ref()
+                .map(|(tab, _)| *tab),
+        };
+        let tab = current.or(boot)?;
+        let (owner, open) = {
+            let tabs = self.tabs.lock().unwrap_or_else(PoisonError::into_inner);
+            // **An unadopted boot tab has no owner yet**: the seat making the
+            // adopting call is the one it will belong to.
+            let owner = tabs.owner(tab).cloned().unwrap_or_else(|| seat.clone());
+            let dialogs = self.dialogs.lock().unwrap_or_else(PoisonError::into_inner);
+            (owner, dialogs.get(&tab)?.clone())
+        };
+        Some(format!(
+            "tab {tab} has a {} dialog open (\"{}\") on seat {}/{}/{}: answer or dismiss it \
+             with browser_handle_dialog, or close the tab with browser_tabs close, before \
+             this call can drive it",
+            open.dialog,
+            open.message,
+            owner.org(),
+            owner.project(),
+            owner.label(),
+        ))
+    }
+
     pub fn key(&self) -> &str {
         &self.key
     }
@@ -4820,6 +4929,14 @@ impl Profile {
                         if let Some(profile) = profile.upgrade() {
                             profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).close(tab);
                             profile.forget_tab(tab);
+                            // **A dialog dies with its page**, so the tab's
+                            // hold goes with it rather than outliving the
+                            // number the host will never hand out again.
+                            profile
+                                .dialogs
+                                .lock()
+                                .unwrap_or_else(PoisonError::into_inner)
+                                .remove(&tab);
                             // **The strip hears it now**, not at the next
                             // call: a popup that closes itself, or a tab the
                             // host gave up, has no call behind it, and a row
@@ -4850,9 +4967,12 @@ impl Profile {
                     }
                     HostEvent::JsDialog { tab, dialog, message, state } => {
                         // **A page's own dialog is information, not a warning**
-                        // (rule 20): an unanswered one is dismissed by the
-                        // host's deadline, which is what keeps its renderer
-                        // from holding the browser's calls (#2732).
+                        // (rule 20). The host holds it until someone answers
+                        // it, so this is what tells a call that it may not
+                        // drive that tab yet (#2754).
+                        if let Some(profile) = profile.upgrade() {
+                            note_dialog(&profile, generation, tab, &dialog, &message, state);
+                        }
                         tracing::debug!(
                             event_name = "browser_js_dialog",
                             profile = %key,
@@ -4920,7 +5040,22 @@ impl Profile {
         self.deferred_tab_events.lock().unwrap_or_else(PoisonError::into_inner).clear();
         // **A birth or reconcile already in flight must not write its events
         // back** over the empty list this death just made.
-        self.host_generation.fetch_add(1, Ordering::AcqRel);
+        {
+            // **The bump and the clear are one step to a dialog line**, which
+            // reads the generation under this same lock: either it inserts
+            // before both (and is cleared) or it reads the new generation and
+            // is dropped. **A line between them would reopen the race**, since
+            // a reader could then pass on the old generation after the clear,
+            // so the two stay under one lock in this order (#2763 review).
+            //
+            // **The test pins the reader half only, and states why**: a test
+            // that stubbed these two steps would be testing the stub, and
+            // there is no clean way to stage a point between them. This order
+            // is kept by this comment and by review.
+            let mut dialogs = self.dialogs.lock().unwrap_or_else(PoisonError::into_inner);
+            self.host_generation.fetch_add(1, Ordering::AcqRel);
+            dialogs.clear();
+        }
         // **The dead host's frames and history go with its numbers.** A kept
         // frame would paint the old page onto the successor's tab, and a kept
         // history would draw arrows for a page that no longer exists.
@@ -5987,10 +6122,11 @@ mod tests {
         DeadHost, DeadPageOutcome, Driven, HostEnd, Profile, ReconcilePass, State, UploadRequest,
         agent_upload_paths, agent_upload_refused, begin_upload, captured_generation, clear_if_dead,
         dead_driver_answer, dead_host_answer, dead_page_answer, death_cause, device_pixels,
-        file_name, installed_generation, note_agent_answered, note_surfaced_opened,
+        file_name, installed_generation, note_agent_answered, note_dialog, note_surfaced_opened,
         note_upload_finished, owner_size, pair_tab_events, stage_agent_uploads, upload_request,
         window_dimension, write_uploads,
     };
+    use crate::control::JsDialogState;
     use forge_primitives::SessionSlot;
     use forge_primitives::browser::BrowserDownload;
     use forge_primitives::browser::ProfileKey;
@@ -10786,6 +10922,217 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].number, 1);
         assert_eq!(rows[0].owner, lead);
+    }
+
+    /// **A dialog the person has not answered holds its tab** (#2754): the
+    /// host never dismisses one, so a page call is refused before it reaches
+    /// the driver, and the refusal names the seat that owns the tab and both
+    /// ways out. The tools that leave the page alone pass.
+    #[tokio::test]
+    async fn a_dialog_holds_its_tab_against_page_calls() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let lead = SessionSlot::lead("O", "p");
+        service
+            .install_fake_with_boot(&lead, FakeDriver::with_blank("T1"), (1, "T1".to_owned()))
+            .await;
+        service.call(&lead, "browser_snapshot", json!({})).await.expect("the lead adopts tab 1");
+
+        // The host raised a dialog on the tab the lead drives.
+        let profile = service.find("O/default").await.expect("the profile");
+        let generation = profile.host_generation.load(Ordering::Acquire);
+        note_dialog(&profile, generation, 1, "confirm", "proceed?", JsDialogState::Shown);
+
+        let Err(refused) = service.call(&lead, "browser_snapshot", json!({})).await else {
+            panic!("a page call is refused while the dialog holds the tab");
+        };
+        assert!(
+            refused.contains("tab 1 has a confirm dialog open"),
+            "the refusal names the tab and the dialog: {refused}",
+        );
+        assert!(refused.contains("O/p/lead"), "and the seat that owns it: {refused}");
+        assert!(
+            refused.contains("browser_handle_dialog") && refused.contains("browser_tabs close"),
+            "and both ways out: {refused}",
+        );
+
+        // **Everything that leaves the page alone passes**: the listing, the
+        // answer itself, and a close, which sends the host a `TabClose`
+        // rather than driving the page.
+        service
+            .call(&lead, "browser_tabs", json!({"action": "list"}))
+            .await
+            .expect("the listing passes");
+        service
+            .call(&lead, "browser_handle_dialog", json!({"accept": true}))
+            .await
+            .expect("the answer passes");
+
+        // The answer gives the tab back.
+        note_dialog(&profile, generation, 1, "confirm", "proceed?", JsDialogState::Answered);
+        service
+            .call(&lead, "browser_snapshot", json!({}))
+            .await
+            .expect("the page call drives the tab again");
+
+        // **And so does a close**: `browser_close` is the seat's own tab going
+        // away, host-side, so the hold has nothing to refuse.
+        note_dialog(&profile, generation, 1, "confirm", "proceed?", JsDialogState::Shown);
+        service.call(&lead, "browser_close", json!({})).await.expect("the close passes");
+    }
+
+    /// **A dialog on the boot tab refuses the call that would adopt it**
+    /// (#2763 review): the check runs before `ensure_tab`, so the seat whose
+    /// first page call would take that tab is told rather than left to wait
+    /// on the driver's bound.
+    #[tokio::test]
+    async fn a_dialog_on_the_boot_tab_refuses_the_adopting_call() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let lead = SessionSlot::lead("O", "p");
+        service
+            .install_fake_with_boot(&lead, FakeDriver::with_blank("T1"), (1, "T1".to_owned()))
+            .await;
+        let profile = service.find("O/default").await.expect("the profile");
+        let generation = profile.host_generation.load(Ordering::Acquire);
+        note_dialog(&profile, generation, 1, "confirm", "proceed?", JsDialogState::Shown);
+
+        let Err(refused) = service.call(&lead, "browser_snapshot", json!({})).await else {
+            panic!("the adopting call is refused while the boot tab is held");
+        };
+        assert!(
+            refused.contains("tab 1 has a confirm dialog open"),
+            "the refusal names the boot tab and the dialog: {refused}",
+        );
+        let named = refused.contains("O/p/lead");
+        assert!(named, "and the seat that would adopt it: {refused}");
+    }
+
+    /// **A hold from the host that went is not the successor's** (#2763
+    /// review): a new host numbers its tabs from one again, so a kept entry
+    /// would refuse the new host's tab of the same number for ever.
+    #[tokio::test]
+    async fn a_host_replacement_drops_the_holds_of_the_host_that_went() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let lead = SessionSlot::lead("O", "p");
+        service
+            .install_fake_with_boot(&lead, FakeDriver::with_blank("T1"), (1, "T1".to_owned()))
+            .await;
+        service.call(&lead, "browser_snapshot", json!({})).await.expect("the lead adopts tab 1");
+
+        let profile = service.find("O/default").await.expect("the profile");
+        let generation = profile.host_generation.load(Ordering::Acquire);
+        note_dialog(&profile, generation, 1, "confirm", "proceed?", JsDialogState::Shown);
+
+        // The host dies and a successor takes the same entry over.
+        profile.end(HostEnd::Closed).await;
+        service
+            .install_fake_with_boot(&lead, FakeDriver::with_blank("T2"), (1, "T2".to_owned()))
+            .await;
+        service
+            .call(&lead, "browser_snapshot", json!({}))
+            .await
+            .expect("the successor's tab 1 is free");
+    }
+
+    /// **A raise takes the tab and an answer or a close gives it back**, which
+    /// is the whole state a refusal reads.
+    #[tokio::test]
+    async fn a_dialog_event_raises_and_releases_its_tab() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let lead = SessionSlot::lead("O", "p");
+        service.install_fake(&lead, FakeDriver::with_blank("T1")).await;
+        let profile = service.find("O/default").await.expect("the profile");
+        let generation = profile.host_generation.load(Ordering::Acquire);
+
+        note_dialog(&profile, generation, 3, "confirm", "are you sure?", JsDialogState::Shown);
+        {
+            let held = profile.dialogs.lock().expect("the holds");
+            let open = held.get(&3).expect("tab 3 is held");
+            assert_eq!(open.dialog, "confirm");
+            assert_eq!(open.message, "are you sure?");
+        }
+        note_dialog(&profile, generation, 3, "confirm", "are you sure?", JsDialogState::Answered);
+        let free = profile.dialogs.lock().expect("the holds").is_empty();
+        assert!(free, "the answer releases it");
+
+        note_dialog(&profile, generation, 3, "confirm", "are you sure?", JsDialogState::Shown);
+        note_dialog(&profile, generation, 3, "confirm", "are you sure?", JsDialogState::Closed);
+        assert!(
+            profile.dialogs.lock().expect("the holds").is_empty(),
+            "a closed dialog releases it too",
+        );
+    }
+
+    /// **A raise read from a host that has since gone is dropped**: its tab
+    /// numbers belong to a browser that no longer exists, and a successor
+    /// numbers from one again (#2763 review).
+    #[tokio::test]
+    async fn a_dialog_line_from_the_dead_host_is_dropped() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let lead = SessionSlot::lead("O", "p");
+        service.install_fake(&lead, FakeDriver::with_blank("T1")).await;
+        let profile = service.find("O/default").await.expect("the profile");
+        let dead = profile.host_generation.load(Ordering::Acquire);
+        profile.end(HostEnd::Closed).await;
+
+        note_dialog(&profile, dead, 1, "confirm", "proceed?", JsDialogState::Shown);
+        assert!(
+            profile.dialogs.lock().expect("the holds").is_empty(),
+            "the dead host's line was applied to its successor",
+        );
+
+        let current = profile.host_generation.load(Ordering::Acquire);
+        note_dialog(&profile, current, 1, "confirm", "proceed?", JsDialogState::Shown);
+        assert_eq!(
+            profile.dialogs.lock().expect("the holds").len(),
+            1,
+            "the live host's line still applies",
+        );
+    }
+
+    /// **The generation is read under the dialogs lock, not before it**
+    /// (#2763 review). A line that read the pre-bump generation must not
+    /// insert after the bump: the test holds the lock so the call blocks on
+    /// it, moves the generation the way `host_gone` does, and then releases.
+    /// **The wait is what stages the interleaving**: the worker is spawned
+    /// and signalled first, so it is on its way to the lock before the
+    /// generation moves; holding the lock is what makes its arrival
+    /// deterministic. **This pins the reader half**: the bump-and-clear half
+    /// inside `host_gone` has no clean staging, and its order is kept by that
+    /// function's own comment.
+    #[tokio::test]
+    async fn a_dialog_line_that_blocks_on_the_lock_rechecks_the_generation() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let lead = SessionSlot::lead("O", "p");
+        service.install_fake(&lead, FakeDriver::with_blank("T1")).await;
+        let profile = service.find("O/default").await.expect("the profile");
+        let stale = profile.host_generation.load(Ordering::Acquire);
+
+        let held = profile.dialogs.lock().unwrap_or_else(PoisonError::into_inner);
+        let ready = Arc::new(std::sync::Barrier::new(2));
+        let worker = {
+            let profile = Arc::clone(&profile);
+            let ready = Arc::clone(&ready);
+            std::thread::spawn(move || {
+                ready.wait();
+                note_dialog(&profile, stale, 1, "confirm", "proceed?", JsDialogState::Shown);
+            })
+        };
+        ready.wait();
+        std::thread::sleep(Duration::from_millis(100));
+        profile.host_generation.fetch_add(1, Ordering::AcqRel);
+        drop(held);
+        worker.join().expect("the dialog line");
+
+        assert!(
+            profile.dialogs.lock().unwrap_or_else(PoisonError::into_inner).is_empty(),
+            "a line that read the pre-bump generation inserted after it",
+        );
     }
 
     /// **A stale hand-off cannot close a new host's tab.** The old host's
