@@ -1789,14 +1789,15 @@ impl SessionTask {
     /// The same frame, naming the dispatch that owns it.
     ///
     /// Two shapes need it. A sub-agent's frames name the `Task`/`Agent` call
-    /// its own parent fired as `parent_tool_use_id`, and that call is a child
-    /// line of the outer card rather than a card - so a frame from an agent
-    /// two levels down drew nowhere. A `permission_denied` frame names the
-    /// refused call and the agent that made it and no dispatch at all, so it
-    /// drew as a row the session itself had made. The card tracker keeps every
-    /// tool-use id's parent, so the chain walks up to the top-level dispatch
-    /// the expansion draws it in; a chain that reaches no card is left alone,
-    /// because a stamp naming an id no expansion takes draws nowhere.
+    /// its own parent fired as `parent_tool_use_id`, and only the outermost
+    /// dispatch is a card: a second level's call is a child line, a third
+    /// level's only a parent link - so a frame from an agent two levels down
+    /// drew nowhere. A `permission_denied` frame names the refused call and
+    /// the agent that made it and no dispatch at all, so it drew as a row the
+    /// session itself had made. The card tracker keeps every tool-use id's
+    /// parent, so the chain walks up to the top-level dispatch the expansion
+    /// draws it in; a chain that reaches no card is left alone, because a
+    /// stamp naming an id no expansion takes draws nowhere.
     fn attribute_dispatch(&self, msg: forge_primitives::Message) -> forge_primitives::Message {
         let (held, owner) = {
             let domain = self.domain.lock();
@@ -8763,10 +8764,11 @@ provider = "anthropic"
 
     /// **A frame from an agent three levels down names the card that owns
     /// it.** The wire parents such a frame to the dispatch its own parent
-    /// fired, and that call is a child line of the outer card rather than a
-    /// card - so both the frame and the refusal the agent made drew nowhere.
-    /// The tracker's parent links walk the chain back to the top-level
-    /// dispatch on every frame, which is the expansion that draws it.
+    /// fired, and only the outermost dispatch is a card: that call is a child
+    /// line one level down and only a parent link a level further - so both
+    /// the frame and the refusal the agent made drew nowhere. The tracker's
+    /// parent links walk the chain back to the top-level dispatch on every
+    /// frame, which is the expansion that draws it.
     #[test]
     fn a_third_level_agents_frames_name_the_card_that_owns_them() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -8788,9 +8790,17 @@ provider = "anthropic"
 
         task.translate_event(sdk_message(agent_said(Some("call-deeper"))));
         assert_eq!(
-            drawn_assistant_parents(&mut updates),
+            drawn_frame_parents(&mut updates),
             [Some("call-dispatch".to_owned())],
             "the third-level agent's frame names the card that owns its dispatch",
+        );
+
+        task.translate_event(sdk_message(user_result(Some("call-deeper"))));
+        task.translate_event(sdk_message(hook_summary(Some("call-deeper"))));
+        assert_eq!(
+            drawn_frame_parents(&mut updates),
+            [Some("call-dispatch".to_owned()), Some("call-dispatch".to_owned())],
+            "its tool result and hook summary name the same card",
         );
 
         task.translate_event(sdk_message(refusal(Some("agent-3"))));
@@ -8819,15 +8829,47 @@ provider = "anthropic"
         .expect("an assistant frame")
     }
 
-    /// The parent each assistant frame the task drew carries.
-    fn drawn_assistant_parents(
+    /// A tool result the agent named by `parent` produced.
+    fn user_result(parent: Option<&str>) -> forge_primitives::Message {
+        serde_json::from_value(serde_json::json!({
+            "type": "user",
+            "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "call", "content": "done"}]},
+            "session_id": "s",
+            "parent_tool_use_id": parent,
+        }))
+        .expect("a user frame")
+    }
+
+    /// A hook summary the agent named by `parent` fired.
+    fn hook_summary(parent: Option<&str>) -> forge_primitives::Message {
+        forge_primitives::Message::StopHookSummary {
+            actions: 1,
+            hook_infos: Vec::new(),
+            hook_errors: Vec::new(),
+            has_output: false,
+            level: "suggestion".to_owned(),
+            prevented_continuation: false,
+            stop_reason: String::new(),
+            tool_use_id: String::new(),
+            parent_tool_use_id: parent.map(str::to_owned),
+            session_id: "s".to_owned(),
+            uuid: "u-hook".to_owned(),
+            extras: serde_json::Map::new(),
+        }
+    }
+
+    /// The parent each frame the task drew carries.
+    fn drawn_frame_parents(
         updates: &mut mpsc::UnboundedReceiver<SeatUpdate>,
     ) -> Vec<Option<String>> {
         drain_updates(updates)
             .into_iter()
             .filter_map(|update| match update {
                 SessionUpdate::ChatAppended {
-                    msg: forge_primitives::Message::Assistant { parent_tool_use_id, .. },
+                    msg:
+                        forge_primitives::Message::Assistant { parent_tool_use_id, .. }
+                        | forge_primitives::Message::User { parent_tool_use_id, .. }
+                        | forge_primitives::Message::StopHookSummary { parent_tool_use_id, .. },
                     ..
                 } => Some(parent_tool_use_id),
                 _ => None,
