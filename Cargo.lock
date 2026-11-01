@@ -1152,7 +1152,6 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "time",
- "toml",
  "tracing",
  "transcribe-cpp",
 ]
@@ -1295,12 +1294,15 @@ dependencies = [
  "forge-sdk",
  "forge-system-one",
  "forge-workspace",
+ "hex",
+ "hound",
  "parking_lot",
  "redb",
  "reqwest",
  "rustix",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "thiserror 2.0.21",
  "time",
@@ -1310,6 +1312,7 @@ dependencies = [
  "toml_edit",
  "tracing",
  "tracing-subscriber",
+ "transcribe-cpp",
  "uuid",
 ]
 

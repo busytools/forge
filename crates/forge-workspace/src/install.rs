@@ -114,6 +114,86 @@ fn key_for_role(role: DictateRole) -> &'static str {
     }
 }
 
+/// The spec an installed record names. The record keeps no digest, so the
+/// size is the identity a loader can check.
+fn spec_from_record(installed: &InstalledModel) -> ModelSpec {
+    ModelSpec {
+        file: installed.file.clone(),
+        url: installed.url.clone(),
+        size: installed.size,
+        sha256: None,
+        facts: installed.facts.clone(),
+    }
+}
+
+/// What resolving one role answers: a model, or the feed lookup a config key
+/// needs.
+pub(crate) enum RoleResolution {
+    Chosen(ActiveModel),
+    /// A config key names a variant no install on this machine recorded, so
+    /// only the feed can turn it into a spec.
+    NeedsFeed {
+        key: String,
+        variant: String,
+    },
+}
+
+/// One role's model, from the config key when set, else the runtime pick,
+/// else the compiled pin.
+///
+/// The rows are passed in rather than read here, because the boot reads them
+/// from the store this process owns and a bench reads a copy of one it does
+/// not; both then answer the role the same way.
+pub(crate) fn resolve_role(
+    role: DictateRole,
+    pin: ModelSpec,
+    configured: Option<&str>,
+    installed: &[InstalledModel],
+    pick: Option<ActiveChoice>,
+) -> RoleResolution {
+    // A config key wins over everything, and it never clears the record:
+    // removing the key returns the role to the last runtime pick.
+    if let Some(variant) = configured {
+        let key = key_for_role(role).to_owned();
+        return match installed.iter().find(|model| model.variant == variant) {
+            Some(record) => RoleResolution::Chosen(ActiveModel {
+                role,
+                spec: spec_from_record(record),
+                from: ActiveFrom::Config { key, variant: variant.to_owned() },
+                at: None,
+            }),
+            None => RoleResolution::NeedsFeed { key, variant: variant.to_owned() },
+        };
+    }
+    if let Some(choice) = pick {
+        let Some(record) = installed.iter().find(|model| model.variant == choice.variant) else {
+            // A pick whose record is gone falls to the pin rather than
+            // refusing the boot: the pick is forge's own bookkeeping, so a
+            // removal that stranded one must not take the launchpad with it.
+            // The removal clears the pick it strands.
+            tracing::warn!(
+                event_name = "dictate_pick_without_a_record",
+                role = crate::store::dictate_models::role_key(role),
+                variant = %choice.variant,
+                "the runtime pick names a model no record carries; the compiled pin runs this role"
+            );
+            return RoleResolution::Chosen(ActiveModel {
+                role,
+                spec: pin,
+                from: ActiveFrom::Pin,
+                at: None,
+            });
+        };
+        return RoleResolution::Chosen(ActiveModel {
+            role,
+            spec: spec_from_record(record),
+            from: ActiveFrom::Installed { variant: choice.variant },
+            at: Some(choice.at),
+        });
+    }
+    RoleResolution::Chosen(ActiveModel { role, spec: pin, from: ActiveFrom::Pin, at: None })
+}
+
 impl Workspace {
     /// The install's state, for the page's read.
     pub fn dictate_install(&self) -> InstallState {
@@ -497,70 +577,29 @@ impl Workspace {
     ) -> Result<Vec<(DictateRole, ActiveModel)>, String> {
         let mut resolved = Vec::new();
         for (role, pin) in settings.model_specs() {
-            let key = key_for_role(role);
             let configured = match role {
                 DictateRole::Transcribing => settings.transcribe_model.as_deref(),
                 DictateRole::Normalization => settings.cleanup_model.as_deref(),
             };
-            // A config key wins over everything, and it never clears the
-            // record: removing the key returns the role to the last
-            // runtime pick.
-            if let Some(variant) = configured {
-                let spec = self.resolve_variant(key, variant).await?;
-                resolved.push((
-                    role,
-                    ActiveModel {
-                        role,
-                        spec,
-                        from: ActiveFrom::Config {
-                            key: key.to_owned(),
-                            variant: variant.to_owned(),
-                        },
-                        at: None,
-                    },
-                ));
-                continue;
-            }
-            if let Some(choice) = self.active_choice(role) {
-                let installed = self
-                    .installed_models()
-                    .into_iter()
-                    .find(|model| model.variant == choice.variant);
-                // A pick whose record is gone falls to the pin rather than
-                // refusing the boot: the pick is forge's own bookkeeping, so
-                // a removal that stranded one must not take the launchpad
-                // with it. The removal clears the pick it strands.
-                let Some(installed) = installed else {
-                    tracing::warn!(
-                        event_name = "dictate_pick_without_a_record",
-                        role = crate::store::dictate_models::role_key(role),
-                        variant = %choice.variant,
-                        "the runtime pick names a model no record carries; the compiled pin runs this role"
-                    );
+            let installed = self.installed_models();
+            // Read the pick only when the key does not decide: reading it
+            // unconditionally logs a warning about a row that cannot matter.
+            let pick = if configured.is_none() { self.active_choice(role) } else { None };
+            match resolve_role(role, pin, configured, &installed, pick) {
+                RoleResolution::Chosen(model) => resolved.push((role, model)),
+                RoleResolution::NeedsFeed { key, variant } => {
+                    let spec = self.resolve_variant(&key, &variant).await?;
                     resolved.push((
                         role,
-                        ActiveModel { role, spec: pin, from: ActiveFrom::Pin, at: None },
-                    ));
-                    continue;
-                };
-                resolved.push((
-                    role,
-                    ActiveModel {
-                        role,
-                        spec: ModelSpec {
-                            file: installed.file,
-                            url: installed.url,
-                            size: installed.size,
-                            sha256: None,
-                            facts: installed.facts,
+                        ActiveModel {
+                            role,
+                            spec,
+                            from: ActiveFrom::Config { key, variant },
+                            at: None,
                         },
-                        from: ActiveFrom::Installed { variant: choice.variant },
-                        at: Some(choice.at),
-                    },
-                ));
-                continue;
+                    ));
+                }
             }
-            resolved.push((role, ActiveModel { role, spec: pin, from: ActiveFrom::Pin, at: None }));
         }
         Ok(resolved)
     }
@@ -593,13 +632,7 @@ impl Workspace {
         if let Some(installed) =
             self.installed_models().into_iter().find(|model| model.variant == variant)
         {
-            return Ok(ModelSpec {
-                file: installed.file,
-                url: installed.url,
-                size: installed.size,
-                sha256: None,
-                facts: installed.facts,
-            });
+            return Ok(spec_from_record(&installed));
         }
         let Some(entry) = self.catalogue_entry_for(variant).await else {
             return Err(format!(
@@ -1194,6 +1227,14 @@ mod tests_install {
             ActiveFrom::Config { key: "transcribe_model".to_owned(), variant: "keyed".to_owned() },
             "and the page can name the key that holds the role"
         );
+        // A transcribe_model key must not leak into the cleanup role.
+        let normalizer = role_model(&resolved, DictateRole::Normalization);
+        assert_eq!(
+            normalizer.spec.file,
+            forge_dictate::ModelSpec::s1_mini_f16().file,
+            "the cleanup role still runs the compiled pin",
+        );
+        assert_eq!(normalizer.from, ActiveFrom::Pin);
     }
 
     /// Without a key the runtime pick wins over the compiled pin, and it

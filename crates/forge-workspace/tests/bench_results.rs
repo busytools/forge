@@ -7,9 +7,8 @@
 //! shows up" on its own. Neither test alone distinguishes a working writer
 //! from a degenerate one.
 //!
-//! Resolutions here are illustrative inputs to the writer, NOT measured
-//! values. The real ones get set from observed spread once there is a
-//! pipeline to time.
+//! Resolutions here are the writer's inputs, chosen to exercise its
+//! boundaries; they are not the trend bench's measured spreads.
 
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
@@ -18,10 +17,10 @@ mod results;
 
 use results::{Section, committed, render, settle};
 
-/// An ARBITRARY magnitude for exercising the deadband. Deliberately not any
-/// figure anyone has measured: this crate has produced no timings yet, and a
-/// test constant that resembles a real reading is how an unsourced number
-/// acquires credibility and ends up seeded into the committed file.
+/// An ARBITRARY magnitude for exercising the deadband. Deliberately not a
+/// figure anyone has measured: a test constant that resembles a real reading
+/// is how an unsourced number acquires credibility and ends up seeded into
+/// the committed file.
 const FIXTURE_MS: u64 = 500;
 const DEADBAND_MS: u64 = 10;
 
@@ -186,7 +185,7 @@ fn what_render_writes_is_what_committed_reads_back() {
 /// the committed figures have to survive.
 ///
 /// Measured cold numbers, not invented: `model_load` 6977 ms and a 10694 ms
-/// wall clock against a warm committed 3548 ms with a 500 ms band.
+/// wall clock against a warm measured 3548 ms with a 500 ms band.
 /// Committing the raw total relocates the anchor, so one anomalous run
 /// becomes a permanent step in the trend - the failure any bimodal figure
 /// causes under a deadband.
