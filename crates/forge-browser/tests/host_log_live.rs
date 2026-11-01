@@ -40,12 +40,11 @@ fn a_passing_host_prints_nothing() {
     let scratch = tempfile::tempdir().expect("a scratch dir");
     let exe = stand_in(scratch.path(), "#!/bin/sh\necho \"cef host: stub\" >&2\nexec sleep 30\n");
     let log = scratch.path().join("host.log");
-    let ring = RingOnly(format!("/forge-quiet-{}", std::process::id()));
     let host = support::Host::start(
         &exe,
         &scratch.path().join("profile"),
         1,
-        &ring.0,
+        "/forge-stub",
         "800x600",
         &[],
         &log,
@@ -64,12 +63,11 @@ fn an_empty_log_is_said_in_words() {
     let scratch = tempfile::tempdir().expect("a scratch dir");
     let exe = stand_in(scratch.path(), "#!/bin/sh\nexec sleep 30\n");
     let log = scratch.path().join("host.log");
-    let ring = RingOnly(format!("/forge-empty-{}", std::process::id()));
     let host = support::Host::start(
         &exe,
         &scratch.path().join("profile"),
         1,
-        &ring.0,
+        "/forge-stub",
         "800x600",
         &[],
         &log,
