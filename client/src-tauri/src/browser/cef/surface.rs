@@ -1364,29 +1364,64 @@ mod tests {
         );
     }
 
-    /// **`attach`'s lay closure emits nothing, and the one announcement is
-    /// made after it, behind the laid flag.**
+    /// **`attach`'s closure makes no direct emit or announce, and the one
+    /// announcement sits after the call, guarded by the laid flag.**
     ///
     /// On the main thread the closure runs inline while the dispatcher's
-    /// window lock is held, and an emit there reaches `eval_script`, which
-    /// takes that same lock on the same thread: the client wedges with no
-    /// error and no log line (measured 2026-11-01 on the hand-off Open).
+    /// window lock is held, and an emit or an announce there reaches
+    /// `eval_script`, which takes that same lock on the same thread: the
+    /// client wedges with no error and no log line (measured 2026-11-01 on
+    /// the hand-off Open). What a scan can prove is what this file spells: a
+    /// call reached through a helper, or one the compiler arranges elsewhere,
+    /// is beyond it.
     #[test]
     fn the_attach_never_emits_from_inside_its_lay() {
         let source = include_str!("surface.rs");
-        let start = source.find("pub fn attach(").expect("attach is in this file");
-        let attach = &source[start..];
+        // Production only: the test's own literals name the same calls.
+        let production = &source[..source.find("\nmod tests {").expect("the tests module")];
+        let start = production.find("pub fn attach(").expect("attach is in this file");
+        let attach = &production[start..];
         let ended = attach
             .find("/// Tell the page the picture holds the keyboard")
             .expect("attach ends before its helper");
-        assert!(
-            !attach[..ended].contains(".emit("),
-            "attach emits an event: its lay closure runs inline under the window lock on the \
-             main thread, and the emit re-locks it, wedging the client"
+        let attach = &attach[..ended];
+
+        // The closure, from the call to the `});` that closes it.
+        let open = attach.find("window.with_webview(").expect("attach lays through the webview");
+        let close =
+            attach[open..].find("\n    });").expect("the webview call closes on a line of its own");
+        let closure = &attach[open..open + close];
+
+        // A comment may name these calls to explain the hazard; only code counts.
+        let code: Vec<&str> =
+            closure.lines().filter(|line| !line.trim_start().starts_with("//")).collect();
+        let code = code.join("\n");
+        // Every `Emitter` method starts `.emit`, so this is the whole family.
+        for forbidden in [".emit", "announce_page_keyboard("] {
+            assert!(
+                !code.contains(forbidden),
+                "attach's lay closure calls {forbidden}: it runs inline under the window lock on \
+                 the main thread, and the call re-locks it, wedging the client"
+            );
+        }
+
+        // The one announcement: after the webview's answer, and only for a
+        // view this call laid.
+        let after = &attach[open + close..];
+        assert_eq!(
+            after.matches("announce_page_keyboard(").count(),
+            1,
+            "attach must announce the page's keyboard exactly once, and after the call"
         );
+        let answered = after.find("if let Err(why) = scheduled").expect("attach reads the answer");
+        let call = after.find("announce_page_keyboard(").expect("the announcement");
+        assert!(answered < call, "the announcement runs before the webview's answer is checked");
+        let guarded = after[answered..]
+            .find("if laid.load(Ordering::Relaxed)")
+            .expect("the announcement is guarded by the laid flag");
         assert!(
-            attach[..ended].contains("announce_page_keyboard("),
-            "attach no longer tells the page it holds the keyboard"
+            answered + guarded < call,
+            "the announcement runs unguarded: a moved view would take the keys off the bar"
         );
     }
 
