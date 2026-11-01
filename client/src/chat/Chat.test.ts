@@ -1686,10 +1686,11 @@ describe('the arrival mark', () => {
     );
 
   it('enters the row that arrives, and only that row', async () => {
-    // **A row's key is the whole of what says it is new.** A page is history
-    // rather than arrival, so nothing it draws enters; from the frame that
-    // opens a live turn on, every row drawn for the first time enters, and no
-    // row already on the page is marked.
+    // **A row's key is the whole of what says it is new.** A settled page is
+    // history rather than arrival, so nothing it draws enters; from the frame
+    // that opens a live turn on, every row drawn for the first time enters,
+    // and no row already on the page is marked. (A page that lands on a turn
+    // still being written is the case tested further down.)
     vi.useFakeTimers();
     try {
       const server = stub();

@@ -30,7 +30,7 @@
   import Turn from './Turn.svelte';
   import { turnOfDispatch } from './dispatch-jump';
   import { callRow, reachableIds, reveal, subagents } from './subagents.svelte';
-  import { stopsOf, turnFold, type TurnInfo } from './units';
+  import { stopsOf, turnFold, type PageStops, type TurnInfo } from './units';
 
   /**
    * The conversation: whole turns, virtualised.
@@ -236,6 +236,11 @@
     for (const drawn of Object.keys(arrived)) {
       if (drawing[drawn] !== true) delete arrived[drawn];
     }
+    // The turn record is bounded the same way: a turn the column no longer
+    // holds cannot become the newest again.
+    for (const seen of Object.keys(seenTurn)) {
+      if (drawing[seen] !== true) delete seenTurn[seen];
+    }
   }
 
   /**
@@ -244,10 +249,14 @@
    * The DOM's keys are the fold's: a unit or the reader's own block is
    * `<turn>:<unit key>`, and a call row is `call-<call key>` under its unit.
    * The leaf kinds without a row of their own, and cards, carry none.
+   *
+   * **The stops are the fold's own argument**: a stop the page holds lands on
+   * the row it ends, so the same turn keys differently with and without them,
+   * and the seed has to name what the render will draw.
    */
-  function drawnKeys(turn: HeldTurn): string[] {
+  function drawnKeys(turn: HeldTurn, stops: PageStops): string[] {
     const keys: string[] = [];
-    const units = turnFold(turn, slot, beingWritten(turn), !beingWritten(turn));
+    const units = turnFold(turn, slot, beingWritten(turn), !beingWritten(turn), stops);
     for (const unit of units) {
       keys.push(`${turn.key}:${unit.key}`);
       if (unit.kind !== 'leaves') continue;
@@ -257,10 +266,10 @@
   }
 
   /** Record a turn already on screen as arrived, whatever built it. */
-  function seedDrawn(turn: HeldTurn | null): void {
+  function seedDrawn(turn: HeldTurn | null, stops: PageStops): void {
     if (turn === null) return;
     seenTurn[turn.key] = true;
-    for (const key of drawnKeys(turn)) recordArrival(turn.key, key);
+    for (const key of drawnKeys(turn, stops)) recordArrival(turn.key, key);
   }
 
   /**
@@ -273,13 +282,13 @@
    * is already seen, and the rows it carries are ones the reader never saw,
    * so they enter.
    */
-  function firstSight(turn: HeldTurn | null): void {
+  function firstSight(turn: HeldTurn | null, stops: PageStops): void {
     if (turn === null || seenTurn[turn.key] === true) return;
     if (turn.live) {
       seenTurn[turn.key] = true;
       return;
     }
-    seedDrawn(turn);
+    seedDrawn(turn, stops);
   }
 
   /** Mark one row as having just arrived, and take the mark back after it. */
@@ -928,8 +937,13 @@
       kept.set(which, value);
       if (untrack(() => seat) === which) {
         // **Before the draw**, so a page-drawn turn is recorded as it arrives
-        // rather than after its rows have landed.
-        firstSight(untrack(() => value.turns[value.turns.length - 1] ?? null));
+        // rather than after its rows have landed. The stops are the incoming
+        // record's, not the derived one's: `held` is still the outgoing
+        // conversation's until the line below.
+        firstSight(
+          untrack(() => value.turns[value.turns.length - 1] ?? null),
+          stopsOf(value.turns),
+        );
         held = value;
       }
     });
@@ -1019,12 +1033,19 @@
     placedFor = which;
     // The seat coming on screen is put there from what was kept, not from a
     // read, which is the whole point of holding it.
-    held = untrack(() => kept.get(which)) ?? NOTHING;
+    const keptValue = untrack(() => kept.get(which)) ?? NOTHING;
+    held = keptValue;
     // **What the conversation already draws has already arrived.** A return
     // into a seat whose newest turn was built by frames would otherwise enter
     // every row of it at once, and the list renders its first items after the
-    // attach, so only the model can say which rows those are.
-    if (switched) seedDrawn(untrack(() => newestTurn));
+    // attach, so only the model can say which rows those are. The stops are
+    // the kept record's, which the derived `stops` has not caught up to yet.
+    if (switched) {
+      seedDrawn(
+        untrack(() => keptValue.turns[keptValue.turns.length - 1] ?? null),
+        stopsOf(keptValue.turns),
+      );
+    }
     // After `held`, so the open's own start and the conversation it names
     // land in one flush - the drawn mark below reads `held` and must never
     // time the seat that is going. The seat is handed over as the slot and
@@ -1218,6 +1239,8 @@
 
   /** The turn whose row the pin is holding, which is what the beat is about. */
   let carried: string | null = $state(null);
+  /** The report unit the pin holds, so its detach into the turn is known. */
+  let carriedRow: string | null = null;
   /** Whether the row being held is the finished one, on its beat before it detaches. */
   let beating = $state(false);
   /** The beat's own timer, held rather than returned as a cleanup: a frame arriving mid-beat re-runs this effect. */
@@ -1228,6 +1251,23 @@
       clearTimeout(beatTimer);
       beatTimer = null;
     }
+  }
+
+  /**
+   * Let the pin's row go, recording it as arrived.
+   *
+   * **The pin draws outside the conversation**, so the row it has been holding
+   * was never observed; when it detaches into the turn the reader sees it
+   * there for the first time, and that is a move rather than an arrival.
+   */
+  function releasePin(): void {
+    // Read untracked: this runs from the pin's own effect, and a tracked read
+    // of `carried` would make the effect's own write a reason to run again.
+    const turn = untrack(() => carried);
+    if (turn !== null && carriedRow !== null) {
+      recordArrival(turn, `${turn}:${carriedRow}`);
+    }
+    carriedRow = null;
   }
 
   // The pin follows the newest turn: a turn being written takes the row, and a
@@ -1245,19 +1285,23 @@
       // A turn being written takes the row back, whichever turn was beating
       // under it - the next turn can start inside the last one's beat.
       if (untrack(() => carried) !== which || untrack(() => beating)) {
+        releasePin();
         carried = which;
         beating = false;
         stopBeat();
       }
+      carriedRow = newestRow.key;
       return;
     }
     // A row that arrived finished is the turn's own, not the pin's: only the
     // turn this column watched run is carried over, and only once.
     if (untrack(() => carried) !== which || untrack(() => beating)) return;
     carried = which;
+    carriedRow = newestRow.key;
     beating = true;
     stopBeat();
     beatTimer = setTimeout(() => {
+      releasePin();
       beating = false;
       carried = null;
       beatTimer = null;
