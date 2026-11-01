@@ -1175,6 +1175,8 @@ mod tests {
                 installed: Vec::new(),
                 bench: forge_workspace::bench::BenchState::Idle,
                 results: Vec::new(),
+                speaking_bench: forge_workspace::bench::SpeakingBenchState::Idle,
+                speaking_results: Vec::new(),
                 read_aloud: forge_workspace::bench::ReadAloudState {
                     recordings: Vec::new(),
                     recording: false,

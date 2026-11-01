@@ -66,6 +66,7 @@ use forge_test_harness::sdk_wire::{baseline_dir, legacy_baseline_dir, load_basel
 use forge_workspace::DictateModelState;
 use forge_workspace::bench::{
     BenchResult, BenchRole, BenchState, BenchTarget, ReadAloudRecording, ReadAloudState,
+    SpeakingBenchResult, SpeakingBenchState,
 };
 use forge_workspace::catalogue::{
     CandidateRow, CatalogueCheck, CatalogueJoin, CatalogueRow, CurrentFacts, DictateModelsSnapshot,
@@ -318,7 +319,8 @@ census!(Command,
         RespondQuestion struct, SetDictateOverride struct, ResetDictateOverrides struct,
         DictateCatalogueCheck struct, DictateInstall struct,
         DictateActivate struct, DictateDeactivate struct, DictateBench struct,
-        DictateBenchStop struct, DictateReadAloudStart struct, DictateReadAloudStop struct,
+        DictateBenchStop struct, VoiceBenchStart struct, VoiceBenchStop struct,
+        DictateReadAloudStart struct, DictateReadAloudStop struct,
         DictateReadAloudDelete struct, DictateBenchDelete struct, DictateUninstall struct,
         PluginInstall struct, PluginUpdate struct, PluginUpdateAll struct,
         PluginCheckUpdates struct, MarketplaceAdd struct, MarketplaceRepair struct,
@@ -402,8 +404,20 @@ fn a_unit_command_crosses_as_its_name() {
         json!("dictate_bench_stop"),
         "a unit command no longer crosses as its own name"
     );
+    assert_eq!(
+        serde_json::to_value(Command::VoiceBenchStart).expect("the variant encodes"),
+        json!("voice_bench_start"),
+        "a unit command no longer crosses as its own name"
+    );
+    assert_eq!(
+        serde_json::to_value(Command::VoiceBenchStop).expect("the variant encodes"),
+        json!("voice_bench_stop"),
+        "a unit command no longer crosses as its own name"
+    );
 
-    for name in ["dictate_catalogue_check", "dictate_bench_stop"] {
+    for name in
+        ["dictate_catalogue_check", "dictate_bench_stop", "voice_bench_start", "voice_bench_stop"]
+    {
         let frame = json!({
             "kind": "command",
             "command": name,
@@ -417,7 +431,9 @@ fn a_unit_command_crosses_as_its_name() {
         };
         match (&*command, name) {
             (Command::DictateCatalogueCheck, "dictate_catalogue_check")
-            | (Command::DictateBenchStop, "dictate_bench_stop") => {}
+            | (Command::DictateBenchStop, "dictate_bench_stop")
+            | (Command::VoiceBenchStart, "voice_bench_start")
+            | (Command::VoiceBenchStop, "voice_bench_stop") => {}
             other => panic!("{name} decoded as {other:?}"),
         }
         assert!(reply_to.is_none(), "the outcome rides the subscription, not a reply");
@@ -1438,6 +1454,25 @@ fn frames_record() -> Value {
                             decode_ms: 40,
                             normalize_ms: 50,
                         },
+                    },
+                    at: "2026-10-06T19:11:38Z".to_owned(),
+                    corpus: CorpusId {
+                        clips: 12,
+                        audio_seconds: 320,
+                        sha256: "a414db2a".to_owned(),
+                    },
+                }],
+                speaking_bench: SpeakingBenchState::Failed {
+                    reason: "nothing to bench: the public corpus has not been downloaded yet"
+                        .to_owned(),
+                },
+                speaking_results: vec![SpeakingBenchResult {
+                    file: "Qwen3-TTS-12Hz-1.7B-Base-Q8_0.gguf".to_owned(),
+                    metrics: forge_tts::bench::TtsBenchResult {
+                        clips: 12,
+                        round_trip_wer: 0.041,
+                        first_audio_ms: 3_400,
+                        realtime_factor: 0.31,
                     },
                     at: "2026-10-06T19:11:38Z".to_owned(),
                     corpus: CorpusId {

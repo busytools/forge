@@ -181,6 +181,29 @@ export type BenchState =
   | { state: 'failed'; target: BenchTarget; reason: string }
   | { state: 'unknown' };
 
+/** Where the speaking bench got to, with the same `unknown` rule. */
+export type SpeakingBenchState =
+  | { state: 'idle' }
+  | { state: 'running'; clip: number; clips: number }
+  | { state: 'failed'; reason: string }
+  | { state: 'unknown' };
+
+/** What one speaking run measured: the round trip and the render's pace. */
+export interface SpeakingBenchMetrics {
+  clips: number;
+  round_trip_wer: number;
+  first_audio_ms: number;
+  realtime_factor: number;
+}
+
+/** One finished speaking bench, kept under the model and corpus it ran. */
+export interface SpeakingBenchResult {
+  file: string;
+  metrics: SpeakingBenchMetrics;
+  at: string;
+  corpus: CorpusId;
+}
+
 /** One recording of the read-aloud passage, as the page lists it. */
 export interface ReadAloudRecording {
   /** The take's directory name, which the page deletes by. */
@@ -286,6 +309,8 @@ export interface DictateModelsWire {
   installed: InstalledModel[];
   bench: BenchState;
   results: BenchResult[];
+  speaking_bench: SpeakingBenchState;
+  speaking_results: SpeakingBenchResult[];
   read_aloud: ReadAloudState;
 }
 
@@ -306,6 +331,9 @@ const ACTIVATE_STATES = ['idle', 'activating', 'failed'] as const;
 
 /** The bench states the server writes; the fourth is this client's own. */
 const BENCH_STATES = ['idle', 'running', 'failed'] as const;
+
+/** The speaking bench's states, on the same terms. */
+const SPEAKING_BENCH_STATES = ['idle', 'running', 'failed'] as const;
 
 /** The verdicts the core writes; the fifth is this client's own. */
 const VERDICTS: Exclude<UpdateVerdict, 'unknown'>[] = [
@@ -362,8 +390,24 @@ export function modelsFrom(data: DictateModelsWire): DictateModelsWire {
       target: targetFrom(result.target),
       tier: narrow(result.tier, BENCH_TIERS, 'other'),
     })),
+    speaking_bench: speakingBenchFrom(data.speaking_bench),
+    speaking_results: (data.speaking_results ?? []).filter(
+      (result) => typeof result.file === 'string' && typeof result.at === 'string',
+    ),
     read_aloud: readAloudFrom(data.read_aloud),
   };
+}
+
+/**
+ * The speaking bench's state, narrowed where it enters: a page that trusted
+ * this shape would draw a run that is not there.
+ */
+function speakingBenchFrom(value: SpeakingBenchState | undefined): SpeakingBenchState {
+  const state: string | undefined = value?.state;
+  if (typeof state !== 'string' || !(SPEAKING_BENCH_STATES as readonly string[]).includes(state)) {
+    return { state: 'unknown' };
+  }
+  return value as SpeakingBenchState;
 }
 
 /** One catalogue row, with the kind narrowed the way the wire's roles are. */

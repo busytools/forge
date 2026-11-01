@@ -39,6 +39,9 @@
     resultVerdict,
     resultWhen,
     roleWord,
+    speakingBenchLine,
+    speakingResultFacts,
+    speakingWhen,
     rowAction,
     search,
     sizeLabel,
@@ -74,6 +77,8 @@
     ondeactivate,
     onbench,
     onbenchstop,
+    onspeakbench,
+    onspeakbenchstop,
     onrecord,
     onrecordstop,
     onrecorddelete,
@@ -101,6 +106,10 @@
     ondeactivate: (role: ModelRole) => void;
     onbench: (target: BenchTarget, tier: BenchTier) => void;
     onbenchstop: () => void;
+    /** Score the speaking loop: the speaking model against the pair that
+     * transcribes, over the public corpus. */
+    onspeakbench: () => void;
+    onspeakbenchstop: () => void;
     /** Begin recording the read-aloud passage. */
     onrecord: () => void;
     /** End it: `keep` saves the recording as the set. */
@@ -165,6 +174,7 @@
   const building = $derived(activateLine(wire.activate));
   const benchState = $derived(wire.bench);
   const bench = $derived(benchLine(wire.bench));
+  const speakLine = $derived(speakingBenchLine(wire.speaking_bench));
   const targets = $derived(benchTargets(wire.in_use, wire.installed, wire.updates, wire.rows));
 
   /**
@@ -969,6 +979,48 @@
           wire.bench.state === 'failed' ? () => (dismissedFailure = benchFailure) : null,
         )}
       {/if}
+
+      <!-- The speaking direction: one model against the pair that
+           transcribes, scored over the same public corpus. Its own card
+           because its figures - round-trip words, first audio, the render's
+           pace - are not the words bench's. -->
+      <div class="status" role="status">
+        <span
+          class="dot {speakLine === null
+            ? wire.speaking_bench.state === 'failed'
+              ? 'failed'
+              : 'off'
+            : 'live'}"
+        ></span>
+        <span class="t">
+          {speakLine === null ? 'score the speaking loop' : speakLine.title}
+        </span>
+        {#if speakLine !== null && speakLine.detail !== null}
+          <span class="when">{speakLine.detail}</span>
+        {/if}
+        <span class="spacer"></span>
+        {#if wire.speaking_bench.state === 'running'}
+          <button class="chip" type="button" onclick={onspeakbenchstop}>stop</button>
+        {:else}
+          <button class="chip" type="button" disabled={busy} onclick={onspeakbench}
+            >score the loop</button
+          >
+        {/if}
+        <span class="detail">
+          the speaking model says each public transcript &middot; the transcribing pair hears it
+          back and the words are scored again &middot; a run needs the public corpus beside the
+          models
+        </span>
+        {#if wire.speaking_results[0] !== undefined}
+          {@const last = wire.speaking_results[0]}
+          <span class="detail">
+            last run, {last.file}
+            {#if speakingWhen(last) !== null}&middot; {speakingWhen(last)}{/if}: {@render facts(
+              speakingResultFacts(last),
+            )}
+          </span>
+        {/if}
+      </div>
 
       <!-- The doors: what a run measured, and what can be run by hand. Both
            lists are long, and neither is what the section is for, so they

@@ -436,6 +436,13 @@ pub enum Command {
     /// Stop the bench in flight. What ran so far is discarded: a partial
     /// corpus is not a result.
     DictateBenchStop,
+    /// Score the speaking loop on the public corpus: synthesize each
+    /// transcript, hear it back through the transcribing and cleanup pair,
+    /// and report the round-trip words, the first-audio latency and the
+    /// render's pace. App-level, same outcome channel as the words bench.
+    VoiceBenchStart,
+    /// Stop the speaking bench in flight: a partial corpus is not a result.
+    VoiceBenchStop,
     /// Begin recording the read-aloud set: the connection that sent this
     /// feeds the audio as binary frames, like a take a client captures, and
     /// no session owns it. App-level; the recording's own state rides the
@@ -907,6 +914,8 @@ impl Command {
             | Self::DictateDeactivate { .. }
             | Self::DictateBench { .. }
             | Self::DictateBenchStop
+            | Self::VoiceBenchStart
+            | Self::VoiceBenchStop
             | Self::DictateReadAloudStart { .. }
             | Self::DictateReadAloudStop { .. }
             | Self::DictateReadAloudDelete { .. }
@@ -1088,6 +1097,8 @@ impl std::fmt::Debug for Command {
                 f.debug_struct("DictateBench").field("target", target).field("tier", tier).finish()
             }
             Self::DictateBenchStop => f.write_str("DictateBenchStop"),
+            Self::VoiceBenchStart => f.write_str("VoiceBenchStart"),
+            Self::VoiceBenchStop => f.write_str("VoiceBenchStop"),
             Self::DictateReadAloudStart { .. } => f.write_str("DictateReadAloudStart"),
             Self::DictateReadAloudStop { keep, .. } => {
                 f.debug_struct("DictateReadAloudStop").field("keep", keep).finish()
@@ -2603,6 +2614,10 @@ pub enum DispatchError {
     /// there are no pinned models for a check to be about.
     #[error("dictation is off, so there is no catalogue to check")]
     DictateOff,
+    /// A speaking action was asked for with `[tts]` switched off or no
+    /// model files resolving: there is nothing to speak with.
+    #[error("speech is off: {reason}")]
+    VoiceOff { reason: String },
     /// An install is already running: one at a time, like a check.
     #[error("a model install is already running")]
     Installing,

@@ -13,6 +13,7 @@ import type {
   DictateModelsWire,
   InstalledModel,
   InUseModel,
+  SpeakingBenchResult,
 } from '../wire/models';
 import { modelsWire } from './testing';
 import {
@@ -37,6 +38,9 @@ import {
   rowAction,
   search,
   sizeLabel,
+  speakingBenchLine,
+  speakingResultFacts,
+  speakingWhen,
   speedLabel,
   comparison,
   sweepCost,
@@ -677,6 +681,41 @@ describe('the operation lines', () => {
 
     expect(line?.detail).toContain('the file is not a model');
     expect(line?.detail).toContain('the current model is still running');
+  });
+});
+
+describe('the speaking bench', () => {
+  it('draws where the run is, and what stopped it', () => {
+    const running = speakingBenchLine({ state: 'running', clip: 3, clips: 12 });
+    expect(running?.mark).toBe('live');
+    expect(running?.title).toBe('scoring the speaking loop');
+    expect(running?.detail).toContain('clip 3 of 12');
+    expect(running?.percent).toBe(25);
+
+    const failed = speakingBenchLine({
+      state: 'failed',
+      reason: 'nothing to bench: the public corpus has not been downloaded yet',
+    });
+    expect(failed?.mark).toBe('failed');
+    expect(failed?.detail).toContain('public corpus');
+
+    expect(speakingBenchLine({ state: 'idle' })).toBeNull();
+    expect(speakingBenchLine({ state: 'unknown' })?.mark).toBe('off');
+  });
+
+  it("draws a result's round trip, first audio and pace", () => {
+    const result: SpeakingBenchResult = {
+      file: 'Qwen3-TTS-12Hz-1.7B-Base-Q8_0.gguf',
+      metrics: { clips: 12, round_trip_wer: 0.041, first_audio_ms: 3_400, realtime_factor: 0.31 },
+      at: '2026-11-01T19:00:00Z',
+      corpus: { clips: 12, audio_seconds: 320, sha256: 'a414db2a' },
+    };
+    const facts = speakingResultFacts(result).map((part) => part.text);
+    expect(facts).toContain('round-trip WER 4.1%');
+    expect(facts).toContain('first audio 3.4s');
+    expect(facts).toContain('0.31\u{d7} realtime');
+    expect(facts.some((text) => text.includes('12 clips'))).toBe(true);
+    expect(speakingWhen(result)).toMatch(/^measured \d\d:\d\d$/);
   });
 });
 

@@ -293,7 +293,8 @@
   from. One read of <span class="mono">Subject::DictateModels</span> fills all of it; a check
   landing, the models finishing their load, and a download or activation landing are the updates
   that move it. The benchmark section's own runs - the takes, the read-aloud set, the downloaded
-  public slice, and the one press that scores the picks - are on the same read.</p>
+  public slice, the one press that scores the picks and the speaking loop's own card - are on
+  the same read.</p>
 
   <h2>The page</h2>
   <div class="tile">
@@ -438,6 +439,17 @@
           <span class="detail"><b>74.3&times; realtime</b> &middot; term accuracy 94% &middot; WER 4.2% &middot; 2 clips &middot; 41s of audio</span>
           <span class="detail">what you run, s1-mini-f16.gguf: 69.2&times; realtime &middot; term accuracy 88% &middot; WER 6.1% &middot; 2 clips &middot; 41s of audio</span>
           <span class="detail">switching downloads 396 MB again - the sweep took the file back when the verdict came in</span>
+        </div>
+
+        <!-- The other direction: the speaking model, the pair that
+             transcribes, and the round trip's own figures. -->
+        <div class="status">
+          <span class="dot off"></span>
+          <span class="t">score the speaking loop</span>
+          <span class="spacer"></span>
+          <button class="chip" type="button">score the loop</button>
+          <span class="detail">the speaking model says each public transcript &middot; the transcribing pair hears it back and the words are scored again &middot; a run needs the public corpus beside the models</span>
+          <span class="detail">last run, Qwen3-TTS-12Hz-1.7B-Base-Q8_0.gguf &middot; measured 01:42: <b>round-trip WER 4.1%</b> &middot; <b>first audio 3.4s</b> &middot; 0.31&times; realtime &middot; 12 clips &middot; Qwen3-TTS-12Hz-1.7B-Base-Q8_0.gguf</span>
         </div>
 
         <!-- The doors: what a run measured, and what can be run by hand.
@@ -630,7 +642,7 @@
   </div>
 
   <div class="tile">
-    <div class="tcap">the <b>benchmark</b>'s other states: <b>off</b>, the <b>read-aloud set empty</b>, a set <b>this client cannot read</b>, a <b>recording</b> in flight, a <b>sweep running</b>, the <b>consensus note</b> with <b>benchmark again</b>, a <b>sweep that ended on a corpus move</b>, and a <b>run that did not finish</b> with its close</div>
+    <div class="tcap">the <b>benchmark</b>'s other states: <b>off</b>, the <b>read-aloud set empty</b>, a set <b>this client cannot read</b>, a <b>recording</b> in flight, a <b>sweep running</b>, the <b>consensus note</b> with <b>benchmark again</b>, a <b>sweep that ended on a corpus move</b>, a <b>speaking loop running and failed</b>, and a <b>run that did not finish</b> with its close</div>
     <div class="models-page">
       <p class="note" style="margin-top:0">the bench runs only with <code>[dictate] enabled</code> set &middot; it scores a model on the takes forge has recorded here</p>
       <div class="status" role="status">

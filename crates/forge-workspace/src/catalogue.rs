@@ -53,6 +53,11 @@ pub struct DictateModelsSnapshot {
     pub bench: crate::bench::BenchState,
     /// What benches have measured on this machine, newest first.
     pub results: Vec<crate::bench::BenchResult>,
+    /// Where the speaking loop's bench got to: idle, running with its
+    /// tick, or failed with its reason.
+    pub speaking_bench: crate::bench::SpeakingBenchState,
+    /// What speaking benches have measured on this machine, newest first.
+    pub speaking_results: Vec<crate::bench::SpeakingBenchResult>,
     /// The read-aloud set: whether this machine has one, and its passage.
     pub read_aloud: crate::bench::ReadAloudState,
 }
@@ -493,6 +498,8 @@ impl crate::Workspace {
             installed: self.installed_models(),
             bench: self.dictate_bench(),
             results: self.bench_results(),
+            speaking_bench: self.speaking_bench(),
+            speaking_results: self.speaking_bench_results(),
             read_aloud: self.read_aloud_state(),
         }
     }

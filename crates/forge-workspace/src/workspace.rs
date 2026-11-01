@@ -724,6 +724,10 @@ pub struct Workspace {
     /// the models page through `dictate_bench` and `bench_results`.
     pub(crate) dictate_bench: Mutex<crate::bench::BenchState>,
     pub(crate) dictate_bench_cancel: std::sync::atomic::AtomicBool,
+    /// Where the speaking loop's bench got to, and the flag its Stop sets.
+    /// Read by the models page through `speaking_bench` and its results.
+    pub(crate) speaking_bench: Mutex<crate::bench::SpeakingBenchState>,
+    pub(crate) speaking_bench_cancel: std::sync::atomic::AtomicBool,
     /// The last read-aloud write's failure, when there was one: a stop
     /// whose write fails has no dispatch left to answer, so the page reads
     /// it here instead. Cleared when the next recording starts.
@@ -2427,6 +2431,8 @@ impl Workspace {
             dictate_activate: Mutex::new(crate::install::ActivateState::default()),
             dictate_bench: Mutex::new(crate::bench::BenchState::default()),
             dictate_bench_cancel: std::sync::atomic::AtomicBool::new(false),
+            speaking_bench: Mutex::new(crate::bench::SpeakingBenchState::default()),
+            speaking_bench_cancel: std::sync::atomic::AtomicBool::new(false),
             read_aloud_error: Mutex::new(None),
             #[cfg(any(test, feature = "testing"))]
             test_catalogue_source: Mutex::new(None),
@@ -6872,6 +6878,16 @@ impl Workspace {
                 }
                 Command::DictateBenchStop => {
                     return self.stop_bench();
+                }
+                Command::VoiceBenchStart => {
+                    let outcome = self.start_speaking_bench();
+                    self.push_models();
+                    return outcome;
+                }
+                Command::VoiceBenchStop => {
+                    let outcome = self.stop_speaking_bench();
+                    self.push_models();
+                    return outcome;
                 }
                 Command::DictateReadAloudStart { initiator } => {
                     let outcome = self.start_read_aloud(initiator);

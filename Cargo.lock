@@ -1269,6 +1269,7 @@ dependencies = [
  "forge-primitives",
  "forge-sdk",
  "forge-server",
+ "forge-tts",
  "forge-workspace",
  "parking_lot",
  "regex",

@@ -4,6 +4,11 @@
 /// capture opens a device at: one constant, so the two cannot drift.
 pub use forge_capture::SAMPLE_RATE;
 
+/// A buffer at another rate, brought to [`SAMPLE_RATE`] with the capture
+/// path's own filtered resampler: the one way a source declaring another
+/// rate becomes a source this crate accepts.
+pub use forge_capture::resample_mono;
+
 /// A pull-based source of mono audio.
 ///
 /// Chunked rather than streamed so a source needs no hardware and no

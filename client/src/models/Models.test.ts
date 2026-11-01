@@ -56,6 +56,8 @@ function open(
     ondeactivate: (role: ModelRole) => void;
     onbench: (target: BenchTarget, tier: BenchTier) => void;
     onbenchstop: () => void;
+    onspeakbench: () => void;
+    onspeakbenchstop: () => void;
     onrecord: () => void;
     onrecordstop: (keep: boolean) => void;
     onrecorddelete: (recording: ReadAloudRecording) => void;
@@ -85,6 +87,8 @@ function open(
       ondeactivate: handlers.ondeactivate ?? (() => {}),
       onbench: handlers.onbench ?? (() => {}),
       onbenchstop: handlers.onbenchstop ?? (() => {}),
+      onspeakbench: handlers.onspeakbench ?? (() => {}),
+      onspeakbenchstop: handlers.onspeakbenchstop ?? (() => {}),
       onrecord: handlers.onrecord ?? (() => {}),
       onrecordstop: handlers.onrecordstop ?? (() => {}),
       onrecorddelete: handlers.onrecorddelete ?? (() => {}),
@@ -727,6 +731,60 @@ describe('the models page as it draws', () => {
     button?.click();
     flushSync();
     expect(runs.map((run) => run.tier)).toEqual(['public']);
+  });
+
+  /**
+   * The speaking direction draws its own card: where the run is, the stop
+   * while it runs, the press that starts it, and the last run's figures.
+   */
+  it('scores the speaking loop from its own card', () => {
+    const pressed: string[] = [];
+    const running = {
+      ...modelsWire,
+      speaking_bench: { state: 'running', clip: 2, clips: 12 },
+      speaking_results: [
+        {
+          file: 'Qwen3-TTS-12Hz-1.7B-Base-Q8_0.gguf',
+          metrics: {
+            clips: 12,
+            round_trip_wer: 0.041,
+            first_audio_ms: 3_400,
+            realtime_factor: 0.31,
+          },
+          at: '2026-11-01T19:00:00Z',
+          corpus: { clips: 12, audio_seconds: 320, sha256: 'a414db2a' },
+        },
+      ],
+    } as DictateModelsWire;
+    const host = open(running, {
+      onspeakbench: () => pressed.push('start'),
+      onspeakbenchstop: () => pressed.push('stop'),
+    });
+
+    expect(host.textContent).toContain('scoring the speaking loop');
+    expect(host.textContent).toContain('clip 2 of 12');
+    expect(host.textContent).toContain('round-trip WER 4.1%');
+    expect(host.textContent).toContain('first audio 3.4s');
+
+    const stop = [...host.querySelectorAll('button')].find(
+      (c) => c.textContent?.trim() === 'stop',
+    );
+    expect(stop, 'a running speaking bench offers no stop').not.toBeUndefined();
+    stop?.click();
+    flushSync();
+    expect(pressed).toEqual(['stop']);
+
+    const idle = open(modelsWire, {
+      onspeakbench: () => pressed.push('start'),
+      onspeakbenchstop: () => pressed.push('stop'),
+    });
+    const start = [...idle.querySelectorAll('button')].find((c) =>
+      c.textContent?.includes('score the loop'),
+    );
+    expect(start, 'an idle speaking bench offers no press').not.toBeUndefined();
+    start?.click();
+    flushSync();
+    expect(pressed).toEqual(['stop', 'start']);
   });
 
   /** What a finished run measured, with its corpus named. */

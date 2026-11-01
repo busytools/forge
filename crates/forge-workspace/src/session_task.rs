@@ -2801,6 +2801,8 @@ pub(crate) fn execute_command_via_handle(
         | Command::DictateDeactivate { .. }
         | Command::DictateBench { .. }
         | Command::DictateBenchStop
+        | Command::VoiceBenchStart
+        | Command::VoiceBenchStop
         | Command::DictateReadAloudStart { .. }
         | Command::DictateReadAloudStop { .. }
         | Command::DictateReadAloudDelete { .. }

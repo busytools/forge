@@ -187,10 +187,9 @@ mod tests {
 
     #[tokio::test]
     async fn an_empty_corpus_is_refused_by_name() {
-        let Err(error) = run(&StubEngine, &[], |_, _| String::new(), |_| {
-            std::ops::ControlFlow::Continue(())
-        })
-        .await
+        let Err(error) =
+            run(&StubEngine, &[], |_, _| String::new(), |_| std::ops::ControlFlow::Continue(()))
+                .await
         else {
             panic!("an empty corpus is no run");
         };
@@ -204,10 +203,15 @@ mod tests {
             BenchClip { transcript: "two".to_owned() },
         ];
         let mut landed = Vec::new();
-        run(&StubEngine, &corpus, |_, _| "one".to_owned(), |index| {
-            landed.push(index);
-            std::ops::ControlFlow::Continue(())
-        })
+        run(
+            &StubEngine,
+            &corpus,
+            |_, _| "one".to_owned(),
+            |index| {
+                landed.push(index);
+                std::ops::ControlFlow::Continue(())
+            },
+        )
         .await
         .expect("the run lands");
 
@@ -220,9 +224,12 @@ mod tests {
             BenchClip { transcript: "one".to_owned() },
             BenchClip { transcript: "two".to_owned() },
         ];
-        let Err(error) = run(&StubEngine, &corpus, |_, _| "one".to_owned(), |_| {
-            std::ops::ControlFlow::Break(())
-        })
+        let Err(error) = run(
+            &StubEngine,
+            &corpus,
+            |_, _| "one".to_owned(),
+            |_| std::ops::ControlFlow::Break(()),
+        )
         .await
         else {
             panic!("a stopped run is not a result");

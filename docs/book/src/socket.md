@@ -311,10 +311,11 @@ variant's own name rather than on `kind`:
 }
 ```
 
-A command's variant is its name around its field bag - `Command` has 59
-variants, 55 of them struct variants; the four unit variants,
-`dictate_catalogue_check`, `dictate_bench_stop`, `plugin_update_all` and
-`plugin_check_updates`, cross as the name alone. An update is the same
+A command's variant is its name around its field bag - `Command` has 61
+variants, 55 of them struct variants; the six unit variants,
+`dictate_catalogue_check`, `dictate_bench_stop`, `voice_bench_start`,
+`voice_bench_stop`, `plugin_update_all` and `plugin_check_updates`, cross as
+the name alone. An update is the same
 shape one level in,
 `{"kind": "update", "update": {"chat_appended": {"key": ..., "msg": ...}}}`,
 and 69 of `SessionUpdate`'s 72 variants are struct variants too. The other

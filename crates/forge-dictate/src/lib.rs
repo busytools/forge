@@ -48,7 +48,7 @@ mod fetch;
 mod gates;
 pub mod normalize;
 
-pub use audio::{AudioSource, SAMPLE_RATE, Samples};
+pub use audio::{AudioSource, SAMPLE_RATE, Samples, resample_mono};
 pub use config::{Config, ConfigBuilder, ModelFacts, ModelSpec, spec_for_download};
 pub use engine::{
     Capture, CaptureMeter, Engine, FrameSink, Outcome, Stages, StreamCapture, Ticket, Transcript,

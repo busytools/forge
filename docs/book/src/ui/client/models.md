@@ -28,6 +28,7 @@ read and the actions are the server's (`Subject::DictateModels`,
 `Command::DictateActivate`, `Command::DictateDeactivate`,
 `Command::DictateUninstall`, `Command::DictateBench`,
 `Command::DictateBenchStop`, `Command::DictateBenchDelete`,
+`Command::VoiceBenchStart`, `Command::VoiceBenchStop`,
 `Command::DictateReadAloudStart`, `Command::DictateReadAloudStop` and
 `Command::DictateReadAloudDelete`), and this page is the view of either.
 
@@ -40,7 +41,7 @@ read and the actions are the server's (`Subject::DictateModels`,
 | In use | one row per model forge runs: its role - **the selector for the updates below** - its file, the facts the spec declares (size, quant, parameters, digest, licence), the feed's own measurement when it has one, the live state as a chip, and a line saying where the model came from | `in_use` |
 | Updates | what a check reads, the check's own line - up to date, an update, checking, unreachable, or a state this client cannot read - with both roles' news under it, then the selected role's recommendation with the one control that takes it, then the comparison table behind a door; the cleanup role's own view instead, where no feed measures a normalizer: its candidates with each one's own runs under it | `check`, `updates`, `rows`, `installed`, `results` |
 | Find a model | a box that filters the feed's rows as it is typed, with the feed's families and its fastest rows offered before a name is known: the variant, the quant a machine would run, the measured speed and error, the licence, what it transcribes, and the row's control. Each row links to the entry's own document | `rows` |
-| Benchmark | the fixtures first - the read-aloud set's own state with the record control and the count line - then the one press that scores the picks on this machine and leaves a verdict, then two doors: every run scored here, and every model a bench can run, with the control that removes a downloaded model nothing runs | `bench`, `read_aloud`, `results` |
+| Benchmark | the fixtures first - the read-aloud set's own state with the record control and the count line - then the one press that scores the picks on this machine and leaves a verdict, then the speaking loop's own card, then two doors: every run scored here, and every model a bench can run, with the control that removes a downloaded model nothing runs | `bench`, `read_aloud`, `results`, `speaking_bench`, `speaking_results` |
 
 **A model in use is drawn from its spec.** The first fact line comes off the
 `ModelSpec` - the size, quant, parameters, digest and licence the loader
@@ -167,10 +168,21 @@ and a stop that discards a partial corpus rather than saving one. Each saved
 result draws its figures, what it means against the model in use on the same
 corpus, and a delete.
 
+**The other direction has its own card.** The speaking model says each
+public transcript, the transcribing pair hears the audio back, and the words
+are scored again: round-trip word error, first audio and the render's pace.
+It sits beside the words bench and never mixes into its results, because the
+two measure different things - one scores a model on audio that exists, the
+other scores the loop from words to audio and back. One press scores it, a
+stop discards a partial corpus, and the newest saved run draws under the
+card. The run needs the public corpus, the same slice the words bench's
+public tier scores, and a machine without it is told so by name.
+
 **The benchmark reads as three things, not seven.** The fixtures come
 first, in a count line and the set's own card - what a run scores on, which
-is the reader's to change. Then the one press. Then the verdict, and under
-it two doors: every run scored here, and every model a bench can run. Both
+is the reader's to change. Then the one press. Then the verdict, the
+speaking loop's own card, and under them two doors: every run scored here,
+and every model a bench can run. Both
 lists are long and neither is what the section is for, so they fold behind
 a heading that carries their count. The catalogue above does not fold: it
 is a lookup a reader opens the page for, not evidence for anything.
