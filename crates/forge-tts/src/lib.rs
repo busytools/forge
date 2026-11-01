@@ -5,9 +5,13 @@
 //! and reads [`Chunk`]s off the returned channel. Which engine renders, and
 //! when a chunk reaches the speaker, stays with the host.
 
+mod engine;
 mod error;
+mod model;
 
+pub use engine::QwenTts;
 pub use error::Error;
+pub use model::ModelFiles;
 
 /// One utterance to render, with the model's own voice settings.
 #[derive(Debug, Clone)]
