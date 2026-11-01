@@ -63,7 +63,7 @@ tracing = { workspace = true }
 # its own process: this crate ships the executable that does.
 [target.'cfg(target_os = "macos")'.dependencies]
 base64 = { workspace = true }
-cef = { version = "=154.5.0", features = ["build-util"] }
+cef = { version = "=156.2.0", features = ["build-util"] }
 chrono = { workspace = true }
 futures-util = { workspace = true }
 libc = "0.2"
