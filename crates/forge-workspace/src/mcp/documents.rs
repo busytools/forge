@@ -312,7 +312,7 @@ mod tests {
     /// A session spawned without the `review` family can hand a reviewable
     /// document off, but it cannot read the review back. Its answer names
     /// the family it lacks and routes the scope to its lead instead of
-    /// sending it to a `review__get` it does not have (#2787).
+    /// sending it to a `review__get` it does not have.
     #[tokio::test]
     async fn a_hand_off_from_a_session_without_review_names_the_family_it_lacks() {
         let mock = Arc::new(MockDocumentFacade::new());

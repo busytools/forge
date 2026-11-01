@@ -1367,8 +1367,8 @@ mod tests {
         // `review` reads as review-pass tooling, so a lead withholding it
         // from an implementing worker leaves that worker unable to answer
         // a review on its own branch (#2510) - or to read the review a
-        // handed-off document comes back with (#2787). Each family names
-        // what a worker gets from it and who should have it.
+        // handed-off document comes back with. Each family names what a
+        // worker gets from it and who should have it.
         let families = schema["properties"]["mcp_families"]["description"]
             .as_str()
             .expect("mcp_families carries a description");

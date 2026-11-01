@@ -9753,9 +9753,9 @@ mod lead_charter_tests {
     }
 
     /// A worker handed off a reviewable document and had no `review__*`
-    /// tools to read the comments with (#2787). The spawn step is where a
-    /// lead picks the family selection, so the requirement ships there -
-    /// pinned so a paraphrase cannot drop it.
+    /// tools to read the comments with. The spawn step is where a lead
+    /// picks the family selection, so the requirement ships there - pinned
+    /// so a paraphrase cannot drop it.
     #[test]
     fn the_charter_names_the_review_family_for_a_document_worker() {
         assert!(
