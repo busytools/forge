@@ -40,7 +40,7 @@ in-process node any more.
 | Region | Shows | Read from |
 |---|---|---|
 | The hand-off's card | `browser hand-off · tab N`; **Open browser**, **Done** and **Not now** before the takeover; while it is up, the card says the browser is open over the window and leaves the actions to the bar. **Words a lowered takeover handed to the chat are named here**, since the composer is behind this card until the ask is answered | the `browser_hand_off` ask, and the page's own surface state |
-| The takeover's bar | **back to chat**, the page's **back** and **forward** arrows, the tab picker, the title (`the browser · <org>/<name>`, or `browser hand-off · tab N`), **take control** / **release control**, **Done**, **something's wrong…** and **Not now**; **try again** while the surface is in its failed state | the page's surface state, the parked hand-off, and the pushed `browser_view` and `browser_tabs` frames |
+| The takeover's bar | **back to chat**, the page's **back** and **forward** arrows, the tab picker, the title (`the browser · <org>/<name>`, or `browser hand-off · tab N`), **the pane chord's hint** while the page holds the keyboard, **take control** / **release control**, **Done**, **something's wrong…** and **Not now**; **try again** while the surface is in its failed state | the page's surface state, the parked hand-off, and the pushed `browser_view` and `browser_tabs` frames |
 | The ask on the bar | this seat's parked hand-off: its own words under the bar row, with the tab its title names. Shown whenever the page is this seat's; **Done, Not now and the feedback line's send are offered only while that page is up on the tab the hand-off named** (live, or failed with its host gone), and **a page raised for another seat is lowered when that seat is left** | the `browser_hand_off` ask, and the page's own surface state |
 | The feedback line | a text field and the dock's own **mic** and **send**: the person's words go to the agent as a prompt and the hand-off ends as *feedback* - they spoke, so nothing is recorded as a decline. A take begun at the bar's mic, or by the push-to-talk key wherever the caret is while the line's own toggle is offered, lands in this line, and a take already running ends on that same key. **The line holds those words in every phase the takeover stands** - opening, failed, or showing another tab - and showing them is not answering, so only the send waits for the page. **Lowering the takeover hands them to the chat's draft**, and the hand-off's card says so; **a send does not** - the words left for the agent, so the line clears and the draft gets nothing. **A take replaces the field with the dock's own card**, and the card takes the line: it grows to everything the mic leaves, so its graph is the row's meter rather than a pill in an empty row. **A slow open says so in a line above the row**: one brief enough to be the press itself draws no line, and a longer one says the microphone is opening. **A send the connection never took says so in that same line**, in the refusal tone - `Not sent - the connection is down.` - and the words stay in the field: the bar does not clear what did not leave, and the hand-off stays parked for the retry. The card draws from this page's own take, which exists only once the capture has opened, and the composer's own band is behind the picture | the page's own state, and the take it is opening; the prompt rides the socket |
 | The surface | the viewed tab's page, filling the window under the bar: no window, no browser tab strip and no browser chrome | the server's relayed frames for that tab - drawn by the desktop's native overlay, or by the phone's and the web page's canvas |
@@ -208,6 +208,23 @@ page - Cmd+V as the pasteboard's text - Cmd+W lowers the takeover the way
 back to chat does, and Cmd+[ and Cmd+] move through the page's history. With
 the bar's own feedback field focused, the menu keeps its editing as it does
 everywhere else, and every other Command chord belongs to the app.
+
+**The keyboard moves between the page and the bar on the pane chords.**
+Cmd+Option+Down or Cmd+Option+Up moves it to the other pane - the two keys
+macOS Chrome uses to cycle between its toolbar and its page, and with two
+panes either direction lands on the other one. **While the page holds the
+keys the bar names the chord**: the title row carries `Cmd` `Opt` `Down` and
+the region declares both chords as `aria-keyshortcuts`, so a keyboard reader
+can find the door it cannot see. The hint goes once the chord has been used.
+The bar is a document above the picture, not part of it, so with the keyboard
+there Tab stays inside the bar (it wraps at both ends), its buttons take
+Enter and Space, and the feedback field types as any field does. **The bar
+holds the DOM focus only while it has the keys**: on open the native page
+keeps them, so no ring sits on a control the keyboard cannot reach, and
+clicking the picture takes them back the way the chord does. A focus that
+lands in the bar - the push-to-talk key's line, a take's landing - brings
+the keys with it too. A failed page has no picture to hold them, so the bar
+takes them.
 
 **The arrows are the page's own history.** The server reads
 `Page.getNavigationHistory` over the same CDP connection that carries the

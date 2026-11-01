@@ -31,16 +31,20 @@ function attachedFrom(value: unknown): { profile: string; tab: number } | null {
 }
 
 function shellLink(): BrowserLink {
+  /** **The phone keeps the picture in its page**: its shell has no native
+   *  overlay, so the frames the Rust half relays land in a canvas there, and
+   *  the document owns the keyboard either way. */
+  const android = typeof navigator !== 'undefined' && /Android/i.test(navigator.userAgent);
   return {
     attachable: true,
     drawsSurface: true,
-    /** **The phone paints the frames itself**: its shell has no native
-     *  overlay, so the frames the Rust half relays land in the page. */
-    paintsCanvas: typeof navigator !== 'undefined' && /Android/i.test(navigator.userAgent),
+    paintsCanvas: android,
     /** The shell's watcher window never moves the page under the driver. */
     sizesAsWatcher: false,
     /** The bridge re-attaches the viewer on its own socket. */
     reattachesOnReconnect: false,
+    /** An overlay view holds AppKit's first responder on the desktop. */
+    pageHoldsKeyboard: !android,
     /** The shell's own hardware Back lowers the takeover. */
     usesPageHistory: false,
 
@@ -92,6 +96,24 @@ function shellLink(): BrowserLink {
 
     async takeControl(take): Promise<void> {
       await invokeShell('client_browser_control', { take });
+    },
+
+    /** The pane chord's way back: the overlay takes first responder again. */
+    async focusPage(): Promise<void> {
+      try {
+        await invokeShell('browser_surface_focus', { holder: 'page' });
+      } catch (why) {
+        console.warn('the keyboard did not go back to the page', why);
+      }
+    },
+
+    /** Focus landing in the bar: the webview takes it from the picture. */
+    async focusBar(): Promise<void> {
+      try {
+        await invokeShell('browser_surface_focus', { holder: 'bar' });
+      } catch (why) {
+        console.warn('the keyboard did not come into the bar', why);
+      }
     },
 
     async keptFrame(): Promise<BrowserFrame | null> {
@@ -188,6 +210,17 @@ function shellLink(): BrowserLink {
     async onModifierChord(fn): Promise<() => void> {
       const { listen } = await import('@tauri-apps/api/event');
       return await listen('browser_modifier_chord', () => fn());
+    },
+
+    async onKeyboard(fn): Promise<() => void> {
+      const { listen } = await import('@tauri-apps/api/event');
+      return await listen<unknown>('browser_keyboard', (event) => {
+        const held = event.payload;
+        if (typeof held !== 'object' || held === null) return;
+        const holder = (held as Record<string, unknown>)['holder'];
+        if (holder !== 'bar' && holder !== 'page') return;
+        fn(holder);
+      });
     },
   };
 }
