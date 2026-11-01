@@ -70,7 +70,8 @@ pub async fn run(
         };
         first_audio += first;
         if rate > 0 {
-            audio_seconds += samples.len() as f64 / f64::from(rate);
+            let count = u32::try_from(samples.len()).unwrap_or(u32::MAX);
+            audio_seconds += f64::from(count) / f64::from(rate);
         }
         let heard = transcribe(&samples, rate);
         let truth = words(&clip.transcript);
@@ -168,9 +169,8 @@ mod tests {
 
     #[tokio::test]
     async fn an_empty_corpus_is_refused_by_name() {
-        let error = match run(&StubEngine, &[], |_, _| String::new()).await {
-            Ok(_) => panic!("an empty corpus is no run"),
-            Err(error) => error,
+        let Err(error) = run(&StubEngine, &[], |_, _| String::new()).await else {
+            panic!("an empty corpus is no run");
         };
         assert!(error.to_string().contains("no clips"));
     }

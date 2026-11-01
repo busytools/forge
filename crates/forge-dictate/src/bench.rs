@@ -904,9 +904,8 @@ mod tests {
         // Rewrite the audio under the same name: the manifest still names
         // the digest of the bytes that were there.
         write_wav(&dir.path().join("clip-0001.wav"), 12);
-        let error = match corpus(Tier::Public, dir.path(), dir.path(), dir.path()) {
-            Ok(_) => panic!("a clip whose bytes are not the manifest's must be refused"),
-            Err(error) => error,
+        let Err(error) = corpus(Tier::Public, dir.path(), dir.path(), dir.path()) else {
+            panic!("a clip whose bytes are not the manifest's must be refused");
         };
         assert!(
             error.to_string().contains("clip-0001.wav"),
