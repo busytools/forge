@@ -4166,11 +4166,12 @@ describe('the frames the fold had no row for', () => {
     expect(notice?.raw, 'and the frame itself stays reachable').toContain('toolu_denied');
   });
 
-  it("keeps a sub-agent's refusal out of the session's rows", () => {
-    // The server stamps the dispatch on the refusal's frame, which the wire
-    // scopes to the session. A row here would draw the same refusal a second
-    // time at the session's level, where it reads as a call the session
-    // itself made (#2767). The dispatch's own expansion draws the call.
+  it("keeps a refusal the server attributed to a dispatch out of the session's rows", () => {
+    // **Contract guard, not new behaviour**: the skip is the dispatch rule
+    // that predates #2767. What it pins is the half the client owes the
+    // server - once the server stamps the dispatch, the refusal must not also
+    // draw here as a row the session itself made, because the dispatch's
+    // expansion is where it draws.
     const refusal = {
       type: 'system',
       subtype: 'permission_denied',
