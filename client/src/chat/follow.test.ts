@@ -29,7 +29,7 @@ vi.mock('./conversation', async (importOriginal) => {
   return frozenConversation(await importOriginal<typeof import('./conversation')>());
 });
 
-const { clear, element, layout, list, measured, pinned, setElement, setMeasured } =
+const { clear, element, layout, list, measured, pinned, setElement, setMeasured, setModel } =
   await import('./testing/records');
 const { default: Chat } = await import('./Chat.svelte');
 const { default: Seats } = await import('./testing/Seats.svelte');
@@ -481,7 +481,9 @@ describe('whether the column follows the newest end', () => {
 
     server.frame();
     await settle();
-    // The late layout, after the frame's own pin has landed.
+    // The late layout, after the frame's own pin has landed: the row reported
+    // its height, so the list's measurement and the element move together.
+    setModel(TOTAL + 80);
     element.height = TOTAL + 80;
     resized();
     await settle();
@@ -489,6 +491,71 @@ describe('whether the column follows the newest end', () => {
     const grown = Math.floor(TOTAL + 80);
     expect(pinned(), 'the late layout lands one more pin, at the new foot').toEqual([
       PIN,
+      { asked: grown, landed: grown - VIEWPORT },
+    ]);
+  });
+
+  it("holds the pin at the list's own end while the browser counts a row it has not measured", async () => {
+    // **The blink while a turn is live.** A row that grows is in the browser's
+    // scrollHeight at once, and the list measures it a callback later. A scroll
+    // written past the measured end is read by the list as a position beyond
+    // its content, and it answers by dropping the rows on screen until the
+    // measurement lands - the whole conversation flickering frame after frame.
+    const server = stub();
+    await draw(server);
+    readerAt(FOOT);
+    await settle();
+    clear();
+
+    // The row grew in the DOM; the list has not measured it yet.
+    setElement(TOTAL + 40, VIEWPORT);
+    server.frame();
+    await settle();
+
+    // **The pin stops at the measured end, exactly.** The model's foot is
+    // `TOTAL - VIEWPORT` plus the viewport's top padding, which jsdom reports
+    // as none today, so the exact number is also what pins that premise.
+    expect(pinned().length, 'the lagging pin still lands').toBeGreaterThan(0);
+    for (const pin of pinned()) {
+      expect(pin.asked, 'the pin holds at the end the list measured').toBe(TOTAL - VIEWPORT);
+    }
+
+    // **The budget bounds the retries, not the hold.** Frames past it, with
+    // the measurement still behind, still ask the model's end and never the
+    // browser's - the fallback a give-up write would be.
+    for (let at = 0; at < 3; at += 1) {
+      await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
+      flushSync();
+    }
+    for (const pin of pinned()) {
+      expect(pin.asked, 'the exhausted budget still holds at the measured end').toBe(
+        TOTAL - VIEWPORT,
+      );
+    }
+  });
+
+  it('lands the foot again when the list measures what the browser already counted', async () => {
+    // **No size report follows the growth.** The row's own measurement is the
+    // list's, not the column's, so the deferred pin is the only thing that can
+    // land the reader on the real foot - which is what makes this the retry's
+    // own test.
+    const server = stub();
+    await draw(server);
+    readerAt(FOOT);
+    await settle();
+    clear();
+
+    setElement(TOTAL + 40, VIEWPORT);
+    server.frame();
+    await settle();
+
+    const before = pinned().length;
+    setModel(TOTAL + 40);
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
+    flushSync();
+
+    const grown = Math.floor(TOTAL + 40);
+    expect(pinned().slice(before), 'the deferred pin lands on the measured end').toEqual([
       { asked: grown, landed: grown - VIEWPORT },
     ]);
   });
@@ -522,6 +589,7 @@ describe('whether the column follows the newest end', () => {
     expect(pinned(), 'the reserved slot is not a foot to pin onto').toEqual([]);
 
     // The measurement lands and the slot corrects to what the row drew.
+    setModel(TOTAL + 60);
     measured(TOTAL + 60, [...reserved, { top: TOTAL, height: 60 }]);
     element.height = TOTAL + 60;
     resized();
@@ -735,7 +803,9 @@ describe('whether the column follows the newest end', () => {
     clear();
 
     // The content grows under a reader at the foot and the frame's pin rides
-    // them down: the write moved, so its echo is on the way.
+    // them down: the write moved, so its echo is on the way. The list's
+    // measurement is the row's own report, so it moves with the element.
+    setModel(TOTAL + 80);
     setElement(TOTAL + 80, VIEWPORT);
     server.frame();
     flushSync();
@@ -2352,7 +2422,12 @@ describe('the heights a turn ends at', () => {
       'the pin holds the finished row for its beat',
     ).toHaveLength(0);
     vi.advanceTimersByTime(450);
-    if (grow > 0) element.height = TOTAL + grow;
+    if (grow > 0) {
+      // The row is laid out in the turn: the browser's count and the list's
+      // measurement move together, which is what a real row's growth is.
+      setModel(TOTAL + grow);
+      element.height = TOTAL + grow;
+    }
     // The page landing and the completion each pinned the old foot; what the
     // beat itself lands is the only pin the cases below are about.
     clear();
@@ -2399,6 +2474,7 @@ describe('the heights a turn ends at', () => {
     await settle();
     clear();
 
+    setModel(TOTAL + ROW);
     setElement(TOTAL + ROW, VIEWPORT);
     // Only the newest turn's own observer: every other node is skipped, the
     // column's watcher included, so the height reaches the key by that row

@@ -1701,6 +1701,48 @@ describe('the arrival mark', () => {
       vi.useRealTimers();
     }
   });
+
+  it('marks the newest turn again when its closing row lands as it settles', async () => {
+    // **The mark is keyed on the turn GROWING, not on the core's running
+    // answer.** A turn takes its last rows after that answer clears - the
+    // closing text is the one the reader is waiting for - so a settled turn
+    // has to take the mark back when a row lands on it.
+    vi.useFakeTimers();
+    try {
+      const server = stub();
+      draw({}, server);
+      server.answer([]);
+      // A frame opens a live turn, and the core then says the turn is over -
+      // the row stays live, which is how a closing unit still lands in it.
+      server.send(appended(frame('a-open', 100)));
+      await painted();
+      server.send({
+        kind: 'snapshot',
+        subject: { session: LEAD },
+        data: { header: { turn_in_flight: false } },
+      });
+      flushSync();
+      vi.advanceTimersByTime(450);
+      flushSync();
+      expect(
+        document.querySelector('.conv .arriving'),
+        'the settled turn outlived its window',
+      ).toBeNull();
+
+      // The closing row, joining the SAME turn after the core said it was over.
+      server.send(appended(frame('a-closing', 120)));
+      await painted();
+
+      const items = [...document.querySelectorAll('.conv > *')];
+      expect(items.length, 'the closing row opened a second turn').toBe(1);
+      expect(
+        items.at(-1)?.classList.contains('arriving'),
+        'a row landing as the turn settled did not enter',
+      ).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 /**
