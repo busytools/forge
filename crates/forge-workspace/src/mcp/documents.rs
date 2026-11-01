@@ -202,11 +202,7 @@ impl HandOffTool {
                 return Err("the reader said not now, so nothing opened".to_owned());
             }
             DocumentHandOffEnding::Abandoned => {
-                return Err(
-                    "the reader's client went away before they finished, so the hand-off ended \
-                     without an answer"
-                        .to_owned(),
-                );
+                return Err("The hand-off ended without an answer.".to_owned());
             }
         })
     }
@@ -362,8 +358,9 @@ mod tests {
         );
     }
 
-    /// The reader's decline and an abandoned client are the call's failures,
-    /// each with its own sentence - the agent must not read either as done.
+    /// The reader's decline and an abandoned hand-off are the call's
+    /// failures, each with its own sentence - the agent must not read either
+    /// as done.
     #[tokio::test]
     async fn a_declined_or_abandoned_hand_off_fails_with_its_reason() {
         let mock = Arc::new(MockDocumentFacade::new());
@@ -381,7 +378,7 @@ mod tests {
         let out = tool.call(ToolInput { value: json!({ "path": "docs/readme.md" }) }).await;
         assert!(out.is_error, "an abandoned hand-off is not a success: {:?}", out.blocks);
         let text = crate::mcp::test_support::block_text(&out.blocks[0]);
-        assert!(text.contains("went away"), "{text}");
+        assert!(text.contains("ended without an answer"), "{text}");
     }
 
     /// `reviewable` is off unless asked for: everything the agent did not
