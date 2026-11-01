@@ -96,8 +96,6 @@
   const ROW_ESTIMATE_PX = 120;
   /** How long a row's arrival mark stays on it, past the animation. */
   const ARRIVE_MS = 300;
-  /** How many turns of row keys are remembered before the dropped ones go. */
-  const ARRIVED_TURNS = 64;
   /** The longest a return's hold waits for a paint before it lifts anyway. */
   const HOLD_MAX_MS = 250;
   /** How far above the last pin counts as the reader when no input preceded it. */
@@ -198,7 +196,8 @@
   /** The newest turn's key: the row the carried beat and the reader's echo ride. */
   const newest = $derived(newestTurn?.key ?? null);
   /**
-   * The rows each turn has already shown, by their own `data-k` keys.
+   * The row keys each turn has already shown, by the row's own `data-k`, and
+   * the turns seen at all.
    *
    * **The row's key, not the DOM's shape.** The list re-creates a row's node
    * whenever it leaves and re-enters the drawn window, and a fold rebuild
@@ -207,32 +206,80 @@
    * row can enter several times inside one turn. The key is the one name a
    * row keeps across all of that, so a key seen once is never marked again.
    *
-   * Seeded from what the column draws when it attaches, because those rows
-   * arrived before anyone was watching for them.
+   * **A turn drawn whole is seeded from the MODEL, not from DOM nodes**: the
+   * list renders its first items after the column attaches, so an attach-time
+   * scan of the DOM sees nothing - and a return into a seat whose newest turn
+   * was built by frames would otherwise enter every row of it at once.
    */
-  const arrived: Record<string, string[]> = {};
+  let arrived: Record<string, Record<string, true>> = {};
+  let seenTurn: Record<string, true> = {};
 
-  /** Whether this row has arrived in this turn before, recording it if not. */
-  function firstArrival(turn: string, key: string): boolean {
+  /** Whether this row has arrived in this turn before. */
+  function hasArrived(turn: string, key: string): boolean {
+    return arrived[turn]?.[key] === true;
+  }
+
+  /** Record a row as arrived, keeping the record to the turns the column holds. */
+  function recordArrival(turn: string, key: string): void {
     let rows = arrived[turn];
     if (rows === undefined) {
-      rows = [];
+      rows = {};
       arrived[turn] = rows;
-      // **A turn the window no longer holds cannot be drawn again**, so its
-      // keys go once the record outgrows the turns a conversation can hold at
-      // once. Pruned here rather than in an effect: a reactive write on the
-      // arrival path schedules a render the entry's own pin is measured
-      // against, and the list re-applies its attachment on a render.
-      if (Object.keys(arrived).length > ARRIVED_TURNS) {
-        const drawing = held.turns.map((turn) => turn.key);
-        for (const seen of Object.keys(arrived)) {
-          if (!drawing.includes(seen)) delete arrived[seen];
-        }
-      }
     }
-    if (rows.includes(key)) return false;
-    rows.push(key);
-    return true;
+    rows[key] = true;
+    // **Bounded to the turns the column holds**, on every insert: a turn the
+    // window no longer draws cannot be drawn again, so its keys go with it.
+    // The turn being recorded is kept even when `held` is still the outgoing
+    // conversation's - seeding a switch happens before the new record is drawn.
+    const drawing: Record<string, true> = { [turn]: true };
+    for (const turn of held.turns) drawing[turn.key] = true;
+    for (const drawn of Object.keys(arrived)) {
+      if (drawing[drawn] !== true) delete arrived[drawn];
+    }
+  }
+
+  /**
+   * Every drawn row key of one turn, as the fold names them.
+   *
+   * The DOM's keys are the fold's: a unit or the reader's own block is
+   * `<turn>:<unit key>`, and a call row is `call-<call key>` under its unit.
+   * The leaf kinds without a row of their own, and cards, carry none.
+   */
+  function drawnKeys(turn: HeldTurn): string[] {
+    const keys: string[] = [];
+    const units = turnFold(turn, slot, beingWritten(turn), !beingWritten(turn));
+    for (const unit of units) {
+      keys.push(`${turn.key}:${unit.key}`);
+      if (unit.kind !== 'leaves') continue;
+      for (const row of unit.rows) if (row.tag === 'call') keys.push(`call-${row.key}`);
+    }
+    return keys;
+  }
+
+  /** Record a turn already on screen as arrived, whatever built it. */
+  function seedDrawn(turn: HeldTurn | null): void {
+    if (turn === null) return;
+    seenTurn[turn.key] = true;
+    for (const key of drawnKeys(turn)) recordArrival(turn.key, key);
+  }
+
+  /**
+   * A turn seen for the first time.
+   *
+   * **How it first arrives decides.** A frame-built turn is about to draw its
+   * first row, and that row is an arrival; a turn a page drew is already on
+   * the page, so its rows are recorded before they reach the DOM and open
+   * still. A page that merges onto a turn being written is neither - the turn
+   * is already seen, and the rows it carries are ones the reader never saw,
+   * so they enter.
+   */
+  function firstSight(turn: HeldTurn | null): void {
+    if (turn === null || seenTurn[turn.key] === true) return;
+    if (turn.live) {
+      seenTurn[turn.key] = true;
+      return;
+    }
+    seedDrawn(turn);
   }
 
   /** Mark one row as having just arrived, and take the mark back after it. */
@@ -242,16 +289,39 @@
     // animations run at different lengths, and a class left on the node
     // would restart both if the row were moved in the document. The timer is
     // the fallback for a node the animation never reaches (a stilled one).
+    let timer: ReturnType<typeof setTimeout> | null = null;
     const clear = (event: AnimationEvent): void => {
       if (event.animationName !== 'arrive-rise') return;
       row.classList.remove('arrive');
       row.removeEventListener('animationend', clear);
+      if (timer !== null) clearTimeout(timer);
     };
     row.addEventListener('animationend', clear);
-    setTimeout(() => {
+    timer = setTimeout(() => {
       row.classList.remove('arrive');
       row.removeEventListener('animationend', clear);
     }, ARRIVE_MS);
+  }
+
+  /**
+   * Every `[data-k]` key one inserted node brought into this turn.
+   *
+   * **The turn's own `data-t` decides whose rows these are**, here rather
+   * than again in `rowsIn`: a node that brought no key of this turn is not
+   * this turn's insertion at all.
+   */
+  function keysIn(node: Element, turn: string): string[] {
+    const out: string[] = [];
+    for (const row of node.querySelectorAll('[data-k]')) {
+      if (row.closest('[data-t]')?.getAttribute('data-t') !== turn) continue;
+      const key = row.getAttribute('data-k');
+      if (key !== null) out.push(key);
+    }
+    if (node.matches('[data-k]') && node.closest('[data-t]')?.getAttribute('data-t') === turn) {
+      const own = node.getAttribute('data-k');
+      if (own !== null) out.push(own);
+    }
+    return out;
   }
 
   /**
@@ -260,15 +330,15 @@
    * A new unit and the call row inside it arrive together, and entering both
    * would run the entrance inside itself; the outermost row is the one the
    * reader sees arrive. A row inserted inside a unit already drawn is its own
-   * outermost, so a call joining a run enters on its own.
+   * outermost, so a call joining a run enters on its own. Which turn's rows
+   * these are was already answered by `keysIn`, whose filter is the one guard.
    */
-  function rowsIn(node: Element, turn: string): HTMLElement[] {
+  function rowsIn(node: Element): HTMLElement[] {
     if (node.matches('[data-k]')) {
-      return node.closest('[data-t]')?.getAttribute('data-t') === turn ? [node as HTMLElement] : [];
+      return [node as HTMLElement];
     }
     const out: HTMLElement[] = [];
     for (const row of node.querySelectorAll('[data-k]')) {
-      if (row.closest('[data-t]')?.getAttribute('data-t') !== turn) continue;
       const outer = row.parentElement?.closest('[data-k]');
       if (outer !== null && outer !== undefined && node.contains(outer)) continue;
       out.push(row as HTMLElement);
@@ -659,31 +729,32 @@
     // re-created with the list's window; a key already in `arrived` is a row
     // the reader has seen, whoever draws it again.
     const arrivals = new MutationObserver((records) => {
-      // **Only a turn the frames built is a live turn.** A page read is
-      // history rather than arrival, so the rows a load draws are drawn
-      // still; from the frame that opens a turn onward, every row it takes
-      // enters once.
+      // **A turn still being written takes arrivals.** `live` alone is not
+      // that state: a seat opened mid-flight has its newest row from a page
+      // (`live: false`, `running: true`) and frames join it, and those rows
+      // are arrivals too - `beingWritten` is the predicate the fold and the
+      // pin both use.
       const turn = untrack(() => newestTurn);
-      if (turn === null || !turn.live) return;
+      if (turn === null || !beingWritten(turn)) return;
       const at = turn.key;
       for (const record of records) {
         for (const added of record.addedNodes) {
           if (!(added instanceof Element)) continue;
-          for (const row of rowsIn(added, at)) {
+          const keys = keysIn(added, at);
+          if (keys.length === 0) continue;
+          // **Every key is recorded, only the outermost row is entered.** A
+          // call bundled inside a new unit enters with the unit, and its own
+          // key still has to be known so a later re-create of that leaf does
+          // not replay.
+          const entering = rowsIn(added).filter((row) => {
             const key = row.getAttribute('data-k');
-            if (key === null || !firstArrival(at, key)) continue;
-            enter(row);
-          }
+            return key !== null && !hasArrived(at, key);
+          });
+          for (const key of keys) recordArrival(at, key);
+          for (const row of entering) enter(row);
         }
       }
     });
-    // What is already drawn has already arrived: a scroll back to it, or a
-    // fold rebuild, must draw it without replaying the entrance.
-    for (const row of node.querySelectorAll('[data-k]')) {
-      const turn = row.closest('[data-t]')?.getAttribute('data-t');
-      const key = row.getAttribute('data-k');
-      if (turn !== null && turn !== undefined && key !== null) firstArrival(turn, key);
-    }
     arrivals.observe(node, { childList: true, subtree: true });
     return () => {
       arrivals.disconnect();
@@ -855,7 +926,12 @@
     entry.chat.showing();
     const unsubscribe = entry.chat.value.subscribe((value) => {
       kept.set(which, value);
-      if (untrack(() => seat) === which) held = value;
+      if (untrack(() => seat) === which) {
+        // **Before the draw**, so a page-drawn turn is recorded as it arrives
+        // rather than after its rows have landed.
+        firstSight(untrack(() => value.turns[value.turns.length - 1] ?? null));
+        held = value;
+      }
     });
     // The placement belonged to the conversation that is going, and the two
     // clauses are the two ways one goes. `fresh` is a conversation this run
@@ -886,6 +962,9 @@
     // change alone is no conversation, and a board route must write nothing.
     const switched = fresh || which !== placedFor;
     if (switched) {
+      // The arrival record belongs to the conversation that is going.
+      arrived = {};
+      seenTurn = {};
       placed = null;
       // The place a reader held was a row of the conversation that is going.
       anchor = null;
@@ -941,6 +1020,11 @@
     // The seat coming on screen is put there from what was kept, not from a
     // read, which is the whole point of holding it.
     held = untrack(() => kept.get(which)) ?? NOTHING;
+    // **What the conversation already draws has already arrived.** A return
+    // into a seat whose newest turn was built by frames would otherwise enter
+    // every row of it at once, and the list renders its first items after the
+    // attach, so only the model can say which rows those are.
+    if (switched) seedDrawn(untrack(() => newestTurn));
     // After `held`, so the open's own start and the conversation it names
     // land in one flush - the drawn mark below reads `held` and must never
     // time the seat that is going. The seat is handed over as the slot and
