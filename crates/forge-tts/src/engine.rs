@@ -10,8 +10,13 @@ use crate::{Chunk, Engine, Error, SpeakRequest};
 
 /// A loaded Qwen3-TTS pipeline. One render thread per engine, so a second
 /// utterance queues behind the first and the model is never shared mid-render.
+///
+/// **The thread is joined on drop**, because the model lives on it and the
+/// process's own exit frees ggml's Metal device after it: a detached thread
+/// still holding buffers at exit trips the device's residency-set assert.
 pub struct QwenTts {
-    jobs: mpsc::UnboundedSender<Job>,
+    jobs: Option<mpsc::UnboundedSender<Job>>,
+    worker: std::sync::Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 
 struct Job {
@@ -35,7 +40,7 @@ impl QwenTts {
         let (jobs, mut queue) = mpsc::unbounded_channel::<Job>();
         let (ready, loaded) = std::sync::mpsc::channel();
         let (model_path, projector_path) = (model.to_path_buf(), projector.to_path_buf());
-        std::thread::Builder::new()
+        let worker = std::thread::Builder::new()
             .name("forge-tts".to_owned())
             .spawn(move || match ffi::Core::load(&model_path, &projector_path) {
                 Ok(mut core) => {
@@ -55,24 +60,45 @@ impl QwenTts {
             .map_err(|error| Error::Load(error.to_string()))?;
 
         match loaded.recv() {
-            Ok(Ok(())) => Ok(Self { jobs }),
+            Ok(Ok(())) => {
+                Ok(Self { jobs: Some(jobs), worker: std::sync::Mutex::new(Some(worker)) })
+            }
             Ok(Err(error)) => Err(error),
             Err(_) => Err(Error::Load("the render thread stopped while loading".to_owned())),
         }
     }
 }
 
+impl Drop for QwenTts {
+    fn drop(&mut self) {
+        // Close the queue first, so the thread ends its loop, drops the core
+        // and only then lets the join return.
+        drop(self.jobs.take());
+        let worker = self.worker.get_mut().ok().and_then(Option::take);
+        if let Some(worker) = worker {
+            let _ = worker.join();
+        }
+    }
+}
+
 impl Engine for QwenTts {
     fn speak(&self, request: SpeakRequest) -> mpsc::Receiver<Result<Chunk, Error>> {
+        let Some(jobs) = self.jobs.as_ref() else {
+            return refused();
+        };
         let (reply, chunks) = mpsc::channel(2);
-        if let Err(error) = self.jobs.send(Job { request, reply }) {
-            let _ = error
-                .0
-                .reply
-                .try_send(Err(Error::Render("the render thread is no longer running".to_owned())));
+        if jobs.send(Job { request, reply }).is_err() {
+            return refused();
         }
         chunks
     }
+}
+
+/// A channel carrying one failure, for a render thread that is gone.
+fn refused() -> mpsc::Receiver<Result<Chunk, Error>> {
+    let (reply, chunks) = mpsc::channel(1);
+    let _ = reply.try_send(Err(Error::Render("the render thread is no longer running".to_owned())));
+    chunks
 }
 
 #[cfg(test)]
