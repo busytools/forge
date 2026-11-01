@@ -1,13 +1,22 @@
-# Dictation models
+# Models
 
-The page that shows which dictation models forge runs, what the runtime's
-own catalogue publishes, which models this machine has downloaded, and how
-to bring a candidate onto the machine and make it the one dictation runs. It
-is drawn from one snapshot of the `dictate_models` subject - the models in
+The page that shows which local models forge runs, what the runtime's own
+catalogue publishes, which models this machine has downloaded, and how to
+bring a candidate onto the machine and make it the one a role runs. It is
+drawn from one snapshot of the `dictate_models` subject - the models in
 use, the catalogue check, the proposals, every row of the feed, the installed
 set and the download/activation state - and redrawn from the update stream
 after it. The drawing it is held against is
-[web-dictate-models.html](./web-dictate-models.html), beside this page.
+[web-models.html](./web-models.html), beside this page.
+
+**Three roles, one page.** The transcribing and cleanup roles are the
+dictation engine's; the speaking role is speech out, pinned to the
+Qwen3-TTS model and its codec projector. Every role's row is drawn the same
+way - the spec's facts, the feed's measurement when it has one, the state
+chip, where the choice came from - and `[tts] speaking_model` pins the
+speaking role exactly as the `[dictate]` keys pin theirs.
+The name is the page's, not a crate's: `forge-dictate` and `forge-tts` stay
+what they are.
 
 It lives at `/models`, which is its own address rather than a session's: the
 models belong to the forge, not to a seat, and the subject carries no slot.
@@ -130,13 +139,18 @@ runs: a switch onto what is already running changes nothing.
 
 **The bench scores a model on this machine's own material, and nothing is
 embedded.** A shipped binary carries no audio: a machine with no material
-says so, and the way to get material is to record it. Two tiers. The
+says so, and the way to get material is to record it - or to download the
+public slice, which every machine has. Three tiers. The
 consensus tier is the takes forge has saved here, the candidate's words read
 against the words the model in use recorded beside each one - speed and
 agreement, and agreement is a signal rather than an error, because the other
 side is another model's output. The read-aloud tier is the one passage
-somebody read aloud on purpose: its words are known, so it is the only corpus
-that can score term accuracy and word error rate. **The page records that
+somebody read aloud on purpose: its words are known, so it is the corpus
+that scores term accuracy as well as word error rate. The public tier is a
+downloaded slice of licence-clean read speech whose transcripts and
+digests ship with it, so a machine that has never recorded anything still
+has something to score; a clip whose bytes are not the ones its manifest
+names is refused by the clip's own name rather than scored. **The page records that
 passage itself**: the section draws the passage and the record control, and a
 press opens this client's microphone through the composer's own capture. The
 recording is not a take - no session owns it and nothing is transcribed,

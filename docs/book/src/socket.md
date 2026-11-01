@@ -762,6 +762,30 @@ no longer holds is dropped rather than placed in another box; the composer
 is the exception, and re-places its own carried landing after a remount.
 Pressing enter sends the words as an ordinary prompt every view then sees.
 
+**`voice_mode {key, on}`** - a client turns voice on or off for the seat it
+is showing. It is that connection's own switch, not the seat's: two clients
+can watch one seat and only one of them be listening. The transport stamps
+the connection on it, so the listener set counts connections; the seat
+answers with a `voice_mode_state` carrying the count, to every subscriber
+of that seat. The first client in and the last client out also put a short
+note into the session, so the agent is told once that the person is
+listening and that anything they should hear goes through
+`mcp__forge__voice__say`.
+
+**`voice_utterance {key, pcm}`** - one complete hold-to-talk clip, mono
+16-bit samples at 16 kHz. Holding and releasing makes a whole clip, so
+nothing streams: the array is the utterance. The server transcribes it with
+the seat's live dictation role and dispatches the words into the seat as
+the reader's own prompt; a clip that cannot be transcribed, or that carries
+no speech, draws a notice row and dispatches nothing.
+
+**`voice_audio {key, seq, sample_rate, pcm}`** - one rendered clip of the
+seat's speech, mono 16-bit samples at `sample_rate`. Clips arrive in `seq`
+order, numbered per seat in render order, and every connection subscribed
+to that seat plays them. **`voice_mode_state {key, listeners}`** carries how
+many clients have voice on for that seat, so a control shows the room rather
+than only itself.
+
 **`command {command, reply_to?}`** - any of the core's own commands, as
 the core's own enum. `reply_to` is absent or `null` on most of them, and
 the two mean the same thing - a `null` is what the field is if a client

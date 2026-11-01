@@ -285,14 +285,15 @@
 <body>
 <div class="page">
 
-  <h1>Dictation models</h1>
+  <h1>Models</h1>
   <p class="sub">The page at <span class="mono">/models</span>, as the client draws it: what is
   pinned, what the transcribe.cpp catalogue proposes, the feed's rows the search reads, and the
-  controls that bring a candidate onto the machine and make it the one dictation runs. One
-  read of <span class="mono">Subject::DictateModels</span> fills all of it; a check landing, the
-  models finishing their load, and a download or activation landing are the updates that move it.
-  The benchmark section's own runs - the takes, the read-aloud set, and the one press that
-  scores the picks - are on the same read.</p>
+  controls that bring a candidate onto the machine and make it the one a role runs. The three
+  roles are the transcribing and cleanup models and the speaking model speech out is drawn
+  from. One read of <span class="mono">Subject::DictateModels</span> fills all of it; a check
+  landing, the models finishing their load, and a download or activation landing are the updates
+  that move it. The benchmark section's own runs - the takes, the read-aloud set, the downloaded
+  public slice, and the one press that scores the picks - are on the same read.</p>
 
   <h2>The page</h2>
   <div class="tile">
@@ -397,6 +398,8 @@
         <p class="note">fixtures &middot; the last run scored 42 takes &middot; 1 read-aloud recording</p>
 
         <p class="note">the read-aloud set &middot; every recording is scored against the one passage on 6 known terms &middot; a run over them reads term accuracy and word error, where the takes read agreement</p>
+
+        <p class="note">the public corpus &middot; a downloaded slice of licence-clean read speech with its transcripts &middot; a clip whose bytes are not the ones its manifest names is refused by name, and a machine with no recordings still has something to score</p>
         <ul class="list" aria-label="Read-aloud recordings">
           <li>
             <span class="rec"><span class="nm">0:41</span><span class="facts"><b>1 MB</b> &middot; sha 980227df &middot; recorded 06:04:23</span></span>
@@ -460,6 +463,7 @@
               <span class="bench-row"><span class="nm">cohere-transcribe-03-2026-Q4_K_M.gguf</span><span class="col">transcribing</span><span class="chip">in use</span></span>
               <button class="chip" type="button">bench it</button>
               <button class="chip" type="button">score the read-aloud</button>
+              <button class="chip" type="button">score the public corpus</button>
             </li>
             <li>
               <span class="bench-row"><span class="nm">CeluneNorm-0.6B-v2.0-ctx2048.Q4_K_M.gguf</span><span class="col">cleanup</span></span>

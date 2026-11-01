@@ -1,11 +1,12 @@
 # Architecture
 
-Twelve crates, layered so the dependency graph stays acyclic.
+Thirteen crates, layered so the dependency graph stays acyclic.
 
 ```
 forge-primitives      leaf: pure data, no logic, no I/O, no async
 forge-capture         leaf: microphone capture, depends on no forge-* crate
 forge-dictate     ->  capture
+forge-tts             leaf: speech synthesis, depends on no forge-* crate
 forge-system-one      leaf: decision-model client, depends on no forge-* crate
 forge-gateway     ->  primitives
 forge-connectors  ->  primitives
@@ -22,6 +23,7 @@ forge-test-harness->  primitives + sdk
 | `forge-primitives`   | Every type that crosses a crate boundary: message envelopes, content blocks, hook and permission payloads, IDs, render-side view structs. No logic, no I/O, no async.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | `forge-capture`      | Microphone capture: the input device, the input plan, the downmix and resampler, and the mono model-rate audio a host reads from it. A leaf: it depends on no forge-* crate and knows nothing about a host, a take or a wire, so a client's own shell captures through it and `forge-dictate` takes its sample rate.                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | `forge-dictate`      | The dictation primitive: audio in, text out. Owns its model files, speech recognition and transcript normalization, and takes audio as mono frames a host pushes in. Its one forge-* dependency is the capture leaf, for the sample rate, and it knows nothing about the program embedding it.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `forge-tts`          | The speech primitive: text in, audio chunks out. Owns the Qwen3-TTS engine (llama.cpp in process, through the vendored `llama-cpp-sys-2`), the model files a speaking model is made of, sentence splitting and the utterance bound. A leaf: it depends on no forge-* crate and knows nothing about a seat, a tool or a wire. |
 | `forge-system-one`   | The System One decision-model client: the `[systemone]` config shape, the wire question/answer types and their validation, the HTTP call with its timeout and error mapping. A leaf: depends on no forge-* crate, and its types stay there for consumers to import.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | `forge-gateway`      | The account pool: one backend per provider token (credential resolution, the usage probe's HTTP and payload mapping, billing shape), plus account selection by declared models, account health, probe scheduling and backoff. Depends on forge-primitives only; the `claude --version` user agent and TLS-trust plumbing arrive through the host port forge-agent implements.                                                                                                                                                                                                                                                                                                                                                                                                          |
 | `forge-connectors`   | One module per inbound connector: the stream client, REST lookups, subscription matching and subsystem pump for one external integration (Gotify and Slack today). Depends on forge-primitives only; Gotify's workspace state and message dispatch arrive through the host port forge-workspace implements.                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
@@ -47,7 +49,11 @@ Work top-down; the first match wins.
    another crate reads them. **The microphone itself** - opening a
    device, negotiating its config, downmixing and resampling, handing
    out frames - goes in `forge-capture`, a leaf a client's own shell can
-   depend on without carrying dictation's models.
+   depend on without carrying dictation's models. **Text turned into
+   speech** (the engine, its model files, the sentence split, the
+   utterance bound) goes in `forge-tts`, a leaf beside `forge-dictate`:
+   the two directions have disjoint model families and dependencies, and a
+   leaf holding both would be one crate with two unrelated engines.
 2. **System One decision-model I/O** (the `[systemone]` config shape,
    the wire question and answer types with their validation, the HTTP
    call) goes in `forge-system-one`. A leaf: it may not depend on any
