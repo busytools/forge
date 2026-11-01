@@ -9753,10 +9753,10 @@ mod lead_charter_tests {
     }
 
     /// **The project handoff is the lead's**, and a worker's note is never
-    /// the project's: one memory directory is shared by every session in a
-    /// project, so a worker writing `handoff.md` overwrites the lead's
-    /// rolling state. Both addresses are pinned so a reword fails here
-    /// rather than in whichever seat writes the shared file.
+    /// the project's: the project's memory directory holds the lead's rolling
+    /// handoff, so a worker writing `handoff.md` there overwrites it. Both
+    /// addresses are pinned so a reword fails here rather than in whichever
+    /// seat writes the lead's file.
     #[test]
     fn the_charter_says_the_project_handoff_is_the_leads() {
         assert!(

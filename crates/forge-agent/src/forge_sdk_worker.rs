@@ -3892,11 +3892,11 @@ mod tests {
         );
     }
 
-    /// **The project handoff is the lead's.** One memory directory is shared
-    /// by every session in a project, so a worker that writes `handoff.md`
-    /// replaces the lead's rolling state with its own. The owner and both
-    /// bans are pinned together, and the worker's own address is pinned
-    /// because a worker with no alternative writes the shared file.
+    /// **The project handoff is the lead's.** The project's memory directory
+    /// holds the lead's rolling handoff, and a worker that writes
+    /// `handoff.md` there replaces it with its own. The owner and both bans
+    /// are pinned together, and the worker's own address is pinned because a
+    /// worker with no alternative writes the lead's file.
     #[test]
     fn the_conduct_block_says_the_project_handoff_is_the_leads() {
         assert!(
