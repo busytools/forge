@@ -29,8 +29,8 @@ pub struct AreaSpec {
 }
 
 /// The sub-nav's areas, in the order it draws them. `[browser]` rides with
-/// the server that hosts it; `[dictate]` is an area of its own, because the
-/// keypress, the engine and the transcript are not client presentation.
+/// the server that hosts it; `[dictate]` and `[tts]` share the voice area,
+/// because they are the two directions of one conversation.
 pub const AREAS: &[AreaSpec] = &[
     AreaSpec {
         id: "accounts",
@@ -54,9 +54,9 @@ pub const AREAS: &[AreaSpec] = &[
     },
     AreaSpec { id: "client", name: "client", note: "the sets a client draws with" },
     AreaSpec {
-        id: "dictate",
-        name: "dictate",
-        note: "the keypress, the engine and the transcript a take goes through",
+        id: "voice",
+        name: "voice",
+        note: "the two directions: a take becomes text, and a reply becomes speech",
     },
     AreaSpec {
         id: "models",
@@ -209,6 +209,7 @@ fn edit_spec(path: &str) -> EditSpec {
         | "server.enabled"
         | "dictate.enabled"
         | "dictate.normalizer"
+        | "tts.enabled"
         | "handoff.enabled" => BOOLEAN,
         "systemone.timeout_ms"
         | "server.first_frame_cap_kb"
@@ -218,6 +219,7 @@ fn edit_spec(path: &str) -> EditSpec {
         | "browser.quality"
         | "browser.idle_minutes"
         | "dictate.max_capture_minutes"
+        | "tts.max_utterance_seconds"
         | "handoff.at_percent"
         | "handoff.after_compactions" => NUMBER,
         "server.allowed_origins" => LIST,
@@ -271,6 +273,7 @@ fn all_keys() -> impl Iterator<Item = &'static ConfigKey> {
         .chain(SERVER_KEYS)
         .chain(CLIENT_KEYS)
         .chain(DICTATE_KEYS)
+        .chain(TTS_KEYS)
         .chain(MODEL_KEYS)
         .chain(HANDOFF_KEYS)
         .chain(DOCUMENT_KEYS)
@@ -974,13 +977,13 @@ const CLIENT_KEYS: &[ConfigKey] = &[
 const DICTATE_KEYS: &[ConfigKey] = &[
     ConfigKey {
         path: "dictate.enabled",
-        area: "dictate",
+        area: "voice",
         class: EffectClass::Restart,
         rows: |config| vec![flag("dictate.enabled", config.dictate.enabled)],
     },
     ConfigKey {
         path: "dictate.models_dir",
-        area: "dictate",
+        area: "voice",
         class: EffectClass::Restart,
         rows: |config| {
             vec![text(
@@ -991,7 +994,7 @@ const DICTATE_KEYS: &[ConfigKey] = &[
     },
     ConfigKey {
         path: "dictate.transcribe_model",
-        area: "dictate",
+        area: "voice",
         class: EffectClass::Restart,
         rows: |config| {
             vec![text(
@@ -1002,7 +1005,7 @@ const DICTATE_KEYS: &[ConfigKey] = &[
     },
     ConfigKey {
         path: "dictate.cleanup_model",
-        area: "dictate",
+        area: "voice",
         class: EffectClass::Restart,
         rows: |config| {
             vec![text(
@@ -1013,7 +1016,7 @@ const DICTATE_KEYS: &[ConfigKey] = &[
     },
     ConfigKey {
         path: "dictate.language",
-        area: "dictate",
+        area: "voice",
         class: EffectClass::Restart,
         rows: |config| {
             vec![text(
@@ -1024,13 +1027,13 @@ const DICTATE_KEYS: &[ConfigKey] = &[
     },
     ConfigKey {
         path: "dictate.normalizer",
-        area: "dictate",
+        area: "voice",
         class: EffectClass::Restart,
         rows: |config| vec![flag("dictate.normalizer", config.dictate.normalizer)],
     },
     ConfigKey {
         path: "dictate.max_capture_minutes",
-        area: "dictate",
+        area: "voice",
         class: EffectClass::Restart,
         rows: |config| {
             vec![number("dictate.max_capture_minutes", config.dictate.max_capture_minutes)]
@@ -1038,19 +1041,19 @@ const DICTATE_KEYS: &[ConfigKey] = &[
     },
     ConfigKey {
         path: "dictate.bind",
-        area: "dictate",
+        area: "voice",
         class: EffectClass::Live,
         rows: |config| vec![text("dictate.bind", config.dictate.bind.label())],
     },
     ConfigKey {
         path: "dictate.mode",
-        area: "dictate",
+        area: "voice",
         class: EffectClass::Live,
         rows: |config| vec![text("dictate.mode", config.dictate.mode.label())],
     },
     ConfigKey {
         path: "dictate.styling",
-        area: "dictate",
+        area: "voice",
         class: EffectClass::NextSession,
         rows: |config| {
             vec![text(
@@ -1064,7 +1067,7 @@ const DICTATE_KEYS: &[ConfigKey] = &[
     },
     ConfigKey {
         path: "dictate.structure",
-        area: "dictate",
+        area: "voice",
         class: EffectClass::NextSession,
         rows: |config| {
             vec![text(
@@ -1078,7 +1081,7 @@ const DICTATE_KEYS: &[ConfigKey] = &[
     },
     ConfigKey {
         path: "dictate.context",
-        area: "dictate",
+        area: "voice",
         class: EffectClass::NextSession,
         rows: |config| {
             vec![text(
@@ -1091,6 +1094,67 @@ const DICTATE_KEYS: &[ConfigKey] = &[
         },
     },
 ];
+
+/// The speaking role's keys: the other direction of the same voice area.
+const TTS_KEYS: &[ConfigKey] = &[
+    ConfigKey {
+        path: "tts.enabled",
+        area: "voice",
+        class: EffectClass::Restart,
+        rows: |config| vec![flag("tts.enabled", config.tts.enabled)],
+    },
+    ConfigKey {
+        path: "tts.models_dir",
+        area: "voice",
+        class: EffectClass::Restart,
+        rows: |config| {
+            vec![text(
+                "tts.models_dir",
+                config.tts.models_dir.clone().unwrap_or_else(|| "not set".to_owned()),
+            )]
+        },
+    },
+    ConfigKey {
+        path: "tts.speaking_model",
+        area: "voice",
+        class: EffectClass::Restart,
+        rows: |config| {
+            vec![text(
+                "tts.speaking_model",
+                config.tts.speaking_model.clone().unwrap_or_else(|| "not set".to_owned()),
+            )]
+        },
+    },
+    ConfigKey {
+        path: "tts.language",
+        area: "voice",
+        class: EffectClass::Restart,
+        rows: |config| {
+            vec![text(
+                "tts.language",
+                config.tts.language.clone().unwrap_or_else(|| "autodetect".to_owned()),
+            )]
+        },
+    },
+    ConfigKey {
+        path: "tts.speaker",
+        area: "voice",
+        class: EffectClass::Restart,
+        rows: |config| {
+            vec![text(
+                "tts.speaker",
+                config.tts.speaker.clone().unwrap_or_else(|| "the model's default".to_owned()),
+            )]
+        },
+    },
+    ConfigKey {
+        path: "tts.max_utterance_seconds",
+        area: "voice",
+        class: EffectClass::Restart,
+        rows: |config| vec![number("tts.max_utterance_seconds", config.tts.max_utterance_seconds)],
+    },
+];
+
 const MODEL_KEYS: &[ConfigKey] = &[ConfigKey {
     path: "models.*.auto_compact_window",
     area: "models",
@@ -1474,6 +1538,14 @@ styling = "casual"
 structure = "lists"
 context = "email"
 
+[tts]
+enabled = true
+models_dir = "/tmp/tts-models"
+speaking_model = "qwen3-tts-12hz-1.7b-base"
+language = "en"
+speaker = "default"
+max_utterance_seconds = 60
+
 [gotify]
 url = "https://gotify.test"
 client_token = "g"
@@ -1651,6 +1723,7 @@ models = ["m"]
         let models = accepted_fields(&format!("{BASE}\n[models.\"m\"]\nzzz_unknown = 1\n"));
         let handoff = accepted_fields(&format!("{BASE}\n[handoff]\nzzz_unknown = 1\n"));
         let dictate = accepted_fields(&format!("{BASE}\n[dictate]\nzzz_unknown = 1\n"));
+        let tts = accepted_fields(&format!("{BASE}\n[tts]\nzzz_unknown = 1\n"));
         let gotify = accepted_fields(&format!("{BASE}\n[gotify]\nzzz_unknown = 1\n"));
         let systemone = accepted_fields(&format!("{BASE}\n[systemone]\nzzz_unknown = 1\n"));
         let slack = accepted_fields(&format!("{BASE}\n[[slack]]\nzzz_unknown = 1\n"));
@@ -1685,6 +1758,7 @@ models = ["m"]
                         .filter(|field| field.as_str() != "device")
                         .map(|field| format!("dictate.{field}")),
                 ),
+                "tts" => accepted.extend(tts.iter().map(|field| format!("tts.{field}"))),
                 "gotify" => accepted.extend(gotify.iter().map(|field| format!("gotify.{field}"))),
                 "systemone" => {
                     accepted.extend(systemone.iter().map(|field| format!("systemone.{field}")));
@@ -2027,18 +2101,18 @@ models = ["m"]
     /// `[dictate]` is an area of its own, and every key it holds is drawn
     /// there rather than under the client that captures through it.
     #[test]
-    fn the_dictate_area_is_its_own() {
+    fn the_voice_area_holds_both_directions() {
         let config = load(EVERY_KEY);
         let document = document(&config, "v", Path::new("/tmp/forge.toml"));
-        let dictate = document
-            .areas
-            .iter()
-            .find(|area| area.id == "dictate")
-            .expect("the dictate area is drawn");
-        assert_eq!(dictate.keys.len(), 12, "every [dictate] key draws there");
+        let voice =
+            document.areas.iter().find(|area| area.id == "voice").expect("the voice area is drawn");
+        assert_eq!(voice.keys.len(), 18, "every [dictate] and [tts] key draws there");
         assert!(
-            dictate.keys.iter().all(|key| key.path.starts_with("dictate.")),
-            "no other table's key rides in the dictate area",
+            voice
+                .keys
+                .iter()
+                .all(|key| key.path.starts_with("dictate.") || key.path.starts_with("tts.")),
+            "no other table's key rides in the voice area",
         );
         let client = document
             .areas

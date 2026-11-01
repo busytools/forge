@@ -23,6 +23,7 @@ pub fn role_key(role: DictateRole) -> &'static str {
     match role {
         DictateRole::Transcribing => "transcribing",
         DictateRole::Normalization => "normalization",
+        DictateRole::Speaking => "speaking",
     }
 }
 

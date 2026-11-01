@@ -462,15 +462,28 @@ impl crate::Workspace {
         let state = self.dictate_catalogue.lock();
         let entries: &[CatalogueEntry] =
             state.catalogue.as_ref().map_or(&[], |catalogue| catalogue.entries.as_slice());
+        let mut in_use = if settings.enabled { in_use(entries, &active, &preflight) } else { Vec::new() };
+        if config.tts.enabled {
+            let pin = config.tts.pin();
+            for row in &self.voices().snapshot.models {
+                in_use.push(InUseModel {
+                    role: row.role,
+                    file: row.file.clone(),
+                    size: pin.size,
+                    sha256: pin.sha256.clone(),
+                    state: row.state.clone(),
+                    facts: pin.facts.clone(),
+                    catalogue: None,
+                    from: crate::install::ActiveFrom::Pin,
+                    at: None,
+                });
+            }
+        }
 
         DictateModelsSnapshot {
             enabled: settings.enabled,
             models_dir: settings.models_dir(),
-            in_use: if settings.enabled {
-                in_use(entries, &active, &preflight)
-            } else {
-                Vec::new()
-            },
+            in_use,
             check: state.check.clone(),
             updates: if settings.enabled { updates_for(entries, &specs) } else { Vec::new() },
             rows: entries.iter().map(row_for).collect(),

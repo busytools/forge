@@ -378,11 +378,15 @@ impl DictateSettings {
 /// What a model is for. Preflight labels the row by role and prints the
 /// file underneath, because the role is what a reader is scanning for
 /// and the file is the detail they want only when something is wrong.
+///
+/// Named for dictation, which owned the model lifecycle first; the set now
+/// spans every local role, speech out included.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DictateRole {
     Transcribing,
     Normalization,
+    Speaking,
 }
 
 impl DictateRole {
@@ -390,6 +394,7 @@ impl DictateRole {
         match self {
             Self::Transcribing => "transcribing model",
             Self::Normalization => "normalization model",
+            Self::Speaking => "speaking model",
         }
     }
 }

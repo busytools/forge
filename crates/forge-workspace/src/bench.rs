@@ -155,6 +155,8 @@ pub fn resolved_live_roles(config_dir: &Path, app_support: &Path) -> Result<Live
         let configured = match role {
             crate::dictate::DictateRole::Transcribing => settings.transcribe_model.as_deref(),
             crate::dictate::DictateRole::Normalization => settings.cleanup_model.as_deref(),
+            // The bench walks the dictate roles; speaking has its own run.
+            crate::dictate::DictateRole::Speaking => None,
         };
         // The pick is read only when the key does not decide, as the boot
         // does: a row that cannot matter must not fail the bench.
