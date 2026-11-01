@@ -193,10 +193,15 @@ between a placeholder and the content. **`painted` is the pixels where
 holds the seat's turns, before that flush's own DOM exists, so it cannot
 say when a reader first had a row to look at - an open that drew at 80 ms
 and painted at 10 s is two different stories, and only this record tells
-them apart. It is written once per open, by the first row whose measured
-height is above zero (a held row that draws nothing is no paint), and
-dropped with the seat that opened. The drawn, painted and quiet records
-carry the time since the switch. Slow frames are what the file is for; a
+them apart. It is written once per open, by the first row that is not a
+held row and whose measured height is above zero - a held row keeps its
+wrapper mounted and reserves a height while it draws nothing - and dropped
+with the seat that opened; an open the seat answers `empty` drops it too,
+so the first message that arrives minutes later is not stamped with the
+whole wait. `ms` covers the open as a whole, including any period the
+window was hidden or occluded: the mark waits for a measured row, and
+unlike `frame` this record carries no hidden flag. The drawn, painted and
+quiet records carry the time since the switch. Slow frames are what the file is for; a
 quiet log is a client that is keeping up.
 
 **A switch's client-side gap has marks of its own (#2513).** `click` is

@@ -1026,6 +1026,15 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
       if (content ? contentSeen : placeholderSeen) return;
       if (content) {
         contentSeen = true;
+        // **An empty seat has no row to paint** (#2754 review): the open is
+        // answered by the empty state itself, and its first message can
+        // measure minutes later - holding the arm would stamp that whole wait
+        // as the open's paint. A placeholder keeps it, because the content
+        // drawing that follows brings the rows.
+        if (state === 'empty') {
+          paintSeat = null;
+          paintAt = null;
+        }
         // **The seat's content drew without a subscribe spending the click**:
         // a seat the client already holds is drawn from what it kept and
         // subscribes nothing, so its open is what says the click opened no

@@ -1810,10 +1810,14 @@ describe('the drawn mark', () => {
     expect(columnMeasure(drawnMark), 'the rows mark carries the column measure').toEqual(
       NOTHING_LAID_OUT,
     );
+    // This seat's first row gets a box, which is its painted mark.
+    resized(120);
+    expect(paintedMark, 'the first seat reports its own first row').toHaveBeenCalled();
 
     // The switch: the new seat's own conversation opens, and its own page is
     // what puts the drawn mark down for it.
     drawnMark.mockClear();
+    paintedMark.mockClear();
     openedMark.mockClear();
     column.flip();
     flushSync();
@@ -1841,6 +1845,12 @@ describe('the drawn mark', () => {
     expect(columnMeasure(drawnMark), "and it carries that seat's own measure").toEqual(
       NOTHING_LAID_OUT,
     );
+
+    // **The painted mark is per open, not per column**: the seat that came
+    // next paints its own first row, and a column that kept the flag from the
+    // seat it left would stop reporting them.
+    resized(120);
+    expect(paintedMark, 'the switched-to seat reports its own first row').toHaveBeenCalled();
   });
 
   /**
@@ -1870,6 +1880,42 @@ describe('the drawn mark', () => {
     // a reader's first row.
     resized(0);
     expect(paintedMark.mock.calls.length, 'a zero-height report is no paint').toBe(afterBox);
+  });
+
+  /**
+   * **A held row is a box with nothing in it** (#2754 review). The hold keeps
+   * the wrapper mounted and reserves its last measured height while it draws
+   * nothing, so a height-only guard reads the queued send's empty row as the
+   * reader's first row. The drain's own row is what paints.
+   */
+  it('does not mark a held row as the first painted row', async () => {
+    const server = stub();
+    paintedMark.mockClear();
+    draw({}, server);
+    server.answer([]);
+    server.send({
+      kind: 'update',
+      update: {
+        chat_appended: {
+          key: LEAD,
+          msg: {
+            type: 'user',
+            uuid: 'u-held',
+            message: { role: 'user', content: [{ type: 'text', text: 'held words' }] },
+          },
+        },
+      },
+    });
+    await painted();
+    server.send({
+      kind: 'update',
+      update: { prompt_queued: { key: LEAD, uuid: 'u-held', source: 'you', text: 'held words' } },
+    });
+    await painted();
+
+    expect(document.querySelectorAll('[data-t]'), 'one row, the held one').toHaveLength(1);
+    resized(120);
+    expect(paintedMark, 'the held wrapper has a box and no row in it').not.toHaveBeenCalled();
   });
 
   /**

@@ -977,6 +977,65 @@ describe('the open a conversation begins', () => {
   });
 
   /**
+   * **An open the seat answers `empty` has no row to paint, ever** (#2754
+   * review). The arm survives a quiet because a quiet can settle before the
+   * rows land - but an empty seat's first message can arrive minutes later,
+   * and holding the arm would stamp that whole wait as the open's paint,
+   * which is the misleading reading the record exists to prevent. A
+   * placeholder keeps the arm: its content is still on its way and does bring
+   * rows.
+   */
+  it('drops the painted span when the open is answered empty', () => {
+    const h = harness();
+    h.probe.setSurface('session', 'Busytools/forge/lead');
+    h.probe.noteConversationOpened('Busytools/forge/lead');
+    h.probe.noteDrawn('empty');
+    h.advance(600_000);
+    h.probe.notePainted();
+    expect(
+      h.records.flat().filter((record) => record.kind === 'painted'),
+      'a row measuring after an empty open is not that open painting',
+    ).toHaveLength(0);
+
+    // The placeholder half: a waking line does NOT drop the arm, because the
+    // content drawing that follows it brings the rows.
+    h.probe.noteConversationOpened('Busytools/forge/lead');
+    h.probe.noteDrawn('waking');
+    h.advance(50);
+    h.probe.notePainted();
+    expect(
+      h.records.flat().filter((record) => record.kind === 'painted'),
+      'a placeholder leaves the arm for the content that follows',
+    ).toHaveLength(1);
+  });
+
+  /**
+   * **The span survives the quiet** (#2754 review). A quiet can settle an open
+   * before its rows paint - a big seat's frame loop comes back to normal while
+   * the column is still laying out the landing - and reading the span off the
+   * open itself would delete the record in exactly the case it exists for.
+   */
+  it('keeps the painted span across a quiet that lands before the rows', () => {
+    const h = harness();
+    h.probe.setSurface('session', 'Busytools/forge/lead');
+    h.probe.noteConversationOpened('Busytools/forge/lead');
+    h.probe.noteDrawn('conversation');
+
+    h.frame(120); // the landing's own slow frame
+    h.frame(16); // and the frame loop back to normal: the open settles
+    expect(
+      h.records.flat().filter((record) => record.kind === 'quiet'),
+      'the quiet landed before any row painted',
+    ).toHaveLength(1);
+
+    h.advance(240);
+    h.probe.notePainted();
+    const painted = h.records.flat().filter((record) => record.kind === 'painted');
+    expect(painted, 'the row that painted after the quiet is still marked').toHaveLength(1);
+    expect(painted[0]?.ms, "and its span is the whole open, not the quiet's").toBe(376);
+  });
+
+  /**
    * **A placeholder does not end the open** (#2374): a waking line is the
    * column saying the seat is coming up, not its content arriving. The open
    * stays armed, no quiet may fire while the content is still on its way,
