@@ -17,6 +17,7 @@
               call, the pointers are CEF's own, and the casts are the C API's widths"
 )]
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use forge_primitives::browser::{BrowserInputEvent, MouseAction};
@@ -927,10 +928,20 @@ fn page_y(height: f64, y: f64, rect_height: f64, flipped: bool) -> f64 {
 ///
 /// **Placed on the main thread**: the view is AppKit's, and the call is made
 /// from a command that already runs there.
+///
+/// **Nothing in the closure may emit or announce.** On the main thread it
+/// runs inline while the dispatcher's window lock is held, and both reach
+/// `eval_script`, which takes that same lock on the same thread: a
+/// self-deadlock the person sees as a beachball (measured 2026-11-01 on the
+/// hand-off Open).
 pub fn attach(app: &tauri::AppHandle, rect: Rect, viewport: super::super::Viewport) {
     let rect = rect.sane();
     let viewport = viewport.sane();
     let app_for_view = app.clone();
+    // Whether this call laid a view of its own (rather than moving the one
+    // already up): the page is told it holds the keyboard only then.
+    let laid = Arc::new(AtomicBool::new(false));
+    let laid_here = Arc::clone(&laid);
     let Some(window) = app.get_webview_window("main") else {
         tauri_plugin_log::log::warn!("the client window is not there; the surface is not laid");
         return;
@@ -1066,7 +1077,7 @@ pub fn attach(app: &tauri::AppHandle, rect: Rect, viewport: super::super::Viewpo
                             let responder: &NSResponder = &overlay;
                             take_keyboard(&window, responder, "the page");
                         }
-                        overlay.emit(KEYBOARD_EVENT, page_keyboard());
+                        laid_here.store(true, Ordering::Relaxed);
                         let view = &*overlay as *const OverlayView as usize;
                         *overlay_slot() = Some(Overlay {
                             view,
@@ -1089,7 +1100,17 @@ pub fn attach(app: &tauri::AppHandle, rect: Rect, viewport: super::super::Viewpo
     });
     if let Err(why) = scheduled {
         tauri_plugin_log::log::warn!("the window's webview cannot be reached: {why}");
+        return;
     }
+    if laid.load(Ordering::Relaxed) {
+        announce_page_keyboard(app);
+    }
+}
+
+/// Tell the page the picture holds the keyboard. **Only the end of [`attach`]
+/// may call this**, never the lay closure.
+fn announce_page_keyboard(app: &tauri::AppHandle) {
+    let _ = app.emit(KEYBOARD_EVENT, page_keyboard());
 }
 
 /// Draw one decoded frame on the main thread.
@@ -1340,6 +1361,32 @@ mod tests {
             modifier_press(55, Flags::empty(), &mut held).map(|press| press.down),
             Some(false),
             "the left goes up"
+        );
+    }
+
+    /// **`attach`'s lay closure emits nothing, and the one announcement is
+    /// made after it, behind the laid flag.**
+    ///
+    /// On the main thread the closure runs inline while the dispatcher's
+    /// window lock is held, and an emit there reaches `eval_script`, which
+    /// takes that same lock on the same thread: the client wedges with no
+    /// error and no log line (measured 2026-11-01 on the hand-off Open).
+    #[test]
+    fn the_attach_never_emits_from_inside_its_lay() {
+        let source = include_str!("surface.rs");
+        let start = source.find("pub fn attach(").expect("attach is in this file");
+        let attach = &source[start..];
+        let ended = attach
+            .find("/// Tell the page the picture holds the keyboard")
+            .expect("attach ends before its helper");
+        assert!(
+            !attach[..ended].contains(".emit("),
+            "attach emits an event: its lay closure runs inline under the window lock on the \
+             main thread, and the emit re-locks it, wedging the client"
+        );
+        assert!(
+            attach[..ended].contains("announce_page_keyboard("),
+            "attach no longer tells the page it holds the keyboard"
         );
     }
 
