@@ -141,6 +141,7 @@ describe('the report row closes the turn', () => {
     // work unit: the row splits, or the call draws after the line that ended
     // the turn.
     const units = fold([called('c-1'), peer('m-1', 'take a look'), ended()]);
+    const [work, , after] = units;
 
     expect(kinds(units), 'the call above the line, the message below it').toEqual([
       'leaves',
@@ -148,8 +149,16 @@ describe('the report row closes the turn', () => {
       'leaves',
     ]);
     expect(
+      work?.kind === 'leaves' ? work.rows.map((row) => row.tag) : [],
+      'the call keeps the unit above the line',
+    ).toEqual(['call']);
+    expect(
+      after?.kind === 'leaves' ? after.rows.map((row) => row.tag) : [],
+      'and the message draws in the unit below it',
+    ).toEqual(['card']);
+    expect(
       cards(units).map((card) => card.body),
-      'and the message still draws',
+      'the message still draws',
     ).toEqual(['take a look']);
   });
 
