@@ -766,9 +766,7 @@ describe('the models page as it draws', () => {
     expect(host.textContent).toContain('round-trip WER 4.1%');
     expect(host.textContent).toContain('first audio 3.4s');
 
-    const stop = [...host.querySelectorAll('button')].find(
-      (c) => c.textContent?.trim() === 'stop',
-    );
+    const stop = [...host.querySelectorAll('button')].find((c) => c.textContent?.trim() === 'stop');
     expect(stop, 'a running speaking bench offers no stop').not.toBeUndefined();
     stop?.click();
     flushSync();
