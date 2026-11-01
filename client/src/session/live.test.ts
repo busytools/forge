@@ -3268,142 +3268,149 @@ describe('the read, and the answer a frame has outrun', () => {
   });
 
   /**
-   * **An answer the frames have outrun is refused, and asked for again.** A
-   * read is the whole record now, so one encoded before a frame that has
-   * already landed carries the seat backwards: the page keeps what the frames
-   * left and asks a second time, which is the want the merge used to satisfy
-   * by patching around the answer.
+   * **An answer the frames have outrun is dropped, and asks for nothing.**
+   * Every slice of the record has a frame, so the record the frames carried
+   * forward IS the record - one more encode would be outrun too (#1472) - and
+   * asking for it again is a whole server encode apiece (#2563).
    */
-  it('refuses an answer the frames have outrun, and asks again', () => {
+  it('drops an answer the frames have outrun without asking again', () => {
     const connection = drivable();
     const page = watch(connection);
-    page.land(snapshotOf(LEAD, { conversation: { turns: [], compaction_count: 0 } }, { seq: 1 }));
-    page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke('hello') } }, 1));
-    paint();
-    expect(page.read().wire?.conversation.turns, 'precondition: the frame landed').toHaveLength(1);
-
-    // The seat takes a new occupant: the page asks for the whole record.
-    page.land(frameOf(occupant('new'), 2));
-    const asked = page.reads();
-
-    // A frame lands while that answer is in flight - the new epoch's first,
-    // the successor of where the wipe left the record - so the record has
-    // been carried past where the answer was encoded.
-    page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke('more', 'u3') } }, 1));
-    paint();
-
-    // The answer lands: the seat as it was BEFORE that frame, standing where
-    // its stream stood before it.
     page.land(
       snapshotOf(
         LEAD,
         { conversation: { turns: [], compaction_count: 0 } },
-        { seq: 1, epoch: 'new' },
+        { epoch: 'one', seq: 1 },
       ),
     );
+    page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke('hello') } }, 1));
+    paint();
+    expect(page.read().wire?.conversation.turns, 'precondition: the frame landed').toHaveLength(1);
+    const asked = page.reads();
 
-    expect(
-      page.read().wire?.conversation.turns,
-      'an answer the frames had outrun was taken',
-    ).toHaveLength(2);
-    expect(page.reads(), 'the outrun answer was never asked for again').toBe(asked + 1);
-
-    // And the fresh ask converges: its clean answer is taken whole.
+    // An answer encoded before the frame that carried the record forward.
     page.land(
       snapshotOf(
         LEAD,
-        { conversation: { turns: [], compaction_count: 0 }, work: null },
-        { seq: 4, epoch: 'new' },
+        { conversation: { turns: [], compaction_count: 0 }, work: { branch: 'stale' } },
+        { epoch: 'one', seq: 1 },
       ),
     );
-    expect(page.read().wire?.conversation.turns, 'the fresh answer was not taken').toHaveLength(0);
+    paint();
+
+    expect(page.read().wire?.work.branch, 'a stale answer reached the record').not.toBe('stale');
+    expect(spoken(page), "the frames' rows were lost with the answer").toEqual(['hello']);
+    expect(page.reads(), 'an outrun answer bought a whole re-read').toBe(asked);
+    expect(connection.ranges, 'the drop asked for numbers it already held').toHaveLength(0);
     page.stop();
   });
 
   /**
-   * **The re-ask stops at the cap, and the stale answer never reaches the
-   * record** (#1472): a seat framed faster than a round trip outruns every
-   * answer, so an uncapped re-ask asked once per trip forever, a full server
-   * encode apiece. The fourth consecutive outrun is the cap, and there the
-   * answer is DROPPED rather than taken - taking it would roll the record
-   * back to its encode point and rewind the count, and numbers the ring no
-   * longer holds are then never re-fetched (rule 25). The frames' rows must
-   * stand.
+   * **A swap's outrun answer is taken, and the frames above it fetched**
+   * (#2276, #2563). A wipe starts the count again without clearing the
+   * record, so the new epoch's frames merge onto the PREVIOUS occupant's
+   * conversation - and dropping the answer there leaves those rows standing.
+   * Taking it is the replace the wipe waited for; the new occupant's frames
+   * the record had merged on come back by number, not by a whole record.
    */
-  it('stops re-asking at the cap, and the drop keeps the frames record', () => {
+  it('takes a swap answer the frames outran, and fetches the frames above it', () => {
     const connection = drivable();
     const page = watch(connection);
-    // The record exists, taken whole on the seat's first answer.
-    page.land(snapshotOf(LEAD, { conversation: { turns: [], compaction_count: 0 } }, { seq: 1 }));
+    page.land(
+      snapshotOf(LEAD, {
+        conversation: { turns: [], compaction_count: 0 },
+        work: { branch: 'old' },
+      }),
+    );
+    page.land(frameOf(occupant('new'), 2));
+    const asked = page.reads();
 
-    // The live loop, one ask per trip: three answers in a row are refused and
-    // re-asked; the fourth is the cap. Four rounds is the whole run - after
-    // the cap no ask is outstanding, so in life no fifth answer comes.
+    // The new epoch's first frame lands while the answer is in flight.
+    page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke('the new row', 'n1') } }, 1));
+    paint();
+
+    page.land(
+      snapshotOf(
+        LEAD,
+        { conversation: { turns: [], compaction_count: 0 }, work: { branch: 'new' } },
+        { epoch: 'new', seq: 1 },
+      ),
+    );
+
+    expect(
+      page.read().wire?.work.branch,
+      'the swap answer was dropped, so the previous record stood',
+    ).toBe('new');
+    expect(page.reads(), 'the swap answer bought a whole re-read').toBe(asked);
+    expect(connection.ranges, 'the new epoch frames the answer outran were not fetched').toEqual([
+      { slot: LEAD, epoch: 'new', from: 1, to: 1 },
+    ]);
+
+    page.land({
+      kind: 'seat_frames',
+      slot: LEAD,
+      epoch: 'new',
+      frames: [
+        { seq: 1, update: { chat_appended: { key: LEAD, msg: spoke('the new row', 'n1') } } },
+      ],
+    });
+    paint();
+    expect(spoken(page), 'the repaired new epoch row was drawn twice or not at all').toEqual([
+      'the new row',
+    ]);
+    page.stop();
+  });
+
+  /**
+   * **Every outrun is dropped, and no re-ask follows** (#1472, #2563). A seat
+   * framed faster than a round trip outruns every answer, so a re-ask per
+   * answer was a full server encode apiece forever; the record the frames
+   * carried forward IS the record, and one more encode would be outrun too.
+   * Pinned on a named occupant, so the same-occupant id comparison is what
+   * decides the drop.
+   */
+  it('drops every answer the frames have outrun without asking again', () => {
+    const connection = drivable();
+    const page = watch(connection);
+    page.land(
+      snapshotOf(
+        LEAD,
+        { conversation: { turns: [], compaction_count: 0 } },
+        { epoch: 'one', seq: 1 },
+      ),
+    );
+
     for (let round = 1; round <= 4; round += 1) {
       page.land(
         frameOf({ chat_appended: { key: LEAD, msg: spoke(`line ${round}`, `u${round}`) } }, round),
       );
-      page.land(snapshotOf(LEAD, { conversation: { turns: [], compaction_count: 0 } }, { seq: 1 }));
+      page.land(
+        snapshotOf(
+          LEAD,
+          { conversation: { turns: [], compaction_count: 0 } },
+          { epoch: 'one', seq: 1 },
+        ),
+      );
     }
     // Publishes are paint-gated: the frames' draws are still queued.
     paint();
 
-    expect(page.reads(), 'the cap never stopped the re-ask').toBe(3);
+    expect(page.reads(), 'an outrun answer bought a whole re-read').toBe(0);
     expect(
       page.read().wire?.conversation.turns,
-      'a stale answer reached the record past the cap',
+      "a stale answer reached the record, or the frames' rows were lost",
     ).toHaveLength(4);
     page.stop();
   });
 
   /**
-   * **The same occupant framed past the cap still drops, on a named id.**
-   * The case above runs with no occupant named on either side, where the
-   * record and the answer agree trivially - and the id is the fix's own
-   * operand (#2276), so the arm that compares two REAL ids has to be pinned
-   * too: same seat, same answer, still the frames' record.
-   */
-  it('keeps the frames record at the cap when the answer names the same occupant', () => {
-    const connection = drivable();
-    const page = watch(connection);
-    page.land(
-      snapshotOf(
-        LEAD,
-        { conversation: { turns: [], compaction_count: 0 } },
-        { epoch: 'one', seq: 1 },
-      ),
-    );
-
-    for (let round = 1; round <= 4; round += 1) {
-      page.land(
-        frameOf({ chat_appended: { key: LEAD, msg: spoke(`line ${round}`, `u${round}`) } }, round),
-      );
-      page.land(
-        snapshotOf(
-          LEAD,
-          { conversation: { turns: [], compaction_count: 0 } },
-          { epoch: 'one', seq: 1 },
-        ),
-      );
-    }
-    paint();
-
-    expect(page.reads(), 'the cap never stopped the re-ask').toBe(3);
-    expect(
-      page.read().wire?.conversation.turns,
-      "the same occupant's answer was taken past the cap, so the frames' record was rolled back",
-    ).toHaveLength(4);
-    page.stop();
-  });
-
-  /**
-   * **A read wanted while the cap dropped its answer is still served.** The
-   * cap drops the answer, but a want latched behind it would be unserved with
-   * no ask outstanding - the two-sources answer a review page's own read
+   * **A read wanted while an outrun answer was in flight is still served.**
+   * The drop spends the ask, but a want latched behind it would be unserved
+   * with no ask outstanding - the two-sources answer a review page's own read
    * exists to prevent - and would fire later as a stray read. Every path that
    * spends an ask funnels through the same want.
    */
-  it('serves a read wanted while the cap dropped its answer', () => {
+  it('serves a read wanted while an outrun answer landed', () => {
     const connection = drivable();
     const page = watch(connection);
     page.land(
@@ -3413,27 +3420,15 @@ describe('the read, and the answer a frame has outrun', () => {
         { epoch: 'one', seq: 1 },
       ),
     );
+    page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke('one') } }, 1));
 
-    // Three outruns, each re-asked; the ask from the third is in flight.
-    for (let round = 1; round <= 3; round += 1) {
-      page.land(
-        frameOf({ chat_appended: { key: LEAD, msg: spoke(`line ${round}`, `u${round}`) } }, round),
-      );
-      page.land(
-        snapshotOf(
-          LEAD,
-          { conversation: { turns: [], compaction_count: 0 } },
-          { epoch: 'one', seq: 1 },
-        ),
-      );
-    }
-    expect(page.reads(), 'the first three outruns asked').toBe(3);
-
-    // A frame lands, and the page wants a read while that ask is in flight.
-    page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke('four', 'u4') } }, 4));
+    // An ask goes out, and a review read is wanted behind it.
+    rereadSeat(connection, LEAD);
+    const asked = page.reads();
     rereadSeat(connection, LEAD, { review: true });
 
-    // The fourth answer is the cap's: dropped, and the want served.
+    // A frame carries the record past the answer's encode point.
+    page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke('two', 'u2') } }, 2));
     page.land(
       snapshotOf(
         LEAD,
@@ -3441,22 +3436,36 @@ describe('the read, and the answer a frame has outrun', () => {
         { epoch: 'one', seq: 1 },
       ),
     );
-    paint();
 
-    expect(page.reads(), 'the want latched behind the dropped answer was never served').toBe(4);
+    expect(page.reads(), 'the want latched behind the dropped answer was never served').toBe(
+      asked + 1,
+    );
+    expect(connection.refreshes.at(-1), 'the want was served as the scope it asked for').toEqual({
+      review: true,
+    });
+
+    // A clean answer lands, and the want is NOT served a second time: it was
+    // spent on the drop, not left latched for the next answer.
+    page.land(
+      snapshotOf(
+        LEAD,
+        { conversation: { turns: [], compaction_count: 0 } },
+        { epoch: 'one', seq: 4 },
+      ),
+    );
+    expect(page.reads(), 'the served want fired again behind the next answer').toBe(asked + 1);
     page.stop();
   });
 
   /**
-   * **The drop's premise is a record of the answer's OWN epoch, and a swap's
-   * read is not one** (#2276). A wipe starts the count again without clearing
-   * the record, so the new epoch's frames merge onto the PREVIOUS occupant's
-   * conversation - and the answer that would have replaced it is exactly what
-   * the cap drops, leaving the old rows standing until the next clean read (a
-   * reconnect, another swap, a quiet round trip). Same-epoch seats keep the
-   * drop: there the frames' record really is the record.
+   * **The drop's premise is a record of the answer's OWN occupant, and a
+   * swap's read is not one** (#2276). A wipe starts the count again without
+   * clearing the record, so the new epoch's frames merge onto the PREVIOUS
+   * occupant's conversation - and dropping the answer there leaves those rows
+   * standing. The first outrun adopts the new record and fetches the frames
+   * above it; the outruns that follow are same-occupant and drop.
    */
-  it('adopts the new occupant past the cap, rather than keeping the previous one', () => {
+  it('adopts the new occupant on the first outrun, rather than keeping the previous one', () => {
     const connection = drivable();
     const page = watch(connection);
     // The seat's own occupant, with a row of its conversation.
@@ -3475,10 +3484,10 @@ describe('the read, and the answer a frame has outrun', () => {
     page.land(frameOf(occupant('new'), 2));
     expect(page.reads(), 'precondition: the swap asked for a whole record').toBe(1);
 
-    // The live loop the cap's own case runs, on the swapped seat: one frame,
-    // then the answer, four rounds, the answer every time behind the frames.
-    // The answers carry a record of their own, so "the new occupant's record
-    // was adopted" cannot read alike with "the old one was left standing".
+    // The live loop: one frame, then the answer, four rounds, the answer every
+    // time behind the frames. The answers carry a record of their own, so "the
+    // new occupant's record was adopted" cannot read alike with "the old one
+    // was left standing".
     for (let round = 1; round <= 4; round += 1) {
       page.land(
         frameOf({ chat_appended: { key: LEAD, msg: spoke(`line ${round}`, `u${round}`) } }, round),
@@ -3501,6 +3510,7 @@ describe('the read, and the answer a frame has outrun', () => {
       spoken(page),
       "the previous occupant's rows stood where the new record's belong",
     ).toEqual([]);
+    expect(page.reads(), 'the swap outruns bought a whole re-read apiece').toBe(1);
     page.stop();
   });
 
@@ -3552,7 +3562,14 @@ describe('the read, and the answer a frame has outrun', () => {
     page.stop();
   });
 
-  it('does not put a settled turn back from an answer older than the frame', () => {
+  /**
+   * **A swap answer from before a settle is adopted, and the settle fetched
+   * again by number.** The record it replaces is the PREVIOUS occupant's, so
+   * refusing the answer leaves those rows standing (#2276); the frame that
+   * settled the turn sits in the stretch above the answer's encode point, and
+   * one range ask puts it back (#2563) - never a whole re-read.
+   */
+  it('fetches the settle back after adopting a swap answer older than the frame', () => {
     const connection = drivable();
     const page = watch(connection);
     // The seat's record says a turn is running.
@@ -3564,42 +3581,34 @@ describe('the read, and the answer a frame has outrun', () => {
     const asked = page.reads();
 
     // The turn settles while that answer is in flight - the new epoch's
-    // first frame - and an answer from before it would put the running turn
-    // back.
+    // first frame.
     page.land(frameOf({ turn_complete: { key: LEAD } }, 1));
     paint();
 
-    // The answer lands: the seat as it was BEFORE the settle, standing where
-    // its stream stood before it. Adopted whole it puts the running turn back,
-    // and the box refuses a send the turn has already taken.
+    // The answer lands, encoded before the settle: the swap's record.
     page.land(snapshotOf(LEAD, { header: { turn_in_flight: true } }, { seq: 1, epoch: 'new' }));
 
+    expect(connection.ranges, 'the settle frame was not fetched by number').toEqual([
+      { slot: LEAD, epoch: 'new', from: 1, to: 1 },
+    ]);
+    expect(page.reads(), 'the swap answer bought a whole re-read').toBe(asked);
+
+    // The repair lands, and the settle is applied to the new record.
+    page.land({
+      kind: 'seat_frames',
+      slot: LEAD,
+      epoch: 'new',
+      frames: [{ seq: 1, update: { turn_complete: { key: LEAD } } }],
+    });
+    paint();
     expect(
       page.read().wire?.header.turn_in_flight,
-      'an answer from before the settle put the running turn back',
+      'the settle was lost with the outrun answer',
     ).toBe(false);
-
-    // **The whole record is still WANTED.** Refusing the outrun answer keeps
-    // the frame-fed record, which is the fix above, but the conversation and
-    // the header this answer was asked for are still owed - so the want is
-    // kept and asked again. Without this the old occupant stands until a later
-    // REPLACES frame with a clean window or a socket drop.
-    expect(page.reads(), 'the whole record was not asked for again').toBe(asked + 1);
-
-    // And the fresh ask converges: its clean answer is adopted whole.
-    page.land(
-      snapshotOf(
-        LEAD,
-        { header: { turn_in_flight: false }, work: { branch: 'new' } },
-        { seq: 4, epoch: 'new' },
-      ),
-    );
-    expect(page.read().wire?.work.branch, 'the fresh answer was not taken').toBe('new');
     page.stop();
 
-    // The control, and it is the guard's NARROWNESS it holds: the same answer
-    // with nothing outrunning it is adopted whole and does NOT ask again. An
-    // over-broad guard re-asks here and fails this.
+    // The control: the same answer with nothing outrunning it is adopted
+    // whole, and no range is asked for.
     const control = drivable();
     const other = watch(control);
     other.land(snapshotOf(LEAD, { header: { turn_in_flight: true } }, { seq: 1 }));
@@ -3615,6 +3624,7 @@ describe('the read, and the answer a frame has outrun', () => {
 
     expect(other.read().wire?.work.branch, 'the control took the record').toBe('new');
     expect(other.reads(), 'a clean answer was asked for again').toBe(askedOnce);
+    expect(control.ranges, 'a clean answer asked for numbers it carried').toHaveLength(0);
   });
 
   it('does not read a take off the record, and does read the notice', () => {
@@ -3777,6 +3787,30 @@ describe('the seat sequence', () => {
     paint();
 
     expect(connection.ranges, 'nothing is asked for a frame already in hand').toHaveLength(0);
+    page.stop();
+  });
+
+  /**
+   * **A repaired frame the record already carries is not drawn again**
+   * (#2564). The gate and the seat can both ask for a range, and a stale
+   * whole-read answer can rewind the gate's count, so a `seat_frames` answer
+   * can carry numbers this record has already applied. A repaired frame is
+   * exempt from the hold and the hole, never from the already-drawn rule.
+   */
+  it('does not draw a repaired frame the record already carries', () => {
+    const connection = drivable();
+    const page = watch(connection);
+    page.land(snapshotOf(LEAD, {}, { seq: 1 }));
+    page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke('one') } }, 1));
+    page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke('two', 'u2') } }, 2));
+    paint();
+    expect(spoken(page), 'precondition: both rows are drawn').toEqual(['one', 'two']);
+
+    // A repair that starts below what the record holds.
+    page.land(repaired({ seq: 1, text: 'one' }, { seq: 2, text: 'two' }));
+    paint();
+
+    expect(spoken(page), 'a repaired row was drawn a second time').toEqual(['one', 'two']);
     page.stop();
   });
 

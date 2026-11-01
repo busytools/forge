@@ -203,25 +203,6 @@ function streamed(read: SessionRead): string[] {
   return spoken(read).filter((word) => /^u\d+$/.test(word));
 }
 
-/**
- * The streamed rows with repeats dropped, keeping each first occurrence.
- *
- * **A duplicate stretch is a known defect outside this cut** (a repaired
- * range can re-apply rows already drawn). Rule 25's property for this test is
- * that the stretch is complete and in order, so repeats are folded out and a
- * hole or a row out of turn still fails.
- */
-function carried(read: SessionRead): string[] {
-  const seen = new Set<string>();
-  const kept: string[] = [];
-  for (const word of streamed(read)) {
-    if (seen.has(word)) continue;
-    seen.add(word);
-    kept.push(word);
-  }
-  return kept;
-}
-
 const wait = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
@@ -237,6 +218,37 @@ async function until(what: () => boolean, why: string, deadlineMs = WAIT_MS): Pr
     await wait(5);
   }
 }
+
+/**
+ * **A slow first record must not draw the repaired stretch twice** (#2564).
+ */
+describe('a first whole record slower than the frames', () => {
+  it('draws every streamed row once', async () => {
+    const server = await slowLink(ANSWER_MS, 15);
+    const connection = connect(server.url, BOUND_MS);
+    const view = watchSession(connection, LEAD, true);
+    const stop = view.subscribe(() => undefined);
+
+    try {
+      await until(() => get(view).wire !== null, 'the seat to draw its record');
+      await wait(QUIET_MS);
+
+      const emitted = server.emitted();
+      await until(
+        () => streamed(get(view)).length >= emitted,
+        'the emitted frames to reach the record',
+      );
+      const words = streamed(get(view));
+      expect(words, 'a streamed row was drawn more than once').toEqual(
+        Array.from({ length: words.length }, (_, at) => `u${at + 1}`),
+      );
+    } finally {
+      stop();
+      connection.close();
+      server.stop();
+    }
+  });
+});
 
 /**
  * **A slow whole-record answer must not buy whole re-reads** (#2561).
@@ -261,21 +273,18 @@ describe('a whole-record answer slower than the bound', () => {
       // The first answer lands and the seat draws its record.
       await until(() => get(view).wire !== null, 'the seat to draw its record');
 
-      // And any pass the outrun path still owes has had its window.
+      // And every ask the answer's own arrival could have bought has had its
+      // window.
       await wait(QUIET_MS);
 
-      // **The bound's one retry went, and the ceiling holds.** The lower bound
+      // **The bound's one retry went, and nothing else did.** The lower bound
       // is the retry at five seconds (a bound that never fired would leave the
-      // one subscribe the page made). The ceiling allows the read, its retry,
-      // and the outrun path's up to three re-asks for an answer that lands
-      // behind the frames; the cadence amplifier measured thirteen in this
-      // window.
+      // one subscribe the page made). The old ceiling allowed the read, its
+      // retry, and the outrun path's up to three re-asks; with the outrun
+      // answer dropped rather than re-read (#2563), the retry is the last
+      // ask. The cadence amplifier measured thirteen in this window.
       const asked = server.seatSubscribes().length;
-      expect(asked, 'the bound never retried the unanswered read').toBeGreaterThanOrEqual(2);
-      expect(
-        asked,
-        'a slow answer bought a whole re-read on every bound cadence',
-      ).toBeLessThanOrEqual(5);
+      expect(asked, 'the read was either not retried or re-read again past the bound').toBe(2);
 
       // **The frames that crossed the answer reach the record, whole and in
       // order.** The count is taken from the forge and the record is waited
@@ -284,10 +293,10 @@ describe('a whole-record answer slower than the bound', () => {
       // answer's encode point and the record never catches up to the count.
       const emitted = server.emitted();
       await until(
-        () => carried(get(view)).length >= emitted,
+        () => streamed(get(view)).length >= emitted,
         'the emitted frames to reach the record',
       );
-      const words = carried(get(view));
+      const words = streamed(get(view));
       expect(words, 'the repaired stretch has a hole or arrived out of order').toEqual(
         Array.from({ length: words.length }, (_, at) => `u${at + 1}`),
       );
