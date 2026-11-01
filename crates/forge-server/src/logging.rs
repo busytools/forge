@@ -126,6 +126,7 @@ pub const DEFAULT_LOG_DIRECTIVES: &str = "info,\
     forge_workspace::mcp=debug,\
     forge_agent::mcp=debug,\
     forge_workspace::dictate=debug,\
+    forge_workspace::subagent_cards=debug,\
     forge_dictate=debug,\
     llama_cpp_2=error,\
     llama-cpp-2=error";
@@ -464,6 +465,16 @@ mod tests {
         assert!(
             DEFAULT_LOG_DIRECTIVES.split(',').any(|directive| directive.trim() == scan_module),
             "the scan's module path keeps its directive ({scan_module}): \
+             {DEFAULT_LOG_DIRECTIVES}",
+        );
+        // `forge_workspace::subagent_cards` carries the tracker's record for a
+        // parented frame it cannot resolve: the frame keeps its wire parent
+        // and draws nowhere, so without the directive its only trace lands
+        // nowhere too.
+        let tracker_module = "forge_workspace::subagent_cards=debug";
+        assert!(
+            DEFAULT_LOG_DIRECTIVES.split(',').any(|directive| directive.trim() == tracker_module),
+            "the tracker's module path keeps its directive ({tracker_module}): \
              {DEFAULT_LOG_DIRECTIVES}",
         );
         // The scan's lite-read failures carry a target of their own, which

@@ -25,8 +25,9 @@ type SubLine =
   | { kind: 'prose'; text: string }
   | { kind: 'thought'; text: string }
   | { kind: 'hook'; text: string }
-  /** A notice with no call on the page to attach it to. */
-  | { kind: 'notice'; text: string };
+  /** A notice with no call on the page to attach it to: it draws with the
+   * session notice's level glyph and the wire's own subtype as its chip. */
+  | { kind: 'notice'; text: string; mark: string };
 
 /** Everything the row's expansion reads off a dispatch's frames. */
 interface DispatchFrames {
@@ -180,7 +181,11 @@ export function dispatchTimeline(
  * conversation's and a dispatched agent's frames are not in them.
  */
 export function dispatchFrames(messages: Iterable<unknown>, dispatchId: string): DispatchFrames {
-  const lines: (CallDraft | { kind: 'prose' | 'thought' | 'hook' | 'notice'; text: string })[] = [];
+  const lines: (
+    | CallDraft
+    | { kind: 'prose' | 'thought' | 'hook'; text: string }
+    | { kind: 'notice'; text: string; mark: string }
+  )[] = [];
   const at = new Map<string, CallDraft>();
   const beats = new Set<string>();
   /** The task id the CLI assigned a child call, so its ending can be placed. */
@@ -241,6 +246,7 @@ export function dispatchFrames(messages: Iterable<unknown>, dispatchId: string):
           lines.push({
             kind: 'notice',
             text: `${tool} refused${words === '' ? '' : `: ${words}`}`,
+            mark: 'permission_denied',
           });
         } else {
           refused.set(call, {
