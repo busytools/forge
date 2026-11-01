@@ -43,6 +43,16 @@ const SCHEMA = 'forge-perf/v1';
  */
 const SLOW_FRAME_MS = 50;
 
+/**
+ * How recent the frame before a clock tick must be for the tick's span to be
+ * the write's cost.
+ *
+ * **A longer gap means the loop was dead**, not slow: the span would be the
+ * dead period rather than the write's cost. 250 ms tolerates a page as slow
+ * as 4 fps.
+ */
+const DEAD_FRAME_MS = 250;
+
 /** How often a window's cadence is summarised, the same cadence the view this
  *  client replaced used. */
 const SUMMARY_INTERVAL_MS = 10_000;
@@ -103,7 +113,8 @@ export interface PerfRecord {
     | 'snapshot'
     | 'connection'
     | 'input'
-    | 'paint';
+    | 'paint'
+    | 'tick';
   run_id: string;
   ts_ms: number;
   version?: string;
@@ -112,7 +123,9 @@ export interface PerfRecord {
   /**
    * The frame's gap, or the long task's duration, or - for a `drawn`, a
    * `painted` and a `quiet` - the time since the switch record the mark
-   * belongs to.
+   * belongs to. A `tick` reads the span from the page clock's write to the
+   * next frame callback: an upper bound, because the wait for that frame is
+   * on it, and so is anything else that wrote in the window.
    */
   ms?: number;
   /**
@@ -207,8 +220,8 @@ export interface PerfRecord {
   /** A `subscribe`: ms since the click that preceded it; absent when no
    *  click did, so a reconnect never invents one. */
   since_click_ms?: number;
-  /** A slow `frame`: whether the gap it measures overlapped a hidden window,
-   *  sampled when the record is written - a visibility gate rather than a
+  /** A `frame` or a `tick`: whether the span it measures overlapped a hidden
+   *  window, measured when it is timed - a visibility gate rather than a
    *  blocked thread (#2569). */
   hidden?: boolean;
   /**
@@ -278,6 +291,12 @@ interface PerfProbe {
   noteSnapshot(seat: string | null, chars: number, parseMs: number): void;
   /** One gesture handed to the browser, as it leaves this side (#2645). */
   noteBrowserInput(kind: string, tab: number, profile: string | null): void;
+  /**
+   * The page clock's state write, timed to the next frame; see the `tick`
+   * reading on `ms`. Written only when the span is slow and the frame before
+   * the write is alive.
+   */
+  noteClockTick(seat: string | null): void;
   /** One browser frame drawn for `tab`, with its own sequence (#2645). */
   noteBrowserPaint(seq: number, tab: number, profile: string | null): void;
 }
@@ -609,6 +628,8 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
   let postBeats = 0;
   let postLate = 0;
   let flushArmed = false;
+  /** The page clock's last state write, waiting for the frame it costs. */
+  let clockTick: { at: number; seat: string | null; surface: string | null } | null = null;
   /**
    * The open conversation's own seat, when it started, and what has drawn
    * for it (#2374).
@@ -849,6 +870,26 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
         }
       }
     }
+    // **A tick that lands while frames were not running cannot claim the
+    // dead period.** The frame before the write must be recent, and a span
+    // that overlapped a hidden window is named the way a slow frame's is.
+    if (clockTick !== null) {
+      const cost = at - clockTick.at;
+      const live = last !== null && clockTick.at - last <= DEAD_FRAME_MS;
+      if (live && cost >= slowFrameMs) {
+        emit({
+          schema: SCHEMA,
+          kind: 'tick',
+          run_id: runId,
+          ts_ms: Date.now(),
+          ms: cost,
+          hidden: gapHidden(clockTick.at),
+          surface: clockTick.surface,
+          session: clockTick.seat,
+        });
+      }
+      clockTick = null;
+    }
     // A beat before the FIRST frame belongs to no gap, so the baseline
     // frame starts the counters' period as a fast one would.
     if (last === null) {
@@ -892,6 +933,7 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
       connSubscribes = 0;
       connSnapshotChars = 0;
       awaitingPaint = null;
+      clockTick = null;
       // Boot's own reading: the router has usually not wired a route yet,
       // so null here is the honest answer rather than a gap.
       windowSurface = surface;
@@ -1162,6 +1204,9 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
         surface: 'browser',
       });
     },
+    noteClockTick(seat: string | null): void {
+      clockTick = { at: now(), seat, surface };
+    },
   };
 }
 
@@ -1263,6 +1308,13 @@ export function noteSnapshot(subject: Subject, chars: number, parseMs: number): 
     chars,
     parseMs,
   );
+}
+
+/**
+ * The page clock's state write, timed to the next frame (#2782); see `ms`.
+ */
+export function noteClockTick(slot: SessionSlot): void {
+  running?.noteClockTick(seatLabel(slot));
 }
 
 /** One gesture on its way to the browser, as the page's or the shell's path sends it (#2645). */

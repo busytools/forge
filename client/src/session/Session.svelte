@@ -32,6 +32,7 @@
   import { subagents } from '../chat/subagents.svelte';
   import { tasks } from '../chat/tasks.svelte';
   import { watchSession, type SessionRead } from './live';
+  import { noteClockTick } from '../perf';
   import { askCompaction } from './scroll-ask';
   import {
     boardProjectOf,
@@ -547,6 +548,9 @@
   $effect(() => {
     now = Date.now();
     const tick = setInterval(() => {
+      // Before the clock moves: the record measures the write, not the
+      // timer's delay (#2782).
+      noteClockTick(slot);
       now = Date.now();
     }, 30_000);
     return () => clearInterval(tick);

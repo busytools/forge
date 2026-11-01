@@ -233,6 +233,113 @@ describe('the frame probe', () => {
     h.frame(50);
     h.settle();
     expect(h.records.flat().filter((record) => record.kind === 'frame')).toHaveLength(1);
+
+    // The tick's own gate is the same rule: exactly 50 ms is written.
+    const t = harness();
+    t.frame(16);
+    t.probe.noteClockTick('forge/lead');
+    t.frame(50);
+    t.settle();
+    const ticks = t.records.flat().filter((record) => record.kind === 'tick');
+    expect(ticks, 'a tick at the threshold is written').toHaveLength(1);
+    expect(ticks[0]?.ms, 'and its span is the threshold itself').toBe(50);
+  });
+
+  /**
+   * **The record names the write it measured, not the route that drew next**
+   * (#2782): the seat, the surface and the span are the write's.
+   */
+  it('names a slow page-clock tick, the seat it was made on, and its cost', () => {
+    const h = harness();
+    h.probe.setSurface('session', 'Busytools/busymail/lead');
+    h.frame(16);
+    // **The tick lands between frames**, as a 30 s clock does: the span it
+    // costs is from its own write, not from the previous frame.
+    h.advance(24);
+    h.probe.noteClockTick('Busytools/busymail/lead');
+    // A real route and seat move before the frame lands: the tick belongs to
+    // the pair that wrote it, not to whatever drew next.
+    h.probe.setSurface('review', 'Busytools/forge/lead');
+    h.frame(1_100);
+    h.settle();
+
+    const tick = h.records.flat().find((record) => record.kind === 'tick');
+    expect(tick?.ms, 'the span runs from the write, not the previous frame').toBe(1_100);
+    expect(tick?.session, 'the seat is the one the write was made on').toBe(
+      'Busytools/busymail/lead',
+    );
+    expect(tick?.surface, 'the surface is the one the write was made on').toBe('session');
+    expect(tick?.hidden, 'no visibility event crossed this tick').toBe(false);
+  });
+
+  it('leaves a fast page-clock tick unwritten, and spends it', () => {
+    const h = harness();
+    h.frame(16);
+    h.advance(16);
+    h.probe.noteClockTick('forge/lead');
+    h.frame(16);
+    // The pending tick is spent by the fast frame that landed on it: a later
+    // slow frame must not write it with the idle span.
+    h.advance(100);
+    h.frame(1_100);
+    h.settle();
+    expect(
+      h.records.flat().filter((record) => record.kind === 'tick'),
+      'a fast tick writes nothing, and a later slow frame does not revive it',
+    ).toHaveLength(0);
+  });
+
+  /**
+   * **A tick whose span crossed a hidden window is not a cost**: the page
+   * produced no frames, so the record names the hidden period the way a slow
+   * frame's does and a reader can discount it.
+   */
+  it('names a tick that spanned a hidden window as hidden', () => {
+    const h = harness();
+    h.frame(16);
+    h.advance(16);
+    h.probe.noteClockTick('Busytools/busymail/lead');
+    h.hidden(true);
+    h.advance(5_000);
+    h.hidden(false);
+    h.advance(16);
+    h.frame(16);
+    h.settle();
+
+    const tick = h.records.flat().find((record) => record.kind === 'tick');
+    expect(tick?.hidden, 'a tick whose frame landed after a hidden window is named as one').toBe(
+      true,
+    );
+  });
+
+  /**
+   * **A tick written while the frame loop was already dead cannot claim the
+   * dead period**: the frame before the write is not recent, so the span is
+   * not the write's cost. A slow but alive page still pays for its tick.
+   */
+  it('drops a tick the frame before it did not follow', () => {
+    const h = harness();
+    h.frame(16);
+    h.advance(5_000);
+    h.probe.noteClockTick('Busytools/busymail/lead');
+    h.frame(100);
+    h.settle();
+
+    expect(
+      h.records.flat().filter((record) => record.kind === 'tick'),
+      'a tick inside an already-dead frame period writes nothing',
+    ).toHaveLength(0);
+
+    // A 10 fps page is slow, not dead: 100 ms after its last frame is inside
+    // the dead-loop bound, so the tick is written.
+    const slow = harness();
+    slow.frame(100);
+    slow.advance(100);
+    slow.probe.noteClockTick('Busytools/busymail/lead');
+    slow.frame(200);
+    slow.settle();
+    const tick = slow.records.flat().find((record) => record.kind === 'tick');
+    expect(tick?.ms, 'a slow page still pays for a tick it followed').toBe(200);
   });
 
   it('summarises a window even when nothing in it was slow', () => {

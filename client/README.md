@@ -132,7 +132,14 @@ diagnostic and an outage backlog is not the frame cost. Either file holds one
 JSON line per record: `run_started` when a page attaches, `summary` every
 ten seconds (frames, how many were slow, the worst gap), and a `frame` line
 for each frame at or over 50 ms with the surface and seat it happened
-on, plus `longtask` lines naming the work that blocked. A slow frame also
+on, plus `longtask` lines naming the work that blocked. A `tick` line
+records a session page's 30 s clock write when the span to the next frame
+is 50 ms or more, with the seat, the surface, that span and `hidden`,
+saying whether the span crossed a hidden window; the span is an upper
+bound, because the wait for the frame is on it and so is anything else
+that wrote in the window. Only a tick that follows an alive frame (within
+250 ms) is written, since a write inside a dead frame period is not its
+cost, and only the session page calls `noteClockTick`. A slow frame also
 carries the Web Worker heartbeat: `worker_beats` (the worker's
 one-a-second ticks that reached the page across the gap),
 `worker_max_late_ms` (the WORST lateness among them, omitted when no beat
