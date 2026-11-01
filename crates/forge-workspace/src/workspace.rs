@@ -15452,6 +15452,13 @@ provider = "anthropic"
             .checked_sub(std::time::Duration::from_secs(31 * 24 * 60 * 60))
             .expect("a window ago");
         crate::store::cron_names::put(&db, "fired", &name, stale).expect("seed a stale pairing");
+        // A row nine tenths of the way through the window: a seconds/minutes
+        // mix-up in the constant would drop this one, so it pins the magnitude
+        // from below as the stale row pins it from above.
+        let inside = std::time::SystemTime::now()
+            .checked_sub(std::time::Duration::from_secs(29 * 24 * 60 * 60))
+            .expect("inside the window");
+        crate::store::cron_names::put(&db, "inside", &name, inside).expect("seed a young pairing");
         crate::store::cron_names::put(&db, "fresh", &name, std::time::SystemTime::now())
             .expect("seed a fresh pairing");
         drop(db);
@@ -15460,11 +15467,11 @@ provider = "anthropic"
 
         let guard = workspace.db.lock();
         let db = guard.as_ref().expect("db");
-        let kept = crate::store::cron_names::for_uuids(db, &["fired", "fresh"]).expect("read");
+        let kept = crate::store::cron_names::for_uuids(db, &["fired", "inside", "fresh"]).expect("read");
         assert_eq!(
             kept.keys().collect::<Vec<_>>(),
-            vec!["fresh"],
-            "the boot drops the pairing past the window and keeps the one inside it"
+            vec!["fresh", "inside"],
+            "the boot drops the pairing past the window and keeps the ones inside it"
         );
     }
 
