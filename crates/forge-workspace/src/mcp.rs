@@ -20,6 +20,8 @@
 //! - `systemone` - the decision tools (`ask_noul`, `ask_choice`,
 //!   `ask_score`), injected only when `[systemone]` is configured and
 //!   enabled.
+//! - `voice` - `say`: one utterance spoken aloud to the person listening to
+//!   the seat. Renders as `mcp__forge__voice__say`.
 //!
 //! Tool surface depends on the calling session's kind:
 //!
@@ -69,6 +71,7 @@ pub mod systemone;
 pub mod tasks;
 #[cfg(test)]
 pub(crate) mod test_support;
+pub mod voice;
 pub mod workers;
 
 /// Identifies which kind of session the MCP server is being built
@@ -93,17 +96,19 @@ pub enum McpFamily {
     Gotify,
     Slack,
     Systemone,
+    Voice,
 }
 
 impl McpFamily {
     /// Every toggleable family, in wire order.
-    pub const ALL: [McpFamily; 6] = [
+    pub const ALL: [McpFamily; 7] = [
         McpFamily::Review,
         McpFamily::Cron,
         McpFamily::Tasks,
         McpFamily::Gotify,
         McpFamily::Slack,
         McpFamily::Systemone,
+        McpFamily::Voice,
     ];
 
     /// The default set: a worker whose row names none gets everything.
@@ -120,6 +125,7 @@ impl McpFamily {
             McpFamily::Gotify => "gotify",
             McpFamily::Slack => "slack",
             McpFamily::Systemone => "systemone",
+            McpFamily::Voice => "voice",
         }
     }
 
@@ -250,6 +256,10 @@ pub(crate) fn withheld_family_lines(families: &BTreeSet<McpFamily>) -> Vec<&'sta
                 "This session has no `systemone__*` decision tools. When a decision is \
                  material and not obvious, route it to your lead instead of guessing."
             }
+            McpFamily::Voice => {
+                "This session has no `voice__*` tools. The person listening cannot hear this \
+                 session; put anything they should know in your message to your lead."
+            }
         })
         .collect()
 }
@@ -267,6 +277,7 @@ pub struct ForgeServerFacades {
     pub slack: Arc<dyn SlackFacade>,
     pub tasks: Arc<dyn TasksFacade>,
     pub systemone: Option<Arc<dyn SystemOneFacade>>,
+    pub voice: Arc<crate::voice::VoiceService>,
 }
 
 /// Build the per-session `forge` MCP server. ONE McpServer named
@@ -320,6 +331,7 @@ pub fn build_forge_server(
         slack,
         tasks,
         systemone,
+        voice,
     } = facades;
     let mut builder = McpServerBuilder::new("forge", env!("CARGO_PKG_VERSION"));
     let dispatcher = Arc::new(AgentDispatcher::new(workspace, worker.clone()));
@@ -359,7 +371,10 @@ pub fn build_forge_server(
         builder = systemone::add_tools(builder, systemone);
     }
     if families.contains(&McpFamily::Slack) {
-        builder = slack::add_tools(builder, slack, slot);
+        builder = slack::add_tools(builder, slack, slot.clone());
+    }
+    if families.contains(&McpFamily::Voice) {
+        builder = voice::add_tools(builder, voice, slot);
     }
     builder.instructions(TASK_BOARD_INSTRUCTIONS).build()
 }
@@ -557,6 +572,25 @@ mod tests {
         );
     }
 
+    struct SilentSink;
+    impl crate::voice::AudioSink for SilentSink {
+        fn push(&self, _seat: &SessionSlot, _chunk: forge_tts::Chunk) {}
+    }
+
+    struct SilentNotes;
+    impl crate::voice::NoteDispatch for SilentNotes {
+        fn note(&self, _seat: &SessionSlot, _text: &str) {}
+    }
+
+    fn silent_voice() -> Arc<crate::voice::VoiceService> {
+        Arc::new(crate::voice::VoiceService::new(
+            Arc::new(|| Err("no model loads in this test".to_owned())),
+            crate::voice::VoiceSettings::default(),
+            Arc::new(SilentSink),
+            Arc::new(SilentNotes),
+        ))
+    }
+
     fn forge_server_families(
         kind: SessionKind,
         families: &std::collections::BTreeSet<McpFamily>,
@@ -574,6 +608,7 @@ mod tests {
                 slack: MockSlackFacade::new().into_arc(),
                 tasks: MockTasksFacade::new().into_arc(),
                 systemone: systemone_facade,
+                voice: silent_voice(),
             },
             families,
             fake_key("test"),
@@ -630,7 +665,7 @@ mod tests {
     /// manage their own project's reviews, crons, tasks, subscriptions and
     /// decisions. The browser's own names are read off its table instead -
     /// one list per family, so a tool added there cannot leave this behind.
-    const ANY_CALLER_TOOLS: [&str; 34] = [
+    const ANY_CALLER_TOOLS: [&str; 35] = [
         "review__list",
         "review__get",
         "review__reply",
@@ -665,6 +700,7 @@ mod tests {
         "systemone__ask_noul",
         "systemone__ask_choice",
         "systemone__ask_score",
+        "voice__say",
     ];
 
     #[test]
@@ -907,6 +943,7 @@ mod tests {
                 "This session has no `gotify__*` tools. Notifications from Gotify do not reach you; your lead carries anything urgent.",
                 "This session has no `slack__*` tools. Channel reads and posts go through your lead.",
                 "This session has no `systemone__*` decision tools. When a decision is material and not obvious, route it to your lead instead of guessing.",
+                "This session has no `voice__*` tools. The person listening cannot hear this session; put anything they should know in your message to your lead.",
             ],
         );
 

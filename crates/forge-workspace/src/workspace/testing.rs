@@ -402,6 +402,7 @@ impl Workspace {
             reload_generation: std::sync::atomic::AtomicU64::new(0),
             reload_gate: std::sync::Mutex::new(()),
             systemone: parking_lot::RwLock::new(systemone),
+            voice: std::sync::OnceLock::new(),
             catalog: Arc::new(Mutex::new(HashMap::new())),
             app_support,
             pool: Mutex::new(HashMap::new()),

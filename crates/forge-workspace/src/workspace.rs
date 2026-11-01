@@ -619,6 +619,10 @@ pub struct Workspace {
     /// facade over it. `None` keeps the systemone tools out of every
     /// session. Rebuilt by [`Workspace::reload_config`].
     pub(crate) systemone: parking_lot::RwLock<Option<Arc<forge_system_one::SystemOneClient>>>,
+    /// The per-seat voice service, built on first use: its sink and its note
+    /// dispatch hold a `Weak<Workspace>`, which does not exist while the
+    /// value is still being constructed.
+    pub(crate) voice: std::sync::OnceLock<Arc<crate::voice::VoiceService>>,
     /// Catalog of sessions per project. Populated by the background
     /// catalog scan once [`Workspace::start_catalog_scan`] runs;
     /// mutated in-place by [`Workspace::record_connected_session`]
@@ -2390,6 +2394,7 @@ impl Workspace {
             reload_generation: std::sync::atomic::AtomicU64::new(0),
             reload_gate: std::sync::Mutex::new(()),
             systemone: parking_lot::RwLock::new(systemone),
+            voice: std::sync::OnceLock::new(),
             catalog,
             app_support,
             pool: Mutex::new(HashMap::new()),
@@ -3540,6 +3545,7 @@ impl Workspace {
                     slack: slack_facade,
                     tasks: tasks_facade,
                     systemone: systemone_facade,
+                    voice: self.voice_service(),
                 },
                 &families,
                 session_slot.clone(),
@@ -19323,6 +19329,7 @@ mod worker_respawn_tests {
                 gotify: crate::mcp::gotify::facade::ProdGotifyFacade::from_arc(workspace),
                 slack: crate::mcp::slack::facade::ProdSlackFacade::from_arc(workspace),
                 tasks: crate::mcp::tasks::facade::ProdTasksFacade::from_arc(workspace),
+                voice: workspace.voice_service(),
                 systemone: workspace.systemone.read().as_ref().map(|client| {
                     crate::mcp::systemone::facade::ProdSystemOneFacade::new(std::sync::Arc::clone(
                         client,

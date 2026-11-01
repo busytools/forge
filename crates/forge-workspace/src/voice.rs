@@ -191,6 +191,86 @@ impl VoiceService {
     }
 }
 
+impl crate::Workspace {
+    /// The voice service, built on first use. Its sink and note dispatch hold
+    /// a `Weak<Workspace>`, which is why this waits for an `Arc<Self>` rather
+    /// than being built with the rest of the value.
+    pub(crate) fn voice_service(self: &Arc<Self>) -> Arc<VoiceService> {
+        self.voice
+            .get_or_init(|| {
+                let config = self.config_arc();
+                let settings = VoiceSettings {
+                    max_utterance_seconds: config.tts.max_utterance_seconds,
+                    language: config.tts.language.clone(),
+                    speaker: config.tts.speaker.clone(),
+                };
+                let files = config.tts.files();
+                let loader: Loader = Arc::new(move || {
+                    let files =
+                        files.clone().ok_or_else(|| "no models directory resolves".to_owned())?;
+                    let engine = forge_tts::QwenTts::load(&files.model, files.projector.as_deref())
+                        .map_err(|error| error.to_string())?;
+                    Ok(Arc::new(engine) as Arc<dyn Engine>)
+                });
+                Arc::new(VoiceService::new(
+                    loader,
+                    settings,
+                    Arc::new(WorkspaceSink { workspace: Arc::downgrade(self) }),
+                    Arc::new(WorkspaceNotes { workspace: Arc::downgrade(self) }),
+                ))
+            })
+            .clone()
+    }
+}
+
+/// The sink a real workspace hands the service: every rendered clip crosses
+/// the update stream to the clients subscribed to the seat.
+struct WorkspaceSink {
+    workspace: std::sync::Weak<crate::Workspace>,
+}
+
+impl AudioSink for WorkspaceSink {
+    fn push(&self, seat: &SessionSlot, chunk: Chunk) {
+        let Some(workspace) = self.workspace.upgrade() else {
+            return;
+        };
+        let _ = workspace.update_sender().send(crate::SessionUpdate::VoiceAudio {
+            key: seat.clone(),
+            seq: chunk.seq,
+            sample_rate: chunk.sample_rate,
+            pcm: chunk.pcm,
+        });
+    }
+}
+
+/// The note dispatch a real workspace hands the service: the listener note
+/// enters the seat as a forge prompt, drawn as its own row.
+struct WorkspaceNotes {
+    workspace: std::sync::Weak<crate::Workspace>,
+}
+
+impl NoteDispatch for WorkspaceNotes {
+    fn note(&self, seat: &SessionSlot, text: &str) {
+        let Some(workspace) = self.workspace.upgrade() else {
+            return;
+        };
+        let uuid = forge_sdk::request_id::next_prompt_id();
+        if let Err(error) = workspace.dispatch_workspace_prompt_under(
+            seat,
+            text.to_owned(),
+            crate::PromptSource::Forge,
+            uuid,
+        ) {
+            tracing::warn!(
+                event_name = "voice_note_not_delivered",
+                seat = %seat.display(),
+                %error,
+                "the listener note did not reach the seat; the agent will not know it is heard"
+            );
+        }
+    }
+}
+
 async fn render(job: Job, seat: &SessionSlot, settings: &VoiceSettings, sink: &dyn AudioSink) {
     let Job { text, engine, first } = job;
     let mut first = Some(first);

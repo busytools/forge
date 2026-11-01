@@ -424,6 +424,7 @@ mod tests {
                 slack: MockSlackFacade::new().into_arc(),
                 tasks: MockTasksFacade::new().into_arc(),
                 systemone: None,
+                voice: workspace.voice_service(),
             },
             &crate::mcp::McpFamily::all(),
             seat(),
