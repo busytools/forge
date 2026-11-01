@@ -159,6 +159,39 @@ impl VoiceService {
             .unwrap_or(0)
     }
 
+    /// A connection has gone: take it off every seat it was listening to,
+    /// and answer the seats whose count changed.
+    ///
+    /// **A socket that dies says no goodbye**, so the core's own teardown is
+    /// what lowers the count; without it a dropped client listens forever
+    /// and the last-listener note never arrives.
+    pub fn release(&self, client: u64) -> Vec<SessionSlot> {
+        let (changed, emptied) = {
+            let Ok(mut seats) = self.seats.lock() else {
+                return Vec::new();
+            };
+            let mut changed = Vec::new();
+            let mut emptied = Vec::new();
+            for (seat, state) in seats.iter_mut() {
+                if !state.listeners.remove(&client) {
+                    continue;
+                }
+                changed.push(seat.clone());
+                if state.listeners.is_empty() {
+                    emptied.push(seat.clone());
+                }
+            }
+            for seat in &emptied {
+                seats.remove(seat);
+            }
+            (changed, emptied)
+        };
+        for seat in &emptied {
+            self.notes.note(seat, NOT_LISTENING_NOTE);
+        }
+        changed
+    }
+
     /// The engine, loading it on the first caller. The mutex is held across
     /// the load, so a second `say` waits for it instead of racing it.
     async fn engine(&self) -> Result<Arc<dyn Engine>, SayError> {
@@ -217,6 +250,22 @@ impl crate::Workspace {
     /// been built, which is the truth: nobody could have toggled it yet.
     pub fn voice_listeners(&self, seat: &SessionSlot) -> usize {
         self.voice.get().map_or(0, |service| service.listeners(seat))
+    }
+
+    /// A connection has left: take it off every seat it was listening to and
+    /// tell each seat's subscribers the count it left behind.
+    pub fn voice_release(&self, client: u64) -> Vec<SessionSlot> {
+        let Some(service) = self.voice.get() else {
+            return Vec::new();
+        };
+        let changed = service.release(client);
+        for seat in &changed {
+            let listeners = u32::try_from(service.listeners(seat)).unwrap_or(u32::MAX);
+            let _ = self
+                .update_sender()
+                .send(crate::SessionUpdate::VoiceModeState { key: seat.clone(), listeners });
+        }
+        changed
     }
 
     /// Put an already-built engine behind the service, so a test can drive
@@ -583,6 +632,33 @@ mod tests {
         fixture.service.set_listening(&seat(), 2, false);
         assert_eq!(said(&fixture), vec![LISTENING_NOTE.to_owned(), NOT_LISTENING_NOTE.to_owned()],);
         assert_eq!(fixture.service.listeners(&seat()), 0);
+    }
+
+    #[tokio::test]
+    async fn a_dropped_connection_leaves_every_seat_it_listened_to() {
+        let fixture = service_with(|| StubEngine::new(Arc::new(Mutex::new(Vec::new()))));
+        let seat = seat();
+        fixture.service.set_listening(&seat, 1, true);
+        fixture.service.set_listening(&seat, 2, true);
+
+        // A socket dies without a goodbye: the core's teardown is the only
+        // thing that can take its listener off.
+        let changed = fixture.service.release(2);
+        assert_eq!(changed, vec![seat.clone()], "the seat's count moved");
+        assert_eq!(fixture.service.listeners(&seat), 1);
+        assert_eq!(
+            fixture.notes.said.lock().expect("unpoisoned").len(),
+            1,
+            "one client still listens, so nothing is withdrawn",
+        );
+
+        fixture.service.release(1);
+        assert_eq!(fixture.service.listeners(&seat), 0);
+        assert_eq!(
+            fixture.notes.said.lock().expect("unpoisoned").last().map(String::as_str),
+            Some(NOT_LISTENING_NOTE),
+        );
+        assert!(fixture.service.release(1).is_empty(), "a second release changes nothing");
     }
 
     #[tokio::test]

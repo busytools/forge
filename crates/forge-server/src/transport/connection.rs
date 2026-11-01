@@ -695,6 +695,18 @@ where
             );
         }
     }
+    // And the seat's voice listener set: a client that drops without saying
+    // goodbye is gone from it, or the count never falls and the last-listener
+    // note never reaches the session.
+    let released = state.surface.voice_release(me);
+    if !released.is_empty() {
+        tracing::debug!(
+            target: "forge_server::transport",
+            event_name = "voice_listener_released",
+            seats = released.len(),
+            "the connection that was listening went away; its seats drop it",
+        );
+    }
     // A recording this connection was feeding dies with it: dropping it is
     // the same answer as the page's cancel, and keeping it would leave a
     // recording no connection can stop.
@@ -1450,6 +1462,13 @@ fn stamp(command: Command, me: u64) -> Command {
         }
         Command::DictateReadAloudStop { keep, .. } => {
             Command::DictateReadAloudStop { keep, initiator: Some(me) }
+        }
+        // The listener set is per connection, so the switch has to say which
+        // one; an utterance carries the stamp for symmetry and a log that can
+        // name the connection it came from.
+        Command::VoiceMode { key, on, .. } => Command::VoiceMode { key, on, initiator: Some(me) },
+        Command::VoiceUtterance { key, pcm, .. } => {
+            Command::VoiceUtterance { key, pcm, initiator: Some(me) }
         }
         Command::RespondBrowserHandOff { key, id, mut answer } => {
             answer.client = Some(me);

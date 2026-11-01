@@ -1044,6 +1044,63 @@ async fn a_voice_switch_is_answered_and_its_clips_reach_the_subscriber() {
     );
 }
 
+/// A listener that drops without saying goodbye leaves the seat's count: the
+/// server's own connection teardown takes it off, and a client still
+/// listening hears the count fall.
+#[tokio::test]
+async fn a_dropped_listener_leaves_the_seats_count() {
+    let (url, fleet) = a_server().await;
+    fleet.install_agent("TestOrg", "proj", "lead");
+    fleet.workspace().install_voice_engine_for_test(Arc::new(RecordingVoice {
+        requests: Arc::new(Mutex::new(Vec::new())),
+    }));
+
+    let mut watcher = connect(&url).await;
+    send(
+        &mut watcher,
+        ClientMessage::Subscribe {
+            what: Subject::Session(lead_seat()),
+            answering: true,
+            review: false,
+        },
+    )
+    .await;
+    let _ = snapshot_answering(&mut watcher).await;
+    send(
+        &mut watcher,
+        ClientMessage::Command {
+            command: Box::new(Command::VoiceMode { key: lead_seat(), on: true, initiator: None }),
+            reply_to: None,
+        },
+    )
+    .await;
+    update_until(&mut watcher, "the first listener", |update| {
+        matches!(update, SessionUpdate::VoiceModeState { listeners: 1, .. })
+    })
+    .await;
+
+    // A second connection turns voice on and then simply goes away.
+    let mut leaver = connect(&url).await;
+    send(
+        &mut leaver,
+        ClientMessage::Command {
+            command: Box::new(Command::VoiceMode { key: lead_seat(), on: true, initiator: None }),
+            reply_to: None,
+        },
+    )
+    .await;
+    update_until(&mut watcher, "the second listener", |update| {
+        matches!(update, SessionUpdate::VoiceModeState { listeners: 2, .. })
+    })
+    .await;
+    drop(leaver);
+
+    update_until(&mut watcher, "the count falling back", |update| {
+        matches!(update, SessionUpdate::VoiceModeState { listeners: 1, .. })
+    })
+    .await;
+}
+
 /// **The surface a client names on its take crosses the socket into its
 /// end.** The transport rebuilds the command to stamp the connection, and a
 /// field dropped there never reaches the record the words are handed back

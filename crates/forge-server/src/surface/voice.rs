@@ -26,6 +26,12 @@ impl ViewSurface {
         self.workspace.voices()
     }
 
+    /// A connection has left: every seat it was listening to drops it, and
+    /// each seat's subscribers hear the count it left behind.
+    pub fn voice_release(&self, client: u64) -> Vec<SessionSlot> {
+        self.workspace.voice_release(client)
+    }
+
     /// The seat's voice state. `listeners` is per seat, which is why the read
     /// names one.
     pub fn voice(&self, key: &SessionSlot) -> VoiceView {
