@@ -179,17 +179,20 @@ read as one system.
   the notice above only where the fold holds no call row for it - a page
   opened after the call, or a peer message drawn as a card, the one card a
   call never also draws a row for - and the refusal is never dropped. **A
-  sub-agent's refusal draws inside the dispatch the server can place**: the
-  frame names the agent rather than the dispatch, and the refusal rides that
-  expansion's call row with the same chip and body, or draws as a plain line
-  there when the expansion holds no call row for it - a nested dispatch's
-  call is a child line, not a row. A refusal no instance owns - a third-level
-  dispatch, or a task the roster never linked - stays at the session's level.
-  A resumed page draws a top-level sub-agent's refusal from its own sidecar,
-  as the call's errored result. A nested sub-agent's refusal is live-only: no
-  card opens for a nested dispatch, so the sidecar rows that carry it are
-  drawn nowhere whether they join the read or not, and a sidecar past the
-  resume budget is skipped the same way. **A question draws nothing here
+  sub-agent's refusal draws inside the dispatch that owns it**: the frame
+  names the agent rather than the dispatch, and the server walks the
+  agent's dispatch chain up to the top-level card - a nested dispatch's
+  call is a child line, not a row, so an agent two or three levels down
+  still resolves to the expansion that draws it. The refusal rides that
+  expansion's call row with the same chip and body, or draws as a notice
+  row there - the level glyph and the wire's own chip the session's notice
+  carries - when the expansion holds no call row for it. A refusal no
+  instance owns - a task the roster never linked - stays at the session's
+  level. A resumed page draws a sub-agent's refusal from its own sidecar,
+  as the call's errored result, and a nested sidecar's frames fold under
+  the expansion that owns them there too, so the same work draws live and
+  after a resume; a sidecar past the resume budget is skipped. **A question
+  draws nothing here
   while it waits**: the dock is its row. It draws as a card instead - the
   words the reader was asked, marked `unanswered`, with nothing picked or
   typed under them - the moment its own result lands with no answer on

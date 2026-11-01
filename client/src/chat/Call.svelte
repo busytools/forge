@@ -647,8 +647,18 @@
               {/if}
             {:else if line.kind === 'thought'}
               <Thought text={line.text} />
-            {:else if line.kind === 'hook' || line.kind === 'notice'}
+            {:else if line.kind === 'hook'}
               <div class="sg-pr">{line.text}</div>
+            {:else if line.kind === 'notice'}
+              <!-- The session's notice face: the level is its glyph and the
+                   wire's own subtype is its chip, so a refusal inside a
+                   dispatch reads as the refusal it is rather than as a plain
+                   line nobody styled (rule 25). -->
+              <div class="sg-pr sg-refusal">
+                <Icon name="error" class="gl err" label="error" />
+                <span class="tn">{line.text}</span>
+                <span class="chip">{line.mark}</span>
+              </div>
             {:else}
               <div class="sg-pr"><Prose text={line.text} /></div>
             {/if}

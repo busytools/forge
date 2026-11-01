@@ -1177,7 +1177,7 @@ impl SessionTask {
                     if matches!(&msg, forge_primitives::Message::CompactBoundary { .. }) {
                         self.compaction_count = self.compaction_count.saturating_add(1);
                     }
-                    let msg = self.attribute_denial(msg);
+                    let msg = self.attribute_dispatch(msg);
                     // `None` either way: a frame off the wire is the CLI's
                     // own, and carries neither a prompt origin nor a sender.
                     self.emit(SessionUpdate::ChatAppended {
@@ -1786,34 +1786,68 @@ impl SessionTask {
         });
     }
 
-    /// The same frame, naming the dispatch a sub-agent's refusal belongs
-    /// under: the CLI names the agent and never the dispatch, so the refusal
-    /// drew as a row the session itself had made. A top-level dispatch's read
-    /// needs no repair - its sidecar carries the refusal as the call's
-    /// errored result - while no card opens for a nested dispatch, so a
-    /// nested refusal draws live only.
-    fn attribute_denial(&self, msg: forge_primitives::Message) -> forge_primitives::Message {
-        let forge_primitives::Message::PermissionDenied { extras, .. } = &msg else {
+    /// The same frame, naming the dispatch that owns it.
+    ///
+    /// Two shapes need it. A sub-agent's frames name the `Task`/`Agent` call
+    /// its own parent fired as `parent_tool_use_id`, and that call is a child
+    /// line of the outer card rather than a card - so a frame from an agent
+    /// two levels down drew nowhere. A `permission_denied` frame names the
+    /// refused call and the agent that made it and no dispatch at all, so it
+    /// drew as a row the session itself had made. The card tracker keeps every
+    /// tool-use id's parent, so the chain walks up to the top-level dispatch
+    /// the expansion draws it in; a chain that reaches no card is left alone,
+    /// because a stamp naming an id no expansion takes draws nowhere.
+    fn attribute_dispatch(&self, msg: forge_primitives::Message) -> forge_primitives::Message {
+        let (held, owner) = {
+            let domain = self.domain.lock();
+            let tracker = &domain.card_tracker;
+            match &msg {
+                forge_primitives::Message::Assistant { parent_tool_use_id, .. }
+                | forge_primitives::Message::User { parent_tool_use_id, .. }
+                | forge_primitives::Message::StopHookSummary { parent_tool_use_id, .. } => {
+                    let held = parent_tool_use_id.as_deref().filter(|id| !id.trim().is_empty());
+                    (
+                        held.map(str::to_owned),
+                        held.and_then(|id| tracker.owning_dispatch(id)).map(str::to_owned),
+                    )
+                }
+                // A refusal the CLI sent names the agent and no dispatch; an
+                // already-stamped one names the dispatch. The agent is the
+                // task id the roster opened a dispatch's call with.
+                forge_primitives::Message::PermissionDenied { extras, .. } => {
+                    let parent = extras
+                        .get("parent_tool_use_id")
+                        .and_then(serde_json::Value::as_str)
+                        .filter(|id| !id.trim().is_empty());
+                    let owner = match parent {
+                        Some(parent) => tracker.owning_dispatch(parent),
+                        None => extras
+                            .get("agent_id")
+                            .and_then(serde_json::Value::as_str)
+                            .and_then(|agent| tracker.dispatch_of(agent)),
+                    };
+                    (parent.map(str::to_owned), owner.map(str::to_owned))
+                }
+                _ => return msg,
+            }
+        };
+        let Some(owner) = owner else {
             return msg;
         };
-        if forge_primitives::names_a_dispatch(
-            extras.get("parent_tool_use_id").and_then(serde_json::Value::as_str),
-        ) {
+        if held.as_deref() == Some(owner.as_str()) {
             return msg;
         }
-        let Some(agent) = extras.get("agent_id").and_then(serde_json::Value::as_str) else {
-            return msg;
-        };
-        let dispatch = {
-            let domain = self.domain.lock();
-            domain.card_tracker.dispatch_of(agent).map(str::to_owned)
-        };
-        let Some(dispatch) = dispatch else {
-            return msg;
-        };
         let mut msg = msg;
-        if let forge_primitives::Message::PermissionDenied { extras, .. } = &mut msg {
-            extras.insert("parent_tool_use_id".to_owned(), serde_json::Value::String(dispatch));
+        match &mut msg {
+            forge_primitives::Message::Assistant { parent_tool_use_id, .. }
+            | forge_primitives::Message::User { parent_tool_use_id, .. }
+            | forge_primitives::Message::StopHookSummary { parent_tool_use_id, .. } => {
+                *parent_tool_use_id = Some(owner);
+            }
+            forge_primitives::Message::PermissionDenied { extras, .. } => {
+                extras.insert("parent_tool_use_id".to_owned(), serde_json::Value::String(owner));
+            }
+            _ => {}
         }
         msg
     }
@@ -8725,6 +8759,80 @@ provider = "anthropic"
             None,
             "and the session's own refusal names no dispatch",
         );
+    }
+
+    /// **A frame from an agent three levels down names the card that owns
+    /// it.** The wire parents such a frame to the dispatch its own parent
+    /// fired, and that call is a child line of the outer card rather than a
+    /// card - so both the frame and the refusal the agent made drew nowhere.
+    /// The tracker's parent links walk the chain back to the top-level
+    /// dispatch on every frame, which is the expansion that draws it.
+    #[test]
+    fn a_third_level_agents_frames_name_the_card_that_owns_them() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (workspace, _rx) =
+            crate::Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
+        let slot = SessionSlot::lead("TestOrg", "forge");
+        let (mut task, _agent_rx) = command_task_for(&workspace, &slot);
+        let mut updates = task.update_tx.subscribe(SubscriberRole::Answering);
+
+        // The session's dispatch, the dispatch the first-level agent made
+        // under it, and the one the second-level agent made under that.
+        task.translate_event(sdk_message(agent_call("call-dispatch", None)));
+        task.translate_event(sdk_message(task_started("agent-1", Some("call-dispatch"))));
+        task.translate_event(sdk_message(agent_call("call-inner", Some("call-dispatch"))));
+        task.translate_event(sdk_message(task_started("agent-2", Some("call-inner"))));
+        task.translate_event(sdk_message(agent_call("call-deeper", Some("call-inner"))));
+        task.translate_event(sdk_message(task_started("agent-3", Some("call-deeper"))));
+        let _ = drain_updates(&mut updates);
+
+        task.translate_event(sdk_message(agent_said(Some("call-deeper"))));
+        assert_eq!(
+            drawn_assistant_parents(&mut updates),
+            [Some("call-dispatch".to_owned())],
+            "the third-level agent's frame names the card that owns its dispatch",
+        );
+
+        task.translate_event(sdk_message(refusal(Some("agent-3"))));
+        let drawn = drawn_refusals(&mut updates);
+        assert_eq!(drawn.len(), 1, "the third-level refusal is drawn: {drawn:?}");
+        assert_eq!(
+            drawn[0].get("parent_tool_use_id").and_then(serde_json::Value::as_str),
+            Some("call-dispatch"),
+            "and it names the card, not the dispatch two levels down",
+        );
+    }
+
+    /// An assistant frame the agent named by `parent` produced.
+    fn agent_said(parent: Option<&str>) -> forge_primitives::Message {
+        serde_json::from_value(serde_json::json!({
+            "type": "assistant",
+            "message": {
+                "id": "msg-said",
+                "role": "assistant",
+                "model": "claude-sonnet-5",
+                "content": [{"type": "text", "text": "working"}],
+            },
+            "session_id": "s",
+            "parent_tool_use_id": parent,
+        }))
+        .expect("an assistant frame")
+    }
+
+    /// The parent each assistant frame the task drew carries.
+    fn drawn_assistant_parents(
+        updates: &mut mpsc::UnboundedReceiver<SeatUpdate>,
+    ) -> Vec<Option<String>> {
+        drain_updates(updates)
+            .into_iter()
+            .filter_map(|update| match update {
+                SessionUpdate::ChatAppended {
+                    msg: forge_primitives::Message::Assistant { parent_tool_use_id, .. },
+                    ..
+                } => Some(parent_tool_use_id),
+                _ => None,
+            })
+            .collect()
     }
 
     /// An `Agent` call: a top-level dispatch opens a card, and one under

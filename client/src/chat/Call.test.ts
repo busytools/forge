@@ -929,6 +929,43 @@ describe('the dispatch row, joined to its instance', () => {
 
     subagents.sync(null);
   });
+
+  it('draws a refusal with no call row with the notice level and chip', () => {
+    // Rule 25: a refusal whose call this expansion does not hold still draws
+    // rather than vanishing - and it draws as the session's own notice does,
+    // with the level's glyph and the wire's chip, so a plain line is not the
+    // face a refusal gets inside a dispatch.
+    subagents.sync([card({ running: true })]);
+    const drawn = render(Call, {
+      props: {
+        call: dispatch(),
+        k: 'task',
+        open: true,
+        turns: [
+          {
+            messages: [
+              dispatchFrame(),
+              {
+                type: 'system',
+                subtype: 'permission_denied',
+                tool_name: 'Bash',
+                tool_use_id: 'c-gone',
+                decision_reason_type: 'subcommandResults',
+                message: 'Permission to use Bash has been denied.',
+                parent_tool_use_id: 'toolu_task',
+              },
+            ],
+          },
+        ],
+      },
+    }).body;
+
+    expect(drawn, 'the refusal draws').toContain('Bash refused');
+    expect(drawn, 'with the error level glyph').toContain('#i-error');
+    expect(drawn, "and the wire's own subtype as the chip").toContain('permission_denied');
+
+    subagents.sync(null);
+  });
 });
 
 describe('the output a backgrounded row reads back', () => {

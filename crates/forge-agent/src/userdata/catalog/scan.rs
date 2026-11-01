@@ -10,6 +10,7 @@
 //! is read in full: it can sit anywhere in the file and the last one
 //! wins, so there is no window that settles it.
 
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -937,29 +938,99 @@ fn read_session_messages(
 /// put them at the newest edge of the window a resumed conversation is cut
 /// to, so every old sub-agent would be kept in preference to the main rows
 /// around it.
+///
+/// **A nested sidecar joins the expansion that owns it.** A dispatch a
+/// sub-agent fired is a call inside that agent's sidecar and never a row the
+/// transcript carries, so its own sidecar's rows used to join against a row
+/// buried in the parent's frames - stamped with a dispatch id no card holds,
+/// and drawn nowhere. The chain of `made_under` links walks such a dispatch
+/// up to the outermost dispatch the transcript answers, and its rows are
+/// stamped with that card's id (#2781). Resolving before any splice is what
+/// makes the fold order-independent: the child may be read before the parent
+/// whose rows hold its answer.
 fn fold_subagent_sidecars(
     messages: &mut Vec<SessionMessage>,
     sidecars: Vec<(String, Vec<SessionMessage>)>,
 ) {
-    for (dispatch, rows) in sidecars {
-        // A sidecar whose dispatch is not in the transcript joins nothing:
-        // there is no card for it to belong to, and appending it at the end
-        // would put frames with no anchor in the conversation.
-        let Some(index) = messages.iter().position(|row| answers_dispatch(row, &dispatch)) else {
+    // Every call an agent's sidecar holds was made under that sidecar's own
+    // dispatch: the CLI writes no parent into a sidecar row.
+    let mut made_under: HashMap<String, String> = HashMap::new();
+    for (dispatch, rows) in &sidecars {
+        for row in rows {
+            for id in tool_use_ids(row) {
+                made_under.insert(id.to_owned(), dispatch.clone());
+            }
+        }
+    }
+    // Only a row the transcript itself carries is an anchor: a sidecar folded
+    // into another sidecar's rows would nest an expansion inside an
+    // expansion, which is the shape no card owns.
+    let answered: HashSet<String> =
+        messages.iter().flat_map(answered_dispatches).map(str::to_owned).collect();
+    for (dispatch, mut rows) in sidecars {
+        let Some(owner) = owning_dispatch(&dispatch, &answered, &made_under) else {
+            // No row of the transcript answers the dispatch or any dispatch
+            // it was nested under: there is no expansion for these frames.
             continue;
         };
+        let Some(index) = messages.iter().position(|row| answers_dispatch(row, owner)) else {
+            continue;
+        };
+        for row in &mut rows {
+            row.parent_tool_use_id = Some(owner.to_owned());
+        }
         messages.splice((index + 1)..=index, rows);
     }
 }
 
+/// The dispatch whose row a sidecar's frames belong under: `dispatch` itself
+/// when the transcript answers it, else the dispatch it was made under, until
+/// one of them is answered.
+fn owning_dispatch<'a>(
+    dispatch: &'a str,
+    answered: &HashSet<String>,
+    made_under: &'a HashMap<String, String>,
+) -> Option<&'a str> {
+    let mut cursor = dispatch;
+    // Bounded, so a pair of sidecars naming each other cannot spin: these
+    // links are read off disk rather than built here.
+    for _ in 0..=made_under.len() {
+        if answered.contains(cursor) {
+            return Some(cursor);
+        }
+        cursor = made_under.get(cursor)?;
+    }
+    None
+}
+
+/// The calls made in `row`.
+fn tool_use_ids(row: &SessionMessage) -> impl Iterator<Item = &str> {
+    block_field(row, "tool_use", "id")
+}
+
+/// The calls `row` answers.
+fn answered_dispatches(row: &SessionMessage) -> impl Iterator<Item = &str> {
+    block_field(row, "tool_result", "tool_use_id")
+}
+
+/// The `field` of every content block of `kind` in `row`.
+fn block_field<'a>(
+    row: &'a SessionMessage,
+    kind: &'static str,
+    field: &'static str,
+) -> impl Iterator<Item = &'a str> {
+    row.message.get("content").and_then(Value::as_array).into_iter().flatten().filter_map(
+        move |block| {
+            (block.get("type").and_then(Value::as_str) == Some(kind))
+                .then(|| block.get(field).and_then(Value::as_str))
+                .flatten()
+        },
+    )
+}
+
 /// Whether `row` is the tool result answering `dispatch`.
 fn answers_dispatch(row: &SessionMessage, dispatch: &str) -> bool {
-    row.message.get("content").and_then(Value::as_array).is_some_and(|blocks| {
-        blocks.iter().any(|block| {
-            block.get("type").and_then(Value::as_str) == Some("tool_result")
-                && block.get("tool_use_id").and_then(Value::as_str) == Some(dispatch)
-        })
-    })
+    answered_dispatches(row).any(|answered| answered == dispatch)
 }
 
 /// How many bytes of sidecar frames one resume reads in total. A session can
@@ -3496,6 +3567,138 @@ mod tests {
             main_uuids,
             vec!["a1", "u1", "a2"],
             "the main-thread read leaves every sub-agent frame out",
+        );
+    }
+
+    /// **A nested dispatch's sidecar folds under the dispatch that owns it.**
+    /// A nested dispatch's `Task` call is a call inside the outer agent's
+    /// sidecar, never a row the transcript carries, so the nested sidecar
+    /// used to join against a row inside its parent's own frames and stamp
+    /// every row with the nested dispatch id - a card nothing opens. The
+    /// fold now walks the dispatch chain to the outermost dispatch the
+    /// transcript answers, and the nested rows land under that expansion.
+    ///
+    /// The nested meta is NEWER than its parent's here, which is the shape
+    /// the mtime sort meets: resolving against the growing list would skip
+    /// the child because its parent's rows had not been spliced in yet.
+    #[test]
+    fn get_session_messages_folds_a_nested_sidecar_under_its_owner() {
+        let config_dir = tempfile::tempdir().unwrap();
+        let session_id = "550e8400-e29b-41d4-a716-446655440002";
+        let directory = "/Users/me/Projects/playground";
+        let dir = project_dir_for(config_dir.path(), directory);
+        fs::create_dir_all(&dir).unwrap();
+        write_session_jsonl(
+            &dir,
+            session_id,
+            "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"toolu_dispatch\",\"name\":\"Agent\",\"input\":{\"prompt\":\"explore\"}}]},\"uuid\":\"a1\"}\n\
+             {\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_dispatch\",\"content\":\"done\"}]},\"uuid\":\"u1\"}\n\
+             {\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"after\"}]},\"uuid\":\"a2\"}\n",
+        );
+        let sidecars = dir.join(session_id).join("subagents");
+        fs::create_dir_all(&sidecars).unwrap();
+        // The outer agent's sidecar: it fired the nested dispatch and holds
+        // the result that answers it, which is why the nested sidecar used
+        // to join at all.
+        fs::write(
+            sidecars.join("agent-outer.meta.json"),
+            "{\"agentType\":\"Explore\",\"toolUseId\":\"toolu_dispatch\"}",
+        )
+        .unwrap();
+        fs::write(
+            sidecars.join("agent-outer.jsonl"),
+            "{\"type\":\"assistant\",\"isSidechain\":true,\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"toolu_inner\",\"name\":\"Agent\",\"input\":{\"prompt\":\"inner\"}}]},\"uuid\":\"o1\"}\n\
+             {\"type\":\"user\",\"isSidechain\":true,\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_inner\",\"content\":\"inner done\"}]},\"uuid\":\"o2\"}\n",
+        )
+        .unwrap();
+        // The nested agent's sidecar, newer than its parent's.
+        fs::write(
+            sidecars.join("agent-nested.meta.json"),
+            "{\"agentType\":\"Explore\",\"toolUseId\":\"toolu_inner\",\"parentAgentId\":\"outer\",\"spawnDepth\":2}",
+        )
+        .unwrap();
+        fs::write(
+            sidecars.join("agent-nested.jsonl"),
+            "{\"type\":\"assistant\",\"isSidechain\":true,\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"toolu_deep\",\"name\":\"Bash\",\"input\":{\"command\":\"ls\"}}]},\"uuid\":\"n1\"}\n\
+             {\"type\":\"user\",\"isSidechain\":true,\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_deep\",\"content\":\"out\"}]},\"uuid\":\"n2\"}\n",
+        )
+        .unwrap();
+        set_age(&sidecars.join("agent-outer.meta.json"), 600);
+        set_age(&sidecars.join("agent-nested.meta.json"), 60);
+
+        let messages =
+            get_session_messages(config_dir.path(), session_id, Some(directory)).messages;
+
+        let uuids: Vec<_> = messages.iter().map(|message| message.uuid.as_str()).collect();
+        assert_eq!(
+            uuids.len(),
+            7,
+            "the transcript's three rows plus both sidecars' frames: {uuids:?}",
+        );
+        assert_eq!(&uuids[..2], &["a1", "u1"], "the dispatch and its result come first");
+        assert_eq!(uuids[6], "a2", "and the conversation's later row stays last");
+        let mut folded = uuids[2..6].to_vec();
+        folded.sort_unstable();
+        assert_eq!(
+            folded,
+            vec!["n1", "n2", "o1", "o2"],
+            "both instances' frames sit where the outer dispatch ran",
+        );
+        for message in messages.iter().filter(|message| message.parent_tool_use_id.is_some()) {
+            assert_eq!(
+                message.parent_tool_use_id.as_deref(),
+                Some("toolu_dispatch"),
+                "every nested frame names the card that owns the dispatch, not the cardless one",
+            );
+        }
+    }
+
+    /// A sidecar whose chain never reaches a dispatch the transcript answers
+    /// joins nothing: folding it under an id no card owns would put rows in
+    /// the conversation that draw nowhere.
+    #[test]
+    fn a_sidecar_nested_under_an_unanswered_dispatch_joins_nothing() {
+        let config_dir = tempfile::tempdir().unwrap();
+        let session_id = "550e8400-e29b-41d4-a716-446655440003";
+        let directory = "/Users/me/Projects/playground";
+        let dir = project_dir_for(config_dir.path(), directory);
+        fs::create_dir_all(&dir).unwrap();
+        // The outer dispatch has no result row: nothing answers it.
+        write_session_jsonl(
+            &dir,
+            session_id,
+            "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"toolu_dispatch\",\"name\":\"Agent\",\"input\":{\"prompt\":\"explore\"}}]},\"uuid\":\"a1\"}\n",
+        );
+        let sidecars = dir.join(session_id).join("subagents");
+        fs::create_dir_all(&sidecars).unwrap();
+        fs::write(
+            sidecars.join("agent-outer.meta.json"),
+            "{\"agentType\":\"Explore\",\"toolUseId\":\"toolu_dispatch\"}",
+        )
+        .unwrap();
+        fs::write(
+            sidecars.join("agent-outer.jsonl"),
+            "{\"type\":\"assistant\",\"isSidechain\":true,\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"toolu_inner\",\"name\":\"Agent\",\"input\":{\"prompt\":\"inner\"}}]},\"uuid\":\"o1\"}\n",
+        )
+        .unwrap();
+        fs::write(
+            sidecars.join("agent-nested.meta.json"),
+            "{\"agentType\":\"Explore\",\"toolUseId\":\"toolu_inner\"}",
+        )
+        .unwrap();
+        fs::write(
+            sidecars.join("agent-nested.jsonl"),
+            "{\"type\":\"assistant\",\"isSidechain\":true,\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"nested\"}]},\"uuid\":\"n1\"}\n",
+        )
+        .unwrap();
+
+        let messages =
+            get_session_messages(config_dir.path(), session_id, Some(directory)).messages;
+
+        assert_eq!(
+            messages.iter().map(|message| message.uuid.as_str()).collect::<Vec<_>>(),
+            vec!["a1"],
+            "neither sidecar has a row the transcript answers",
         );
     }
 
