@@ -14,7 +14,6 @@
   } from '../wire/models';
   import {
     activateLine,
-    activeSource,
     benchLine,
     benchRoleWord,
     benchTargets,
@@ -39,6 +38,7 @@
     resultVerdict,
     resultWhen,
     roleWord,
+    sourceLine,
     speakingBenchLine,
     speakingResultFacts,
     speakingWhen,
@@ -427,7 +427,7 @@
       {#each wire.in_use as model (`${model.role}/${model.file}`)}
         {@const chip = modelChip(model.state)}
         {@const factsOf = inUseRowFacts(model)}
-        {@const source = activeSource(model.from)}
+        {@const source = sourceLine(model)}
         <div class="model" class:shown={shownRole === model.role}>
           <!-- **The whole row is the selector.** A card that only answers on
                one word reads as furniture; this one takes the press anywhere
@@ -1008,8 +1008,7 @@
         {/if}
         <span class="detail">
           the speaking model says each public transcript &middot; the transcribing pair hears it
-          back and the words are scored again &middot; a run needs the public corpus beside the
-          models
+          back and the words are scored again &middot; it scores the bundled public corpus
         </span>
         {#if wire.speaking_results[0] !== undefined}
           {@const last = wire.speaking_results[0]}

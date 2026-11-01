@@ -384,6 +384,21 @@ export function activeSource(from: ActiveFrom): string {
 }
 
 /**
+ * Where an in-use row's model came from, in the row's own words.
+ *
+ * **The speaking model is placed by hand.** It is a two-file family from a
+ * different publisher than the speech feed the catalogue installs from, so
+ * the row says where its files belong rather than leaving a waiting chip with
+ * no door under it.
+ */
+export function sourceLine(model: InUseModel): string {
+  if (model.role === 'speaking') {
+    return 'placed by hand: the weights and their mmproj projector under the [tts] models_dir';
+  }
+  return activeSource(model.from);
+}
+
+/**
  * What one catalogue row offers, from the page's own state.
  *
  * The order is the rule the core enforces: an installed model can be made

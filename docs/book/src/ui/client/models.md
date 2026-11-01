@@ -51,7 +51,11 @@ measurement and its languages. A model with no join says `not in the feed`
 rather than borrowing a measurement. The third line says where the model
 came from: `compiled default`, `installed here`, or `pinned by [dictate]
 <key>` - naming the key, because that key is what has to go for the runtime
-to move the role.
+to move the role. **The speaking row says its files are placed by hand**:
+the catalogue's install path fetches one file per variant from the speech
+feed, and the speaking model is a two-file family that feed does not carry,
+so the row names the `[tts]` models_dir rather than leaving a waiting chip
+with no control under it.
 
 **The check's line is the feed's freshness and its proposal at once.** A
 fresh check with nothing to propose reads `up to date`; the same check with
@@ -138,20 +142,21 @@ row carries the control that takes it, the same install-then-load press the
 sweep's verdict offers, and none at all when the pick IS the model that
 runs: a switch onto what is already running changes nothing.
 
-**The bench scores a model on this machine's own material, and nothing is
-embedded.** A shipped binary carries no audio: a machine with no material
-says so, and the way to get material is to record it - or to download the
-public slice, which every machine has. Three tiers. The
+**The bench scores a model on this machine's own material, and on one
+bundled slice.** A shipped binary carries none of the person's audio: a
+machine with no recordings says so, and the way to get material is to record
+it - or to score the public slice, which every binary carries. Three tiers. The
 consensus tier is the takes forge has saved here, the candidate's words read
 against the words the model in use recorded beside each one - speed and
 agreement, and agreement is a signal rather than an error, because the other
 side is another model's output. The read-aloud tier is the one passage
 somebody read aloud on purpose: its words are known, so it is the corpus
 that scores term accuracy as well as word error rate. The public tier is a
-downloaded slice of licence-clean read speech whose transcripts and
-digests ship with it, so a machine that has never recorded anything still
-has something to score; a clip whose bytes are not the ones its manifest
-names is refused by the clip's own name rather than scored. **The page records that
+fixed LibriSpeech test-clean slice embedded in the binary with its
+transcripts, digests and attribution; the first bench installs it beside the
+models, so a machine that has never recorded anything still has something to
+score. A clip whose bytes are not the ones its manifest names is refused by
+the clip's own name rather than scored. **The page records that
 passage itself**: the section draws the passage and the record control, and a
 press opens this client's microphone through the composer's own capture. The
 recording is not a take - no session owns it and nothing is transcribed,
@@ -175,8 +180,8 @@ It sits beside the words bench and never mixes into its results, because the
 two measure different things - one scores a model on audio that exists, the
 other scores the loop from words to audio and back. One press scores it, a
 stop discards a partial corpus, and the newest saved run draws under the
-card. The run needs the public corpus, the same slice the words bench's
-public tier scores, and a machine without it is told so by name.
+card. It scores the same bundled public slice the words bench's public tier
+does, so the two directions read on one yardstick.
 
 **The benchmark reads as three things, not seven.** The fixtures come
 first, in a count line and the set's own card - what a run scores on, which

@@ -38,6 +38,7 @@ import {
   rowAction,
   search,
   sizeLabel,
+  sourceLine,
   speakingBenchLine,
   speakingResultFacts,
   speakingWhen,
@@ -547,6 +548,28 @@ describe("where a role's model came from", () => {
     expect(activeSource({ from: 'installed', variant: 'granite' })).toBe('installed here');
     expect(activeSource({ from: 'unknown' })).toBe('set by a newer forge');
   });
+
+  /** **The speaking model says it is placed by hand.** The catalogue's
+   * install path fetches one file per variant from the speech feed, and the
+   * speaking model is a two-file family that feed does not carry, so the row
+   * states where its files belong instead of leaving a waiting chip with no
+   * door under it. */
+  it('says the speaking model is placed by hand', () => {
+    const speaking: InUseModel = {
+      role: 'speaking',
+      file: 'Qwen3-TTS-12Hz-1.7B-Base-Q8_0.gguf',
+      size: 1_847_874_400,
+      sha256: 'ac7931ae',
+      state: 'pending',
+      facts: { quant: 'Q8_0', params: null, license: 'Apache-2.0', runtime: 'llama.cpp' },
+      catalogue: null,
+      from: { from: 'pin' },
+      at: null,
+    };
+    expect(sourceLine(speaking)).toContain('placed by hand');
+    expect(sourceLine(speaking)).toContain('[tts] models_dir');
+    expect(sourceLine({ ...speaking, role: 'transcribing' })).toBe('compiled default');
+  });
 });
 
 /** One installed record, for the row controls. */
@@ -694,7 +717,7 @@ describe('the speaking bench', () => {
 
     const failed = speakingBenchLine({
       state: 'failed',
-      reason: 'nothing to bench: the public corpus has not been downloaded yet',
+      reason: 'nothing to bench: the bundled public corpus holds no clips',
     });
     expect(failed?.mark).toBe('failed');
     expect(failed?.detail).toContain('public corpus');
