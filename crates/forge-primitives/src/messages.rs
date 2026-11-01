@@ -477,8 +477,8 @@ pub enum Message {
         /// measured frame omits it.
         decision_reason_type: Option<String>,
         /// Reason token the CLI recorded (e.g. `"Contains simple_expansion"`).
-        /// Absent on a `subcommandResults` denial, which names the decision
-        /// class and carries no token.
+        /// Absent on the `subcommandResults` denial measured here, which names
+        /// the decision class and carries no token.
         decision_reason: Option<String>,
         /// Text of the refusal shown to the session.
         message: String,
