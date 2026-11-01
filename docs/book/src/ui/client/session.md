@@ -182,17 +182,18 @@ read as one system.
   sub-agent's refusal draws inside the dispatch that owns it**: the frame
   names the agent rather than the dispatch, and the server walks the
   agent's dispatch chain up to the top-level card - a second level's call is
-  a child line and a third level's only a parent link, so an agent two or
-  three levels down still resolves to the expansion that draws it. The
-  refusal rides that expansion's call row with the same chip and body, or
-  draws as a notice row there - the level glyph and the wire's own chip the
-  session's notice carries - when the expansion holds no call row for it. A
-  refusal no instance owns - a task the roster never linked - stays at the
-  session's level. A resumed page draws a sub-agent's refusal from its own
-  sidecar, as the call's errored result, and a nested sidecar's frames fold
-  under the expansion that owns them there too: the fold resolves the chain
-  from the sidecar metas, so a parent's body past the resume budget does not
-  strand its child, while a sidecar whose chain reaches no dispatch the
+  a child line of the card and a third level's names that child line, so an
+  agent two or three levels down still resolves to the expansion that draws
+  it. The refusal rides that expansion's call row with the same chip and
+  body, or draws as a notice line there - the level glyph and the wire's own
+  chip the session's notice carries - when the expansion holds no call row
+  for it. A refusal no instance owns - a task the roster never linked -
+  stays at the session's level. A resumed page draws a sub-agent's refusal
+  from its own sidecar, as the call's errored result, and a nested sidecar's
+  frames fold under the expansion that owns them there too: the fold
+  resolves the chain from the sidecar metas, so a parent's body past the
+  resume budget does not strand its child, a sidecar whose own body is past
+  the budget is skipped, and a sidecar whose chain reaches no dispatch the
   transcript answers joins nothing. **A question
   draws nothing here
   while it waits**: the dock is its row. It draws as a card instead - the
