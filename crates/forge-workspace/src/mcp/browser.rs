@@ -133,13 +133,14 @@ impl BrowserTool {
         else {
             return Err("browser_hand_off needs `reason`: what the person should do".to_owned());
         };
-        let Some(tab) = args.get("tab").and_then(Value::as_u64) else {
+        let Some(tab) =
+            args.get("tab").and_then(Value::as_str).filter(|tab| !tab.trim().is_empty())
+        else {
             return Err(
-                "browser_hand_off needs `tab`: the number of one of this session's tabs".to_owned()
+                "browser_hand_off needs `tab`: the page id of one of this session's tabs, from \
+                 browser_tabs list"
+                    .to_owned(),
             );
-        };
-        let Ok(tab) = u16::try_from(tab) else {
-            return Err(format!("`tab` is a tab's number, not {tab}"));
         };
         match self.facade.hand_off(&self.slot, reason, tab).await? {
             HandOffEnding::Done => Ok(vec![BrowserPart::Text {
@@ -450,7 +451,7 @@ mod tests {
         };
 
         let out = tool
-            .call(ToolInput { value: json!({ "reason": "solve the CAPTCHA", "tab": 3 }) })
+            .call(ToolInput { value: json!({ "reason": "solve the CAPTCHA", "tab": "T3" }) })
             .await;
 
         assert!(!out.is_error, "{:?}", out.blocks);
@@ -460,7 +461,7 @@ mod tests {
         );
         assert_eq!(
             mock.hand_offs.lock().as_slice(),
-            [("solve the CAPTCHA".to_owned(), 3)],
+            [("solve the CAPTCHA".to_owned(), "T3".to_owned())],
             "the reason and the tab cross to the park verbatim",
         );
         let text = crate::mcp::test_support::block_text(&out.blocks[0]);
@@ -479,7 +480,7 @@ mod tests {
             slot: seat(),
         };
 
-        let out = tool.call(ToolInput { value: json!({ "reason": "sign in", "tab": 2 }) }).await;
+        let out = tool.call(ToolInput { value: json!({ "reason": "sign in", "tab": "T2" }) }).await;
 
         assert!(out.is_error, "{:?}", out.blocks);
         let text = crate::mcp::test_support::block_text(&out.blocks[0]);
@@ -500,7 +501,7 @@ mod tests {
             slot: seat(),
         };
 
-        let out = tool.call(ToolInput { value: json!({ "reason": "sign in", "tab": 2 }) }).await;
+        let out = tool.call(ToolInput { value: json!({ "reason": "sign in", "tab": "T2" }) }).await;
 
         assert!(!out.is_error, "{:?}", out.blocks);
         let text = crate::mcp::test_support::block_text(&out.blocks[0]);
@@ -538,7 +539,7 @@ mod tests {
             slot: seat(),
         };
 
-        let out = tool.call(ToolInput { value: json!({ "reason": "   ", "tab": 2 }) }).await;
+        let out = tool.call(ToolInput { value: json!({ "reason": "   ", "tab": "T2" }) }).await;
 
         assert!(out.is_error, "{:?}", out.blocks);
         let text = crate::mcp::test_support::block_text(&out.blocks[0]);
@@ -577,7 +578,7 @@ mod tests {
             slot: seat(),
         };
 
-        let out = tool.call(ToolInput { value: json!({ "reason": "sign in", "tab": 2 }) }).await;
+        let out = tool.call(ToolInput { value: json!({ "reason": "sign in", "tab": "T2" }) }).await;
 
         assert!(out.is_error, "{:?}", out.blocks);
         let text = crate::mcp::test_support::block_text(&out.blocks[0]);

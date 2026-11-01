@@ -850,28 +850,34 @@ impl BrowserService {
     }
 
     /// A parked hand-off marks its tab held, so a sweep or the idle clock
-    /// leaves it alone until the resolution lands. **A tab that is not this
-    /// seat's is refused by name**: an ask parked on a stranger's tab would
-    /// send the person to a page the session never opened.
-    pub async fn hand_off_started(&self, seat: &SessionSlot, tab: u16) -> Result<(), String> {
+    /// leaves it alone until the resolution lands. **A page that is not this
+    /// seat's is refused by name**, with the tabs as they stand: an ask
+    /// parked on a stranger's tab would send the person to a page the session
+    /// never opened. Answers the tab number the ask raises, resolved from the
+    /// page id under the same check that holds it.
+    pub async fn hand_off_started(&self, seat: &SessionSlot, target: &str) -> Result<u16, String> {
         let key = self.profile_for(seat)?;
         let profile = self
             .find(key.as_str())
             .await
-            .map_err(|_| format!("tab {tab} is not open on this session's browser"))?;
-        profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).owned(seat, tab).map_err(
-            |why| {
+            .map_err(|_| format!("no tab has the page id '{target}' on this session's browser"))?;
+        let held = {
+            profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).owned_target(seat, target)
+        };
+        let tab = match held {
+            Ok(tab) => tab,
+            Err(why) => {
                 tracing::debug!(
-                    "a hand-off named a tab the seat does not own (event_name \
-                     browser_hand_off_started_refused, seat {}, tab {tab}): {why}",
+                    "a hand-off named a page the seat does not own (event_name \
+                     browser_hand_off_started_refused, seat {}, page {target}): {why}",
                     seat.display()
                 );
-                why
-            },
-        )?;
+                return Err(Self::tabs_refusal(&profile, seat, &why));
+            }
+        };
         self.holds.lock().unwrap_or_else(PoisonError::into_inner).insert((seat.clone(), tab));
         self.publish_rows(key.as_str()).await;
-        Ok(())
+        Ok(tab)
     }
 
     /// A hand-off resolved. **Only a tab still held is acted on**: a
@@ -1508,17 +1514,33 @@ impl BrowserService {
                 }
             }
             "select" => {
-                let tab = tool_tab(&args)?;
-                profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).select(seat, tab)?;
+                let target = tool_tab(&args)?;
+                let selected = {
+                    let mut tabs = profile.tabs.lock().unwrap_or_else(PoisonError::into_inner);
+                    tabs.owned_target(seat, target).and_then(|tab| tabs.select(seat, tab))
+                };
+                if let Err(why) = selected {
+                    return Err(Self::tabs_refusal(profile, seat, &why));
+                }
                 self.publish_rows(&profile.key).await;
             }
             "close" => {
-                let tab = tool_tab(&args)?;
-                self.close_owned_tab(profile, seat, tab).await?;
+                let target = tool_tab(&args)?;
+                let closed = {
+                    let mut tabs = profile.tabs.lock().unwrap_or_else(PoisonError::into_inner);
+                    tabs.owned_target(seat, target).inspect(|&tab| {
+                        tabs.close(tab);
+                    })
+                };
+                let tab = match closed {
+                    Ok(tab) => tab,
+                    Err(why) => return Err(Self::tabs_refusal(profile, seat, &why)),
+                };
+                self.orphan_tab(profile, tab).await;
             }
             other => return Err(format!("browser_tabs does not know the action '{other}'")),
         }
-        Ok(vec![BrowserPart::Text { text: self.render_tabs(profile, seat) }])
+        Ok(vec![BrowserPart::Text { text: Self::render_tabs(profile, seat) }])
     }
 
     /// Refresh the registry's titles and urls from the browser's own page
@@ -1566,7 +1588,7 @@ impl BrowserService {
                 || format!("this session has no current tab on profile '{}'", profile.key),
             )?;
         self.close_owned_tab(profile, seat, current).await?;
-        Ok(vec![BrowserPart::Text { text: self.render_tabs(profile, seat) }])
+        Ok(vec![BrowserPart::Text { text: Self::render_tabs(profile, seat) }])
     }
 
     async fn close_owned_tab(
@@ -1924,30 +1946,40 @@ impl BrowserService {
         true
     }
 
-    /// One tab's row list, in the words the tool returns.
-    fn render_tabs(&self, profile: &Profile, seat: &SessionSlot) -> String {
-        let held = self.held_tabs(&profile.key);
-        let controlled: HashSet<u16> = profile
-            .controls
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .keys()
-            .copied()
-            .collect();
+    /// The listing a tool answers with, one line per tab: **the page id first,
+    /// then the marker, title and link, then the owner.** The number the
+    /// strip draws is not printed: it restarts with every host, so it names
+    /// nothing a caller may keep.
+    fn render_tabs(profile: &Profile, seat: &SessionSlot) -> String {
         let tabs = profile.tabs.lock().unwrap_or_else(PoisonError::into_inner);
         let current = tabs.current(seat);
-        let rows = tabs.rows(&held, &controlled);
-        if rows.is_empty() {
+        let numbers = tabs.numbers();
+        if numbers.is_empty() {
             return "no tabs are open".to_owned();
         }
-        rows.iter()
-            .map(|row| {
-                let marker = if current == Some(row.number) { "(current) " } else { "" };
-                let owner = if row.owner == *seat { "you".to_owned() } else { row.owner.display() };
-                format!("- {}: {}[{}]({}) - {owner}", row.number, marker, row.title, row.url)
+        numbers
+            .iter()
+            .map(|number| {
+                let marker = if current == Some(*number) { "(current) " } else { "" };
+                let owner = match tabs.owner(*number) {
+                    Some(owner) if owner == seat => "you".to_owned(),
+                    Some(owner) => owner.display(),
+                    None => String::new(),
+                };
+                let target = tabs.target(*number).unwrap_or_default();
+                let address = if target.is_empty() { "(page not named yet)" } else { target };
+                let (title, url) = tabs.title_url(*number).unwrap_or_default();
+                format!("- {address}: {marker}[{title}]({url}) - {owner}")
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    /// A refusal that names the tabs as they stand. **A stale address recovers
+    /// in this call**: the listing the caller would have asked for next rides
+    /// the refusal.
+    fn tabs_refusal(profile: &Profile, seat: &SessionSlot, why: &str) -> String {
+        format!("{why}\nThe tabs open now:\n{}", Self::render_tabs(profile, seat))
     }
 
     /// Select one tab in the driver by its target id.
@@ -5861,15 +5893,17 @@ fn pair_tab_events(
     unmatched
 }
 
-/// The tab's number from a `browser_tabs` call: the field keeps the upstream
-/// name `index`, and it is a forge tab number.
-fn tool_tab(args: &Value) -> Result<u16, String> {
-    let index = args
-        .get("index")
-        .ok_or_else(|| "browser_tabs needs the tab's number in `index`".to_owned())?;
-    let number =
-        index.as_u64().ok_or_else(|| "`index` is a tab number, not what was passed".to_owned())?;
-    u16::try_from(number).map_err(|_| format!("{number} is not a tab number"))
+/// The tab's page id from a `browser_tabs` call. **`index` is named rather
+/// than read as missing**: a resumed seat holds the catalogue it started
+/// with, so its first call after an upgrade still says `index`.
+fn tool_tab(args: &Value) -> Result<&str, String> {
+    if args.get("tab").is_none() && args.get("index").is_some() {
+        return Err("browser_tabs takes `tab`, the page id its list prints first; `index` is gone"
+            .to_owned());
+    }
+    args.get("tab").and_then(Value::as_str).map(str::trim).filter(|tab| !tab.is_empty()).ok_or_else(
+        || "browser_tabs needs `tab`: the page id of one of the tabs in its list".to_owned(),
+    )
 }
 
 /// The view a resize asks for, when the caller owns the tab's layout: its
@@ -6984,11 +7018,12 @@ mod tests {
         );
         let rows = service.tabs(&seat).await.expect("rows").rows;
         assert_eq!(rows.len(), 1, "one tab, not a new one: {rows:?}");
-        service
-            .hand_off_started(&seat, 1)
+        let held = service
+            .hand_off_started(&seat, "T1")
             .await
-            .expect("the number a tool printed is the number a hand-off accepts");
-        service.hand_off_finished(&seat, 1).await;
+            .expect("the page id a tool printed is what a hand-off accepts");
+        assert_eq!(held, 1, "and it resolves to the tab the strip draws");
+        service.hand_off_finished(&seat, held).await;
     }
 
     /// **A selection that runs out its budget is a mute driver, let go for
@@ -9852,7 +9887,8 @@ mod tests {
         service.call(&seat, "browser_snapshot", json!({})).await.expect("the tab");
         let tab = service.tabs(&seat).await.expect("rows").rows[0].number;
         service.sweep_sessions(std::slice::from_ref(&seat), 1).await;
-        service.hand_off_started(&seat, tab).await.expect("the tab is held");
+        let held = service.hand_off_started(&seat, "T1").await.expect("the tab is held");
+        assert_eq!(held, tab, "the page id resolves to the row the strip draws");
 
         service.idle_pass().await;
         assert!(
@@ -10633,7 +10669,7 @@ mod tests {
         service.call(&worker, "browser_snapshot", json!({})).await.expect("the worker's tab");
         let worker_tab = service.tabs(&worker).await.expect("rows").rows[1].number;
 
-        service.hand_off_started(&worker, worker_tab).await.expect("the tab is held");
+        service.hand_off_started(&worker, "T2").await.expect("the tab is held");
         service.sweep_sessions(std::slice::from_ref(&lead), 1).await;
         let rows = service.tabs(&lead).await.expect("rows").rows;
         assert!(rows.iter().any(|row| row.number == lead_tab));
@@ -10719,7 +10755,7 @@ mod tests {
             "the list does not name the boot tab",
         );
         let refused =
-            service.call(&lead, "browser_tabs", json!({"action": "select", "index": 1})).await;
+            service.call(&lead, "browser_tabs", json!({"action": "select", "tab": "T1"})).await;
         assert!(refused.is_err(), "a session cannot select the boot tab");
 
         service.call(&lead, "browser_snapshot", json!({})).await.expect("the page call adopts it");
@@ -10744,7 +10780,8 @@ mod tests {
             .call(&worker, "browser_snapshot", json!({}))
             .await
             .expect("the worker adopts tab 1");
-        service.hand_off_started(&worker, 1).await.expect("the tab is held");
+        let held = service.hand_off_started(&worker, "T1").await.expect("the tab is held");
+        assert_eq!(held, 1);
 
         // The host ends; the registry and holds go with it.
         let profile = service.find("O/default").await.expect("the profile");
@@ -10757,17 +10794,18 @@ mod tests {
             .await
             .expect("the lead adopts the new tab 1");
 
-        service.hand_off_finished(&worker, 1).await;
+        service.hand_off_finished(&worker, held).await;
         let rows = service.tabs(&lead).await.expect("rows").rows;
         assert_eq!(rows.len(), 1, "the new host's tab 1 is not the old hand-off's");
         assert_eq!(rows[0].owner, lead);
     }
 
-    /// **A hand-off is refused by name on a tab that is not the seat's.** An
-    /// ask parked on a stranger's tab sends the person to a page the session
-    /// never opened; an unknown or closed number is the same refusal.
+    /// **A page id from before a host replacement names nothing after it.** The
+    /// successor's tab takes the number the old one had, so a number would
+    /// raise the wrong page; the id is refused by name and the tabs as they
+    /// now stand ride the refusal.
     #[tokio::test]
-    async fn a_hand_off_is_refused_on_a_tab_that_is_not_the_seats() {
+    async fn a_page_id_from_a_replaced_host_refuses_with_the_tabs_open_now() {
         let dir = tempfile::tempdir().expect("a temp dir");
         let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
         let worker = SessionSlot::worker("O", "p", "w");
@@ -10776,24 +10814,68 @@ mod tests {
         service
             .call(&worker, "browser_snapshot", json!({}))
             .await
-            .expect("the worker adopts tab 1");
+            .expect("the worker adopts the first host's tab");
 
-        assert_eq!(
-            service.hand_off_started(&lead, 1).await,
-            Err(format!("tab 1 belongs to {}", worker.display())),
-            "another session's tab is refused",
+        // The host ends; its successor's first tab takes number 1 again.
+        let profile = service.find("O/default").await.expect("the profile");
+        profile.end(HostEnd::Closed).await;
+        service.install_fake(&worker, FakeDriver::with_blank("T2")).await;
+        service
+            .call(&worker, "browser_snapshot", json!({}))
+            .await
+            .expect("the worker adopts the successor's tab");
+
+        let refused = service
+            .hand_off_started(&worker, "T1")
+            .await
+            .expect_err("the old host's page id is not the new host's tab");
+        assert!(refused.starts_with("no tab has the page id 'T1'"), "{refused}");
+        assert!(
+            refused.contains("The tabs open now:") && refused.contains("T2"),
+            "the listing as it stands rides the refusal: {refused}",
         );
-        assert_eq!(
-            service.hand_off_started(&worker, 9).await,
-            Err("tab 9 is not open".to_owned()),
-            "an unknown number is refused",
+        assert!(
+            !refused.contains("T1: "),
+            "and nothing claims to be the page that went: {refused}",
         );
+    }
+
+    /// **A hand-off is refused by name on a page that is not the seat's.** An
+    /// ask parked on a stranger's tab sends the person to a page the session
+    /// never opened; an id no tab carries, or one whose tab has closed, is the
+    /// same refusal.
+    #[tokio::test]
+    async fn a_hand_off_is_refused_on_a_page_that_is_not_the_seats() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let worker = SessionSlot::worker("O", "p", "w");
+        let lead = SessionSlot::lead("O", "p");
+        service.install_fake(&lead, FakeDriver::with_blank("T1")).await;
+        service
+            .call(&worker, "browser_snapshot", json!({}))
+            .await
+            .expect("the worker adopts the tab");
+
+        let foreign = service
+            .hand_off_started(&lead, "T1")
+            .await
+            .expect_err("another session's page is refused");
+        assert!(
+            foreign
+                .starts_with(&format!("the tab with page id 'T1' belongs to {}", worker.display())),
+            "{foreign}",
+        );
+        let unknown = service
+            .hand_off_started(&worker, "gone")
+            .await
+            .expect_err("an id no tab carries is refused");
+        assert!(unknown.starts_with("no tab has the page id 'gone'"), "{unknown}");
         service.call(&worker, "browser_close", json!({})).await.expect("the tab closes");
-        assert_eq!(
-            service.hand_off_started(&worker, 1).await,
-            Err("tab 1 is not open".to_owned()),
-            "a closed tab is refused",
-        );
+        let closed = service
+            .hand_off_started(&worker, "T1")
+            .await
+            .expect_err("a closed tab's page id is refused");
+        assert!(closed.starts_with("no tab has the page id 'T1'"), "{closed}");
     }
 
     /// **Done on a live seat's tab leaves it open.** The seat that touched
@@ -10812,7 +10894,7 @@ mod tests {
             .call(&worker, "browser_snapshot", json!({}))
             .await
             .expect("the worker adopts tab 1, which makes it live");
-        service.hand_off_started(&worker, 1).await.expect("the tab is held");
+        service.hand_off_started(&worker, "T1").await.expect("the tab is held");
 
         service.hand_off_finished(&worker, 1).await;
 
@@ -10838,7 +10920,7 @@ mod tests {
             .call(&worker, "browser_snapshot", json!({}))
             .await
             .expect("the worker adopts tab 1, which makes it live");
-        service.hand_off_started(&worker, 1).await.expect("the tab is held");
+        service.hand_off_started(&worker, "T1").await.expect("the tab is held");
 
         // The sweep sees both configured seats and would call the worker
         // live again; the tombstone is what it cannot re-add.
@@ -10869,7 +10951,7 @@ mod tests {
             .call(&worker, "browser_snapshot", json!({}))
             .await
             .expect("the worker adopts tab 1, which makes it live");
-        service.hand_off_started(&worker, 1).await.expect("the tab is held");
+        service.hand_off_started(&worker, "T1").await.expect("the tab is held");
 
         service.session_ended(&worker);
         // The newer snapshot no longer lists the worker, so applying it drops
@@ -10908,9 +10990,10 @@ mod tests {
         assert!(after > second, "a host's death does not reset the wire's sequence");
     }
 
-    /// **The tool's own rows name the caller's tab and its owner.** A list
-    /// that cannot say which row is the current one, or whose it is, leaves
-    /// the session driving by a number it has to guess at.
+    /// **The tool's own rows are addressed by page id, and name the caller's
+    /// tab and its owner.** A list that cannot say which row is the current
+    /// one, or whose it is, leaves the session driving by an id it has to
+    /// guess at.
     #[tokio::test]
     async fn render_tabs_names_the_current_row_and_its_owner() {
         let dir = tempfile::tempdir().expect("a temp dir");
@@ -10926,14 +11009,62 @@ mod tests {
             .adopt(2, lead.clone(), "T2", "second", "http://b/")
             .expect("the lead's tab");
 
-        let text = service.render_tabs(&profile, &worker);
+        let text = BrowserService::render_tabs(&profile, &worker);
         let lines: Vec<&str> = text.lines().collect();
-        assert!(lines[0].starts_with("- 1: (current) "), "the caller's tab is marked: {text}");
+        assert!(lines[0].starts_with("- T1: (current) "), "the page id addresses the row: {text}");
         assert!(lines[0].ends_with(" - you"), "and reads as the caller's: {text}");
+        assert!(
+            !text.contains("- 1: ") && !text.contains("- 2: "),
+            "the host's number is never printed as an address: {text}",
+        );
         assert!(
             lines.iter().any(|line| line.contains("O/p/lead")),
             "the other row names its owner"
         );
+    }
+
+    /// **A stale page id on the tool surface answers with the tabs open now**,
+    /// so a caller recovers in this call rather than in a second listing.
+    #[tokio::test]
+    async fn a_stale_page_id_answers_with_the_tabs_open_now() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let lead = SessionSlot::lead("O", "p");
+        service.install_fake(&lead, FakeDriver::with_blank("T1")).await;
+        service.call(&lead, "browser_snapshot", json!({})).await.expect("the tab is adopted");
+
+        let refused = service
+            .call(&lead, "browser_tabs", json!({ "action": "select", "tab": "GONE" }))
+            .await
+            .expect_err("an id no tab carries is refused");
+        assert!(refused.starts_with("no tab has the page id 'GONE'"), "{refused}");
+        assert!(refused.contains("The tabs open now:"), "{refused}");
+        assert!(refused.contains("- T1: (current) "), "the caller's own tab is in it: {refused}");
+
+        let closed = service
+            .call(&lead, "browser_tabs", json!({ "action": "close", "tab": "GONE" }))
+            .await
+            .expect_err("a close by a stale id is refused too");
+        assert!(closed.contains("The tabs open now:"), "{closed}");
+    }
+
+    /// **The field an upgrade retired is named rather than read as missing.**
+    /// A resumed seat holds the catalogue it started with, so its first call
+    /// after the upgrade still says `index`.
+    #[tokio::test]
+    async fn the_retired_index_argument_is_named() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let lead = SessionSlot::lead("O", "p");
+        service.install_fake(&lead, FakeDriver::with_blank("T1")).await;
+        service.call(&lead, "browser_snapshot", json!({})).await.expect("the tab is adopted");
+
+        let refused = service
+            .call(&lead, "browser_tabs", json!({ "action": "select", "index": 1 }))
+            .await
+            .expect_err("a number is not an address");
+        assert!(refused.contains("`index` is gone"), "{refused}");
+        assert!(refused.contains("`tab`"), "and names what replaced it: {refused}");
     }
 
     /// **An idle pass forgets a restarted profile's parks.** A dead host's
@@ -10954,7 +11085,7 @@ mod tests {
             .call(&worker, "browser_snapshot", json!({}))
             .await
             .expect("the worker adopts tab 1");
-        service.hand_off_started(&worker, 1).await.expect("the tab is held");
+        service.hand_off_started(&worker, "T1").await.expect("the tab is held");
         let profile = service.find("O/default").await.expect("the profile");
         profile.host_gone();
         assert!(!service.held_tabs("O/default").is_empty(), "the park outlived its host");
@@ -10980,7 +11111,7 @@ mod tests {
             .call(&worker, "browser_snapshot", json!({}))
             .await
             .expect("the worker adopts tab 1");
-        service.hand_off_started(&worker, 1).await.expect("the tab is held");
+        service.hand_off_started(&worker, "T1").await.expect("the tab is held");
         assert!(!service.held_tabs("O/default").is_empty(), "the park is held");
 
         // The host dies as the monitor records it; the next open reads the

@@ -100,12 +100,13 @@ own pre-org `shared/` and per-seat `profiles/<name>/cef` trees, then writes
 profiles live one level deeper, at `profiles/<org>/<name>/cef`, and a stray
 file under `profiles/` is not a profile.
 
-**A hand-off names a tab.** `browser_hand_off` requires the number of one of
-the session's own tabs, and **Open** raises that tab. The tab is held while
-the ask is parked: the idle clock and the dead-seat sweep both leave it
-alone, the strip marks it **held**, and the hand-off's card names it. Any
-answer releases it - Done, Not now or feedback - and a session that went
-while the tab was held takes it with it when the ask resolves.
+**A hand-off names a tab.** `browser_hand_off` requires the page id of one of
+the session's own tabs, as `browser_tabs` prints it, and **Open** raises that
+tab. The tab is held while the ask is parked: the idle clock and the
+dead-seat sweep both leave it alone, the strip marks it **held**, and the
+hand-off's card names it. Any answer releases it - Done, Not now or feedback
+- and a session that went while the tab was held takes it with it when the
+ask resolves.
 
 **A page context that dies is rebuilt and answered in the client's words**,
 never handed back as the driver's `_page` TypeError. A driver that cannot
