@@ -1227,6 +1227,14 @@ mod tests_install {
             ActiveFrom::Config { key: "transcribe_model".to_owned(), variant: "keyed".to_owned() },
             "and the page can name the key that holds the role"
         );
+        // A transcribe_model key must not leak into the cleanup role.
+        let normalizer = role_model(&resolved, DictateRole::Normalization);
+        assert_eq!(
+            normalizer.spec.file,
+            forge_dictate::ModelSpec::s1_mini_f16().file,
+            "the cleanup role still runs the compiled pin",
+        );
+        assert_eq!(normalizer.from, ActiveFrom::Pin);
     }
 
     /// Without a key the runtime pick wins over the compiled pin, and it
