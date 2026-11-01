@@ -4294,6 +4294,32 @@ describe('the frames the fold had no row for', () => {
     expect(notice?.raw, 'and the frame itself stays reachable').toContain('toolu_gone');
   });
 
+  it("keeps a refusal the server attributed to a dispatch out of the session's rows", () => {
+    // **Contract guard, not new behaviour**: the skip is the dispatch rule
+    // that predates #2767. What it pins is the half the client owes the
+    // server - once the server stamps the dispatch, the refusal must not also
+    // draw here as a row the session itself made, because the dispatch's
+    // expansion is where it draws.
+    const refusal = {
+      type: 'system',
+      subtype: 'permission_denied',
+      tool_name: 'Bash',
+      tool_use_id: 'toolu_denied',
+      decision_reason_type: 'subcommandResults',
+      message: 'Permission to use Bash has been denied.',
+      uuid: 'pd2',
+    };
+
+    expect(
+      fold([{ ...refusal, parent_tool_use_id: 'toolu_dispatch' }]),
+      'the dispatch draws it, not the session',
+    ).toHaveLength(0);
+    const control = fold([refusal]);
+    const notice = noticeOf(control[0]);
+    expect(notice?.severity, "control: the session's own refusal still draws").toBe('error');
+    expect(notice?.text, 'with the refusal the arm words it as').toContain('refused');
+  });
+
   it('draws an api error with its status and retry, and an informational line at its level', () => {
     const units = fold([
       {
