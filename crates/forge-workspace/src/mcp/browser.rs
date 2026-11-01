@@ -142,6 +142,7 @@ impl BrowserTool {
         }
         let tab = match args.get("tab") {
             Some(Value::String(tab)) if !tab.trim().is_empty() => tab.trim(),
+            Some(Value::String(_)) => return Err("a page id cannot be blank".to_owned()),
             Some(_) => {
                 return Err(
                     "browser_hand_off needs `tab` as a page id string, not a number".to_owned()
@@ -565,6 +566,13 @@ mod tests {
         assert!(retired.is_error, "{:?}", retired.blocks);
         let text = crate::mcp::test_support::block_text(&retired.blocks[0]);
         assert!(text.contains("`index` is gone"), "{text}");
+
+        // **A blank string is its own refusal**, not a number by another name.
+        let blank =
+            tool.call(ToolInput { value: json!({ "reason": "sign in", "tab": "   " }) }).await;
+        assert!(blank.is_error, "{:?}", blank.blocks);
+        let text = crate::mcp::test_support::block_text(&blank.blocks[0]);
+        assert!(text.contains("cannot be blank"), "{text}");
         assert!(mock.hand_offs.lock().is_empty(), "and nothing was parked");
     }
 

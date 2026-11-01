@@ -5916,6 +5916,7 @@ fn tool_tab(args: &Value) -> Result<&str, String> {
     }
     match args.get("tab") {
         Some(Value::String(tab)) if !tab.trim().is_empty() => Ok(tab.trim()),
+        Some(Value::String(_)) => Err("a page id cannot be blank".to_owned()),
         Some(_) => Err("browser_tabs needs `tab` as a page id string, not a number".to_owned()),
         None => {
             Err("browser_tabs needs `tab`, the page id string its list prints first".to_owned())
@@ -11168,6 +11169,13 @@ mod tests {
             .expect_err("a number is not a page id");
         assert!(numeric.contains("page id string"), "{numeric}");
         assert!(numeric.contains("not a number"), "{numeric}");
+
+        // **A blank string is its own refusal**, not a number by another name.
+        let blank = service
+            .call(&lead, "browser_tabs", json!({ "action": "select", "tab": "   " }))
+            .await
+            .expect_err("a blank id is refused");
+        assert!(blank.contains("cannot be blank"), "{blank}");
     }
 
     /// **An idle pass forgets a restarted profile's parks.** A dead host's
