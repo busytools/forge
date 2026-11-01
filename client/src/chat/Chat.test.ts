@@ -382,45 +382,55 @@ describe('the chat column as it draws', () => {
       'the lead said this',
     );
     // And the new seat's own state is what draws, not a blank page: the
-    // column is there, it says it is still reading, and it does not claim the
-    // seat is empty.
+    // column is there, it does not claim the seat is empty, and the read wait
+    // is the band's rather than the column's.
     expect(drawn(), 'the empty copy stood in for a page still on its way').not.toContain(
       'Nothing said yet',
     );
-    expect(drawn(), 'the switched column drew no wait of its own').toContain(
+    expect(drawn(), 'the switched column drew a wait the band carries').not.toContain(
       'Reading the conversation',
     );
     expect(document.querySelector('.conv'), 'the column went with the switch').not.toBeNull();
   });
 
-  it('says it is reading rather than claiming the seat is empty', () => {
+  it('claims neither an empty seat nor a wait of its own while the page is out', () => {
     const server = stub();
     draw({}, server);
 
     // A page that has not answered yet is not an empty conversation: saying
     // "nothing said yet" here tells the reader the seat is new when the truth
-    // is that nothing has come back. **The column says so itself** -
-    // it used to leave the wait to the composer's band, and a column with no
-    // line of its own read as a dead screen wherever the band's was absent.
+    // is that nothing has come back. **The band says the wait**, like every
+    // other narrative state, so the column draws no line of its own - but it
+    // must not claim the seat is empty either.
     expect(drawn(), 'the column claimed a seat whose page is still out').not.toContain(
       'Nothing said yet',
     );
-    expect(drawn(), 'the read wait has no line in the column').toContain(
+    expect(drawn(), 'the column kept a wait the band carries').not.toContain(
       'Reading the conversation',
     );
     expect(document.querySelector('.conv'), 'the column went missing').not.toBeNull();
   });
 
+  it('reports its loaded flag, which the band draws the read wait from', () => {
+    // **The band cannot read the column's state**, so the column tells it: the
+    // first report is the wait, and the page landing is the second. A wiring
+    // that never reports keeps the band reading forever.
+    const server = stub();
+    const reports: boolean[] = [];
+    draw({ onloaded: (loaded: boolean) => reports.push(loaded) }, server);
+    expect(reports.at(-1), 'the column did not report its read wait').toBe(false);
+
+    server.answer([{ key: 't1', messages: [{ type: 'assistant', uuid: 'a1' }] }]);
+    flushSync();
+    expect(reports.at(-1), 'the column did not report the page landing').toBe(true);
+  });
+
   it('draws the words a reader sends while the column is still reading', () => {
     const server = stub();
     draw({}, server);
-    expect(drawn(), 'precondition: the column says it is reading').toContain(
-      'Reading the conversation',
-    );
 
-    // **The box stays live while the first page is out**, so a send happens
-    // here - and its row has to be drawn under the wait, or the words the
-    // reader just sent are nowhere at all until the page lands.
+    // **A send can land before the page does** - the row has to be drawn, or
+    // the words the reader just sent are nowhere at all until the page lands.
     echoes.post(PIN, 'sent during the read', false, 'e-read', echoes.mint());
     flushSync();
 
@@ -568,12 +578,13 @@ describe('the chat column as it draws', () => {
     );
   });
 
-  it('draws a seat that has no session behind it as its own state', () => {
+  it('leaves a seat with no session behind it to the band, like the wake', () => {
+    // **One place for every narrative state.** The worker's stop used to be
+    // the column's; it is the band's now, so the column draws no copy of it.
     const server = stub();
-    draw({ waking: true, reason: 'no model declared', slot: { ...LEAD, label: 'w1' } }, server);
+    draw({ waking: true, slot: { ...LEAD, label: 'w1' } }, server);
 
-    expect(drawn()).toContain('not running');
-    expect(drawn()).toContain('no model declared');
+    expect(drawn(), 'the column kept a stop the band carries').not.toContain('not running');
   });
 
   it('draws a turn of interleaved peer messages as rows of one turn, both asks included', () => {

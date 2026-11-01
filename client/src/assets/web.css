@@ -68,7 +68,7 @@ html::-webkit-scrollbar,
 .ac .rows::-webkit-scrollbar,
 .sg-list::-webkit-scrollbar,
 .pop::-webkit-scrollbar,
-.box textarea::-webkit-scrollbar,
+.line textarea::-webkit-scrollbar,
 .dock .notes::-webkit-scrollbar,
 .dock .opts::-webkit-scrollbar,
 .dock .preview::-webkit-scrollbar,
@@ -82,7 +82,7 @@ html::-webkit-scrollbar-track,
 .ac .rows::-webkit-scrollbar-track,
 .sg-list::-webkit-scrollbar-track,
 .pop::-webkit-scrollbar-track,
-.box textarea::-webkit-scrollbar-track,
+.line textarea::-webkit-scrollbar-track,
 .dock .notes::-webkit-scrollbar-track,
 .dock .opts::-webkit-scrollbar-track,
 .dock .preview::-webkit-scrollbar-track,
@@ -96,7 +96,7 @@ html::-webkit-scrollbar-corner,
 .ac .rows::-webkit-scrollbar-corner,
 .sg-list::-webkit-scrollbar-corner,
 .pop::-webkit-scrollbar-corner,
-.box textarea::-webkit-scrollbar-corner,
+.line textarea::-webkit-scrollbar-corner,
 .dock .notes::-webkit-scrollbar-corner,
 .dock .opts::-webkit-scrollbar-corner,
 .dock .preview::-webkit-scrollbar-corner,
@@ -110,7 +110,7 @@ html::-webkit-scrollbar-thumb,
 .ac .rows::-webkit-scrollbar-thumb,
 .sg-list::-webkit-scrollbar-thumb,
 .pop::-webkit-scrollbar-thumb,
-.box textarea::-webkit-scrollbar-thumb,
+.line textarea::-webkit-scrollbar-thumb,
 .dock .notes::-webkit-scrollbar-thumb,
 .dock .opts::-webkit-scrollbar-thumb,
 .dock .preview::-webkit-scrollbar-thumb,
@@ -125,7 +125,7 @@ html::-webkit-scrollbar-thumb:hover,
 .ac .rows::-webkit-scrollbar-thumb:hover,
 .sg-list::-webkit-scrollbar-thumb:hover,
 .pop::-webkit-scrollbar-thumb:hover,
-.box textarea::-webkit-scrollbar-thumb:hover,
+.line textarea::-webkit-scrollbar-thumb:hover,
 .dock .notes::-webkit-scrollbar-thumb:hover,
 .dock .opts::-webkit-scrollbar-thumb:hover,
 .dock .preview::-webkit-scrollbar-thumb:hover,
@@ -138,7 +138,7 @@ html::-webkit-scrollbar-thumb:active,
 .ac .rows::-webkit-scrollbar-thumb:active,
 .sg-list::-webkit-scrollbar-thumb:active,
 .pop::-webkit-scrollbar-thumb:active,
-.box textarea::-webkit-scrollbar-thumb:active,
+.line textarea::-webkit-scrollbar-thumb:active,
 .dock .notes::-webkit-scrollbar-thumb:active,
 .dock .opts::-webkit-scrollbar-thumb:active,
 .dock .preview::-webkit-scrollbar-thumb:active,
@@ -2724,6 +2724,89 @@ details.leaf.nrow details.raw pre { margin: 4px 0 2px; padding: 6px 9px; border:
 .strip .ti .sep { opacity: .5; }
 .strip .ti .st.err { color: var(--bad); }
 
+/* ---------- the composer's live row ---------- */
+
+/* What this seat is holding, one line, above the body: the turn's own figures
+   and the seat's segments. It NEVER wraps - a chip that does not fit collapses
+   behind +N - because the ragged wrap is what grew the band to three rows
+   between 780 and 860px (Ved, in the #2159 look). Nor is it a sideways
+   scroller: the row clips the frame before it is measured, and the +N is the
+   door for whatever does not fit. */
+.live-row { position: relative; display: flex; align-items: center; gap: 2px;
+  flex-wrap: nowrap; padding: 5px 10px 5px 8px;
+  border-bottom: 1px solid var(--line); overflow: hidden;
+  font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
+/* The turn's figures lead, in the strip's own order and its own component. */
+/* The figures give way before the doors do: at a narrow width the row shrinks
+   them, and the +N stays reachable at its end. */
+.live-row .live-fig { display: inline-flex; align-items: center; gap: 6px;
+  flex: 0 1 auto; min-width: 0; overflow: hidden;
+  white-space: nowrap; padding: 3px 8px 3px 6px; color: var(--muted); }
+.live-row .live-fig > span { white-space: nowrap; }
+.live-row .live-fig .sep { color: var(--dim); opacity: .6; }
+.live-row .live-fig .st.err { color: var(--bad); }
+.live-row .live-div { flex: none; width: 1px; height: 14px; background: var(--line);
+  margin: 0 4px; }
+/* The chips share one list: one copy of each segment, in the strip's order. */
+.live-row .live-segs { display: flex; align-items: center; gap: 2px; flex: none; }
+.live-row .live-chip { position: relative; display: inline-flex; flex: none; }
+/* A segment whose store says nothing renders no element, and its wrapper must
+   not spend a gap on the row. */
+.live-row .live-segs > .live-chip:empty { display: none; }
+/* The row draws the same chips the strip does, in the row's own dress: a pill
+   rather than the strip's hover box, so a dozen of them read as one line of
+   doors. */
+.live-row .sg-seg, .live-row .bz-seg { margin-left: 0; }
+.live-row .sg-seg .sg-tog, .live-row .bz-seg .bz-tog {
+  gap: 6px; padding: 3px 8px; border-radius: 999px; color: var(--dim); }
+.live-row .sg-seg .sg-tog:hover, .live-row .sg-seg.open .sg-tog,
+.live-row .bz-seg .bz-tog:hover, .live-row .bz-seg.open .bz-tog {
+  border-color: transparent; background: var(--s3); color: var(--text); }
+/* Where a thing waits behind it, the chip says so in its tone: the review
+   answer in the accent, a failed process in the bad red. */
+.live-row .live-chip.att .sg-tog, .live-row .live-chip.att .bz-tog { color: var(--hot);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 55%, transparent); }
+.live-row .live-chip.bad .sg-tog, .live-row .live-chip.bad .bz-tog { color: var(--bad);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--bad) 50%, transparent); }
+/* The row's own doors: what waits in the body, and the reader's draft when
+   the ask holds it. Both are buttons in the row's pill dress, and the ask
+   that is waiting takes the attention tone. */
+.live-row .live-door { flex: none; display: inline-flex; align-items: center; gap: 6px;
+  font-family: var(--mono); font-size: var(--fs-label); color: var(--muted);
+  background: none; border: 1px solid transparent; border-radius: 999px;
+  padding: 3px 8px; cursor: pointer; white-space: nowrap; }
+.live-row .live-door:hover, .live-row .live-door:focus-visible {
+  color: var(--text); background: var(--s3); }
+.live-row .live-door.att { color: var(--hot);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 55%, transparent); }
+.live-row .live-door.bad { color: var(--bad);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--bad) 50%, transparent); }
+.live-row .live-door .show { color: var(--dim); }
+/* A chip that did not fit stays in the DOM so the row can measure it, out of
+   the flow and out of the reader's reach. */
+.live-row .live-chip.off { position: absolute; visibility: hidden; pointer-events: none; }
+.live-row .live-more { flex: none; margin-left: 2px; padding: 2px 8px;
+  font-family: var(--mono); font-size: var(--fs-label); color: var(--muted);
+  background: none; border: 1px solid var(--line); border-radius: 999px;
+  cursor: pointer; }
+.live-row .live-more:hover, .live-row .live-more[aria-expanded="true"] {
+  color: var(--hot); border-color: var(--accent); }
+@media (pointer: coarse) {
+  .live-row .live-more, .live-row .live-door,
+  .live-row .sg-tog, .live-row .bz-tog { min-height: 44px; }
+}
+/* The panel the +N opens: the chips the row could not hold, stacked as rows. */
+.live-panel { position: absolute; z-index: 30; overflow-y: auto;
+  background: var(--s2); outline: 1px solid var(--line); outline-offset: -1px;
+  border-radius: 11px; box-shadow: 0 14px 38px rgba(0,0,0,.5); }
+.live-panel .lp-seg { display: flex; align-items: center; padding: 0 4px; }
+.live-panel .lp-seg + .lp-seg { border-top: 1px solid var(--line); }
+.live-panel .sg-seg, .live-panel .bz-seg { display: flex; width: 100%; }
+.live-panel .sg-tog, .live-panel .bz-tog {
+  width: 100%; justify-content: flex-start; padding: 7px 9px; }
+
 /* ---------- the composer ----------
    Taken from the mock at docs/book/src/ui/client/web-composer.html: the box, the list
    that opens over it, the dictation row inside it, the states that replace
@@ -2757,11 +2840,11 @@ details.leaf.nrow details.raw pre { margin: 4px 0 2px; padding: 6px 9px; border:
   backdrop-filter: blur(10px); box-shadow: 0 14px 38px rgba(0,0,0,.42);
   display: flex; flex-direction: column;
   transition: border-color .3s ease; }
-/* Lanes are split by hairlines; the hidden status line is not a lane. Counting
-   it as one grew the band a pixel and drew a hairline from the gate, which is
-   the open's own flinch - the span is absolutely placed and adds
-   nothing to the band but its words. */
-.surf > :not(.sr) + :not(.sr) { border-top: 1px solid var(--line); }
+/* The card draws its own hairlines where a row has one: the live row's border
+   is the line under it, so the surface adds no separator of its own between
+   children. The hidden status line is not a lane either - it is absolutely
+   placed and adds nothing to the band but its words. */
+
 .surf.rec { border-color: color-mix(in srgb, var(--accent) 35%, var(--hot)); }
 .surf.tr { border-color: var(--blue); }
 .surf.done { border-color: var(--ok); }
@@ -2798,17 +2881,23 @@ details.leaf.nrow details.raw pre { margin: 4px 0 2px; padding: 6px 9px; border:
 .hint.login .sub { color: var(--dim); display: block; font-size: var(--fs-data); }
 
 /* A lane of the surface now, not a box of its own: the ring lives on `.surf`. */
-.box { position: relative;
-  padding: 10px 13px; display: flex; flex-direction: column; gap: 0; }
-/* The draft's own row: the field, and the controls too while the bar is one
-   row. A draft long enough to need the keys takes the second row instead, and
-   the controls follow it down. */
+/* The card's one body slot: exactly one of the field (with its notice above),
+   an ask, a take's card or a blocked line. The row carries the padding,
+   because the row is the only thing in it that draws edge to edge. */
+.slot { display: flex; flex-direction: column; }
+/* The ask hidden under the reader's draft: still mounted, so nothing it holds
+   is lost, and out of the page for the keyboard and the eye alike. */
+.ask-body { display: flex; flex-direction: column; }
+.ask-body.covered { display: none; }
+/* The row's shape is shared - the review and document pages draw their own
+   `.line` - so the composer's padding is scoped to the card's body. */
 .line { display: flex; align-items: center; gap: 8px; }
-/* The separation the box's gap gave every row above the draft: C moved the
-   field and the footer together and left only that pair tight, so this stays
-   per pair rather than a gap. */
-.comp .notice + .line, .comp .notice + .ac,
-.ac + .line { margin-top: 8px; }
+/* The draft's own row: the field or the take's card, the controls, and the
+   keys a pointer can read. */
+.surf .slot > .line { padding: 10px 12px 10px 14px; }
+/* The separation the box's gap gave every row above the draft: the notice
+   sits above the row, so this stays per pair rather than a body gap. */
+.comp .notice + .line { margin-top: 8px; }
 /* The draft. A field rather than a span, so it carries no chrome of the
    page's: the box's own border is the identity. */
 .line .txt { flex: 1; min-width: 0; font-family: inherit; color: inherit;
@@ -2819,11 +2908,10 @@ details.leaf.nrow details.raw pre { margin: 4px 0 2px; padding: 6px 9px; border:
    its own. */
 .line .txt:focus { outline: none; }
 .line .txt::placeholder { color: var(--dim); font-style: italic; }
-/* The controls sit together at the right end of whichever row holds them - the
-   field's own line while the bar is one row, the foot once a draft or a
-   recording gives it a second - so the draft keeps the box's whole width and
-   the controls still land at the caret's last line. 24px is the floor a
-   pointer target takes. */
+/* The controls sit together at the right end of the body's row - the field's
+   or the take's - so the draft keeps the body's whole width and the controls
+   still land at the caret's last line. 24px is the floor a pointer target
+   takes. */
 .ctls { margin-left: auto; flex: none; display: flex; align-items: center;
   gap: 10px; }
 .mic { flex: none; width: 24px; height: 24px;
@@ -2849,16 +2937,14 @@ details.leaf.nrow details.raw pre { margin: 4px 0 2px; padding: 6px 9px; border:
 .stop { color: var(--dim); background: none; border: 0; cursor: pointer;
   display: grid; place-items: center; width: 24px; height: 24px; }
 .stop:hover { color: var(--bad); }
-.foot { display: flex; align-items: center; gap: 10px;
-  font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
-/* A narrow box cannot hold the hints and the controls on one row: the keys are
-   what the phone can spare, so they go and the controls keep the row. Measured:
-   the widest set (hints + mic + stop + send) needs 371px with a mouse's glyphs
-   and 431px with a finger's; each threshold below is that set plus the box's
-   26px of padding, a little early. */
-@container (max-width: 400px) { .foot .hints { display: none; } }
-@media (pointer: coarse) {
-  @container (max-width: 470px) { .foot .hints { display: none; } }
+/* The keys the field honours, drawn for a pointer that can see them: a finger
+   gets the row's controls alone, which is the width the band could not spare
+   for a row of its own. */
+.line .hints { display: none; }
+@media (pointer: fine) {
+  .line .hints { display: inline-flex; align-items: center; gap: 4px; flex: none;
+    font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
+    white-space: nowrap; }
 }
 
 /* The line a composer puts where the mockup puts key hints. The box's names
@@ -3042,7 +3128,7 @@ kbd { font-family: inherit; font-size: inherit; color: inherit;
 
 /* While the session cannot take input the box is replaced entirely, and the
    slot says why it is not accepting keys. */
-.blocked { display: flex; flex-direction: column; gap: 3px; }
+.blocked { display: flex; flex-direction: column; gap: 3px; padding: 12px 14px; }
 .blocked .b1 { display: flex; align-items: center; gap: 10px; font-family: var(--mono);
   font-size: var(--fs-base); color: var(--text); }
 /* The second line starts where the first does, which is the terminal's own
@@ -3172,6 +3258,15 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
 .ac .it.sel { background: var(--sel); }
 .ac .it.sel .p { color: var(--text); }
 .ac .it .g { width: 20px; flex: 0 0 20px; text-align: center; }
+/* The list is a popover over the conversation, not a lane of the bar: mounted
+   as the card's own child it hangs above the card, so opening a list never
+   moves the band (it took the band from 121px to 557px while it sat in the
+   box's flow). */
+.surf > .ac { position: absolute; left: 12px; right: 12px;
+  bottom: calc(100% + 8px); z-index: 5;
+  /* Over the conversation, not in it: a translucent ground let the chat's
+     rows read through the list. */
+  background: linear-gradient(180deg, var(--s2), var(--s1)); }
 
 /* ---------- the dock: the prompt's lane of the surface ---------- */
 
@@ -3338,7 +3433,7 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
 @media (pointer: coarse) {
   .dock .btn { min-height: 44px; }
   /* The fold control is a glyph: its box is ~19px wide without this floor. */
-  .dock .chevb { min-width: 44px; }
+  .dock .chevb { min-width: 44px; min-height: 44px; }
   .micb { min-height: 44px; min-width: 44px; }
   .sendb { min-height: 44px; min-width: 44px; }
 }
@@ -3524,12 +3619,10 @@ details.leaf.cmd > summary .tn { min-width: 0; white-space: normal;
    re-entering its window, or a fold rebuild - is drawn without replaying the
    entrance, and a scroll back to it later carries none.
 
-   Transform and opacity only, and the row's rise does not reach the
-   scroller's overflow in this shape (measured: a 50px translate moves
-   scrollHeight by 0, because virtua's item wrapper carries `contain: layout`
-   and that keeps the moved box out of the ancestor's scrollable area), so
-   the entrance cannot pull the foot pin after it. A row mid-reveal keeps its
-   own flash. */
+   Transform and opacity only, and the rise does not reach the scroller's
+   overflow in this shape (measured: a 50px translate moves scrollHeight by 0,
+   because virtua sets layout containment on the item wrapper), so the entrance
+   cannot pull the foot pin after it. A row mid-reveal keeps its own flash. */
 @keyframes arrive-fade {
   from { opacity: .35; }
   to { opacity: 1; }
@@ -4742,12 +4835,13 @@ details[open] > summary .arw { opacity: 1; }
 }
 
 /* ---------- the settings page ---------- */
-/* The two-pane direction Ved picked (2026-10-29): a sub-nav of areas with
-   their key counts and every class they hold, one area's pane, and every
-   row carrying the class that says when an edit to it lands. The page's
-   own pieces are scoped: `.rail`, `.pane` and `.chip` are names other
-   surfaces already use. The class marks are shared components, so their
-   rules below are not. */
+/* The card direction Ved picked (2026-11-01): a sub-nav of areas with their
+   key counts and every class they hold, and one area's pane drawn as instance
+   cards. Each key is a 40px line - its leaf and class badge on the left, the
+   value or the control right-aligned to the card's edge - and the badge is
+   the page's one statement of the class. The page's own pieces are scoped:
+   `.rail`, `.pane` and `.chip` are names other surfaces already use. The
+   class marks are shared components, so their rules below are not. */
 
 .settings-page .settings-pending { color: var(--muted); font-size: var(--fs-base);
   margin-top: 12vh; text-align: center; }
@@ -4756,8 +4850,15 @@ details[open] > summary .arw { opacity: 1; }
 
 .settings-page .settings-meta { margin-left: auto; display: flex; flex-direction: column;
   align-items: flex-end; gap: 3px; }
-.settings-page .settings-mode { font-family: var(--mono); font-size: 11px; color: var(--muted);
-  border: 1px solid var(--line); border-radius: 99px; padding: 2px 9px; white-space: nowrap; }
+/* The edit door is a button at every width: a phone reaches it too, so no
+   width rule may hide it. */
+.settings-page .settings-mode { font-family: var(--mono); font-size: 11.5px;
+  color: var(--muted); border: 1px solid var(--ctl); border-radius: 10px;
+  padding: 0 16px; min-height: 44px; white-space: nowrap; background: none;
+  cursor: pointer; display: inline-flex; align-items: center; }
+.settings-page .settings-mode:hover { border-color: var(--text); color: var(--text); }
+.settings-page .settings-mode.editing { color: var(--hot);
+  border-color: rgba(244,118,0,.45); background: var(--sel); }
 .settings-page .settings-link { font: inherit; font-family: var(--mono); font-size: var(--fs-label);
   color: var(--blue); background: none; border: 0; padding: 0 0 0 8px; cursor: pointer;
   text-decoration: underline; text-underline-offset: 3px; }
@@ -4782,14 +4883,9 @@ details[open] > summary .arw { opacity: 1; }
 .settings-class.icon { border: 0; padding: 0; }
 .settings-class.icon .settings-class-mark { width: 8px; height: 8px; flex-basis: 8px; }
 
-.settings-page .settings-legend { display: flex; align-items: center; gap: 20px; flex-wrap: wrap;
-  font-family: var(--mono); font-size: 11px; color: var(--dim); margin: 0 0 6px; }
-.settings-page .settings-legend-item { display: inline-flex; align-items: center; gap: 7px; }
-.settings-page .settings-legend-note { font-family: var(--mono); font-size: 11px; color: var(--dim);
-  margin: 0 0 20px; }
-
 .settings-page .settings-split { display: flex; align-items: flex-start; }
-.settings-page .settings-rail { flex: 0 0 232px; padding: 2px 18px 2px 0; }
+.settings-page .settings-rail { flex: 0 0 232px; padding: 2px 18px 2px 0;
+  position: sticky; top: 12px; align-self: flex-start; }
 .settings-page .settings-rail-item { display: flex; align-items: center; gap: 9px; width: 100%;
   text-align: left; font-family: var(--mono); font-size: var(--fs-data); color: var(--muted);
   background: none; border: 1px solid transparent; border-radius: 9px; padding: 9px 11px;
@@ -4805,40 +4901,61 @@ details[open] > summary .arw { opacity: 1; }
 
 .settings-page .settings-pane { flex: 1 1 auto; min-width: 0; padding-left: 22px;
   border-left: 1px solid var(--line); }
-.settings-page .settings-pane-head { display: flex; align-items: baseline; gap: 10px;
-  flex-wrap: wrap; margin: 2px 0 4px; }
-.settings-page .settings-pane-head .t { font-size: 19px; font-weight: 500; letter-spacing: -.01em;
-  color: var(--text); }
-.settings-page .settings-pane-head .s { font-family: var(--mono); font-size: var(--fs-label);
+/* The area head stays above the scroll. The page keeps the document scroll,
+   so this sticks to the viewport rather than to a container of its own. */
+.settings-page .settings-pane-head { position: sticky; top: 0; z-index: 2;
+  background: var(--bg); display: flex; align-items: center; gap: 10px;
+  flex-wrap: wrap; padding: 8px 0; border-bottom: 1px solid var(--line); }
+.settings-page .settings-pane-head .t { font-size: 23px; font-weight: 500;
+  letter-spacing: -.015em; color: var(--text); margin: 0; }
+.settings-page .settings-pane-note { font-family: var(--mono); font-size: 11.5px;
   color: var(--dim); }
-.settings-page .settings-keys { margin-left: auto; font-family: var(--mono); font-size: 11px;
-  color: var(--dim); }
+.settings-page .settings-pane-summary { margin-left: auto; font-family: var(--mono);
+  font-size: 10.5px; color: var(--dim); white-space: nowrap; }
+.settings-page .settings-pane-body { padding-top: 2px; }
 .settings-page .settings-empty { font-family: var(--mono); font-size: var(--fs-label);
   color: var(--dim); margin: 14px 0; }
 
-.settings-page .settings-group { display: flex; align-items: center; gap: 10px;
-  padding: 18px 2px 7px; }
-.settings-page .settings-group-name { font-family: var(--mono); font-size: 11px;
-  letter-spacing: .1em; text-transform: uppercase; color: var(--muted); font-weight: 500; }
-.settings-page .settings-group-class { margin-left: auto; }
+/* an instance card: its head band, then one line per setting */
+.settings-page .settings-card { border: 1px solid var(--line); border-radius: 12px;
+  background: var(--s1); margin: 12px 0; overflow: hidden; }
+.settings-page .settings-card.new { border-style: dashed; }
+.settings-page .settings-card-head { display: flex; align-items: center; gap: 10px;
+  flex-wrap: wrap; padding: 8px 16px; background: var(--s2);
+  border-bottom: 1px solid var(--line); }
+.settings-page .settings-card-head h3,
+.settings-page .settings-card-name { font-size: 14px; font-weight: 500;
+  color: var(--text); margin: 0; }
+.settings-page .settings-card-count { font-family: var(--mono); font-size: 10.5px;
+  color: var(--dim); }
+.settings-page .settings-card-grow { flex: 1; }
+.settings-page .settings-card.removing .settings-card-head { background: var(--s1); }
+.settings-page .settings-card.removing .settings-card-head h3,
+.settings-page .settings-card.removing .settings-card-name { color: var(--dim);
+  text-decoration: line-through; }
 
-.settings-page .settings-rows { width: 100%; border-collapse: collapse; table-layout: fixed;
-  border-top: 1px solid var(--line); }
-.settings-page .settings-rows col.k { width: 36%; }
-.settings-page .settings-rows col.e { width: 132px; }
-.settings-page .settings-rows th, .settings-page .settings-rows td { padding: 9px 10px 9px 0;
-  vertical-align: top; border-bottom: 1px solid rgba(34,42,60,.55); text-align: left;
-  font-weight: 400; }
-.settings-page .settings-rows tr:hover td, .settings-page .settings-rows tr:hover th {
-  background: rgba(27,33,48,.28); }
-.settings-page .settings-rows th[scope="row"] code { font-family: var(--mono); font-size: 13.5px;
+.settings-page .settings-setting { display: flex; align-items: center; gap: 12px;
+  min-height: 40px; padding: 5px 16px; border-top: 1px solid rgba(34,42,60,.55); }
+.settings-page .settings-setting:first-of-type { border-top: 0; }
+.settings-page .settings-setting.edit { min-height: 48px; }
+.settings-page .settings-setting.dirty { background: var(--s2);
+  box-shadow: inset 2px 0 0 var(--accent); }
+.settings-page .settings-setting.bad .settings-setting-label code { color: var(--bad); }
+.settings-page .settings-setting-label { display: flex; align-items: center; gap: 9px;
+  min-width: 0; }
+.settings-page .settings-setting-label code { font-family: var(--mono); font-size: 13px;
   color: var(--text); overflow-wrap: anywhere; }
-.settings-page .settings-rows td.v { font-family: var(--mono); font-size: 13px; color: var(--muted);
+.settings-page .settings-setting-value { margin-left: auto; min-width: 0; max-width: 52%;
+  text-align: right; font-family: var(--mono); font-size: 12.5px; color: var(--muted);
   overflow-wrap: anywhere; }
+.settings-page .settings-setting.edit .settings-setting-value { flex: 0 1 420px;
+  min-width: 0; display: flex; justify-content: flex-end; }
+.settings-page .settings-setting.edit .settings-setting-value .list-editor { flex: 1; }
+
 .settings-page .settings-value { white-space: pre-wrap; }
 .settings-page .settings-dim { color: var(--dim); }
 .settings-page .settings-chips { display: inline-flex; flex-wrap: wrap; gap: 5px;
-  vertical-align: middle; }
+  vertical-align: middle; justify-content: flex-end; }
 .settings-page .settings-chips code { font-family: var(--mono); font-size: 11.5px; color: var(--text);
   border: 1px solid var(--line); border-radius: 99px; padding: 0 7px;
   background: rgba(13,17,26,.5); }
@@ -4846,15 +4963,10 @@ details[open] > summary .arw { opacity: 1; }
 .settings-page .settings-table code { font-family: var(--mono); color: var(--text); }
 
 /* ---------- the editor ---------- */
-.settings-page button.settings-mode { font-family: var(--mono); font-size: 11px;
-  color: var(--muted); border: 1px solid var(--ctl); border-radius: 99px;
-  padding: 2px 9px; white-space: nowrap; background: none; cursor: pointer; }
-.settings-page button.settings-mode:hover { border-color: var(--text); color: var(--text); }
-.settings-page button.settings-mode.editing { color: var(--hot);
-  border-color: rgba(244,118,0,.45); background: var(--sel); }
-
 .settings-page .settings-restart { display: flex; align-items: center; gap: 12px;
-  flex-wrap: wrap; border: 1px solid rgba(201,161,59,.4); background: rgba(201,161,59,.07);
+  flex-wrap: wrap; border: 1px solid rgba(201,161,59,.4);
+  /* Opaque: the dock is sticky, so rows scroll under this banner. */
+  background: linear-gradient(rgba(201,161,59,.07), rgba(201,161,59,.07)), var(--s1);
   border-radius: var(--r); padding: 10px 14px; margin-bottom: 16px; }
 .settings-page .settings-restart .t { font-family: var(--mono); font-size: var(--fs-label);
   color: var(--warn); }
@@ -4871,23 +4983,20 @@ details[open] > summary .arw { opacity: 1; }
   border-color: rgba(224,104,62,.4); }
 .settings-page .settings-row-action.danger:hover { background: rgba(224,104,62,.1);
   color: var(--bad); }
-.settings-page .settings-rows tr.bad > th code { color: var(--bad); }
 .settings-page .settings-error { font-family: var(--mono); font-size: 10px; color: var(--bad);
-  margin-left: 8px; white-space: nowrap; }
+  white-space: nowrap; }
 .settings-page .settings-required { font-family: var(--mono); font-size: 10px;
-  color: var(--warn); margin-left: 8px; white-space: nowrap; }
+  color: var(--warn); white-space: nowrap; }
 .settings-page .settings-new { font-family: var(--mono); font-size: 10.5px; color: var(--blue);
   border: 1px solid rgba(97,160,224,.35); border-radius: 99px; padding: 0 8px; }
 .settings-page .settings-removed { font-family: var(--mono); font-size: 11px;
   color: var(--bad); }
-.settings-page .settings-group.removing .settings-group-name { color: var(--dim);
-  text-decoration: line-through; }
 
-.settings-page .settings-rows input, .settings-page .settings-rows select,
+.settings-page .settings-setting input, .settings-page .settings-setting select,
 .list-editor input { font-family: var(--mono); font-size: 13px;
   color: var(--text); background: var(--bg); border: 1px solid var(--ctl);
   border-radius: 7px; padding: 5px 8px; min-width: 0; width: 100%; }
-.settings-page .settings-rows input:focus, .settings-page .settings-rows select:focus,
+.settings-page .settings-setting input:focus, .settings-page .settings-setting select:focus,
 .list-editor input:focus { outline: none; border-color: var(--accent);
   box-shadow: 0 0 0 3px rgba(244,118,0,.12); }
 /* The form kit's own controls, styled here rather than under the settings
@@ -4918,7 +5027,8 @@ details[open] > summary .arw { opacity: 1; }
    bar is sticky, and a banner at the page top is off-screen when it lands. */
 .settings-page .settings-dock { position: sticky; bottom: 0; z-index: 5;
   display: flex; flex-direction: column; gap: 10px; margin-top: 20px;
-  padding-bottom: var(--safe-bottom); }
+  padding: 10px 0 var(--safe-bottom);
+  background: linear-gradient(to top, var(--bg) 55%, rgba(4, 5, 10, 0)); }
 .settings-page .settings-savebar { display: flex; align-items: center; gap: 12px;
   flex-wrap: wrap; padding: 12px 16px;
   border: 1px solid var(--line); border-radius: var(--r); background: var(--s1);
@@ -4961,28 +5071,55 @@ details[open] > summary .arw { opacity: 1; }
     min-height: 44px; }
   .settings-page .back, .settings-page .settings-link, .settings-page .settings-mode,
   .toggle, .list-x { display: inline-flex; align-items: center; }
-  .settings-page .settings-rows input, .settings-page .settings-rows select,
+  .settings-page .settings-setting input, .settings-page .settings-setting select,
   .list-editor input { min-height: 44px; }
 }
+/* The phone's header is a grid, so the edit door sits on the title row at the
+   right and is never hidden: it is the page's only way into edit mode. */
 @media (max-width: 760px) {
-  .settings-page .settings-meta { margin-left: 0; align-items: flex-start; width: 100%; }
+  .settings-page header.top { display: grid; grid-template-columns: auto 1fr;
+    grid-template-areas: "back brand" "title mode" "meta meta"; gap: 6px 10px;
+    align-items: center; }
+  .settings-page header.top .back { grid-area: back; justify-self: start; margin-left: 0; }
+  .settings-page header.top .brand { grid-area: brand; }
+  .settings-page header.top .title { grid-area: title; flex-direction: column;
+    align-items: flex-start; }
+  .settings-page header.top .settings-meta { grid-area: meta; justify-self: stretch;
+    margin-left: 0; align-items: flex-start; text-align: left; max-width: none; }
+  .settings-page header.top .settings-meta .totals { width: 100%; overflow-wrap: anywhere; }
+  .settings-page header.top .settings-mode { grid-area: mode; justify-self: end;
+    align-self: center; }
   .settings-page .settings-split { flex-direction: column; }
-  .settings-page .settings-rail { flex: none; width: 100%; padding: 0 0 10px; display: flex;
-    flex-wrap: wrap; gap: 6px; }
+  .settings-page .settings-rail { position: static; flex: none; width: 100%;
+    padding: 10px 0; display: flex; flex-wrap: wrap; gap: 6px;
+    border-right: 0; border-bottom: 1px solid var(--line); }
   .settings-page .settings-rail-item { width: auto; flex: 0 0 auto; margin-bottom: 0;
     border: 1px solid var(--ctl); padding: 6px 11px; }
-  .settings-page header.top .back { order: 1; }
-  .settings-page header.top .title { order: 3; flex-basis: 100%; }
-  .settings-page header.top .settings-meta { order: 4; }
-  .settings-page header.top .settings-mode { display: none; }
   .settings-page .settings-rail-count { margin-left: 2px; }
   .settings-page .settings-pane { width: 100%; padding-left: 0; border-left: 0; }
-  .settings-page .settings-keys { margin-left: 0; }
-  .settings-page .settings-rows { table-layout: auto; }
-  .settings-page .settings-rows col.k { width: 48%; }
-  .settings-page .settings-rows col.e { width: 112px; }
-  .settings-page .settings-rows th[scope="row"] code { font-size: 12.5px; }
-  .settings-page .settings-rows td.v { font-size: 12px; }
+  .settings-page .settings-pane-head { padding: 10px 0 8px; gap: 4px 10px; }
+  .settings-page .settings-pane-head .t { font-size: 21px; }
+  .settings-page .settings-pane-note { flex-basis: 100%; font-size: 10.5px; }
+  .settings-page .settings-pane-summary { margin-left: 0; }
+  .settings-page .settings-pane-body { padding: 0 2px; }
+  .settings-page .settings-card { margin: 12px 0; border-radius: 10px; }
+  .settings-page .settings-card-head { padding: 10px 12px; gap: 8px; }
+  .settings-page .settings-setting { flex-direction: column; align-items: stretch;
+    gap: 2px; min-height: 0; padding: 10px 12px; }
+  .settings-page .settings-setting-label { flex-wrap: wrap; gap: 2px 9px; }
+  .settings-page .settings-setting-label code { font-size: 12.5px; }
+  .settings-page .settings-setting-value { margin-left: 0; max-width: none;
+    text-align: left; font-size: 11.5px; }
+  .settings-page .settings-setting.edit .settings-setting-value { width: auto;
+    max-width: none; display: block; }
+  .settings-page .settings-setting.edit input, .settings-page .settings-setting.edit select,
+  .settings-page .settings-setting.edit .number-field,
+  .settings-page .settings-setting.edit .select { width: 100%; max-width: none; }
+  .settings-page .settings-setting.edit input, .settings-page .settings-setting.edit select,
+  .settings-page .settings-setting.edit .toggle,
+  .settings-page .settings-setting.edit .list-x,
+  .settings-page .settings-setting.edit .list-add { min-height: 44px; }
+  .settings-page .settings-chips { justify-content: flex-start; }
 }
 
 /* ---------- the document viewer ---------- */

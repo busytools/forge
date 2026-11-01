@@ -13,11 +13,13 @@ import { emptyHome, settingsWire } from '../dev/settings.fixture';
 
 /**
  * The editor's page: entering edit mode, a batched save's wire, the push that
- * answers it, and the refusal the bar draws.
+ * answers it, and the one claim the bar draws.
  */
 let app: Record<string, unknown> | null = null;
 let listeners: Set<(message: ServerMessage) => void>;
 let sent: { fingerprint: string; edits: SettingsEditWire[]; id: number }[];
+/** Whether the connection takes the next save. */
+let accepts: boolean;
 
 function connection(): Connection {
   return {
@@ -27,7 +29,7 @@ function connection(): Connection {
     },
     settingsEdit: (fingerprint: string, edits: SettingsEditWire[], id: number) => {
       sent.push({ fingerprint, edits, id });
-      return true;
+      return accepts;
     },
   } as unknown as Connection;
 }
@@ -55,9 +57,48 @@ function rail(label: string): HTMLElement {
   return found;
 }
 
+/** The line for one key, found by the path its code carries. */
+function setting(path: string): HTMLElement {
+  const found = [...document.querySelectorAll<HTMLElement>('.settings-setting')].find(
+    (row) => row.querySelector('code')?.getAttribute('title') === path,
+  );
+  if (found === undefined) throw new Error(`no ${path} setting`);
+  return found;
+}
+
+/** The card one instance draws, found by its heading. */
+function card(name: string): HTMLElement {
+  const found = [...document.querySelectorAll<HTMLElement>('.settings-card')].find((held) =>
+    (
+      held.querySelector('.settings-card-head h3, .settings-card-head .settings-card-name')
+        ?.textContent ?? ''
+    ).includes(name),
+  );
+  if (found === undefined) throw new Error(`no ${name} card`);
+  return found;
+}
+
+/** Enter edit mode and open the server area. */
+function editing(): void {
+  (document.querySelector('.settings-mode') as HTMLButtonElement).click();
+  flushSync();
+  rail('server').click();
+  flushSync();
+}
+
+/** Change the port through its control. */
+function changePort(): void {
+  const port = setting('server.port').querySelector<HTMLInputElement>('.number-field');
+  if (port === null) throw new Error('the number control is not drawn');
+  port.value = '8791';
+  port.dispatchEvent(new Event('input', { bubbles: true }));
+  flushSync();
+}
+
 beforeEach(() => {
   listeners = new Set();
   sent = [];
+  accepts = true;
 });
 
 afterEach(async () => {
@@ -70,19 +111,8 @@ afterEach(async () => {
 describe('the settings editor page', () => {
   it('edits a value, sends one batched save, and draws the push it answers', () => {
     draw();
-    (document.querySelector('.settings-mode') as HTMLButtonElement).click();
-    flushSync();
-    rail('server').click();
-    flushSync();
-
-    const port =
-      [...document.querySelectorAll<HTMLElement>('.settings-rows tr')]
-        .find((row) => row.querySelector('code')?.getAttribute('title') === 'server.port')
-        ?.querySelector<HTMLInputElement>('.number-field') ?? null;
-    if (port === null) throw new Error('the number control is not drawn');
-    port.value = '8791';
-    port.dispatchEvent(new Event('input', { bubbles: true }));
-    flushSync();
+    editing();
+    changePort();
     expect(document.body.textContent, 'the bar counts the change').toContain('1 unsaved');
 
     (document.querySelector('.settings-btn.go') as HTMLButtonElement).click();
@@ -131,18 +161,8 @@ describe('the settings editor page', () => {
 
   it('draws the refusal a save that wrote nothing returns', () => {
     draw();
-    (document.querySelector('.settings-mode') as HTMLButtonElement).click();
-    flushSync();
-    rail('server').click();
-    flushSync();
-    const port =
-      [...document.querySelectorAll<HTMLElement>('.settings-rows tr')]
-        .find((row) => row.querySelector('code')?.getAttribute('title') === 'server.port')
-        ?.querySelector<HTMLInputElement>('.number-field') ?? null;
-    if (port === null) throw new Error('the number control is not drawn');
-    port.value = '8791';
-    port.dispatchEvent(new Event('input', { bubbles: true }));
-    flushSync();
+    editing();
+    changePort();
     (document.querySelector('.settings-btn.go') as HTMLButtonElement).click();
     flushSync();
 
@@ -157,8 +177,8 @@ describe('the settings editor page', () => {
       'not a number',
     );
     expect(
-      document.querySelector('.settings-rows tr.bad code')?.getAttribute('title'),
-      'and the row the loader named is marked',
+      document.querySelector('.settings-setting.bad code')?.getAttribute('title'),
+      'and the line the loader named is marked',
     ).toBe('server.port');
   });
 
@@ -177,18 +197,8 @@ describe('the settings editor page', () => {
 
   it('draws a foreign push as a conflict instead of rebasing the draft', () => {
     draw();
-    (document.querySelector('.settings-mode') as HTMLButtonElement).click();
-    flushSync();
-    rail('server').click();
-    flushSync();
-    const port =
-      [...document.querySelectorAll<HTMLElement>('.settings-rows tr')]
-        .find((row) => row.querySelector('code')?.getAttribute('title') === 'server.port')
-        ?.querySelector<HTMLInputElement>('.number-field') ?? null;
-    if (port === null) throw new Error('the number control is not drawn');
-    port.value = '8791';
-    port.dispatchEvent(new Event('input', { bubbles: true }));
-    flushSync();
+    editing();
+    changePort();
 
     settingsFrame.set({
       status: 'ready',
@@ -206,20 +216,98 @@ describe('the settings editor page', () => {
     ).toBe(true);
   });
 
+  /**
+   * **The bar makes one claim.** A landed save keeps its flash for a moment;
+   * an edit, then a foreign push, must replace it rather than draw beside it:
+   * "1 unsaved saved forge.toml changed" states two things at once.
+   */
+  it('clears the saved flash when a foreign push opens a conflict', () => {
+    draw();
+    editing();
+    changePort();
+    (document.querySelector('.settings-btn.go') as HTMLButtonElement).click();
+    flushSync();
+    hear({ kind: 'settings_saved', id: sent[0]?.id ?? 0 });
+    const bar = document.querySelector('.settings-savebar');
+    expect(bar?.querySelector('.saved'), 'the save flashed saved').not.toBeNull();
+
+    changePort();
+    settingsFrame.set({
+      status: 'ready',
+      document: { ...settingsWire, fingerprint: 'ffffffffffffffff' },
+    });
+    flushSync();
+
+    const after = document.querySelector('.settings-savebar');
+    expect(after?.textContent, 'the conflict is the bar claim').toContain(
+      'changed since this page loaded it',
+    );
+    expect(after?.querySelector('.saved'), 'and the saved flash is gone').toBeNull();
+  });
+
+  /** A refusal outranks the flash in the one slot: only the refusal draws. */
+  it('draws only the refusal when it lands after a saved flash', () => {
+    draw();
+    editing();
+    changePort();
+    (document.querySelector('.settings-btn.go') as HTMLButtonElement).click();
+    flushSync();
+    hear({ kind: 'settings_saved', id: sent[0]?.id ?? 0 });
+    expect(document.querySelector('.settings-savebar .saved')).not.toBeNull();
+
+    changePort();
+    accepts = false;
+    (document.querySelector('.settings-btn.go') as HTMLButtonElement).click();
+    flushSync();
+
+    const bar = document.querySelector('.settings-savebar');
+    expect(bar?.textContent, 'the refusal is the bar claim').toContain('nothing was sent');
+    expect(bar?.querySelector('.saved'), 'and the saved flash is gone').toBeNull();
+  });
+
+  /**
+   * **A refusal must not close the conflict's door.** A save refused for
+   * anything but a stale file leaves the draft dirty; a foreign push then
+   * sets the conflict, and with the refusal still in the one slot the reader
+   * needs the conflict's reload, not only Discard.
+   */
+  it('keeps the reload door when a conflict lands behind a refusal', () => {
+    draw();
+    editing();
+    changePort();
+    (document.querySelector('.settings-btn.go') as HTMLButtonElement).click();
+    flushSync();
+    hear({
+      kind: 'settings_refused',
+      reason: 'invalid',
+      message: 'forge.toml at /tmp/forge.toml failed to parse in `port`: not a number',
+      id: sent[0]?.id ?? 0,
+      key_path: 'server.port',
+    });
+    settingsFrame.set({
+      status: 'ready',
+      document: { ...settingsWire, fingerprint: 'ffffffffffffffff' },
+    });
+    flushSync();
+
+    const bar = document.querySelector('.settings-savebar');
+    expect(bar?.textContent, 'the refusal stays the claim').toContain('not a number');
+    expect(
+      [...(bar?.querySelectorAll<HTMLButtonElement>('.settings-btn') ?? [])].some(
+        (button) => button.textContent === 'reload',
+      ),
+      'the conflict reload is still offered',
+    ).toBe(true);
+    expect(
+      (document.querySelector('.settings-btn.go') as HTMLButtonElement).disabled,
+      'saving is still withheld',
+    ).toBe(true);
+  });
+
   it('asks before leaving a dirty draft', async () => {
     draw();
-    (document.querySelector('.settings-mode') as HTMLButtonElement).click();
-    flushSync();
-    rail('server').click();
-    flushSync();
-    const port =
-      [...document.querySelectorAll<HTMLElement>('.settings-rows tr')]
-        .find((row) => row.querySelector('code')?.getAttribute('title') === 'server.port')
-        ?.querySelector<HTMLInputElement>('.number-field') ?? null;
-    if (port === null) throw new Error('the number control is not drawn');
-    port.value = '8791';
-    port.dispatchEvent(new Event('input', { bubbles: true }));
-    flushSync();
+    editing();
+    changePort();
 
     (document.querySelector('.settings-mode') as HTMLButtonElement).click();
     flushSync();
@@ -251,18 +339,8 @@ describe('the settings editor page', () => {
 
   it('ignores an acknowledgement that is not this save', () => {
     draw();
-    (document.querySelector('.settings-mode') as HTMLButtonElement).click();
-    flushSync();
-    rail('server').click();
-    flushSync();
-    const port =
-      [...document.querySelectorAll<HTMLElement>('.settings-rows tr')]
-        .find((row) => row.querySelector('code')?.getAttribute('title') === 'server.port')
-        ?.querySelector<HTMLInputElement>('.number-field') ?? null;
-    if (port === null) throw new Error('the number control is not drawn');
-    port.value = '8791';
-    port.dispatchEvent(new Event('input', { bubbles: true }));
-    flushSync();
+    editing();
+    changePort();
     (document.querySelector('.settings-btn.go') as HTMLButtonElement).click();
     flushSync();
 
@@ -281,12 +359,8 @@ describe('the settings editor page', () => {
     draw();
     (document.querySelector('.settings-mode') as HTMLButtonElement).click();
     flushSync();
-    const granite = [...document.querySelectorAll<HTMLElement>('.settings-group')].find((group) =>
-      group.textContent?.includes('Granite'),
-    );
-    const remove = granite?.querySelector<HTMLButtonElement>('.settings-row-action.danger');
-    if (remove === undefined || remove === null)
-      throw new Error('the entry carries no remove door');
+    const remove = card('Granite').querySelector<HTMLButtonElement>('.settings-row-action.danger');
+    if (remove === null) throw new Error('the card carries no remove door');
     remove.click();
     flushSync();
     expect(document.querySelector('.settings-dialog')?.textContent).toContain('Granite');
@@ -308,18 +382,8 @@ describe('the settings editor page', () => {
   it('asks before a programmatic move while the draft is dirty', () => {
     currentRoute.set({ name: 'settings' });
     draw();
-    (document.querySelector('.settings-mode') as HTMLButtonElement).click();
-    flushSync();
-    rail('server').click();
-    flushSync();
-    const port =
-      [...document.querySelectorAll<HTMLElement>('.settings-rows tr')]
-        .find((row) => row.querySelector('code')?.getAttribute('title') === 'server.port')
-        ?.querySelector<HTMLInputElement>('.number-field') ?? null;
-    if (port === null) throw new Error('the number control is not drawn');
-    port.value = '8791';
-    port.dispatchEvent(new Event('input', { bubbles: true }));
-    flushSync();
+    editing();
+    changePort();
 
     goTo({ name: 'home' });
     flushSync();
@@ -338,18 +402,8 @@ describe('the settings editor page', () => {
   it('a save answer landing under the discard confirm still moves the page', async () => {
     currentRoute.set({ name: 'settings' });
     draw();
-    (document.querySelector('.settings-mode') as HTMLButtonElement).click();
-    flushSync();
-    rail('server').click();
-    flushSync();
-    const port =
-      [...document.querySelectorAll<HTMLElement>('.settings-rows tr')]
-        .find((row) => row.querySelector('code')?.getAttribute('title') === 'server.port')
-        ?.querySelector<HTMLInputElement>('.number-field') ?? null;
-    if (port === null) throw new Error('the number control is not drawn');
-    port.value = '8791';
-    port.dispatchEvent(new Event('input', { bubbles: true }));
-    flushSync();
+    editing();
+    changePort();
     (document.querySelector('.settings-btn.go') as HTMLButtonElement).click();
     flushSync();
 
@@ -381,18 +435,8 @@ describe('the settings editor page', () => {
     // is this test's and not a neighbour's.
     history.pushState({ clean: true }, '', location.href);
     draw();
-    (document.querySelector('.settings-mode') as HTMLButtonElement).click();
-    flushSync();
-    rail('server').click();
-    flushSync();
-    const port =
-      [...document.querySelectorAll<HTMLElement>('.settings-rows tr')]
-        .find((row) => row.querySelector('code')?.getAttribute('title') === 'server.port')
-        ?.querySelector<HTMLInputElement>('.number-field') ?? null;
-    if (port === null) throw new Error('the number control is not drawn');
-    port.value = '8791';
-    port.dispatchEvent(new Event('input', { bubbles: true }));
-    flushSync();
+    editing();
+    changePort();
     (document.querySelector('.settings-btn.go') as HTMLButtonElement).click();
     flushSync();
 
@@ -431,6 +475,7 @@ describe('the settings editor page', () => {
     flushSync();
     expect(document.body.textContent, 'the skeleton is drawn').toContain('new-account');
     expect(document.body.textContent, 'and its required fields are marked').toContain('required');
+    expect(document.body.textContent, 'and the card says what it is').toContain('new account');
 
     // The skeleton's add is part of the same batched save.
     (document.querySelector('.settings-btn.go') as HTMLButtonElement).click();
@@ -438,12 +483,8 @@ describe('the settings editor page', () => {
     expect(sent[0]?.edits.some((edit) => edit.op === 'add')).toBe(true);
 
     // A removal asks first, naming the entry.
-    const granite = [...document.querySelectorAll<HTMLElement>('.settings-group')].find((group) =>
-      group.textContent?.includes('Granite'),
-    );
-    const remove = granite?.querySelector<HTMLButtonElement>('.settings-row-action.danger');
-    if (remove === undefined || remove === null)
-      throw new Error('the entry carries no remove door');
+    const remove = card('Granite').querySelector<HTMLButtonElement>('.settings-row-action.danger');
+    if (remove === null) throw new Error('the card carries no remove door');
     remove.click();
     flushSync();
     expect(
@@ -459,6 +500,6 @@ describe('the settings editor page', () => {
     // the click.
     await settle(() => (document.body.textContent ?? '').includes('removed on save'));
     expect(document.querySelector('.settings-dialog'), 'the dialog is gone').toBeNull();
-    expect(document.body.textContent, 'the group reads as removed').toContain('removed on save');
+    expect(document.body.textContent, 'the card reads as removed').toContain('removed on save');
   });
 });

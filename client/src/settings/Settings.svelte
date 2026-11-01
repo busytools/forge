@@ -78,6 +78,24 @@
 
   const dirty = $derived(dirtyCount(draft));
 
+  /** The bar's one claim, in strict precedence: refusal, conflict, saving,
+   *  saved, idle. There is one slot, so two can never be drawn at once. */
+  type Claim =
+    | { kind: 'idle' }
+    | { kind: 'saving' }
+    | { kind: 'saved' }
+    | { kind: 'conflict' }
+    | { kind: 'refusal'; reason: 'stale' | 'invalid' | 'refused' | 'io'; message: string };
+
+  const claim = $derived.by((): Claim => {
+    if (refusal !== null)
+      return { kind: 'refusal', reason: refusal.reason, message: refusal.message };
+    if (conflict !== null) return { kind: 'conflict' };
+    if (saving) return { kind: 'saving' };
+    if (saved) return { kind: 'saved' };
+    return { kind: 'idle' };
+  });
+
   function clearTimer(): void {
     if (timer !== null) clearTimeout(timer);
     timer = null;
@@ -107,7 +125,13 @@
       saveContext = null;
     }
     if (dirty) {
-      if (baseline !== null && fingerprint !== baseline) conflict = fingerprint;
+      // **A foreign push clears the saved flash before it draws.** The flash
+      // is the last save's claim; a conflict is this file's, and the bar has
+      // one slot, so "saved" must not outlive the push that contradicted it.
+      if (baseline !== null && fingerprint !== baseline) {
+        conflict = fingerprint;
+        saved = false;
+      }
       return;
     }
     baseline = fingerprint;
@@ -483,23 +507,24 @@
         {/if}
         <div class="settings-savebar" role="region" aria-label="unsaved changes">
           <span class="count">{dirty} unsaved</span>
-          {#if saving}<span class="said">saving...</span>{/if}
-          {#if saved}<span class="saved">saved</span>{/if}
-          {#if conflict !== null}
+          {#if claim.kind === 'refusal'}
+            <span class="said bad" role="alert">{claim.message}</span>
+            {#if claim.reason === 'stale' || conflict !== null}
+              <button type="button" class="settings-btn" onclick={() => begin('reload')}>
+                reload
+              </button>
+            {/if}
+          {:else if claim.kind === 'conflict'}
             <span class="said bad" role="alert"
               >forge.toml changed since this page loaded it; reload to edit it</span
             >
             <button type="button" class="settings-btn" onclick={() => begin('reload')}>
               reload
             </button>
-          {/if}
-          {#if refusal !== null}
-            <span class="said bad" role="alert">{refusal.message}</span>
-            {#if refusal.reason === 'stale'}
-              <button type="button" class="settings-btn" onclick={() => begin('reload')}>
-                reload
-              </button>
-            {/if}
+          {:else if claim.kind === 'saving'}
+            <span class="said">saving...</span>
+          {:else if claim.kind === 'saved'}
+            <span class="saved">saved</span>
           {/if}
           <span class="spacer"></span>
           <button type="button" class="settings-btn ghost" disabled={saving} onclick={discard}>
@@ -511,7 +536,7 @@
             disabled={saving || dirty === 0 || conflict !== null}
             onclick={save}
           >
-            {saving ? 'saving...' : 'save'}
+            save
           </button>
         </div>
       </div>

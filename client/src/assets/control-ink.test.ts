@@ -192,7 +192,7 @@ describe('the controls that draw a boundary nothing else carries', () => {
       boundaryOf('.extensions-page button.chip.dim', SHEET),
       'a dim chip that is a button',
     ).toBe('var(--ctl)');
-    expect(boundaryOf('.settings-page button.settings-mode', SHEET), 'the settings mode pill').toBe(
+    expect(boundaryOf('.settings-page .settings-mode', SHEET), 'the settings edit door').toBe(
       CONTROL,
     );
     expect(
@@ -201,7 +201,7 @@ describe('the controls that draw a boundary nothing else carries', () => {
     ).toBe(CONTROL);
     expect(
       boundaryOf(
-        '.settings-page .settings-rows input, .settings-page .settings-rows select, .list-editor input',
+        '.settings-page .settings-setting input, .settings-page .settings-setting select, .list-editor input',
         SHEET,
       ),
       'the settings fields',

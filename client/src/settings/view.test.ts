@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { settingsWire } from '../dev/settings.fixture';
-import { builtInFor, classesOf, groupsOf, selectedArea, strongest } from './view';
+import { builtInFor, classesOf, groupsOf, selectedArea } from './view';
 
 function area(id: string) {
   const found = settingsWire.areas.find((candidate) => candidate.id === id);
@@ -43,14 +43,6 @@ describe('the settings page view', () => {
     ]);
   });
 
-  it('wears the furthest class a group holds', () => {
-    const groups = groupsOf(area('accounts'));
-    const granite = groups.find((group) => group.label === 'Granite');
-    expect(granite?.class, 'a next-session key outranks its live siblings').toBe('next_session');
-    const subspace = groups.find((group) => group.label === 'Subspace');
-    expect(subspace?.class, 'a group with only live keys reads live').toBe('live');
-  });
-
   it('names the built-in a client axis falls back to', () => {
     expect(builtInFor('client', 'client.mark'), 'an unset mark draws the shipped mark').toBe(
       'built-in panes',
@@ -74,12 +66,6 @@ describe('the settings page view', () => {
 
   it('splits the server area into its two tables', () => {
     expect(groupsOf(area('server')).map((group) => group.label)).toEqual(['browser', 'server']);
-  });
-
-  it('orders the classes by what they cost to apply', () => {
-    expect(strongest(area('connectors').keys), 'an unread key outranks an unknown class').toBe(
-      'not_read_yet',
-    );
   });
 
   it('lists every class an area holds, in the legend order', () => {
