@@ -1,5 +1,6 @@
 <script lang="ts">
   import { untrack, type Snippet } from 'svelte';
+  import { SvelteMap, SvelteSet } from 'svelte/reactivity';
   import { VList, type VListHandle } from 'virtua/svelte';
   import { heldReserve, sizes } from './row-sizes';
 
@@ -93,8 +94,10 @@
    * overhang check holds the pin until it is.
    */
   const ROW_ESTIMATE_PX = 120;
-  /** How long a finished arrival's mark stays on the newest item's wrapper. */
+  /** How long a row's arrival mark stays on it, past the animation. */
   const ARRIVE_MS = 300;
+  /** How many turns of row keys are remembered before the dropped ones go. */
+  const ARRIVED_TURNS = 64;
   /** The longest a return's hold waits for a paint before it lifts anyway. */
   const HOLD_MAX_MS = 250;
   /** How far above the last pin counts as the reader when no input preceded it. */
@@ -188,41 +191,83 @@
   /** The newest turn's key: the row the carried beat and the reader's echo ride. */
   const newest = $derived(newestTurn?.key ?? null);
   /**
-   * The newest turn's arrival mark, held for a moment after it last took a row.
+   * The rows each turn has already shown, by their own `data-k` keys.
    *
-   * **Keyed on the turn GROWING, not on the core's running answer.** A turn
-   * takes its last rows after that answer clears - the closing text lands on
-   * the completion frame and after it - and those are the rows the reader is
-   * waiting for. Every publish that rebuilds the newest turn re-arms the
-   * window, so a turn being written holds the mark throughout and a row
-   * landing as it settles enters too.
+   * **The row's key, not the DOM's shape.** The list re-creates a row's node
+   * whenever it leaves and re-enters the drawn window, and a fold rebuild
+   * re-creates it in place - so a mark read off the wrapper's last child
+   * replays the entrance for rows the reader has already seen, and the same
+   * row can enter several times inside one turn. The key is the one name a
+   * row keeps across all of that, so a key seen once is never marked again.
    *
-   * **A window that ends shortly after the turn last took a row**: the list
-   * recreates items as they leave its window, so a mark carried on a settled
-   * turn would replay the entrance on the next scroll back to it. A turn
-   * still taking rows holds the mark throughout, which is the same rule - it
-   * ends when the turn does.
+   * Seeded from what the column draws when it attaches, because those rows
+   * arrived before anyone was watching for them.
    */
-  let touched = $state<{ key: string; at: number } | null>(null);
-  $effect(() => {
-    const turn = newestTurn;
-    if (turn === null) return;
-    const at = Date.now();
-    touched = { key: turn.key, at };
-    const timer = setTimeout(() => {
-      if (touched !== null && touched.key === turn.key && touched.at === at) touched = null;
+  const arrived = new SvelteMap<string, SvelteSet<string>>();
+
+  /** Whether this row has arrived in this turn before, recording it if not. */
+  function firstArrival(turn: string, key: string): boolean {
+    let rows = arrived.get(turn);
+    if (rows === undefined) {
+      rows = new SvelteSet();
+      arrived.set(turn, rows);
+      // **A turn the window no longer holds cannot be drawn again**, so its
+      // keys go once the map outgrows the turns a conversation can hold at
+      // once. Pruned here rather than in an effect: an effect per publish
+      // moves the entry's own paint timing, which the follow is measured
+      // against.
+      if (arrived.size > ARRIVED_TURNS) {
+        const drawing = new SvelteSet(held.turns.map((held) => held.key));
+        for (const seen of [...arrived.keys()]) {
+          if (!drawing.has(seen)) arrived.delete(seen);
+        }
+      }
+    }
+    if (rows.has(key)) return false;
+    rows.add(key);
+    return true;
+  }
+
+  /** Mark one row as having just arrived, and take the mark back after it. */
+  function enter(row: HTMLElement): void {
+    row.classList.add('arrive');
+    // **The mark goes when the rise ends**, not when the fade does: the two
+    // animations run at different lengths, and a class left on the node
+    // would restart both if the row were moved in the document. The timer is
+    // the fallback for a node the animation never reaches (a stilled one).
+    const clear = (event: AnimationEvent): void => {
+      if (event.animationName !== 'arrive-rise') return;
+      row.classList.remove('arrive');
+      row.removeEventListener('animationend', clear);
+    };
+    row.addEventListener('animationend', clear);
+    setTimeout(() => {
+      row.classList.remove('arrive');
+      row.removeEventListener('animationend', clear);
     }, ARRIVE_MS);
-    return () => clearTimeout(timer);
-  });
+  }
 
   /**
-   * The item whose wrapper carries the arrival mark, if any.
+   * The rows one inserted node brought with it, outermost only.
    *
-   * The mark is a class on the WRAPPER and the animation rides its last row,
-   * so rows already drawn keep still - only the one that has just become the
-   * last enters.
+   * A new unit and the call row inside it arrive together, and entering both
+   * would run the entrance inside itself; the outermost row is the one the
+   * reader sees arrive. A row inserted inside a unit already drawn is its own
+   * outermost, so a call joining a run enters on its own.
    */
-  const arrival = $derived(touched !== null && touched.key === newest ? newest : null);
+  function rowsIn(node: Element, turn: string): HTMLElement[] {
+    if (node.matches('[data-k]')) {
+      return node.closest('[data-t]')?.getAttribute('data-t') === turn ? [node as HTMLElement] : [];
+    }
+    const out: HTMLElement[] = [];
+    for (const row of node.querySelectorAll('[data-k]')) {
+      if (row.closest('[data-t]')?.getAttribute('data-t') !== turn) continue;
+      const outer = row.parentElement?.closest('[data-k]');
+      if (outer !== null && outer !== undefined && node.contains(outer)) continue;
+      out.push(row as HTMLElement);
+    }
+    return out;
+  }
 
   /**
    * The echo goes the moment the conversation carries the words.
@@ -602,7 +647,39 @@
     });
     watcher.observe(node);
     if (content !== null) watcher.observe(content);
+    // **Rows enter here, once per key.** The observer is on the scroller
+    // rather than on the newest turn's wrapper because the wrapper itself is
+    // re-created with the list's window; a key already in `arrived` is a row
+    // the reader has seen, whoever draws it again.
+    const arrivals = new MutationObserver((records) => {
+      // **Only a turn the frames built is a live turn.** A page read is
+      // history rather than arrival, so the rows a load draws are drawn
+      // still; from the frame that opens a turn onward, every row it takes
+      // enters once.
+      const turn = untrack(() => newestTurn);
+      if (turn === null || !turn.live) return;
+      const at = turn.key;
+      for (const record of records) {
+        for (const added of record.addedNodes) {
+          if (!(added instanceof Element)) continue;
+          for (const row of rowsIn(added, at)) {
+            const key = row.getAttribute('data-k');
+            if (key === null || !firstArrival(at, key)) continue;
+            enter(row);
+          }
+        }
+      }
+    });
+    // What is already drawn has already arrived: a scroll back to it, or a
+    // fold rebuild, must draw it without replaying the entrance.
+    for (const row of node.querySelectorAll('[data-k]')) {
+      const turn = row.closest('[data-t]')?.getAttribute('data-t');
+      const key = row.getAttribute('data-k');
+      if (turn !== null && turn !== undefined && key !== null) firstArrival(turn, key);
+    }
+    arrivals.observe(node, { childList: true, subtree: true });
     return () => {
+      arrivals.disconnect();
       watcher.disconnect();
       node.removeEventListener('wheel', onWheel);
       node.removeEventListener('touchstart', arm);
@@ -1863,8 +1940,7 @@
     style="display:flex;flex-direction:column"
     data={held.turns}
     getKey={(turn: HeldTurn) => turn.key}
-    itemProps={({ item }: { item: HeldTurn }) => ({
-      ...(item.key === arrival ? { class: 'arriving' } : {}),
+    itemProps={() => ({
       // **A row the list has not measured is drawn, not hidden.** virtua
       // paints the slot and sets `visibility: hidden` until a row reports its
       // height, which is the black a fast scroll meets (#2398). The style
