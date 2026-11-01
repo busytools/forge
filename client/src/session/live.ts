@@ -1035,8 +1035,8 @@ function createSeat(
    * top asks only the new stretch, and a range another reader already asked
    * for is not asked twice.
    */
-  function owe(from: number, to: number): void {
-    if (to < from) return;
+  function owe(from: number, to: number): boolean {
+    if (to < from) return true;
     const fresh = uncovered(seat.owed, from, to);
     coverRanges(seat.owed, { from, to });
     for (const range of fresh) {
@@ -1044,9 +1044,10 @@ function createSeat(
         // A socket that is not open cannot ask, so nothing is coming: the
         // held frames draw rather than waiting forever.
         releaseHeld();
-        return;
+        return false;
       }
     }
+    return true;
   }
 
   /**
@@ -1249,7 +1250,14 @@ function createSeat(
       // **A jump past everything seen leaves a hole**, even when this frame
       // itself waits above one already owed - the stretch between the newest
       // number seen and this frame's is numbers nobody delivered (#2564).
-      if (seq > seen + 1) owe(seen + 1, seq - 1);
+      if (seq > seen + 1 && !owe(seen + 1, seq - 1)) {
+        // Nothing is coming, so nothing waits: this frame draws unordered,
+        // the fallback a closed socket has always had.
+        seat.lastSeq = Math.max(seat.lastSeq, reach);
+        draw(frame.update);
+        drain();
+        return;
+      }
       // **Everything above a hole waits.** Drawn at once, a repaired user row
       // would land below the assistant frames that streamed past it and open
       // a turn of its own at the foot; held, it draws in sequence once its
