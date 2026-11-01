@@ -16,7 +16,7 @@
  */
 
 import { taskStatus } from './families';
-import { blocksOf, leafOf, type Block, type TaskFact, type ToolLeaf } from './leaves';
+import { blocksOf, leafOf, type Block, type Denial, type TaskFact, type ToolLeaf } from './leaves';
 import { carriedValue } from './units';
 
 /** One line of the instance's own work. */
@@ -61,7 +61,7 @@ interface Frame {
    * which every other shape nests an envelope in, so they are read off the
    * raw record below. */
   tool_name?: unknown;
-  /** The reason token a refusal may carry instead of a message. */
+  /** A reason token a refusal may carry beside its message. */
   decision_reason?: unknown;
   task_id?: unknown;
   spawn_depth?: unknown;
@@ -186,16 +186,14 @@ export function dispatchFrames(messages: Iterable<unknown>, dispatchId: string):
   /** The task id the CLI assigned a child call, so its ending can be placed. */
   const owners = new Map<string, string>();
   /**
-   * The calls the CLI refused on permission grounds, by the refusal's own
-   * words.
+   * The calls the CLI refused on permission grounds, by the call each names.
    *
-   * **A refusal is not a result**, so no frame settles the call it names -
-   * and a settled call with nothing to open onto would draw `no result` over
-   * the refusal. The refusal settles the call and supplies the body the
-   * result would have carried, so the row reads the same whether the CLI's
-   * errored result followed or not.
+   * A refusal is not a result, so a refused call may get no settling frame of
+   * its own - and the row would draw `no result` over the one thing the
+   * reader needs. The refusal settles the call and carries the reason a
+   * result body would have supplied.
    */
-  const refused = new Map<string, Block>();
+  const refused = new Map<string, Denial>();
   /** What the roster said about each child call, by call id. */
   const tasks = new Map<string, TaskFact>();
   let brief: string | null = null;
@@ -243,10 +241,8 @@ export function dispatchFrames(messages: Iterable<unknown>, dispatchId: string):
           });
         } else {
           refused.set(call, {
-            type: 'tool_result',
-            tool_use_id: call,
-            content: words,
-            is_error: true,
+            mark: 'permission_denied',
+            reason: words === '' ? null : words,
           });
         }
       }
@@ -384,13 +380,15 @@ export function dispatchFrames(messages: Iterable<unknown>, dispatchId: string):
               line.id,
               line.name,
               line.input,
-              // A refused call is settled by the refusal, which no result
-              // frame will ever answer - and the refusal's words stand in for
-              // the result's body so the row loses nothing when it never came.
-              line.result ?? refused.get(line.id),
+              line.result,
               line.record,
               tasks.get(line.id),
+              // A refusal is the only settling frame such a call gets, so it
+              // settles here, and rides the row as the chip and reason the
+              // session's own fold gives the same frame.
               refused.has(line.id),
+              null,
+              refused.get(line.id) ?? null,
             ),
           }
         : line,

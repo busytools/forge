@@ -86,18 +86,18 @@ describe('a dispatch read into its timeline', () => {
     expect(first?.kind === 'call' && first.leaf.status).toBe('completed');
   });
 
-  it('draws no second row for a refusal the call itself already carries', () => {
+  it('keeps the result words and carries the refusal as the row chip', () => {
     // The refusal is session-scoped on the wire and the server stamps it with
-    // the dispatch; a timeline that drew it as its own line would show the
-    // same refusal twice, beside the call row that already carries it. The
-    // answer supplies the status and the words here, so the only property
-    // this pins is the absent second row.
+    // the dispatch. The result owns the body when one arrived - the CLI's
+    // fuller words beat the refusal's generic sentence - and the refusal still
+    // marks the row; a timeline that drew it as its own line would show the
+    // same refusal twice.
     const frames = dispatchFrames(
       [
         dispatch(),
         call('c1', 'Bash', { command: 'rm -rf /tmp/x' }),
         refusal('c1'),
-        answer('c1', 'Permission to use Bash has been denied.', true),
+        answer('c1', 'Command blocked by the workspace safety check.', true),
       ],
       'tu-task',
     );
@@ -107,8 +107,12 @@ describe('a dispatch read into its timeline', () => {
     expect(first?.kind === 'call' && first.leaf.status).toBe('failed');
     expect(
       first?.kind === 'call' ? JSON.stringify(first.leaf.body) : '',
-      'the call row carries the refusal words',
-    ).toContain('has been denied');
+      'the result words win over the refusal sentence',
+    ).toContain('blocked by the workspace safety check');
+    expect(
+      first?.kind === 'call' ? first.leaf.denied?.mark : undefined,
+      'and the refusal is the row chip',
+    ).toBe('permission_denied');
   });
 
   it('settles a refused call whose result never arrives, and keeps its words', () => {
@@ -125,6 +129,26 @@ describe('a dispatch read into its timeline', () => {
     expect(
       first?.kind === 'call' ? JSON.stringify(first.leaf.body) : '',
       'the refusal words survive the missing result',
+    ).toContain('has been denied');
+  });
+
+  it('keeps the refusal words when the result that followed says nothing', () => {
+    // A refused call can still get a blank errored result. The refusal is the
+    // only frame with words in it, and `no result` would name the wrong fact.
+    const frames = dispatchFrames(
+      [
+        dispatch(),
+        call('c1', 'Bash', { command: 'rm -rf /tmp/x' }),
+        refusal('c1'),
+        answer('c1', '', true),
+      ],
+      'tu-task',
+    );
+
+    const first = frames.lines[0];
+    expect(
+      first?.kind === 'call' ? JSON.stringify(first.leaf.body) : '',
+      'the refusal words, not an empty body',
     ).toContain('has been denied');
   });
 
