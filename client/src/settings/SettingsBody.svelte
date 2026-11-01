@@ -5,17 +5,17 @@
   import ClassMark from '../components/ClassMark.svelte';
   import { PROTOCOL_VERSION } from '../protocol';
   import type { SettingsDocument, SettingsEditSpec, SettingsKey } from '../wire/settings';
-  import EditCell from './EditCell.svelte';
-  import ValueCell from './ValueCell.svelte';
+  import InstanceCard from './InstanceCard.svelte';
+  import SettingRow from './SettingRow.svelte';
   import { ENTRY_FIELDS, addableGroups, currentEntryValue, currentValue } from './editor';
   import type { Draft } from './editor';
   import { builtInFor, classesOf, groupsOf, selectedArea } from './view';
 
   /**
    * The page's drawing, prop-only: the document the server pushed, the area
-   * the sub-nav picked, and the build facts the header names. In edit mode
-   * every value is its control and the group headers carry the add and
-   * remove doors.
+   * the sub-nav picked, and the build facts the header names. Each instance
+   * draws as a card and each key as a line inside it; in edit mode the line's
+   * value is its control and the card heads carry the add and remove doors.
    */
   let {
     document,
@@ -70,6 +70,13 @@
   const shown = $derived(selectedArea(document, selected));
   const area = $derived(shown.area);
   const groups = $derived(area === null ? [] : groupsOf(area));
+  // A project's area holds its orgs' own rows too; the summary counts the
+  // projects, not the orgs that carry them.
+  const instances = $derived(
+    groups.filter((group) =>
+      area?.id === 'projects' ? group.entryGroup === 'project' : group.label !== '',
+    ).length,
+  );
   let heading: HTMLHeadingElement | undefined = $state();
   const added = $derived(
     area === null ? [] : Object.values(draft.adds).filter((entry) => entry.area === area.id),
@@ -106,6 +113,21 @@
       group,
     };
   }
+
+  /** What an area's instances are called in its summary. */
+  function instanceWord(id: string): string {
+    const noun =
+      id === 'accounts'
+        ? 'account'
+        : id === 'projects'
+          ? 'project'
+          : id === 'models'
+            ? 'model'
+            : id === 'server'
+              ? 'table'
+              : 'group';
+    return instances === 1 ? noun : `${noun}s`;
+  }
 </script>
 
 <header class="top pagetop">
@@ -129,6 +151,7 @@
       <code>{document.source}</code>
     </span>
   </span>
+  <a class="back" href="/" onclick={onBack}>&larr; home</a>
   <button
     type="button"
     class="settings-mode"
@@ -139,22 +162,7 @@
   >
     {editing ? 'editing' : 'edit'}
   </button>
-  <a class="back" href="/" onclick={onBack}>&larr; home</a>
 </header>
-
-<div class="settings-legend" aria-label="what the effect classes mean">
-  <span class="settings-legend-item"
-    ><ClassMark held="live" /> reads the change on its next use</span
-  >
-  <span class="settings-legend-item"
-    ><ClassMark held="next_session" /> read when a session or connection opens</span
-  >
-  <span class="settings-legend-item"><ClassMark held="restart" /> built once at boot</span>
-  <span class="settings-legend-item"><ClassMark held="not_read_yet" /> nothing reads this key</span>
-</div>
-<p class="settings-legend-note">
-  an area shows every class its keys hold; a dashed ring means a key there is read by nothing.
-</p>
 
 <div class="settings-split" inert={saving}>
   <nav class="settings-rail" aria-label="config areas">
@@ -176,13 +184,17 @@
   </nav>
 
   <section class="settings-pane" aria-labelledby="settings-area-title">
-    <div class="settings-pane-head">
+    <header class="settings-pane-head">
       <h2 class="t" id="settings-area-title" tabindex="-1" bind:this={heading}>
         {area?.name ?? (shown.missing ? (selected ?? 'that area') : 'settings')}
       </h2>
       {#if area !== null}
-        <span class="s">{area.note}</span>
-        <span class="settings-keys">{area.keys.length} keys</span>
+        <span class="settings-pane-note">{area.note}</span>
+        <span class="settings-pane-summary"
+          >{area.keys.length} keys{instances === 0
+            ? ''
+            : ` / ${instances} ${instanceWord(area.id)}`}</span
+        >
         {#if editing}
           {#each addableGroups(area.id) as group (group)}
             <button type="button" class="settings-add" onclick={() => onAdd(area.id, group, null)}>
@@ -191,140 +203,119 @@
           {/each}
         {/if}
       {/if}
-    </div>
+    </header>
 
-    {#if shown.missing}
-      <p class="settings-empty">
-        That area is not in this config.
-        {#each document.areas.slice(0, 1) as first (first.id)}
-          <button
-            type="button"
-            class="settings-link"
-            onclick={() => {
-              openFirst(first.id);
-            }}
-          >
-            Open {first.name}
-          </button>
-        {/each}
-      </p>
-    {:else if area === null}
-      <p class="settings-empty">This config declares no areas.</p>
-    {:else if area.keys.length === 0 && added.length === 0}
-      <p class="settings-empty">This area has no keys.</p>
-    {:else}
-      {#each groups as group (group.label)}
-        {@const removed =
-          editing && group.entryPath !== null ? draft.removes[group.entryPath] : undefined}
-        {#if group.label !== ''}
-          <div class="settings-group" class:removing={removed !== undefined}>
-            <span class="settings-group-name">{group.label}</span>
-            <span class="settings-group-class"><ClassMark held={group.class} /></span>
-            {#if editing && group.entryGroup === 'org' && group.parent === null}
-              <button
-                type="button"
-                class="settings-row-action"
-                onclick={() => onAdd(area.id, 'project', group.label)}
-              >
-                + project
-              </button>
-            {/if}
-            {#if removed !== undefined}
-              <span class="settings-removed">removed on save</span>
-              <button
-                type="button"
-                class="settings-row-action"
-                onclick={() => onUndoRemove(removed.path)}
-              >
-                undo
-              </button>
-            {:else if editing && group.entryPath !== null && group.entryGroup !== null && group.entryGroup !== 'org'}
-              <button
-                type="button"
-                class="settings-row-action danger"
-                onclick={() =>
-                  onRemoveRequest({
-                    area: area.id,
-                    group: group.entryGroup ?? '',
-                    path: group.entryPath ?? '',
-                    label: group.label,
-                    parent: group.parent,
-                  })}
-              >
-                remove
-              </button>
-            {/if}
-          </div>
-        {/if}
-        {#if removed === undefined}
-          <table class="settings-rows">
-            <caption class="vh"
-              >{area.name}{group.label === '' ? '' : ` ${group.label}`} keys</caption
+    <div class="settings-pane-body">
+      {#if shown.missing}
+        <p class="settings-empty">
+          That area is not in this config.
+          {#each document.areas.slice(0, 1) as first (first.id)}
+            <button
+              type="button"
+              class="settings-link"
+              onclick={() => {
+                openFirst(first.id);
+              }}
             >
-            <colgroup><col class="k" /><col /><col class="e" /></colgroup>
-            <thead class="vh">
-              <tr><th scope="col">key</th><th scope="col">value</th><th scope="col">effect</th></tr>
-            </thead>
-            <tbody>
-              {#each group.rows as key (key.path)}
-                <tr class:bad={errorPath === key.path}>
-                  <th scope="row">
-                    <code title={key.path}>{key.leaf}</code>
-                    {#if editing && key.edit.required}<span class="settings-required">required</span
-                      >{/if}
-                    {#if errorPath === key.path}<span class="settings-error">error</span>{/if}
-                  </th>
-                  <td class="v">
-                    {#if editing}
-                      <EditCell
-                        path={key.path}
-                        spec={key.edit}
-                        value={currentValue(draft, key)}
-                        onchange={(next) => onValue(key, next)}
-                      />
-                    {:else}
-                      <ValueCell value={key.value} builtIn={builtInFor(area.id, key.path)} />
-                    {/if}
-                  </td>
-                  <td class="e"><ClassMark held={key.class} label={key.classLabel} /></td>
-                </tr>
-              {/each}
-            </tbody>
-          </table>
-        {/if}
-      {/each}
-      {#each added as entry (entry.path)}
-        <div class="settings-group new">
-          <span class="settings-group-name">{entry.label}</span>
-          <span class="settings-new">new {entry.group}</span>
-          <button type="button" class="settings-row-action" onclick={() => onCancelAdd(entry.path)}>
-            discard
-          </button>
-        </div>
-        <table class="settings-rows">
-          <caption class="vh">new {entry.group} {entry.label}</caption>
-          <colgroup><col class="k" /><col /><col class="e" /></colgroup>
-          <tbody>
-            {#each ENTRY_FIELDS[entry.group] ?? [] as field, index (field.key)}
-              <tr>
-                <th scope="row">
-                  <code>{field.key}</code>
-                  {#if field.required}<span class="settings-required">required</span>{/if}
-                </th>
-                <td class="v" id={index === 0 ? `settings-add-first-${entry.path}` : undefined}>
-                  <EditCell
-                    path={`${entry.path}.${field.key}`}
-                    spec={addedSpec(entry.group, field)}
-                    value={currentEntryValue(draft, entry.path, field.key)}
-                    onchange={(next) => onEntryValue(entry.path, field.key, next)}
-                  />
-                </td>
-                <td class="e"><span class="settings-new">new</span></td>
-              </tr>
+              Open {first.name}
+            </button>
+          {/each}
+        </p>
+      {:else if area === null}
+        <p class="settings-empty">This config declares no areas.</p>
+      {:else if area.keys.length === 0 && added.length === 0}
+        <p class="settings-empty">This area has no keys.</p>
+      {:else}
+        {#each groups as group, index (group.label)}
+          {@const removed =
+            editing && group.entryPath !== null ? draft.removes[group.entryPath] : undefined}
+          <InstanceCard
+            label={group.label}
+            count={group.rows.length}
+            headingId={group.label === '' ? null : `card-${area.id}-${index}`}
+            removed={removed !== undefined}
+          >
+            {#snippet actions()}
+              {#if removed !== undefined}
+                <button
+                  type="button"
+                  class="settings-row-action"
+                  onclick={() => onUndoRemove(removed.path)}
+                >
+                  undo
+                </button>
+              {:else if editing && group.entryGroup === 'org' && group.parent === null}
+                <button
+                  type="button"
+                  class="settings-row-action"
+                  onclick={() => onAdd(area.id, 'project', group.label)}
+                >
+                  + project
+                </button>
+              {:else if editing && group.entryPath !== null && group.entryGroup !== null && group.entryGroup !== 'org'}
+                <button
+                  type="button"
+                  class="settings-row-action danger"
+                  onclick={() =>
+                    onRemoveRequest({
+                      area: area.id,
+                      group: group.entryGroup ?? '',
+                      path: group.entryPath ?? '',
+                      label: group.label,
+                      parent: group.parent,
+                    })}
+                >
+                  remove
+                </button>
+              {/if}
+            {/snippet}
+            {#each group.rows as key (key.path)}
+              <SettingRow
+                leaf={key.leaf}
+                path={key.path}
+                held={key.class}
+                classLabel={key.classLabel}
+                required={key.edit.required}
+                bad={errorPath === key.path}
+                dirty={key.path in draft.values}
+                {editing}
+                spec={key.edit}
+                value={currentValue(draft, key)}
+                shown={key.value}
+                builtIn={builtInFor(area.id, key.path)}
+                onchange={(next: unknown) => onValue(key, next)}
+              />
             {/each}
-          </tbody>
-        </table>
-      {/each}
-    {/if}
+          </InstanceCard>
+        {/each}
+        {#each added as entry (entry.path)}
+          {@const fields = ENTRY_FIELDS[entry.group] ?? []}
+          <InstanceCard label={entry.label} headingId={`card-add-${entry.path}`} fresh>
+            {#snippet actions()}
+              <span class="settings-new">new {entry.group}</span>
+              <button
+                type="button"
+                class="settings-row-action"
+                onclick={() => onCancelAdd(entry.path)}
+              >
+                discard
+              </button>
+            {/snippet}
+            {#each fields as field, at (field.key)}
+              <SettingRow
+                leaf={field.key}
+                path={`${entry.path}.${field.key}`}
+                required={field.required}
+                editing
+                spec={addedSpec(entry.group, field)}
+                value={currentEntryValue(draft, entry.path, field.key)}
+                fieldId={at === 0 ? `settings-add-first-${entry.path}` : undefined}
+                onchange={(next: unknown) => onEntryValue(entry.path, field.key, next)}
+              />
+            {/each}
+          </InstanceCard>
+        {/each}
+      {/if}
+    </div>
   </section>
 </div>
