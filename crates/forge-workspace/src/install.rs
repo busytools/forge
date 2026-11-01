@@ -106,6 +106,14 @@ pub struct ActiveChoice {
     pub at: String,
 }
 
+/// The table a role's pinning key lives in.
+fn section_for(role: DictateRole) -> &'static str {
+    match role {
+        DictateRole::Speaking => "tts",
+        DictateRole::Transcribing | DictateRole::Normalization => "dictate",
+    }
+}
+
 /// The `[dictate]` key that pins one role.
 fn key_for_role(role: DictateRole) -> &'static str {
     match role {
@@ -719,7 +727,7 @@ impl Workspace {
             return Err(DispatchError::DictateOff);
         }
         if let Some(key) = self.pinning_key(role) {
-            return Err(DispatchError::PinnedRole { key });
+            return Err(DispatchError::PinnedRole { section: section_for(role), key });
         }
         if let Some(holder) = self.dictate_runtime.lock().live_holder() {
             return Err(DispatchError::TakeLive { holder });
@@ -754,7 +762,7 @@ impl Workspace {
             return Err(DispatchError::DictateOff);
         }
         if let Some(key) = self.pinning_key(role) {
-            return Err(DispatchError::PinnedRole { key });
+            return Err(DispatchError::PinnedRole { section: section_for(role), key });
         }
         if let Some(holder) = self.dictate_runtime.lock().live_holder() {
             return Err(DispatchError::TakeLive { holder });
@@ -1934,7 +1942,7 @@ mod tests_install {
             .expect_err("forge.toml pins the role");
 
         assert!(
-            matches!(&err, DispatchError::PinnedRole { key } if key == "transcribe_model"),
+            matches!(&err, DispatchError::PinnedRole { key, .. } if key == "transcribe_model"),
             "the refusal names the [dictate] key, got: {err:?}"
         );
     }

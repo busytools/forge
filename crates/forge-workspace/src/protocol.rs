@@ -2614,10 +2614,10 @@ pub enum DispatchError {
     /// engine cannot be swapped under it.
     #[error("a dictation take is live on {holder}; wait for it to finish")]
     TakeLive { holder: String },
-    /// `forge.toml` pins this role, so the runtime cannot move it; `key`
-    /// is the `[dictate]` key that does.
-    #[error("[dictate] {key} pins this model in forge.toml; remove the key to change it here")]
-    PinnedRole { key: String },
+    /// `forge.toml` pins this role, so the runtime cannot move it; `section`
+    /// and `key` name the table and key that do.
+    #[error("[{section}] {key} pins this model in forge.toml; remove the key to change it here")]
+    PinnedRole { section: &'static str, key: String },
     /// A bench holds the machine: it is measuring an engine, so a swap or
     /// a second run waits for it to finish or stops it.
     #[error("a bench is running; stop it before changing models")]
