@@ -40,6 +40,7 @@ import {
   completionText,
   fold,
   headingNameOf,
+  isInterruptText,
   namesSkill,
   queuedWords,
   skillBody,
@@ -1085,12 +1086,7 @@ function isInterruptMarker(message: unknown): boolean {
   if ((message as { type?: unknown } | null)?.type !== 'user') return false;
   return blocksIn(message).some((block) => {
     const held = block as { type?: unknown; text?: unknown } | null;
-    return (
-      held?.type === 'text' &&
-      typeof held.text === 'string' &&
-      held.text.trimStart().startsWith('[Request interrupted by user') &&
-      held.text.includes(']')
-    );
+    return held?.type === 'text' && typeof held.text === 'string' && isInterruptText(held.text);
   });
 }
 
