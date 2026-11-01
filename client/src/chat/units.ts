@@ -2344,15 +2344,22 @@ export function fold(
     return totals;
   };
 
-  /** Whether a work row draws a message that arrived after the turn's output. */
-  const arrivedRow = (row: WorkRow): boolean => row.tag === 'card' && row.card.row === 'arrived';
+  /**
+   * Whether a work row draws a message that arrived into the turn: a peer
+   * message, or a delivery from an external app.
+   */
+  const arrivedRow = (row: WorkRow): boolean =>
+    row.tag === 'inbound' || (row.tag === 'card' && row.card.row === 'arrived');
 
   /**
    * Whether a unit is nothing but messages that arrived after the last output.
    *
    * **The peer card is the shape the transcript keeps in the turn it
    * interrupted** - a bracket-led envelope opens no turn - so the drawn row is
-   * what says one landed, and the reader's own words ride the same carrier.
+   * what says one landed, and the reader's own words ride the same carrier. A
+   * delivery is the same: a cron fire, a Slack message or a Gotify push
+   * carries its own prompt in, and one queued at a turn's end belongs to the
+   * next.
    */
   const arrivedAfterOutput = (unit: Unit): boolean => {
     // **The interrupt marker is the user row that is not a message**: the CLI
@@ -2393,7 +2400,9 @@ export function fold(
       }
       if (cut === held.rows.length) break;
       // Two units in the one's place: the work keeps its name, and the
-      // messages take a name of their own off it, stable across folds.
+      // messages take a name of their own off it, stable across folds. A card
+      // the reader had opened closes when a split appears (PeerRow keeps its
+      // own state); accepted, and it is the only thing the split costs.
       units.splice(
         at - 1,
         1,
@@ -2975,6 +2984,10 @@ export function fold(
     if (frame.type === 'result') {
       sawResult = true;
       flushWork();
+      // The turn ended, so a command print after it is not the same command.
+      // The report below is spliced rather than pushed, and a push is what
+      // would otherwise spend this handle.
+      localCommandAt = null;
       const closes = reportPlace();
       units.splice(closes, 0, {
         kind: 'report',
@@ -2987,7 +3000,6 @@ export function fold(
       // turn spent.
       const failure = turnFailure(frame);
       if (failure !== null) {
-        localCommandAt = null;
         units.splice(closes + 1, 0, {
           kind: 'notice',
           key: keyOf(at, frame, 'failure'),

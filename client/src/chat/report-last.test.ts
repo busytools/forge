@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { fold, turnFold, type PeerCard, type Unit } from './units';
+import { fold, turnFold, type InboundLeaf, type PeerCard, type Unit } from './units';
 
 /**
  * Where the turn's report row sits when a message arrives after the
@@ -37,6 +37,21 @@ const peer = (id: string, body: string): unknown => ({
       {
         type: 'text',
         text: `[Message id=${id} from agent 'forge/backlog-browser' (org 'Busytools')]\n\n${body}`,
+      },
+    ],
+  },
+});
+
+/** A Slack delivery, as `delivery.rs` writes the prose it carries. */
+const slack = (body: string): unknown => ({
+  type: 'user',
+  uuid: 'u-slack',
+  message: {
+    role: 'user',
+    content: [
+      {
+        type: 'text',
+        text: `[Slack - workspace 'Busytools', #forge] id C1 ts 1.2\nsteward: ${body}`,
       },
     ],
   },
@@ -82,6 +97,12 @@ const cards = (units: Unit[]): PeerCard[] =>
       : [],
   );
 
+/** The delivery rows a fold drew, in the order they drew. */
+const inbounds = (units: Unit[]): InboundLeaf[] =>
+  units.flatMap((unit) =>
+    unit.kind === 'leaves' ? unit.rows.flatMap((row) => (row.tag === 'inbound' ? [row] : [])) : [],
+  );
+
 describe('the report row closes the turn', () => {
   it('draws the closing line before a peer message that arrived after the last output', () => {
     const units = fold([said('the fix is in'), peer('m-1', 'take a look'), ended()]);
@@ -125,6 +146,36 @@ describe('the report row closes the turn', () => {
       'leaves',
       'report',
       'leaves',
+    ]);
+    expect(
+      cards(units).map((card) => card.body),
+      'and the message still draws',
+    ).toEqual(['take a look']);
+  });
+
+  it("draws a delivery that arrived at the turn's end below the closing line", () => {
+    const units = fold([said('the fix is in'), slack('the gate is green'), ended()]);
+
+    expect(kinds(units), 'the report closes the turn, the delivery after it').toEqual([
+      'text',
+      'report',
+      'leaves',
+    ]);
+    expect(
+      inbounds(units).map((row) => row.body),
+      'the delivery still draws',
+    ).toEqual(['the gate is green']);
+  });
+
+  it('keeps a peer message with a call after it above the closing line', () => {
+    // The call is the assistant's last output, and it came after the message -
+    // so the message was mid-turn and the tail is not a run of messages.
+    const units = fold([said('the fix is in'), peer('m-1', 'take a look'), called('c-1'), ended()]);
+
+    expect(kinds(units), 'the message keeps the place it landed in').toEqual([
+      'text',
+      'leaves',
+      'report',
     ]);
     expect(
       cards(units).map((card) => card.body),
