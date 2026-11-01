@@ -274,3 +274,27 @@ describe("the overlay's key doors", () => {
     expect(chords, 'the chord carries no payload and is passed on').toEqual([1]);
   });
 });
+
+/**
+ * **The page names the pane each door moves the keyboard to.** `page` is the
+ * native picture and `bar` is this document; swapping the two literals sends
+ * the keyboard to the wrong pane with every other test green, so the values
+ * are read back off the commands the shell records.
+ */
+describe('the shell keyboard doors', () => {
+  it('asks for the pane each door names', async () => {
+    vi.resetModules();
+    listen.mockReset();
+    listen.mockResolvedValue(() => undefined);
+    installShellInternals();
+    const { focusBar, focusPage, installBrowserLink } = await import('./link');
+    installBrowserLink({} as Connection);
+    asked.length = 0;
+    await focusPage();
+    await focusBar();
+    expect(asked, 'the two holders, in the commands the shell receives').toEqual([
+      { command: 'browser_surface_focus', args: { holder: 'page' } },
+      { command: 'browser_surface_focus', args: { holder: 'bar' } },
+    ]);
+  });
+});

@@ -801,6 +801,14 @@ describe("the takeover bar's keyboard over a native page", () => {
     expect(document.activeElement, 'the bar is the surface that remains').toBe(
       target.querySelector('.takeover-bar'),
     );
+    // **No page pane means no chord to name**: a failed surface has nothing
+    // to move the keyboard to, so the region must not advertise the keys.
+    const bar = target.querySelector('.takeover-bar');
+    expect(bar?.getAttribute('aria-keyshortcuts'), 'no pane, no announcement').toBeNull();
+    expect(
+      target.querySelector('.tb-hint'),
+      'and no hint for a move that does not exist',
+    ).toBeNull();
   });
 
   /// **The failure lands under a bar that is already up**, which is the case
@@ -825,6 +833,6 @@ describe("the takeover bar's keyboard over a native page", () => {
     const chord = paneChord(bar, 'ArrowUp');
     expect(ask, 'no picture, no ask').not.toHaveBeenCalled();
     expect(document.activeElement, 'and the keyboard stays where the bar took it').toBe(bar);
-    expect(chord.defaultPrevented, 'the chord is still the bar panes').toBe(true);
+    expect(chord.defaultPrevented, 'no page pane, so the chord is not claimed').toBe(false);
   });
 });

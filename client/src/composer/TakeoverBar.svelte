@@ -200,7 +200,7 @@
    * keyboard here rather than dropping the focus on the body.
    */
   function handToPage(): void {
-    if (surface.phase !== 'opening' && surface.phase !== 'live') return;
+    if (!pagePaneUp()) return;
     const ask = focusPage();
     if (ask === null) return;
     void ask.catch((why: unknown) => console.warn('the keyboard did not go back', why));
@@ -212,7 +212,7 @@
     // **The chords exist only where a second pane does.** A page that keeps
     // its keys in this document has no other pane to move to, so the keys
     // stay the page's own rather than being claimed to do nothing.
-    if (pageHoldsKeyboard() && paneChord(event)) {
+    if (pagePaneUp() && paneChord(event)) {
       event.preventDefault();
       handToPage();
       return;
@@ -220,10 +220,12 @@
     trap(event);
   }
 
-  /** Whether the native page holds the keys right now: its layer over this
-   *  page is the first responder while the page is up, so the DOM bar takes
-   *  nothing and its focus would only be a ring the keyboard cannot reach. */
-  function pageHasKeyboard(): boolean {
+  /** Whether the native page is a pane right now. **While it opens or is
+   *  live it holds the keys**, so the DOM bar takes nothing and its focus
+   *  would only be a ring the keyboard cannot reach; a failed page has no
+   *  picture and no other pane to move to, so neither the chords nor their
+   *  hint exist there. */
+  function pagePaneUp(): boolean {
     return pageHoldsKeyboard() && (surface.phase === 'opening' || surface.phase === 'live');
   }
 
@@ -263,7 +265,7 @@
     };
     window.addEventListener('forge-bar-focus', toBar);
     window.addEventListener('forge-page-focus', toPage);
-    if (!pageHasKeyboard()) bar?.focus({ preventScroll: true });
+    if (!pagePaneUp()) bar?.focus({ preventScroll: true });
     // **Everything behind the bar is inert, and the bar is inside that page**:
     // the walk marks each sibling on the bar's own path, so the chat, rail
     // and composer stop being tabbable while the picture covers them. **The
@@ -378,7 +380,7 @@
   class="takeover-bar"
   role="region"
   aria-label="the browser takeover"
-  aria-keyshortcuts={pageHoldsKeyboard() ? 'Meta+Alt+ArrowDown Meta+Alt+ArrowUp' : undefined}
+  aria-keyshortcuts={pagePaneUp() ? 'Meta+Alt+ArrowDown Meta+Alt+ArrowUp' : undefined}
   tabindex="-1"
   bind:this={barEl}
 >
@@ -407,7 +409,7 @@
       </button>
     </span>
     <span class="tb-title">{title}</span>
-    {#if pageHoldsKeyboard() && !barFocused}
+    {#if pagePaneUp() && !barFocused}
       <!-- **The keyboard is in the page and this bar is one chord away.** A
            keyboard-only reader who cannot see this has to conclude the bar is
            mouse-only, which is the defect the pane routing fixed. -->
