@@ -8,10 +8,12 @@
 mod engine;
 mod error;
 mod model;
+mod split;
 
 pub use engine::QwenTts;
 pub use error::Error;
 pub use model::ModelFiles;
+pub use split::{sentences, within_bound};
 
 /// One utterance to render, with the model's own voice settings.
 #[derive(Debug, Clone)]
