@@ -1278,6 +1278,47 @@ describe('the chat column as it draws', () => {
     }
   });
 
+  it('records the result the pin is holding when the beat lets go', async () => {
+    // **A second Result can land inside the beat.** The pin holds the row that
+    // is newest at release, not the one it held when the beat began - both
+    // draw in the turn when it lets go, so both have arrived.
+    vi.useFakeTimers();
+    try {
+      const server = stub();
+      draw({}, server);
+      server.answer([]);
+      server.send(appended(prompting('go')));
+      server.send(appended(frame('a-run', 100)));
+      await painted();
+      expect(pinnedRow.of(PIN), 'precondition: the running row is pinned').not.toBeNull();
+
+      server.send(ended());
+      // The first Result starts the beat; the second lands inside it.
+      server.send(appended(settledFrame('r-1', 12.5)));
+      await painted();
+      server.send(appended(settledFrame('r-2', 9)));
+      await painted();
+
+      const turnKey =
+        [...document.querySelectorAll('.conv [data-t]')].at(-1)?.getAttribute('data-t') ?? '';
+      expect(turnKey, 'the live turn is not drawn').not.toBe('');
+
+      vi.advanceTimersByTime(450);
+      flushSync();
+      await painted();
+
+      const row = [...document.querySelectorAll<HTMLElement>('.conv [data-k]')].find(
+        (candidate) => candidate.getAttribute('data-k') === `${turnKey}:r-2`,
+      );
+      expect(row, 'the second result row did not draw').not.toBeUndefined();
+      expect(row?.classList.contains('arrive'), 'the result the pin held at release entered').toBe(
+        false,
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('pins the row of the newest turn, not of the first one the column holds', async () => {
     const server = stub();
     draw({}, server);
@@ -2032,6 +2073,54 @@ describe('the arrival mark', () => {
         again.classList.contains('arrive'),
         'a nested call re-created on its own replayed',
       ).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not enter a rebuilt run whose every row already arrived', async () => {
+    // **A run is keyed by its head, which a fold rebuild can move.** A rebuilt
+    // run carrying a call the reader has seen is a move, not an arrival; one
+    // carrying a key they have not seen is a real arrival.
+    vi.useFakeTimers();
+    try {
+      const server = stub();
+      draw({}, server);
+      server.answer([turn('t0')]);
+      server.send(appended(prompting('go')));
+      await painted();
+      const turnNode = [...document.querySelectorAll('.conv [data-t]')].at(-1);
+      expect(turnNode, 'the live turn is not drawn').not.toBeNull();
+      const turnKey = turnNode?.getAttribute('data-t') ?? '';
+
+      const bring = (unitKey: string, callKey: string): HTMLElement => {
+        const unit = document.createElement('div');
+        unit.setAttribute('data-k', `${turnKey}:${unitKey}`);
+        const call = document.createElement('div');
+        call.setAttribute('data-k', `call-${callKey}`);
+        unit.appendChild(call);
+        turnNode?.appendChild(unit);
+        return unit;
+      };
+
+      // The first run brings its call, which arrives with it.
+      const first = bring('u-one', 'c-known');
+      await painted();
+      expect(first.classList.contains('arrive'), 'the first run did not enter').toBe(true);
+
+      // A rebuilt run whose inner row has already been seen is the same run in
+      // a new shell: it moves, it does not enter.
+      const rebuilt = bring('u-two', 'c-known');
+      await painted();
+      expect(
+        rebuilt.classList.contains('arrive'),
+        'a rebuilt run whose row already arrived entered',
+      ).toBe(false);
+
+      // A run carrying a key the reader has not seen is an arrival.
+      const fresh = bring('u-three', 'c-new');
+      await painted();
+      expect(fresh.classList.contains('arrive'), 'a run with a new row did not enter').toBe(true);
     } finally {
       vi.useRealTimers();
     }
