@@ -119,6 +119,18 @@
       .doc-block:has(> p) + .doc-block:has(> p) > p {
         margin-top: 20px;
       }
+      /* a rule's target and hover band are drawn around the hairline, so its
+         row does not move */
+      .doc-block:has(> hr)::before {
+        content: '';
+        position: absolute;
+        inset: -10px 0;
+        border-radius: 6px;
+      }
+      .doc-block:has(> hr):hover::before,
+      .doc-block:has(> hr).target::before {
+        box-shadow: inset 2px 0 0 var(--accent);
+      }
       .doc-note {
         display: flex;
         flex-wrap: wrap;

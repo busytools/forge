@@ -5190,9 +5190,10 @@ details[open] > summary .arw { opacity: 1; }
   margin: 0 -10px; cursor: pointer; }
 .doc-page .doc-block:hover, .doc-page .doc-block.target, .doc-page .doc-block:focus-visible {
   background: var(--s1); box-shadow: inset 2px 0 0 var(--accent); outline: none; }
-/* The gutter between two blocks is the sheet's air and belongs to neither:
-   a press there opens nothing, and a block's own box is where its comment
-   starts. */
+/* The gutter between two blocks is the sheet's air, not a block's target: a
+   press on a paragraph's gap opens nothing, because the block's own box is
+   where its comment starts. A rule's band is the one target that reaches
+   into the gap it sits in. */
 /* `p + p` cannot see across two block boxes, so the block path states the one
    gap the collapsed margins do not already carry. */
 .doc-page .doc-block:has(> p) + .doc-block:has(> p) > p { margin-top: 20px; }
@@ -5204,14 +5205,16 @@ details[open] > summary .arw { opacity: 1; }
    own vertical padding: its pitch is the line box plus 4px, as it was. */
 .doc-page .doc-block:has(> .doc-raw) { padding: 2px 10px; }
 /* An `hr` block is a hairline, so its pointer target and hover band are a
-   24px band drawn around the line rather than laid out: an hr's own margins
-   keep the row's rhythm where it was. */
+   band drawn around the line rather than laid out: an hr's own margins keep
+   the row's rhythm where it was. The band takes half the 20px gap either
+   side, so two rules in a row do not overlap, and it carries no ground of
+   its own - the sheet's ground painted over the line it marks. */
 .doc-page .doc-block:has(> hr)::before { content: ''; position: absolute;
-  inset: -11.5px 0; border-radius: 6px; }
+  inset: -10px 0; border-radius: 6px; }
 .doc-page .doc-block:has(> hr):hover::before,
 .doc-page .doc-block:has(> hr).target::before,
 .doc-page .doc-block:has(> hr):focus-visible::before {
-  background: var(--s1); box-shadow: inset 2px 0 0 var(--accent); }
+  box-shadow: inset 2px 0 0 var(--accent); }
 /* The sheet's edges keep the trims the block used to apply to every child:
    only the first and last blocks give up their outer margin. */
 .doc-page .doc-blocks > .doc-block:first-child > :first-child { margin-top: 0; }
