@@ -90,6 +90,8 @@
     "TurnCancelled": "turn_cancelled",
     "TurnComplete": "turn_complete",
     "TurnError": "turn_error",
+    "VoiceAudio": "voice_audio",
+    "VoiceModeState": "voice_mode_state",
     "WorkChanged": "work_changed",
     "WorkerStatusChanged": "worker_status_changed"
   },
@@ -158,7 +160,9 @@
     "TaskReopen": "task_reopen",
     "TaskReserve": "task_reserve",
     "TaskVerdict": "task_verdict",
-    "UpsertReviewThread": "upsert_review_thread"
+    "UpsertReviewThread": "upsert_review_thread",
+    "VoiceMode": "voice_mode",
+    "VoiceUtterance": "voice_utterance"
   },
   "client_message": {
     "BrowserControl": "browser_control",

@@ -311,13 +311,13 @@ variant's own name rather than on `kind`:
 }
 ```
 
-A command's variant is its name around its field bag - `Command` has 57
-variants, 53 of them struct variants; the four unit variants,
+A command's variant is its name around its field bag - `Command` has 59
+variants, 55 of them struct variants; the four unit variants,
 `dictate_catalogue_check`, `dictate_bench_stop`, `plugin_update_all` and
 `plugin_check_updates`, cross as the name alone. An update is the same
 shape one level in,
 `{"kind": "update", "update": {"chat_appended": {"key": ..., "msg": ...}}}`,
-and 67 of `SessionUpdate`'s 70 variants are struct variants too. The other
+and 69 of `SessionUpdate`'s 72 variants are struct variants too. The other
 three are why the payload is not one shape: they are unit variants and cross
 as the name alone - `"catalog_loaded"`, `"cli_version_changed"` and
 `"dictate_availability"`.

@@ -303,6 +303,7 @@ census!(SessionUpdate,
         DictateProgress struct, DictateEnded struct, FatalError struct,
         DictateModelsChanged struct,
         DocumentHandOffPending struct, DocumentHandOffResolved struct,
+        VoiceAudio struct, VoiceModeState struct,
     ],
     session_update_census, SESSION_UPDATE_VARIANTS);
 
@@ -332,6 +333,7 @@ census!(Command,
         SetReviewThreadStatus struct,
         CloseSession struct, UpsertReviewThread struct, DeleteReviewThread struct,
         SubmitReview struct,
+        VoiceUtterance struct, VoiceMode struct,
     ],
     command_census, COMMAND_VARIANTS);
 
