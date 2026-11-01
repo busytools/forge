@@ -422,15 +422,18 @@ mod tests {
     /// chat.
     #[test]
     fn the_description_sends_a_review_document_through_the_hand_off() {
-        let tool = tool(MockDocumentFacade::new().into_arc());
-        assert!(
-            tool.description().contains(
-                "a document the reader is meant to review goes here with `reviewable: true`, \
-                 never as a path or link in chat"
-            ),
-            "the description carries the delivery rule: {}",
-            tool.description(),
-        );
+        for review_available in [true, false] {
+            let tool = tool_with_review(MockDocumentFacade::new().into_arc(), review_available);
+            assert!(
+                tool.description().contains(
+                    "a document the reader is meant to review goes here with `reviewable: true`, \
+                     never as a path or link in chat"
+                ),
+                "the description carries the delivery rule (review_available: {review_available}): \
+                 {}",
+                tool.description(),
+            );
+        }
     }
 
     /// The family registers exactly one tool, under the name a prompt calls
