@@ -142,7 +142,14 @@ history is the record.
    pure client change runs SHALLOW: the dev client from the worktree on its
    own (`npm --prefix client run dev`, step 7), pointed at the live forge's
    own address - no scratch forge, no `/tmp` tree, the change in front of the
-   maintainer as fast as vite starts. The cost, named: that tab is another
+   maintainer as fast as vite starts. **The origin must be allowed first, or
+   shallow fails and tempts a scratch forge that a client change never
+   needed.** A release build's socket refuses an origin it does not serve,
+   and the dev client's own loopback origin is a dev-only allowance in a debug
+   build: on a binary carrying the loopback rule any localhost port is
+   allowed, and on one older than it either install the current release or
+   list the dev origin in the live `[server] allowed_origins` (it
+   hot-reloads). The cost, named: that tab is another
    answering client on the live forge, so a turn can park on it. Anything
    that touches server behaviour runs DEEP - the full stack - with the client
    pointed at the stack:
