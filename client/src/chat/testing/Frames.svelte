@@ -1,8 +1,8 @@
 <script lang="ts">
   import { onMount } from 'svelte';
 
+  import LiveRow from '../../composer/LiveRow.svelte';
   import type { TurnInfo } from '../units';
-  import Pinned from '../Pinned.svelte';
 
   /**
    * The pinned row with frames that keep landing.
@@ -13,7 +13,7 @@
    * (`Strip.svelte`'s comment carries the reasoning). The swap is a fresh
    * object every 400 ms, which is what a changed read looks like to the effect.
    *
-   * The fixture is the record `Pinned.test.ts` draws too - a running turn with
+   * The fixture is the record `LiveRow.test.ts` draws too - a running turn with
    * no usage yet, stamped where its clock stands still - and it lives here
    * rather than arriving as a prop, because the row below reads the seeded
    * value and a prop read at init is only ever its first value anyway.
@@ -41,4 +41,4 @@
   });
 </script>
 
-<Pinned {info} />
+<LiveRow {info} />

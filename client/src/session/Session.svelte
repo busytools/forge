@@ -211,6 +211,14 @@
     review.sync(reviewRows(record), reviewSets(record, now));
   });
   const seat = $derived(seatState(wire, slot));
+  /**
+   * Whether the conversation column is still waiting for its first page.
+   *
+   * **Reported by the column**, which owns the turns and their `loaded` flag:
+   * the band's line has to agree with what the column is showing, and the
+   * column is the only thing that knows when the page landed.
+   */
+  let reading = $state(true);
   /** Whether this seat's name needs its org on the header line (#1707). */
   const collides = $derived(orgNeeded(wire, slot));
   const facts = $derived(record === null ? null : headerFacts(record.header));
@@ -547,10 +555,12 @@
   const conversationProps = $derived<ConversationProps>({
     waking: seat.waking,
     spawning: seat.lifecycle === 'Spawning',
-    reason: seat.reason,
     slot,
     connection,
     queue: seatQueue,
+    onloaded: (loaded: boolean) => {
+      reading = !loaded;
+    },
   });
 </script>
 
@@ -821,7 +831,13 @@
        made in the gap goes to the right place. -->
   {#if composer !== null}
     <div class="composer">
-      {@render composer({ record: record ?? emptyComposer(slot), slot, seat, connection })}
+      {@render composer({
+        record: record ?? emptyComposer(slot),
+        slot,
+        seat,
+        connection,
+        reading,
+      })}
     </div>
   {/if}
 </div>
