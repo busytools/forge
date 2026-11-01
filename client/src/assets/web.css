@@ -3613,12 +3613,11 @@ details.leaf.cmd > summary .tn { min-width: 0; white-space: normal;
    frame lands. */
 .turn { min-height: 24px; }
 /* ---------- arriving at the foot ----------
-   The newest turn's last row settles in as it arrives. The mark rides the
-   item's own wrapper (`itemProps` in the column, where each item is the last
-   child of its own wrapper) and is held for a moment after the turn last took
-   a row, so every row that arrives - the closing ones after the core says the
-   turn is over included - enters the same way; the row a stream grows into is
-   not remounted, so nothing replays at 50Hz.
+   A row enters the first time its key is drawn in the turn being written:
+   a 150ms fade and a 6px rise over 180ms. The mark is put on the row itself
+   by the column, once per key, so a row the list re-creates - leaving and
+   re-entering its window, or a fold rebuild - is drawn without replaying the
+   entrance, and a scroll back to it later carries none.
 
    Transform and opacity only, and the rise does not reach the scroller's
    overflow in this shape (measured: a 50px translate moves scrollHeight by 0,
@@ -3632,11 +3631,11 @@ details.leaf.cmd > summary .tn { min-width: 0; white-space: normal;
   from { transform: translateY(6px); }
   to { transform: none; }
 }
-.conv .arriving [data-k]:last-child:not(.sg-hit) {
+.conv [data-k].arrive:not(.sg-hit) {
   animation: arrive-fade 150ms ease-out, arrive-rise 180ms ease-out;
 }
 @media (prefers-reduced-motion: reduce) {
-  .conv .arriving [data-k]:last-child:not(.sg-hit) { animation: none; }
+  .conv [data-k].arrive:not(.sg-hit) { animation: none; }
   /* The waking line keeps its words: the sweep is the only thing that goes.
      Declared HERE, after the base: a media query adds no specificity, so an
      arm above the rule it stills loses to it by source order. */
