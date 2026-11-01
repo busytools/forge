@@ -285,8 +285,9 @@ pub struct ForgeServerFacades {
 /// register for both kinds - unlike the four lead-only `agents__*` verbs. What
 /// each acts on is scoped rather than gated on session kind: a review
 /// conversation belongs to a project and branch, crons and subscriptions to
-/// the caller that made them, and tasks to the caller's project. A worker is
-/// exactly the session a review nudge lands on, so it needs `review__*`.
+/// the caller that made them, and tasks to the caller's project. A review
+/// nudge lands on a worker seat, so the family must be offered to workers
+/// and the nudge must stay usable when it is withheld.
 ///
 /// All submodules share the server name so the LLM sees a single
 /// namespace (`mcp__forge__<group>__*`) and the auto-approve fast-path
