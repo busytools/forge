@@ -107,9 +107,9 @@ impl CardTracker {
                             // sub-agent made is that instance's own call, drawn
                             // in its tail and not as a card of its own: the
                             // work the inner agent then does names THAT
-                            // dispatch as its parent, and nothing in the
-                            // conversation links that id to the outer
-                            // instance.
+                            // dispatch as its parent, so a refusal there
+                            // resolves to this instance's row through its child
+                            // lines (`dispatch_of`).
                             None if matches!(name.as_str(), "Task" | "Agent") => {
                                 self.at.insert(id.clone(), self.instances.len());
                                 self.instances.push(Instance {
@@ -282,13 +282,25 @@ impl CardTracker {
             .collect()
     }
 
-    /// The dispatch a task id names, when the roster linked it to one.
+    /// The row a refusal by `task_id` belongs under: the card dispatch the
+    /// agent ran as, or the instance whose child line its dispatch was.
     ///
-    /// The CLI's `permission_denied` frame names the agent a refusal belongs
-    /// to and never the dispatch it ran under, and the agent is the task id
-    /// the roster opened the dispatch with.
+    /// The CLI's `permission_denied` frame names the agent and never the
+    /// dispatch, and the agent is the task id the roster opened the dispatch
+    /// with. A nested dispatch's `Task` call has no card of its own - it is a
+    /// child line of the instance that fired it - so it resolves to that
+    /// instance's id; a task no instance owns answers `None`, and the frame
+    /// stays where it was.
     pub(crate) fn dispatch_of(&self, task_id: &str) -> Option<&str> {
-        self.task_ids.get(task_id).map(String::as_str).filter(|id| !id.trim().is_empty())
+        let linked =
+            self.task_ids.get(task_id).map(String::as_str).filter(|id| !id.trim().is_empty())?;
+        if self.at.contains_key(linked) {
+            return Some(linked);
+        }
+        self.instances
+            .iter()
+            .find(|instance| instance.children.iter().any(|child| child.id == linked))
+            .map(|instance| instance.id.as_str())
     }
 
     /// Note which task a dispatch's tool call was assigned.

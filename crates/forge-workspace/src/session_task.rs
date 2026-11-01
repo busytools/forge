@@ -1787,19 +1787,10 @@ impl SessionTask {
     }
 
     /// The same frame, naming the dispatch a sub-agent's refusal belongs
-    /// under.
-    ///
-    /// **The CLI's refusal is session-scoped.** It names the refused call and,
-    /// for a sub-agent's call, the agent that made it - never the dispatch it
-    /// ran under - so a chat drew a sub-agent's refusal as a row the session
-    /// itself had made (#2767). The agent id is the `task_id` the roster
-    /// opened the dispatch with, which is the link back to the `Task` call its
-    /// row belongs under.
-    ///
-    /// **The read path needs no such repair.** The transcript keeps no
-    /// `permission_denied` row at all; the sub-agent's own sidecar keeps the
-    /// refused call as its errored result, and the resume read already stamps
-    /// every sidecar row with the dispatch it ran under.
+    /// under: the CLI names the agent and never the dispatch, so the refusal
+    /// drew as a row the session itself had made (#2767). The read path needs
+    /// no repair, because the transcript keeps no refusal row and the
+    /// sub-agent's sidecar carries it as the call's errored result.
     fn attribute_denial(&self, msg: forge_primitives::Message) -> forge_primitives::Message {
         let forge_primitives::Message::PermissionDenied { extras, .. } = &msg else {
             return msg;
@@ -8644,6 +8635,7 @@ provider = "anthropic"
         let (mut task, _agent_rx) = command_task_for(&workspace, &slot);
         let mut updates = task.update_tx.subscribe(SubscriberRole::Answering);
 
+        task.translate_event(sdk_message(agent_call("call-dispatch", None)));
         task.translate_event(sdk_message(forge_primitives::Message::TaskStarted {
             task_id: "agent-1".to_owned(),
             description: "review the fold".to_owned(),
@@ -8663,6 +8655,47 @@ provider = "anthropic"
             "under the Task call whose instance it refused",
         );
 
+        // **A nested dispatch has no card of its own.** Its `Task` call is a
+        // child line of the instance that fired it, so a refusal the nested
+        // instance made belongs on that outer row: stamped with the child id
+        // it would draw nowhere (measured shape: `spawn_depth: 2`, an `Agent`
+        // call under the outer dispatch).
+        task.translate_event(sdk_message(agent_call("call-inner", Some("call-dispatch"))));
+        task.translate_event(sdk_message(forge_primitives::Message::TaskStarted {
+            task_id: "agent-2".to_owned(),
+            description: "inner".to_owned(),
+            uuid: "u-start-2".to_owned(),
+            session_id: "s".to_owned(),
+            tool_use_id: Some("call-inner".to_owned()),
+            task_type: Some("local_agent".to_owned()),
+            extras: {
+                let mut extras = serde_json::Map::new();
+                extras.insert("spawn_depth".to_owned(), serde_json::Value::from(2));
+                extras
+            },
+        }));
+        task.translate_event(sdk_message(refusal(Some("agent-2"))));
+
+        let drawn = drawn_refusals(&mut updates);
+        assert_eq!(drawn.len(), 1, "the nested refusal is drawn: {drawn:?}");
+        assert_eq!(
+            drawn[0].get("parent_tool_use_id").and_then(serde_json::Value::as_str),
+            Some("call-dispatch"),
+            "on the owning instance's row, not the cardless dispatch it ran under",
+        );
+
+        // A task the roster never linked leaves the refusal where it was:
+        // over the session, which is a row rather than the silence a stamp
+        // naming no card would give it (rule 25).
+        task.translate_event(sdk_message(refusal(Some("agent-unknown"))));
+        let drawn = drawn_refusals(&mut updates);
+        assert_eq!(drawn.len(), 1, "an unplaceable refusal is drawn too");
+        assert_eq!(
+            drawn[0].get("parent_tool_use_id"),
+            None,
+            "and it stays the session's own row, named by no dispatch",
+        );
+
         task.translate_event(sdk_message(refusal(None)));
         let drawn = drawn_refusals(&mut updates);
         assert_eq!(drawn.len(), 1, "a session's own refusal is drawn too");
@@ -8671,6 +8704,28 @@ provider = "anthropic"
             None,
             "and it stays the session's own row, named by no dispatch",
         );
+    }
+
+    /// An `Agent` call: a top-level dispatch opens a card, and one under
+    /// `parent` is a child line of the instance that fired it.
+    fn agent_call(call: &str, parent: Option<&str>) -> forge_primitives::Message {
+        serde_json::from_value(serde_json::json!({
+            "type": "assistant",
+            "message": {
+                "id": "msg-call",
+                "role": "assistant",
+                "model": "claude-sonnet-5",
+                "content": [{
+                    "type": "tool_use",
+                    "id": call,
+                    "name": "Agent",
+                    "input": {"description": "dispatch"},
+                }],
+            },
+            "session_id": "s",
+            "parent_tool_use_id": parent,
+        }))
+        .expect("an agent call")
     }
 
     /// A `permission_denied` frame as the CLI sends it: the refused call, the
