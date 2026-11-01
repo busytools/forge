@@ -209,7 +209,8 @@ everywhere else, and every other Command chord belongs to the app.
 
 **The keyboard moves between the page and the bar on the pane chords.**
 Cmd+Option+Down takes it out of the page and into the bar, and Cmd+Option+Up
-hands it back - the two macOS Chrome moves between its toolbar and its page.
+hands it back - the two keys macOS Chrome uses to move between its toolbar
+and its page.
 The bar is a document above the picture, not part of it, so with the keyboard
 there Tab stays inside the bar (it wraps at both ends), its buttons take
 Enter and Space, and the feedback field types as any field does. **The bar
