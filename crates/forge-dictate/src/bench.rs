@@ -1,7 +1,7 @@
 //! The bench's corpus: the audio a run scores against, taken from this
-//! machine's own material.
+//! machine's own material and from the slice the binary carries.
 //!
-//! **Two sources, and what each can say is different.** A saved take is
+//! **Three sources, and what each can say is different.** A saved take is
 //! this machine's own speech with the in-use model's words beside it -
 //! latency on real material, but its `text.txt` is a model's output, not
 //! truth: the consensus tier reads how far the candidate sits from the
@@ -10,8 +10,10 @@
 //! somebody read aloud on purpose - only a clip from it can be scored for
 //! term accuracy, and everything here keeps that distinction in the types.
 //!
-//! **Nothing is embedded.** A shipped binary carries no audio; a machine
-//! with no material says so, and the way to get material is to record it.
+//! **The public slice is the exception to "nothing is embedded".** It is a
+//! fixed LibriSpeech test-clean slice carried in the binary and installed
+//! beside the models on first bench, so a machine that never recorded
+//! anything still has known words to score against.
 
 use std::path::Path;
 use std::time::Duration;
@@ -30,8 +32,8 @@ pub enum Tier {
     Consensus,
     /// The read-aloud set alone: the one tier whose words are known.
     ReadAloud,
-    /// The downloaded public slice: words known like the read-aloud set,
-    /// and material a machine that never recorded anything still has.
+    /// The bundled public slice: words known like the read-aloud set, and
+    /// material a machine that never recorded anything still has.
     Public,
 }
 
@@ -72,7 +74,7 @@ pub struct Corpus {
 }
 
 /// Build one tier's corpus from the machine's own material, and the
-/// downloaded public slice where the tier asks for it.
+/// installed public slice where the tier asks for it.
 pub fn corpus(
     tier: Tier,
     takes_dir: &Path,
@@ -88,6 +90,19 @@ pub fn corpus(
     Ok(Corpus { clips, id })
 }
 
+mod assets;
+
+/// Install the bundled public slice into `models_dir`'s `public-corpus`
+/// directory. Idempotent: a slice this binary wrote is left alone, and a
+/// manifest it did not write is replaced by the bundled one.
+///
+/// **First use installs it.** A bench run over the public tier calls this
+/// before reading, so the corpus a machine scores is the one this binary
+/// carries rather than something it has to find.
+pub fn install_public_corpus(models_dir: &Path) -> Result<(), Error> {
+    assets::install(&models_dir.join("public-corpus"))
+}
+
 /// One clip the public manifest names: a wav, its digest, and the words it
 /// was read from.
 #[derive(serde::Deserialize)]
@@ -97,22 +112,21 @@ struct ManifestClip {
     transcript: String,
 }
 
-/// The manifest a downloaded public corpus carries beside its clips.
+/// The manifest the installed public slice carries beside its clips.
 ///
-/// The licence and attribution are required of the asset's author rather
-/// than read here; the manifest keeps them so a reader of the files has them
-/// where the clips are.
+/// The licence and attribution live in the ATTRIBUTION file the installer
+/// writes beside it, so a reader of the files has them where the clips are.
 #[derive(serde::Deserialize)]
 struct Manifest {
     clips: Vec<ManifestClip>,
 }
 
-/// The downloaded public slice: every clip the manifest names, each verified
+/// The installed public slice: every clip the manifest names, each verified
 /// against its own digest before anything scores it.
 ///
 /// **A missing manifest is an empty tier, a mismatched digest is a refusal.**
-/// A machine that has not fetched the corpus has nothing to score, which the
-/// run reports with its own zero; a file whose bytes are not the ones the
+/// A machine where the slice was never installed has nothing to score, which
+/// the run reports with its own zero; a file whose bytes are not the ones the
 /// manifest names is material nothing can certify, and scoring it would put
 /// a number on the wrong audio. The refusal names the clip.
 pub fn public_corpus(dir: &Path) -> Result<Vec<Clip>, Error> {
@@ -937,5 +951,74 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let built = corpus(Tier::Public, dir.path(), dir.path(), dir.path()).unwrap();
         assert!(built.clips.is_empty());
+    }
+
+    /// **The slice ships in the binary.** A machine with no corpus gets it
+    /// installed beside the models on first use, and the installed corpus
+    /// reads back whole - from the binary, not from the repo tree.
+    #[test]
+    fn the_bundled_public_corpus_installs_beside_the_models() {
+        let dir = tempfile::tempdir().unwrap();
+        let models = dir.path().join("models");
+
+        install_public_corpus(&models).expect("the bundled slice installs");
+
+        let corpus =
+            public_corpus(&models.join("public-corpus")).expect("the installed slice reads");
+        assert_eq!(corpus.len(), 32, "the whole slice lands");
+        assert!(
+            corpus.iter().all(|clip| clip.truth.as_deref().is_some_and(|text| !text.is_empty())),
+            "every clip carries the words it was read from"
+        );
+        let attribution =
+            std::fs::read_to_string(models.join("public-corpus").join("ATTRIBUTION.md"))
+                .expect("the attribution lands with the clips");
+        assert!(attribution.contains("LibriSpeech test-clean"));
+        assert!(attribution.contains("CC BY 4.0"));
+    }
+
+    /// A second install over the slice it wrote is a no-op: the corpus is
+    /// the asset's, not a per-run copy.
+    #[test]
+    fn a_second_install_leaves_the_slice_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let models = dir.path().join("models");
+        install_public_corpus(&models).unwrap();
+        let clip = models.join("public-corpus").join("clip-0000.wav");
+        let before = std::fs::read(&clip).unwrap();
+
+        install_public_corpus(&models).unwrap();
+
+        assert_eq!(std::fs::read(&clip).unwrap(), before);
+    }
+
+    /// **A manifest the bundled slice did not write is replaced.** An older
+    /// slice, or one a person placed, is not this binary's corpus; installing
+    /// again leaves the clips the binary carries.
+    #[test]
+    fn a_foreign_manifest_is_replaced_by_the_bundled_slice() {
+        let dir = tempfile::tempdir().unwrap();
+        install_public_corpus(dir.path()).unwrap();
+        std::fs::write(dir.path().join("public-corpus").join("manifest.json"), "{}").unwrap();
+
+        install_public_corpus(dir.path()).unwrap();
+
+        let corpus = public_corpus(&dir.path().join("public-corpus")).unwrap();
+        assert_eq!(corpus.len(), 32, "the bundled manifest came back");
+    }
+
+    /// The installed clips stay digest-guarded: a clip whose bytes changed
+    /// under the manifest is refused by its own name.
+    #[test]
+    fn a_tampered_installed_clip_is_refused_by_name() {
+        let dir = tempfile::tempdir().unwrap();
+        install_public_corpus(dir.path()).unwrap();
+        std::fs::write(dir.path().join("public-corpus").join("clip-0003.wav"), b"not audio")
+            .unwrap();
+
+        let Err(error) = public_corpus(&dir.path().join("public-corpus")) else {
+            panic!("a tampered clip must be refused");
+        };
+        assert!(error.to_string().contains("clip-0003.wav"), "got: {error}");
     }
 }

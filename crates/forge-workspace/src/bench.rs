@@ -658,9 +658,14 @@ impl Workspace {
         };
         let takes_dir = cfg.diagnostics_dir.clone().unwrap_or_else(|| models_dir.clone());
         let read_aloud_dir = self.read_aloud_dir().unwrap_or_else(|| takes_dir.clone());
-        // The downloaded public slice lives beside the models, as the asset
-        // both directions read.
+        // The bundled public slice lives beside the models, installed on
+        // first use, as the asset both directions read.
         let public_dir = models_dir.join("public-corpus");
+        if let Err(error) = forge_dictate::bench::install_public_corpus(&models_dir) {
+            return self.settle_speaking_bench(Err(format!(
+                "the bundled public corpus could not be installed: {error}"
+            )));
+        }
 
         let corpus = match forge_dictate::bench::corpus(
             forge_dictate::bench::Tier::Public,
@@ -679,7 +684,7 @@ impl Workspace {
             .collect();
         if clips.is_empty() {
             return self.settle_speaking_bench(Err(
-                "nothing to bench: the public corpus has not been downloaded yet".to_owned(),
+                "nothing to bench: the bundled public corpus holds no clips".to_owned(),
             ));
         }
         let total = clips.len();
@@ -797,8 +802,8 @@ impl Workspace {
         };
         let takes_dir = cfg.diagnostics_dir.clone();
         let read_aloud_dir = self.read_aloud_dir();
-        // The downloaded public slice lives beside the models, as the asset
-        // the bench fetches first: one directory both directions read.
+        // The bundled public slice lives beside the models, installed on
+        // first use: one directory both directions read.
         let public_dir = models_dir.join("public-corpus");
         // The closure takes its own copy: the caller keeps the target for
         // the failure paths below.
@@ -810,6 +815,11 @@ impl Workspace {
                 return Err("no diagnostics directory is configured".to_owned());
             };
             let read_aloud_dir = read_aloud_dir.unwrap_or_else(|| takes_dir.clone());
+            if tier == forge_dictate::bench::Tier::Public
+                && let Err(error) = forge_dictate::bench::install_public_corpus(&models_dir)
+            {
+                return Err(format!("the bundled public corpus could not be installed: {error}"));
+            }
             let corpus =
                 forge_dictate::bench::corpus(tier, &takes_dir, &read_aloud_dir, &public_dir)
                     .map_err(|error| error.to_string())?;
@@ -825,7 +835,7 @@ impl Workspace {
                             .to_owned()
                     }
                     forge_dictate::bench::Tier::Public => {
-                        "nothing to bench: the public corpus has not been downloaded yet".to_owned()
+                        "nothing to bench: the bundled public corpus holds no clips".to_owned()
                     }
                 });
             }
@@ -1047,12 +1057,12 @@ mod tests {
         assert!(matches!(err, crate::DispatchError::VoiceOff { .. }), "got: {err:?}");
     }
 
-    /// **A machine with no public corpus says so by name.** The run gets as
-    /// far as the corpus, which is the asset a reader downloads; it must not
-    /// read as a model that failed to load.
+    /// **The first speaking run installs the bundled slice, then says what
+    /// it is actually missing.** A machine with no corpus needs nothing
+    /// fetched; the run reaches its model and fails naming that instead.
     #[tokio::test]
-    async fn a_speaking_bench_without_a_public_corpus_fails_by_name() {
-        let (ws, mut updates, _config, _models) = voice_stub();
+    async fn a_speaking_bench_installs_the_bundled_corpus_before_scoring() {
+        let (ws, mut updates, _config, models) = voice_stub();
         ws.dispatch(crate::Command::VoiceBenchStart).expect("the run starts and fails on its own");
 
         let state = tokio::time::timeout(std::time::Duration::from_secs(15), async {
@@ -1073,9 +1083,49 @@ mod tests {
         .await
         .expect("the failure must land inside fifteen seconds");
         let SpeakingBenchState::Failed { reason } = state else {
-            panic!("a run with no corpus must land failed");
+            panic!("a run with no speaking model must land failed");
         };
-        assert!(reason.contains("public corpus"), "got: {reason}");
+        assert!(!reason.contains("public corpus"), "the bundled corpus is not a blocker: {reason}");
+        assert!(reason.contains("Qwen3-TTS"), "the missing model is named: {reason}");
+
+        let installed = forge_dictate::bench::public_corpus(&models.path().join("public-corpus"))
+            .expect("the bundled slice installed");
+        assert_eq!(installed.len(), 32, "the whole slice landed beside the models");
+    }
+
+    /// **A words-bench run over the public tier installs the slice too** -
+    /// the same first use, so both directions score the corpus the binary
+    /// carries rather than something a machine had to find.
+    #[tokio::test]
+    async fn a_public_words_bench_installs_the_bundled_corpus_before_scoring() {
+        let (ws, mut updates, _config, models) = voice_stub();
+        ws.dispatch(crate::Command::DictateBench {
+            target: target("asr.gguf", BenchRole::Transcribing),
+            tier: forge_dictate::bench::Tier::Public,
+        })
+        .expect("the run starts and fails on its own");
+
+        tokio::time::timeout(std::time::Duration::from_secs(15), async {
+            loop {
+                match updates.recv().await {
+                    Some(frame) => {
+                        if let crate::SessionUpdate::DictateModelsChanged { models } =
+                            std::sync::Arc::unwrap_or_clone(frame.update)
+                            && matches!(models.bench, BenchState::Failed { .. })
+                        {
+                            break;
+                        }
+                    }
+                    None => panic!("the subscription must stay attached"),
+                }
+            }
+        })
+        .await
+        .expect("the failure must land inside fifteen seconds");
+
+        let installed = forge_dictate::bench::public_corpus(&models.path().join("public-corpus"))
+            .expect("the bundled slice installed");
+        assert_eq!(installed.len(), 32, "the whole slice landed beside the models");
     }
 
     /// A workspace with both directions pointed at temp dirs, so a speaking
