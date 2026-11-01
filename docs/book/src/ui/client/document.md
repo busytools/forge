@@ -121,9 +121,9 @@ while the box is open, the same press and release the composer's box reads.
 submits the drafted threads as one round through the same command a code
 review uses, under the document's scope (`doc:<path>`), stamped with the
 asking seat as the origin - and then answers the parked call with the review
-that landed. **The terminal's own drop is the model**: the same one line it
-pushes into the session, `Review #N ready on the document`, goes into the
-chat here, with the document's scope named - so the reader sees the drop in
+that landed. **The terminal's own drop is the model**: the same one-line
+drop, `Review #N ready on the document`, goes into the chat here, with the
+document's scope named - so the reader sees the drop in
 the conversation and the agent hears it. The line names no review tool and
 promises no answer that follows: a reload of the address mounts the viewer
 with no parked hand-off to answer, so the line names the scope and both ways
