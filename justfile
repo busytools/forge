@@ -152,7 +152,7 @@ conformance-record-socket:
 #
 # Benchmark the corpus and rewrite this machine's results file.
 bench:
-    RUSTFLAGS="-D warnings" cargo nextest run -p forge-workspace --test bench --run-ignored all --no-capture -E 'test(=bench_corpus)'
+    RUSTFLAGS="-D warnings" cargo nextest run -p forge-workspace --test bench --run-ignored all --no-capture --no-tests=fail -E 'test(=bench_corpus)'
 
 # Mutation-test the client with Stryker: break each line the tests claim to
 # cover and see whether anything fails. `vitest` reports what ran and never
