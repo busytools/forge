@@ -1,6 +1,5 @@
 <script lang="ts">
   import { untrack, type Snippet } from 'svelte';
-  import { SvelteMap, SvelteSet } from 'svelte/reactivity';
   import { VList, type VListHandle } from 'virtua/svelte';
   import { heldReserve, sizes } from './row-sizes';
 
@@ -203,28 +202,28 @@
    * Seeded from what the column draws when it attaches, because those rows
    * arrived before anyone was watching for them.
    */
-  const arrived = new SvelteMap<string, SvelteSet<string>>();
+  const arrived: Record<string, string[]> = {};
 
   /** Whether this row has arrived in this turn before, recording it if not. */
   function firstArrival(turn: string, key: string): boolean {
-    let rows = arrived.get(turn);
+    let rows = arrived[turn];
     if (rows === undefined) {
-      rows = new SvelteSet();
-      arrived.set(turn, rows);
+      rows = [];
+      arrived[turn] = rows;
       // **A turn the window no longer holds cannot be drawn again**, so its
-      // keys go once the map outgrows the turns a conversation can hold at
-      // once. Pruned here rather than in an effect: an effect per publish
-      // moves the entry's own paint timing, which the follow is measured
-      // against.
-      if (arrived.size > ARRIVED_TURNS) {
-        const drawing = new SvelteSet(held.turns.map((held) => held.key));
-        for (const seen of [...arrived.keys()]) {
-          if (!drawing.has(seen)) arrived.delete(seen);
+      // keys go once the record outgrows the turns a conversation can hold at
+      // once. Pruned here rather than in an effect: a reactive write on the
+      // arrival path schedules a render the entry's own pin is measured
+      // against, and the list re-applies its attachment on a render.
+      if (Object.keys(arrived).length > ARRIVED_TURNS) {
+        const drawing = held.turns.map((turn) => turn.key);
+        for (const seen of Object.keys(arrived)) {
+          if (!drawing.includes(seen)) delete arrived[seen];
         }
       }
     }
-    if (rows.has(key)) return false;
-    rows.add(key);
+    if (rows.includes(key)) return false;
+    rows.push(key);
     return true;
   }
 
