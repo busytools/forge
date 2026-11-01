@@ -36,7 +36,8 @@ pub fn sentences(text: &str) -> Vec<String> {
     units
 }
 
-/// Whether one whole utterance fits `max_seconds` at [`CHARS_PER_SECOND`].
+/// Whether one whole utterance fits `max_seconds`, at the rough speaking
+/// pace the bound is read at.
 pub fn within_bound(text: &str, max_seconds: u64) -> Result<(), Error> {
     let bound = max_seconds.saturating_mul(CHARS_PER_SECOND);
     let characters = u64::try_from(text.chars().count()).unwrap_or(u64::MAX);
