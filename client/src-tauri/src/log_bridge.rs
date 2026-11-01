@@ -138,6 +138,29 @@ mod tests {
         );
     }
 
+    /// **The shell's own install is what carries these lines** (#2730): the
+    /// tests above build the layer directly, so a shell that stopped calling
+    /// `install()` would leave them green while `forge.log` lost every capture
+    /// warning. nextest runs each test in its own process, so the global set
+    /// is safe here.
+    #[test]
+    fn the_install_routes_a_capture_warning_into_the_client_log() {
+        let _held = log_capture::capture();
+        install();
+        tracing::warn!(
+            target: "forge_capture::stream",
+            event_name = "capture_thread_panicked",
+            "the capture thread panicked",
+        );
+        let lines = log_capture::records();
+        assert_eq!(lines.len(), 1, "install() put the bridge on the global subscriber");
+        assert!(
+            lines[0].message.contains("event_name=capture_thread_panicked"),
+            "the installed bridge carries the guard's own fields: {}",
+            lines[0].message
+        );
+    }
+
     /// The bridge does not bypass the facade's filter: a debug event from a
     /// target the client keeps at info stays out of the file.
     #[test]
