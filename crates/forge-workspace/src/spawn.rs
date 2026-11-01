@@ -9760,10 +9760,12 @@ mod lead_charter_tests {
     fn the_charter_names_the_review_family_for_a_document_worker() {
         assert!(
             DEFAULT_LEAD_CHARTER.contains(
-                "A worker whose deliverable can be handed off as a reviewable document needs \
-                 `review` in its `mcp_families` at spawn, or it cannot read the review back."
+                "If you narrow a worker's `mcp_families`, include `review` for a worker whose \
+                 deliverable can be handed off as a reviewable document - omitting the field \
+                 gives every family."
             ),
-            "the spawn step carries the document worker's review-family requirement",
+            "the spawn step scopes the requirement to a narrowed selection and names the \
+             default it overrides",
         );
     }
 
