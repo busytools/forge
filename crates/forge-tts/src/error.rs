@@ -8,4 +8,7 @@ pub enum Error {
     Load(String),
     #[error("render failed: {0}")]
     Render(String),
+    /// The caller stopped a bench: what ran is not a result.
+    #[error("bench cancelled")]
+    Cancelled,
 }
