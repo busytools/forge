@@ -840,6 +840,7 @@
         slot,
         seat,
         connection,
+        voice: wire.voice.enabled,
         reading,
       })}
     </div>

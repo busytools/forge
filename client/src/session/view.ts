@@ -482,6 +482,9 @@ export interface ComposerProps {
   connection: Connection;
   /** Whether the conversation's first page is still out, which the band says. */
   reading: boolean;
+  /** Whether `[tts] enabled` is set: the voice control draws only when the
+   * core offers the role at all. */
+  voice: boolean;
 }
 
 /**

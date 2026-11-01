@@ -276,6 +276,7 @@ describe('axe over the rendered pages', () => {
             seat: seatRead(),
             connection: wire().connection,
             dictation,
+            voice: false,
             reading: false,
           } satisfies ComposerProps,
         }).body
@@ -374,6 +375,7 @@ describe('axe over the rendered pages', () => {
             seat: seatRead(),
             connection: wire().connection,
             dictation: false,
+            voice: false,
             reading: false,
           } satisfies ComposerProps,
         }).body
