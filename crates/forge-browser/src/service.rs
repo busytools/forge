@@ -5044,7 +5044,14 @@ impl Profile {
             // **The bump and the clear are one step to a dialog line**, which
             // reads the generation under this same lock: either it inserts
             // before both (and is cleared) or it reads the new generation and
-            // is dropped. Nothing can slip between them (#2763 review).
+            // is dropped. **A line between them would reopen the race**, since
+            // a reader could then pass on the old generation after the clear,
+            // so the two stay under one lock in this order (#2763 review).
+            //
+            // **The test pins the reader half only, and states why**: a test
+            // that stubbed these two steps would be testing the stub, and
+            // there is no clean way to stage a point between them. This order
+            // is kept by this comment and by review.
             let mut dialogs = self.dialogs.lock().unwrap_or_else(PoisonError::into_inner);
             self.host_generation.fetch_add(1, Ordering::AcqRel);
             dialogs.clear();
@@ -11094,7 +11101,9 @@ mod tests {
     /// **The wait is what stages the interleaving**: the worker is spawned
     /// and signalled first, so it is on its way to the lock before the
     /// generation moves; holding the lock is what makes its arrival
-    /// deterministic.
+    /// deterministic. **This pins the reader half**: the bump-and-clear half
+    /// inside `host_gone` has no clean staging, and its order is kept by that
+    /// function's own comment.
     #[tokio::test]
     async fn a_dialog_line_that_blocks_on_the_lock_rechecks_the_generation() {
         let dir = tempfile::tempdir().expect("a temp dir");
