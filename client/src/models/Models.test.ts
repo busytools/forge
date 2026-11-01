@@ -709,6 +709,26 @@ describe('the models page as it draws', () => {
     expect(runs.map((run) => run.tier)).toEqual(['consensus']);
   });
 
+  /** A machine with no material still has the downloaded public slice to
+   * score, so the tier is offered whatever the read-aloud set holds. */
+  it('offers the public corpus as a bench tier', () => {
+    const runs: { target: BenchTarget; tier: BenchTier }[] = [];
+    const host = open(
+      {
+        ...modelsWire,
+        read_aloud: { ...modelsWire.read_aloud, recordings: [] },
+      },
+      { onbench: (target, tier) => runs.push({ target, tier }) },
+    );
+    const button = [...host.querySelectorAll<HTMLButtonElement>('button')].find((c) =>
+      c.textContent?.includes('score the public corpus'),
+    );
+    expect(button, 'the public tier draws with no recordings').not.toBeUndefined();
+    button?.click();
+    flushSync();
+    expect(runs.map((run) => run.tier)).toEqual(['public']);
+  });
+
   /** What a finished run measured, with its corpus named. */
   it('draws a saved bench result with its own numbers', () => {
     const host = open({

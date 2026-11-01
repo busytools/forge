@@ -1030,6 +1030,13 @@
                       onclick={() => onbench(row.target, 'read_aloud')}>score the read-aloud</button
                     >
                   {/if}
+                  <button
+                    class="chip"
+                    type="button"
+                    disabled={busy}
+                    title="score a downloaded slice of public read speech, so a machine with no recordings still has a corpus"
+                    onclick={() => onbench(row.target, 'public')}>score the public corpus</button
+                  >
                   {#if !row.current && wire.installed.some((model) => model.file === row.target.file)}
                     <button
                       class="chip"
