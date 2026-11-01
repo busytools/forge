@@ -232,7 +232,10 @@ export function dispatchFrames(messages: Iterable<unknown>, dispatchId: string):
       // arrived (rule 25).
       if (frame.subtype === 'permission_denied') {
         const call = str(frame.tool_use_id);
-        const words = str(obj(frame)['message']) ?? str(frame.decision_reason) ?? '';
+        const words =
+          [str(obj(frame)['message']), str(frame.decision_reason)].find(
+            (line): line is string => line !== null && line.trim() !== '',
+          ) ?? '';
         if (call === null || !at.has(call)) {
           const tool = str(frame.tool_name) ?? 'a tool';
           lines.push({
