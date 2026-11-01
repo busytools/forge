@@ -82,6 +82,10 @@ tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"
 tauri-plugin-log = "2"
+# The capture leaf logs through tracing; the shell's log file is the `log`
+# facade, so the bridge in log_bridge.rs needs both sides.
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["registry", "std"] }
 tauri-plugin-notification = "2"
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["process", "rt-multi-thread", "macros", "time", "fs", "net", "sync"] }

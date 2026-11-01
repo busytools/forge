@@ -234,7 +234,9 @@ impl Workspace {
             cron_id: cron_id.to_owned(),
             description: description.map(str::to_owned),
         };
-        if let Err(error) = crate::store::cron_names::put(db, uuid, &name) {
+        if let Err(error) =
+            crate::store::cron_names::put(db, uuid, &name, std::time::SystemTime::now())
+        {
             tracing::warn!(
                 event_name = "cron_name_store_failed",
                 org = slot.org(),
