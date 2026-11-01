@@ -52,7 +52,7 @@ interface Frame {
 }
 
 /** A range of numbers nobody has delivered or repaired yet. */
-interface Range {
+export interface Range {
   from: number;
   to: number;
 }
@@ -150,7 +150,7 @@ function replacer(update: SessionUpdate): Record<string, unknown> | null {
 }
 
 /** Merge `range` into a sorted, merged list. */
-function cover(ranges: Range[], range: Range): void {
+export function cover(ranges: Range[], range: Range): void {
   let at = 0;
   let head = ranges[at];
   while (head !== undefined && head.to < range.from - 1) {
@@ -167,7 +167,7 @@ function cover(ranges: Range[], range: Range): void {
 }
 
 /** Take `from..=to` out of a sorted, merged list: those numbers are filled. */
-function filled(ranges: Range[], from: number, to: number): void {
+export function filled(ranges: Range[], from: number, to: number): void {
   const kept: Range[] = [];
   for (const range of ranges) {
     if (range.to < from || range.from > to) {
