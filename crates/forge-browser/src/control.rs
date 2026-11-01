@@ -44,7 +44,8 @@ pub enum HostEvent {
     FileDialog { id: u64, tab: u16, multiple: bool },
     /// A page's JavaScript dialog. **The host holds it until it is answered**:
     /// a `shown` line is followed by `answered` when the agent's answer
-    /// arrives, and by nothing until then.
+    /// arrives, or by `closed` when the page takes the dialog away itself,
+    /// and by nothing until one of those.
     JsDialog { tab: u16, dialog: String, message: String, state: JsDialogState },
     /// A download finished on the server: the tab it started from, the file's
     /// name, its path beside the profile, and how many bytes it holds.

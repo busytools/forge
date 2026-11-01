@@ -104,10 +104,13 @@ fn note_dialog(
     message: &str,
     state: JsDialogState,
 ) {
+    // **The lock comes first, and the generation is read under it**: a check
+    // outside the lock could pass, the host could go and clear, and this line
+    // would then insert a dead host's hold after the clear (#2763 review).
+    let mut dialogs = profile.dialogs.lock().unwrap_or_else(PoisonError::into_inner);
     if generation != profile.host_generation.load(Ordering::Acquire) {
         return;
     }
-    let mut dialogs = profile.dialogs.lock().unwrap_or_else(PoisonError::into_inner);
     match state {
         JsDialogState::Shown => {
             dialogs
@@ -123,11 +126,11 @@ fn note_dialog(
 
 /// Whether `tool` leaves a page alone while a dialog holds its tab.
 ///
-/// **The listing reads the host's own table**, both closes go host-side
-/// (`close_owned_tab` and `close_current_tab` send the host a `TabClose`
-/// rather than driving the page), and `browser_handle_dialog` is the answer
-/// itself. Everything else drives the page through the driver, which would
-/// wait on a renderer a dialog has paused.
+/// **The listing reads the host's own table**, both closes end the host's tab
+/// through `orphan_tab` - the `browser_tabs` close straight there, and
+/// `browser_close` by way of `close_owned_tab` - and `browser_handle_dialog`
+/// is the answer itself. Everything else drives the page through the driver,
+/// which would wait on a renderer a dialog has paused.
 fn dialog_exempt(tool: &str) -> bool {
     matches!(tool, "browser_tabs" | "browser_close" | "browser_handle_dialog")
 }
@@ -5028,10 +5031,6 @@ impl Profile {
         self.mute_dropped.store(false, Ordering::Release);
         *self.host_suspect.lock().unwrap_or_else(PoisonError::into_inner) = None;
         *self.tabs.lock().unwrap_or_else(PoisonError::into_inner) = TabRegistry::default();
-        // **A successor numbers its tabs from one again**, so a hold kept from
-        // the dead host would refuse the new host's tab of the same number for
-        // ever (#2763 review).
-        self.dialogs.lock().unwrap_or_else(PoisonError::into_inner).clear();
         *self.boot.lock().unwrap_or_else(PoisonError::into_inner) = None;
         *self.focused.lock().unwrap_or_else(PoisonError::into_inner) = None;
         self.controls.lock().unwrap_or_else(PoisonError::into_inner).clear();
@@ -5041,7 +5040,15 @@ impl Profile {
         self.deferred_tab_events.lock().unwrap_or_else(PoisonError::into_inner).clear();
         // **A birth or reconcile already in flight must not write its events
         // back** over the empty list this death just made.
-        self.host_generation.fetch_add(1, Ordering::AcqRel);
+        {
+            // **The bump and the clear are one step to a dialog line**, which
+            // reads the generation under this same lock: either it inserts
+            // before both (and is cleared) or it reads the new generation and
+            // is dropped. Nothing can slip between them (#2763 review).
+            let mut dialogs = self.dialogs.lock().unwrap_or_else(PoisonError::into_inner);
+            self.host_generation.fetch_add(1, Ordering::AcqRel);
+            dialogs.clear();
+        }
         // **The dead host's frames and history go with its numbers.** A kept
         // frame would paint the old page onto the successor's tab, and a kept
         // history would draw arrows for a page that no longer exists.
@@ -11077,6 +11084,45 @@ mod tests {
             profile.dialogs.lock().expect("the holds").len(),
             1,
             "the live host's line still applies",
+        );
+    }
+
+    /// **The generation is read under the dialogs lock, not before it**
+    /// (#2763 review). A line that read the pre-bump generation must not
+    /// insert after the bump: the test holds the lock so the call blocks on
+    /// it, moves the generation the way `host_gone` does, and then releases.
+    /// **The wait is what stages the interleaving**: the worker is spawned
+    /// and signalled first, so it is on its way to the lock before the
+    /// generation moves; holding the lock is what makes its arrival
+    /// deterministic.
+    #[tokio::test]
+    async fn a_dialog_line_that_blocks_on_the_lock_rechecks_the_generation() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let lead = SessionSlot::lead("O", "p");
+        service.install_fake(&lead, FakeDriver::with_blank("T1")).await;
+        let profile = service.find("O/default").await.expect("the profile");
+        let stale = profile.host_generation.load(Ordering::Acquire);
+
+        let held = profile.dialogs.lock().unwrap_or_else(PoisonError::into_inner);
+        let ready = Arc::new(std::sync::Barrier::new(2));
+        let worker = {
+            let profile = Arc::clone(&profile);
+            let ready = Arc::clone(&ready);
+            std::thread::spawn(move || {
+                ready.wait();
+                note_dialog(&profile, stale, 1, "confirm", "proceed?", JsDialogState::Shown);
+            })
+        };
+        ready.wait();
+        std::thread::sleep(Duration::from_millis(100));
+        profile.host_generation.fetch_add(1, Ordering::AcqRel);
+        drop(held);
+        worker.join().expect("the dialog line");
+
+        assert!(
+            profile.dialogs.lock().unwrap_or_else(PoisonError::into_inner).is_empty(),
+            "a line that read the pre-bump generation inserted after it",
         );
     }
 
