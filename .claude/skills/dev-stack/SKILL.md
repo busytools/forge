@@ -143,14 +143,17 @@ history is the record.
    own (`npm --prefix client run dev`, step 7), pointed at the live forge's
    own address - no scratch forge, no `/tmp` tree, the change in front of the
    maintainer as fast as vite starts. **The origin must be allowed first, or
-   shallow fails and tempts a scratch forge that a client change never
-   needed.** A release build's socket refuses an origin it does not serve,
-   and the dev client's own loopback origin is a dev-only allowance in a debug
-   build: on a binary carrying the loopback rule any localhost port is
-   allowed, and on one older than it either install the current release or
-   list the dev origin in the live `[server] allowed_origins` (it
-   hot-reloads). The cost, named: that tab is another
-   answering client on the live forge, so a turn can park on it. Anything
+   shallow fails.** The socket admits a page only when it accepts that page's
+   origin, and the dev client's is `http://localhost:1420` (or
+   `127.0.0.1:1420`). A binary carrying the loopback rule (#2743 and the
+   release that ships it) admits any http or https loopback origin at any
+   port, in every build. An older binary admits the dev origins only in a
+   debug build, and a release refuses them unless the live
+   `[server] allowed_origins` already lists the one in use - read the live
+   config to check, and **never edit it or restart the live forge to make
+   shallow work; when the origin is not admitted, run DEEP.** The cost,
+   named: that tab is another answering client on the live forge, so a turn
+   can park on it. Anything
    that touches server behaviour runs DEEP - the full stack - with the client
    pointed at the stack:
    - Browser tab (the deep default): the dev client from the worktree - hot
