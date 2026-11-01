@@ -6,6 +6,12 @@
 //! three gigabytes, because a cron that quietly downloads that much is a
 //! surprise nobody asked for.
 //!
+//! **It measures the models the live roles resolve to on this machine**, not
+//! the compiled pins. A trend is only a signal about what a user gets if the
+//! model beside the timings is the one dictate actually runs, and a
+//! resolution this process cannot read is a failure rather than a quiet
+//! fall back to a pin.
+//!
 //! # What the file is for, and why it is shaped this way
 //!
 //! It exists to be diffed across commits, so the governing property is
@@ -38,7 +44,11 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
-use forge_dictate::{Config, Engine, ModelSpec, Normalizer, Outcome, SAMPLE_RATE, Samples, Stages};
+use forge_dictate::{Engine, ModelSpec, Normalizer, Outcome, SAMPLE_RATE, Samples, Stages};
+use forge_workspace::DictateRole;
+use forge_workspace::bench::{LiveRoles, resolved_live_roles};
+use forge_workspace::install::{ActiveChoice, ActiveFrom, InstalledModel};
+use forge_workspace::store::{self, Db, dictate_models};
 use serde::Deserialize;
 use sha2::{Digest as _, Sha256};
 
@@ -85,8 +95,61 @@ fn resolution(key: &str) -> u64 {
         .map_or_else(|| panic!("no resolution declared for {key}"), |(_, v)| *v)
 }
 
+/// The fixture corpus stays with the dictate crate, whose own tests read it
+/// too; this bench is the second reader.
 fn fixtures_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures")
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../forge-dictate/fixtures")
+}
+
+/// `$CLAUDE_CONFIG_DIR`, else `~/.claude`: the config dir a running forge
+/// boots from, which is where the roles' resolution lives.
+fn config_dir() -> PathBuf {
+    if let Ok(value) = std::env::var("CLAUDE_CONFIG_DIR") {
+        let trimmed = value.trim_end_matches('/');
+        if !trimmed.is_empty() {
+            return PathBuf::from(trimmed);
+        }
+    }
+    dirs::home_dir().expect("a home directory is required to locate the config dir").join(".claude")
+}
+
+/// The models the live roles resolve to, for a process that is not forge.
+///
+/// A failure here is the bench refusing to run: falling back to the compiled
+/// pins is how the trend came to measure a model nobody was running.
+fn live_roles() -> LiveRoles {
+    let app_support =
+        forge_sdk::app_support_dir().expect("a data directory is required to locate forge's store");
+    resolved_live_roles(&config_dir(), &app_support).unwrap_or_else(|error| {
+        panic!(
+            "the bench measures the model the live dictate role resolves to, and that \
+             resolution failed: {error}"
+        )
+    })
+}
+
+/// Where one role's model came from, in the words a stdout reader needs.
+fn source_of(live: &LiveRoles, role: DictateRole) -> String {
+    match live.models.iter().find(|(runner, _)| *runner == role).map(|(_, model)| &model.from) {
+        Some(ActiveFrom::Config { key, variant }) => {
+            format!("pinned by [dictate] {key} = \"{variant}\"")
+        }
+        Some(ActiveFrom::Installed { variant }) => format!("the runtime pick, \"{variant}\""),
+        Some(ActiveFrom::Pin) => "the compiled pin".to_owned(),
+        None => "no role".to_owned(),
+    }
+}
+
+/// The live engine configuration with per-take diagnostics off.
+///
+/// **A bench run is not the user's dictation.** Its clips would otherwise
+/// land in the per-take diagnostics store, filling the shelf the bench
+/// itself scores.
+fn bench_config(live: &LiveRoles) -> forge_dictate::Config {
+    let mut config = live.config.clone();
+    config.diagnostics_dir = None;
+    config.models_dir = Some(live.models_dir.clone());
+    config
 }
 
 fn sysctl(key: &str) -> String {
@@ -191,24 +254,155 @@ fn the_committed_pipeline_figure_excludes_the_asr_model_load() {
     );
 }
 
+/// A machine laid out the way forge leaves it: a config dir carrying
+/// `forge.toml`, and the app-support store holding what has been installed
+/// and picked, so the resolution runs without the live ones.
+struct Machine {
+    _root: tempfile::TempDir,
+    config_dir: PathBuf,
+    app_support: PathBuf,
+}
+
+impl Machine {
+    /// `dictate` is the rest of the `[dictate]` section; `installed` is one
+    /// record the store carries and `pick` the runtime pick for the
+    /// transcribing role.
+    fn with_store(dictate: &str, installed: Option<(&str, &str, u64)>, pick: Option<&str>) -> Self {
+        let root = tempfile::tempdir().expect("a temp dir");
+        let config_dir = root.path().join("claude");
+        std::fs::create_dir_all(config_dir.join("forge")).expect("the forge dir");
+        std::fs::write(
+            config_dir.join("forge/forge.toml"),
+            format!(
+                "[[orgs]]\nname = \"Personal\"\naccounts = [\"Stargate\"]\n\n\
+                 [[orgs.projects]]\nname = \"forge\"\npath = \"~/Projects/forge\"\n\n\
+                 [[accounts]]\ndisplay_name = \"Stargate\"\ntoken = \"t\"\n\
+                 models = [\"claude-sonnet-5\"]\nprovider = \"anthropic\"\n\n\
+                 [dictate]\nenabled = true\n{dictate}"
+            ),
+        )
+        .expect("forge.toml must be writable");
+        let app_support = root.path().join("support");
+        std::fs::create_dir_all(app_support.join("stores")).expect("the store dir");
+
+        {
+            let db =
+                Db::open(&store::path_for(&app_support, &config_dir)).expect("the store opens");
+            if let Some((variant, file, size)) = installed {
+                dictate_models::record_installed(
+                    &db,
+                    &InstalledModel {
+                        variant: variant.to_owned(),
+                        file: file.to_owned(),
+                        url: format!("https://weights.invalid/{file}"),
+                        size,
+                        facts: forge_dictate::ModelFacts::default(),
+                        at: "2026-11-01T00:00:00Z".to_owned(),
+                    },
+                )
+                .expect("the record lands");
+            }
+            if let Some(variant) = pick {
+                dictate_models::record_active(
+                    &db,
+                    DictateRole::Transcribing,
+                    &ActiveChoice {
+                        variant: variant.to_owned(),
+                        at: "2026-11-01T00:00:00Z".to_owned(),
+                    },
+                )
+                .expect("the pick lands");
+            }
+        }
+
+        Self { _root: root, config_dir, app_support }
+    }
+
+    fn resolve(&self) -> Result<LiveRoles, String> {
+        resolved_live_roles(&self.config_dir, &self.app_support)
+    }
+}
+
+/// **The bench measures the model the live role resolves to, not the
+/// compiled pin.** Measuring the pin while the user runs an installed pick is
+/// the defect this reads for: every committed trend named a model nobody was
+/// running, so a quality gap between the two was invisible.
+#[test]
+fn the_bench_takes_the_transcribing_model_from_the_live_pick() {
+    let granite = "granite-speech-5.0-470m-turboctc-nc-Q4_K_M.gguf";
+    let machine = Machine::with_store("", Some(("granite", granite, 279_393_440)), Some("granite"));
+
+    let live = machine.resolve().expect("the live roles resolve");
+
+    assert_eq!(live.config.asr_model.file, granite, "the transcribing role runs the pick");
+    assert_eq!(live.config.asr_model.size, 279_393_440, "with the size its record carries");
+    assert!(
+        live.models.iter().any(|(role, model)| *role == DictateRole::Transcribing
+            && matches!(&model.from, ActiveFrom::Installed { .. })),
+        "and the resolution carries where the model came from, which the bench prints"
+    );
+    assert_eq!(
+        live.config.normalizer.map(|spec| spec.file),
+        Some(ModelSpec::s1_mini_f16().file),
+        "the cleanup role has no key and no pick, so it falls to the compiled pin"
+    );
+}
+
+/// **A store the bench cannot read is a failure, not a fall back to the
+/// pins.** The fallback is the defect restated: it measures a model the user
+/// is not running, and says nothing about it.
+#[test]
+fn a_machine_with_no_store_fails_rather_than_measuring_the_pin() {
+    let machine = Machine::with_store("", None, None);
+    std::fs::remove_file(store::path_for(&machine.app_support, &machine.config_dir))
+        .expect("the store was written");
+
+    let error = machine.resolve().expect_err("no store, no resolution");
+
+    assert!(error.contains("could not be read"), "got: {error}");
+    assert!(error.contains(".redb"), "the error names the file it wanted, got: {error}");
+}
+
+/// **A config key the machine has not installed fails, rather than reaching
+/// the feed.** A bench fetches nothing, and dropping to the pin here would
+/// measure a model nobody chose.
+#[test]
+fn a_config_key_with_no_installed_record_fails_rather_than_fetching() {
+    let machine = Machine::with_store("transcribe_model = \"lfm3\"\n", None, None);
+
+    let error = machine.resolve().expect_err("nothing resolves that key");
+
+    assert!(
+        error.contains("transcribe_model") && error.contains("lfm3"),
+        "the error names the key and the variant, got: {error}"
+    );
+}
+
 #[test]
 #[ignore = "needs both models on disk; run via just bench"]
 fn bench_corpus() {
-    let models = dirs::cache_dir()
-        .map(|d| d.join("forge-dictate"))
-        .expect("a cache directory is required to locate the weights");
-    let asr = ModelSpec::cohere_transcribe_q4_k_m();
-    let normalizer = ModelSpec::s1_mini_f16();
+    let live = live_roles();
+    let models = live.models_dir.clone();
+    let asr = live.config.asr_model.clone();
+    let normalizer = live.config.normalizer.clone().expect(
+        "the normalization role is off in this forge.toml ([dictate] normalizer = false); the \
+         trend measures both roles",
+    );
 
-    for spec in [&asr, &normalizer] {
+    for (role, spec) in
+        [(DictateRole::Transcribing, &asr), (DictateRole::Normalization, &normalizer)]
+    {
         let path = models.join(&spec.file);
         assert!(
             path.exists(),
-            "{} is not on disk at {}. This bench does not fetch - run prepare() first. \
-             Downloading three gigabytes as a side effect of a benchmark, or of a cron, is a \
-             surprise nobody asked for.",
+            "{} is not on disk at {}. The {} resolves to it ({}), so the bench measures that \
+             model or nothing. This bench does not fetch - run prepare() first. Downloading three \
+             gigabytes as a side effect of a benchmark, or of a cron, is a surprise nobody asked \
+             for.",
             spec.file,
-            path.display()
+            path.display(),
+            role.label(),
+            source_of(&live, role)
         );
     }
 
@@ -217,7 +411,7 @@ fn bench_corpus() {
     let manifest_sha = hex::encode(Sha256::digest(raw.as_bytes()))[..8].to_owned();
 
     let construct_start = std::time::Instant::now();
-    let engine = Engine::new(Config::default()).expect("engine must start");
+    let engine = Engine::new(bench_config(&live)).expect("engine must start");
     let engine_construct = construct_start.elapsed();
     let mut first_clip = Duration::ZERO;
     let mut asr_differs = Vec::new();
@@ -282,6 +476,8 @@ fn bench_corpus() {
     // Raw and unsettled, every run. The committed file may not move; this
     // always does, and it is what makes a sub-resolution creep visible.
     println!("\n=== RAW, unsettled (the file is the trend, this is the truth) ===");
+    println!("asr         {}  ({})", asr.file, source_of(&live, DictateRole::Transcribing));
+    println!("normalizer  {}  ({})", normalizer.file, source_of(&live, DictateRole::Normalization));
     println!("model_load {:>7} ms", ms(total.model_load));
     println!("resample   {:>7} ms", ms(total.resample));
     println!("mel        {:>7} ms", ms(total.mel));
@@ -381,28 +577,27 @@ fn bench_corpus() {
 /// `FORGE_DICTATE_BENCH_MODELS` at a copy of the weights when something live
 /// has the originals mapped: the copy is the same bytes with no mapping, so
 /// the purge reaches it, and `model_identity` checks it against the spec.
-/// The override is this test's alone; `bench_corpus` always reads the cache
-/// directory. A run without either is warm throughout and is the control.
+/// The override is this test's alone; `bench_corpus` always reads the models
+/// directory the live roles resolve. A run without either is warm throughout
+/// and is the control.
 ///
 /// Run it as `just bench` never does, in a process of its own:
 ///
 /// ```text
-/// cargo nextest run -p forge-dictate --test bench --run-ignored all \
+/// cargo nextest run -p forge-workspace --test bench --run-ignored all \
 ///   --no-capture -E 'test(model_load_cold_warm)'
 /// ```
 #[test]
 #[ignore = "needs both models on disk; measures model load only"]
 fn model_load_cold_warm() {
-    let models = std::env::var_os("FORGE_DICTATE_BENCH_MODELS").map_or_else(
-        || {
-            dirs::cache_dir()
-                .map(|d| d.join("forge-dictate"))
-                .expect("a cache directory is required to locate the weights")
-        },
-        PathBuf::from,
+    let live = live_roles();
+    let models = std::env::var_os("FORGE_DICTATE_BENCH_MODELS")
+        .map_or_else(|| live.models_dir.clone(), PathBuf::from);
+    let asr = live.config.asr_model.clone();
+    let normalizer = live.config.normalizer.clone().expect(
+        "the normalization role is off in this forge.toml ([dictate] normalizer = false); this \
+         measurement loads both roles' weights",
     );
-    let asr = ModelSpec::cohere_transcribe_q4_k_m();
-    let normalizer = ModelSpec::s1_mini_f16();
     let asr_path = models.join(&asr.file);
     let normalizer_path = models.join(&normalizer.file);
     let _ = model_identity(&asr, &asr_path);
@@ -438,8 +633,9 @@ fn model_load_cold_warm() {
     // The app-visible path: the engine loads both on its worker thread, and
     // `wait_ready` resolves once the second is in memory.
     let started = std::time::Instant::now();
-    let engine = Engine::new(forge_dictate::ConfigBuilder::new().models_dir(&models).build())
-        .expect("engine must start");
+    let mut engine_config = bench_config(&live);
+    engine_config.models_dir = Some(models.clone());
+    let engine = Engine::new(engine_config).expect("engine must start");
     engine.wait_ready().expect("both models must load");
     println!("\nengine (new + wait_ready): {} ms", ms(started.elapsed()));
     drop(engine);
@@ -455,7 +651,7 @@ fn header(
     models: &Path,
 ) -> String {
     format!(
-        "# forge-dictate bench. Regenerated by `just bench`. Commit the result.\n\
+        "# The dictate trend bench. Regenerated by `just bench`. Commit the result.\n\
          # Do not hand-edit: an unreadable file makes the next run refuse rather\n\
          # than silently start the trend over.\n\
          #\n\

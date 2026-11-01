@@ -65,6 +65,102 @@ pub struct BenchResult {
     pub corpus: forge_dictate::bench::CorpusId,
 }
 
+/// What the live roles run on this machine, for a bench that runs outside
+/// forge.
+#[cfg(any(test, feature = "testing"))]
+#[derive(Debug)]
+pub struct LiveRoles {
+    /// The model each role runs, in role order, with where the choice came
+    /// from.
+    pub models: Vec<(crate::dictate::DictateRole, crate::install::ActiveModel)>,
+    /// The engine configuration those roles describe, as the boot builds it.
+    pub config: forge_dictate::Config,
+    /// Where the weights live: the configured directory, else the platform
+    /// cache directory.
+    pub models_dir: std::path::PathBuf,
+}
+
+/// A copy of a store another process holds, removed when it goes.
+#[cfg(any(test, feature = "testing"))]
+struct StoreCopy(std::path::PathBuf);
+
+#[cfg(any(test, feature = "testing"))]
+impl StoreCopy {
+    fn take(live: &Path) -> Result<Self, String> {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "forge-store-{}-{}.redb",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::copy(live, &path).map_err(|error| {
+            format!(
+                "the store at {} could not be read ({error}); has forge run with this config dir \
+                 yet?",
+                live.display()
+            )
+        })?;
+        Ok(Self(path))
+    }
+}
+
+#[cfg(any(test, feature = "testing"))]
+impl Drop for StoreCopy {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+/// The models the live roles resolve to, read by a process that is not
+/// forge.
+///
+/// redb takes an exclusive lock, so a running forge holds the live store; the
+/// rows are read off a copy, the way forge's own live probes read one. A
+/// role whose config key names a variant this machine has not installed is
+/// an error rather than a feed lookup: the caller is a bench, and a bench
+/// fetches nothing.
+#[cfg(any(test, feature = "testing"))]
+pub fn resolved_live_roles(config_dir: &Path, app_support: &Path) -> Result<LiveRoles, String> {
+    let loaded = crate::config::load_from_dir(config_dir)
+        .map_err(|error| format!("forge.toml could not be read: {error}"))?;
+    let settings = &loaded.dictate;
+    let Some(models_dir) = settings.models_dir() else {
+        return Err("no models directory resolves: [dictate] models_dir is unset and there is no \
+                    platform cache directory"
+            .to_owned());
+    };
+
+    let live = crate::store::path_for(app_support, config_dir);
+    let copy = StoreCopy::take(&live)?;
+    let db = crate::store::Db::open(&copy.0).map_err(|error| {
+        format!("the store copy at {} failed to open: {error}", copy.0.display())
+    })?;
+    let installed = crate::store::dictate_models::installed(&db)
+        .map_err(|error| format!("the installed models could not be read: {error}"))?;
+
+    let mut models = Vec::new();
+    for (role, pin) in settings.model_specs() {
+        let configured = match role {
+            crate::dictate::DictateRole::Transcribing => settings.transcribe_model.as_deref(),
+            crate::dictate::DictateRole::Normalization => settings.cleanup_model.as_deref(),
+        };
+        let pick = crate::store::dictate_models::active(&db, role)
+            .map_err(|error| format!("the {} row could not be read: {error}", role.label()))?;
+        match crate::install::resolve_role(role, pin, configured, &installed, pick) {
+            crate::install::RoleResolution::Chosen(model) => models.push((role, model)),
+            crate::install::RoleResolution::NeedsFeed { key, variant } => {
+                return Err(format!(
+                    "[dictate] {key} names {variant}, which this machine has not installed; the \
+                     bench measures what a live role runs and never fetches"
+                ));
+            }
+        }
+    }
+
+    let config = crate::dictate::preflight_config(settings, &models);
+    Ok(LiveRoles { models, config, models_dir })
+}
+
 /// How many saved results the page reads.
 const RESULTS_SHOWN: usize = 50;
 

@@ -18,10 +18,10 @@ mod results;
 
 use results::{Section, committed, render, settle};
 
-/// An ARBITRARY magnitude for exercising the deadband. Deliberately not any
-/// figure anyone has measured: this crate has produced no timings yet, and a
-/// test constant that resembles a real reading is how an unsourced number
-/// acquires credibility and ends up seeded into the committed file.
+/// An ARBITRARY magnitude for exercising the deadband. Deliberately not a
+/// figure anyone has measured: a test constant that resembles a real reading
+/// is how an unsourced number acquires credibility and ends up seeded into
+/// the committed file.
 const FIXTURE_MS: u64 = 500;
 const DEADBAND_MS: u64 = 10;
 
