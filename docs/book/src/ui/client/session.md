@@ -181,17 +181,19 @@ read as one system.
   call never also draws a row for - and the refusal is never dropped. **A
   sub-agent's refusal draws inside the dispatch that owns it**: the frame
   names the agent rather than the dispatch, and the server walks the
-  agent's dispatch chain up to the top-level card - a nested dispatch's
-  call is a child line, not a row, so an agent two or three levels down
-  still resolves to the expansion that draws it. The refusal rides that
-  expansion's call row with the same chip and body, or draws as a notice
-  row there - the level glyph and the wire's own chip the session's notice
-  carries - when the expansion holds no call row for it. A refusal no
-  instance owns - a task the roster never linked - stays at the session's
-  level. A resumed page draws a sub-agent's refusal from its own sidecar,
-  as the call's errored result, and a nested sidecar's frames fold under
-  the expansion that owns them there too, so the same work draws live and
-  after a resume; a sidecar past the resume budget is skipped. **A question
+  agent's dispatch chain up to the top-level card - a second level's call is
+  a child line and a third level's only a parent link, so an agent two or
+  three levels down still resolves to the expansion that draws it. The
+  refusal rides that expansion's call row with the same chip and body, or
+  draws as a notice row there - the level glyph and the wire's own chip the
+  session's notice carries - when the expansion holds no call row for it. A
+  refusal no instance owns - a task the roster never linked - stays at the
+  session's level. A resumed page draws a sub-agent's refusal from its own
+  sidecar, as the call's errored result, and a nested sidecar's frames fold
+  under the expansion that owns them there too: the fold resolves the chain
+  from the sidecar metas, so a parent's body past the resume budget does not
+  strand its child, while a sidecar whose chain reaches no dispatch the
+  transcript answers joins nothing. **A question
   draws nothing here
   while it waits**: the dock is its row. It draws as a card instead - the
   words the reader was asked, marked `unanswered`, with nothing picked or
