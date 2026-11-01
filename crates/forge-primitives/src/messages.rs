@@ -472,8 +472,10 @@ pub enum Message {
         tool_name: String,
         /// Id of the `tool_use` block that was refused.
         tool_use_id: String,
-        /// Machine-readable reason category (e.g. `"other"`).
-        decision_reason_type: String,
+        /// Machine-readable reason category (e.g. `"other"`). Optional in the
+        /// 2.1.280 schema, beside `agent_id` and `decision_reason`; no
+        /// measured frame omits it.
+        decision_reason_type: Option<String>,
         /// Reason token the CLI recorded (e.g. `"Contains simple_expansion"`).
         /// Absent on a `subcommandResults` denial, which names the decision
         /// class and carries no token.
@@ -1556,7 +1558,8 @@ enum TypedSystemRepr {
     PermissionDenied {
         tool_name: String,
         tool_use_id: String,
-        decision_reason_type: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        decision_reason_type: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         decision_reason: Option<String>,
         message: String,
@@ -3557,7 +3560,7 @@ mod tests_message_extras {
     }
 
     #[test]
-    fn a_denial_without_a_reason_token_still_decodes_typed() {
+    fn a_denial_missing_its_optional_fields_still_decodes_typed() {
         // A `subcommandResults` refusal names the decision class and no
         // token, and carries the agent a sub-agent's refusal belongs to -
         // measured on 2.1.280. Requiring the token dropped the whole frame to
@@ -3598,6 +3601,37 @@ mod tests_message_extras {
                 "session_id": "f1492219-e1a5-4c39-8cec-ff692498cbc8",
             }),
             "and it round-trips byte for byte: no key the CLI omitted is invented",
+        );
+
+        // **`decision_reason_type` is optional in the schema, not yet in a
+        // measured frame.** No capture omits it, so this half pins the schema
+        // rather than a reproduction: a refusal without it must still be the
+        // typed frame, or its agent is unreadable and a sub-agent's refusal
+        // falls back to the session's level.
+        let bare = json!({
+            "type": "system",
+            "subtype": "permission_denied",
+            "tool_name": "Bash",
+            "tool_use_id": "call_bare",
+            "agent_id": "a942e0767f027631a",
+            "message": "Permission to use Bash has been denied.",
+            "uuid": "u-bare",
+            "session_id": "s",
+        });
+        let msg: Message = serde_json::from_value(bare.clone()).expect("decode");
+        assert!(
+            matches!(
+                &msg,
+                Message::PermissionDenied { decision_reason_type: None, extras, .. }
+                    if extras.get("agent_id").and_then(serde_json::Value::as_str)
+                        == Some("a942e0767f027631a")
+            ),
+            "the decision class is optional too, and the agent stays reachable: {msg:?}",
+        );
+        assert_eq!(
+            serde_json::to_value(&msg).expect("encode"),
+            bare,
+            "and the frame it re-emits is the frame it was given",
         );
     }
 
