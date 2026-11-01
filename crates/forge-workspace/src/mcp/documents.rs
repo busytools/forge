@@ -93,7 +93,7 @@ one of the project's `vault_roots` in `forge.toml`. Set `reviewable` \
 to ask the reader for a review of it: they open it, comment on lines \
 and finish, and their review is filed under the document's own scope. \
 This session was spawned without the `review` MCP family, so you cannot \
-read it back; the answer names the review's scope, which your lead \
+read it back; the answer names the review's id and scope, which your lead \
 reads with review__get. A PDF always opens read-only. The reader is \
 asked to open it or not, and **this call waits for them**: it answers \
 when they finish - with what the reader left - or when they say not \
@@ -192,8 +192,8 @@ impl HandOffTool {
                 } else {
                     format!(
                         "{filed}. This session was spawned without the `review` MCP family, so \
-                         you cannot read them back - hand that scope to your lead, which can \
-                         read them with review__get."
+                         you cannot read them back - hand your lead the review id and scope \
+                         above, which it reads with review__get."
                     )
                 }
             }
