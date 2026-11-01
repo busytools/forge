@@ -282,13 +282,19 @@
    * is already seen, and the rows it carries are ones the reader never saw,
    * so they enter.
    */
-  function firstSight(turn: HeldTurn | null, stops: PageStops): void {
+  function firstSight(
+    turn: HeldTurn | null,
+    turns: readonly { messages: readonly unknown[] }[],
+  ): void {
     if (turn === null || seenTurn[turn.key] === true) return;
     if (turn.live) {
       seenTurn[turn.key] = true;
       return;
     }
-    seedDrawn(turn, stops);
+    // **The stops are walked only where they are used.** They are the render's
+    // own fold argument, and the live path must not pay a second page walk per
+    // frame - which it would if the caller evaluated them before these guards.
+    seedDrawn(turn, stopsOf(turns));
   }
 
   /** Mark one row as having just arrived, and take the mark back after it. */
@@ -760,7 +766,17 @@
           // not replay.
           const entering = rowsIn(added).filter((row) => {
             const key = row.getAttribute('data-k');
-            return key !== null && !hasArrived(at, key);
+            if (key === null || hasArrived(at, key)) return false;
+            // **A run is keyed by its head, which a fold rebuild can move.**
+            // A stop drawn alone resolves once its launch's page lands and the
+            // fold drops that head row; the rebuilt run takes the next row's
+            // key, and its rows were all shown already - so it is a move, not
+            // an arrival.
+            const inside = [...row.querySelectorAll('[data-k]')];
+            return !(
+              inside.length > 0 &&
+              inside.every((inner) => hasArrived(at, inner.getAttribute('data-k') ?? ''))
+            );
           });
           for (const key of keys) recordArrival(at, key);
           for (const row of entering) pending.push(row);
@@ -955,7 +971,7 @@
         // conversation's until the line below.
         firstSight(
           untrack(() => value.turns[value.turns.length - 1] ?? null),
-          stopsOf(value.turns),
+          value.turns,
         );
         held = value;
       }
@@ -1277,8 +1293,13 @@
     // Read untracked: this runs from the pin's own effect, and a tracked read
     // of `carried` would make the effect's own write a reason to run again.
     const turn = untrack(() => carried);
-    if (turn !== null && carriedRow !== null) {
-      recordArrival(turn, `${turn}:${carriedRow}`);
+    if (turn === null) return;
+    // **The row the pin holds NOW, which a second result inside the beat can
+    // have changed**, and the one it held when the beat began: both draw in
+    // the turn when the pin lets go.
+    const holding = untrack(() => (carried === newest && pinned !== null ? pinned.key : null));
+    for (const row of new Set([carriedRow, holding])) {
+      if (row !== null) recordArrival(turn, `${turn}:${row}`);
     }
     carriedRow = null;
   }
