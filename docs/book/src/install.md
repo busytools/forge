@@ -76,7 +76,8 @@ just check
 That runs four independent groups concurrently: the fast checks
 (`cargo fmt --check`, the Unicode punctuation gate, the book's client-page
 word-count gate, and the scripts' own tests, `script-tests`: the release
-manifest's, the client-dependency bootstrap's, the check-group orchestrator's,
+manifest's, the client-dependency bootstrap's, the client-quit script's,
+the check-group orchestrator's,
 the gate lock's, the book's client-page word-count test's, the client-wasm
 check's, the browser-stack patch's and the browser-host focus test's), the
 Rust workspace
@@ -252,12 +253,12 @@ this same script, builds and installs the client over
 archive. Only then does it push `main` with the tag and create the GitHub
 release with every asset the update path reads; the push and the publish
 are last because they are the only irreversible steps. The binary goes
-first, so a failure later in the sequence - a client running from the
-installed bundle, a missing Android keystore or toolchain - cannot leave
-it stale. The install replaces the on-disk binary; a running forge picks
-the new one up at its next restart. A failure after the tag aborts the
-release with the tag cut; each half re-runs alone with the tree still at
-the tag (`just install`, `just client-release <version>`,
+first, so a failure later in the sequence - a client that does not quit
+when the release asks it to, a missing Android keystore or toolchain -
+cannot leave it stale. The install replaces the on-disk binary; a
+running forge picks the new one up at its next restart. A failure after
+the tag aborts the release with the tag cut; each half re-runs alone with
+the tree still at the tag (`just install`, `just client-release <version>`,
 `just client-android-release <version>`, `just client-web-release
 <version>`), and a release whose tag was cut and pushed finishes with
 `just publish <version>`, while re-running `just release` refuses
