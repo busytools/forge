@@ -968,6 +968,19 @@ function isLocalCommand(text: string): boolean {
 }
 
 /**
+ * Whether a row's words are the CLI's interrupt marker, the row it writes
+ * INSIDE the turn it ended.
+ *
+ * One copy for both readers - the conversation joins the row to the turn it
+ * interrupted (#1323), and the fold places the reporting line around it - and
+ * the same rule as `is_interrupt_marker` in the workspace's transcript fold.
+ */
+export function isInterruptText(text: string): boolean {
+  const held = text.trimStart();
+  return held.startsWith('[Request interrupted by user') && held.includes(']');
+}
+
+/**
  * The summary a task notification's envelope carries, or null for every other
  * text.
  *
@@ -2331,6 +2344,76 @@ export function fold(
     return totals;
   };
 
+  /**
+   * Whether a work row draws a message that arrived into the turn: a peer
+   * message, or a delivery from an external app.
+   */
+  const arrivedRow = (row: WorkRow): boolean =>
+    row.tag === 'inbound' || (row.tag === 'card' && row.card.row === 'arrived');
+
+  /**
+   * Whether a unit is nothing but messages that arrived after the last output.
+   *
+   * **The peer card is the shape the transcript keeps in the turn it
+   * interrupted** - a bracket-led envelope opens no turn - so the drawn row is
+   * what says one landed, and the reader's own words ride the same carrier. A
+   * delivery is the same: a cron fire, a Slack message or a Gotify push
+   * carries its own prompt in, and one queued at a turn's end belongs to the
+   * next.
+   */
+  const arrivedAfterOutput = (unit: Unit): boolean => {
+    // **The interrupt marker is the user row that is not a message**: the CLI
+    // writes it INSIDE the turn it ended (#1323), so it stays above the report
+    // whatever came before it.
+    if (unit.kind === 'user') return !isInterruptText(unit.text);
+    if (unit.kind !== 'leaves') return false;
+    return unit.rows.length > 0 && unit.rows.every(arrivedRow);
+  };
+
+  /**
+   * Where the turn's report row belongs: after the work it closed, and before
+   * the messages that arrived after the last of it.
+   *
+   * A user or peer message that lands after the assistant's final output
+   * starts the next turn, so the closing line is placed ahead of it rather
+   * than after it. One with assistant work after it was genuinely mid-turn and
+   * keeps its place. A turn whose every row is one of these has nothing for
+   * the row to close yet, so it stays at the end. A work unit ENDING in
+   * messages is split, so the calls above them keep their side of the line
+   * (Ved, #2766).
+   */
+  const reportPlace = (): number => {
+    let at = units.length;
+    while (at > 0) {
+      const held = units[at - 1];
+      if (held === undefined) break;
+      if (arrivedAfterOutput(held)) {
+        at -= 1;
+        continue;
+      }
+      if (held.kind !== 'leaves') break;
+      let cut = held.rows.length;
+      while (cut > 0) {
+        const row = held.rows[cut - 1];
+        if (row === undefined || !arrivedRow(row)) break;
+        cut -= 1;
+      }
+      if (cut === held.rows.length) break;
+      // Two units in the one's place: the work keeps its name, and the
+      // messages take a name of their own off it, stable across folds. A card
+      // the reader had opened closes when a split appears (PeerRow keeps its
+      // own state); accepted, and it is the only thing the split costs.
+      units.splice(
+        at - 1,
+        1,
+        { kind: 'leaves', key: held.key, rows: held.rows.slice(0, cut) },
+        { kind: 'leaves', key: `${held.key}#after`, rows: held.rows.slice(cut) },
+      );
+      return at;
+    }
+    return at === 0 ? units.length : at;
+  };
+
   const flushWork = (): void => {
     const items = pending;
     pending = [];
@@ -2901,7 +2984,12 @@ export function fold(
     if (frame.type === 'result') {
       sawResult = true;
       flushWork();
-      units.push({
+      // The turn ended, so a command print after it is not the same command.
+      // The report below is spliced rather than pushed, and a push is what
+      // would otherwise spend this handle.
+      localCommandAt = null;
+      const closes = reportPlace();
+      units.splice(closes, 0, {
         kind: 'report',
         info: reportOf(frame, model, thinking, endedAt),
         key: typeof frame.uuid === 'string' ? frame.uuid : `result-${at}`,
@@ -2912,7 +3000,11 @@ export function fold(
       // turn spent.
       const failure = turnFailure(frame);
       if (failure !== null) {
-        units.push({ kind: 'notice', key: keyOf(at, frame, 'failure'), notice: failure });
+        units.splice(closes + 1, 0, {
+          kind: 'notice',
+          key: keyOf(at, frame, 'failure'),
+          notice: failure,
+        });
       }
       thinking = null;
       continue;
@@ -3372,7 +3464,7 @@ export function fold(
   // the Result lands.
   if (live && !sawResult) {
     const held = liveUsage();
-    units.push({
+    units.splice(reportPlace(), 0, {
       kind: 'report',
       key: 'live-report',
       info: {
@@ -3440,6 +3532,15 @@ interface TurnMemo {
   units: Unit[];
   /** The running row this fold drew, when it drew one, whose figures move. */
   report: TurnInfo | null;
+  /**
+   * Where the running row sits in `units`, or -1 when the fold drew none.
+   *
+   * **Not the tail**, which is what it used to be: a message that arrived
+   * after the assistant's last output draws below the row, so a carry that
+   * replaced the last unit would rewrite the message and leave two rows on one
+   * key.
+   */
+  reportAt: number;
   /** The instant the running row's own span is measured from, in ms. */
   startedMs: number | null;
 }
@@ -3657,7 +3758,7 @@ function firstStampMs(messages: readonly unknown[]): number | null {
  * rather than the turn.
  */
 function advance(memo: TurnMemo, tail: readonly Frame[]): Unit[] {
-  if (memo.report === null) return memo.units;
+  if (memo.report === null || memo.reportAt < 0) return memo.units;
   const held = memo.report;
   let thinking = held.thinking_tokens;
   let endedAt = held.ended_at_utc;
@@ -3684,7 +3785,11 @@ function advance(memo: TurnMemo, tail: readonly Frame[]): Unit[] {
     duration_ms: spanOf(memo.startedMs, endedMs),
   };
   memo.report = info;
-  memo.units = [...memo.units.slice(0, -1), { kind: 'report', key: 'live-report', info }];
+  memo.units = [
+    ...memo.units.slice(0, memo.reportAt),
+    { kind: 'report', key: 'live-report', info },
+    ...memo.units.slice(memo.reportAt + 1),
+  ];
   return memo.units;
 }
 
@@ -3697,9 +3802,9 @@ function memoOf(
   ended: boolean,
   stops: PageStops,
 ): TurnMemo {
-  const last = units[units.length - 1];
-  const report =
-    last !== undefined && last.kind === 'report' && last.key === 'live-report' ? last.info : null;
+  const reportAt = units.findIndex((unit) => unit.kind === 'report' && unit.key === 'live-report');
+  const running = units[reportAt];
+  const report = running !== undefined && running.kind === 'report' ? running.info : null;
   return {
     messages,
     self,
@@ -3708,6 +3813,7 @@ function memoOf(
     stops,
     units,
     report,
+    reportAt,
     // Scanned rather than recovered from the running row's own span: the row
     // carries the span it was drawn with, but not the instant it started, and
     // a span at the fold's clamp to zero cannot be told from a forward one.
