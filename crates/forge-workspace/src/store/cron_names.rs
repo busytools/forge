@@ -57,8 +57,9 @@ fn epoch(at: SystemTime) -> u64 {
     at.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()
 }
 
-/// Drop the pairings older than [`RETENTION_SECS`] and stamp the ones written
-/// before the stamp existed, so they age out one window from the upgrade.
+/// Drop the pairings older than the retention window and stamp the ones
+/// written before the stamp existed, so they age out one window from the
+/// upgrade.
 ///
 /// **A record this build cannot decode is left alone**, the same rule the read
 /// path keeps: deleting what cannot be read is how a corrupt row becomes a
