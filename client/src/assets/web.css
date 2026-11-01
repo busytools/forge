@@ -5190,9 +5190,16 @@ details[open] > summary .arw { opacity: 1; }
   margin: 0 -10px; cursor: pointer; }
 .doc-page .doc-block:hover, .doc-page .doc-block.target, .doc-page .doc-block:focus-visible {
   background: var(--s1); box-shadow: inset 2px 0 0 var(--accent); outline: none; }
+/* The gutter between two blocks is the sheet's air and belongs to neither:
+   a press there opens nothing, and a block's own box is where its comment
+   starts. */
 /* `p + p` cannot see across two block boxes, so the block path states the one
    gap the collapsed margins do not already carry. */
 .doc-page .doc-block:has(> p) + .doc-block:has(> p) > p { margin-top: 20px; }
+/* A comment card sits between two blocks; the block after it keeps the
+   sheet's 20px gap rather than the card's own tail. */
+.doc-page .doc-blocks > :is(.doc-note, .doc-compose, .rv-marker):has(+ .doc-block) {
+  margin-bottom: 20px; }
 /* A plain-text row's child carries no margins, so the row keeps the block's
    own vertical padding: its pitch is the line box plus 4px, as it was. */
 .doc-page .doc-block:has(> .doc-raw) { padding: 2px 10px; }
@@ -5264,9 +5271,19 @@ details[open] > summary .arw { opacity: 1; }
 .doc-page .doc-left { color: var(--ok); font-family: var(--ui); font-size: var(--fs-base); }
 
 @media (pointer: coarse) {
-  /* A finger reaches the block targets, the composer's pair and the done. */
+  /* **A finger's target is the row.** Child margins do not collapse in a flex
+     box, so the coarse layout states its own spacing rather than inheriting
+     the sheet's: every block is a row of at least 44px with its content
+     centred, and rows stack at the sheet's own 20px gap, a one-line row
+     adding the centring slack the 44px target gives it. The collapsed rhythm
+     above is the fine-pointer layout. */
   .doc-page .doc-block, .doc-page .doc-comment-btn, .doc-page .doc-cancel-btn,
   .doc-page .doc-finish-btn { min-height: 44px; }
-  .doc-page .doc-block { display: flex; flex-direction: column; justify-content: center; }
+  .doc-page .doc-block { display: flex; flex-direction: column; justify-content: center;
+    margin-bottom: 20px; }
+  .doc-page .doc-block > :first-child { margin-top: 0; }
+  .doc-page .doc-block > :last-child { margin-bottom: 0; }
+  .doc-page .doc-block:has(> p) + .doc-block:has(> p) > p { margin-top: 0; }
+  .doc-page .doc-blocks > .doc-block:not(:has(~ .doc-block)) { margin-bottom: 0; }
   .doc-page .doc-note, .doc-page .doc-compose { margin-left: 1.8rem; }
 }
