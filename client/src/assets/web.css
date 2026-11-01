@@ -5180,12 +5180,44 @@ details[open] > summary .arw { opacity: 1; }
    document changes. A plain-text document has no blocks, so its rows are
    its own lines, drawn as the text they are. */
 .doc-page .doc-blocks { font-size: var(--fs-base); }
-.doc-page .doc-block { position: relative; border-radius: 6px; padding: 2px 10px;
+/* **A block is a prose root**: its rendered marks read the chat's own rules
+   through `.prose`, the way the non-reviewable page reads them. No vertical
+   padding, so each block's first and last child margins collapse through the
+   box - the block boxes then space themselves by the sheet's own rhythm
+   instead of stacking flush. */
+.doc-page .doc-block { position: relative; border-radius: 6px; padding: 0 10px;
   margin: 0 -10px; cursor: pointer; }
 .doc-page .doc-block:hover, .doc-page .doc-block.target, .doc-page .doc-block:focus-visible {
   background: var(--s1); box-shadow: inset 2px 0 0 var(--accent); outline: none; }
-.doc-page .doc-block > :first-child { margin-top: 0; }
-.doc-page .doc-block > :last-child { margin-bottom: 0; }
+/* The gutter between two blocks is the sheet's air, not a block's target: a
+   press on a paragraph's gap opens nothing, because the block's own box is
+   where its comment starts. A rule's band is the one target that reaches
+   into the gap it sits in. */
+/* `p + p` cannot see across two block boxes, so the block path states the one
+   gap the collapsed margins do not already carry. */
+.doc-page .doc-block:has(> p) + .doc-block:has(> p) > p { margin-top: 20px; }
+/* A comment card sits between two blocks; the block after it keeps the
+   sheet's 20px gap rather than the card's own tail. */
+.doc-page .doc-blocks > :is(.doc-note, .doc-compose, .rv-marker):has(+ .doc-block) {
+  margin-bottom: 20px; }
+/* A plain-text row's child carries no margins, so the row keeps the block's
+   own vertical padding: its pitch is the line box plus 4px, as it was. */
+.doc-page .doc-block:has(> .doc-raw) { padding: 2px 10px; }
+/* An `hr` block is a hairline, so its pointer target and hover band are a
+   band drawn around the line rather than laid out: an hr's own margins keep
+   the row's rhythm where it was. The band takes half the 20px gap either
+   side, so two rules in a row do not overlap, and it carries no ground of
+   its own - the sheet's ground painted over the line it marks. */
+.doc-page .doc-block:has(> hr)::before { content: ''; position: absolute;
+  inset: -10px 0; border-radius: 6px; }
+.doc-page .doc-block:has(> hr):hover::before,
+.doc-page .doc-block:has(> hr).target::before,
+.doc-page .doc-block:has(> hr):focus-visible::before {
+  box-shadow: inset 2px 0 0 var(--accent); }
+/* The sheet's edges keep the trims the block used to apply to every child:
+   only the first and last blocks give up their outer margin. */
+.doc-page .doc-blocks > .doc-block:first-child > :first-child { margin-top: 0; }
+.doc-page .doc-blocks > .doc-block:not(:has(~ .doc-block)) > :last-child { margin-bottom: 0; }
 .doc-page .doc-raw { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text);
   font-family: var(--mono); font-size: var(--fs-data); line-height: 1.6; }
 /* A comment under the block it is about: who wrote it, the words, and the
@@ -5241,9 +5273,19 @@ details[open] > summary .arw { opacity: 1; }
 .doc-page .doc-left { color: var(--ok); font-family: var(--ui); font-size: var(--fs-base); }
 
 @media (pointer: coarse) {
-  /* A finger reaches the block targets, the composer's pair and the done. */
+  /* **A finger's target is the row.** Child margins do not collapse in a flex
+     box, so the coarse layout states its own spacing rather than inheriting
+     the sheet's: every block is a row of at least 44px with its content
+     centred, and rows stack at the sheet's own 20px gap, a one-line row
+     adding the centring slack the 44px target gives it. The collapsed rhythm
+     above is the fine-pointer layout. */
   .doc-page .doc-block, .doc-page .doc-comment-btn, .doc-page .doc-cancel-btn,
   .doc-page .doc-finish-btn { min-height: 44px; }
-  .doc-page .doc-block { display: flex; flex-direction: column; justify-content: center; }
+  .doc-page .doc-block { display: flex; flex-direction: column; justify-content: center;
+    margin-bottom: 20px; }
+  .doc-page .doc-block > :first-child { margin-top: 0; }
+  .doc-page .doc-block > :last-child { margin-bottom: 0; }
+  .doc-page .doc-block:has(> p) + .doc-block:has(> p) > p { margin-top: 0; }
+  .doc-page .doc-blocks > .doc-block:not(:has(~ .doc-block)) { margin-bottom: 0; }
   .doc-page .doc-note, .doc-page .doc-compose { margin-left: 1.8rem; }
 }

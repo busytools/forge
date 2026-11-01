@@ -754,7 +754,7 @@
         <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
         <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
         <div
-          class="doc-block"
+          class="doc-block prose"
           class:target={composing === row.line}
           role="group"
           tabindex="0"
