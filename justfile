@@ -480,9 +480,9 @@ client-android-check: client-android-warnings
 # the one that mounts the image and opens a Finder window - is never invoked.
 #
 # A client already running from that bundle is quit first - a graceful SIGTERM
-# and a bounded wait - and refused rather than replaced only when the quit does
-# not take: overwriting the bundle a live process is executing out of is the
-# one way this fails quietly. The check is on the bundle's own executable, so a
+# and a bounded wait - and refused rather than replaced if the quit does not
+# take: overwriting the bundle a live process is executing out of is the one
+# way this fails quietly. The check is on the bundle's own executable, so a
 # client running from a checkout's target dir does not block a release - it
 # goes on executing the image it started from, which this neither disturbs nor
 # updates.
