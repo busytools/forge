@@ -927,7 +927,10 @@ fn page_y(height: f64, y: f64, rect_height: f64, flipped: bool) -> f64 {
 /// the dev stack).
 ///
 /// **Placed on the main thread**: the view is AppKit's, and the call is made
-/// from a command that already runs there.
+/// from a command that already runs there. **The contract is that thread**:
+/// called from another one, `with_webview` posts its closure and returns
+/// before it runs, so the lay and the announcement below are both skipped,
+/// which is logged rather than passed over.
 ///
 /// **Nothing in the closure may emit or announce.** On the main thread it
 /// runs inline while the dispatcher's window lock is held, and both reach
@@ -942,11 +945,16 @@ pub fn attach(app: &tauri::AppHandle, rect: Rect, viewport: super::super::Viewpo
     // already up): the page is told it holds the keyboard only then.
     let laid = Arc::new(AtomicBool::new(false));
     let laid_here = Arc::clone(&laid);
+    // Whether the closure ran at all: a caller on another thread posts it and
+    // returns before it runs, which the check below reports.
+    let entered = Arc::new(AtomicBool::new(false));
+    let entered_here = Arc::clone(&entered);
     let Some(window) = app.get_webview_window("main") else {
         tauri_plugin_log::log::warn!("the client window is not there; the surface is not laid");
         return;
     };
     let scheduled = window.with_webview(move |platform| {
+        entered_here.store(true, Ordering::Relaxed);
         // SAFETY: this runs on the main thread, and the platform view is the
         // webview's own NSView for the window's lifetime.
         unsafe {
@@ -1100,6 +1108,13 @@ pub fn attach(app: &tauri::AppHandle, rect: Rect, viewport: super::super::Viewpo
     });
     if let Err(why) = scheduled {
         tauri_plugin_log::log::warn!("the window's webview cannot be reached: {why}");
+        return;
+    }
+    if !entered.load(Ordering::Relaxed) {
+        tauri_plugin_log::log::warn!(
+            "the webview closure did not run, so the page is not told it holds the keyboard; \
+             attach must be called on the main thread (event_name client_browser_attach_off_main)"
+        );
         return;
     }
     if laid.load(Ordering::Relaxed) {
