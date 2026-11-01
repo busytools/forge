@@ -6,6 +6,8 @@ import {
   canAttach,
   drawsCanvas,
   drawsSurface,
+  focusBar,
+  focusPage,
   hideBrowser,
   installBrowserLink,
   keptFrame,
@@ -13,6 +15,7 @@ import {
   navigateBrowser,
   onTabs,
   onView,
+  pageHoldsKeyboard,
   reattachesOnReconnect,
   resizeBrowser,
   showBrowser,
@@ -148,6 +151,16 @@ describe('the wire link', () => {
     expect(sizesAsWatcher(), 'the page lays itself out').toBe(true);
     expect(reattachesOnReconnect(), 'and asks for its attach again').toBe(true);
     expect(usesPageHistory(), 'and its Back lowers the takeover').toBe(true);
+  });
+
+  /// **A page's picture is in this DOM, so its keyboard is this DOM's**: there
+  /// is no native layer to take the keys from the bar, and no page to hand
+  /// them back to.
+  it('holds no keyboard of its own, so there is no page to hand it to', () => {
+    install();
+    expect(pageHoldsKeyboard(), 'the canvas and its field are this document').toBe(false);
+    expect(focusPage(), 'and nothing native takes a keyboard back').toBeNull();
+    expect(focusBar(), 'nor takes one away from it').toBeNull();
   });
 
   /// **A size the page already has is not a request**: a re-measure that lands

@@ -13,6 +13,7 @@ vi.mock('./link', () => ({
   navigateBrowser: vi.fn(() => Promise.resolve()),
   onConnection: vi.fn(() => Promise.resolve(() => {})),
   onFailed: vi.fn(() => Promise.resolve(() => {})),
+  onKeyboard: vi.fn(() => null),
   onLower: vi.fn(() => null),
   onNav: vi.fn(() => Promise.resolve(() => {})),
   onRemeasure: vi.fn(() => null),

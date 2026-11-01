@@ -48,6 +48,16 @@ export interface BrowserLink {
    */
   readonly reattachesOnReconnect: boolean;
   /**
+   * Whether a native layer over this page holds the keyboard while the
+   * takeover is up.
+   *
+   * **A desktop shell's picture is a view of its own**, so AppKit first
+   * responder is not this document and the bar's DOM focus is nothing until
+   * the shell hands the keyboard over. A page that paints its own frames
+   * keeps the keys in this document, where the bar's focus is real.
+   */
+  readonly pageHoldsKeyboard: boolean;
+  /**
    * Whether the takeover pushes a page-history entry so the browser's Back
    * lowers it.
    *
@@ -67,6 +77,10 @@ export interface BrowserLink {
   resize(width: number, height: number, scale: number): Promise<void>;
   navigate(direction: 'back' | 'forward'): Promise<void>;
   takeControl(take: boolean): Promise<void>;
+  /** Hand the keyboard back to the native page that holds it. */
+  focusPage?: () => Promise<void>;
+  /** Take the keyboard from the native page: focus has landed in the bar. */
+  focusBar?: () => Promise<void>;
   /** The newest frame the shell kept, for a canvas that mounts after it. */
   keptFrame(): Promise<BrowserFrame | null>;
   listTabs(seat: SessionSlot | null): Promise<BrowserTabList>;
@@ -101,6 +115,15 @@ export interface BrowserLink {
    * The shell says only that the key arrived; the page marks its own press.
    */
   onModifierChord?: (fn: () => void) => Promise<() => void>;
+  /**
+   * Whose keyboard it is: the native page, or this document's bar.
+   *
+   * **Only a native overlay can hand it over.** While it holds first
+   * responder the bar gets no keydown at all, so the shell says when the
+   * pane chords moved the keyboard into the webview, and when the picture
+   * took it back.
+   */
+  onKeyboard?: (fn: (holder: 'bar' | 'page') => void) => Promise<() => void>;
 }
 
 /** A page with no connection: every ask answers the same refusal. */
@@ -110,6 +133,7 @@ const OFFLINE: BrowserLink = {
   paintsCanvas: false,
   sizesAsWatcher: false,
   reattachesOnReconnect: false,
+  pageHoldsKeyboard: false,
   usesPageHistory: false,
   show: () => Promise.resolve('this page is not connected'),
   hide: () => Promise.resolve('this page is not connected'),
@@ -181,6 +205,25 @@ export function reattachesOnReconnect(): boolean {
 /** Whether the takeover is lowered by the browser's own Back. */
 export function usesPageHistory(): boolean {
   return browserLink().usesPageHistory;
+}
+
+/** Whether a native layer over this page holds the keyboard while it is up. */
+export function pageHoldsKeyboard(): boolean {
+  return browserLink().pageHoldsKeyboard;
+}
+
+/** Hand the keyboard back to the native page that holds it, or `null` where
+ *  no native page takes one. */
+export function focusPage(): Promise<void> | null {
+  const focus = browserLink().focusPage;
+  return focus === undefined ? null : focus();
+}
+
+/** Take the keyboard from the native page, or `null` where the keys never
+ *  left this document. */
+export function focusBar(): Promise<void> | null {
+  const focus = browserLink().focusBar;
+  return focus === undefined ? null : focus();
 }
 
 export function showBrowser(
@@ -271,5 +314,12 @@ export function onModifier(
  *  keyboard to hear the other key. */
 export function onModifierChord(fn: () => void): Promise<() => void> | null {
   const start = browserLink().onModifierChord;
+  return start === undefined ? null : start(fn);
+}
+
+/** The shell's keyboard holder, or `null` where the keys never leave this
+ *  document. */
+export function onKeyboard(fn: (holder: 'bar' | 'page') => void): Promise<() => void> | null {
+  const start = browserLink().onKeyboard;
   return start === undefined ? null : start(fn);
 }

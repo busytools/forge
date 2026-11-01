@@ -85,6 +85,10 @@ pub mod viewer {
 
     #[tauri::command]
     pub fn browser_surface_rect(_rect: Rect, _viewport: super::Viewport) {}
+
+    /// No native page holds a keyboard here, so there is none to move.
+    #[tauri::command]
+    pub fn browser_surface_focus(_holder: String) {}
 }
 
 /// **A native resize moves the webview's frame, not the page's picture.**

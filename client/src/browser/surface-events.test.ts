@@ -107,6 +107,7 @@ describe('the shell listeners', () => {
         'browser_nav_state',
         'browser_view',
         'browser_tabs',
+        'browser_keyboard',
         'client://connection',
       ]);
 
@@ -124,6 +125,26 @@ describe('the shell listeners', () => {
       viewed({
         payload: { id: 7, profile: 'browser-stack-lead', tab: 3, viewer: 3, controller: 4 },
       });
+
+      // **The shell says whose keyboard it is**, and the page relays the
+      // holder as the window event its bar listens for. A payload this page
+      // cannot read is no holder at all, rather than a guessed one.
+      const keyboard = listen.mock.calls.find((entry) => entry[0] === 'browser_keyboard')?.[1] as
+        ((event: { payload: unknown }) => void) | undefined;
+      const holders: string[] = [];
+      const heard = (event: Event): void => {
+        holders.push(event.type);
+      };
+      window.addEventListener('forge-bar-focus', heard);
+      window.addEventListener('forge-page-focus', heard);
+      keyboard?.({ payload: { holder: 'bar' } });
+      keyboard?.({ payload: { holder: 'page' } });
+      keyboard?.({ payload: null });
+      keyboard?.({ payload: { holder: 'sideways' } });
+      expect(holders, 'the two holders, and nothing from a payload it cannot read').toEqual([
+        'forge-bar-focus',
+        'forge-page-focus',
+      ]);
 
       // **A failure that names another surface is not this one's.** A late
       // frame for a superseded attach must not fail the tab now viewed.
@@ -251,5 +272,29 @@ describe("the overlay's key doors", () => {
     const chord = listen.mock.calls[1]?.[1] as (event: { payload: unknown }) => void;
     chord({ payload: null });
     expect(chords, 'the chord carries no payload and is passed on').toEqual([1]);
+  });
+});
+
+/**
+ * **The page names the pane each door moves the keyboard to.** `page` is the
+ * native picture and `bar` is this document; swapping the two literals sends
+ * the keyboard to the wrong pane with every other test green, so the values
+ * are read back off the commands the shell records.
+ */
+describe('the shell keyboard doors', () => {
+  it('asks for the pane each door names', async () => {
+    vi.resetModules();
+    listen.mockReset();
+    listen.mockResolvedValue(() => undefined);
+    installShellInternals();
+    const { focusBar, focusPage, installBrowserLink } = await import('./link');
+    installBrowserLink({} as Connection);
+    asked.length = 0;
+    await focusPage();
+    await focusBar();
+    expect(asked, 'the two holders, in the commands the shell receives').toEqual([
+      { command: 'browser_surface_focus', args: { holder: 'page' } },
+      { command: 'browser_surface_focus', args: { holder: 'bar' } },
+    ]);
   });
 });
