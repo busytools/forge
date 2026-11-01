@@ -117,11 +117,10 @@ impl Drop for StoreCopy {
 /// redb takes an exclusive lock, so a running forge holds the live store; the
 /// rows are read off a copy. On macOS the copy is an APFS clone, so it is a
 /// point-in-time snapshot; a plain byte copy racing a commit can land on the
-/// previous one, which is why this answers what a fresh boot would resolve
-/// rather than what a running engine holds mid-activation. A role whose
-/// config key names a variant this machine has not installed is an error
-/// rather than a feed lookup: the caller is a bench, and a bench fetches
-/// nothing.
+/// previous one, so these answers are the store as of the copy rather than
+/// what a running engine holds mid-activation. A role whose config key names
+/// a variant this machine has not installed is an error rather than a feed
+/// lookup: the caller is a bench, and a bench fetches nothing.
 #[cfg(any(test, feature = "testing"))]
 pub fn resolved_live_roles(config_dir: &Path, app_support: &Path) -> Result<LiveRoles, String> {
     let loaded = crate::config::load_from_dir(config_dir)
@@ -141,10 +140,15 @@ pub fn resolved_live_roles(config_dir: &Path, app_support: &Path) -> Result<Live
     let live = crate::store::path_for(app_support, config_dir);
     let copy = StoreCopy::take(&live)?;
     let db = crate::store::Db::open(&copy.0).map_err(|error| {
-        format!("the store copy at {} failed to open: {error}", copy.0.display())
+        format!(
+            "the store at {} could not be read through a copy at {}: {error}",
+            live.display(),
+            copy.0.display()
+        )
     })?;
-    let installed = crate::store::dictate_models::installed(&db)
-        .map_err(|error| format!("the installed models could not be read: {error}"))?;
+    let installed = crate::store::dictate_models::installed(&db).map_err(|error| {
+        format!("the installed models could not be read from {}: {error}", live.display())
+    })?;
 
     let mut models = Vec::new();
     for (role, pin) in settings.model_specs() {
@@ -152,8 +156,19 @@ pub fn resolved_live_roles(config_dir: &Path, app_support: &Path) -> Result<Live
             crate::dictate::DictateRole::Transcribing => settings.transcribe_model.as_deref(),
             crate::dictate::DictateRole::Normalization => settings.cleanup_model.as_deref(),
         };
-        let pick = crate::store::dictate_models::active(&db, role)
-            .map_err(|error| format!("the {} row could not be read: {error}", role.label()))?;
+        // The pick is read only when the key does not decide, as the boot
+        // does: a row that cannot matter must not fail the bench.
+        let pick = if configured.is_none() {
+            crate::store::dictate_models::active(&db, role).map_err(|error| {
+                format!(
+                    "the {} row could not be read from {}: {error}",
+                    role.label(),
+                    live.display()
+                )
+            })?
+        } else {
+            None
+        };
         match crate::install::resolve_role(role, pin, configured, &installed, pick) {
             crate::install::RoleResolution::Chosen(model) => models.push((role, model)),
             crate::install::RoleResolution::NeedsFeed { key, variant } => {
