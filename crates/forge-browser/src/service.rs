@@ -1492,9 +1492,10 @@ impl BrowserService {
         Ok(requested)
     }
 
-    /// The `browser_tabs` tool, answered from the registry: **the host's
-    /// numbers are the tab names**, and no driver call is needed to list,
-    /// select or close one.
+    /// The `browser_tabs` tool, answered from the registry: **the page id a
+    /// row carries is the address**, and no driver call is needed to list,
+    /// select or close one. The host's number is the row's internal name and
+    /// is never printed.
     ///
     /// **The browser's own page list is the only other reader here.** The
     /// driver's tab listing used to run before this answer and attached a CDP
@@ -5914,7 +5915,7 @@ fn tool_tab(args: &Value) -> Result<&str, String> {
             .to_owned());
     }
     match args.get("tab") {
-        Some(Value::String(tab)) if !tab.trim().is_empty() => Ok(tab),
+        Some(Value::String(tab)) if !tab.trim().is_empty() => Ok(tab.trim()),
         Some(_) => Err("browser_tabs needs `tab` as a page id string, not a number".to_owned()),
         None => {
             Err("browser_tabs needs `tab`, the page id string its list prints first".to_owned())
@@ -11100,6 +11101,12 @@ mod tests {
             text.lines().any(|line| line.starts_with("- T1: (current) ")),
             "the selected tab is the current one: {text}",
         );
+
+        // **A stray space is trimmed, not carried into the lookup.**
+        service
+            .call(&lead, "browser_tabs", json!({ "action": "select", "tab": " T1 " }))
+            .await
+            .expect("a padded page id selects the same tab");
     }
 
     /// **A page id closes its tab**, the positive half of the close refusal:

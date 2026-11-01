@@ -133,8 +133,15 @@ impl BrowserTool {
         else {
             return Err("browser_hand_off needs `reason`: what the person should do".to_owned());
         };
+        if args.get("tab").is_none() && args.get("index").is_some() {
+            return Err(
+                "browser_hand_off takes `tab`, the page id its listing prints first; `index` is \
+                 gone"
+                    .to_owned(),
+            );
+        }
         let tab = match args.get("tab") {
-            Some(Value::String(tab)) if !tab.trim().is_empty() => tab,
+            Some(Value::String(tab)) if !tab.trim().is_empty() => tab.trim(),
             Some(_) => {
                 return Err(
                     "browser_hand_off needs `tab` as a page id string, not a number".to_owned()
@@ -532,6 +539,55 @@ mod tests {
         let text = crate::mcp::test_support::block_text(&out.blocks[0]);
         assert!(text.contains("`tab`"), "{text}");
         assert!(mock.hand_offs.lock().is_empty(), "and nothing was parked");
+    }
+
+    /// **A page id is a string, and the field an upgrade retired is named.**
+    /// A resumed seat's catalogue predates both changes, and a number must not
+    /// be read as a missing argument.
+    #[tokio::test]
+    async fn a_hand_off_requires_a_page_id_string_and_names_the_retired_field() {
+        let mock = Arc::new(MockBrowserFacade::new());
+        let tool = BrowserTool {
+            spec: spec_named("browser_hand_off"),
+            facade: Arc::clone(&mock) as Arc<dyn BrowserFacade>,
+            slot: seat(),
+        };
+
+        let numeric =
+            tool.call(ToolInput { value: json!({ "reason": "sign in", "tab": 2 }) }).await;
+        assert!(numeric.is_error, "{:?}", numeric.blocks);
+        let text = crate::mcp::test_support::block_text(&numeric.blocks[0]);
+        assert!(text.contains("page id string"), "{text}");
+        assert!(text.contains("not a number"), "{text}");
+
+        let retired =
+            tool.call(ToolInput { value: json!({ "reason": "sign in", "index": 2 }) }).await;
+        assert!(retired.is_error, "{:?}", retired.blocks);
+        let text = crate::mcp::test_support::block_text(&retired.blocks[0]);
+        assert!(text.contains("`index` is gone"), "{text}");
+        assert!(mock.hand_offs.lock().is_empty(), "and nothing was parked");
+    }
+
+    /// **A page id is trimmed before it parks.** A listing an agent copied
+    /// with a stray space must not send the person to a page nobody named.
+    #[tokio::test]
+    async fn a_hand_off_trims_its_page_id() {
+        let mock = Arc::new(MockBrowserFacade::new());
+        let tool = BrowserTool {
+            spec: spec_named("browser_hand_off"),
+            facade: Arc::clone(&mock) as Arc<dyn BrowserFacade>,
+            slot: seat(),
+        };
+
+        let out =
+            tool.call(ToolInput { value: json!({ "reason": "sign in", "tab": " T1 " }) }).await;
+
+        assert!(!out.is_error, "{:?}", out.blocks);
+        assert_eq!(
+            mock.hand_offs.lock().as_slice(),
+            [("sign in".to_owned(), "T1".to_owned())],
+            "the trimmed id is what parks",
+        );
     }
 
     /// A blank reason is no reason: it would park an ask that says nothing to
