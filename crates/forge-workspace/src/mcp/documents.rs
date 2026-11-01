@@ -80,7 +80,8 @@ they say not now.";
 
 /// What a session spawned without `review` reads instead, before it calls:
 /// the hand-off works and the reader may still review, but the review is
-/// the lead's to read, so the plain description would promise it back.
+/// the lead's to read, so the plain description would promise it back. The
+/// paragraphs it shares with `DESCRIPTION` change in both.
 const DESCRIPTION_WITHOUT_REVIEW: &str = "\
 Hand the reader a document from this session's working tree, or from one of \
 the project's vault roots, opened in their own viewer. Use it when a \
