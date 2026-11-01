@@ -29,8 +29,8 @@ the document scopes the rest of the review plumbing uses. The scope is the
 seat and never the branch, so a worker that commits, or rebases, or moves
 its branch keeps its comments; a comment threads, replies, resolves and
 seals into rounds exactly as one on a diff does, and the worker addresses it
-through the same review MCP. When the reader seals a round,
-`finish review` files a `submit_review` and pushes `Review #N ready -
+through the same review MCP when it has the family. When the reader seals
+a round, `finish review` files a `submit_review` and pushes `Review #N ready -
 scope tree:{org}/{project}/{label}. Read it back under that scope, or hand
 the scope to your lead if you do not have the review tools` into the seat's
 chat, the review page's own line.
