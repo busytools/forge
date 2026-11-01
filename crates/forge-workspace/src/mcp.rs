@@ -336,13 +336,9 @@ pub fn build_forge_server(
     // to withhold. The review family still rides along: a session without it
     // can hand a document off but cannot read the review back, so its answer
     // says so.
-    builder = documents::add_tools(
-        builder,
-        documents,
-        slot.clone(),
-        families.contains(&McpFamily::Review),
-    );
-    if families.contains(&McpFamily::Review) {
+    let review_available = families.contains(&McpFamily::Review);
+    builder = documents::add_tools(builder, documents, slot.clone(), review_available);
+    if review_available {
         builder = review::add_tools(builder, review, slot.clone());
     }
     if families.contains(&McpFamily::Cron) {
