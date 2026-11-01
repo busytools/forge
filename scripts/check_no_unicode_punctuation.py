@@ -91,6 +91,10 @@ EXCLUDE_PATH_PREFIXES = (
     # tests are about. Editing one would make it not the document it stands
     # for.
     "crates/forge-dictate/tests/fixtures/docs",
+    # Third-party crates vendored as-is; their prose is not forge's to edit.
+    # `vendor/VENDOR.md` beside them is forge-authored and stays scanned.
+    "vendor/llama-cpp-2",
+    "vendor/llama-cpp-sys-2",
 )
 
 
