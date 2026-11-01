@@ -15467,7 +15467,8 @@ provider = "anthropic"
 
         let guard = workspace.db.lock();
         let db = guard.as_ref().expect("db");
-        let kept = crate::store::cron_names::for_uuids(db, &["fired", "inside", "fresh"]).expect("read");
+        let kept =
+            crate::store::cron_names::for_uuids(db, &["fired", "inside", "fresh"]).expect("read");
         assert_eq!(
             kept.keys().collect::<Vec<_>>(),
             vec!["fresh", "inside"],
