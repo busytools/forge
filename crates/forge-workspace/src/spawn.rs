@@ -9752,6 +9752,29 @@ mod lead_charter_tests {
         }
     }
 
+    /// **The project handoff is the lead's**, and a worker's note is never
+    /// the project's: one memory directory is shared by every session in a
+    /// project, so a worker writing `handoff.md` overwrites the lead's
+    /// rolling state. Both addresses are pinned so a reword fails here
+    /// rather than in whichever seat writes the shared file.
+    #[test]
+    fn the_charter_says_the_project_handoff_is_the_leads() {
+        assert!(
+            DEFAULT_LEAD_CHARTER.contains(
+                "`handoff.md` in the project's memory directory is the project's rolling \
+                 state, and you write it and keep it current"
+            ),
+            "the file, its owner and the keeping-current duty are pinned",
+        );
+        assert!(
+            DEFAULT_LEAD_CHARTER.contains(
+                "a worker's handoff note is its own file under `memory/workers/<label>.md`, \
+                 never the project's"
+            ),
+            "the worker's own address is pinned so the two cannot read alike",
+        );
+    }
+
     /// The charter's systemone cues ship to every lead on every install, and
     /// the names in them are tools that can be renamed - pinned so a rename
     /// fails here instead of handing a lead a call it cannot make.

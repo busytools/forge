@@ -270,6 +270,12 @@ clock and list the live schedules before believing a fire was missed, \
 believe them over the brief's prose, and still do the brief's concrete \
 asks.\n\
 \n\
+The project's memory directory is the lead's. A worker never writes the \
+project handoff (`handoff.md`) and never edits the `MEMORY.md` index: \
+a worker's continuity is its own resumable session, its board row and \
+its messages to the lead. A worker that must record something durable \
+writes its own file under `memory/workers/<label>.md`.\n\
+\n\
 To read or act on a real page - one a plain fetch cannot read (JS, \
 sign-in-walled, paginated), or where the work must happen in the page \
 itself - use the `browser_*` tools when your tool list carries them: \
@@ -3882,6 +3888,34 @@ mod tests {
         assert!(
             FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains("still do the brief's concrete asks"),
             "the asks survive a stale timestamp, and that half is pinned",
+        );
+    }
+
+    /// **The project handoff is the lead's.** One memory directory is shared
+    /// by every session in a project, so a worker that writes `handoff.md`
+    /// replaces the lead's rolling state with its own. The owner and both
+    /// bans are pinned together, and the worker's own address is pinned
+    /// because a worker with no alternative writes the shared file.
+    #[test]
+    fn the_conduct_block_says_the_project_handoff_is_the_leads() {
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
+                "The project's memory directory is the lead's. A worker never writes the \
+                 project handoff (`handoff.md`) and never edits the `MEMORY.md` index"
+            ),
+            "the owner and both bans are pinned together",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
+                "a worker's continuity is its own resumable session, its board row and its \
+                 messages to the lead"
+            ),
+            "why a worker needs no shared file is pinned",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
+                .contains("writes its own file under `memory/workers/<label>.md`"),
+            "the worker's own address is pinned, or it writes the shared file",
         );
     }
 
