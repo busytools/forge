@@ -2131,6 +2131,38 @@ describe('the arrival mark', () => {
     }
   });
 
+  it('keeps the mark until the last animation ends', async () => {
+    // **A fade longer than the rise must not be cut short.** The mark goes
+    // when both animations have ended, not when the shorter one does.
+    vi.useFakeTimers();
+    try {
+      const server = stub();
+      draw({}, server);
+      server.answer([turn('t0')]);
+      server.send(appended(prompting('go')));
+      await painted();
+
+      const row = document.querySelector('.conv [data-k].arrive');
+      if (!(row instanceof HTMLElement)) throw new Error('no row is marked');
+      const end = (animationName: string): void => {
+        const event = new Event('animationend');
+        Object.defineProperty(event, 'animationName', { value: animationName });
+        row.dispatchEvent(event);
+      };
+
+      end('arrive-rise');
+      expect(row.classList.contains('arrive'), 'the rise ended the mark before the fade').toBe(
+        true,
+      );
+      end('arrive-fade');
+      expect(row.classList.contains('arrive'), 'the last animation did not end the mark').toBe(
+        false,
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('does not enter a row the queue pulls back before it paints', async () => {
     // **The queue's own transient is not an arrival.** A prompt sent during a
     // turn draws its row and the queue retracts it a frame or two later; the

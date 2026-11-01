@@ -3629,7 +3629,7 @@ details.leaf.cmd > summary .tn { min-width: 0; white-space: normal;
 .turn { min-height: 24px; }
 /* ---------- arriving at the foot ----------
    A row enters the first time its key is drawn in the turn being written:
-   a 200ms fade and a 6px rise over 220ms, both on one gentle ease. The mark is put on the row itself
+   a 260ms fade and a 6px rise over 220ms, both on one gentle ease. The mark is put on the row itself
    by the column, once per key, so a row the list re-creates - leaving and
    re-entering its window, or a fold rebuild - is drawn without replaying the
    entrance, and a scroll back to it later carries none.
@@ -3647,7 +3647,7 @@ details.leaf.cmd > summary .tn { min-width: 0; white-space: normal;
   to { transform: none; }
 }
 .conv [data-k].arrive:not(.sg-hit) {
-  animation: arrive-fade 200ms cubic-bezier(.4, 0, .2, 1), arrive-rise 220ms cubic-bezier(.4, 0, .2, 1);
+  animation: arrive-fade 260ms cubic-bezier(.4, 0, .2, 1), arrive-rise 220ms cubic-bezier(.4, 0, .2, 1);
 }
 @media (prefers-reduced-motion: reduce) {
   .conv [data-k].arrive:not(.sg-hit) { animation: none; }
