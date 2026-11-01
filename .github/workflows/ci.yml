@@ -163,7 +163,7 @@ jobs:
       - uses: actions/checkout@v7
       # The vendor-patch test runs the patcher with node, at the version the
       # repo pins in scripts/vendor_browser_stack.sh.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "24"
       # The recipe is what runs the scripts, so the step's composition has one
@@ -432,7 +432,7 @@ jobs:
       # **The fleet end to end**: the server's live browser test drives the
       # staged host through the vendored driver. It needs the driver stack,
       # which `just install` also vendors, and the host bundle staged above.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "24"
       - run: scripts/vendor_browser_stack.sh
