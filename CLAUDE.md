@@ -1058,17 +1058,18 @@ come last, because they are the only irreversible steps.
 
 The client bundle is the app alone
 (`--bundles app`), so no disk image is mounted and no Finder window
-opens, and a client running from the installed bundle is a refusal rather
-than a replace: replacing a live bundle underneath itself is the one way
-this fails quietly. The bundle also carries the update tarball the desktop
-updater installs from, signed with the minisign keypair under `~/.tauri/`
-that the client README documents (nothing in the repo) - losing that
-private key ends updates for every installed desktop, which would then
-need a manual reinstall onto a new key. The signed pair is read back
-against the pinned pubkey before anything is swapped in, the way the
-Android half reads its APK's signer back. `client-android-release` then
-stages the release APK: arm64, release-signed from the local keystore the
-client README documents (nothing in the repo), at
+opens, and a client running from the installed bundle is quit first and
+refused rather than replaced only when the quit does not take: replacing
+a live bundle underneath itself is the one way this fails quietly. The
+bundle also carries the update tarball the desktop updater installs from,
+signed with the minisign keypair under `~/.tauri/` that the client README
+documents (nothing in the repo) - losing that private key ends updates
+for every installed desktop, which would then need a manual reinstall onto
+a new key. The signed pair is read back against the pinned pubkey before
+anything is swapped in, the way the Android half reads its APK's signer
+back. `client-android-release` then stages the release APK: arm64,
+release-signed from the local keystore the client README documents
+(nothing in the repo), at
 `client/src-tauri/target/release/bundle/android/forge-<version>-arm64.apk`.
 It fails rather than skipping when its toolchain or keystore is missing,
 and reads the version, the ABI and the signer back off the built APK, so
