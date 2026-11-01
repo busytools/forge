@@ -94,10 +94,10 @@ describe('the chat column under a page that re-reads', () => {
     });
     flushSync();
     server.answer([{ key: 't1', messages: [{ type: 'assistant', uuid: 'a1' }] }]);
-    const drawn = (): string => document.body.textContent ?? '';
-    expect(drawn(), 'the page answered and the column did not draw it').not.toContain(
-      'Reading the conversation',
-    );
+    // The column itself, not a string the cut removed from it: the state this
+    // test guards is that the SAME column survives the page's own re-reads.
+    const column = document.querySelector('.conv');
+    expect(column, 'the page answered and the column did not draw').not.toBeNull();
 
     reads.set(1);
     flushSync();
@@ -108,9 +108,7 @@ describe('the chat column under a page that re-reads', () => {
       server.asks,
       "the page's own read asked the server nothing: the subscribe answered the page",
     ).toEqual([]);
-    expect(drawn(), "the page's own read put the column back to loading").not.toContain(
-      'Reading the conversation',
-    );
+    expect(document.querySelector('.conv'), "the page's own read rebuilt the column").toBe(column);
   });
 
   it("draws what a Read came back with as the page's own code panel", () => {

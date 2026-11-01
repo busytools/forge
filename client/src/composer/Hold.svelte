@@ -16,9 +16,7 @@
   }: { line: string; sub?: string | null; bad?: boolean; shimmer?: boolean } = $props();
 </script>
 
-<div class="box">
-  <div class="blocked" class:err={bad}>
-    <span class="b1"><span class:shimmer>{line}</span></span>
-    {#if sub !== null}<span class="b2">{sub}</span>{/if}
-  </div>
+<div class="blocked" class:err={bad}>
+  <span class="b1"><span class:shimmer>{line}</span></span>
+  {#if sub !== null}<span class="b2">{sub}</span>{/if}
 </div>

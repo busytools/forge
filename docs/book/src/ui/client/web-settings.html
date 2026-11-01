@@ -49,8 +49,17 @@
   .totals code { font-family: var(--mono); color: var(--dim); }
   .settings-meta { margin-left: auto; display: flex; flex-direction: column;
     align-items: flex-end; gap: 3px; }
-  .settings-mode { font-family: var(--mono); font-size: 11px; color: var(--muted);
-    border: 1px solid var(--ctl); border-radius: 99px; padding: 2px 9px; white-space: nowrap; }
+  /* The edit door is a button at every width: a phone reaches it too, so no
+     width rule may hide it. */
+  .settings-mode { font-family: var(--mono); font-size: 11.5px; color: var(--muted);
+    border: 1px solid var(--ctl); border-radius: 10px; padding: 0 16px;
+    min-height: 44px; white-space: nowrap; background: none; cursor: pointer;
+    display: inline-flex; align-items: center; }
+  .settings-mode.editing { color: var(--hot); border-color: rgba(244,118,0,.45);
+    background: var(--sel); }
+  .settings-link { font: inherit; font-family: var(--mono); font-size: var(--fs-label);
+    color: var(--blue); background: none; border: 0; padding: 0 0 0 8px; cursor: pointer;
+    text-decoration: underline; text-underline-offset: 3px; }
   .back { font-family: var(--mono); font-size: var(--fs-label); color: var(--muted);
     text-decoration: none; border: 1px solid var(--ctl); border-radius: 9px; padding: 6px 11px; }
 
@@ -72,14 +81,10 @@
     border-radius: 50%; }
   .settings-class.icon { border: 0; padding: 0; }
   .settings-class.icon .settings-class-mark { width: 8px; height: 8px; flex-basis: 8px; }
-  .settings-legend { display: flex; align-items: center; gap: 20px; flex-wrap: wrap;
-    font-family: var(--mono); font-size: 11px; color: var(--dim); margin: 0 0 6px; }
-  .settings-legend-item { display: inline-flex; align-items: center; gap: 7px; }
-  .settings-legend-note { font-family: var(--mono); font-size: 11px; color: var(--dim);
-    margin: 0 0 20px; }
 
   .settings-split { display: flex; align-items: flex-start; }
-  .settings-rail { flex: 0 0 232px; padding: 2px 18px 2px 0; }
+  .settings-rail { flex: 0 0 232px; padding: 2px 18px 2px 0;
+    position: sticky; top: 12px; align-self: flex-start; }
   .settings-rail-item { display: flex; align-items: center; gap: 9px; width: 100%;
     text-align: left; font-family: var(--mono); font-size: var(--fs-data); color: var(--muted);
     background: none; border: 1px solid transparent; border-radius: 9px; padding: 9px 11px;
@@ -94,71 +99,115 @@
 
   .settings-pane { flex: 1 1 auto; min-width: 0; padding-left: 22px;
     border-left: 1px solid var(--line); }
-  .settings-pane-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
-    margin: 2px 0 4px; }
-  .settings-pane-head .t { font-size: 19px; font-weight: 500; letter-spacing: -.01em;
-    color: var(--text); }
-  .settings-pane-head .s { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
-  .settings-keys { margin-left: auto; font-family: var(--mono); font-size: 11px; color: var(--dim); }
+  /* The area head stays above the scroll; the page keeps the document
+     scroll, so this sticks to the viewport rather than to a container. */
+  .settings-pane-head { position: sticky; top: 0; z-index: 2; background: var(--bg);
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    padding: 8px 0; border-bottom: 1px solid var(--line); }
+  .settings-pane-head .t { font-size: 23px; font-weight: 500; letter-spacing: -.015em;
+    color: var(--text); margin: 0; }
+  .settings-pane-note { font-family: var(--mono); font-size: 11.5px; color: var(--dim); }
+  .settings-pane-summary { margin-left: auto; font-family: var(--mono); font-size: 10.5px;
+    color: var(--dim); white-space: nowrap; }
+  .settings-pane-body { padding-top: 2px; }
 
-  .settings-group { display: flex; align-items: center; gap: 10px; padding: 18px 2px 7px; }
-  .settings-group-name { font-family: var(--mono); font-size: 11px; letter-spacing: .1em;
-    text-transform: uppercase; color: var(--muted); font-weight: 500; }
-  .settings-group-class { margin-left: auto; }
-  .settings-rows { width: 100%; border-collapse: collapse; table-layout: fixed;
-    border-top: 1px solid var(--line); }
-  .settings-rows col.k { width: 36%; }
-  .settings-rows col.e { width: 132px; }
-  .settings-rows th, .settings-rows td { padding: 9px 10px 9px 0; vertical-align: top;
-    border-bottom: 1px solid rgba(34,42,60,.55); text-align: left; font-weight: 400; }
-  .settings-rows th[scope="row"] code { font-family: var(--mono); font-size: 13.5px;
-    color: var(--text); overflow-wrap: anywhere; }
-  .settings-rows td.v { font-family: var(--mono); font-size: 13px; color: var(--muted);
+  /* an instance card: its head band, then one line per setting */
+  .settings-card { border: 1px solid var(--line); border-radius: 12px; background: var(--s1);
+    margin: 12px 0; overflow: hidden; }
+  .settings-card.new { border-style: dashed; }
+  .settings-card-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    padding: 8px 16px; background: var(--s2); border-bottom: 1px solid var(--line); }
+  .settings-card-head h3, .settings-card-name { font-size: 14px; font-weight: 500;
+    color: var(--text); margin: 0; }
+  .settings-card-count { font-family: var(--mono); font-size: 10.5px; color: var(--dim); }
+  .settings-card-grow { flex: 1; }
+  .settings-card.removing .settings-card-head { background: var(--s1); }
+  .settings-card.removing .settings-card-head h3, .settings-card.removing .settings-card-name {
+    color: var(--dim); text-decoration: line-through; }
+
+  .settings-setting { display: flex; align-items: center; gap: 12px; min-height: 40px;
+    padding: 5px 16px; border-top: 1px solid rgba(34,42,60,.55); }
+  .settings-setting:first-of-type { border-top: 0; }
+  .settings-setting.edit { min-height: 48px; }
+  .settings-setting.dirty { background: var(--s2); box-shadow: inset 2px 0 0 var(--accent); }
+  .settings-setting.bad .settings-setting-label code { color: var(--bad); }
+  .settings-setting-label { display: flex; align-items: center; gap: 9px; min-width: 0; }
+  .settings-setting-label code { font-family: var(--mono); font-size: 13px; color: var(--text);
     overflow-wrap: anywhere; }
+  .settings-setting-value { margin-left: auto; min-width: 0; max-width: 52%; text-align: right;
+    font-family: var(--mono); font-size: 12.5px; color: var(--muted); overflow-wrap: anywhere; }
+  .settings-setting.edit .settings-setting-value { flex: none; width: 420px; max-width: 420px;
+    display: flex; justify-content: flex-end; }
+  .settings-setting.edit .settings-setting-value .list-editor { flex: 1; }
+
   .settings-value { white-space: pre-wrap; }
-  .settings-chips { display: inline-flex; flex-wrap: wrap; gap: 5px; vertical-align: middle; }
+  .settings-dim { color: var(--dim); }
+  .settings-chips { display: inline-flex; flex-wrap: wrap; gap: 5px; vertical-align: middle;
+    justify-content: flex-end; }
   .settings-chips code { font-family: var(--mono); font-size: 11.5px; color: var(--text);
     border: 1px solid var(--line); border-radius: 99px; padding: 0 7px;
     background: rgba(13,17,26,.5); }
 
-  /* the phone: the rail wraps above the pane and the row's value drops under
-     its key */
+  /* the phone: the rail wraps above the pane and the setting line stacks */
   .phone { max-width: 392px; margin-top: 40px; border: 1px solid var(--line);
     border-radius: 22px; padding: 16px 14px 18px;
     background: linear-gradient(180deg, rgba(13,17,26,.5), rgba(4,5,10,.5)); }
-  .phone header.top { flex-wrap: wrap; }
-  .phone header.top .title { order: 3; flex-basis: 100%; }
-  .phone .settings-meta { margin-left: 0; align-items: flex-start; width: 100%; }
+  .phone header.top { display: grid; grid-template-columns: auto 1fr;
+    grid-template-areas: "back brand" "title mode" "meta meta"; gap: 6px 10px;
+    align-items: center; }
+  .phone .back { grid-area: back; justify-self: start; }
+  .phone .brand { grid-area: brand; }
+  .phone header.top .title { grid-area: title; flex-direction: column; align-items: flex-start; }
+  .phone .settings-meta { grid-area: meta; justify-self: stretch; align-items: flex-start;
+    text-align: left; max-width: none; }
+  .phone .settings-meta .totals { width: 100%; overflow-wrap: anywhere; }
+  .phone .settings-mode { grid-area: mode; justify-self: end; align-self: center; }
   .phone .settings-split { flex-direction: column; }
-  .phone .settings-rail { flex: none; width: 100%; padding: 0 0 10px; display: flex;
-    flex-wrap: wrap; gap: 6px; }
+  .phone .settings-rail { position: static; flex: none; width: 100%; padding: 10px 0;
+    display: flex; flex-wrap: wrap; gap: 6px; border-right: 0;
+    border-bottom: 1px solid var(--line); }
   .phone .settings-rail-item { width: auto; flex: 0 0 auto; margin-bottom: 0;
     border: 1px solid var(--ctl); padding: 6px 11px; }
   .phone .settings-rail-count { margin-left: 2px; }
   .phone .settings-pane { padding-left: 0; border-left: 0; width: 100%; }
-  .phone .settings-keys { margin-left: 0; }
-  .phone .settings-rows { table-layout: auto; }
-  .phone .settings-rows col.k { width: 48%; }
-  .phone .settings-rows col.e { width: 112px; }
+  .phone .settings-pane-head { padding: 10px 0 8px; gap: 4px 10px; }
+  .phone .settings-pane-head .t { font-size: 21px; }
+  .phone .settings-pane-note { flex-basis: 100%; font-size: 10.5px; }
+  .phone .settings-pane-summary { margin-left: 0; }
+  .phone .settings-pane-body { padding: 0 2px; }
+  .phone .settings-card { margin: 12px 0; border-radius: 10px; }
+  .phone .settings-card-head { padding: 10px 12px; gap: 8px; }
+  .phone .settings-setting { flex-direction: column; align-items: stretch; gap: 2px;
+    min-height: 0; padding: 10px 12px; }
+  .phone .settings-setting-label { flex-wrap: wrap; gap: 2px 9px; }
+  .phone .settings-setting-label code { font-size: 12.5px; }
+  .phone .settings-setting-value { margin-left: 0; max-width: none; text-align: left;
+    font-size: 11.5px; }
+  .phone .settings-setting.edit .settings-setting-value { width: auto; max-width: none;
+    display: block; }
+  .phone .settings-setting.edit input, .phone .settings-setting.edit select,
+  .phone .settings-setting.edit .number-field,
+  .phone .settings-setting.edit .select { width: 100%; max-width: none; }
+  .phone .settings-setting.edit input, .phone .settings-setting.edit select,
+  .phone .settings-setting.edit .toggle, .phone .settings-setting.edit .list-x,
+  .phone .settings-setting.edit .list-add { min-height: 44px; }
+  .phone .settings-chips { justify-content: flex-start; }
 
   /* ---------- the editor ---------- */
   .editor-demo { margin-top: 44px; }
-  /* The editor demo's pill is the EDITING state, so only that specimen takes
-     the hot tone; the header's own button rests in the control mark. */
-  .editor-demo button.settings-mode { font-family: var(--mono); font-size: 11px; color: var(--hot);
-    border: 1px solid rgba(244,118,0,.45); border-radius: 99px; padding: 2px 9px;
-    white-space: nowrap; background: var(--sel); cursor: pointer; }
   .settings-restart { display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
-    border: 1px solid rgba(201,161,59,.4); background: rgba(201,161,59,.07);
+    border: 1px solid rgba(201,161,59,.4);
+    background: linear-gradient(rgba(201,161,59,.07), rgba(201,161,59,.07)), var(--s1);
     border-radius: var(--r); padding: 10px 14px; margin-bottom: 16px; }
   .settings-restart .t { font-family: var(--mono); font-size: var(--fs-label); color: var(--warn); }
   .settings-restart .keys { font-family: var(--mono); font-size: var(--fs-label); color: var(--muted); }
+  .settings-restart .settings-link { margin-left: auto; }
   .settings-add, .settings-row-action { font-family: var(--mono); font-size: 11px;
     color: var(--muted); background: none; border: 1px solid var(--ctl); border-radius: 99px;
     padding: 3px 10px; cursor: pointer; white-space: nowrap; }
   .settings-row-action.danger { color: var(--bad); border-color: rgba(224,104,62,.4); }
   .settings-required { font-family: var(--mono); font-size: 10px; color: var(--warn);
-    margin-left: 8px; white-space: nowrap; }
+    white-space: nowrap; }
   .settings-new { font-family: var(--mono); font-size: 10.5px; color: var(--blue);
     border: 1px solid rgba(97,160,224,.35); border-radius: 99px; padding: 0 8px; }
   .settings-removed { font-family: var(--mono); font-size: 11px; color: var(--bad); }
@@ -170,11 +219,12 @@
   .list-add { align-self: flex-start; font-family: var(--mono); font-size: 11px;
     color: var(--muted); background: none; border: 1px dashed var(--ctl); border-radius: 7px;
     padding: 3px 10px; cursor: pointer; }
-  .settings-rows input, .settings-rows select { font-family: var(--mono); font-size: 13px;
-    color: var(--text); background: var(--bg); border: 1px solid var(--ctl);
-    border-radius: 7px; padding: 5px 8px; min-width: 0; width: 100%; }
-  .settings-rows input[type="number"] { max-width: 160px; }
-  .settings-rows select { max-width: 260px; }
+  .settings-setting input, .settings-setting select, .list-editor input {
+    font-family: var(--mono); font-size: 13px; color: var(--text); background: var(--bg);
+    border: 1px solid var(--ctl); border-radius: 7px; padding: 5px 8px; min-width: 0;
+    width: 100%; }
+  .settings-setting input[type="number"] { max-width: 160px; }
+  .settings-setting select { max-width: 260px; }
   .toggle { display: inline-flex; align-items: center; gap: 9px; background: none; border: 0;
     padding: 0; cursor: pointer; font: inherit; color: var(--muted); }
   .toggle .track { width: 30px; height: 17px; border-radius: 99px;
@@ -187,7 +237,8 @@
     border: 1px solid var(--line); border-radius: var(--r); background: var(--s1);
     box-shadow: 0 -12px 32px -18px rgba(0,0,0,.9); }
   .settings-savebar .count { font-family: var(--mono); font-size: 12.5px; color: var(--hot); }
-  .settings-savebar .said { font-family: var(--mono); font-size: 11.5px; color: var(--bad); }
+  .settings-savebar .said { font-family: var(--mono); font-size: 11.5px; color: var(--muted); }
+  .settings-savebar .said.bad { color: var(--bad); }
   .settings-savebar .saved { font-family: var(--mono); font-size: 11.5px; color: var(--ok); }
   .settings-savebar .spacer { flex: 1; }
   .settings-btn { border: 0; cursor: pointer; font: inherit; font-family: var(--mono);
@@ -226,17 +277,9 @@
         <span class="n">12</span> areas &middot;
         <code>~/.claude/forge/forge.toml</code></span>
     </span>
-    <button class="settings-mode">edit</button>
     <a class="back" href="#">&larr; home</a>
+    <button class="settings-mode">edit</button>
   </header>
-
-  <div class="settings-legend" aria-label="what the effect classes mean">
-    <span class="settings-legend-item"><span class="chip settings-class" data-class="live"><span class="settings-class-mark"></span><span class="settings-class-word">live</span></span> reads the change on its next use</span>
-    <span class="settings-legend-item"><span class="chip settings-class" data-class="next_session"><span class="settings-class-mark"></span><span class="settings-class-word">next session</span></span> read when a session or connection opens</span>
-    <span class="settings-legend-item"><span class="chip settings-class" data-class="restart"><span class="settings-class-mark"></span><span class="settings-class-word">restart</span></span> built once at boot</span>
-    <span class="settings-legend-item"><span class="chip settings-class" data-class="not_read_yet"><span class="settings-class-mark"></span><span class="settings-class-word">not read yet</span></span> nothing reads this key</span>
-  </div>
-  <p class="settings-legend-note">an area shows every class its keys hold; a dashed ring means a key there is read by nothing.</p>
 
   <div class="settings-split">
     <nav class="settings-rail" aria-label="config areas">
@@ -255,80 +298,89 @@
     </nav>
 
     <section class="settings-pane">
-      <div class="settings-pane-head">
+      <header class="settings-pane-head">
         <h2 class="t">accounts</h2>
-        <span class="s">the provider endpoints and credentials a session can spawn under</span>
-        <span class="settings-keys">31 keys</span>
+        <span class="settings-pane-note">the provider endpoints and credentials a session can spawn under</span>
+        <span class="settings-pane-summary">31 keys / 2 accounts</span>
+      </header>
+
+      <div class="settings-pane-body">
+        <div class="settings-card" role="group" aria-labelledby="card-accounts-0">
+          <header class="settings-card-head">
+            <h3 id="card-accounts-0">Subspace</h3>
+            <span class="settings-card-count">5 keys</span>
+            <span class="settings-card-grow"></span>
+          </header>
+          <div class="settings-setting"><span class="settings-setting-label"><code title="accounts.Subspace.display_name">display_name</code><span class="chip settings-class" data-class="live"><span class="settings-class-mark"></span><span class="settings-class-word">live</span></span></span><span class="settings-setting-value">Subspace</span></div>
+          <div class="settings-setting"><span class="settings-setting-label"><code title="accounts.Subspace.provider">provider</code><span class="chip settings-class" data-class="live"><span class="settings-class-mark"></span><span class="settings-class-word">live</span></span></span><span class="settings-setting-value">anthropic</span></div>
+          <div class="settings-setting"><span class="settings-setting-label"><code title="accounts.Subspace.base_url">base_url</code><span class="chip settings-class" data-class="live"><span class="settings-class-mark"></span><span class="settings-class-word">live</span></span></span><span class="settings-setting-value settings-dim">not set</span></div>
+          <div class="settings-setting"><span class="settings-setting-label"><code title="accounts.Subspace.token">token</code><span class="chip settings-class" data-class="live"><span class="settings-class-mark"></span><span class="settings-class-word">live</span></span></span><span class="settings-setting-value">sk-ant-oat01-example</span></div>
+          <div class="settings-setting"><span class="settings-setting-label"><code title="accounts.Subspace.models">models</code><span class="chip settings-class" data-class="live"><span class="settings-class-mark"></span><span class="settings-class-word">live</span></span></span><span class="settings-setting-value"><span class="settings-chips"><code>claude-opus-5-5[1m]</code><code>claude-opus-5-5</code></span></span></div>
+        </div>
+
+        <div class="settings-card" role="group" aria-labelledby="card-accounts-1">
+          <header class="settings-card-head">
+            <h3 id="card-accounts-1">OpenRouter</h3>
+            <span class="settings-card-count">4 keys</span>
+            <span class="settings-card-grow"></span>
+          </header>
+          <div class="settings-setting"><span class="settings-setting-label"><code title="accounts.OpenRouter.provider">provider</code><span class="chip settings-class" data-class="live"><span class="settings-class-mark"></span><span class="settings-class-word">live</span></span></span><span class="settings-setting-value">openrouter</span></div>
+          <div class="settings-setting"><span class="settings-setting-label"><code title="accounts.OpenRouter.base_url">base_url</code><span class="chip settings-class" data-class="live"><span class="settings-class-mark"></span><span class="settings-class-word">live</span></span></span><span class="settings-setting-value">https://openrouter.ai/api</span></div>
+          <div class="settings-setting"><span class="settings-setting-label"><code title="accounts.OpenRouter.model_slugs.glm-5.3-flash">glm-5.3-flash</code><span class="chip settings-class" data-class="live"><span class="settings-class-mark"></span><span class="settings-class-word">live</span></span></span><span class="settings-setting-value">z-ai/glm-5.3-flash</span></div>
+          <div class="settings-setting"><span class="settings-setting-label"><code title="accounts.OpenRouter.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS">CLAUDE_CODE_MAX_CONTEXT_TOKENS</code><span class="chip settings-class" data-class="next_session"><span class="settings-class-mark"></span><span class="settings-class-word">next session</span></span></span><span class="settings-setting-value">1048576</span></div>
+        </div>
       </div>
-
-      <div class="settings-group"><span class="settings-group-name">Subspace</span><span class="settings-group-class"><span class="chip settings-class" data-class="live"><span class="settings-class-mark"></span><span class="settings-class-word">live</span></span></span></div>
-      <table class="settings-rows">
-        <colgroup><col class="k" /><col /><col class="e" /></colgroup>
-        <tbody>
-          <tr><th scope="row"><code title="accounts.Subspace.display_name">display_name</code></th><td class="v">Subspace</td><td class="e"><span class="chip settings-class" data-class="live"><span class="settings-class-mark"></span><span class="settings-class-word">live</span></span></td></tr>
-          <tr><th scope="row"><code title="accounts.Subspace.provider">provider</code></th><td class="v">anthropic</td><td class="e"><span class="chip settings-class" data-class="live"><span class="settings-class-mark"></span><span class="settings-class-word">live</span></span></td></tr>
-          <tr><th scope="row"><code title="accounts.Subspace.base_url">base_url</code></th><td class="v">not set</td><td class="e"><span class="chip settings-class" data-class="live"><span class="settings-class-mark"></span><span class="settings-class-word">live</span></span></td></tr>
-          <tr><th scope="row"><code title="accounts.Subspace.token">token</code></th><td class="v">sk-ant-oat01-example</td><td class="e"><span class="chip settings-class" data-class="live"><span class="settings-class-mark"></span><span class="settings-class-word">live</span></span></td></tr>
-          <tr><th scope="row"><code title="accounts.Subspace.models">models</code></th><td class="v"><span class="settings-chips"><code>claude-opus-5-5[1m]</code><code>claude-opus-5-5</code></span></td><td class="e"><span class="chip settings-class" data-class="live"><span class="settings-class-mark"></span><span class="settings-class-word">live</span></span></td></tr>
-        </tbody>
-      </table>
-
-      <div class="settings-group"><span class="settings-group-name">OpenRouter</span><span class="settings-group-class"><span class="chip settings-class" data-class="next_session"><span class="settings-class-mark"></span><span class="settings-class-word">next session</span></span></span></div>
-      <table class="settings-rows">
-        <colgroup><col class="k" /><col /><col class="e" /></colgroup>
-        <tbody>
-          <tr><th scope="row"><code title="accounts.OpenRouter.provider">provider</code></th><td class="v">openrouter</td><td class="e"><span class="chip settings-class" data-class="live"><span class="settings-class-mark"></span><span class="settings-class-word">live</span></span></td></tr>
-          <tr><th scope="row"><code title="accounts.OpenRouter.base_url">base_url</code></th><td class="v">https://openrouter.ai/api</td><td class="e"><span class="chip settings-class" data-class="live"><span class="settings-class-mark"></span><span class="settings-class-word">live</span></span></td></tr>
-          <tr><th scope="row"><code title="accounts.OpenRouter.model_slugs.glm-5.3-flash">glm-5.3-flash</code></th><td class="v">z-ai/glm-5.3-flash</td><td class="e"><span class="chip settings-class" data-class="live"><span class="settings-class-mark"></span><span class="settings-class-word">live</span></span></td></tr>
-          <tr><th scope="row"><code title="accounts.OpenRouter.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS">CLAUDE_CODE_MAX_CONTEXT_TOKENS</code></th><td class="v">1048576</td><td class="e"><span class="chip settings-class" data-class="next_session"><span class="settings-class-mark"></span><span class="settings-class-word">next session</span></span></td></tr>
-        </tbody>
-      </table>
     </section>
   </div>
 
   <div class="phone">
     <header class="top pagetop">
+      <a class="back" href="#">&larr; home</a>
       <span class="brand">
         <span class="mark"><svg viewBox="0 0 24 24" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="2.4"><rect x="3.2" y="3.2" width="17.6" height="17.6" rx="4"/><path d="M13.6 3.2V20.8"/></g><path fill="currentColor" d="M4.4 6.4a2 2 0 0 1 2-2h4v15.2h-4a2 2 0 0 1-2-2Z"/></svg></span>
         <span class="word">forge</span>
       </span>
-      <a class="back" href="#">&larr; home</a>
-      <span class="title"><span class="t">settings</span><span class="s">the effective config, as loaded</span></span>
       <span class="settings-meta">
-        <span class="versions"><span class="build"><span class="k">server</span> <b>v1.1.34</b></span> &middot; <span class="build"><span class="k">socket</span> <b>v18</b></span></span>
+        <span class="versions"><span class="build"><span class="k">server</span> <b>v1.1.34</b></span> &middot; <span class="build"><span class="k">socket</span> <b>v21</b></span></span>
         <span class="totals"><span class="n">249</span> keys &middot; <span class="n">12</span> areas</span>
       </span>
+      <span class="title"><span class="t">settings</span><span class="s">the effective config, as loaded</span></span>
+      <button class="settings-mode">edit</button>
     </header>
 
     <div class="settings-split">
-      <div class="settings-rail">
+      <nav class="settings-rail" aria-label="config areas">
         <button class="settings-rail-item"><span class="settings-rail-name">accounts</span><span class="settings-rail-class"><span class="chip settings-class icon" data-class="live"><span class="settings-class-mark"></span></span> <span class="chip settings-class icon" data-class="next_session"><span class="settings-class-mark"></span></span></span><span class="settings-rail-count">31</span></button>
         <button class="settings-rail-item"><span class="settings-rail-name">projects</span><span class="settings-rail-class"><span class="chip settings-class icon" data-class="live"><span class="settings-class-mark"></span></span> <span class="chip settings-class icon" data-class="next_session"><span class="settings-class-mark"></span></span></span><span class="settings-rail-count">162</span></button>
         <button class="settings-rail-item on" aria-pressed="true"><span class="settings-rail-name">connectors</span><span class="settings-rail-class"><span class="chip settings-class icon" data-class="live"><span class="settings-class-mark"></span></span> <span class="chip settings-class icon" data-class="next_session"><span class="settings-class-mark"></span></span> <span class="chip settings-class icon" data-class="restart"><span class="settings-class-mark"></span></span> <span class="chip settings-class icon" data-class="not_read_yet"><span class="settings-class-mark"></span></span></span><span class="settings-rail-count">16</span></button>
         <button class="settings-rail-item"><span class="settings-rail-name">server</span><span class="settings-rail-class"><span class="chip settings-class icon" data-class="live"><span class="settings-class-mark"></span></span> <span class="chip settings-class icon" data-class="next_session"><span class="settings-class-mark"></span></span> <span class="chip settings-class icon" data-class="restart"><span class="settings-class-mark"></span></span></span><span class="settings-rail-count">9</span></button>
-      </div>
-      <div class="settings-pane">
-        <div class="settings-pane-head">
+      </nav>
+      <section class="settings-pane">
+        <header class="settings-pane-head">
           <h2 class="t">connectors</h2>
-          <span class="s">the integrations that reach outside forge</span>
-          <span class="settings-keys">16 keys</span>
+          <span class="settings-pane-note">the integrations that reach outside forge</span>
+          <span class="settings-pane-summary">16 keys / 2 groups</span>
+        </header>
+        <div class="settings-pane-body">
+          <div class="settings-card" role="group" aria-labelledby="card-connectors-0">
+            <header class="settings-card-head">
+              <h3 id="card-connectors-0">slack / Trust Machines</h3>
+              <span class="settings-card-count">2 keys</span>
+              <span class="settings-card-grow"></span>
+            </header>
+            <div class="settings-setting"><span class="settings-setting-label"><code title="slack.Trust Machines.workspace">workspace</code><span class="chip settings-class" data-class="restart"><span class="settings-class-mark"></span><span class="settings-class-word">restart</span></span></span><span class="settings-setting-value">Trust Machines</span></div>
+            <div class="settings-setting"><span class="settings-setting-label"><code title="slack.Trust Machines.token">token</code><span class="chip settings-class" data-class="restart"><span class="settings-class-mark"></span><span class="settings-class-word">restart</span></span></span><span class="settings-setting-value">xoxp-example</span></div>
+          </div>
+          <div class="settings-card" role="group" aria-labelledby="card-connectors-1">
+            <header class="settings-card-head">
+              <h3 id="card-connectors-1">plugins</h3>
+              <span class="settings-card-count">1 key</span>
+              <span class="settings-card-grow"></span>
+            </header>
+            <div class="settings-setting"><span class="settings-setting-label"><code title="plugins.auto_update">auto_update</code><span class="chip settings-class" data-class="not_read_yet"><span class="settings-class-mark"></span><span class="settings-class-word">not read yet</span></span></span><span class="settings-setting-value">true</span></div>
+          </div>
         </div>
-        <div class="settings-group"><span class="settings-group-name">slack / Trust Machines</span><span class="settings-group-class"><span class="chip settings-class" data-class="restart"><span class="settings-class-mark"></span><span class="settings-class-word">restart</span></span></span></div>
-        <table class="settings-rows">
-          <colgroup><col class="k" /><col /><col class="e" /></colgroup>
-          <tbody>
-            <tr><th scope="row"><code title="slack.Trust Machines.workspace">workspace</code></th><td class="v">Trust Machines</td><td class="e"><span class="chip settings-class" data-class="restart"><span class="settings-class-mark"></span><span class="settings-class-word">restart</span></span></td></tr>
-            <tr><th scope="row"><code title="slack.Trust Machines.token">token</code></th><td class="v">xoxp-example</td><td class="e"><span class="chip settings-class" data-class="restart"><span class="settings-class-mark"></span><span class="settings-class-word">restart</span></span></td></tr>
-          </tbody>
-        </table>
-        <div class="settings-group"><span class="settings-group-name">plugins</span><span class="settings-group-class"><span class="chip settings-class" data-class="not_read_yet"><span class="settings-class-mark"></span><span class="settings-class-word">not read yet</span></span></span></div>
-        <table class="settings-rows">
-          <colgroup><col class="k" /><col /><col class="e" /></colgroup>
-          <tbody>
-            <tr><th scope="row"><code title="plugins.auto_update">auto_update</code></th><td class="v">true</td><td class="e"><span class="chip settings-class" data-class="not_read_yet"><span class="settings-class-mark"></span><span class="settings-class-word">not read yet</span></span></td></tr>
-          </tbody>
-        </table>
-      </div>
+      </section>
     </div>
   </div>
 
@@ -342,58 +394,59 @@
       <span class="settings-meta">
         <span class="versions"><span class="build"><span class="k">server</span> <b>v1.1.34</b></span> &middot; <span class="build"><span class="k">socket</span> <b>v21</b></span></span>
       </span>
-      <button class="settings-mode">editing</button>
       <a class="back" href="#">&larr; home</a>
+      <button class="settings-mode editing">editing</button>
     </header>
 
     <div class="settings-split">
-      <div class="settings-rail">
+      <nav class="settings-rail" aria-label="config areas">
         <button class="settings-rail-item on" aria-pressed="true"><span class="settings-rail-name">accounts</span><span class="settings-rail-class"><span class="chip settings-class icon" data-class="live"><span class="settings-class-mark"></span></span> <span class="chip settings-class icon" data-class="next_session"><span class="settings-class-mark"></span></span></span><span class="settings-rail-count">31</span></button>
         <button class="settings-rail-item"><span class="settings-rail-name">projects</span><span class="settings-rail-class"><span class="chip settings-class icon" data-class="live"><span class="settings-class-mark"></span></span> <span class="chip settings-class icon" data-class="next_session"><span class="settings-class-mark"></span></span></span><span class="settings-rail-count">162</span></button>
         <button class="settings-rail-item"><span class="settings-rail-name">server</span><span class="settings-rail-class"><span class="chip settings-class icon" data-class="live"><span class="settings-class-mark"></span></span> <span class="chip settings-class icon" data-class="next_session"><span class="settings-class-mark"></span></span> <span class="chip settings-class icon" data-class="restart"><span class="settings-class-mark"></span></span></span><span class="settings-rail-count">9</span></button>
-      </div>
-      <div class="settings-pane">
-        <div class="settings-pane-head">
+      </nav>
+      <section class="settings-pane">
+        <header class="settings-pane-head">
           <h2 class="t">accounts</h2>
-          <span class="s">the provider endpoints and credentials a session can spawn under</span>
-          <span class="settings-keys">31 keys</span>
+          <span class="settings-pane-note">the provider endpoints and credentials a session can spawn under</span>
+          <span class="settings-pane-summary">31 keys / 2 accounts</span>
           <button class="settings-add">+ account</button>
-        </div>
+        </header>
 
-        <div class="settings-group">
-          <span class="settings-group-name">Subspace</span>
-          <span class="settings-group-class"><span class="chip settings-class" data-class="live"><span class="settings-class-mark"></span><span class="settings-class-word">live</span></span></span>
-          <button class="settings-row-action danger">remove</button>
-        </div>
-        <table class="settings-rows">
-          <colgroup><col class="k" /><col /><col class="e" /></colgroup>
-          <tbody>
-            <tr><th scope="row"><code title="accounts.Subspace.display_name">display_name</code><span class="settings-required">required</span></th><td class="v"><input data-editor="settings" value="Subspace" aria-label="display_name" /></td><td class="e"><span class="chip settings-class" data-class="live"><span class="settings-class-mark"></span><span class="settings-class-word">live</span></span></td></tr>
-            <tr><th scope="row"><code title="accounts.Subspace.provider">provider</code><span class="settings-required">required</span></th><td class="v"><select aria-label="provider"><option>anthropic</option><option>openrouter</option></select></td><td class="e"><span class="chip settings-class" data-class="live"><span class="settings-class-mark"></span><span class="settings-class-word">live</span></span></td></tr>
-            <tr><th scope="row"><code title="accounts.Subspace.token">token</code><span class="settings-required">required</span></th><td class="v"><input data-editor="settings" value="sk-ant-oat01-example" aria-label="token" /></td><td class="e"><span class="chip settings-class" data-class="live"><span class="settings-class-mark"></span><span class="settings-class-word">live</span></span></td></tr>
-            <tr><th scope="row"><code title="accounts.Subspace.models">models</code><span class="settings-required">required</span></th><td class="v"><div class="list-editor" role="group" aria-label="models"><span class="list-item"><input data-editor="settings" value="claude-opus-5-5[1m]" aria-label="models item 1" /><button class="list-x" aria-label="remove models item 1">&times;</button></span><span class="list-item"><input data-editor="settings" value="claude-opus-5-5" aria-label="models item 2" /><button class="list-x" aria-label="remove models item 2">&times;</button></span><button class="list-add">add</button></div></td><td class="e"><span class="chip settings-class" data-class="live"><span class="settings-class-mark"></span><span class="settings-class-word">live</span></span></td></tr>
-          </tbody>
-        </table>
+        <div class="settings-pane-body">
+          <div class="settings-card" role="group" aria-labelledby="card-edit-0">
+            <header class="settings-card-head">
+              <h3 id="card-edit-0">Subspace</h3>
+              <span class="settings-card-count">4 keys</span>
+              <span class="settings-card-grow"></span>
+              <button class="settings-row-action danger">remove</button>
+            </header>
+            <div class="settings-setting edit"><span class="settings-setting-label"><code title="accounts.Subspace.display_name">display_name</code><span class="chip settings-class" data-class="live"><span class="settings-class-mark"></span><span class="settings-class-word">live</span></span><span class="settings-required">required</span></span><span class="settings-setting-value"><input data-editor="settings" value="Subspace" aria-label="display_name" /></span></div>
+            <div class="settings-setting edit"><span class="settings-setting-label"><code title="accounts.Subspace.provider">provider</code><span class="chip settings-class" data-class="live"><span class="settings-class-mark"></span><span class="settings-class-word">live</span></span><span class="settings-required">required</span></span><span class="settings-setting-value"><select aria-label="provider"><option>anthropic</option><option>openrouter</option></select></span></div>
+            <div class="settings-setting edit dirty"><span class="settings-setting-label"><code title="accounts.Subspace.token">token</code><span class="chip settings-class" data-class="live"><span class="settings-class-mark"></span><span class="settings-class-word">live</span></span><span class="settings-required">required</span></span><span class="settings-setting-value"><input data-editor="settings" value="sk-ant-oat01-example-2" aria-label="token" /></span></div>
+            <div class="settings-setting edit"><span class="settings-setting-label"><code title="accounts.Subspace.models">models</code><span class="chip settings-class" data-class="live"><span class="settings-class-mark"></span><span class="settings-class-word">live</span></span><span class="settings-required">required</span></span><span class="settings-setting-value"><div class="list-editor" role="group" aria-label="models"><span class="list-item"><input data-editor="settings" value="claude-opus-5-5[1m]" aria-label="models item 1" /><button class="list-x" aria-label="remove models item 1">&times;</button></span><span class="list-item"><input data-editor="settings" value="claude-opus-5-5" aria-label="models item 2" /><button class="list-x" aria-label="remove models item 2">&times;</button></span><button class="list-add">add</button></div></span></div>
+          </div>
 
-        <div class="settings-group removing">
-          <span class="settings-group-name">OpenRouter</span>
-          <span class="settings-removed">removed on save</span>
-          <button class="settings-row-action">undo</button>
-        </div>
+          <div class="settings-card removing" role="group" aria-labelledby="card-edit-1">
+            <header class="settings-card-head">
+              <h3 id="card-edit-1">OpenRouter</h3>
+              <span class="settings-removed">removed on save</span>
+              <span class="settings-card-grow"></span>
+              <button class="settings-row-action">undo</button>
+            </header>
+          </div>
 
-        <div class="settings-group new">
-          <span class="settings-group-name">new-account</span>
-          <span class="settings-new">new account</span>
-          <button class="settings-row-action">discard</button>
+          <div class="settings-card new" role="group" aria-labelledby="card-edit-2">
+            <header class="settings-card-head">
+              <h3 id="card-edit-2">new-account</h3>
+              <span class="settings-new">new account</span>
+              <span class="settings-card-grow"></span>
+              <button class="settings-row-action">discard</button>
+            </header>
+            <div class="settings-setting edit"><span class="settings-setting-label"><code>display_name</code><span class="settings-required">required</span></span><span class="settings-setting-value"><input data-editor="settings" placeholder="not set" aria-label="new account display_name" /></span></div>
+            <div class="settings-setting edit"><span class="settings-setting-label"><code>token</code><span class="settings-required">required</span></span><span class="settings-setting-value"><input data-editor="settings" placeholder="not set" aria-label="new account token" /></span></div>
+          </div>
         </div>
-        <table class="settings-rows">
-          <colgroup><col class="k" /><col /><col class="e" /></colgroup>
-          <tbody>
-            <tr><th scope="row"><code>display_name</code><span class="settings-required">required</span></th><td class="v"><input data-editor="settings" placeholder="not set" aria-label="new account display_name" /></td><td class="e"><span class="settings-new">new</span></td></tr>
-            <tr><th scope="row"><code>token</code><span class="settings-required">required</span></th><td class="v"><input data-editor="settings" placeholder="not set" aria-label="new account token" /></td><td class="e"><span class="settings-new">new</span></td></tr>
-          </tbody>
-        </table>
-      </div>
+      </section>
     </div>
 
     <div class="settings-restart" role="status">
@@ -404,7 +457,7 @@
 
     <div class="settings-savebar" role="region" aria-label="unsaved changes">
       <span class="count">3 unsaved</span>
-      <span class="said">forge.toml at ... failed to parse at line 12, column 14 in `token`: ...</span>
+      <span class="said">saving...</span>
       <span class="spacer"></span>
       <button class="settings-btn ghost">discard</button>
       <button class="settings-btn go">save</button>
@@ -412,12 +465,19 @@
 
     <div class="settings-savebar" role="region" aria-label="a foreign push while dirty">
       <span class="count">3 unsaved</span>
-      <span class="saved">saved</span>
-      <span class="said">forge.toml changed since this page loaded it; reload to edit it</span>
+      <span class="said bad">forge.toml changed since this page loaded it; reload to edit it</span>
       <button class="settings-btn">reload</button>
       <span class="spacer"></span>
       <button class="settings-btn ghost">discard</button>
       <button class="settings-btn go" disabled>save</button>
+    </div>
+
+    <div class="settings-savebar" role="region" aria-label="a refused save">
+      <span class="count">3 unsaved</span>
+      <span class="said bad">forge.toml at ... failed to parse at line 12, column 14 in `token`: ...</span>
+      <span class="spacer"></span>
+      <button class="settings-btn ghost">discard</button>
+      <button class="settings-btn go">save</button>
     </div>
 
     <div class="settings-dialog" role="dialog" aria-modal="true">

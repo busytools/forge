@@ -54,4 +54,21 @@ describe("the card graph's bars", () => {
       /@container \(max-width: \d+px\) \{ \.tc \.bars,[^{]*\{ display: none; \} \}/,
     );
   });
+
+  it('drops one reading at a time, the clock first, on the ladder it was measured at', () => {
+    // **The ladder is a sequence, not a set.** Each step takes one reading
+    // away from the left, and the order is the reader's: the clock, then the
+    // graph, then the tallies and the counts. A threshold moved or a step
+    // swapped is a card that loses a reading it should still be holding.
+    const ladder = [...SHEET.matchAll(/@container \(max-width: (\d+)px\) \{ ([^}]+) \}/g)]
+      .filter((match) => /\.tc \./.test(match[2] ?? ''))
+      .map((match) => ({ at: Number(match[1]), what: (match[2] ?? '').trim() }));
+    expect(
+      ladder.map((row) => row.at),
+      'the take reading ladder moved off the widths it was measured at',
+    ).toEqual([505, 456, 330, 266, 195, 124]);
+    expect(ladder[0]?.what, 'the clock is not the first reading to go').toContain('.tc .clock');
+    expect(ladder[1]?.what, 'the graph is not removed after the clock').toContain('.tc .bars');
+    expect(ladder[5]?.what, 'the pace is not the last reading to go').toContain('.tc .pace');
+  });
 });

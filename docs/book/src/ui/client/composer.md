@@ -1,43 +1,47 @@
 # The composer
 
-The input surface at the foot of [a session page](./session.md): one
-surface whose lanes are the strip, the field, and - while the agent is
-asking something - the prompt's dock, which takes the field's place
-entirely rather than stacking above it. The queued prompts that pile above
-it are [the queue](./queue.md)'s page. The drawing it is held against is
+The input surface at the foot of [a session page](./session.md): one card whose top row says
+what this seat is doing and whose body holds exactly one thing - the field, an ask, a take's
+card, or the reason it cannot take input. The queued prompts that pile above it are [the
+queue](./queue.md)'s page. The drawing it is held against is
 [web-composer.html](./web-composer.html), beside this page.
 
-The draft is the reader's own state and this client holds it, per seat: a
-draft follows the seat, comes back when the reader does, and never walks
-into the seat being moved to. Nothing the box shows is a bundled default;
-every list it opens is a live read.
+The draft is the reader's own state and this client holds it, per seat: a draft follows the
+seat, comes back when the reader does, and never walks into the seat being moved to. Nothing the
+card shows is a bundled default; every list it opens is a live read.
 
 ## What it draws
 
-| Lane | Shows | Read from |
+| Part | Shows | Read from |
 |---|---|---|
-| Strip | the running turn's figures (clock, thinking, tokens, cached) and the seat's segments - the rows the session page's strip draws | the seat's record and the board's project row |
-| Field | the box: the draft, the caret, the key hints, and the controls - the mic at the row's end, `send` once there is content, `stop` while a turn runs | the host's composer store |
-| Dock | the front of the seat's parked asks: a question's options, or a permission's actions, over the reader's own words row | `pending_asks` |
-| Hints | one line above the box where there is something to say: a sign-in, a cancelled turn resubmitting, a suggestion | `notice`, the take, the CLI's own frames |
-| Autocomplete | one popover over the box: the five lists below | the CLI's advertised commands, this seat's file index, the subagent catalogue, the bundle's emoji set, the sessions this seat can resume |
-| Dictation | the take card and the panel: the axes, the models each role runs, the input device | the greeting's dictate axes; `dictate` subject |
+| Live row | the running turn's figures (mark, clock, thinking, tokens, cached, written, cost) and the seat's segment chips, one line, never wrapping; the ask that waits, and the reader's draft chip | the seat's record, the board's project row, and the segment stores |
+| Body | exactly one of: the field (with its notice above), an ask's dock, a take's card, a blocked line | the host's composer store, `pending_asks`, the dictate subject |
+| Menu | one popover above the card: the five lists below | the CLI's advertised commands, this seat's file index, the subagent catalogue, the bundle's emoji set, the sessions this seat can resume |
+| Dialog | the dictation panel: the axes, the models each role runs, the input device | the greeting's dictate axes; `dictate` subject |
 
-**The field's row is the whole composer when there is nothing else to
-say.** Idle, it is the placeholder and the mic; typing grows the draft and
-the send appears; while the turn runs the figures lead the strip lane and
-the stop joins the controls. A control that has no work is absent rather
-than drawn disabled.
+**The live row is the strip, moved onto the card.** It mounts the same segment components the
+strip drew - browser, subagents, processes, connectors, schedules, MCPs, files, git, review,
+tasks, monitors - in that fixed order, so a segment gaining a state gains it here for free. A
+turn's figure the record does not carry is dropped, never drawn as a zero or a dash. Chips that
+do not fit collapse behind `+N`, which lists them in a panel; the row clips rather than wrapping
+or scrolling sideways. A segment with something waiting - the review answer, a failed process -
+takes its tone: the accent for attention, red for a failure.
 
-**Every send is stamped.** The composer mints a uuid for the prompt and
-sends the words under it, which is what makes the CLI emit the lifecycle
-frames [the queue page](./queue.md) reads; without a stamp the CLI emits
-none.
+**The row carries the ask too.** While an ask holds the body, a chip at the row's front names it
+(the question's position, an approval, a held post, a document or a browser hand-off) in the
+attention tone. When the reader has words in their draft, a `draft N lines · show` chip sits on
+the row: one click swaps the field into the body, the ask stays mounted and hidden behind it, and
+the ask's chip brings it back. Nothing the reader had chosen in the ask - a toggled set, the
+marked row - is lost to the swap.
+
+**Every send is stamped.** The composer mints a uuid for the prompt and sends the words under
+it, which is what makes the CLI emit the lifecycle frames [the queue page](./queue.md) reads;
+without a stamp the CLI emits none.
 
 ## The five lists
 
-Five triggers, one popover shape, each row carrying the real icon for its
-kind rather than a character-cell prefix and the matched span highlighted:
+Five triggers, one popover shape, each row carrying the real icon for its kind rather than a
+character-cell prefix and the matched span highlighted:
 
 | Trigger | List | Source |
 |---|---|---|
@@ -46,6 +50,10 @@ kind rather than a character-cell prefix and the matched span highlighted:
 | `&` | the subagent types the CLI names | the subagents catalogue |
 | `:name` | emoji, by shortcode | the bundle's own set |
 | `/resume ` and `/resume <partial>` | the sessions this seat can jump back to, newest first: the id, and the transcript's own title beside it | the record's `resume_sessions` read |
+
+**The popover is over the conversation, not a lane of the bar.** It was `position: static` in
+the box, and an open menu took the band from 121px to 557px; it now hangs above the card and the
+bar's height does not move with it.
 
 **The `/resume` list is the set that command can actually resume.** The
 argument has to be a whole word, so a second word opens nothing rather than
@@ -64,10 +72,12 @@ CLI's row of the same name - one name, one row.
 
 ## Dictation
 
-The mic sits at the field row's end; a take runs `ready` (the capture is
+The mic sits at the body row's end; a take runs `ready` (the capture is
 open, nothing said yet), `recording` from the first real sample, and
-`transcribing` after the release, and the take card carries the counts
-where this page produced the capture. Push-to-talk is `forge.toml`'s own
+`transcribing` after the release. The take's card is the body's own row in every phase - a dot
+while it records, a spinner while it transcribes, the clock, the level graph or the section
+bar, the counts and the way out - and there is no second take shape anywhere, no pill or badge
+on the live row. Push-to-talk is `forge.toml`'s own
 binding (right or left Cmd, or off), in one of three modes: a clean
 press-release under 300ms is a tap, and whether a tap keeps recording or
 finishes is the mode's business. The panel opens from the mic: the three
@@ -75,12 +85,11 @@ axes - styling, structure, context - the models each role runs, and the
 input device. The axes are per seat and remembered on this machine, so a
 reload returns what the reader chose rather than the config's value.
 
-**The panel hangs off the input row, not the surface above it.** The strip
-lane changes height with every turn, so a panel anchored to the surface would
-move and re-cap as a turn starts and ends; anchored to the row, the strip
-grows under it and the panel stays where it is. Its models read is held for
-the connection rather than remade whenever the page hands the composer its
-props again, so a record frame never blinks the rows back to "reading".
+**The panel hangs off the input row, not the card above it.** The live row changes height with
+every turn, so a panel anchored to the card would move and re-cap as a turn starts and ends;
+anchored to the row, the row grows under it and the panel stays where it is. Its models read is
+held for the connection rather than remade whenever the page hands the composer its props
+again, so a record frame never blinks the rows back to "reading".
 
 **On the desktop the picked input stays open for the client's whole
 run**: the shell takes the hold as the page that takes typing appears and
@@ -111,7 +120,7 @@ another app is on the microphone.
 on.**
 The open blocks on the hardware, and a device layer that is wedged - a
 permission whose prompt never surfaced, a device another process holds -
-answers neither way. Past twenty seconds the line above the box says the
+answers neither way. Past twenty seconds the line above the body says the
 microphone did not come up, and the take the open began is left nobody's:
 when it answers late it is ended, so the next press records rather than
 being refused as busy. A device layer that fails by panicking during the
@@ -129,31 +138,35 @@ catch at either layer can reach it.
 
 | State | Draws |
 |---|---|
-| Idle | the field row alone, placeholder and mic |
-| Typing | the draft, the send joining the controls |
-| Running | the turn's figures leading the strip lane; `stop` beside the mic, and escape its key |
-| A question parked | the dock's lane in place of the field |
-| Sign-in needed | the box stays, with the sign-in line above it: the reader is told where, not blocked |
+| Idle | the field row alone when the seat has nothing to report, the live row above it otherwise |
+| Typing | the draft, the send joining the row; the keys as a pointer's detail |
+| Running | the turn's figures leading the live row; `stop` beside the mic, and escape its key |
+| A question parked | the dock in the body, its chip on the live row, the reader's draft a chip beside it |
+| An ask folded | every kind folds to one bar: the kind's mark, its subject, the count behind it, a refusal line |
+| Sign-in needed | the field stays, with the sign-in line above it: the reader is told where, not blocked |
 | A handoff | `handing this session over`, the sweep, no field |
 | Compacting | `compacting this session`, the sweep, no field |
 | A command in flight | `Running <name>` for the slash command the turn is still working on, the sweep |
 | Waking | `Waking up agent...` while the lead's seat comes up, the sweep |
 | Not running | `not running` and the seat's own reason: a worker's seat has no spawn coming, and says so |
-| A take that does not come up | the box stays, with the line above it: the microphone did not come up, or the device layer's own named failure |
+| Reading | `Reading the conversation...` above the field while the seat's first page is still out, with the sweep; the field stays live |
+| A take that does not come up | the body stays, with the line above it: the microphone did not come up, or the device layer's own named failure |
 | Failed | `Input disabled due to error` and what to do: quit and start forge again |
 
-**A blocked state replaces the box entirely and always says why.** The
+**A blocked state replaces the body entirely and always says why.** The
 order the states are read in is the one a reader has to be told: a failing
 seat first, then a seat nothing has started, then the more specific truth
 about a turn the reader caused.
 
-**A conversation still being read is not one of them.** The seat is up and
-takes a prompt, so the box keeps its field while the column says
-`Reading the conversation...` - and the words a send puts there are drawn
-under that line as the reader's own row, not lost until the page lands.
+**The read wait is one of them.** A seat whose first page is still out says
+`Reading the conversation...` on the band above the field, with the sweep -
+the band is the single place every narrative state speaks. It is the one
+narrative line that does not take the field with it: the seat is up and takes
+a prompt while the page is out, and a send made before it landed is drawn as
+the reader's own row in the column above, so its words are never lost.
 
-**Every narrative hold is one draw.** Waking, a command in flight, a
-compaction and a handoff all replace the box with one line and the same sweep
+**Every narrative hold is one draw.** Waking, reading, a command in flight, a
+compaction and a handoff all replace the body with one line and the same sweep
 moving through its words - only the text changes - so a hold reads the same
 wherever it comes from. The two states that are not progress carry no motion:
 `not running` states a stop, and the error keeps its own tone and its sub.
@@ -162,24 +175,25 @@ wherever it comes from. The two states that are not progress carry no motion:
 seat when its judgment turn ends, and a compaction is the CLI rewriting the
 context; both take the field, the send and the mic away and name themselves in
 the line. The push-to-talk key begins nothing there, but a take already running
-still ends on it: the box draws no row to end one from, and Escape would throw
+still ends on it: the body draws no row to end one from, and Escape would throw
 the words away. The draft is the reader's and stays on the seat, so the words
 come back with the field when the machine turn ends.
 
 **A parked prompt outranks the machine line.** Both machine turns are ordinary
 tool-using turns - the judgment turn writes memory files and stops processes -
-so they raise permission prompts, and this box is the only surface that answers
+so they raise permission prompts, and this card is the only surface that answers
 them. The dock draws, the line stands down, and the turn carries on once the
 prompt is answered; the alternative is a seat waiting for an answer nobody can
 give. A compaction still running when a handoff ends is read back off the
-record, so the box does not come alive under it.
+record, so the body does not come alive under it.
 
 ## The two widths
 
-The surface is drawn and checked on the session page's column, at 1600 and
-at 430. Below the width that holds the strip's figures and chips together
-the chips take a lane of their own that scrolls sideways, and the dock's
-rows keep their order. Every control a finger reaches takes a 44px target
-under a coarse pointer, keyed on the pointer rather than the width - the
-phone has no push-to-talk key, so the mic is the only way into dictation
-there.
+The card is drawn and checked on the session page's column, at 1600 and at
+430. At 1600 the idle band measures 83px, or 46px on a seat with nothing to
+report; an open menu does not move it. At 430 it measures 121px: every control
+a finger reaches takes a 44px target under a coarse pointer, keyed on the
+pointer rather than the width - the phone has no push-to-talk key, so the mic
+is the only way into dictation there - and the key hints stand down because a
+finger has no use for them. The live row never wraps at either width; the
+figures give way first, and what still does not fit is behind `+N`.

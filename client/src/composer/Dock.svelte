@@ -30,6 +30,7 @@
     takeline = null,
     answered = false,
     carried = null,
+    visible = true,
   }: {
     ask: Ask;
     /**
@@ -122,6 +123,15 @@
      * them.
      */
     carried?: string | null;
+    /**
+     * Whether this dock is the body's drawn half.
+     *
+     * **The ask stays mounted while the reader's draft shows the field**, so
+     * the toggled set and the marked row it holds are not lost to a remount;
+     * the body hides it instead. What a hidden dock must not do is keep the
+     * keyboard, and what a shown one owes is the keyboard back.
+     */
+    visible?: boolean;
   } = $props();
 
   /**
@@ -254,6 +264,18 @@
   $effect(() => {
     if (!collapsed) return;
     barEl?.focus();
+  });
+
+  // **The keyboard comes back with the dock.** Hiding it while the reader's
+  // draft shows the field moves no state but does move the caret, so showing
+  // it again gives the caret back to the bar or the rows they left.
+  let wasVisible = true;
+  $effect(() => {
+    const shown = visible;
+    if (shown && !wasVisible) {
+      (collapsed ? barEl : (listbox ?? root))?.focus({ preventScroll: true });
+    }
+    wasVisible = shown;
   });
   /** The options a multi-select question has toggled, in the order they were. */
   let toggled = $state<string[]>([]);
@@ -572,6 +594,31 @@
       ? `browser hand-off · tab ${ask.request.tab}`
       : 'browser hand-off',
   );
+  /**
+   * What a folded bar says: the kind's mark and its subject. **Every kind
+   * folds**, not only the question - the body is one slot, so any ask can give
+   * it back to the field for a look, and the bar is the way in and out.
+   */
+  const barMark = $derived.by(() => {
+    if (ask.kind === 'question') return 'question';
+    if (ask.kind === 'permission') return 'warning';
+    if (ask.kind === 'slack_draft') return 'plane';
+    if (ask.kind === 'document_hand_off') return 'file';
+    return 'bell';
+  });
+  const barText = $derived.by(() => {
+    if (ask.kind === 'question') return ask.request.question;
+    if (ask.kind === 'permission') {
+      return ask.request.subject === ''
+        ? ask.request.title
+        : `${ask.request.title} · ${ask.request.subject}`;
+    }
+    if (ask.kind === 'slack_draft') {
+      return `${ask.request.workspace} · ${ask.request.conversationLabel}`;
+    }
+    if (ask.kind === 'document_hand_off') return ask.request.path;
+    return handOffTitle;
+  });
   /** Which hand-off's view Open was asked for and did not open, by its id. */
   let raiseFailedFor = $state<string | null>(null);
   /** Why the raise failed, in the shell's own words - a machine with no
@@ -920,6 +967,21 @@
        panel is drawn. **A tab stop, because it is a document**: the keys that
        read the rest of it have to reach it. It is not a widget, so it takes
        no widget role for being focusable. -->
+  <!-- The one fold control, worn by every kind's head: the body is one slot,
+       and the bar it folds to is the way back in. -->
+  {#snippet foldButton()}
+    <button
+      class="chevb"
+      type="button"
+      aria-label="fold to its bar"
+      onclick={() => {
+        collapsed = true;
+      }}
+    >
+      <Icon name="down" class="ic" />
+    </button>
+  {/snippet}
+
   {#snippet previewRegion(label: string, text: string, source: boolean)}
     <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
     <div class="preview" tabindex="0" role="region" aria-label={label} data-preview>
@@ -952,10 +1014,10 @@
         collapsed = false;
       }}
     >
-      <span class="qm">?</span>
-      <span class="t">{ask.kind === 'question' ? ask.request.question : ''}</span>
+      <span class="qm"><Icon name={barMark} /></span>
+      <span class="t">{barText}</span>
       {#if depth > 1}<span class="cnt">+{depth - 1}</span>{/if}
-      <span class="chevc" aria-hidden="true">&#9652;</span>
+      <Icon name="fold-up" class="chevc" />
     </button>
     {#if take !== null}{@render wordsRow()}{/if}
   {:else}
@@ -969,6 +1031,7 @@
       <div class="d-head">
         <span class="tag warn">&#9888; needs approval</span>
         <span class="q mono">{ask.request.title}</span>
+        {@render foldButton()}
       </div>
       {#if ask.request.subject !== ''}
         <!-- The subject exactly as it arrives: prose when Claude sent prose, a
@@ -1015,16 +1078,7 @@
             <span class="sr">question {ask.request.index + 1} of {ask.request.total}</span>
           {/if}
           <!-- Folding is the reader's: the bar is the way back. -->
-          <button
-            class="chevb"
-            type="button"
-            aria-label="fold the question to its bar"
-            onclick={() => {
-              collapsed = true;
-            }}
-          >
-            <Icon name="down" class="ic" />
-          </button>
+          {@render foldButton()}
         </span>
       </div>
       <div class="desc">{ask.request.header}</div>
@@ -1038,6 +1092,7 @@
         <span class="q mono">
           {ask.request.threadTs === null ? 'Post to Slack' : 'Reply in Slack'}
         </span>
+        {@render foldButton()}
       </div>
       <!-- The body verbatim: this is what would go out, so the reader approves
          the text itself rather than a summary of it. -->
@@ -1050,6 +1105,7 @@
       <div class="d-head">
         <span class="tag warn">&#9888; needs you</span>
         <span class="q mono">document hand-off</span>
+        {@render foldButton()}
       </div>
       <!-- The resolved path verbatim: it is the document's own address, and a
          basename would be the client guessing at which file was meant. -->
@@ -1063,6 +1119,7 @@
       <div class="d-head">
         <span class="tag warn">&#9888; needs you</span>
         <span class="q mono">{handOffTitle}</span>
+        {@render foldButton()}
       </div>
       <!-- The reason verbatim: it is what the session needs, in its own words,
          and a summary of it would be the client guessing at the act. -->

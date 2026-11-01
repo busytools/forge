@@ -448,8 +448,6 @@ export interface ConversationProps {
    * once neither is true (#1712's follow-up).
    */
   spawning: boolean;
-  /** Why it is not running, when the roster says. */
-  reason: string | null;
   slot: SessionSlot;
   connection: Connection;
   /**
@@ -461,6 +459,12 @@ export interface ConversationProps {
    * rather than props, because the chat must not reach for the record.
    */
   queue?: Snippet;
+  /**
+   * The column's report of its own `loaded` flag, which the band draws the
+   * read wait from. The column owns the turns and their first page, so it is
+   * the only thing that knows when the page landed.
+   */
+  onloaded?: (loaded: boolean) => void;
 }
 
 /** What the composer is handed, and what its own task writes against. */
@@ -476,6 +480,8 @@ export interface ComposerProps {
   /** The seat behind the page, which its blocked states read. */
   seat: SeatState;
   connection: Connection;
+  /** Whether the conversation's first page is still out, which the band says. */
+  reading: boolean;
 }
 
 /**

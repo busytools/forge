@@ -65,21 +65,33 @@ describe("the band's open", () => {
     ).toMatch(/@media \(prefers-reduced-motion: reduce\) \{\s*\.surf\.load \{ animation: none;/);
   });
 
-  it('does not count the hidden status line as a lane', () => {
-    // The gate inserts the status span as the band's first child, so a
-    // separator rule reading `* + *` gave the lane after it a hairline at
-    // that instant - a pixel of growth and a line, at the same frame the
-    // colour used to jump.
-    const separator = /\.surf > ([^{]+) \{ border-top: 1px solid var\(--line\); \}/.exec(
-      SHEET,
-    )?.[1];
+  it('draws no separator of its own, and keeps the hidden status line out of the flow', () => {
+    // **The card is one bar, and its first row draws its own hairline.** A
+    // `* + *` separator returning here draws a second line at the live row's
+    // foot, and a status span left in the flow grows the band a pixel at the
+    // open - the same flinch this pair has always caught, restated for the
+    // card.
     expect(
-      separator,
-      'the band no longer has a separator rule, so this check is reading nothing',
-    ).toBeTruthy();
+      /\.surf > [^{]* \+ [^{]*\{ border-top:/.test(SHEET),
+      "the surface draws a separator between children again, on top of the live row's own hairline",
+    ).toBe(false);
+    expect(rule('.live-row'), 'the live row lost the line under itself').toContain(
+      'border-bottom: 1px solid var(--line)',
+    );
     expect(
-      separator,
-      'the separator rule takes the hidden status line for a lane, so the open grows the band a pixel and draws a hairline',
-    ).toContain(':not(.sr) + :not(.sr)');
+      rule('.comp .sr'),
+      'the status line is back in the flow, where it grows the band at the open',
+    ).toContain('position: absolute');
+  });
+
+  it('keeps the live row one line, with the chips collapsing rather than wrapping', () => {
+    // The ragged wrap this replaced grew the band to three rows between 780
+    // and 860px (Ved, in the #2159 look). `wrap` returning here is that band
+    // coming back; a figure allowed to break is the same failure inside a
+    // token pair - `18.4k` on one line and its arrow on the next.
+    expect(rule('.live-row'), 'the live row wraps again').toContain('flex-wrap: nowrap');
+    expect(rule('.live-row .live-fig'), 'a turn figure is allowed to break its own line').toContain(
+      'white-space: nowrap',
+    );
   });
 });
