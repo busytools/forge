@@ -33,6 +33,7 @@ mod asks;
 pub mod bridge;
 pub mod browser;
 mod launch;
+mod log_bridge;
 #[cfg(test)]
 mod log_capture;
 #[cfg(all(target_os = "macos", feature = "look-driver"))]
@@ -685,6 +686,9 @@ pub fn run() -> u8 {
 
     let run = builder
         .setup(|app| {
+            // The facade is up by now, so the capture crate's tracing events
+            // have somewhere to land from the first command onward.
+            log_bridge::install();
             tauri_plugin_log::log::info!("forge client started");
             #[cfg(not(desktop))]
             let _ = &app;

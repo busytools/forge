@@ -120,10 +120,10 @@ line (`the microphone device layer panicked during the take's open: ...`),
 and writes the operation, the device and a backtrace to the client log. The
 audio callback has its own guard, in the capture crate: a panic in the
 pipeline body forge calls from cpal's frame is caught there before it
-crosses the C boundary, and the capture stops delivering - though that line
-is a `tracing` record the desktop client does not sink yet (#2730), so it is
-readable server-side only. A panic that unwinds through a foreign frame
-still aborts; no catch at either layer can reach it.
+crosses the C boundary, and the capture stops delivering. That line is a
+`tracing` record, and the shell forwards tracing into the client log, so it
+is readable beside the shell's own lines. A panic that unwinds through a
+foreign frame still aborts; no catch at either layer can reach it.
 
 ## The states the surface can be in
 
