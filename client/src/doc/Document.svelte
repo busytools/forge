@@ -649,15 +649,16 @@
       number = typeof filed.number === 'number' ? filed.number : null;
       // **The nudge the view this client replaced sent on its own drop**, so
       // the chat shows the review to the reader AND reaches the agent - one
-      // line, not the comments - with the document's scope named, which is
-      // how the agent reads it back.
+      // line, not the comments - with the document's scope named. It names no
+      // review tool: the hand-off answer that follows carries the read-back
+      // path for a session with the `review` family and for one without.
       if (number !== null) {
         try {
           void connection.dispatch(
             {
               prompt_under: {
                 key: slot,
-                text: `Review #${number} ready on the document - address it via the review MCP (\`review__list\` with the scope ${scope}).`,
+                text: `Review #${number} ready on the document - scope ${scope}; the hand-off answer names how to read it back.`,
                 attachments: [],
                 uuid: mintPromptId(),
                 source: 'you',

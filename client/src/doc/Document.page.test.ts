@@ -520,6 +520,9 @@ describe('the reviewable document', () => {
       'Review #4 ready on the document',
     );
     expect(nudge?.text).toContain(`doc:${PATH}`);
+    expect(nudge?.text, 'and names no review tool the asking seat may lack').not.toContain(
+      'review__list',
+    );
   });
 
   /** **A link inside the block is the link's.** A click landing on an anchor

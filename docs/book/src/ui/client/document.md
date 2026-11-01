@@ -35,7 +35,7 @@ with no comment affordance anywhere.
 | Editing and deleting  | `edit` on a comment - a filed thread's or a local draft's, wherever it is drawn - opens the page's own box over its words, mic and all, and `save` rewrites it; `delete` takes the thread or the draft away, asking first. Either way the document is re-read, so the card draws what the store now holds | `upsert_review_thread` and `delete_review_thread`; the reply, then the `document_read` re-ask                                                                                                 |
 | Resolved              | a resolved comment collapses to its marker line like every other surface's, opened by a press, where `reopen` and `collapse` sit                                                                                                                            | the thread's status, and the page's own opened set                                                                          |
 | The done              | the one door, in every state: `done (n)` files the drafts as one round, pushes the review-ready line into the chat, releases the parked hand-off with what was filed, and returns to the session; a refusal draws the core's own words and keeps the drafts | `submit_review`'s reply, then `answer_document_hand_off`                                                                     |
-| The chat line         | `Review #N ready on the document - address it via the review MCP (review__list, with the scope doc:<path>)`, the core's own nudge                                                                                                                       | the page's own dispatch after the finish                                                                                     |
+| The chat line         | `Review #N ready on the document - scope doc:<path>; the hand-off answer names how to read it back`, the core's own nudge                                                                                                                                | the page's own dispatch after the finish                                                                                     |
 | A refusal             | the server's sentence as its own line - missing, unreadable, over the ceiling, outside the session's tree, a text kind that is not UTF-8                                                                                                                    | the `error` naming `document_read`                                                                                           |
 | Opening               | `Opening <path>...` while the read is out                                                                                                                                                                                                                   | the page's own state                                                                                                         |
 | Empty                 | its own line, before any kind is drawn                                                                                                                                                                                                                      | an answer with zero bytes                                                                                                    |
@@ -121,9 +121,11 @@ submits the drafted threads as one round through the same command a code
 review uses, under the document's scope (`doc:<path>`), stamped with the
 asking seat as the origin - and then answers the parked call with the review
 that landed. **The terminal's own drop is the model**: the same one line it
-pushes into the session, `Review #N ready on the document - address it via
-the review MCP`, goes into the chat here, with the document's scope named -
-so the reader sees the drop in the conversation and the agent hears it. Then the
+pushes into the session, `Review #N ready on the document`, goes into the
+chat here, with the document's scope named - so the reader sees the drop in
+the conversation and the agent hears it. The line names no review tool,
+because the hand-off answer that follows names the read-back path for a
+session with the `review` family and for one without. Then the
 page returns to the session the reader came through: the done is the one
 door, and the chat line is the confirmation. A refusal files nothing and
 answers nothing: the call stays parked, the drafts stay where they were, and
