@@ -912,6 +912,71 @@ describe('the open a conversation begins', () => {
   });
 
   /**
+   * **The drawn mark is the model; the painted mark is the pixels** (#2733,
+   * #2752, #1909). The column draws on the effect flush that first holds the
+   * seat's turns, which runs before that flush's own DOM exists, so `drawn`
+   * cannot say when a reader first had a row on screen - the one number that
+   * tells a slow open from a blank one. The column reports the first row the
+   * browser gave a box, and the probe stamps it against the open it belongs
+   * to, once.
+   */
+  it('marks the first painted row once per open, from the switch it belongs to', () => {
+    const h = harness();
+    h.probe.setSurface('session', 'Busytools/forge/lead');
+    h.probe.noteConversationOpened('Busytools/forge/lead');
+    h.probe.noteDrawn('conversation');
+
+    h.advance(240);
+    h.probe.notePainted();
+    const painted = h.records.flat().filter((record) => record.kind === 'painted');
+    expect(painted, 'the first row with a box is one record').toHaveLength(1);
+    expect(painted[0]?.ms, 'measured from the same open the drawn mark measures from').toBe(240);
+    expect(painted[0]?.session).toBe('Busytools/forge/lead');
+    expect(painted[0]?.surface).toBe('session');
+
+    // Every later row that measures belongs to the same open, and it already
+    // has its mark - a busy list must not write one per row.
+    h.advance(500);
+    h.probe.notePainted();
+    expect(h.records.flat().filter((record) => record.kind === 'painted')).toHaveLength(1);
+  });
+
+  /**
+   * **The mark belongs to the seat that opened.** A row measuring under a seat
+   * the reader is merely holding is not an open, and an open the reader leaves
+   * before it paints is dropped with the seat - leaving it armed would stamp
+   * the next occurrence with a time that belongs to another seat.
+   */
+  it('arms the painted mark per open, and drops it with the seat', () => {
+    const h = harness();
+    h.probe.setSurface('session', 'Busytools/forge/lead');
+    h.probe.notePainted();
+    expect(h.records.flat().filter((record) => record.kind === 'painted')).toHaveLength(0);
+
+    // An open the reader leaves before a row paints takes its span with it: a
+    // row measuring under the seat that came next must not be stamped with
+    // the seat that opened.
+    h.probe.noteConversationOpened('Busytools/forge/lead');
+    h.advance(120);
+    h.probe.setSurface('session', 'Busytools/forge/busymail');
+    h.advance(900);
+    h.probe.notePainted();
+    expect(
+      h.records.flat().filter((record) => record.kind === 'painted'),
+      'the seat that left owns no painted mark',
+    ).toHaveLength(0);
+
+    // A new open re-arms it, and its time is its own.
+    h.probe.noteConversationOpened('Busytools/forge/busymail');
+    h.advance(80);
+    h.probe.notePainted();
+    const painted = h.records.flat().filter((record) => record.kind === 'painted');
+    expect(painted).toHaveLength(1);
+    expect(painted[0]?.session).toBe('Busytools/forge/busymail');
+    expect(painted[0]?.ms).toBe(80);
+  });
+
+  /**
    * **A placeholder does not end the open** (#2374): a waking line is the
    * column saying the seat is coming up, not its content arriving. The open
    * stays armed, no quiet may fire while the content is still on its way,

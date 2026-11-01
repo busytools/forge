@@ -95,6 +95,7 @@ export interface PerfRecord {
     | 'summary'
     | 'switch'
     | 'drawn'
+    | 'painted'
     | 'quiet'
     | 'heartbeat'
     | 'click'
@@ -109,8 +110,9 @@ export interface PerfRecord {
   /** The frame's own counter within the run, for a frame record. */
   frame?: number;
   /**
-   * The frame's gap, or the long task's duration, or - for a `drawn` and a
-   * `quiet` - the time since the switch record the mark belongs to.
+   * The frame's gap, or the long task's duration, or - for a `drawn`, a
+   * `painted` and a `quiet` - the time since the switch record the mark
+   * belongs to.
    */
   ms?: number;
   /**
@@ -255,6 +257,16 @@ interface PerfProbe {
    * one record per open: called here, the measure runs only on the write.
    */
   noteDrawn(state: DrawnState, geometry?: () => DrawnGeometry | undefined): void;
+  /**
+   * The open seat's first row got a box on screen.
+   *
+   * **The drawn mark is a state, not a pixel**: it is written on the flush that
+   * first holds the seat's turns, before that flush's own DOM exists, so it
+   * cannot say when a reader first had a row to look at. This is the other
+   * half, and it is what tells an open that drew at 80 ms and painted at 10 s
+   * from one that was actually on screen (#2733, #2752, #1909).
+   */
+  notePainted(): void;
   /** A click on a seat, at the handler that takes it (#2513). */
   noteSeatClick(seat: string): void;
   /** A subscribe written to the socket, with the seat its subject names when
@@ -619,6 +631,18 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
   let placeholderSeen = false;
   let contentSeen = false;
   /**
+   * The open whose first row has not painted yet, when it opened, and whether
+   * its mark has been written.
+   *
+   * **A clock of its own, not `openAt`'s.** A quiet can settle an open before
+   * its rows paint - which is exactly the case the painted mark exists for
+   * (#2733, #2752) - so the span survives the quiet and is dropped only when
+   * the reader leaves the seat or a new open starts.
+   */
+  let paintSeat: string | null = null;
+  let paintAt: number | null = null;
+  let paintSeen = false;
+  /**
    * #2513's own counters: the click a subscribe is measured from, the last
    * user action and the last snapshot's completion (what makes a subscribe
    * "unprompted"), and the connection window's subscribes and snapshot chars.
@@ -847,6 +871,9 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
       openSeat = null;
       placeholderSeen = false;
       contentSeen = false;
+      paintSeat = null;
+      paintAt = null;
+      paintSeen = false;
       windowStart = now();
       // Null until the first tick lands: before then there is no arrival to
       // measure from, and a since-beat of "since start" would invent one.
@@ -960,10 +987,19 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
         openAt = null;
         openSeat = null;
       }
+      // The painted mark belongs to the seat that opened, so leaving it drops
+      // the span rather than stamping the next seat's rows with this one's.
+      if (paintSeat !== null && seat !== paintSeat) {
+        paintSeat = null;
+        paintAt = null;
+      }
     },
     noteConversationOpened(seat: string): void {
       openSeat = seat;
       openAt = now();
+      paintSeat = seat;
+      paintAt = openAt;
+      paintSeen = false;
       // A click for the seat the reader left opens nothing here, so it is
       // spent rather than left to a later read (#2708).
       if (clickAt !== null && clickAt.seat !== seat) clickAt = null;
@@ -1010,6 +1046,19 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
         ...(geometry?.() ?? {}),
         surface: 'session',
         session: openSeat,
+      });
+    },
+    notePainted(): void {
+      if (paintSeat === null || paintAt === null || paintSeen) return;
+      paintSeen = true;
+      emit({
+        schema: SCHEMA,
+        kind: 'painted',
+        run_id: runId,
+        ts_ms: Date.now(),
+        ms: now() - paintAt,
+        surface: 'session',
+        session: paintSeat,
       });
     },
     noteSeatClick(seat: string): void {
@@ -1161,6 +1210,15 @@ export function noteConversationOpened(slot: SessionSlot): void {
  */
 export function noteDrawn(state: DrawnState, geometry?: () => DrawnGeometry | undefined): void {
   running?.noteDrawn(state, geometry);
+}
+
+/**
+ * The open seat's first row got a box on screen. **The other half of the drawn
+ * mark**: that one is the model, this one is the pixels, and an open that drew
+ * fast and painted late is the shape #2733 and #2752 were filed on.
+ */
+export function notePainted(): void {
+  running?.notePainted();
 }
 
 /** A click landed on `slot`, in the shell's delegated handler (#2513). */

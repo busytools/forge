@@ -5,7 +5,7 @@
 
   import Icon from '../components/Icon.svelte';
   import { cannotPaint } from '../paint';
-  import { noteConversationOpened, noteDrawn, type DrawnGeometry } from '../perf';
+  import { noteConversationOpened, noteDrawn, notePainted, type DrawnGeometry } from '../perf';
   import { MORE_TURNS, subjectKey } from '../protocol';
   import { scrollAsk } from '../session/scroll-ask';
   import type { Connection } from '../socket';
@@ -491,7 +491,16 @@
    */
   function measureTurn(node: HTMLElement, key: string): () => void {
     const observer = new ResizeObserver((entries) => {
-      for (const entry of entries) rowSizes.remember(key, entry.contentRect.height);
+      for (const entry of entries) {
+        const height = entry.contentRect.height;
+        rowSizes.remember(key, height);
+        // **The open's painted mark is the first row with a box** (#2733,
+        // #2752). The drawn mark is the model and lands before this flush's
+        // DOM exists, so only this one can say when a reader first had a row
+        // to look at. The probe keeps one per open, so a list that reports
+        // every row it measures writes one record in total.
+        if (height > 0) notePainted();
+      }
       // **The row's own report wakes the fill.** A landing's rows measure
       // AFTER the size watcher's batch has already read them as unmeasured,
       // and a row that measures at the list's estimate leaves the content

@@ -45,7 +45,12 @@ const drawnMark = vi.hoisted(() =>
   vi.fn<(state: string, geometry?: () => ColumnMeasure | undefined) => void>(),
 );
 const openedMark = vi.hoisted(() => vi.fn());
-vi.mock('../perf', () => ({ noteDrawn: drawnMark, noteConversationOpened: openedMark }));
+const paintedMark = vi.hoisted(() => vi.fn());
+vi.mock('../perf', () => ({
+  noteDrawn: drawnMark,
+  noteConversationOpened: openedMark,
+  notePainted: paintedMark,
+}));
 
 const LEAD: SessionSlot = { org: 'Busytools', project: 'forge', label: 'lead' };
 
@@ -1836,6 +1841,35 @@ describe('the drawn mark', () => {
     expect(columnMeasure(drawnMark), "and it carries that seat's own measure").toEqual(
       NOTHING_LAID_OUT,
     );
+  });
+
+  /**
+   * **The drawn mark is the model, so the column reports the pixels too**
+   * (#2733, #2752). `drawn` lands on the flush that first holds the seat's
+   * turns, before that flush's own DOM exists - so it cannot say when a reader
+   * first had a row to look at. The first row the browser gives a box is the
+   * other half, and a row that reports no height is no paint.
+   */
+  it('marks the first row the browser gave a box', async () => {
+    const server = stub();
+    paintedMark.mockClear();
+    app = mount(Chat, {
+      target: document.body,
+      props: { slot: LEAD, connection: server.connection },
+    });
+    flushSync();
+    server.answer([turn('t1')]);
+    await painted();
+    expect(paintedMark, 'no row has a box until the browser gives one').not.toHaveBeenCalled();
+
+    resized(120);
+    const afterBox = paintedMark.mock.calls.length;
+    expect(afterBox, 'the rows the browser laid out are the painted mark').toBeGreaterThan(0);
+
+    // A held row draws nothing and reports nothing, so it must not read as
+    // a reader's first row.
+    resized(0);
+    expect(paintedMark.mock.calls.length, 'a zero-height report is no paint').toBe(afterBox);
   });
 
   /**
