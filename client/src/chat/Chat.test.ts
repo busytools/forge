@@ -2037,6 +2037,38 @@ describe('the arrival mark', () => {
     }
   });
 
+  it('does not enter a row the queue pulls back before it paints', async () => {
+    // **The queue's own transient is not an arrival.** A prompt sent during a
+    // turn draws its row and the queue retracts it a frame or two later; the
+    // rise in between reads as a gap over a row that is already leaving.
+    vi.useFakeTimers();
+    try {
+      const server = stub();
+      draw({}, server);
+      server.answer([turn('t0')]);
+      server.send(appended(prompting('go')));
+      await painted();
+      const turnNode = [...document.querySelectorAll('.conv [data-t]')].at(-1);
+      expect(turnNode, 'the live turn is not drawn').not.toBeNull();
+
+      const row = document.createElement('div');
+      row.setAttribute('data-k', 'queued-row');
+      turnNode?.appendChild(row);
+      // The observer sees the row while it is still there - it queues the
+      // entrance for the next paint - and the queue takes it back before that
+      // paint.
+      await Promise.resolve();
+      row.remove();
+      await painted();
+
+      expect(row.classList.contains('arrive'), 'a row pulled back before its paint entered').toBe(
+        false,
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('enters nothing into a turn that is not the one being written', async () => {
     // **The turn's own `data-t` decides whose rows these are.** A row added to
     // an older turn is history, however it got there.
