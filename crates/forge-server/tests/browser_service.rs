@@ -266,8 +266,8 @@ async fn a_killed_host_publishes_no_tabs_and_its_successor_starts_empty() {
     let service = BrowserService::at(scratch.path().to_path_buf(), stack);
     let seat = SessionSlot::lead("TestOrg", "proj");
     service.call(&seat, "browser_snapshot", json!({})).await.expect("the first tab opens");
-    let tab = service.tabs(&seat).await.expect("rows").rows[0].number;
-    service.hand_off_started(&seat, tab).await.expect("the tab is parked");
+    let page = listed_page_id(&service, &seat).await;
+    service.hand_off_started(&seat, &page).await.expect("the tab is parked");
     assert_eq!(
         service.tabs(&seat).await.expect("rows").rows[0].state,
         forge_primitives::browser::BrowserTabState::Held,
@@ -692,7 +692,7 @@ async fn a_challenge_state_separates_a_live_widget_from_an_expired_one() {
 /// **A driver rebuild renames every page, and a session keeps its own.**
 /// Creating a tab rebuilds the driver, and a fresh Playwright backend gives
 /// every page a new guid. The first seat's next evaluate must still be its
-/// own document, not a new about:blank, and the tab number it was shown must
+/// own document, not a new about:blank, and the page id it was shown must
 /// still be the one a hand-off accepts (row c00bd4de).
 #[ignore = "needs the built host bundle and the vendored driver stack; run with --run-ignored ignored-only"]
 #[tokio::test(flavor = "multi_thread")]
@@ -716,6 +716,10 @@ async fn a_driver_rebuild_keeps_a_sessions_page() {
         .await
         .expect("the first seat's page opens");
     let tab = service.tabs(&one).await.expect("rows").rows[0].number;
+    // **The id is the one the first seat was shown**, captured before the
+    // rebuild the second seat's call causes; a listing after it proves only
+    // that a freshly printed id works.
+    let listed = listed_page_id(&service, &one).await;
 
     // **A second seat's first call creates a tab**, and creating one rebuilds
     // the driver, renaming every page the first seat holds.
@@ -744,10 +748,32 @@ async fn a_driver_rebuild_keeps_a_sessions_page() {
         rows.iter().any(|row| row.number == tab),
         "the seat keeps the tab it was shown: {rows:?}",
     );
-    service.hand_off_started(&one, tab).await.expect("the number a tool printed is accepted");
-    service.hand_off_finished(&one, tab).await;
+    let held = service
+        .hand_off_started(&one, &listed)
+        .await
+        .expect("the page id it was shown, not a fresh one, is accepted");
+    service.hand_off_finished(&one, held).await;
 
     service.close(&one).await.expect("the profile closes");
+}
+
+/// The page id the tool's own listing prints for a seat's first row. **The
+/// id is the address the tools take**: the strip's number is not.
+async fn listed_page_id(service: &BrowserService, seat: &SessionSlot) -> String {
+    let parts = service
+        .call(seat, "browser_tabs", json!({ "action": "list" }))
+        .await
+        .expect("the list answers");
+    let text = parts
+        .iter()
+        .find_map(|part| match part {
+            forge_primitives::browser::BrowserPart::Text { text } => Some(text.as_str()),
+            forge_primitives::browser::BrowserPart::Image { .. } => None,
+        })
+        .expect("the list is text");
+    let row = text.lines().next().expect("a row");
+    let (page, _) = row.trim_start_matches("- ").split_once(':').expect("a page id and a row");
+    page.to_owned()
 }
 
 /// The page's own report of its surface: the viewport it lays out at, the
@@ -1016,10 +1042,14 @@ async fn a_pages_popup_joins_the_profile_and_hands_the_session_back() {
     .expect("the tab listing answers within its bound")
     .expect("the list answers");
     let text = text_of(&listed);
-    assert!(
-        text.lines().any(|line| line.starts_with(&format!("- {popup}: (current) "))),
-        "the popup is the session's current tab: {text}",
-    );
+    let popup_line = text
+        .lines()
+        .find(|line| line.contains(&popup_url))
+        .unwrap_or_else(|| panic!("the popup's row is listed: {text}"))
+        .to_owned();
+    assert!(popup_line.contains(": (current) "), "the popup is the current tab: {text}");
+    let popup_page =
+        popup_line.trim_start_matches("- ").split_once(':').expect("a page id and a row").0;
 
     // **The popup is driven like any other page, through the driver's own
     // page**. That is the claim the book makes, and a snapshot is the call
@@ -1039,7 +1069,7 @@ async fn a_pages_popup_joins_the_profile_and_hands_the_session_back() {
     );
 
     service
-        .call(&seat, "browser_tabs", json!({ "action": "close", "index": popup }))
+        .call(&seat, "browser_tabs", json!({ "action": "close", "tab": popup_page }))
         .await
         .expect("the popup closes");
     let rows = service.tabs(&seat).await.expect("rows").rows;
@@ -1051,7 +1081,7 @@ async fn a_pages_popup_joins_the_profile_and_hands_the_session_back() {
         .expect("the list answers");
     let text = text_of(&listed);
     assert!(
-        text.lines().any(|line| line.starts_with(&format!("- {opener}: (current) "))),
+        text.lines().next().is_some_and(|line| line.contains(": (current) ")),
         "the session is back on the opener: {text}",
     );
 

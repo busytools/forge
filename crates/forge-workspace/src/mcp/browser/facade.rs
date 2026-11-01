@@ -9,9 +9,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use forge_primitives::SessionSlot;
-use forge_primitives::browser::{
-    BrowserPart, HandOff, HandOffAnswer, HandOffEnding, HandOffSource,
-};
+use forge_primitives::browser::{BrowserPart, HandOffAnswer, HandOffEnding, HandOffSource};
 use serde_json::Value;
 
 use crate::browser::NO_BROWSER_HOST;
@@ -30,7 +28,8 @@ pub trait BrowserFacade: Send + Sync {
     ) -> Result<Vec<BrowserPart>, String>;
 
     /// Ask the person at a client to act in one of the seat's browser tabs,
-    /// and wait for their word.
+    /// and wait for their word. `tab` is the page id the tool listed; the
+    /// fleet resolves it to the tab it raises.
     ///
     /// **No timeout.** The ask dock's own timelines say a held prompt sits for
     /// hours, and the session is meant to wait as long as it takes; the one
@@ -41,7 +40,7 @@ pub trait BrowserFacade: Send + Sync {
         &self,
         seat: &SessionSlot,
         reason: &str,
-        tab: u16,
+        tab: &str,
     ) -> Result<HandOffEnding, String>;
 }
 
@@ -78,13 +77,12 @@ impl BrowserFacade for ProdBrowserFacade {
         &self,
         seat: &SessionSlot,
         reason: &str,
-        tab: u16,
+        tab: &str,
     ) -> Result<HandOffEnding, String> {
         let Some(workspace) = self.workspace.upgrade() else {
             return Err("the workspace went away before the hand-off was staged".to_owned());
         };
-        let handoff = HandOff { id: uuid::Uuid::new_v4(), reason: reason.to_owned(), tab };
-        let (id, answer) = workspace.register_browser_hand_off(seat, handoff).await?;
+        let (id, answer) = workspace.register_browser_hand_off(seat, reason, tab).await?;
         let guard =
             ResolveHandOffOnDrop { workspace: Arc::clone(&workspace), id, caller: seat.clone() };
         let ending = answer.await.map_err(|_| {
@@ -134,7 +132,8 @@ pub struct MockBrowserFacade {
     pub answer: parking_lot::Mutex<Result<Vec<BrowserPart>, String>>,
     /// What `hand_off` answers with, and what it was asked.
     pub hand_off_answer: parking_lot::Mutex<Result<HandOffEnding, String>>,
-    pub hand_offs: parking_lot::Mutex<Vec<(String, u16)>>,
+    /// Each hand-off's `(reason, page id)`.
+    pub hand_offs: parking_lot::Mutex<Vec<(String, String)>>,
 }
 
 #[cfg(test)]
@@ -174,10 +173,10 @@ impl BrowserFacade for MockBrowserFacade {
         &self,
         seat: &SessionSlot,
         reason: &str,
-        tab: u16,
+        tab: &str,
     ) -> Result<HandOffEnding, String> {
         self.seats.lock().push(seat.clone());
-        self.hand_offs.lock().push((reason.to_owned(), tab));
+        self.hand_offs.lock().push((reason.to_owned(), tab.to_owned()));
         self.hand_off_answer.lock().clone()
     }
 }
@@ -223,7 +222,7 @@ mod tests {
         let task = tokio::spawn({
             let facade = Arc::clone(&facade);
             let seat = seat.clone();
-            async move { facade.hand_off(&seat, "solve the CAPTCHA", 2).await }
+            async move { facade.hand_off(&seat, "solve the CAPTCHA", "T2").await }
         });
         // The hand-off lands in the registry, which is what the blocked call
         // just did.
@@ -280,9 +279,9 @@ mod tests {
         let facade = ProdBrowserFacade::from_workspace(&workspace);
         let seat = SessionSlot::lead("TestOrg", "proj");
 
-        let refused = facade.hand_off(&seat, "look at this", 0).await;
+        let refused = facade.hand_off(&seat, "look at this", "gone").await;
 
-        assert_eq!(refused, Err("tab 0 is not open".to_owned()));
+        assert_eq!(refused, Err("no tab has the page id 'gone'".to_owned()));
         assert!(workspace.browser_handoffs.lock().is_empty(), "nothing is parked");
         assert!(rx.try_recv().is_err(), "and no view is told to draw a dock");
     }

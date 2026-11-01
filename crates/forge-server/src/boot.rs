@@ -398,9 +398,9 @@ impl forge_workspace::browser::BrowserHost for HostedBrowser {
     async fn hand_off_started(
         &self,
         seat: &forge_primitives::SessionSlot,
-        tab: u16,
-    ) -> Result<(), String> {
-        self.0.hand_off_started(seat, tab).await
+        target: &str,
+    ) -> Result<u16, String> {
+        self.0.hand_off_started(seat, target).await
     }
 
     async fn hand_off_finished(&self, seat: &forge_primitives::SessionSlot, tab: u16) {
