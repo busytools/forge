@@ -179,22 +179,23 @@ read as one system.
   the notice above only where the fold holds no call row for it - a page
   opened after the call, or a peer message drawn as a card, the one card a
   call never also draws a row for - and the refusal is never dropped. **A
-  sub-agent's refusal draws inside the dispatch it belongs under**: the
-  frame names the agent rather than the dispatch, and the server stamps the
-  dispatch it can place, so the refusal rides that expansion's call row with
-  the same chip and body, or draws as the notice above when the expansion
-  holds no call row for it - a nested dispatch's call is a child line, not a
-  row. A resumed page draws a top-level sub-agent's refusal from its own
-  sidecar, as the call's errored result; a nested sub-agent's refusal is
-  live-only, because its dispatch is named in the outer agent's sidecar and
-  the nested sidecar joins no transcript row, and a sidecar past the resume
-  budget is skipped the same way. **A question draws nothing here while it
-  waits**: the dock is its row. It draws as a card instead - the words the
-  reader was asked, marked `unanswered`, with nothing picked or typed under
-  them - the moment its own result lands with no answer on record (the
-  reader dismissing the dock), or the turn closes on it. A question whose
-  result came back an error, or one the CLI refused before it ran, keeps its
-  call row instead.
+  sub-agent's refusal draws inside the dispatch the server can place**: the
+  frame names the agent rather than the dispatch, and the refusal rides that
+  expansion's call row with the same chip and body, or draws as a plain line
+  there when the expansion holds no call row for it - a nested dispatch's
+  call is a child line, not a row. A refusal no instance owns - a third-level
+  dispatch, or a task the roster never linked - stays at the session's level.
+  A resumed page draws a top-level sub-agent's refusal from its own sidecar,
+  as the call's errored result. A nested sub-agent's refusal is live-only: no
+  card opens for a nested dispatch, so the sidecar rows that carry it are
+  drawn nowhere whether they join the read or not, and a sidecar past the
+  resume budget is skipped the same way. **A question draws nothing here
+  while it waits**: the dock is its row. It draws as a card instead - the
+  words the reader was asked, marked `unanswered`, with nothing picked or
+  typed under them - the moment its own result lands with no answer on
+  record (the reader dismissing the dock), or the turn closes on it. A
+  question whose result came back an error, or one the CLI refused before it
+  ran, keeps its call row instead.
 - **A model swap, a memory recall, a local command and a project's
   development intent each draw a row of their own.** A model fallback (and a
   refusal retry, a refusal with no fallback, and the Fable consent gate) draws

@@ -1790,8 +1790,8 @@ impl SessionTask {
     /// under: the CLI names the agent and never the dispatch, so the refusal
     /// drew as a row the session itself had made. A top-level dispatch's read
     /// needs no repair - its sidecar carries the refusal as the call's
-    /// errored result - while a nested dispatch's sidecar joins no transcript
-    /// row, so a nested refusal draws live only.
+    /// errored result - while no card opens for a nested dispatch, so a
+    /// nested refusal draws live only.
     fn attribute_denial(&self, msg: forge_primitives::Message) -> forge_primitives::Message {
         let forge_primitives::Message::PermissionDenied { extras, .. } = &msg else {
             return msg;

@@ -752,8 +752,8 @@ mod tests {
     /// `tool_result` whose content still carries the refusal's words, under
     /// the dispatch that ran it. No measured capture keeps a
     /// `permission_denied` row for a sub-agent's call, so the sidecar row is
-    /// the only thing a reload can draw it from - and a nested dispatch's
-    /// sidecar joins no transcript row, so that case draws live only.
+    /// the only thing a reload can draw it from; no card opens for a nested
+    /// dispatch, so that case draws live only.
     #[test]
     fn conversation_carries_a_subagents_denied_result() {
         let (workspace, _dir) = crate::surface::testing::workspace();
