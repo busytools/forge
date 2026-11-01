@@ -125,8 +125,13 @@ conformance-record-socket:
         --no-tests=fail --run-ignored ignored-only write_the_socket_records
 
 # Runs the 15-clip fixture corpus through the whole dictation pipeline and
-# rewrites `crates/forge-dictate/bench/<machine>.toml`. Commit the result:
+# rewrites `crates/forge-workspace/bench/<machine>.toml`. Commit the result:
 # the file is the trend, and its diff is the signal.
+#
+# It measures the models the LIVE roles resolve to on this machine - the
+# config key, the runtime pick, else the compiled pin - not the pins directly,
+# and it fails rather than falling back when that resolution cannot be read.
+# The store is read off a copy, because a running forge holds the live one.
 #
 # NEVER FETCHES. Absent weights fail with a message rather than pulling 3 GB,
 # because a benchmark - or a cron - that quietly downloads that much is a
@@ -147,7 +152,7 @@ conformance-record-socket:
 #
 # Benchmark the corpus and rewrite this machine's results file.
 bench:
-    RUSTFLAGS="-D warnings" cargo nextest run -p forge-dictate --test bench --run-ignored all --no-capture -E 'test(=bench_corpus)'
+    RUSTFLAGS="-D warnings" cargo nextest run -p forge-workspace --test bench --run-ignored all --no-capture -E 'test(=bench_corpus)'
 
 # Mutation-test the client with Stryker: break each line the tests claim to
 # cover and see whether anything fails. `vitest` reports what ran and never

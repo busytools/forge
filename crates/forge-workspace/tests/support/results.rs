@@ -40,27 +40,30 @@ pub struct Section {
 /// finds nothing, which reads as a first run and silently disables the
 /// deadband on every figure.
 pub fn committed(file: Option<&str>, section: &str, key: &str) -> Result<Option<u64>, String> {
+    let Some(value) = lookup(file, section, key)? else {
+        return Ok(None);
+    };
+    value.as_integer().and_then(|i| u64::try_from(i).ok()).map(Some).ok_or_else(|| {
+        format!("{section}.{key} is present but is not a non-negative integer: {value}")
+    })
+}
+
+/// The value at the dotted `section.key` path, walked segment by segment.
+pub fn lookup(file: Option<&str>, section: &str, key: &str) -> Result<Option<toml::Value>, String> {
     let Some(text) = file else {
         return Ok(None);
     };
-
     let parsed: toml::Value = toml::from_str(text).map_err(|e| {
         format!(
             "results file is not valid TOML ({e}); refusing to overwrite it, because that would \
              destroy the trend and hide the corruption. Fix or delete it deliberately."
         )
     })?;
-
-    let table = section.split('.').try_fold(&parsed, |node, segment| node.get(segment));
-
-    match table.and_then(|s| s.get(key)) {
-        None => Ok(None),
-        Some(value) => {
-            value.as_integer().and_then(|i| u64::try_from(i).ok()).map(Some).ok_or_else(|| {
-                format!("{section}.{key} is present but is not a non-negative integer: {value}")
-            })
-        }
-    }
+    Ok(section
+        .split('.')
+        .try_fold(&parsed, |node, segment| node.get(segment))
+        .and_then(|table| table.get(key))
+        .cloned())
 }
 
 /// The value to commit: keep whatever is already committed while the new

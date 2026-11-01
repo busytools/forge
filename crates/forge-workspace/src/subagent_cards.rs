@@ -87,6 +87,13 @@ pub struct CardTracker {
     /// what lets a later lifecycle frame find the card it belongs to.
     task_ids: HashMap<String, String>,
     answers: HashMap<String, Answer>,
+    /// The call each assistant tool-use id was made under. Only a
+    /// parentless `Task`/`Agent` call opens an instance, so this is the link
+    /// that walks a deeper dispatch up to the card that owns it.
+    made_under: HashMap<String, String>,
+    /// The instance each of its recorded child calls belongs to, so a walk
+    /// that names a child resolves without scanning every instance.
+    child_owner: HashMap<String, usize>,
 }
 
 impl CardTracker {
@@ -102,39 +109,60 @@ impl CardTracker {
                 let parent = parent_tool_use_id.as_deref().filter(|p| !p.trim().is_empty());
                 for block in &envelope.content {
                     match block {
-                        ContentBlock::ToolUse { id, name, input, .. } => match parent {
-                            // A dispatch the session itself made. A `Task` a
-                            // sub-agent made is that instance's own call, drawn
-                            // in its tail and not as a card of its own: the
-                            // work the inner agent then does names THAT
-                            // dispatch as its parent, so a refusal there
-                            // resolves to this instance's row through its child
-                            // lines (`dispatch_of`).
-                            None if matches!(name.as_str(), "Task" | "Agent") => {
-                                self.at.insert(id.clone(), self.instances.len());
-                                self.instances.push(Instance {
-                                    id: id.clone(),
-                                    dispatch_name: dispatch_name(input, name),
-                                    agent_type: input
-                                        .get("subagent_type")
-                                        .and_then(serde_json::Value::as_str)
-                                        .map(str::trim)
-                                        .filter(|value| !value.is_empty())
-                                        .map(str::to_owned),
-                                    backgrounded: input
-                                        .get("run_in_background")
-                                        .and_then(serde_json::Value::as_bool)
-                                        .unwrap_or(false),
-                                    children: Vec::new(),
-                                });
+                        ContentBlock::ToolUse { id, name, input, .. } => {
+                            if let Some(parent) = parent {
+                                self.made_under.insert(id.clone(), parent.to_owned());
                             }
-                            Some(parent) => {
-                                if let Some(&slot) = self.at.get(parent) {
-                                    self.instances[slot].children.push(child_of(id, name, input));
+                            match parent {
+                                // A dispatch the session itself made. A `Task` a
+                                // sub-agent made is that instance's own call, drawn
+                                // in its tail and not as a card of its own: the
+                                // work the inner agent then does names THAT
+                                // dispatch as its parent, so a refusal there
+                                // resolves to this instance's row through its child
+                                // lines (`dispatch_of`).
+                                None if matches!(name.as_str(), "Task" | "Agent") => {
+                                    self.at.insert(id.clone(), self.instances.len());
+                                    self.instances.push(Instance {
+                                        id: id.clone(),
+                                        dispatch_name: dispatch_name(input, name),
+                                        agent_type: input
+                                            .get("subagent_type")
+                                            .and_then(serde_json::Value::as_str)
+                                            .map(str::trim)
+                                            .filter(|value| !value.is_empty())
+                                            .map(str::to_owned),
+                                        backgrounded: input
+                                            .get("run_in_background")
+                                            .and_then(serde_json::Value::as_bool)
+                                            .unwrap_or(false),
+                                        children: Vec::new(),
+                                    });
                                 }
+                                Some(parent) => {
+                                    // The parent may itself be a dispatch a
+                                    // deeper agent fired, so resolve the chain
+                                    // to the card the read path would give it.
+                                    let slot = self
+                                        .owning_dispatch(parent)
+                                        .and_then(|owner| self.at.get(owner).copied());
+                                    if let Some(slot) = slot {
+                                        self.child_owner.insert(id.clone(), slot);
+                                        self.instances[slot]
+                                            .children
+                                            .push(child_of(id, name, input));
+                                    } else {
+                                        tracing::debug!(
+                                            event_name = "subagent_call_without_a_card",
+                                            call = %id,
+                                            parent = %parent,
+                                            "a parented call resolves to no card; it stays where the wire put it",
+                                        );
+                                    }
+                                }
+                                None => {}
                             }
-                            None => {}
-                        },
+                        }
                         // A server-side tool's result arrives inline in the
                         // assistant frame that made the call, so it settles a
                         // child here rather than on a user row.
@@ -282,25 +310,33 @@ impl CardTracker {
             .collect()
     }
 
-    /// The row a refusal by `task_id` belongs under: the card dispatch the
-    /// agent ran as, or the instance whose child line its dispatch was.
-    ///
-    /// The CLI's `permission_denied` frame names the agent and never the
-    /// dispatch, and the agent is the task id the roster opened the dispatch
-    /// with. A nested dispatch's `Task` call has no card of its own - it is a
-    /// child line of the instance that fired it - so it resolves to that
-    /// instance's id; a task no instance owns answers `None`, and the frame
-    /// stays where it was.
+    /// The row a refusal by `task_id` belongs under. The CLI names the agent,
+    /// never the dispatch, so the agent's task id is resolved through the
+    /// chain; a task no instance owns answers `None` and the frame stays put.
     pub(crate) fn dispatch_of(&self, task_id: &str) -> Option<&str> {
         let linked =
             self.task_ids.get(task_id).map(String::as_str).filter(|id| !id.trim().is_empty())?;
-        if self.at.contains_key(linked) {
-            return Some(linked);
+        self.owning_dispatch(linked)
+    }
+
+    /// The card dispatch that owns `call`: the call itself when it opened a
+    /// card, else the instance whose child line it is, else the call it was
+    /// made under. Only the outermost dispatch is a card, so a depth-3 call
+    /// names a child line rather than a card and needs the extra hop.
+    pub(crate) fn owning_dispatch(&self, call: &str) -> Option<&str> {
+        let mut cursor = call;
+        // Bounded, so a parent link pair naming each other cannot spin: the
+        // links are read from the CLI's frames rather than this module.
+        for _ in 0..=self.made_under.len() {
+            if let Some(&slot) = self.at.get(cursor) {
+                return Some(self.instances[slot].id.as_str());
+            }
+            if let Some(&slot) = self.child_owner.get(cursor) {
+                return Some(self.instances[slot].id.as_str());
+            }
+            cursor = self.made_under.get(cursor)?;
         }
-        self.instances
-            .iter()
-            .find(|instance| instance.children.iter().any(|child| child.id == linked))
-            .map(|instance| instance.id.as_str())
+        None
     }
 
     /// Note which task a dispatch's tool call was assigned.
@@ -315,13 +351,13 @@ impl CardTracker {
     fn settle_child(&mut self, tool_use_id: &str, failed: bool) {
         let status =
             if failed { SubagentCallStatus::Failed } else { SubagentCallStatus::Completed };
-        for instance in &mut self.instances {
-            for child in &mut instance.children {
-                if child.id == tool_use_id {
-                    child.status = status;
-                    return;
-                }
-            }
+        let Some(&slot) = self.child_owner.get(tool_use_id) else {
+            return;
+        };
+        if let Some(child) =
+            self.instances[slot].children.iter_mut().find(|child| child.id == tool_use_id)
+        {
+            child.status = status;
         }
     }
 }
@@ -870,13 +906,113 @@ mod tests {
         let cards = subagent_cards(&messages);
 
         assert_eq!(names(&cards), ["cli-version"], "one card, for the session's own dispatch");
-        assert_eq!(cards[0].tail.len(), 1, "and the inner dispatch is that card's own call");
+        assert_eq!(
+            cards[0].tail.len(),
+            2,
+            "the inner dispatch and the call under it are that card's own calls",
+        );
     }
 
     /// A dispatch that never came back is running.
     #[test]
     fn a_dispatch_with_no_result_yet_is_running() {
         assert!(subagent_cards(&[dispatch("toolu_a", "cli-version", "Explore")])[0].running);
+    }
+
+    /// **A dispatch three levels down resolves to the card that owns it.**
+    /// Only a parentless `Task`/`Agent` call opens a card; a dispatch a
+    /// sub-agent made is a call inside the instance that fired it, and one
+    /// the depth-2 agent made names that child line as its parent - so its
+    /// own agent's frames named an id no card owns and drew nowhere. The
+    /// parent link on every assistant tool-use id is what walks the chain
+    /// back to the top-level dispatch.
+    #[test]
+    fn a_dispatch_three_levels_down_resolves_to_the_card_that_owns_it() {
+        let messages = [
+            dispatch("toolu_a", "outer", "Explore"),
+            call(
+                "toolu_inner",
+                "Agent",
+                serde_json::json!({"description": "inner"}),
+                Some("toolu_a"),
+            ),
+            call(
+                "toolu_deeper",
+                "Agent",
+                serde_json::json!({"description": "deeper"}),
+                Some("toolu_inner"),
+            ),
+            task_started("t-a", "toolu_a", "outer"),
+            task_started("t-inner", "toolu_inner", "inner"),
+            task_started("t-deeper", "toolu_deeper", "deeper"),
+        ];
+        let mut tracker = CardTracker::default();
+        for message in &messages {
+            tracker.apply(message);
+        }
+
+        assert_eq!(
+            tracker.dispatch_of("t-a"),
+            Some("toolu_a"),
+            "the session's own dispatch is its card",
+        );
+        assert_eq!(
+            tracker.dispatch_of("t-inner"),
+            Some("toolu_a"),
+            "a nested dispatch is the child line of the card that fired it",
+        );
+        assert_eq!(
+            tracker.dispatch_of("t-deeper"),
+            Some("toolu_a"),
+            "and the hop past that child line still reaches the same card",
+        );
+        // The live fold and the replay fold must count the same children: the
+        // read stamps a nested row with the card, so the live tracker resolves
+        // its parent the same way rather than dropping the call.
+        assert_eq!(
+            tracker.instances[0].children.iter().map(|child| child.id.as_str()).collect::<Vec<_>>(),
+            vec!["toolu_inner", "toolu_deeper"],
+            "both deeper calls belong to the card's own call list",
+        );
+        // A nested call's result settles through the same index.
+        let result = serde_json::json!({
+            "type": "user",
+            "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_deeper", "content": "done"}]},
+            "uuid": "u-deep",
+            "session_id": "s",
+        });
+        tracker.apply(&serde_json::from_value(result).expect("a result frame"));
+        let settled = tracker.instances[0]
+            .children
+            .iter()
+            .find(|child| child.id == "toolu_deeper")
+            .map(|child| child.status);
+        assert_eq!(
+            settled,
+            Some(forge_primitives::runtime::SubagentCallStatus::Completed),
+            "the third-level call settles on its own result",
+        );
+        // A frame can arrive before the call it names was registered as a
+        // child line; the parent link alone still reaches the card.
+        let mut early = CardTracker::default();
+        early.apply(&dispatch("toolu_a", "outer", "Explore"));
+        early.apply(&call("toolu_deep", "Bash", serde_json::json!({}), Some("toolu_inner")));
+        early.apply(&call("toolu_inner", "Agent", serde_json::json!({}), Some("toolu_a")));
+        early.apply(&task_started("t-deep", "toolu_deep", "deep"));
+        assert_eq!(
+            early.dispatch_of("t-deep"),
+            Some("toolu_a"),
+            "the parent link alone reaches the card when the child line arrived late",
+        );
+
+        // A chain that never reaches a card resolves to nothing: the refusal
+        // stays a row at the session's level rather than being stamped with an
+        // id no expansion takes.
+        let mut orphan = CardTracker::default();
+        orphan.apply(&call("toolu_plain", "Read", serde_json::json!({}), None));
+        orphan.apply(&call("toolu_unowned", "Agent", serde_json::json!({}), Some("toolu_plain")));
+        orphan.apply(&task_started("t-unowned", "toolu_unowned", "unowned"));
+        assert_eq!(orphan.dispatch_of("t-unowned"), None);
     }
 
     /// The usage its last progress or notification frame reported rides the

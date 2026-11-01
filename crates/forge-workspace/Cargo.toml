@@ -81,3 +81,10 @@ forge-primitives = { workspace = true, features = ["test-helpers"] }
 # real-time `KICK_DISPATCH_INTERVAL` sleep.
 tokio = { workspace = true, features = ["test-util"] }
 tempfile = { workspace = true }
+# `tests/bench.rs` reads the fixture corpus' wavs and digests the manifest;
+# its cold/warm load test times the ASR weights through the runtime that
+# loads them.
+hound = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+transcribe-cpp = { workspace = true }

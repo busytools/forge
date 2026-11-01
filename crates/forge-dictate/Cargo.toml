@@ -50,4 +50,3 @@ llama-cpp-2 = { workspace = true, features = ["metal"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }
-toml = { workspace = true }

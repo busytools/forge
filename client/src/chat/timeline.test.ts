@@ -176,7 +176,8 @@ describe('a dispatch read into its timeline', () => {
 
   it('draws a refusal that names no call on the page as itself', () => {
     // Rule 25: a frame whose call has been paged out still draws, rather
-    // than reading as a frame that never arrived.
+    // than reading as a frame that never arrived - and it draws as the
+    // session's own notice does, with the wire's chip on the line.
     const frames = dispatchFrames(
       [dispatch(), refusal('c-gone', 'Permission to use Bash has been denied.')],
       'tu-task',
@@ -186,6 +187,9 @@ describe('a dispatch read into its timeline', () => {
     expect(first?.kind).toBe('notice');
     expect(first?.kind === 'notice' && first.text).toBe(
       'Bash refused: Permission to use Bash has been denied.',
+    );
+    expect(first?.kind === 'notice' && first.mark, 'the wire subtype is the chip').toBe(
+      'permission_denied',
     );
   });
 
