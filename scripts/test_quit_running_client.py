@@ -89,10 +89,10 @@ class QuitRunningClientTest(unittest.TestCase):
         self.wait_until_in_use(proc)
         return proc, marker
 
-    def wait_until_in_use(self, proc: "subprocess.Popen[bytes]") -> None:
+    def wait_until_in_use(self, proc: "subprocess.Popen[bytes]", count: int = 1) -> None:
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline:
-            if self.running_pids():
+            if len(self.running_pids()) >= count:
                 return
             if proc.poll() is not None:
                 self.fail(f"the stand-in exited with {proc.returncode} instead of holding {self.exe}")
@@ -151,6 +151,21 @@ class QuitRunningClientTest(unittest.TestCase):
 
     def test_a_file_holder_is_neither_signalled_nor_waited_for(self) -> None:
         holder, marker = self.holder()
+
+        result = self.quit(bound="1")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(marker.exists(), "a process that only held the binary open was signalled")
+        self.assertIsNone(holder.poll(), "the file-holder was killed")
+
+    def test_a_holder_does_not_keep_the_wait_running(self) -> None:
+        # **The wait loop's own query is pinned here.** The client exits on the
+        # quit, and the holder is the only process left with the file open: a
+        # plain `lsof` in the loop would keep the bundle "in use" until the
+        # bound and refuse, where the executing-only query finds nothing.
+        self.client()
+        holder, marker = self.holder()
+        self.wait_until_in_use(holder, count=2)
 
         result = self.quit(bound="1")
 
