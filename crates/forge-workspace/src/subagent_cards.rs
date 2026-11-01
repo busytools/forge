@@ -906,7 +906,11 @@ mod tests {
         let cards = subagent_cards(&messages);
 
         assert_eq!(names(&cards), ["cli-version"], "one card, for the session's own dispatch");
-        assert_eq!(cards[0].tail.len(), 1, "and the inner dispatch is that card's own call");
+        assert_eq!(
+            cards[0].tail.len(),
+            2,
+            "the inner dispatch and the call under it are that card's own calls",
+        );
     }
 
     /// A dispatch that never came back is running.
