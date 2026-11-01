@@ -177,6 +177,11 @@ pub fn has_a_transcript_row(message: &forge_primitives::Message) -> bool {
         Message::User { parent_tool_use_id, .. }
         | Message::Assistant { parent_tool_use_id, .. }
         | Message::StopHookSummary { parent_tool_use_id, .. } => parent_tool_use_id.as_deref(),
+        // The session task stamps a sub-agent's refusal with the dispatch it
+        // belongs under, and the row rule drops it like any parented frame.
+        Message::PermissionDenied { extras, .. } => {
+            extras.get("parent_tool_use_id").and_then(Value::as_str)
+        }
         _ => None,
     };
     if forge_primitives::names_a_dispatch(parent) {
@@ -3967,6 +3972,41 @@ mod tests {
             serde_json::from_value(row.clone()).expect("a frame");
         assert!(!has_a_transcript_row(&frame), "a sub-agent's frame carries no row");
         assert!(transcript_row(&row).is_none(), "and the row rule drops it, as this says it does");
+    }
+
+    /// **A stamped refusal has no transcript row either.** Stamping a
+    /// refusal with the dispatch it belongs under makes it a sub-agent frame
+    /// the row rule drops, so a numbering that counted it as a row would be
+    /// off for every page below it.
+    #[test]
+    fn a_stamped_refusal_has_no_row() {
+        let row = serde_json::json!({
+            "type": "system",
+            "subtype": "permission_denied",
+            "tool_name": "Bash",
+            "tool_use_id": "call_refused",
+            "decision_reason_type": "subcommandResults",
+            "message": "Permission to use Bash has been denied.",
+            "uuid": "p1",
+            "session_id": "s1",
+            "parent_tool_use_id": "toolu_dispatch",
+        });
+        let frame: forge_primitives::Message =
+            serde_json::from_value(row).expect("a stamped refusal");
+        assert!(!has_a_transcript_row(&frame), "a stamped refusal carries no row");
+        let unstamped: forge_primitives::Message = serde_json::from_value(serde_json::json!({
+            "type": "system",
+            "subtype": "permission_denied",
+            "tool_name": "Bash",
+            "tool_use_id": "call_refused",
+            "decision_reason_type": "other",
+            "decision_reason": "Contains simple_expansion",
+            "message": "Contains simple_expansion",
+            "uuid": "p2",
+            "session_id": "s1",
+        }))
+        .expect("a session-level refusal");
+        assert!(has_a_transcript_row(&unstamped), "the session's own refusal keeps its row");
     }
 
     /// The one row rule's forks reach a span: a queued prompt's attachment row
