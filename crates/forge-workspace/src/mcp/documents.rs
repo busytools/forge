@@ -96,8 +96,8 @@ This session was spawned without the `review` MCP family, so you cannot \
 read it back; the answer names the review's scope, which your lead \
 reads with review__get. A PDF always opens read-only. The reader is \
 asked to open it or not, and **this call waits for them**: it answers \
-when they finish - with the review their comments were filed as - or \
-when they say not now.";
+when they finish - with what the reader left - or when they say not \
+now.";
 
 /// The one tool: the hand-off itself.
 pub(crate) struct HandOffTool {
