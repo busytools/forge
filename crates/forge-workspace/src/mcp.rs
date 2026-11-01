@@ -792,11 +792,8 @@ mod tests {
         );
     }
 
-    /// The hand-off tool is built with the caller's own family set: a
-    /// session spawned without `review` is told the family it lacks at
-    /// hand-off time, while a session with it is sent to `review__get`.
     /// The documents tool's own tests inject the flag, so only a built
-    /// server proves the flag comes from the caller's families.
+    /// server proves it comes from the caller's families.
     #[tokio::test]
     async fn the_document_hand_off_knows_whether_the_session_has_review() {
         let withheld: std::collections::BTreeSet<McpFamily> =
