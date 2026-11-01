@@ -555,6 +555,10 @@ role, and the models page refuses an activation for it, naming the key:
 
     [tts] speaking_model pins this model in forge.toml; remove the key to change it here
 
+**forge does not fetch these two files.** They are placed under
+`models_dir` by hand, and the engine loads them when the first `say`
+arrives; a missing file is reported by its own path.
+
 ## `[gotify]`
 
 Optional. Absent means the Gotify integration stays dormant.
