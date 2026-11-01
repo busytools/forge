@@ -169,7 +169,7 @@ const KEYBOARD_EVENT: &str = "browser_keyboard";
 /// The two panes the keyboard moves between, as the page hears them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
-enum KeyboardHolder {
+pub(crate) enum KeyboardHolder {
     Bar,
     Page,
 }
@@ -181,11 +181,40 @@ struct Keyboard {
     holder: KeyboardHolder,
 }
 
+/// The bar's document holds the keyboard.
+fn bar_keyboard() -> Keyboard {
+    Keyboard { holder: KeyboardHolder::Bar }
+}
+
+/// The native page holds the keyboard.
+fn page_keyboard() -> Keyboard {
+    Keyboard { holder: KeyboardHolder::Page }
+}
+
+/// What a click on the picture tells the page: a click that took the keyboard
+/// from the bar says so, and one that followed a click the page already had
+/// says nothing.
+fn keyboard_after_click(held: bool) -> Option<Keyboard> {
+    if held { None } else { Some(page_keyboard()) }
+}
+
 /// **The pane chords are the platform's own**: exactly Command+Option with
-/// an arrow, the two macOS Chrome moves between its toolbar and its page.
-/// They are key equivalents, so the remote page never sees them.
+/// an arrow, the two macOS Chrome cycles between its toolbar and its page.
+/// **With two panes either direction moves to the other one**, so both keys
+/// take the keyboard away from whichever pane has it. They are key
+/// equivalents, so the remote page never sees them.
 fn pane_key(keycode: u16, command: bool, shift: bool, option: bool, control: bool) -> bool {
     command && option && !shift && !control && matches!(keycode, 125 | 126)
+}
+
+/// Move AppKit's first responder, saying so when it refuses: a pane that
+/// asked for the keyboard and did not get it is forge's own problem.
+fn take_keyboard(window: &objc2_app_kit::NSWindow, responder: &NSResponder, to: &str) {
+    if !window.makeFirstResponder(Some(responder)) {
+        tauri_plugin_log::log::warn!(
+            "the keyboard did not move to {to} (event_name client_keyboard_refused)"
+        );
+    }
 }
 
 /// The drawn picture's two spaces: the frame's own pixels, and the page's
@@ -298,11 +327,11 @@ define_class!(
         unsafe fn mouse_down(&self, event: &objc2_app_kit::NSEvent) {
             if let Some(window) = self.window() {
                 let held = self.holds_keyboard();
-                window.makeFirstResponder(Some(self as &NSResponder));
+                take_keyboard(&window, self as &NSResponder, "the page");
                 // **A click on the picture takes the keyboard back**, so a
                 // ring the bar still draws is one the keys cannot reach.
-                if !held {
-                    self.emit(KEYBOARD_EVENT, Keyboard { holder: KeyboardHolder::Page });
+                if let Some(keyboard) = keyboard_after_click(held) {
+                    self.emit(KEYBOARD_EVENT, keyboard);
                 }
             }
             self.mouse(MouseAction::Press, event);
@@ -576,21 +605,21 @@ impl OverlayView {
             // SAFETY: main thread, and the webview lives for the window's
             // own lifetime.
             let view = unsafe { &*(webview as *const NSView) };
-            window.makeFirstResponder(Some(view));
+            take_keyboard(&window, view, "the bar's document");
         }
-        self.emit(KEYBOARD_EVENT, Keyboard { holder: KeyboardHolder::Bar });
+        self.emit(KEYBOARD_EVENT, bar_keyboard());
     }
 
     fn set_webview(&self, webview: usize) {
-        if let Ok(mut slot) = self.ivars().webview.lock() {
-            *slot = Some(webview);
-        }
+        *self.ivars().webview.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some(webview);
     }
 
     /// The webview the page's DOM lives in, as the address it was attached
-    /// with.
+    /// with. **The slot is recovered from a poisoned lock**: it holds an
+    /// `Option` and nothing it stores can be left half-written.
     fn webview(&self) -> Option<usize> {
-        self.ivars().webview.lock().ok().and_then(|slot| *slot)
+        *self.ivars().webview.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// **The page marks its own press from this**, exactly as the DOM route
@@ -1035,9 +1064,9 @@ pub fn attach(app: &tauri::AppHandle, rect: Rect, viewport: super::super::Viewpo
                         overlay.set_webview(webview as *const NSView as usize);
                         if let Some(window) = overlay.window() {
                             let responder: &NSResponder = &overlay;
-                            window.makeFirstResponder(Some(responder));
+                            take_keyboard(&window, responder, "the page");
                         }
-                        overlay.emit(KEYBOARD_EVENT, Keyboard { holder: KeyboardHolder::Page });
+                        overlay.emit(KEYBOARD_EVENT, page_keyboard());
                         let view = &*overlay as *const OverlayView as usize;
                         *overlay_slot() = Some(Overlay {
                             view,
@@ -1094,11 +1123,11 @@ fn focus(app: &tauri::AppHandle, holder: KeyboardHolder) {
                 KeyboardHolder::Bar => {
                     if let Some(webview) = view.webview() {
                         let page = &*(webview as *const NSView);
-                        window.makeFirstResponder(Some(page));
+                        take_keyboard(&window, page, "the bar's document");
                     }
                 }
                 KeyboardHolder::Page => {
-                    window.makeFirstResponder(Some(view as &NSResponder));
+                    take_keyboard(&window, view as &NSResponder, "the page");
                 }
             }
         }
@@ -1140,7 +1169,7 @@ pub fn detach(app: &tauri::AppHandle) {
                 for sibling in &parent.subviews() {
                     let pointer = (&*sibling as *const NSView) as usize;
                     if pointer != view as *const OverlayView as usize {
-                        let _ = window.makeFirstResponder(Some(&*sibling));
+                        take_keyboard(&window, &sibling, "the page");
                         break;
                     }
                 }
@@ -1344,6 +1373,33 @@ mod tests {
             shell.contains(&format!("viewer::{command}")),
             "the shell's handler list lost {command}"
         );
+    }
+
+    /// **The holder crosses as one field with two values.** A renamed field, a
+    /// re-cased value or a swapped pair is a page that focuses the wrong pane
+    /// with every other test green, so the wire shape itself is pinned.
+    #[test]
+    fn the_keyboard_payload_names_its_holder() {
+        assert_eq!(
+            serde_json::to_value(bar_keyboard()).unwrap(),
+            serde_json::json!({ "holder": "bar" }),
+            "the bar's document is `bar`"
+        );
+        assert_eq!(
+            serde_json::to_value(page_keyboard()).unwrap(),
+            serde_json::json!({ "holder": "page" }),
+            "the native page is `page`"
+        );
+    }
+
+    /// **A click tells the page it has the keyboard only when it took it.**
+    /// A click after one the page already had is no news, and a click that
+    /// took it from the bar must say so or the bar keeps a ring it cannot
+    /// reach.
+    #[test]
+    fn a_click_says_the_page_has_the_keyboard_only_when_it_took_it() {
+        assert_eq!(keyboard_after_click(false), Some(page_keyboard()), "the page took it");
+        assert_eq!(keyboard_after_click(true), None, "the page already had it");
     }
 
     /// **The pane chords are exactly Command+Option with an arrow**, so a

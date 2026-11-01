@@ -143,6 +143,11 @@
   /** The element that had the keyboard before the bar took it. */
   let restoreTo: HTMLElement | null = null;
 
+  /** Whether the keyboard is in the bar right now. **The pane chord's hint
+   *  belongs to the pane that does not have it**: showing it over a bar that
+   *  already owns the keys would name a move the person has made. */
+  let barFocused = $state(false);
+
   /** Every stop Tab may take inside the bar; a disabled control is not one. */
   function stops(): HTMLElement[] {
     const bar = barEl;
@@ -174,9 +179,10 @@
     }
   }
 
-  /** The pane chords: Cmd+Option+Down takes the keyboard out of the page and
-   *  into the bar, Cmd+Option+Up hands it back. Both are the platform's own
-   *  pane cycle, the two macOS Chrome moves between its toolbar and page. */
+  /** The pane chords: Cmd+Option+Down and Cmd+Option+Up move the keyboard to
+   *  the other pane, the two macOS Chrome cycles between its toolbar and its
+   *  page. **With two panes either direction lands on the other one**, so
+   *  each chord is a move rather than a fixed target. */
   function paneChord(event: KeyboardEvent): boolean {
     return (
       event.metaKey &&
@@ -197,13 +203,16 @@
     if (surface.phase !== 'opening' && surface.phase !== 'live') return;
     const ask = focusPage();
     if (ask === null) return;
-    void ask;
+    void ask.catch((why: unknown) => console.warn('the keyboard did not go back', why));
     const active = document.activeElement;
     if (active instanceof HTMLElement && barEl?.contains(active) === true) active.blur();
   }
 
   function keys(event: KeyboardEvent): void {
-    if (paneChord(event)) {
+    // **The chords exist only where a second pane does.** A page that keeps
+    // its keys in this document has no other pane to move to, so the keys
+    // stay the page's own rather than being claimed to do nothing.
+    if (pageHoldsKeyboard() && paneChord(event)) {
       event.preventDefault();
       handToPage();
       return;
@@ -231,11 +240,20 @@
     // picture still holds AppKit's first responder, so the shell is asked to
     // hand it over rather than leaving a caret no key can reach.
     const keepKeyboard = (): void => {
+      barFocused = true;
       if (!pageHoldsKeyboard()) return;
       const ask = focusBar();
-      if (ask !== null) void ask;
+      if (ask !== null) {
+        void ask.catch((why: unknown) => console.warn('the keyboard did not come in', why));
+      }
+    };
+    // The hint is for the pane that does NOT have the keyboard, so it goes as
+    // soon as the focus is in the bar and comes back when it leaves.
+    const leftBar = (event: FocusEvent): void => {
+      if (!bar?.contains(event.relatedTarget as Node | null)) barFocused = false;
     };
     bar?.addEventListener('focusin', keepKeyboard);
+    bar?.addEventListener('focusout', leftBar);
     const toBar = (): void => {
       bar?.focus({ preventScroll: true });
     };
@@ -268,6 +286,7 @@
     return () => {
       bar?.removeEventListener('keydown', keys, true);
       bar?.removeEventListener('focusin', keepKeyboard);
+      bar?.removeEventListener('focusout', leftBar);
       window.removeEventListener('forge-bar-focus', toBar);
       window.removeEventListener('forge-page-focus', toPage);
       for (const behind of gated) behind.removeAttribute('inert');
@@ -359,6 +378,7 @@
   class="takeover-bar"
   role="region"
   aria-label="the browser takeover"
+  aria-keyshortcuts={pageHoldsKeyboard() ? 'Meta+Alt+ArrowDown Meta+Alt+ArrowUp' : undefined}
   tabindex="-1"
   bind:this={barEl}
 >
@@ -387,6 +407,12 @@
       </button>
     </span>
     <span class="tb-title">{title}</span>
+    {#if pageHoldsKeyboard() && !barFocused}
+      <!-- **The keyboard is in the page and this bar is one chord away.** A
+           keyboard-only reader who cannot see this has to conclude the bar is
+           mouse-only, which is the defect the pane routing fixed. -->
+      <span class="tb-hint"><kbd>Cmd</kbd> <kbd>Opt</kbd> <kbd>Down</kbd> to focus the bar</span>
+    {/if}
     {#if tabs.length > 0}
       <select
         class="tb-pick"

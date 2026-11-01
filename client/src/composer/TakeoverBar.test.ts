@@ -703,6 +703,24 @@ describe("the takeover bar's keyboard over a native page", () => {
     ).not.toBe(target.querySelector('.takeover-bar'));
   });
 
+  /// **The chord is the only door into the bar on desktop**, so the bar names
+  /// it: one in the accessibility tree, one the eye can read, and the hint
+  /// goes once the chord has been used because it names a move already made.
+  it('announces the pane chord and draws its hint while the page holds the keys', async () => {
+    const target = await nativeBar('live');
+    const bar = target.querySelector('.takeover-bar');
+    expect(bar?.getAttribute('aria-keyshortcuts')).toBe('Meta+Alt+ArrowDown Meta+Alt+ArrowUp');
+    expect(target.querySelector('.tb-hint')?.textContent, 'the hint is readable').toContain(
+      'to focus the bar',
+    );
+    window.dispatchEvent(new Event('forge-bar-focus'));
+    flushSync();
+    expect(
+      target.querySelector('.tb-hint'),
+      'the chord has been used: the hint is done',
+    ).toBeNull();
+  });
+
   it('takes the keyboard when the shell hands it over', async () => {
     const target = await nativeBar('live');
     window.dispatchEvent(new Event('forge-bar-focus'));
@@ -760,6 +778,20 @@ describe("the takeover bar's keyboard over a native page", () => {
     button.focus();
     flushSync();
     expect(askBar, 'no native page holds a keyboard to take back').not.toHaveBeenCalled();
+  });
+
+  /// **A page with no second pane keeps its own keys.** Claiming the chord
+  /// there would preventDefault a shortcut with nothing behind it, and on a
+  /// phone with a hardware keyboard it would blur the focused control.
+  it('claims no pane chord where this document owns the keyboard', async () => {
+    holds.mockReturnValue(false);
+    const target = await nativeBar('live');
+    const button = target.querySelector<HTMLButtonElement>('.tb-btn');
+    if (button === null) throw new Error('the bar drew no control');
+    button.focus();
+    const chord = paneChord(button, 'ArrowDown');
+    expect(chord.defaultPrevented, 'the keys stay with the page').toBe(false);
+    expect(ask, 'and no pane moves').not.toHaveBeenCalled();
   });
 
   /// **A failed page has no native layer to hold anything**, so the bar is the
