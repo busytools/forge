@@ -88,7 +88,7 @@ tokio-tungstenite = { version = "0.30", features = ["rustls-tls-native-roots"] }
 
 # Local speech recognition (ggml-backed) and microphone capture for
 # forge-dictate. `metal` is opted into per-target by the crate.
-transcribe-cpp = "0.2.2"
+transcribe-cpp = "0.4.1"
 cpal = "0.18"
 
 # Workspace-internal crates
