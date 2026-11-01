@@ -13,8 +13,8 @@ the binary open, so a file-holder that ignores TERM is neither signalled nor
 waited on. The stand-in is a compiled stub because `lsof -d txt` reports the
 executable mapping, which a script's interpreter owns rather than the script.
 
-Stdlib only, like the other script tests: python3 and cc are already check
-dependencies, and the file is macOS-only by way of lsof.
+Stdlib only, like the other script tests: python3, cc and lsof all ship with
+the gate's runners, macOS and ubuntu alike.
 """
 
 import subprocess
