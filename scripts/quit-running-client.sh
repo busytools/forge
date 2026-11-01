@@ -5,10 +5,12 @@
 # one way this fails quietly.
 #
 # **The query names the process EXECUTING the client, not every process with
-# its file open**: `-d txt` is the executable mapping, so an XPC or helper
-# service that merely holds the binary open is neither signalled nor waited
-# on. Without it, a file-holder that ignores TERM would refuse a release that
-# should go ahead.
+# its file open.** `-d txt` is the executable mapping, and `-a` ANDs it with
+# the file so only that path is asked about: without `-a` the same query
+# returns every process with a text mapping, and `kill` would signal them all.
+# So an XPC or helper service that merely holds the binary open is neither
+# signalled nor waited on, where a file-holder that ignores TERM would
+# otherwise refuse a release that should go ahead.
 #
 # The check is on the bundle's own executable, so a client running from a
 # checkout's target dir does not block a release - it goes on executing the
