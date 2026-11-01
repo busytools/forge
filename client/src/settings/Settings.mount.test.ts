@@ -7,9 +7,10 @@ import { settingsWire } from '../dev/settings.fixture';
 import { emptyDraft } from './editor';
 
 /**
- * The page's controls: the sub-nav switches the pane, and an area that is
- * gone or empty draws as itself. The page is a view; what it dispatches is
- * nothing, so what this pins is the drawing and the id the rail hands up.
+ * The page's controls: the sub-nav switches the pane, each instance is a
+ * card, each key a line inside it, and an area that is gone or empty draws as
+ * itself. The page is a view; what it dispatches is nothing, so what this pins
+ * is the drawing and the id the rail hands up.
  */
 let app: Record<string, unknown> | null = null;
 
@@ -36,7 +37,6 @@ function draw(selected: string | null, onSelect: (id: string) => void = () => {}
       onRemoveRequest: () => {},
       onCancelAdd: () => {},
       onUndoRemove: () => {},
-      onDismissRestart: () => {},
     },
   });
   flushSync();
@@ -44,6 +44,28 @@ function draw(selected: string | null, onSelect: (id: string) => void = () => {}
 
 function rail(): HTMLElement[] {
   return [...document.querySelectorAll<HTMLElement>('.settings-rail-item')];
+}
+
+function cards(): HTMLElement[] {
+  return [...document.querySelectorAll<HTMLElement>('.settings-card')];
+}
+
+function cardNames(): (string | undefined)[] {
+  return cards().map(
+    (card) =>
+      card.querySelector('.settings-card-head h3, .settings-card-head .settings-card-name')
+        ?.textContent ?? undefined,
+  );
+}
+
+function rows(): HTMLElement[] {
+  return [...document.querySelectorAll<HTMLElement>('.settings-setting')];
+}
+
+function rowKeys(): (string | undefined)[] {
+  return rows().map(
+    (row) => row.querySelector('.settings-setting-label code')?.textContent?.trim() ?? undefined,
+  );
 }
 
 describe('the settings page', () => {
@@ -56,62 +78,59 @@ describe('the settings page', () => {
     expect(rail()[4]?.textContent).toContain('0');
   });
 
-  it('draws the selected area rows with their class words', () => {
+  it('draws each instance as a card and each key as one line in it', () => {
     draw('server');
     expect(document.querySelector('#settings-area-title')?.textContent).toBe('server');
-    const keys = [...document.querySelectorAll('.settings-rows th[scope="row"]')].map((cell) =>
-      cell.textContent?.trim(),
-    );
-    expect(keys, 'a row draws its leaf, not the path its group already names').toEqual([
+    expect(cardNames(), 'each table is its own card, named and counted').toEqual([
+      'browser',
+      'server',
+    ]);
+    expect(cards()[1]?.querySelector('.settings-card-count')?.textContent).toBe('2 keys');
+    expect(cards()[0]?.querySelector('.settings-card-count')?.textContent).toBe('1 key');
+
+    expect(rowKeys(), 'a line draws its leaf, not the path its card already names').toEqual([
       'idle_minutes',
       'port',
       'first_frame_cap_kb',
     ]);
+    const port = rows().find(
+      (row) => row.querySelector('code')?.getAttribute('title') === 'server.port',
+    );
+    expect(port, 'the whole path stays reachable').toBeDefined();
     expect(
-      [...document.querySelectorAll<HTMLElement>('.settings-rows th[scope="row"] code')]
-        .find((code) => code.textContent === 'port')
-        ?.getAttribute('title'),
-      'the whole path stays reachable',
-    ).toBe('server.port');
-    expect(document.body.textContent, 'the port is drawn as a restart').toContain('restart');
-    expect(document.body.textContent, 'and its value').toContain('8790');
+      port?.querySelector<HTMLElement>('.settings-class-word')?.textContent,
+      'the line states its class once',
+    ).toBe('restart');
+    expect(port?.querySelector('.settings-setting-value')?.textContent?.trim()).toBe('8790');
+    expect(
+      rows().every((row) => row.querySelectorAll('.settings-class').length === 1),
+      'no line states its class twice',
+    ).toBe(true);
+    expect(document.querySelector('.settings-legend'), 'the legend band is gone').toBeNull();
   });
 
   it('groups the accounts by account', () => {
     draw('accounts');
-    const groups = [...document.querySelectorAll('.settings-group-name')].map(
-      (name) => name.textContent,
-    );
-    expect(groups, 'a key-major table still reads one account at a time').toEqual([
+    expect(cardNames(), 'a card per account, in name order').toEqual([
       'Acme.Corp',
       'Granite',
       'OpenRouter',
       'Subspace',
     ]);
-    expect(
-      [...document.querySelectorAll('.settings-rows th[scope="row"]')].map((cell) =>
-        cell.textContent?.trim(),
-      ),
-      'each account keeps its own rows',
-    ).toContain('token');
+    expect(rowKeys(), 'each account keeps its own rows').toContain('token');
   });
 
   it('draws a dotted leaf and a dotted group whole', () => {
     draw('accounts');
-    const slug = [
-      ...document.querySelectorAll<HTMLElement>('.settings-rows th[scope="row"] code'),
-    ].find(
-      (code) => code.getAttribute('title') === 'accounts.OpenRouter.model_slugs.glm-5.3-flash',
-    );
+    const slug = rows()
+      .map((row) => row.querySelector<HTMLElement>('.settings-setting-label code'))
+      .find(
+        (code) => code?.getAttribute('title') === 'accounts.OpenRouter.model_slugs.glm-5.3-flash',
+      );
     expect(slug?.textContent, 'the slug keeps its dots rather than losing all but 3-flash').toBe(
       'glm-5.3-flash',
     );
-    expect(
-      [...document.querySelectorAll('.settings-group-name')].map((name) =>
-        name.textContent?.trim(),
-      ),
-      'a dotted account name stays one group header',
-    ).toContain('Acme.Corp');
+    expect(cardNames(), 'a dotted account name stays one card heading').toContain('Acme.Corp');
   });
 
   it('hands the picked area id up', () => {
@@ -128,29 +147,21 @@ describe('the settings page', () => {
     expect(document.body.textContent).toContain('This area has no keys');
   });
 
-  it('groups the models by model, which the group header names', () => {
+  it('groups the models by model, which the card heading names', () => {
     draw('models');
     expect(
-      [...document.querySelectorAll('.settings-group-name')].map((name) =>
-        name.textContent?.trim(),
-      ),
-      'each model is its own group, so the model is visible rather than a tooltip',
+      cardNames(),
+      'each model is its own card, so the model is visible rather than a tooltip',
     ).toEqual(['claude-opus-5-5', 'deepseek-v4.1-flash']);
-    expect(
-      [...document.querySelectorAll('.settings-rows th[scope="row"]')].map((cell) =>
-        cell.textContent?.trim(),
-      ),
-      'the row keeps the key name the group does not repeat',
-    ).toEqual(['auto_compact_window', 'auto_compact_window']);
+    expect(rowKeys(), 'the line keeps the key name the card does not repeat').toEqual([
+      'auto_compact_window',
+      'auto_compact_window',
+    ]);
   });
 
   it('splits the server area by the table each row comes from', () => {
     draw('server');
-    expect(
-      [...document.querySelectorAll('.settings-group-name')].map((name) =>
-        name.textContent?.trim(),
-      ),
-    ).toEqual(['browser', 'server']);
+    expect(cardNames()).toEqual(['browser', 'server']);
   });
 
   it('draws a selected area the document no longer holds, with a way back', () => {
@@ -234,7 +245,6 @@ describe('the settings page', () => {
         onRemoveRequest: () => {},
         onCancelAdd: () => {},
         onUndoRemove: () => {},
-        onDismissRestart: () => {},
       },
     });
     flushSync();

@@ -94,7 +94,7 @@
    * overhang check holds the pin until it is.
    */
   const ROW_ESTIMATE_PX = 120;
-  /** How long the arrival mark stays on the newest item's wrapper. */
+  /** How long a finished arrival's mark stays on the newest item's wrapper. */
   const ARRIVE_MS = 300;
   /** The longest a return's hold waits for a paint before it lifts anyway. */
   const HOLD_MAX_MS = 250;
@@ -128,6 +128,15 @@
    * this update, and the element's own `scrollHeight` does not.
    */
   let viewport: HTMLElement | null = $state(null);
+  /**
+   * The viewport's own top padding, read once where it is bound.
+   *
+   * The list's measured size stops at its content, so this is the whole of
+   * the gap between the browser's scroll numbers and the list's own - the
+   * difference the foot pin has to account for when it holds at the model
+   * instead of at the browser's end.
+   */
+  let padTop = 0;
   /**
    * The list's own handle, for the one move the element cannot make: a jump
    * to a row that may not be drawn. `land` deliberately goes through the
@@ -187,23 +196,41 @@
   /** The newest turn's key: the row the carried beat and the reader's echo ride. */
   const newest = $derived(newestTurn?.key ?? null);
   /**
-   * The item whose arrival fade is owed, dropped again after the window.
+   * The newest turn's arrival mark, held for a moment after it last took a row.
    *
-   * The mark cannot sit on `newest` itself: a CSS animation restarts per
-   * element insertion, and the list recreates items as they leave its
-   * window - a class still carried would replay the fade on the next scroll
-   * back to the foot. The window is twice the animation's length.
+   * **Keyed on the turn GROWING, not on the core's running answer.** A turn
+   * takes its last rows after that answer clears - the closing text lands on
+   * the completion frame and after it - and those are the rows the reader is
+   * waiting for. Every publish that rebuilds the newest turn re-arms the
+   * window, so a turn being written holds the mark throughout and a row
+   * landing as it settles enters too.
+   *
+   * **A window that ends shortly after the turn last took a row**: the list
+   * recreates items as they leave its window, so a mark carried on a settled
+   * turn would replay the entrance on the next scroll back to it. A turn
+   * still taking rows holds the mark throughout, which is the same rule - it
+   * ends when the turn does.
    */
-  let arriving = $state<string | null>(null);
+  let touched = $state<{ key: string; at: number } | null>(null);
   $effect(() => {
-    const key = newest;
-    if (key === null) return;
-    arriving = key;
+    const turn = newestTurn;
+    if (turn === null) return;
+    const at = Date.now();
+    touched = { key: turn.key, at };
     const timer = setTimeout(() => {
-      if (arriving === key) arriving = null;
+      if (touched !== null && touched.key === turn.key && touched.at === at) touched = null;
     }, ARRIVE_MS);
     return () => clearTimeout(timer);
   });
+
+  /**
+   * The item whose wrapper carries the arrival mark, if any.
+   *
+   * The mark is a class on the WRAPPER and the animation rides its last row,
+   * so rows already drawn keep still - only the one that has just become the
+   * last enters.
+   */
+  const arrival = $derived(touched !== null && touched.key === newest ? newest : null);
 
   /**
    * The echo goes the moment the conversation carries the words.
@@ -478,6 +505,7 @@
 
   function scrollViewport(node: HTMLElement): () => void {
     viewport = node;
+    padTop = Number.parseFloat(getComputedStyle(node).paddingTop) || 0;
     // A token armed against a previous viewport must not eat this one's first event.
     pinEcho = null;
     // The sizes and the last event belong to the element a previous conversation scrolled.
@@ -1212,6 +1240,30 @@
     // has the newest turn outside the window, where their pin is the jump
     // down to it and must go through.
     if (undrawnOverhang() > 0) return foot;
+    // **Hold at the list's own bottom while the browser's runs ahead of it.**
+    // A row that grew in this update is already in the browser's scrollHeight,
+    // and the list measures it a callback later. A scroll written past the
+    // measured content makes the list compute its window past its own end, so
+    // it drops rows that are on screen and draws them again when the
+    // measurement lands - the whole conversation flickering while a turn is
+    // live. The pin stops at the model and lands again next frame, when the
+    // growth is measured.
+    const max = foot - viewport.clientHeight;
+    const model = modelFoot();
+    let target = foot;
+    if (model !== null && max > model) {
+      // **The pin never passes the end the list has measured.** It holds
+      // there and comes back for the growth on a later frame; the two-frame
+      // budget bounds only the deferred retries, never the hold, so a stream
+      // that grows the row every frame still cannot write past the model.
+      target = model;
+      if (repinTries < REPIN_TRIES) {
+        repinTries += 1;
+        repin();
+      }
+    } else {
+      repinTries = 0;
+    }
     // **The write is unconditional, and the token comes from the read-back.**
     // `scrollTop` clamps to `scrollHeight - clientHeight`, so what the write
     // lands on is not what it asked for, and only the read-back knows whether
@@ -1220,12 +1272,55 @@
     // it armed with no echo coming, to be eaten by the next real event the
     // browser fires - a clamp the follow then misreads as the reader.
     const was = viewport.scrollTop;
-    viewport.scrollTop = foot;
+    viewport.scrollTop = target;
     if (viewport.scrollTop !== was) pinEcho = viewport.scrollTop;
     // Where the column last left the reader, which is the foot the browser
     // clamped the pin to.
     placed = viewport.scrollTop;
     return foot;
+  }
+
+  /** How many deferred retries one hold at the list's model schedules. */
+  const REPIN_TRIES = 2;
+  /** How many of those frames the current hold has already spent. */
+  let repinTries = 0;
+  /** A pin deferred to the next frame, while the list measures the row that grew. */
+  let repinFrame: number | null = null;
+
+  /**
+   * Land again once the list has measured what the browser already counted.
+   *
+   * **A frame, not a tick**: the list's measurement is a ResizeObserver
+   * callback, delivered before the next frame's callbacks - so the next
+   * animation frame is the first moment the pin can be written against it.
+   * One frame is held at a time, and a reader who has left the foot by then
+   * is left where they are.
+   */
+  function repin(): void {
+    if (repinFrame !== null) return;
+    repinFrame = requestAnimationFrame(() => {
+      repinFrame = null;
+      if (held.following) land();
+    });
+  }
+
+  /**
+   * The bottom the list itself has measured, as a scroll offset; `null`
+   * before the list has a handle to ask.
+   *
+   * **The element's own room, not the list's report of it.** What can lag
+   * behind the browser is the content the list has measured, and a column
+   * whose room changed - the composer taking space - must pin on that change
+   * at once rather than wait for a measurement nothing moved.
+   *
+   * `padTop` is exact while the column carries no bottom padding: the
+   * browser's scrollable end counts the pane's top padding and the list's
+   * measured content stops below it. A bottom padding would sit on the
+   * browser's end alone and need a term of its own.
+   */
+  function modelFoot(): number | null {
+    if (list === null || viewport === null) return null;
+    return Math.max(0, list.getScrollSize() - viewport.clientHeight) + padTop;
   }
 
   /** The ask already answered, so a repeat of the same token is not acted on twice. */
@@ -1767,7 +1862,7 @@
     data={held.turns}
     getKey={(turn: HeldTurn) => turn.key}
     itemProps={({ item }: { item: HeldTurn }) => ({
-      ...(item.key === arriving ? { class: 'arriving' } : {}),
+      ...(item.key === arrival ? { class: 'arriving' } : {}),
       // **A row the list has not measured is drawn, not hidden.** virtua
       // paints the slot and sets `visibility: hidden` until a row reports its
       // height, which is the black a fast scroll meets (#2398). The style
