@@ -163,21 +163,28 @@ read as one system.
   than drawing an empty body.
 - **A frame the page has no face for yet draws as itself, marked
   provisional.** An unknown top-level frame and an unknown content block, and
-  the CLI's own system lines for a permission refusal, an API error, an
-  informational line and a notification, each draw as a notice row whose
-  level is its glyph and whose chip is the wire's own type. The open body lists what the frame carried as one-line
-  labelled values - the tool and call a refusal names, an error's message,
-  status and retry, an unknown frame's fields - and the frame itself sits
-  behind a second control under them, so the payload stays reachable while
-  the row's face is the facts. The frame is seen the day it arrives and can
-  be given a real face later, rather than being dropped. A refusal also
-  settles the call it names, which no result frame will ever settle. **A
-  question draws nothing here while it waits**: the dock is its row. It draws
-  as a card instead - the words the reader was asked, marked `unanswered`,
-  with nothing picked or typed under them - the moment its own result lands
-  with no answer on record (the reader dismissing the dock), or the turn
-  closes on it. A question whose result came back an error, or one the CLI
-  refused before it ran, keeps its call row instead.
+  the CLI's own system lines for an API error, an informational line and a
+  notification, each draw as a notice row whose level is its glyph and whose
+  chip is the wire's own type. The open body lists what the frame carried as
+  one-line labelled values - an error's message, status and retry, an
+  unknown frame's fields - and the frame itself sits behind a second control
+  under them, so the payload stays reachable while the row's face is the
+  facts. The frame is seen the day it arrives and can be given a real face
+  later, rather than being dropped. **A permission refusal draws on the call
+  row it refused**, which no result frame will ever settle: the row's chip is
+  the wire's own `permission_denied` and its body carries the CLI's reason
+  where the result said nothing, so one refusal is one row. A refused
+  mutation keeps its diff and the reason rides under it, because the diff
+  comes from the call's own input rather than from the result. It draws as
+  the notice above only where the fold holds no call row for it - a page
+  opened after the call, or a peer message drawn as a card, the one card a
+  call never also draws a row for - and the refusal is never dropped. **A
+  question draws nothing here while it waits**: the dock is its
+  row. It draws as a card instead - the words the reader was asked, marked
+  `unanswered`, with nothing picked or typed under them - the moment its own
+  result lands with no answer on record (the reader dismissing the dock), or
+  the turn closes on it. A question whose result came back an error, or one
+  the CLI refused before it ran, keeps its call row instead.
 - **A model swap, a memory recall, a local command and a project's
   development intent each draw a row of their own.** A model fallback (and a
   refusal retry, a refusal with no fallback, and the Fable consent gate) draws

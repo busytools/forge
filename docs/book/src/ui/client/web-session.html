@@ -2778,11 +2778,24 @@ docs: The sprite a row draws, by the class it belongs to.</div>
         </div>
 
         <div class="leaves">
-          <!-- A frame the page has no face for yet draws as itself, open here:
-               the wire's own type as a chip, the frame's fields as labelled
-               values under it, and the frame itself one control further in
-               (rule 25 keeps it reachable). This one also settles the call it
-               refused, which no result will. -->
+          <!-- A permission refusal draws on the call row it refused, which
+               no result will ever settle: the wire's own subtype is the row's
+               chip and the CLI's reason is the row's body, so one refusal is
+               one row. A refusal whose call row the page does not hold still
+               draws as a provisional notice of its own. -->
+          <details class="leaf">
+            <summary><svg class="ic gl err"><use href="#i-square-terminal"/></svg><span class="tn">Print the home directory</span><span class="fam-chip bad">permission_denied</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <div class="body">
+              <div class="panel bodytext"><span class="pfx">$</span> echo $HOME
+Contains simple_expansion</div>
+            </div>
+          </details>
+
+          <!-- The same refusal where the page holds no call row for it - a
+               page opened after the call, or a peer message drawn as a card:
+               it draws as itself, open here, with the wire's own type as the
+               chip and the frame's fields under it (rule 25 keeps it
+               reachable). -->
           <details class="leaf nrow" open>
             <summary><span class="lead"><svg class="ic gl err"><use href="#i-error"/></svg><span class="tn">Bash refused: Contains simple_expansion</span></span><span class="chip">permission_denied</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
             <div class="body">
