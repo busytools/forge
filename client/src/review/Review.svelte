@@ -158,9 +158,9 @@
    * record it opens on may have been read for whichever page asked last, and
    * its base may be hours old; the all-changes diff is drawn from a read that
    * refreshes that base first. The intent lives on the seat, so the open
-   * itself carries it and every re-ask after it does too - an outrun, a
-   * replacement frame, a reconnect. The cleanup takes it back, so a page
-   * mounting the seat afterwards asks an ordinary read.
+   * itself carries it and every later read after it does too - a reconnect, a
+   * replacement frame. The cleanup takes it back, so a page mounting the seat
+   * afterwards asks an ordinary read.
    *
    * **Keyed to the slot**, because the same page can be handed another seat:
    * stepping to a second review must ask for that seat's read, not inherit

@@ -17514,15 +17514,10 @@ mod worker_activity_tests {
     async fn a_parked_hand_off_is_in_the_pending_asks_read() {
         let (ws, _rx) = Workspace::testing_stub();
         let key = SessionSlot::from_str_for_test("caller-uuid");
-        let handoff = forge_primitives::browser::HandOff {
-            id: uuid::Uuid::new_v4(),
-            reason: "solve the CAPTCHA".to_owned(),
-            tab: 2,
-        };
-        let id = handoff.id;
         let (calls, _heard) = tokio::sync::mpsc::unbounded_channel();
         ws.install_browser_host(std::sync::Arc::new(crate::browser::testing::StubHost { calls }));
-        let (_asked, _answer) = ws.register_browser_hand_off(&key, handoff).await.expect("parks");
+        let (id, _answer) =
+            ws.register_browser_hand_off(&key, "solve the CAPTCHA", "T2").await.expect("parks");
 
         assert!(
             ws.pending_asks(&key)
@@ -17984,14 +17979,10 @@ mod worker_activity_tests {
         domain.lock().turn_pending = true;
         assert_eq!(ws.session_activity(&seat), L::Running, "the control, as for the draft");
 
-        let handoff = forge_primitives::browser::HandOff {
-            id: uuid::Uuid::new_v4(),
-            reason: "solve the CAPTCHA".to_owned(),
-            tab: 2,
-        };
         let (calls, _heard) = tokio::sync::mpsc::unbounded_channel();
         ws.install_browser_host(std::sync::Arc::new(crate::browser::testing::StubHost { calls }));
-        let (_id, _answer) = ws.register_browser_hand_off(&seat, handoff).await.expect("parks");
+        let (_id, _answer) =
+            ws.register_browser_hand_off(&seat, "solve the CAPTCHA", "T2").await.expect("parks");
 
         assert_eq!(
             ws.session_activity(&seat),

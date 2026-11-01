@@ -165,10 +165,12 @@ pub trait BrowserHost: Send + Sync {
     /// work that follows it. A successor clears it by warming or calling.
     fn session_ended(&self, seat: &SessionSlot);
 
-    /// A hand-off parked on one of the seat's tabs: the tab is held against
-    /// the sweep and the idle clock until it resolves. **Refused when the tab
-    /// is not open or not this seat's**, before any ask reaches a person.
-    async fn hand_off_started(&self, seat: &SessionSlot, tab: u16) -> Result<(), String>;
+    /// A hand-off parked on one of the seat's pages, named by the page id its
+    /// listing printed: the tab is held against the sweep and the idle clock
+    /// until it resolves. Answers the tab number the ask raises. **Refused
+    /// when no tab has that page or it is not this seat's**, before any ask
+    /// reaches a person.
+    async fn hand_off_started(&self, seat: &SessionSlot, target: &str) -> Result<u16, String>;
 
     /// A hand-off left the registry: the tab is released, and a session that
     /// went while it was held takes its tab with it.
@@ -202,17 +204,21 @@ impl Workspace {
     pub(crate) async fn register_browser_hand_off(
         &self,
         caller: &SessionSlot,
-        handoff: HandOff,
+        reason: &str,
+        target: &str,
     ) -> Result<(uuid::Uuid, oneshot::Receiver<HandOffEnding>), String> {
         let (sender, receiver) = oneshot::channel();
-        let id = handoff.id;
-        let tab = handoff.tab;
+        let id = uuid::Uuid::new_v4();
         // **The hold is the service's, and it is awaited.** A sweep that ran
         // between a detached hold and the ask would see the tab as an orphan
-        // and close it under the person, and a tab that is not this seat's
-        // would send the person to a page the session never opened: the
+        // and close it under the person, and a page that is not this seat's
+        // would send the person to a document the session never opened: the
         // fleet's refusal is the tool call's refusal, before any ask exists.
-        self.browser_hand_off_started(caller, tab).await?;
+        // **The page id becomes the tab number here**, under that same check:
+        // the ask a view draws names the number, and a listing after this call
+        // can never change what it raises.
+        let tab = self.browser_hand_off_started(caller, target).await?;
+        let handoff = HandOff { id, reason: reason.to_owned(), tab };
         self.browser_handoffs.lock().insert(id, (caller.clone(), handoff.clone(), sender));
         let answerable = self.update_sender().send_answering(
             crate::protocol::SessionUpdate::BrowserHandOffPending { key: caller.clone(), handoff },
@@ -230,13 +236,17 @@ impl Workspace {
     }
 
     /// Take the fleet's hold for a hand-off, awaited so its refusal is the
-    /// tool call's. Answers the fleet's own sentence for a tab that is not
-    /// open or not this seat's.
-    async fn browser_hand_off_started(&self, caller: &SessionSlot, tab: u16) -> Result<(), String> {
+    /// tool call's. Answers the tab number the fleet resolved the page id to,
+    /// or its own sentence for a page that is not open or not this seat's.
+    async fn browser_hand_off_started(
+        &self,
+        caller: &SessionSlot,
+        target: &str,
+    ) -> Result<u16, String> {
         let Some(host) = self.browser_host() else {
             return Err(NO_BROWSER_HOST.to_owned());
         };
-        host.hand_off_started(caller, tab).await
+        host.hand_off_started(caller, target).await
     }
 
     /// Tell the fleet a hand-off left its tab: the service acts on a tab that
@@ -427,14 +437,14 @@ pub(crate) mod testing {
             self.heard("session_ended", serde_json::json!(seat));
         }
 
-        async fn hand_off_started(&self, seat: &SessionSlot, tab: u16) -> Result<(), String> {
-            self.heard("hand_off_started", serde_json::json!({ "seat": seat, "tab": tab }));
-            // A host's tabs start at 1; 0 stands in for one that is not open
-            // so the refusal has a caller.
-            if tab == 0 {
-                return Err(format!("tab {tab} is not open"));
+        async fn hand_off_started(&self, seat: &SessionSlot, target: &str) -> Result<u16, String> {
+            self.heard("hand_off_started", serde_json::json!({ "seat": seat, "page": target }));
+            // `gone` stands in for a page no tab carries, so the refusal has a
+            // caller; every other id resolves to the tab a hand-off raises.
+            if target == "gone" {
+                return Err(format!("no tab has the page id '{target}'"));
             }
-            Ok(())
+            Ok(2)
         }
 
         async fn hand_off_finished(&self, seat: &SessionSlot, tab: u16) {
@@ -456,10 +466,6 @@ mod tests {
     use super::*;
     use crate::browser::testing::StubHost;
     use forge_primitives::browser::HandOffSource;
-
-    fn handoff(reason: &str) -> HandOff {
-        HandOff { id: uuid::Uuid::new_v4(), reason: reason.to_owned(), tab: 2 }
-    }
 
     /// One answer from the given door, with a connection behind it.
     fn answer(ending: HandOffEnding, source: HandOffSource) -> HandOffAnswer {
@@ -483,10 +489,8 @@ mod tests {
         let (ws, mut rx) = Workspace::testing_stub();
         let _heard = with_host(&ws);
         let caller = SessionSlot::from_str_for_test("caller-uuid");
-        let (_id, _answer) = ws
-            .register_browser_hand_off(&caller, handoff("solve the CAPTCHA"))
-            .await
-            .expect("parks");
+        let (_id, _answer) =
+            ws.register_browser_hand_off(&caller, "solve the CAPTCHA", "T2").await.expect("parks");
 
         let mut addressed = Vec::new();
         while let Ok(frame) = rx.try_recv() {
@@ -509,14 +513,12 @@ mod tests {
         ws.install_browser_host(std::sync::Arc::new(StubHost { calls }));
         let caller = SessionSlot::from_str_for_test("caller-uuid");
 
-        let (_id, _answer) = ws
-            .register_browser_hand_off(&caller, handoff("solve the CAPTCHA"))
-            .await
-            .expect("parks");
+        let (_id, _answer) =
+            ws.register_browser_hand_off(&caller, "solve the CAPTCHA", "T2").await.expect("parks");
 
         let (what, args) = heard.recv().await.expect("the fleet hears the hold");
-        assert_eq!(what, "hand_off_started", "the fleet is told which tab is held");
-        assert_eq!(args, serde_json::json!({ "seat": caller, "tab": 2 }));
+        assert_eq!(what, "hand_off_started", "the fleet is told which page is held");
+        assert_eq!(args, serde_json::json!({ "seat": caller, "page": "T2" }));
     }
 
     /// **The answer releases the tab.** A resolved hand-off holds nothing, so
@@ -527,9 +529,8 @@ mod tests {
         let (calls, mut heard) = tokio::sync::mpsc::unbounded_channel();
         ws.install_browser_host(std::sync::Arc::new(StubHost { calls }));
         let caller = SessionSlot::from_str_for_test("caller-uuid");
-        let handoff = handoff("solve the CAPTCHA");
-        let id = handoff.id;
-        let (_id, _answer) = ws.register_browser_hand_off(&caller, handoff).await.expect("parks");
+        let (id, _answer) =
+            ws.register_browser_hand_off(&caller, "solve the CAPTCHA", "T2").await.expect("parks");
         let started = heard.recv().await.map(|(what, _)| what);
         assert_eq!(started, Some("hand_off_started".to_owned()));
 
@@ -554,10 +555,8 @@ mod tests {
         ws.install_browser_host(std::sync::Arc::new(StubHost { calls }));
         let caller = SessionSlot::from_str_for_test("caller-uuid");
 
-        let (_id, answer) = ws
-            .register_browser_hand_off(&caller, handoff("solve the CAPTCHA"))
-            .await
-            .expect("parks");
+        let (_id, answer) =
+            ws.register_browser_hand_off(&caller, "solve the CAPTCHA", "T2").await.expect("parks");
         assert!(answer.await.is_err(), "the fail-closed read");
 
         let mut calls = Vec::new();
@@ -599,10 +598,8 @@ mod tests {
         drop(rx);
         let _heard = with_host(&ws);
         let caller = SessionSlot::from_str_for_test("caller-uuid");
-        let (_id, answer) = ws
-            .register_browser_hand_off(&caller, handoff("solve the CAPTCHA"))
-            .await
-            .expect("parks");
+        let (_id, answer) =
+            ws.register_browser_hand_off(&caller, "solve the CAPTCHA", "T2").await.expect("parks");
 
         assert!(
             ws.browser_handoffs.lock().is_empty(),
@@ -619,9 +616,8 @@ mod tests {
         let (ws, mut rx) = Workspace::testing_stub();
         let _heard = with_host(&ws);
         let caller = SessionSlot::from_str_for_test("caller-uuid");
-        let handoff = handoff("solve the CAPTCHA");
-        let id = handoff.id;
-        let (_id, waiter) = ws.register_browser_hand_off(&caller, handoff).await.expect("parks");
+        let (id, waiter) =
+            ws.register_browser_hand_off(&caller, "solve the CAPTCHA", "T2").await.expect("parks");
         while rx.try_recv().is_ok() {}
 
         let taken = answer(HandOffEnding::Done, HandOffSource::Takeover);
@@ -655,10 +651,8 @@ mod tests {
         let (ws, rx) = Workspace::testing_stub();
         let _heard = with_host(&ws);
         let caller = SessionSlot::from_str_for_test("caller-uuid");
-        let handoff = handoff("solve the CAPTCHA");
-        let id = handoff.id;
-        let (_id, mut waiter) =
-            ws.register_browser_hand_off(&caller, handoff).await.expect("parks");
+        let (id, mut waiter) =
+            ws.register_browser_hand_off(&caller, "solve the CAPTCHA", "T2").await.expect("parks");
 
         drop(rx);
 
@@ -679,9 +673,8 @@ mod tests {
         let (ws, _rx) = Workspace::testing_stub();
         let _heard = with_host(&ws);
         let caller = SessionSlot::from_str_for_test("caller-uuid");
-        let handoff = handoff("solve the CAPTCHA");
-        let id = handoff.id;
-        let (_id, waiter) = ws.register_browser_hand_off(&caller, handoff).await.expect("parks");
+        let (id, waiter) =
+            ws.register_browser_hand_off(&caller, "solve the CAPTCHA", "T2").await.expect("parks");
 
         assert!(ws.resolve_browser_hand_off(
             id,
@@ -704,9 +697,8 @@ mod tests {
         let _heard = with_host(&ws);
         let owner = SessionSlot::from_str_for_test("owner-uuid");
         let other = SessionSlot::from_str_for_test("other-uuid");
-        let handoff = handoff("solve the CAPTCHA");
-        let id = handoff.id;
-        let (_id, _answer) = ws.register_browser_hand_off(&owner, handoff).await.expect("parks");
+        let (id, _answer) =
+            ws.register_browser_hand_off(&owner, "solve the CAPTCHA", "T2").await.expect("parks");
 
         assert!(
             !ws.resolve_browser_hand_off(
