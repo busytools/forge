@@ -4135,7 +4135,11 @@ describe('the frames the fold had no row for', () => {
     expect(notice?.raw, 'and the block itself stays reachable').toContain('"payload"');
   });
 
-  it('draws a permission denial as an error and settles the call it refused', () => {
+  it('folds a permission denial onto the call row it refused, and draws no second row', () => {
+    // A refusal is a `system/permission_denied` frame with no result of its
+    // own, so the call row is where it draws: the frame's own subtype is the
+    // row's chip, and its reason is the body where the result said nothing.
+    // A notice under the call repeated what the call already said (#2764).
     const units = fold([
       said([use('toolu_denied', 'Bash', { command: 'echo $HOME' })]),
       {
@@ -4150,20 +4154,83 @@ describe('the frames the fold had no row for', () => {
       },
     ]);
 
+    expect(kinds(units), 'one refusal, one row').toEqual(['leaves']);
     const leaf = callsOf(units[0])[0]?.leaf;
     expect(leaf?.status, 'the refused call is settled, not left spinning').toBe('failed');
-    const notice = noticeOf(units[1]);
+    expect(leaf?.denied?.mark, 'the call row carries the refusal').toBe('permission_denied');
+    expect(leaf?.denied?.reason, "and the CLI's own reason").toBe('Contains simple_expansion');
+    expect(
+      leaf?.body.map((piece) => (piece.kind === 'text' ? piece.text : '')).join(''),
+      'the row says why, there being no result text to say it',
+    ).toContain('Contains simple_expansion');
+  });
+
+  it("draws a denied result's own output on the call row that carries the refusal", () => {
+    // The refusal folds onto the call either way; what the result said still
+    // draws exactly as it did, so a reader loses no word of it (#2764).
+    const units = fold([
+      said([use('toolu_denied', 'Bash', { command: 'echo $HOME' })]),
+      {
+        type: 'system',
+        subtype: 'permission_denied',
+        tool_name: 'Bash',
+        tool_use_id: 'toolu_denied',
+        decision_reason: 'Contains simple_expansion',
+        message: 'Contains simple_expansion',
+        uuid: 'pd1',
+      },
+      heard(
+        [
+          {
+            type: 'tool_result',
+            tool_use_id: 'toolu_denied',
+            content: 'Denied by the user',
+            is_error: true,
+          },
+        ],
+        { uuid: 'u1' },
+      ),
+    ]);
+
+    expect(kinds(units), 'the result draws no row of its own either way').toEqual(['leaves']);
+    const leaf = callsOf(units[0])[0]?.leaf;
+    expect(
+      leaf?.body.map((piece) => (piece.kind === 'text' ? piece.text : '')).join(''),
+      "the result's own words still draw",
+    ).toContain('Denied by the user');
+    expect(leaf?.denied?.mark, 'and the refusal rides the same row').toBe('permission_denied');
+  });
+
+  it('draws a refusal as its own notice when the page holds no call row for it', () => {
+    // Nothing is dropped: a refusal whose call this fold does not carry - a
+    // page opened after the call, or a call drawn as something else - still
+    // draws as a row of its own.
+    const units = fold([
+      {
+        type: 'system',
+        subtype: 'permission_denied',
+        tool_name: 'Bash',
+        tool_use_id: 'toolu_gone',
+        decision_reason_type: 'other',
+        decision_reason: 'Contains simple_expansion',
+        message: 'Contains simple_expansion',
+        uuid: 'pd1',
+      },
+    ]);
+
+    expect(kinds(units), 'the frame draws rather than vanishing').toEqual(['notice']);
+    const notice = noticeOf(units[0]);
     expect(notice?.severity, 'a refusal reads as an error').toBe('error');
     expect(notice?.mark).toBe('permission_denied');
     expect(notice?.text, 'the tool and the reason').toContain('Bash');
     expect(notice?.text, 'the CLI said why').toContain('Contains simple_expansion');
     expect(notice?.fields, 'the open body names the refused call and why').toEqual([
       { label: 'tool', value: 'Bash' },
-      { label: 'call', value: 'toolu_denied' },
+      { label: 'call', value: 'toolu_gone' },
       { label: 'reason', value: 'Contains simple_expansion' },
       { label: 'decision', value: 'other' },
     ]);
-    expect(notice?.raw, 'and the frame itself stays reachable').toContain('toolu_denied');
+    expect(notice?.raw, 'and the frame itself stays reachable').toContain('toolu_gone');
   });
 
   it('draws an api error with its status and retry, and an informational line at its level', () => {

@@ -182,6 +182,24 @@ export interface ToolLeaf {
    * reader's own.
    */
   imageNote: string | null;
+  /**
+   * The permission refusal the CLI reported for this call, absent for a call
+   * it let run.
+   *
+   * A refusal arrives as a `system/permission_denied` frame with no result of
+   * its own, and the call it names is where it draws: the frame's subtype is
+   * the row's chip and its reason the row's words, rather than a notice under
+   * the call repeating what the call already says (#2764).
+   */
+  denied?: Denial;
+}
+
+/** The permission refusal a call's own row carries. */
+export interface Denial {
+  /** The wire's own subtype, which is what the row's chip says. */
+  mark: string;
+  /** Why the CLI refused it, or `null` where the frame named no reason. */
+  reason: string | null;
 }
 
 /**
@@ -724,6 +742,7 @@ export function leafOf(
   task: TaskFact | undefined = undefined,
   abandoned = false,
   stop: string | null = null,
+  denied: Denial | null = null,
 ): ToolLeaf {
   const body = mutationBody(name, input, record);
   // A backgrounded call is held open by its TASK fact and nothing else: the
@@ -745,9 +764,12 @@ export function leafOf(
   // body (#1836, rule 22). A clean answer that drew no line leaves one just as
   // surely as a failure does, and a call still out is the one state that has
   // an empty body and no words, because its body is not written yet.
+  // A refusal is a settled call whose result said nothing, so its reason is
+  // the words the row has: "no result" would name the wrong fact about a call
+  // the CLI answered.
   const shown =
     drawn.length === 0 && settled !== 'pending' && settled !== 'in_progress'
-      ? [{ kind: 'text' as const, text: 'no result' }]
+      ? [{ kind: 'text' as const, text: denied?.reason ?? 'no result' }]
       : drawn;
   return {
     id,
@@ -778,6 +800,7 @@ export function leafOf(
     skill: null,
     image: imageOf(result),
     imageNote: null,
+    ...(denied === null ? {} : { denied }),
   };
 }
 

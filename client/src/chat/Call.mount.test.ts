@@ -364,4 +364,32 @@ describe('the call row, mounted', () => {
       void unmount(app);
     }
   });
+
+  /**
+   * A refusal rides the row it refused: the wire's own subtype is the chip,
+   * so the call that failed says the CLI refused it rather than only that it
+   * never came back (#2764).
+   */
+  it('draws a permission refusal as the chip on the call row it names', () => {
+    const app = mount(Call, {
+      target: document.body,
+      props: {
+        k: 'f-denied',
+        call: {
+          ...backgrounded,
+          status: 'failed',
+          denied: { mark: 'permission_denied', reason: 'Contains simple_expansion' },
+        },
+      },
+    });
+    try {
+      flushSync();
+      expect(
+        document.querySelector('summary .fam-chip')?.textContent,
+        'the row says the CLI refused it',
+      ).toBe('permission_denied');
+    } finally {
+      void unmount(app);
+    }
+  });
 });
