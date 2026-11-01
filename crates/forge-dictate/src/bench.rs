@@ -30,6 +30,9 @@ pub enum Tier {
     Consensus,
     /// The read-aloud set alone: the one tier whose words are known.
     ReadAloud,
+    /// The downloaded public slice: words known like the read-aloud set,
+    /// and material a machine that never recorded anything still has.
+    Public,
 }
 
 /// Where one clip came from.
@@ -38,6 +41,7 @@ pub enum Tier {
 pub enum ClipSource {
     Take,
     ReadAloud,
+    Public,
 }
 
 /// One clip of audio, and whatever is known about it.
@@ -67,14 +71,96 @@ pub struct Corpus {
     pub id: CorpusId,
 }
 
-/// Build one tier's corpus from the machine's own material.
-pub fn corpus(tier: Tier, takes_dir: &Path, read_aloud_dir: &Path) -> Result<Corpus, Error> {
+/// Build one tier's corpus from the machine's own material, and the
+/// downloaded public slice where the tier asks for it.
+pub fn corpus(
+    tier: Tier,
+    takes_dir: &Path,
+    read_aloud_dir: &Path,
+    public_dir: &Path,
+) -> Result<Corpus, Error> {
     let clips = match tier {
         Tier::Consensus => takes(takes_dir)?,
         Tier::ReadAloud => read_aloud(read_aloud_dir)?,
+        Tier::Public => public_corpus(public_dir)?,
     };
     let id = corpus_id(&clips);
     Ok(Corpus { clips, id })
+}
+
+/// One clip the public manifest names: a wav, its digest, and the words it
+/// was read from.
+#[derive(serde::Deserialize)]
+struct ManifestClip {
+    file: String,
+    sha256: String,
+    transcript: String,
+}
+
+/// The manifest a downloaded public corpus carries beside its clips.
+///
+/// The licence and attribution are required of the asset's author rather
+/// than read here; the manifest keeps them so a reader of the files has them
+/// where the clips are.
+#[derive(serde::Deserialize)]
+struct Manifest {
+    clips: Vec<ManifestClip>,
+}
+
+/// The downloaded public slice: every clip the manifest names, each verified
+/// against its own digest before anything scores it.
+///
+/// **A missing manifest is an empty tier, a mismatched digest is a refusal.**
+/// A machine that has not fetched the corpus has nothing to score, which the
+/// run reports with its own zero; a file whose bytes are not the ones the
+/// manifest names is material nothing can certify, and scoring it would put
+/// a number on the wrong audio. The refusal names the clip.
+pub fn public_corpus(dir: &Path) -> Result<Vec<Clip>, Error> {
+    let manifest_path = dir.join("manifest.json");
+    let bytes = match std::fs::read(&manifest_path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(source) => return Err(Error::Io { path: manifest_path, source }),
+    };
+    let manifest: Manifest = serde_json::from_slice(&bytes)
+        .map_err(|error| Error::Bench { message: format!("public corpus manifest: {error}") })?;
+
+    let mut clips = Vec::with_capacity(manifest.clips.len());
+    for entry in manifest.clips {
+        let path = dir.join(&entry.file);
+        let audio_bytes = std::fs::read(&path).map_err(|error| Error::Bench {
+            message: format!(
+                "{}: the manifest names a clip that is not there: {error}",
+                entry.file
+            ),
+        })?;
+        let mut hasher = Sha256::new();
+        hasher.update(&audio_bytes);
+        let actual = hex::encode(hasher.finalize());
+        if !actual.eq_ignore_ascii_case(&entry.sha256) {
+            return Err(Error::Bench {
+                message: format!(
+                    "{}: the manifest names sha256 {}, and the file is {actual}",
+                    entry.file, entry.sha256,
+                ),
+            });
+        }
+        let audio = decode_wav(&path)?;
+        clips.push(Clip {
+            source: ClipSource::Public,
+            audio,
+            truth: Some(entry.transcript),
+            recorded: None,
+        });
+    }
+    Ok(clips)
+}
+
+/// Word error rate of `text` against `truth`: edits over the truth's own
+/// words, and no error when the truth has none.
+pub fn wer(text: &str, truth: &str) -> f64 {
+    let truth_words = words(truth);
+    ratio(edits(&words(text), &truth_words), truth_words.len())
 }
 
 /// Every complete take in `dir`, oldest first.
@@ -377,7 +463,8 @@ fn walk(
         let outcome = transcribe(index, clip)?;
         let wall = started.elapsed();
         let against = match clip.source {
-            ClipSource::ReadAloud => None,
+            // Both carry words somebody knows, not another model's output.
+            ClipSource::ReadAloud | ClipSource::Public => None,
             ClipSource::Take => clip.recorded.as_ref(),
         };
         let matched = against.map(|other| words(&outcome.text) == words(other));
@@ -588,18 +675,18 @@ mod tests {
         write_take(dir.path(), 1, 16_000, "one");
         let empty = tempfile::tempdir().unwrap();
 
-        let one = corpus(Tier::Consensus, dir.path(), empty.path()).unwrap();
-        let again = corpus(Tier::Consensus, dir.path(), empty.path()).unwrap();
+        let one = corpus(Tier::Consensus, dir.path(), empty.path(), empty.path()).unwrap();
+        let again = corpus(Tier::Consensus, dir.path(), empty.path(), empty.path()).unwrap();
         assert_eq!(one.id, again.id, "the same clips are the same corpus");
         assert_eq!(one.id.clips, 1);
         assert_eq!(one.id.audio_seconds, 1, "16k samples is one second");
 
         write_take(dir.path(), 2, 8_000, "two");
-        let two = corpus(Tier::Consensus, dir.path(), empty.path()).unwrap();
+        let two = corpus(Tier::Consensus, dir.path(), empty.path(), empty.path()).unwrap();
         assert_ne!(one.id.sha256, two.id.sha256, "one more take is a different corpus");
         assert_eq!(two.id.clips, 2, "the tier is the machine's own takes and nothing else");
 
-        let gold = corpus(Tier::ReadAloud, empty.path(), empty.path()).unwrap();
+        let gold = corpus(Tier::ReadAloud, empty.path(), empty.path(), empty.path()).unwrap();
         assert!(gold.clips.is_empty(), "no passage recorded, no read-aloud tier");
     }
 
@@ -706,7 +793,7 @@ mod tests {
         write_take(dir.path(), 2, 8, "two");
         write_take(dir.path(), 3, 8, "three");
         let empty = tempfile::tempdir().unwrap();
-        let built = corpus(Tier::Consensus, dir.path(), empty.path()).unwrap();
+        let built = corpus(Tier::Consensus, dir.path(), empty.path(), empty.path()).unwrap();
 
         let mut called = 0;
         let mut transcribed = 0;
@@ -740,7 +827,7 @@ mod tests {
         write_take(dir.path(), 1, 8, "Hello, world!");
         write_take(dir.path(), 2, 8, "Something else entirely.");
         let empty = tempfile::tempdir().unwrap();
-        let built = corpus(Tier::Consensus, dir.path(), empty.path()).unwrap();
+        let built = corpus(Tier::Consensus, dir.path(), empty.path(), empty.path()).unwrap();
 
         let runs = walk(
             &built,
@@ -776,5 +863,80 @@ mod tests {
         .unwrap();
 
         assert_eq!(runs[0].matched, None, "a passage is scored by term accuracy, not by agreement");
+    }
+
+    /// One public corpus as the download leaves it: the manifest, and the wav
+    /// files it names with their digests.
+    fn write_public(dir: &Path, clips: &[(&str, &str)]) {
+        std::fs::create_dir_all(dir).unwrap();
+        let mut entries = Vec::new();
+        for (name, transcript) in clips {
+            write_wav(&dir.join(name), 8);
+            let bytes = std::fs::read(dir.join(name)).unwrap();
+            let mut hasher = Sha256::new();
+            hasher.update(&bytes);
+            let digest = hex::encode(hasher.finalize());
+            entries.push(serde_json::json!({
+                "file": name,
+                "sha256": digest,
+                "transcript": transcript,
+            }));
+        }
+        let manifest = serde_json::json!({
+            "license": "CC BY 4.0",
+            "attribution": "LibriSpeech test-clean, OpenSLR",
+            "source": "https://www.openslr.org/12",
+            "clips": entries,
+        });
+        std::fs::write(dir.join("manifest.json"), manifest.to_string()).unwrap();
+    }
+
+    /// A digest is the whole guard on a downloaded clip: a file whose bytes
+    /// are not the ones the manifest names is refused by the clip's own name,
+    /// not scored.
+    #[test]
+    fn a_corpus_clip_with_a_bad_digest_is_refused_by_name() {
+        let dir = tempfile::tempdir().unwrap();
+        write_public(dir.path(), &[("clip-0001.wav", "the quick brown fox")]);
+        let built = corpus(Tier::Public, dir.path(), dir.path(), dir.path()).unwrap();
+        assert_eq!(built.clips.len(), 1);
+
+        // Rewrite the audio under the same name: the manifest still names
+        // the digest of the bytes that were there.
+        write_wav(&dir.path().join("clip-0001.wav"), 12);
+        let error = match corpus(Tier::Public, dir.path(), dir.path(), dir.path()) {
+            Ok(_) => panic!("a clip whose bytes are not the manifest's must be refused"),
+            Err(error) => error,
+        };
+        assert!(
+            error.to_string().contains("clip-0001.wav"),
+            "the refusal names the clip it could not trust: {error}",
+        );
+    }
+
+    /// A public clip carries words somebody wrote down, so the tier is the
+    /// one a machine with no recordings still has something to score.
+    #[test]
+    fn the_public_tier_scores_a_known_transcript() {
+        let dir = tempfile::tempdir().unwrap();
+        write_public(dir.path(), &[("clip-0001.wav", "the quick brown fox")]);
+        let built = corpus(Tier::Public, dir.path(), dir.path(), dir.path()).unwrap();
+        let clip = &built.clips[0];
+        assert_eq!(clip.source, ClipSource::Public);
+        assert_eq!(clip.truth.as_deref(), Some("the quick brown fox"));
+        assert!(clip.recorded.is_none(), "a public clip has no model output beside it");
+
+        let truth = clip.truth.as_deref().unwrap_or_default();
+        assert_eq!(wer("the quick brown fox", truth), 0.0, "the exact words are no error");
+        assert!(wer("the quick brown fix", truth) > 0.0, "a changed word is an edit");
+    }
+
+    /// A machine that has downloaded nothing has an empty tier rather than a
+    /// failure: the run says so with its own zero.
+    #[test]
+    fn an_absent_public_corpus_is_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let built = corpus(Tier::Public, dir.path(), dir.path(), dir.path()).unwrap();
+        assert!(built.clips.is_empty());
     }
 }

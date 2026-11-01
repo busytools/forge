@@ -591,6 +591,8 @@ export function tierWord(tier: BenchTier): string {
       return 'your own takes';
     case 'read_aloud':
       return 'the read-aloud passage';
+    case 'public':
+      return 'the public corpus';
     case 'other':
       return 'a corpus this client cannot name';
   }

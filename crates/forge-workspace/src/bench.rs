@@ -552,6 +552,9 @@ impl Workspace {
         };
         let takes_dir = cfg.diagnostics_dir.clone();
         let read_aloud_dir = self.read_aloud_dir();
+        // The downloaded public slice lives beside the models, as the asset
+        // the bench fetches first: one directory both directions read.
+        let public_dir = models_dir.join("public-corpus");
         // The closure takes its own copy: the caller keeps the target for
         // the failure paths below.
         let ran = target.clone();
@@ -562,8 +565,9 @@ impl Workspace {
                 return Err("no diagnostics directory is configured".to_owned());
             };
             let read_aloud_dir = read_aloud_dir.unwrap_or_else(|| takes_dir.clone());
-            let corpus = forge_dictate::bench::corpus(tier, &takes_dir, &read_aloud_dir)
-                .map_err(|error| error.to_string())?;
+            let corpus =
+                forge_dictate::bench::corpus(tier, &takes_dir, &read_aloud_dir, &public_dir)
+                    .map_err(|error| error.to_string())?;
             if corpus.clips.is_empty() {
                 return Err(match tier {
                     forge_dictate::bench::Tier::Consensus => {
@@ -574,6 +578,9 @@ impl Workspace {
                     forge_dictate::bench::Tier::ReadAloud => {
                         "nothing to bench: the read-aloud passage has not been recorded yet"
                             .to_owned()
+                    }
+                    forge_dictate::bench::Tier::Public => {
+                        "nothing to bench: the public corpus has not been downloaded yet".to_owned()
                     }
                 });
             }

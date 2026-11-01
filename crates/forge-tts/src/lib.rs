@@ -5,6 +5,7 @@
 //! and reads [`Chunk`]s off the returned channel. Which engine renders, and
 //! when a chunk reaches the speaker, stays with the host.
 
+pub mod bench;
 mod engine;
 mod error;
 mod model;
