@@ -91,6 +91,9 @@ pub struct CardTracker {
     /// parentless `Task`/`Agent` call opens an instance, so this is the link
     /// that walks a deeper dispatch up to the card that owns it.
     made_under: HashMap<String, String>,
+    /// The instance each of its recorded child calls belongs to, so a walk
+    /// that names a child resolves without scanning every instance.
+    child_owner: HashMap<String, usize>,
 }
 
 impl CardTracker {
@@ -137,7 +140,16 @@ impl CardTracker {
                                     });
                                 }
                                 Some(parent) => {
-                                    if let Some(&slot) = self.at.get(parent) {
+                                    // The parent may itself be a dispatch a
+                                    // deeper agent fired: resolve the chain so
+                                    // this call joins the same card the read
+                                    // path gives it, rather than the cardless
+                                    // call it names.
+                                    let slot = self
+                                        .owning_dispatch(parent)
+                                        .and_then(|owner| self.at.get(owner).copied());
+                                    if let Some(slot) = slot {
+                                        self.child_owner.insert(id.clone(), slot);
                                         self.instances[slot]
                                             .children
                                             .push(child_of(id, name, input));
@@ -298,8 +310,9 @@ impl CardTracker {
     ///
     /// The CLI's `permission_denied` frame names the agent and never the
     /// dispatch, and the agent is the task id the roster opened the dispatch
-    /// with. A nested dispatch's `Task` call has no card of its own - it is a
-    /// child line of the instance that fired it - so it resolves to that
+    /// with. A dispatch a sub-agent fired has no card of its own - a second
+    /// level's call is a child line of the instance that fired it, and a
+    /// third level's is only a parent link - so both resolve to the owning
     /// instance; a task no instance owns answers `None`, and the frame stays
     /// where it was.
     pub(crate) fn dispatch_of(&self, task_id: &str) -> Option<&str> {
@@ -316,7 +329,7 @@ impl CardTracker {
     /// of the outer card, but the dispatch a depth-3 agent ran under was
     /// made by the depth-2 agent, which the tracker holds only as a parent
     /// link - so a frame from that agent named an id no card owns and drew
-    /// at the session's level (#2781).
+    /// at the session's level.
     pub(crate) fn owning_dispatch(&self, call: &str) -> Option<&str> {
         let mut cursor = call;
         // Bounded, so a parent link pair naming each other cannot spin: the
@@ -325,12 +338,8 @@ impl CardTracker {
             if let Some(&slot) = self.at.get(cursor) {
                 return Some(self.instances[slot].id.as_str());
             }
-            if let Some(instance) = self
-                .instances
-                .iter()
-                .find(|instance| instance.children.iter().any(|child| child.id == cursor))
-            {
-                return Some(instance.id.as_str());
+            if let Some(&slot) = self.child_owner.get(cursor) {
+                return Some(self.instances[slot].id.as_str());
             }
             cursor = self.made_under.get(cursor)?;
         }
@@ -349,13 +358,13 @@ impl CardTracker {
     fn settle_child(&mut self, tool_use_id: &str, failed: bool) {
         let status =
             if failed { SubagentCallStatus::Failed } else { SubagentCallStatus::Completed };
-        for instance in &mut self.instances {
-            for child in &mut instance.children {
-                if child.id == tool_use_id {
-                    child.status = status;
-                    return;
-                }
-            }
+        let Some(&slot) = self.child_owner.get(tool_use_id) else {
+            return;
+        };
+        if let Some(child) =
+            self.instances[slot].children.iter_mut().find(|child| child.id == tool_use_id)
+        {
+            child.status = status;
         }
     }
 }
@@ -959,6 +968,14 @@ mod tests {
             tracker.dispatch_of("t-deeper"),
             Some("toolu_a"),
             "and the hop past that child line still reaches the same card",
+        );
+        // The live fold and the replay fold must count the same children: the
+        // read stamps a nested row with the card, so the live tracker resolves
+        // its parent the same way rather than dropping the call.
+        assert_eq!(
+            tracker.instances[0].children.iter().map(|child| child.id.as_str()).collect::<Vec<_>>(),
+            vec!["toolu_inner", "toolu_deeper"],
+            "both deeper calls belong to the card's own call list",
         );
 
         // A chain that never reaches a card resolves to nothing: the refusal
