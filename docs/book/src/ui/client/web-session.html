@@ -2791,6 +2791,26 @@ Contains simple_expansion</div>
             </div>
           </details>
 
+          <!-- The same refusal where the page holds no call row for it - a
+               page opened after the call, or a peer message drawn as a card:
+               it draws as itself, open here, with the wire's own type as the
+               chip and the frame's fields under it (rule 25 keeps it
+               reachable). -->
+          <details class="leaf nrow" open>
+            <summary><span class="lead"><svg class="ic gl err"><use href="#i-error"/></svg><span class="tn">Bash refused: Contains simple_expansion</span></span><span class="chip">permission_denied</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <div class="body">
+              <div class="nbody">
+                <div class="nfact"><span class="k">tool</span><span class="v">Bash</span></div>
+                <div class="nfact"><span class="k">call</span><span class="v">toolu_denied</span></div>
+                <div class="nfact"><span class="k">reason</span><span class="v">Contains simple_expansion</span></div>
+                <div class="nfact"><span class="k">decision</span><span class="v">other</span></div>
+                <details class="raw">
+                  <summary><svg class="ic arw"><use href="#i-chev"/></svg>raw frame</summary>
+                </details>
+              </div>
+            </div>
+          </details>
+
           <!-- An api error with its retry: the reader-facing `formatted` line,
                the attempt chip, and the delay riding the same line as the row -
                a line of their own would push the chevron under the words. -->

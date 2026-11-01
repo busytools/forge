@@ -173,10 +173,13 @@ read as one system.
   later, rather than being dropped. **A permission refusal draws on the call
   row it refused**, which no result frame will ever settle: the row's chip is
   the wire's own `permission_denied` and its body carries the CLI's reason
-  where the result said nothing, so one refusal is one row. It draws as the
-  notice above only where the fold holds no call row for it - a page opened
-  after the call, or a call drawn as a card - and the refusal is never
-  dropped. **A question draws nothing here while it waits**: the dock is its
+  where the result said nothing, so one refusal is one row. A refused
+  mutation keeps its diff and the reason rides under it, because the diff
+  comes from the call's own input rather than from the result. It draws as
+  the notice above only where the fold holds no call row for it - a page
+  opened after the call, or a peer message drawn as a card, the one card a
+  call never also draws a row for - and the refusal is never dropped. **A
+  question draws nothing here while it waits**: the dock is its
   row. It draws as a card instead - the words the reader was asked, marked
   `unanswered`, with nothing picked or typed under them - the moment its own
   result lands with no answer on record (the reader dismissing the dock), or

@@ -4152,6 +4152,11 @@ describe('the frames the fold had no row for', () => {
         message: 'Contains simple_expansion',
         uuid: 'pd1',
       },
+      // The shape the issue was filed on: a denied result with no body of its
+      // own, which is what the CLI sends with the refusal.
+      heard([{ type: 'tool_result', tool_use_id: 'toolu_denied', content: '', is_error: true }], {
+        uuid: 'u1',
+      }),
     ]);
 
     expect(kinds(units), 'one refusal, one row').toEqual(['leaves']);
@@ -4192,13 +4197,69 @@ describe('the frames the fold had no row for', () => {
       ),
     ]);
 
-    expect(kinds(units), 'the result draws no row of its own either way').toEqual(['leaves']);
+    expect(kinds(units), 'the denial still adds no row of its own').toEqual(['leaves']);
     const leaf = callsOf(units[0])[0]?.leaf;
     expect(
       leaf?.body.map((piece) => (piece.kind === 'text' ? piece.text : '')).join(''),
       "the result's own words still draw",
     ).toContain('Denied by the user');
     expect(leaf?.denied?.mark, 'and the refusal rides the same row').toBe('permission_denied');
+  });
+
+  it("keeps a refused mutation's diff and says the CLI's reason under it", () => {
+    // A mutation's body is drawn from the call's own input, so it is never
+    // empty: a reason read only off an empty body would leave a refused Edit
+    // saying `permission_denied` and never why (#2764).
+    const units = fold([
+      said([
+        use('toolu_denied_edit', 'Edit', {
+          file_path: 'src/lib.rs',
+          old_string: 'let a = 1;',
+          new_string: 'let a = 2;',
+        }),
+      ]),
+      {
+        type: 'system',
+        subtype: 'permission_denied',
+        tool_name: 'Edit',
+        tool_use_id: 'toolu_denied_edit',
+        decision_reason: 'Contains simple_expansion',
+        message: 'Contains simple_expansion',
+        uuid: 'pd2',
+      },
+    ]);
+
+    expect(kinds(units), 'one refusal, one row').toEqual(['leaves']);
+    const leaf = callsOf(units[0])[0]?.leaf;
+    expect(
+      leaf?.body.some((piece) => piece.kind === 'diff'),
+      'the change it would have made still draws',
+    ).toBe(true);
+    expect(
+      leaf?.body.map((piece) => (piece.kind === 'text' ? piece.text : '')).join(''),
+      'and the CLI said why',
+    ).toContain('Contains simple_expansion');
+  });
+
+  it("reads a refusal's reason past a blank message", () => {
+    // The CLI sends `message: ""` beside a real `decision_reason` on some
+    // refusals; a plain `message ?? decision_reason` reads the blank as words.
+    const units = fold([
+      said([use('toolu_blank', 'Bash', { command: 'echo $HOME' })]),
+      {
+        type: 'system',
+        subtype: 'permission_denied',
+        tool_name: 'Bash',
+        tool_use_id: 'toolu_blank',
+        decision_reason: 'Contains simple_expansion',
+        message: '',
+        uuid: 'pd3',
+      },
+    ]);
+
+    expect(callsOf(units[0])[0]?.leaf.denied?.reason, 'the reason that is there').toBe(
+      'Contains simple_expansion',
+    );
   });
 
   it('draws a refusal as its own notice when the page holds no call row for it', () => {

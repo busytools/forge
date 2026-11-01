@@ -2010,12 +2010,15 @@ export function fold(
       const task = str(frame, 'task_id');
       const call = str(frame, 'tool_use_id');
       if (frame.subtype === 'permission_denied' && call !== null) {
-        refusals.set(call, {
-          mark: 'permission_denied',
-          // The same order the notice read them in: the CLI's `message` is
-          // the line written for a reader, `decision_reason` the fallback.
-          reason: str(frame, 'message') ?? str(frame, 'decision_reason'),
-        });
+        // The CLI's `message` is the line written for a reader and
+        // `decision_reason` the fallback, read the way the api error's own
+        // pair is: by the first that is not blank, since an empty `message`
+        // would otherwise swallow a reason that is there.
+        const reason =
+          [str(frame, 'message'), str(frame, 'decision_reason')].find(
+            (line): line is string => line !== null && line.trim() !== '',
+          ) ?? null;
+        refusals.set(call, { mark: 'permission_denied', reason });
       }
       if (frame.subtype === 'task_started' && call !== null) {
         if (task !== null) owners.set(task, call);
@@ -2166,8 +2169,9 @@ export function fold(
    * A refusal folds onto that row (#2764), because the row already says the
    * call failed and a notice under it said the same thing twice. A refusal
    * naming a call this fold holds no row for - a page opened after it, or a
-   * call drawn as a card - still draws its notice, since a missing frame is
-   * worse than a second one.
+   * peer message drawn as a card, which is the one card a call never also
+   * draws a row for - still draws its notice, since a missing frame is worse
+   * than a second one.
    */
   const callRows = new Set<string>();
 
