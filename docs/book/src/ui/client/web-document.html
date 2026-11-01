@@ -274,9 +274,9 @@
         background: var(--line);
         margin: 20px 0;
       }
-      /* The sheet's own reading scale, after the prose block - the order
-         web.css holds, where the `.doc-page` rules follow `.prose` and win
-         at equal specificity. */
+      /* The sheet's own reading scale. In web.css these win by specificity
+         (`.doc-page .doc-body h2` over `.prose h2`); here both are equal, so
+         their place after the prose block is what carries the override. */
       .doc-body h1 {
         font-size: 30px;
         line-height: 1.25;
@@ -287,6 +287,7 @@
       .doc-body h2 {
         font-size: 19px;
         font-weight: 500;
+        letter-spacing: -0.005em;
         margin: 38px 0 12px;
         padding-top: 22px;
         border-top: 1px solid var(--line);
@@ -351,7 +352,7 @@
       .strip .doc-block {
         position: relative;
         border-radius: 6px;
-        padding: 2px 10px;
+        padding: 0 10px;
         margin: 0 -10px;
       }
       .strip .doc-block.target {
@@ -615,6 +616,12 @@
               top-level blocks rendered by the same module the chat draws its
               prose with, and every block a comment target whether the page was
               handed over or opened cold.
+            </p>
+          </div>
+          <div class="doc-block prose">
+            <p>
+              A second paragraph block follows the first, so the gap the sheet
+              states between two of them is drawn here as the chat draws it.
             </p>
           </div>
           <div class="doc-block target prose">
