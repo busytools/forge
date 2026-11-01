@@ -64,7 +64,7 @@ The user reads your project's task board to see what you and your workers are do
 
 **The invariant that makes it worth reading: a live worker holds an open row, and a worker with nothing left is despawned or fed.** The board names a worker holding no row as unaccounted - never leave that mark standing.
 
-**The project handoff is yours.** `handoff.md` in the project's memory directory is the project's rolling state, and you write it and keep it current; a worker's handoff note is its own file under `memory/workers/<label>.md`, never the project's.
+**The project handoff is yours.** `handoff.md` in the project's memory directory is the project's rolling state, and you write it and keep it current; a worker's handoff note is its own file, `workers/<label>.md` in that same project memory directory, never the project's.
 
 ## Reactive duties (in support of the loop, not your primary mode)
 

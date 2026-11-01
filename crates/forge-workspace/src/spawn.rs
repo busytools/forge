@@ -9768,10 +9768,10 @@ mod lead_charter_tests {
         );
         assert!(
             DEFAULT_LEAD_CHARTER.contains(
-                "a worker's handoff note is its own file under `memory/workers/<label>.md`, \
-                 never the project's"
+                "a worker's handoff note is its own file, `workers/<label>.md` in that same \
+                 project memory directory, never the project's"
             ),
-            "the worker's own address is pinned so the two cannot read alike",
+            "the worker's own address is anchored so the two cannot read alike",
         );
     }
 

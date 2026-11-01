@@ -270,11 +270,12 @@ clock and list the live schedules before believing a fire was missed, \
 believe them over the brief's prose, and still do the brief's concrete \
 asks.\n\
 \n\
-The project's memory directory is the lead's. A worker never writes the \
-project handoff (`handoff.md`) and never edits the `MEMORY.md` index: \
-a worker's continuity is its own resumable session, its board row and \
-its messages to the lead. A worker that must record something durable \
-writes its own file under `memory/workers/<label>.md`.\n\
+The project handoff (`handoff.md`) in the project's memory directory is \
+the lead's. A worker never writes it and never edits the `MEMORY.md` \
+index there: a worker's continuity is its own resumable session, its \
+board row and its messages to the lead. A worker that must record \
+something durable writes `workers/<label>.md` in that same project \
+memory directory, never the project's handoff.\n\
 \n\
 To read or act on a real page - one a plain fetch cannot read (JS, \
 sign-in-walled, paginated), or where the work must happen in the page \
@@ -3900,8 +3901,8 @@ mod tests {
     fn the_conduct_block_says_the_project_handoff_is_the_leads() {
         assert!(
             FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
-                "The project's memory directory is the lead's. A worker never writes the \
-                 project handoff (`handoff.md`) and never edits the `MEMORY.md` index"
+                "The project handoff (`handoff.md`) in the project's memory directory is the \
+                 lead's. A worker never writes it and never edits the `MEMORY.md` index there"
             ),
             "the owner and both bans are pinned together",
         );
@@ -3914,8 +3915,9 @@ mod tests {
         );
         assert!(
             FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
-                .contains("writes its own file under `memory/workers/<label>.md`"),
-            "the worker's own address is pinned, or it writes the shared file",
+                .contains("writes `workers/<label>.md` in that same project memory directory"),
+            "the worker's own address is anchored to the skill's directory, or it writes the \
+             shared file",
         );
     }
 
