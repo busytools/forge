@@ -7,7 +7,7 @@
 //! surprise nobody asked for.
 //!
 //! **It measures the models the live roles resolve to on this machine**, not
-//! the compiled pins. A trend is only a signal about what a user gets if the
+//! a hardcoded pin. A trend is only a signal about what a user gets if the
 //! model beside the timings is the one dictate actually runs, and a
 //! resolution this process cannot read is a failure rather than a quiet
 //! fall back to a pin.
@@ -140,11 +140,50 @@ fn source_of(live: &LiveRoles, role: DictateRole) -> String {
     }
 }
 
+/// The string the committed trend holds at `section.key`, if any.
+fn committed_str(file: Option<&str>, section: &str, key: &str) -> Result<Option<String>, String> {
+    let Some(value) = results::lookup(file, section, key)? else {
+        return Ok(None);
+    };
+    value
+        .as_str()
+        .map(str::to_owned)
+        .map(Some)
+        .ok_or_else(|| format!("{section}.{key} is present but is not a string: {value}"))
+}
+
+/// Whether the committed trend measured the same model identities this run
+/// did.
+///
+/// A different model re-anchors every figure: keeping a deadband anchor
+/// recorded for another model would attribute that model's numbers to this
+/// one, and the anchor would then never self-correct. The identity is the
+/// file plus what the header writes beside it, not the source - a pick
+/// becoming a pin for the same file is the same model.
+fn same_models(
+    existing: Option<&str>,
+    asr: (&str, &str),
+    normalizer: (&str, &str),
+) -> Result<bool, String> {
+    for (section, (model, identity)) in [("asr", asr), ("normalizer", normalizer)] {
+        let Some(prior_model) = committed_str(existing, section, "model")? else {
+            return Ok(false);
+        };
+        let Some(prior_identity) = committed_str(existing, section, "sha256")? else {
+            return Ok(false);
+        };
+        if prior_model != model || prior_identity != identity {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 /// The live engine configuration with per-take diagnostics off.
 ///
 /// **A bench run is not the user's dictation.** Its clips would otherwise
-/// land in the per-take diagnostics store, filling the shelf the bench
-/// itself scores.
+/// land in the per-take diagnostics store, the shelf the in-app model bench
+/// scores; this trend bench writes no takes.
 fn bench_config(live: &LiveRoles) -> forge_dictate::Config {
     let mut config = live.config.clone();
     config.diagnostics_dir = None;
@@ -259,8 +298,12 @@ fn the_committed_pipeline_figure_excludes_the_asr_model_load() {
 /// and picked, so the resolution runs without the live ones.
 struct Machine {
     _root: tempfile::TempDir,
+    /// Held open for the lifetime of the fixture: the store is locked exactly
+    /// as a running forge holds it, which is the condition the copy exists for.
+    _db: Db,
     config_dir: PathBuf,
     app_support: PathBuf,
+    models_dir: PathBuf,
 }
 
 impl Machine {
@@ -268,9 +311,20 @@ impl Machine {
     /// record the store carries and `pick` the runtime pick for the
     /// transcribing role.
     fn with_store(dictate: &str, installed: Option<(&str, &str, u64)>, pick: Option<&str>) -> Self {
+        Self::with_dictate_enabled(true, dictate, installed, pick)
+    }
+
+    fn with_dictate_enabled(
+        enabled: bool,
+        dictate: &str,
+        installed: Option<(&str, &str, u64)>,
+        pick: Option<&str>,
+    ) -> Self {
         let root = tempfile::tempdir().expect("a temp dir");
         let config_dir = root.path().join("claude");
         std::fs::create_dir_all(config_dir.join("forge")).expect("the forge dir");
+        let models_dir = root.path().join("models");
+        std::fs::create_dir_all(&models_dir).expect("the models dir");
         std::fs::write(
             config_dir.join("forge/forge.toml"),
             format!(
@@ -278,44 +332,42 @@ impl Machine {
                  [[orgs.projects]]\nname = \"forge\"\npath = \"~/Projects/forge\"\n\n\
                  [[accounts]]\ndisplay_name = \"Stargate\"\ntoken = \"t\"\n\
                  models = [\"claude-sonnet-5\"]\nprovider = \"anthropic\"\n\n\
-                 [dictate]\nenabled = true\n{dictate}"
+                 [dictate]\nenabled = {enabled}\nmodels_dir = \"{}\"\n{dictate}",
+                models_dir.display()
             ),
         )
         .expect("forge.toml must be writable");
         let app_support = root.path().join("support");
         std::fs::create_dir_all(app_support.join("stores")).expect("the store dir");
 
-        {
-            let db =
-                Db::open(&store::path_for(&app_support, &config_dir)).expect("the store opens");
-            if let Some((variant, file, size)) = installed {
-                dictate_models::record_installed(
-                    &db,
-                    &InstalledModel {
-                        variant: variant.to_owned(),
-                        file: file.to_owned(),
-                        url: format!("https://weights.invalid/{file}"),
-                        size,
-                        facts: forge_dictate::ModelFacts::default(),
-                        at: "2026-11-01T00:00:00Z".to_owned(),
-                    },
-                )
-                .expect("the record lands");
-            }
-            if let Some(variant) = pick {
-                dictate_models::record_active(
-                    &db,
-                    DictateRole::Transcribing,
-                    &ActiveChoice {
-                        variant: variant.to_owned(),
-                        at: "2026-11-01T00:00:00Z".to_owned(),
-                    },
-                )
-                .expect("the pick lands");
-            }
+        let db = Db::open(&store::path_for(&app_support, &config_dir)).expect("the store opens");
+        if let Some((variant, file, size)) = installed {
+            dictate_models::record_installed(
+                &db,
+                &InstalledModel {
+                    variant: variant.to_owned(),
+                    file: file.to_owned(),
+                    url: format!("https://weights.invalid/{file}"),
+                    size,
+                    facts: forge_dictate::ModelFacts::default(),
+                    at: "2026-11-01T00:00:00Z".to_owned(),
+                },
+            )
+            .expect("the record lands");
+        }
+        if let Some(variant) = pick {
+            dictate_models::record_active(
+                &db,
+                DictateRole::Transcribing,
+                &ActiveChoice {
+                    variant: variant.to_owned(),
+                    at: "2026-11-01T00:00:00Z".to_owned(),
+                },
+            )
+            .expect("the pick lands");
         }
 
-        Self { _root: root, config_dir, app_support }
+        Self { _root: root, _db: db, config_dir, app_support, models_dir }
     }
 
     fn resolve(&self) -> Result<LiveRoles, String> {
@@ -336,6 +388,10 @@ fn the_bench_takes_the_transcribing_model_from_the_live_pick() {
 
     assert_eq!(live.config.asr_model.file, granite, "the transcribing role runs the pick");
     assert_eq!(live.config.asr_model.size, 279_393_440, "with the size its record carries");
+    assert_eq!(
+        live.models_dir, machine.models_dir,
+        "the models dir is [dictate] models_dir, not a cache default"
+    );
     assert!(
         live.models.iter().any(|(role, model)| *role == DictateRole::Transcribing
             && matches!(&model.from, ActiveFrom::Installed { .. })),
@@ -354,13 +410,66 @@ fn the_bench_takes_the_transcribing_model_from_the_live_pick() {
 #[test]
 fn a_machine_with_no_store_fails_rather_than_measuring_the_pin() {
     let machine = Machine::with_store("", None, None);
-    std::fs::remove_file(store::path_for(&machine.app_support, &machine.config_dir))
-        .expect("the store was written");
+    let store = store::path_for(&machine.app_support, &machine.config_dir);
+    std::fs::remove_file(&store).expect("the store was written");
 
     let error = machine.resolve().expect_err("no store, no resolution");
 
     assert!(error.contains("could not be read"), "got: {error}");
-    assert!(error.contains(".redb"), "the error names the file it wanted, got: {error}");
+    assert!(
+        error.contains(&store.display().to_string()),
+        "the error names the store it wanted, got: {error}"
+    );
+}
+
+/// **A machine with dictation off has no live role to measure.** The bench
+/// refuses by name rather than resolving pins for a role a running forge
+/// never starts.
+#[test]
+fn a_machine_with_dictation_off_fails_by_name() {
+    let machine = Machine::with_dictate_enabled(false, "", None, None);
+
+    let error = machine.resolve().expect_err("no live role when dictation is off");
+
+    assert!(error.contains("[dictate] enabled = false"), "got: {error}");
+}
+
+/// **A different model re-anchors the trend.** The header names this run's
+/// model while the figures are held to the file's deadband, so an anchor
+/// recorded for another model would attribute its numbers to this one and
+/// never self-correct.
+#[test]
+fn a_different_model_re_anchors_the_trend() {
+    let committed = "[asr]\nmodel = \"a.gguf\"\nsha256 = \"sha256:aa\"\n\n\
+                     [normalizer]\nmodel = \"n.gguf\"\nsha256 = \"size-10\"\n";
+    assert!(
+        same_models(Some(committed), ("a.gguf", "sha256:aa"), ("n.gguf", "size-10"))
+            .expect("a valid file"),
+        "the same pair keeps its anchors",
+    );
+    assert!(
+        !same_models(Some(committed), ("b.gguf", "sha256:aa"), ("n.gguf", "size-10"))
+            .expect("a valid file"),
+        "a different asr file re-anchors",
+    );
+    assert!(
+        !same_models(Some(committed), ("a.gguf", "size-279"), ("n.gguf", "size-10"))
+            .expect("a valid file"),
+        "the same file with a new identity re-anchors",
+    );
+    assert!(
+        !same_models(None, ("a.gguf", "sha256:aa"), ("n.gguf", "size-10")).expect("no file"),
+        "a first run re-anchors",
+    );
+    assert!(
+        !same_models(
+            Some("[machine]\nmodel = \"Mac\"\n"),
+            ("a.gguf", "sha256:aa"),
+            ("n.gguf", "size-10"),
+        )
+        .expect("a file without the sections"),
+        "a file without the sections is a first run",
+    );
 }
 
 /// **A config key the machine has not installed fails, rather than reaching
@@ -373,8 +482,9 @@ fn a_config_key_with_no_installed_record_fails_rather_than_fetching() {
     let error = machine.resolve().expect_err("nothing resolves that key");
 
     assert!(
-        error.contains("transcribe_model") && error.contains("lfm3"),
-        "the error names the key and the variant, got: {error}"
+        error.contains("[dictate] transcribe_model names lfm3")
+            && error.contains("has not installed"),
+        "the error names the key, the variant and why, got: {error}"
     );
 }
 
@@ -510,7 +620,23 @@ fn bench_corpus() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("bench")
         .join(format!("{}.toml", machine_slug(&model)));
-    let existing = std::fs::read_to_string(&path).ok();
+    let existing = match std::fs::read_to_string(&path) {
+        Ok(text) => Some(text),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => panic!(
+            "the results file {} could not be read ({error}); refusing to overwrite a trend it \
+             cannot read",
+            path.display()
+        ),
+    };
+    let asr_identity = model_identity(&asr, &models.join(&asr.file));
+    let normalizer_identity = model_identity(&normalizer, &models.join(&normalizer.file));
+    let same_model = same_models(
+        existing.as_deref(),
+        (&asr.file, &asr_identity),
+        (&normalizer.file, &normalizer_identity),
+    )
+    .expect("an unreadable results file must not be silently overwritten");
 
     // `model_load` is deliberately NOT committed. It is bimodal - roughly
     // 450 ms with the weights in page cache and 6977 ms cold - and the
@@ -527,6 +653,7 @@ fn bench_corpus() {
             let name = format!("speed.{key}");
             let prior = committed(existing.as_deref(), &name, "ms")
                 .expect("an unreadable results file must not be silently overwritten");
+            let prior = if same_model { prior } else { None };
             Section {
                 name,
                 key: "ms",
@@ -659,8 +786,10 @@ fn header(
          # running. That is the condition this pipeline runs under, so a\n\
          # comparison against a quiet-machine run is not like for like.\n\
          #\n\
-         # The model sha256s sit beside the timings on purpose: if they are\n\
-         # unchanged and a stage moved, it was our code.\n\n\
+         # The model identities sit beside the timings on purpose (the digest,\n\
+         # or the size where the record carries none): if they are unchanged\n\
+         # and a stage moved, it was our code; if they moved, the figures\n\
+         # below were re-anchored rather than kept.\n\n\
          [machine]\n\
          model = \"{model}\"\n\
          cpu = \"{}\"\n\
@@ -718,7 +847,8 @@ fn accuracy(manifest: &[Entry], differs: &[String], asr_differs: &[String]) -> S
          # Per-clip identity is the signal: a percentage would hide which clip\n\
          # moved, and the baselines are another model's locked output rather\n\
          # than ground truth, so a difference is a question and not a verdict.\n\
-         # Divergence is expected - see fixtures/README.md. Nothing here may be\n\
+         # Divergence is expected - see ../forge-dictate/fixtures/README.md.\n\
+         # Nothing here may be\n\
          # tuned toward these baselines.\n\
          #\n\
          # This is the WHOLE pipeline against baseline_normalized. The\n\

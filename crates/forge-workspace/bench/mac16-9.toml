@@ -6,8 +6,10 @@
 # running. That is the condition this pipeline runs under, so a
 # comparison against a quiet-machine run is not like for like.
 #
-# The model sha256s sit beside the timings on purpose: if they are
-# unchanged and a stage moved, it was our code.
+# The model identities sit beside the timings on purpose (the digest,
+# or the size where the record carries none): if they are unchanged
+# and a stage moved, it was our code; if they moved, the figures
+# below were re-anchored rather than kept.
 
 [machine]
 model = "Mac16,9"
@@ -82,7 +84,8 @@ resolution = 500
 # Per-clip identity is the signal: a percentage would hide which clip
 # moved, and the baselines are another model's locked output rather
 # than ground truth, so a difference is a question and not a verdict.
-# Divergence is expected - see fixtures/README.md. Nothing here may be
+# Divergence is expected - see ../forge-dictate/fixtures/README.md.
+# Nothing here may be
 # tuned toward these baselines.
 #
 # This is the WHOLE pipeline against baseline_normalized. The
