@@ -2247,6 +2247,25 @@ impl Workspace {
                 ),
             }
         }
+        // The fired-prompt pairings had no retention: every fire added a row
+        // and nothing took one away. A boot drops the ones past the window.
+        if let Some(db) = &db {
+            match crate::store::cron_names::prune_expired(db, std::time::SystemTime::now()) {
+                Ok(0) => {}
+                Ok(removed) => tracing::debug!(
+                    target: "forge_workspace::workspace",
+                    event_name = "cron_names_pruned",
+                    removed,
+                    "dropped fired-prompt pairings older than the retention window",
+                ),
+                Err(error) => tracing::warn!(
+                    target: "forge_workspace::workspace",
+                    event_name = "cron_names_prune_failed",
+                    %error,
+                    "sweeping old fired-prompt pairings failed; they stay until the next boot",
+                ),
+            }
+        }
         // The settings table held one row, the `/spinner` override, which went
         // with the spinner.
         if let Some(db) = db.as_mut() {
@@ -15415,6 +15434,40 @@ provider = "anthropic"
         assert_eq!(lead.session_id.as_deref(), Some("lead-session-id"), "with its id untouched");
     }
 
+    /// The fired-prompt pairings are swept by the boot itself: a sweep wired
+    /// nowhere is the unbounded table the issue names.
+    #[tokio::test]
+    async fn booting_sweeps_fired_prompt_pairings_past_the_window() {
+        let dir = make_workspace_dir_with_two_accounts();
+        let app_support = dir.path().join("app-support");
+        fs::create_dir_all(&app_support).expect("app-support dir");
+        let db_path = store_path(&app_support, dir.path());
+        fs::create_dir_all(db_path.parent().expect("the stores dir")).expect("stores dir");
+        let db = crate::store::Db::open(&db_path).expect("open db");
+        let name = forge_primitives::cron::CronName {
+            cron_id: "c1".to_owned(),
+            description: Some("Morning summary".to_owned()),
+        };
+        let stale = std::time::SystemTime::now()
+            .checked_sub(std::time::Duration::from_secs(31 * 24 * 60 * 60))
+            .expect("a window ago");
+        crate::store::cron_names::put(&db, "fired", &name, stale).expect("seed a stale pairing");
+        crate::store::cron_names::put(&db, "fresh", &name, std::time::SystemTime::now())
+            .expect("seed a fresh pairing");
+        drop(db);
+
+        let workspace = Workspace::new_for_test(dir.path().to_owned()).expect("new");
+
+        let guard = workspace.db.lock();
+        let db = guard.as_ref().expect("db");
+        let kept = crate::store::cron_names::for_uuids(db, &["fired", "fresh"]).expect("read");
+        assert_eq!(
+            kept.keys().collect::<Vec<_>>(),
+            vec!["fresh"],
+            "the boot drops the pairing past the window and keeps the one inside it"
+        );
+    }
+
     /// The retired table is dropped only once every row it held has been
     /// copied. A row no configured project can key stays where it is, so
     /// the table has to stay with it: dropped, that worker exists nowhere
@@ -25570,6 +25623,7 @@ provider = "anthropic"
                     cron_id: "c1".to_owned(),
                     description: Some("Morning summary".to_owned()),
                 },
+                std::time::SystemTime::now(),
             )
             .expect("seed a row in the legacy store");
         }

@@ -6962,6 +6962,7 @@ mod tests {
                     cron_id: "c1".to_owned(),
                     description: Some("Morning summary".to_owned()),
                 },
+                std::time::SystemTime::now(),
             )
             .expect("write the pairing");
         }

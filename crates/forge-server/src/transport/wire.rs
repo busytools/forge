@@ -2719,6 +2719,7 @@ mod tests {
                     cron_id: "c1".to_owned(),
                     description: Some("Morning summary".to_owned()),
                 },
+                std::time::SystemTime::now(),
             )
             .expect("write the pairing");
             forge_workspace::store::cron_names::put(
@@ -2728,6 +2729,7 @@ mod tests {
                     cron_id: "not-a-fire".to_owned(),
                     description: Some("an assistant row's id".to_owned()),
                 },
+                std::time::SystemTime::now(),
             )
             .expect("write a pairing under a non-prompt id too");
         }
