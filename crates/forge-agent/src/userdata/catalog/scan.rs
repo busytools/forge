@@ -934,23 +934,16 @@ fn read_session_messages(
     history
 }
 
-/// Insert each dispatch's sidecar frames where the dispatch ran: right after
-/// the row that answers its tool call. Appending them all at the end would
-/// put them at the newest edge of the window a resumed conversation is cut
-/// to, so every old sub-agent would be kept in preference to the main rows
-/// around it.
+/// Insert each dispatch's sidecar frames under the first row its chain
+/// answers. Appending them at the end would put them at the newest edge of
+/// the resumed window, ahead of the main rows.
 ///
-/// **A nested sidecar joins the expansion that owns it.** A dispatch a
-/// sub-agent fired is a call inside that agent's sidecar and never a row the
-/// transcript carries, so its own sidecar's rows used to join against
-/// whatever the growing message list held: the nested id when the parent had
-/// been spliced first, nothing when the child was read first. The chain of
-/// `made_under` links walks such a dispatch up to the first dispatch in the
-/// chain the transcript answers, and its rows are stamped with that card's
-/// id. Resolving before any splice is what makes the fold order-independent:
-/// the child may be read before the parent whose sidecar holds its answer.
-/// Blocks are then emitted as a tree, each inside the row that fired it, so
-/// the expansion reads in the order the work ran.
+/// A nested dispatch is named by a call inside its parent's sidecar, never by
+/// the transcript, so its chain is walked to the first dispatch the transcript
+/// answers and every row is stamped with that card. Resolution happens before
+/// any splice, which is what makes the child independent of the parent's read
+/// order; a block whose parent body was read then emits inside the row that
+/// fired it, and one whose parent was not read follows the owner's anchor.
 fn fold_subagent_sidecars(
     messages: &mut Vec<SessionMessage>,
     sidecars: Vec<(String, Vec<SessionMessage>)>,
@@ -978,14 +971,16 @@ fn fold_subagent_sidecars(
         };
         made_under.insert(link.dispatch.clone(), parent_link.dispatch.clone());
     }
-    // Only a row the transcript itself carries is an anchor: a sidecar folded
-    // into another sidecar's rows would nest an expansion inside an
-    // expansion, which is the shape no card owns.
+    // Only a transcript row anchors a block; a sidecar folded into another
+    // sidecar's rows would nest an expansion inside an expansion. Tool-use
+    // ids are unique per call, so a spliced row cannot answer another
+    // sidecar's dispatch.
     let answered: HashSet<String> =
         messages.iter().flat_map(answered_dispatches).map(str::to_owned).collect();
     // Group by owner, then splice each owner's tree in the order it ran: a
-    // nested agent's block is emitted at the row carrying its dispatch, so a
-    // depth band cannot flatten it and the order does not ride the mtimes.
+    // nested block emits at the row carrying its dispatch, so a depth band
+    // cannot flatten it. Nesting rides the tool_use ids; only roots follow
+    // arrival order.
     let mut folded: HashMap<String, Vec<Block>> = HashMap::new();
     for (dispatch, mut rows) in sidecars {
         let Some(owner) = owning_dispatch(&dispatch, &answered, &made_under) else {
@@ -1005,15 +1000,13 @@ fn fold_subagent_sidecars(
         folded.entry(owner.to_owned()).or_default().push(Block { dispatch, rows });
     }
     for (owner, mut blocks) in folded {
-        // The sidecars arrive newest-first; emit the roots oldest-first.
+        // The sidecars arrive newest-first; roots follow arrival, so reverse
+        // them. Nesting itself rides the tool_use ids, not the mtimes.
         blocks.reverse();
+        // `owning_dispatch` only answers for a dispatch `answered` holds, and
+        // `messages` only grows below, so this lookup cannot miss; the guard
+        // keeps the splice total.
         let Some(index) = messages.iter().position(|row| answers_dispatch(row, &owner)) else {
-            tracing::debug!(
-                event_name = "subagent_sidecar_unanchored",
-                session = %session_id,
-                owner = %owner,
-                "subagent sidecar blocks skipped: no transcript row answers their owner",
-            );
             continue;
         };
         let rows = emit_sidecar_tree(blocks);
@@ -1027,13 +1020,9 @@ struct Block {
     rows: Vec<SessionMessage>,
 }
 
-/// One owner's blocks, flattened in the order the work ran.
-///
-/// A block is emitted at the row inside another block that carries its
-/// dispatch's tool_use, so a nested agent's frames sit where it was fired
-/// rather than after all of its parent's frames. A block no other block
-/// names - its parent body was past the read budget, or the link is missing -
-/// is a root and follows the owner's other roots.
+/// One owner's blocks, flattened in the order the work ran: a block emits at
+/// the row naming its dispatch, and a block no other names - its parent body
+/// was past the budget - follows the roots.
 fn emit_sidecar_tree(mut blocks: Vec<Block>) -> Vec<SessionMessage> {
     let by_dispatch: HashMap<String, usize> =
         blocks.iter().enumerate().map(|(at, block)| (block.dispatch.clone(), at)).collect();
@@ -1158,10 +1147,9 @@ struct SidecarLink {
 /// The sidecar bodies the budget admitted, and every meta's chain link.
 type SidecarRead = (Vec<(String, Vec<SessionMessage>)>, HashMap<String, SidecarLink>);
 
-/// The frames a session's sub-agent sidecars hold, each stamped with the
-/// dispatch it ran under - the join the card fold reads - and every meta's
-/// chain link, which is read for all sidecars rather than only the ones
-/// inside the budget.
+/// The frames a session's sub-agent sidecars hold, with each sidecar's own
+/// dispatch and every meta's chain link. The links are read for all sidecars,
+/// not only the ones inside the budget; the fold stamps the rows themselves.
 ///
 /// The CLI writes a sub-agent's own frames to
 /// `<session>/subagents/agent-<id>.jsonl` and names the dispatch and its
@@ -1182,16 +1170,54 @@ fn subagent_sidecars_with_budget(session_id: &str, transcript: &Path, budget: u6
     let Some(dir) = transcript.parent() else {
         return (Vec::new(), HashMap::new());
     };
-    let Ok(entries) = fs::read_dir(dir.join(session_id).join("subagents")) else {
-        return (Vec::new(), HashMap::new());
+    let sidecar_dir = dir.join(session_id).join("subagents");
+    let entries = match fs::read_dir(&sidecar_dir) {
+        Ok(entries) => entries,
+        // No directory is the ordinary case: the session never dispatched.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return (Vec::new(), HashMap::new());
+        }
+        Err(error) => {
+            tracing::debug!(
+                event_name = "subagent_sidecar_dir_unreadable",
+                session = %session_id,
+                dir = %sidecar_dir.display(),
+                %error,
+                "subagent sidecars skipped: the directory could not be read",
+            );
+            return (Vec::new(), HashMap::new());
+        }
     };
     let mut metas: Vec<(PathBuf, std::time::SystemTime)> = entries
-        .flatten()
+        .filter_map(|entry| match entry {
+            Ok(entry) => Some(entry),
+            Err(error) => {
+                tracing::debug!(
+                    event_name = "subagent_sidecar_dir_entry_unreadable",
+                    session = %session_id,
+                    dir = %sidecar_dir.display(),
+                    %error,
+                    "a subagent sidecar entry was skipped: it could not be read",
+                );
+                None
+            }
+        })
         .filter(|entry| entry.file_name().to_str().is_some_and(|name| name.ends_with(".meta.json")))
-        .map(|entry| {
-            let modified =
-                entry.metadata().and_then(|meta| meta.modified()).unwrap_or(std::time::UNIX_EPOCH);
-            (entry.path(), modified)
+        .filter_map(|entry| {
+            let modified = match entry.metadata().and_then(|meta| meta.modified()) {
+                Ok(modified) => modified,
+                Err(error) => {
+                    tracing::debug!(
+                        event_name = "subagent_sidecar_meta_unreadable",
+                        session = %session_id,
+                        meta = %entry.path().display(),
+                        %error,
+                        "subagent sidecar meta skipped: its timestamp could not be read",
+                    );
+                    return None;
+                }
+            };
+            Some((entry.path(), modified))
         })
         .collect();
     metas.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
@@ -1278,10 +1304,9 @@ fn subagent_sidecars_with_budget(session_id: &str, transcript: &Path, budget: u6
             );
             continue;
         };
-        let mut rows = parse_session_messages(file).messages;
-        for row in &mut rows {
-            row.parent_tool_use_id = Some(dispatch.to_owned());
-        }
+        // The fold stamps every row with its owner; the parse leaves the
+        // wire's own value alone.
+        let rows = parse_session_messages(file).messages;
         sidecars.push((dispatch.to_owned(), rows));
     }
     (sidecars, links)
@@ -3612,8 +3637,9 @@ mod tests {
     /// A sub-agent's own frames live only in the CLI's sidecar
     /// (`<session>/subagents/agent-*.jsonl`), which nothing read: after a
     /// resume the dispatch's card held no calls (#1763). The transcript read
-    /// folds each sidecar in under the dispatch its meta names - where the
-    /// dispatch ran, not at the end - which is the join the card fold reads.
+    /// folds each sidecar under the first dispatch its chain answers - where
+    /// the dispatch ran, not at the end - which is the join the card fold
+    /// reads.
     #[test]
     fn get_session_messages_folds_subagent_sidecars_under_their_dispatch() {
         let config_dir = tempfile::tempdir().unwrap();
@@ -3881,31 +3907,102 @@ mod tests {
             "{\"type\":\"assistant\",\"isSidechain\":true,\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"kept\"}]},\"uuid\":\"n1\"}\n",
         )
         .unwrap();
+        // A second child of the same skipped parent: both become roots, and
+        // their order must be the one they fired in (oldest first).
+        fs::write(
+            sidecars.join("agent-second.meta.json"),
+            "{\"agentType\":\"Explore\",\"toolUseId\":\"toolu_other\",\"parentAgentId\":\"outer\",\"spawnDepth\":2}",
+        )
+        .unwrap();
+        fs::write(
+            sidecars.join("agent-second.jsonl"),
+            "{\"type\":\"assistant\",\"isSidechain\":true,\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"older\"}]},\"uuid\":\"m1\"}\n",
+        )
+        .unwrap();
         set_age(&sidecars.join("agent-outer.meta.json"), 600);
         set_age(&sidecars.join("agent-nested.meta.json"), 60);
+        set_age(&sidecars.join("agent-second.meta.json"), 120);
 
-        // The budget fits the child's body only: its parent's body is skipped.
+        // The budget fits the children's bodies only: the parent's is skipped.
         let transcript = dir.join(format!("{session_id}.jsonl"));
-        let (sidecars, links) = subagent_sidecars_with_budget(session_id, &transcript, 200);
+        let (sidecars, links) = subagent_sidecars_with_budget(session_id, &transcript, 300);
         assert!(
             sidecars.iter().all(|(dispatch, _)| dispatch != "toolu_dispatch"),
             "the parent's body is past the budget",
         );
-        assert_eq!(links.len(), 2, "but both metas are read for the chain");
+        assert_eq!(links.len(), 3, "but every meta is read for the chain");
 
         let mut messages = parse_session_messages(fs::File::open(&transcript).unwrap()).messages;
         fold_subagent_sidecars(&mut messages, sidecars, &links, session_id);
 
         assert_eq!(
             messages.iter().map(|message| message.uuid.as_str()).collect::<Vec<_>>(),
-            vec!["a1", "u1", "n1"],
-            "the child's frame folds although its parent's body was skipped",
+            vec!["a1", "u1", "m1", "n1"],
+            "both children fold, the older root first, although the parent's body was skipped",
         );
+        for message in messages.iter().filter(|message| message.parent_tool_use_id.is_some()) {
+            assert_eq!(
+                message.parent_tool_use_id.as_deref(),
+                Some("toolu_dispatch"),
+                "every child is stamped with the dispatch the transcript answers",
+            );
+        }
+    }
+
+    /// **A child meta with no `parentAgentId` still resolves through the
+    /// parent body.** The parent's own rows name the child's dispatch, and
+    /// that link is enough.
+    #[test]
+    fn a_child_meta_without_a_parent_agent_id_resolves_through_the_body() {
+        let config_dir = tempfile::tempdir().unwrap();
+        let session_id = "550e8400-e29b-41d4-a716-446655440006";
+        let directory = "/Users/me/Projects/playground";
+        let dir = project_dir_for(config_dir.path(), directory);
+        fs::create_dir_all(&dir).unwrap();
+        write_session_jsonl(
+            &dir,
+            session_id,
+            "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"toolu_dispatch\",\"name\":\"Agent\",\"input\":{\"prompt\":\"explore\"}}]},\"uuid\":\"a1\"}\n\
+             {\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_dispatch\",\"content\":\"done\"}]},\"uuid\":\"u1\"}\n",
+        );
+        let sidecars = dir.join(session_id).join("subagents");
+        fs::create_dir_all(&sidecars).unwrap();
+        fs::write(
+            sidecars.join("agent-outer.meta.json"),
+            "{\"agentType\":\"Explore\",\"toolUseId\":\"toolu_dispatch\"}",
+        )
+        .unwrap();
+        fs::write(
+            sidecars.join("agent-outer.jsonl"),
+            "{\"type\":\"assistant\",\"isSidechain\":true,\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"toolu_child\",\"name\":\"Agent\",\"input\":{\"prompt\":\"inner\"}}]},\"uuid\":\"o1\"}\n\
+             {\"type\":\"user\",\"isSidechain\":true,\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_child\",\"content\":\"ok\"}]},\"uuid\":\"o2\"}\n",
+        )
+        .unwrap();
+        // No parentAgentId: only the parent body names this dispatch.
+        fs::write(
+            sidecars.join("agent-child.meta.json"),
+            "{\"agentType\":\"Explore\",\"toolUseId\":\"toolu_child\"}",
+        )
+        .unwrap();
+        fs::write(
+            sidecars.join("agent-child.jsonl"),
+            "{\"type\":\"assistant\",\"isSidechain\":true,\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"child\"}]},\"uuid\":\"c1\"}\n",
+        )
+        .unwrap();
+        set_age(&sidecars.join("agent-outer.meta.json"), 600);
+        set_age(&sidecars.join("agent-child.meta.json"), 60);
+
+        let messages =
+            get_session_messages(config_dir.path(), session_id, Some(directory)).messages;
+
         assert_eq!(
-            messages.last().and_then(|message| message.parent_tool_use_id.as_deref()),
-            Some("toolu_dispatch"),
-            "stamped with the dispatch the transcript answers",
+            messages.iter().map(|message| message.uuid.as_str()).collect::<Vec<_>>(),
+            vec!["a1", "u1", "o1", "c1", "o2"],
+            "the child folds inside the row that fired it",
         );
+        for message in messages.iter().filter(|message| message.parent_tool_use_id.is_some()) {
+            assert_eq!(message.parent_tool_use_id.as_deref(), Some("toolu_dispatch"));
+        }
     }
 
     /// **A chain that loops, or loses its parent meta, joins nothing.** Both
@@ -3951,6 +4048,31 @@ mod tests {
             messages.iter().map(|message| message.uuid.as_str()).collect::<Vec<_>>(),
             vec!["a1"],
             "a cycle and a missing parent both resolve to nothing, and nothing loops",
+        );
+        // The rows above would also vanish for a walk that answered a
+        // non-answered id, so pin the resolution itself.
+        let mut made_under = HashMap::new();
+        made_under.insert("toolu_a".to_owned(), "toolu_b".to_owned());
+        made_under.insert("toolu_b".to_owned(), "toolu_a".to_owned());
+        made_under.insert("toolu_c".to_owned(), "toolu_ghost".to_owned());
+        let mut answered = HashSet::new();
+        answered.insert("toolu_top".to_owned());
+        assert_eq!(
+            owning_dispatch("toolu_a", &answered, &made_under),
+            None,
+            "a cycle resolves to nothing"
+        );
+        assert_eq!(owning_dispatch("toolu_b", &answered, &made_under), None);
+        assert_eq!(
+            owning_dispatch("toolu_c", &answered, &made_under),
+            None,
+            "a missing parent resolves to nothing",
+        );
+        made_under.insert("toolu_top_child".to_owned(), "toolu_top".to_owned());
+        assert_eq!(
+            owning_dispatch("toolu_top_child", &answered, &made_under),
+            Some("toolu_top"),
+            "a chain that reaches an answered dispatch resolves to it",
         );
     }
 

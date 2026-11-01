@@ -310,32 +310,19 @@ impl CardTracker {
             .collect()
     }
 
-    /// The row a refusal by `task_id` belongs under: the card dispatch the
-    /// agent ran as, or the card that owns the dispatch it was nested under.
-    ///
-    /// The CLI's `permission_denied` frame names the agent and never the
-    /// dispatch, and the agent is the task id the roster opened the dispatch
-    /// with. A dispatch a sub-agent fired has no card of its own: a second
-    /// level's call is a child line of the instance that fired it, and a
-    /// third level's call names that child line as its parent - which is why
-    /// the walk needs a second hop. Both resolve to the owning instance; a
-    /// task no instance owns answers `None`, and the frame stays where it
-    /// was.
+    /// The row a refusal by `task_id` belongs under. The CLI names the agent,
+    /// never the dispatch, so the agent's task id is resolved through the
+    /// chain; a task no instance owns answers `None` and the frame stays put.
     pub(crate) fn dispatch_of(&self, task_id: &str) -> Option<&str> {
         let linked =
             self.task_ids.get(task_id).map(String::as_str).filter(|id| !id.trim().is_empty())?;
         self.owning_dispatch(linked)
     }
 
-    /// The card dispatch that owns `call`, walking the nesting: the call
-    /// itself when it opened a card, else the instance whose child line it
-    /// is, else the call it was made under, until one of those answers.
-    ///
-    /// One hop is not enough. A depth-2 agent's `Task` call is a child line
-    /// of the outer card, but the dispatch a depth-3 agent ran under was
-    /// made by the depth-2 agent: its parent is that child line, not a card,
-    /// so a frame from that agent named an id no card owns and drew at the
-    /// session's level.
+    /// The card dispatch that owns `call`: the call itself when it opened a
+    /// card, else the instance whose child line it is, else the call it was
+    /// made under. Only the outermost dispatch is a card, so a depth-3 call
+    /// names a child line rather than a card and needs the extra hop.
     pub(crate) fn owning_dispatch(&self, call: &str) -> Option<&str> {
         let mut cursor = call;
         // Bounded, so a parent link pair naming each other cannot spin: the
@@ -1000,6 +987,18 @@ mod tests {
             settled,
             Some(forge_primitives::runtime::SubagentCallStatus::Completed),
             "the third-level call settles on its own result",
+        );
+        // A frame can arrive before the call it names was registered as a
+        // child line; the parent link alone still reaches the card.
+        let mut early = CardTracker::default();
+        early.apply(&dispatch("toolu_a", "outer", "Explore"));
+        early.apply(&call("toolu_deep", "Bash", serde_json::json!({}), Some("toolu_inner")));
+        early.apply(&call("toolu_inner", "Agent", serde_json::json!({}), Some("toolu_a")));
+        early.apply(&task_started("t-deep", "toolu_deep", "deep"));
+        assert_eq!(
+            early.dispatch_of("t-deep"),
+            Some("toolu_a"),
+            "the parent link alone reaches the card when the child line arrived late",
         );
 
         // A chain that never reaches a card resolves to nothing: the refusal

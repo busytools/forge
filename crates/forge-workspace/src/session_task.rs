@@ -1788,16 +1788,11 @@ impl SessionTask {
 
     /// The same frame, naming the dispatch that owns it.
     ///
-    /// Two shapes need it. A sub-agent's frames name the `Task`/`Agent` call
-    /// its own parent fired as `parent_tool_use_id`, and only the outermost
-    /// dispatch is a card: a second level's call is a child line of the card,
-    /// and a third level's names that child line - so a frame from an agent
-    /// two levels down drew nowhere. A `permission_denied` frame names the
-    /// refused call and the agent that made it and no dispatch at all, so it
-    /// drew as a row the session itself had made. The card tracker keeps every
-    /// tool-use id's parent, so the chain walks up to the top-level dispatch
-    /// the expansion draws it in; a chain that reaches no card is left alone,
-    /// because a stamp naming an id no expansion takes draws nowhere.
+    /// A sub-agent's frames carry the dispatch their parent fired, and only
+    /// the outermost dispatch is a card, so a deeper frame names no expansion;
+    /// a `permission_denied` frame names the agent and no dispatch at all.
+    /// Both walk the tracker's parent links to the owning card, and a frame
+    /// whose chain reaches none is left alone.
     fn attribute_dispatch(&self, msg: forge_primitives::Message) -> forge_primitives::Message {
         let (held, owner) = {
             let domain = self.domain.lock();
@@ -1833,6 +1828,16 @@ impl SessionTask {
             }
         };
         let Some(owner) = owner else {
+            // The frame keeps the parent the wire gave it; a nested id draws
+            // nowhere, so the tracker's own record is the only trace.
+            if let Some(held) = held.as_deref() {
+                tracing::debug!(
+                    target: "forge_workspace::subagent_cards",
+                    event_name = "subagent_frame_without_a_card",
+                    parent = %held,
+                    "a parented frame resolves to no card; it keeps the parent the wire gave it",
+                );
+            }
             return msg;
         };
         if held.as_deref() == Some(owner.as_str()) {
@@ -8763,13 +8768,12 @@ provider = "anthropic"
     }
 
     /// **A frame from an agent three levels down names the card that owns
-    /// it.** The wire parents such a frame to the dispatch its own parent
-    /// fired, and only the outermost dispatch is a card: that call is a child
-    /// line one level down, and a level further the frame names that child
-    /// line rather than a card - so the frame drew nowhere and the refusal
-    /// drew at the session's level. The tracker's parent links walk the chain
-    /// back to the top-level dispatch on every frame, which is the expansion
-    /// that draws it.
+    /// it.** The wire parents such a frame to the `Agent` call its own parent
+    /// fired; that call is a child line one level below the card, and a level
+    /// further the frame names that child line rather than a card - so the
+    /// frame drew nowhere and the refusal drew at the session's level. The
+    /// tracker's parent links walk the chain back to the top-level dispatch on
+    /// every frame, which is the expansion that draws it.
     #[test]
     fn a_third_level_agents_frames_name_the_card_that_owns_them() {
         let dir = tempfile::tempdir().expect("tempdir");
