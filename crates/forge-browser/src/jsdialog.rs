@@ -51,10 +51,10 @@ cef::wrap_jsdialog_handler! {
     }
 
     impl JsdialogHandler {
-        /// **Every dialog is answered here**, not left for CEF's own modal:
-        /// the host is a windowless process on a server, so a dialog CEF
-        /// draws has nobody to draw it to. The page gets a dismissal unless
-        /// its agent answers first, and the ask is a host event either way.
+        /// **Every dialog is taken here**, not left for CEF's own modal: the
+        /// host is a windowless process on a server, so a dialog CEF draws
+        /// has nobody to draw it to. The callback is held until the agent
+        /// answers, and the raise is a host event.
         fn on_jsdialog(
             &self,
             _browser: Option<&mut cef::Browser>,
@@ -92,16 +92,16 @@ cef::wrap_jsdialog_handler! {
             1
         }
 
-        /// **An answer the agent made** - through the page's own CDP session -
-        /// closes the dialog and cancels its deadline. The dismissal this
-        /// module makes has already taken the entry, so it is not announced
-        /// twice.
+        /// **A dialog that closed under this module** - the page navigated, or
+        /// the browser went. `forget` answers nothing and announces the
+        /// release, so a server still holding the tab is told it is free.
         fn on_dialog_closed(&self, _browser: Option<&mut cef::Browser>) {
             forget(self.tab);
         }
 
-        /// The page navigated out of its own dialog; there is nothing left to
-        /// answer, and nothing to announce.
+        /// The page navigated out of its own dialog: there is nothing left to
+        /// answer, and the release is announced so the tab is not held for a
+        /// modal that no longer exists.
         fn on_reset_dialog_state(&self, _browser: Option<&mut cef::Browser>) {
             forget(self.tab);
         }
@@ -129,8 +129,19 @@ fn raise(tab: u16, dialog: &'static str, message: String, callback: &JsdialogCal
 /// Forget a tab's dialog without answering it. **The browser is going**, so
 /// its callback has nothing left to answer, and the entry must not outlive
 /// the page that raised it.
+///
+/// **The release is announced like an answer is**: a server that kept holding
+/// the tab would refuse calls the page is free for, and this module's promise
+/// is that every raise and every release is a host event.
 pub fn forget(tab: u16) {
-    OPEN.with(|open| open.borrow_mut().remove(&tab));
+    let gone = OPEN.with(|open| open.borrow_mut().remove(&tab));
+    let Some(dialog) = gone else { return };
+    control::emit(&HostEvent::JsDialog {
+        tab,
+        dialog: dialog.dialog.to_owned(),
+        message: dialog.message,
+        state: JsDialogState::Closed,
+    });
 }
 
 /// Answer one dialog: `accept` is the button the agent chose, `prompt` the

@@ -107,26 +107,18 @@ fn an_answered_dialog_is_answered_once() {
         wait_for_dialog(host, "confirm", JsDialogState::Answered);
         wait_for_title(cdp, "accepted", BOUND).await;
 
-        // **A second answer has nothing to answer**: the dialog is gone, and
-        // a host that kept its callback would answer the page twice. The
-        // page answers its own confirm and raises no second one.
-        let count_shown = |events: &[String]| {
-            events
-                .iter()
-                .filter(|line| {
-                    matches!(
-                        forge_browser::control::parse(line),
-                        Some(HostEvent::JsDialog { state: JsDialogState::Shown, .. })
-                    )
-                })
-                .count()
-        };
-        let before = count_shown(&host.events());
-        std::thread::sleep(Duration::from_secs(2));
+        // **A second answer has nothing to answer**: the host took the entry
+        // on the first one, so nothing reaches the page a second time.
+        host.input(&forge_browser::input::host_line(&HostInput::Dialog {
+            tab: 1,
+            accept: true,
+            prompt: None,
+        }));
+        std::thread::sleep(Duration::from_millis(750));
         assert_eq!(
-            count_shown(&host.events()),
-            before,
-            "the answered dialog was raised again: {:?}",
+            count_state(host, JsDialogState::Answered),
+            1,
+            "a second answer answered the dialog again: {:?}",
             host.events(),
         );
     });
@@ -326,6 +318,19 @@ fn wait_for_dialog(host: &support::Host, wanted: &str, state: JsDialogState) -> 
         );
         std::thread::sleep(POLL);
     }
+}
+
+/// How many dialogs the host reported in `state`.
+fn count_state(host: &support::Host, state: JsDialogState) -> usize {
+    host.events()
+        .into_iter()
+        .filter(|line| {
+            matches!(
+                forge_browser::control::parse(line),
+                Some(HostEvent::JsDialog { state: event_state, .. }) if event_state == state
+            )
+        })
+        .count()
 }
 
 /// Whether this dialog ever reached `state`.

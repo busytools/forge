@@ -71,7 +71,8 @@ segment's list is tabs rather than profiles.
 A tab carries the host's number, and the registry keeps its owner, its title
 and URL, and the session's current tab. A session's first page call creates
 its tab - or adopts the host's own boot tab - and every later call drives
-that tab; another session's calls never land on it. **A page's `window.open` opens a
+that tab, unless a page's own dialog holds it (see the rule below); another
+session's calls never land on it. **A page's `window.open` opens a
 tab of its own**, owned by the opener's session and made that session's current
 tab, so a sign-in popup is driven like any other page; a popup that closes
 itself hands the session back to the tab that opened it. Three things close a tab
@@ -297,6 +298,16 @@ Not now and the feedback line only while that page is up on the tab the
 hand-off named; a page moved to another tab names the ask and answers nothing.
 **A failed page stays answerable**: a host that died under a parked ask is what
 the feedback line is for.
+
+**A page's dialog is held until someone answers it.** A `confirm`, an `alert`
+or a `beforeunload` prompt takes the tab it was raised on: every call that
+would drive that tab is refused by name - the tab, the dialog, its message and
+the seat that owns the tab - before it reaches the driver, so nothing attaches
+to a paused renderer. `browser_handle_dialog` answers or dismisses it,
+`browser_tabs close` and `browser_close` dispose of it by closing the tab, and
+the listing is unaffected. **A tab with a pending dialog is unusable until it
+is answered**, which is the price of never answering a person's modal behind
+their back. The tab carries no visible mark of the dialog yet (#2765).
 
 ## The widths
 

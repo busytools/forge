@@ -1809,7 +1809,7 @@ cef::wrap_life_span_handler! {
             self.popups.forget(self.tab);
             // **A dialog open on this browser goes with it.** The callback has
             // nothing left to answer, and an entry kept for a destroyed page
-            // would be expired against a browser that no longer exists.
+            // would hold its tab against a browser that no longer exists.
             crate::jsdialog::forget(self.tab);
         }
     }

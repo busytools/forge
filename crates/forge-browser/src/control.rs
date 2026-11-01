@@ -11,13 +11,15 @@ use std::io::Write as _;
 use serde::{Deserialize, Serialize};
 
 /// Where a JavaScript dialog stands. **The host holds one until it is
-/// answered**, so these are the two facts there are: it was raised, and
-/// someone answered it.
+/// answered**, so these are the facts there are: it was raised, someone
+/// answered it, or the page took it away without an answer (a navigation, or
+/// the tab closing). **`Closed` is not `Answered`**: nobody decided.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum JsDialogState {
     Shown,
     Answered,
+    Closed,
 }
 
 /// One thing the host needs the server to route.
@@ -88,7 +90,7 @@ mod tests {
     /// server can tell a held dialog from one someone answered.
     #[test]
     fn a_js_dialog_round_trips_its_line() {
-        for state in [JsDialogState::Shown, JsDialogState::Answered] {
+        for state in [JsDialogState::Shown, JsDialogState::Answered, JsDialogState::Closed] {
             let event = HostEvent::JsDialog {
                 tab: 2,
                 dialog: "confirm".to_owned(),
