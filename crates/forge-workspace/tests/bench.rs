@@ -152,31 +152,47 @@ fn committed_str(file: Option<&str>, section: &str, key: &str) -> Result<Option<
         .ok_or_else(|| format!("{section}.{key} is present but is not a string: {value}"))
 }
 
-/// Whether the committed trend measured the same model identities this run
-/// did.
+/// Whether the committed trend recorded the same run this one is: the same
+/// machine, corpus and model identities.
 ///
-/// A different model re-anchors every figure: keeping a deadband anchor
-/// recorded for another model would attribute that model's numbers to this
-/// one, and the anchor would then never self-correct. The identity is the
-/// file plus what the header writes beside it, not the source - a pick
-/// becoming a pin for the same file is the same model.
-fn same_models(
+/// Any change re-anchors every figure: keeping a deadband anchor recorded for
+/// another model, corpus or machine would attribute that run's numbers to
+/// this one, and the anchor would then never self-correct. The identity is
+/// what the header writes, not the source - a pick becoming a config key that
+/// names the same installed record keeps the anchor, while a compiled-pin
+/// takeover changes the identity (a digest rather than a size).
+fn same_run(
     existing: Option<&str>,
+    machine: (&str, &str, &str),
+    corpus_sha: &str,
     asr: (&str, &str),
     normalizer: (&str, &str),
 ) -> Result<bool, String> {
-    for (section, (model, identity)) in [("asr", asr), ("normalizer", normalizer)] {
-        let Some(prior_model) = committed_str(existing, section, "model")? else {
+    let fields = [
+        ("machine", "model", machine.0),
+        ("machine", "cpu", machine.1),
+        ("machine", "os", machine.2),
+        ("corpus", "manifest_sha256", corpus_sha),
+        ("asr", "model", asr.0),
+        ("asr", "sha256", asr.1),
+        ("normalizer", "model", normalizer.0),
+        ("normalizer", "sha256", normalizer.1),
+    ];
+    for (section, key, now) in fields {
+        let Some(prior) = committed_str(existing, section, key)? else {
             return Ok(false);
         };
-        let Some(prior_identity) = committed_str(existing, section, "sha256")? else {
-            return Ok(false);
-        };
-        if prior_model != model || prior_identity != identity {
+        if prior != now {
             return Ok(false);
         }
     }
     Ok(true)
+}
+
+/// The anchor a figure is held to: none when the run changed, so every
+/// figure re-anchors; otherwise the committed one.
+fn prior_for(prior: Option<u64>, same_model: bool) -> Option<u64> {
+    if same_model { prior } else { None }
 }
 
 /// The live engine configuration with per-take diagnostics off.
@@ -404,6 +420,28 @@ fn the_bench_takes_the_transcribing_model_from_the_live_pick() {
     );
 }
 
+/// **A config key decides before the pick is read.** The bench resolves a
+/// keyed role from the key, as the boot does; the pick row must not change
+/// the answer.
+#[test]
+fn a_config_key_beats_the_pick_in_the_bench_resolution() {
+    let keyed = "keyed-speech.gguf";
+    let machine = Machine::with_store(
+        "transcribe_model = \"keyed\"\n",
+        Some(("keyed", keyed, 100)),
+        Some("picked"),
+    );
+
+    let live = machine.resolve().expect("the key resolves");
+
+    assert_eq!(live.config.asr_model.file, keyed, "the key's model runs, not the pick");
+    assert!(
+        live.models.iter().any(|(role, model)| *role == DictateRole::Transcribing
+            && matches!(&model.from, ActiveFrom::Config { .. })),
+        "and the resolution names the key as the source",
+    );
+}
+
 /// **A store the bench cannot read is a failure, not a fall back to the
 /// pins.** The fallback is the defect restated: it measures a model the user
 /// is not running, and says nothing about it.
@@ -428,48 +466,70 @@ fn a_machine_with_no_store_fails_rather_than_measuring_the_pin() {
 #[test]
 fn a_machine_with_dictation_off_fails_by_name() {
     let machine = Machine::with_dictate_enabled(false, "", None, None);
+    // No store either: the gate must speak before anything is read, so a
+    // store error here would mean the check moved below the read.
+    std::fs::remove_file(store::path_for(&machine.app_support, &machine.config_dir))
+        .expect("the store was written");
 
     let error = machine.resolve().expect_err("no live role when dictation is off");
 
     assert!(error.contains("[dictate] enabled = false"), "got: {error}");
 }
 
-/// **A different model re-anchors the trend.** The header names this run's
-/// model while the figures are held to the file's deadband, so an anchor
-/// recorded for another model would attribute its numbers to this one and
-/// never self-correct.
+/// **A changed run re-anchors the trend.** The header names this run's
+/// machine, corpus and models while the figures are held to the file's
+/// deadband, so an anchor recorded for another run would attribute its
+/// numbers to this one and never self-correct.
 #[test]
-fn a_different_model_re_anchors_the_trend() {
-    let committed = "[asr]\nmodel = \"a.gguf\"\nsha256 = \"sha256:aa\"\n\n\
+fn a_changed_run_re_anchors_the_trend() {
+    let committed = "[machine]\nmodel = \"Mac16,9\"\ncpu = \"M4\"\nos = \"macOS\"\n\n\
+                     [corpus]\nmanifest_sha256 = \"corpus1\"\n\n\
+                     [asr]\nmodel = \"a.gguf\"\nsha256 = \"sha256:aa\"\n\n\
                      [normalizer]\nmodel = \"n.gguf\"\nsha256 = \"size-10\"\n";
+    let machine = ("Mac16,9", "M4", "macOS");
+    let asr = ("a.gguf", "sha256:aa");
+    let normalizer = ("n.gguf", "size-10");
+    let same =
+        |machine: (&str, &str, &str), corpus: &str, asr: (&str, &str), norm: (&str, &str)| {
+            same_run(Some(committed), machine, corpus, asr, norm).expect("a valid file")
+        };
+    assert!(same(machine, "corpus1", asr, normalizer), "the same run keeps its anchors");
     assert!(
-        same_models(Some(committed), ("a.gguf", "sha256:aa"), ("n.gguf", "size-10"))
-            .expect("a valid file"),
-        "the same pair keeps its anchors",
-    );
-    assert!(
-        !same_models(Some(committed), ("b.gguf", "sha256:aa"), ("n.gguf", "size-10"))
-            .expect("a valid file"),
+        !same(machine, "corpus1", ("b.gguf", "sha256:aa"), normalizer),
         "a different asr file re-anchors",
     );
     assert!(
-        !same_models(Some(committed), ("a.gguf", "size-279"), ("n.gguf", "size-10"))
-            .expect("a valid file"),
-        "the same file with a new identity re-anchors",
+        !same(machine, "corpus1", ("a.gguf", "size-279"), normalizer),
+        "the same asr file with a new identity re-anchors",
     );
     assert!(
-        !same_models(None, ("a.gguf", "sha256:aa"), ("n.gguf", "size-10")).expect("no file"),
+        !same(machine, "corpus1", asr, ("m.gguf", "size-10")),
+        "a different normalizer file re-anchors",
+    );
+    assert!(
+        !same(machine, "corpus1", asr, ("n.gguf", "size-99")),
+        "a normalizer identity change re-anchors",
+    );
+    assert!(!same(machine, "corpus2", asr, normalizer), "a different corpus re-anchors");
+    assert!(
+        !same(("Mac16,9", "M3", "macOS"), "corpus1", asr, normalizer),
+        "a different machine re-anchors",
+    );
+    assert!(
+        !same_run(None, machine, "corpus1", asr, normalizer).expect("no file"),
         "a first run re-anchors",
     );
     assert!(
-        !same_models(
-            Some("[machine]\nmodel = \"Mac\"\n"),
-            ("a.gguf", "sha256:aa"),
-            ("n.gguf", "size-10"),
-        )
-        .expect("a file without the sections"),
+        !same_run(Some("[machine]\nmodel = \"Mac\"\n"), machine, "corpus1", asr, normalizer)
+            .expect("a file without the sections"),
         "a file without the sections is a first run",
     );
+    assert_eq!(
+        prior_for(Some(682), true),
+        Some(682),
+        "an unchanged run keeps the committed anchor",
+    );
+    assert_eq!(prior_for(Some(682), false), None, "a changed run re-anchors every figure");
 }
 
 /// **A config key the machine has not installed fails, rather than reaching
@@ -631,8 +691,12 @@ fn bench_corpus() {
     };
     let asr_identity = model_identity(&asr, &models.join(&asr.file));
     let normalizer_identity = model_identity(&normalizer, &models.join(&normalizer.file));
-    let same_model = same_models(
+    let cpu = sysctl("machdep.cpu.brand_string");
+    let os = os_version();
+    let same_model = same_run(
         existing.as_deref(),
+        (&model, &cpu, &os),
+        &manifest_sha,
         (&asr.file, &asr_identity),
         (&normalizer.file, &normalizer_identity),
     )
@@ -653,7 +717,7 @@ fn bench_corpus() {
             let name = format!("speed.{key}");
             let prior = committed(existing.as_deref(), &name, "ms")
                 .expect("an unreadable results file must not be silently overwritten");
-            let prior = if same_model { prior } else { None };
+            let prior = prior_for(prior, same_model);
             Section {
                 name,
                 key: "ms",
@@ -847,7 +911,7 @@ fn accuracy(manifest: &[Entry], differs: &[String], asr_differs: &[String]) -> S
          # Per-clip identity is the signal: a percentage would hide which clip\n\
          # moved, and the baselines are another model's locked output rather\n\
          # than ground truth, so a difference is a question and not a verdict.\n\
-         # Divergence is expected - see ../forge-dictate/fixtures/README.md.\n\
+         # Divergence is expected - see crates/forge-dictate/fixtures/README.md.\n\
          # Nothing here may be\n\
          # tuned toward these baselines.\n\
          #\n\
