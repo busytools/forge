@@ -1231,6 +1231,7 @@ dependencies = [
  "forge-primitives",
  "forge-sdk",
  "forge-server",
+ "forge-tts",
  "forge-workspace",
  "futures-util",
  "rlimit",

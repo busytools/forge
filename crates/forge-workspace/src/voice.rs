@@ -183,8 +183,9 @@ impl VoiceService {
         let settings = self.settings.clone();
         let seat = seat.clone();
         tokio::spawn(async move {
+            let mut seq = 0_u32;
             while let Some(job) = jobs.recv().await {
-                render(job, &seat, &settings, sink.as_ref()).await;
+                seq = render(job, &seat, &settings, sink.as_ref(), seq).await;
             }
         });
         queue
@@ -199,11 +200,6 @@ impl crate::Workspace {
         self.voice
             .get_or_init(|| {
                 let config = self.config_arc();
-                let settings = VoiceSettings {
-                    max_utterance_seconds: config.tts.max_utterance_seconds,
-                    language: config.tts.language.clone(),
-                    speaker: config.tts.speaker.clone(),
-                };
                 let files = config.tts.files();
                 let loader: Loader = Arc::new(move || {
                     let files =
@@ -212,14 +208,126 @@ impl crate::Workspace {
                         .map_err(|error| error.to_string())?;
                     Ok(Arc::new(engine) as Arc<dyn Engine>)
                 });
-                Arc::new(VoiceService::new(
-                    loader,
-                    settings,
-                    Arc::new(WorkspaceSink { workspace: Arc::downgrade(self) }),
-                    Arc::new(WorkspaceNotes { workspace: Arc::downgrade(self) }),
-                ))
+                Arc::new(self.build_voice_service(loader))
             })
             .clone()
+    }
+
+    /// The clients with voice on for `seat`. Zero before the service has
+    /// been built, which is the truth: nobody could have toggled it yet.
+    pub fn voice_listeners(&self, seat: &SessionSlot) -> usize {
+        self.voice.get().map_or(0, |service| service.listeners(seat))
+    }
+
+    /// Put an already-built engine behind the service, so a test can drive
+    /// the utterance path without loading a model.
+    #[cfg(any(test, feature = "test-helpers"))]
+    pub fn install_voice_engine_for_test(self: &Arc<Self>, engine: Arc<dyn Engine>) {
+        let loader: Loader = Arc::new(move || Ok(Arc::clone(&engine)));
+        let _ = self.voice.set(Arc::new(self.build_voice_service(loader)));
+    }
+
+    /// Speak one utterance the way `voice__say` does, so a cross-crate test
+    /// can drive a render without an agent calling the tool.
+    #[cfg(any(test, feature = "test-helpers"))]
+    pub async fn voice_say_for_test(
+        self: &Arc<Self>,
+        seat: &SessionSlot,
+        text: String,
+    ) -> Result<(), SayError> {
+        self.voice_service().say(seat, text).await
+    }
+
+    fn build_voice_service(self: &Arc<Self>, loader: Loader) -> VoiceService {
+        let config = self.config_arc();
+        let settings = VoiceSettings {
+            max_utterance_seconds: config.tts.max_utterance_seconds,
+            language: config.tts.language.clone(),
+            speaker: config.tts.speaker.clone(),
+        };
+        VoiceService::new(
+            loader,
+            settings,
+            Arc::new(WorkspaceSink { workspace: Arc::downgrade(self) }),
+            Arc::new(WorkspaceNotes { workspace: Arc::downgrade(self) }),
+        )
+    }
+
+    /// One complete clip from a client: transcribe it with the seat's live
+    /// dictation role and dispatch the words as the reader's own prompt.
+    /// A clip nothing can transcribe draws a notice row and dispatches
+    /// nothing.
+    pub(crate) async fn voice_utterance(self: Arc<Self>, key: SessionSlot, pcm: Vec<i16>) {
+        let engine = self.dictate.engine.lock().clone();
+        let Some(engine) = engine else {
+            self.notice(
+                &key,
+                crate::NoticeSeverity::Error,
+                "voice: dictation is not ready, so this utterance was not transcribed",
+            );
+            return;
+        };
+        let samples: Vec<f32> =
+            pcm.iter().map(|sample| f32::from(*sample) / f32::from(i16::MAX)).collect();
+        let answer = tokio::task::spawn_blocking(move || {
+            let ticket = engine.transcribe(forge_dictate::Samples::mono(samples))?;
+            ticket.recv()
+        })
+        .await;
+        let outcome = match answer {
+            Ok(Ok(outcome)) => outcome,
+            Ok(Err(error)) => {
+                tracing::debug!(
+                    event_name = "voice_transcribe_failed",
+                    slot = %key.display(),
+                    %error,
+                    "the utterance did not transcribe"
+                );
+                self.notice(
+                    &key,
+                    crate::NoticeSeverity::Error,
+                    "voice: the utterance did not transcribe",
+                );
+                return;
+            }
+            Err(error) => {
+                tracing::warn!(
+                    event_name = "voice_transcribe_unjoined",
+                    slot = %key.display(),
+                    %error,
+                    "the transcription task failed to join"
+                );
+                self.notice(
+                    &key,
+                    crate::NoticeSeverity::Error,
+                    "voice: the utterance did not transcribe",
+                );
+                return;
+            }
+        };
+        let words = match outcome {
+            forge_dictate::Outcome::Transcript(transcript) => transcript.text,
+            forge_dictate::Outcome::NoAudio { .. } => String::new(),
+        };
+        if words.trim().is_empty() {
+            self.notice(
+                &key,
+                crate::NoticeSeverity::Error,
+                "voice: nothing was heard in that utterance",
+            );
+            return;
+        }
+        let uuid = forge_sdk::request_id::next_prompt_id();
+        if let Err(error) =
+            self.dispatch_workspace_prompt_under(&key, words, crate::PromptSource::You, uuid)
+        {
+            tracing::warn!(
+                event_name = "voice_prompt_not_delivered",
+                slot = %key.display(),
+                %error,
+                "the transcript did not reach the seat"
+            );
+        }
     }
 }
 
@@ -271,7 +379,13 @@ impl NoteDispatch for WorkspaceNotes {
     }
 }
 
-async fn render(job: Job, seat: &SessionSlot, settings: &VoiceSettings, sink: &dyn AudioSink) {
+async fn render(
+    job: Job,
+    seat: &SessionSlot,
+    settings: &VoiceSettings,
+    sink: &dyn AudioSink,
+    mut seq: u32,
+) -> u32 {
     let Job { text, engine, first } = job;
     let mut first = Some(first);
     for sentence in forge_tts::sentences(&text) {
@@ -286,7 +400,8 @@ async fn render(job: Job, seat: &SessionSlot, settings: &VoiceSettings, sink: &d
                     if let Some(sender) = first.take() {
                         let _ = sender.send(Ok(()));
                     }
-                    sink.push(seat, chunk);
+                    sink.push(seat, Chunk { seq, ..chunk });
+                    seq = seq.wrapping_add(1);
                 }
                 Err(error) => {
                     tracing::warn!(
@@ -297,7 +412,7 @@ async fn render(job: Job, seat: &SessionSlot, settings: &VoiceSettings, sink: &d
                     if let Some(sender) = first.take() {
                         let _ = sender.send(Err(SayError::Engine(error.to_string())));
                     }
-                    return;
+                    return seq;
                 }
             }
         }
@@ -305,6 +420,7 @@ async fn render(job: Job, seat: &SessionSlot, settings: &VoiceSettings, sink: &d
     if let Some(sender) = first {
         let _ = sender.send(Ok(()));
     }
+    seq
 }
 
 #[cfg(test)]

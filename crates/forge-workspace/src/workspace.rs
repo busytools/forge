@@ -6273,7 +6273,7 @@ impl Workspace {
     }
 
     /// Emit one line the core has for a view about `key`.
-    fn notice(&self, key: &SessionSlot, severity: NoticeSeverity, text: &str) {
+    pub(crate) fn notice(&self, key: &SessionSlot, severity: NoticeSeverity, text: &str) {
         let _ = self.update_sender().send(SessionUpdate::Notice {
             key: key.clone(),
             severity,
@@ -6411,6 +6411,23 @@ impl Workspace {
                         &key,
                         crate::dictate::DictateOverrideUpdate::Reset,
                     );
+                }
+                // The seat's voice state, and one clip on its way to a
+                // prompt: workspace state and dictation traffic, never agent
+                // traffic, so neither rides the session task.
+                Command::VoiceMode { key, on, initiator } => {
+                    let client = initiator.unwrap_or(0);
+                    let voice = self.voice_service();
+                    voice.set_listening(&key, client, on);
+                    let listeners = u32::try_from(voice.listeners(&key)).unwrap_or(u32::MAX);
+                    let _ =
+                        self.update_sender().send(SessionUpdate::VoiceModeState { key, listeners });
+                    return Ok(());
+                }
+                Command::VoiceUtterance { key, pcm, .. } => {
+                    let this = Arc::clone(self);
+                    tokio::spawn(async move { this.voice_utterance(key, pcm).await });
+                    return Ok(());
                 }
                 _ => {}
             }
