@@ -52,6 +52,13 @@
   .bt.arrow svg { width: 15px; height: 15px; }
   .bt.off { opacity: .45; }
   .btitle { font-family: var(--mono); font-size: var(--fs-label); color: var(--muted); }
+  /* The pane chord's hint, drawn only where a native page holds the keys: the
+     title row names the keys that bring the keyboard into the bar. */
+  .bhint { display: inline-flex; align-items: center; gap: 4px;
+    font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
+    white-space: nowrap; }
+  .bhint kbd { font-family: inherit; font-size: inherit; color: inherit;
+    border: 1px solid var(--line); border-radius: 5px; padding: 0 5px; }
   .bacts { margin-left: auto; display: flex; gap: 8px; }
   /* The parked ask's words, on the bar that answers it: the card carrying them
      is behind the page, so this row is where they are read. */
@@ -186,6 +193,7 @@
           <span class="bt arrow off" aria-label="forward"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg></span>
         </span>
         <span class="btitle">browser hand-off &middot; tab 2</span>
+        <span class="bhint"><kbd>Cmd</kbd> <kbd>Opt</kbd> <kbd>Down</kbd> to focus the bar</span>
         <span class="bt bpick" title="the profile's tabs">2 &middot; Senior Rust engineer &middot; Busytools/forge/lead
           <span class="car">&#9662;</span></span>
         <span class="bacts">

@@ -2,8 +2,9 @@
 import { readFileSync } from 'node:fs';
 
 import { flushSync, mount, unmount } from 'svelte';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { focusBar, focusPage, pageHoldsKeyboard } from '../browser/link';
 import { selectTab, surface } from '../browser/surface.svelte';
 import TakeoverBar from './TakeoverBar.svelte';
 
@@ -12,6 +13,19 @@ const SHEET = readFileSync('src/assets/web.css', 'utf8');
 vi.mock('../browser/surface.svelte', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../browser/surface.svelte')>();
   return { ...actual, selectTab: vi.fn(() => Promise.resolve(null)) };
+});
+
+/** The two doors a native page adds: whether it holds the keyboard, and the
+ *  ask that gives it back. A page with no shell has neither, which is the
+ *  default here. */
+vi.mock('../browser/link', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../browser/link')>();
+  return {
+    ...actual,
+    pageHoldsKeyboard: vi.fn(() => false),
+    focusPage: vi.fn(() => Promise.resolve()),
+    focusBar: vi.fn(() => Promise.resolve()),
+  };
 });
 
 let shown: ReturnType<typeof mount> | null = null;
@@ -28,6 +42,7 @@ async function stop(): Promise<void> {
   surface.viewer = null;
   surface.controller = null;
   surface.tabs = null;
+  surface.phase = 'closed';
 }
 
 /** One bar, mounted for one test; never re-mounted inside a test. The
@@ -624,5 +639,200 @@ describe("the bar's ask", () => {
       (await drawn('The sign-in page is showing a CAPTCHA.')).querySelector('.tb-ask')?.textContent,
       'and words are drawn as they came',
     ).toBe('The sign-in page is showing a CAPTCHA.');
+  });
+});
+
+/**
+ * **The keyboard follows the picture.** On a desktop shell a native layer over
+ * this page holds AppKit first responder while the takeover is up, so the
+ * bar's DOM focus is not where keys land: the shell hands the keyboard over
+ * on the pane chords, and the bar gives it back to the page rather than
+ * keeping a ring on a control it cannot reach (#2571).
+ */
+describe("the takeover bar's keyboard over a native page", () => {
+  const holds = vi.mocked(pageHoldsKeyboard);
+  const ask = vi.mocked(focusPage);
+  const askBar = vi.mocked(focusBar);
+
+  /** One bar with the native page's claim on, mounted for one test. */
+  async function nativeBar(phase: 'live' | 'failed'): Promise<HTMLElement> {
+    await stop();
+    surface.phase = phase;
+    surface.viewer = 1;
+    surface.controller = 1;
+    const target = document.createElement('div');
+    document.body.appendChild(target);
+    shown = mount(TakeoverBar, {
+      target,
+      props: { title: 'browser hand-off', onback: () => {}, ondone: () => {}, onnotnow: () => {} },
+    });
+    flushSync();
+    return target;
+  }
+
+  function paneChord(element: Element, key: 'ArrowUp' | 'ArrowDown'): KeyboardEvent {
+    const chord = new KeyboardEvent('keydown', {
+      key,
+      metaKey: true,
+      altKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    element.dispatchEvent(chord);
+    flushSync();
+    return chord;
+  }
+
+  beforeEach(() => {
+    holds.mockReturnValue(true);
+    ask.mockReset();
+    ask.mockReturnValue(Promise.resolve());
+    askBar.mockReset();
+    askBar.mockReturnValue(Promise.resolve());
+  });
+
+  afterEach(() => {
+    holds.mockReturnValue(false);
+  });
+
+  it('leaves the keyboard on the page rather than taking it on open', async () => {
+    const target = await nativeBar('live');
+    expect(
+      document.activeElement,
+      'the native page holds the keys, so the bar claiming the DOM focus would be a lie',
+    ).not.toBe(target.querySelector('.takeover-bar'));
+  });
+
+  /// **The chord is the only door into the bar on desktop**, so the bar names
+  /// it: one in the accessibility tree, one the eye can read, and the hint
+  /// goes once the chord has been used because it names a move already made.
+  it('announces the pane chord and draws its hint while the page holds the keys', async () => {
+    const target = await nativeBar('live');
+    const bar = target.querySelector('.takeover-bar');
+    expect(bar?.getAttribute('aria-keyshortcuts')).toBe('Meta+Alt+ArrowDown Meta+Alt+ArrowUp');
+    expect(target.querySelector('.tb-hint')?.textContent, 'the hint is readable').toContain(
+      'to focus the bar',
+    );
+    window.dispatchEvent(new Event('forge-bar-focus'));
+    flushSync();
+    expect(
+      target.querySelector('.tb-hint'),
+      'the chord has been used: the hint is done',
+    ).toBeNull();
+  });
+
+  it('takes the keyboard when the shell hands it over', async () => {
+    const target = await nativeBar('live');
+    window.dispatchEvent(new Event('forge-bar-focus'));
+    flushSync();
+    expect(
+      document.activeElement,
+      'the chord put the keyboard in the webview, so the bar takes it',
+    ).toBe(target.querySelector('.takeover-bar'));
+  });
+
+  it('hands the keyboard back to the page on the pane chord, and lets the focus go', async () => {
+    const target = await nativeBar('live');
+    const button = target.querySelector<HTMLButtonElement>('.tb-btn');
+    if (button === null) throw new Error('the bar drew no control');
+    button.focus();
+    const chord = paneChord(button, 'ArrowUp');
+    expect(ask, 'the shell is asked for the native page').toHaveBeenCalledTimes(1);
+    expect(
+      document.activeElement,
+      'the DOM gives the focus up with the keys, rather than ringing a control they cannot reach',
+    ).not.toBe(button);
+    expect(chord.defaultPrevented, 'the chord is the bar panes, not the page').toBe(true);
+  });
+
+  it('gives the focus up when the picture takes the keyboard back', async () => {
+    const target = await nativeBar('live');
+    const button = target.querySelector<HTMLButtonElement>('.tb-btn');
+    if (button === null) throw new Error('the bar drew no control');
+    button.focus();
+    window.dispatchEvent(new Event('forge-page-focus'));
+    flushSync();
+    expect(document.activeElement, 'the ring goes with the keyboard').not.toBe(button);
+  });
+
+  /// **A focus inside the bar is the keyboard's too**: a take's landing puts
+  /// the caret in the feedback field while the picture still holds AppKit's
+  /// first responder, so the shell has to hand the keys over.
+  it('asks the shell for the keyboard when focus lands inside it', async () => {
+    const target = await nativeBar('live');
+    const button = target.querySelector<HTMLButtonElement>('.tb-btn');
+    if (button === null) throw new Error('the bar drew no control');
+    button.focus();
+    flushSync();
+    expect(
+      askBar,
+      'the webview must take the keys for the DOM focus to mean anything',
+    ).toHaveBeenCalledTimes(1);
+  });
+
+  it('asks for nothing where this document already owns the keyboard', async () => {
+    holds.mockReturnValue(false);
+    const target = await nativeBar('live');
+    const button = target.querySelector<HTMLButtonElement>('.tb-btn');
+    if (button === null) throw new Error('the bar drew no control');
+    button.focus();
+    flushSync();
+    expect(askBar, 'no native page holds a keyboard to take back').not.toHaveBeenCalled();
+  });
+
+  /// **A page with no second pane keeps its own keys.** Claiming the chord
+  /// there would preventDefault a shortcut with nothing behind it, and on a
+  /// phone with a hardware keyboard it would blur the focused control.
+  it('claims no pane chord where this document owns the keyboard', async () => {
+    holds.mockReturnValue(false);
+    const target = await nativeBar('live');
+    const button = target.querySelector<HTMLButtonElement>('.tb-btn');
+    if (button === null) throw new Error('the bar drew no control');
+    button.focus();
+    const chord = paneChord(button, 'ArrowDown');
+    expect(chord.defaultPrevented, 'the keys stay with the page').toBe(false);
+    expect(ask, 'and no pane moves').not.toHaveBeenCalled();
+  });
+
+  /// **A failed page has no native layer to hold anything**, so the bar is the
+  /// only thing left to act on and takes the keyboard itself.
+  it('takes the keyboard when the page failed, with no picture to hold it', async () => {
+    const target = await nativeBar('failed');
+    expect(document.activeElement, 'the bar is the surface that remains').toBe(
+      target.querySelector('.takeover-bar'),
+    );
+    // **No page pane means no chord to name**: a failed surface has nothing
+    // to move the keyboard to, so the region must not advertise the keys.
+    const bar = target.querySelector('.takeover-bar');
+    expect(bar?.getAttribute('aria-keyshortcuts'), 'no pane, no announcement').toBeNull();
+    expect(
+      target.querySelector('.tb-hint'),
+      'and no hint for a move that does not exist',
+    ).toBeNull();
+  });
+
+  /// **The failure lands under a bar that is already up**, which is the case
+  /// the mount cannot cover: a live page held the keys, its picture is taken
+  /// down with the failure, and the bar is what the keyboard has left.
+  it('takes the keyboard when the page fails under it', async () => {
+    const target = await nativeBar('live');
+    expect(document.activeElement, 'the page holds the keys while it is live').not.toBe(
+      target.querySelector('.takeover-bar'),
+    );
+    surface.phase = 'failed';
+    flushSync();
+    expect(document.activeElement, 'the picture is gone, so the bar takes them').toBe(
+      target.querySelector('.takeover-bar'),
+    );
+  });
+
+  it('keeps the keyboard when the chord has no page to hand it to', async () => {
+    const target = await nativeBar('failed');
+    const bar = target.querySelector('.takeover-bar');
+    if (bar === null) throw new Error('the bar was not drawn');
+    const chord = paneChord(bar, 'ArrowUp');
+    expect(ask, 'no picture, no ask').not.toHaveBeenCalled();
+    expect(document.activeElement, 'and the keyboard stays where the bar took it').toBe(bar);
+    expect(chord.defaultPrevented, 'no page pane, so the chord is not claimed').toBe(false);
   });
 });

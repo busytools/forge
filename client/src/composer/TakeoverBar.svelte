@@ -20,6 +20,7 @@
   import Field from './Field.svelte';
   import TakeCard from './TakeCard.svelte';
   import { tabRows } from '../browser/host';
+  import { focusBar, focusPage, pageHoldsKeyboard } from '../browser/link';
   import { holdsControl, selectTab, surface, takeControl } from '../browser/surface.svelte';
   import type { NavState } from '../browser/surface.svelte';
   import type { RowPhase } from './dictate.svelte';
@@ -142,6 +143,11 @@
   /** The element that had the keyboard before the bar took it. */
   let restoreTo: HTMLElement | null = null;
 
+  /** Whether the keyboard is in the bar right now. **The pane chord's hint
+   *  belongs to the pane that does not have it**: showing it over a bar that
+   *  already owns the keys would name a move the person has made. */
+  let barFocused = $state(false);
+
   /** Every stop Tab may take inside the bar; a disabled control is not one. */
   function stops(): HTMLElement[] {
     const bar = barEl;
@@ -154,9 +160,8 @@
   }
 
   /**
-   * **The bar is the only thing on screen while it is up**, so it owns the
-   * keyboard: Tab wraps at both ends rather than walking into the chat the
-   * native layer is covering.
+   * **The bar owns the keyboard while it has it**, so Tab wraps at both ends
+   * rather than walking into the chat the native layer is covering.
    */
   function trap(event: KeyboardEvent): void {
     if (event.key !== 'Tab') return;
@@ -174,6 +179,56 @@
     }
   }
 
+  /** The pane chords: Cmd+Option+Down and Cmd+Option+Up move the keyboard to
+   *  the other pane, the two macOS Chrome cycles between its toolbar and its
+   *  page. **With two panes either direction lands on the other one**, so
+   *  each chord is a move rather than a fixed target. */
+  function paneChord(event: KeyboardEvent): boolean {
+    return (
+      event.metaKey &&
+      event.altKey &&
+      !event.shiftKey &&
+      !event.ctrlKey &&
+      (event.key === 'ArrowUp' || event.key === 'ArrowDown')
+    );
+  }
+
+  /**
+   * **The bar and the native page are two panes with one keyboard between
+   * them.** Handing it back needs a page to take it: a failed surface has no
+   * picture and a page with no shell has nowhere to put it, so both keep the
+   * keyboard here rather than dropping the focus on the body.
+   */
+  function handToPage(): void {
+    if (!pagePaneUp()) return;
+    const ask = focusPage();
+    if (ask === null) return;
+    void ask.catch((why: unknown) => console.warn('the keyboard did not go back', why));
+    const active = document.activeElement;
+    if (active instanceof HTMLElement && barEl?.contains(active) === true) active.blur();
+  }
+
+  function keys(event: KeyboardEvent): void {
+    // **The chords exist only where a second pane does.** A page that keeps
+    // its keys in this document has no other pane to move to, so the keys
+    // stay the page's own rather than being claimed to do nothing.
+    if (pagePaneUp() && paneChord(event)) {
+      event.preventDefault();
+      handToPage();
+      return;
+    }
+    trap(event);
+  }
+
+  /** Whether the native page is a pane right now. **While it opens or is
+   *  live it holds the keys**, so the DOM bar takes nothing and its focus
+   *  would only be a ring the keyboard cannot reach; a failed page has no
+   *  picture and no other pane to move to, so neither the chords nor their
+   *  hint exist there. */
+  function pagePaneUp(): boolean {
+    return pageHoldsKeyboard() && (surface.phase === 'opening' || surface.phase === 'live');
+  }
+
   onMount(() => {
     const bar = barEl;
     const had = document.activeElement;
@@ -181,8 +236,36 @@
     // **Capture, because the feedback field stops its own keys**: the Field's
     // handler ends the event before it bubbles to this bar, so a Tab pressed
     // in the last stop would leave the surface.
-    bar?.addEventListener('keydown', trap, true);
-    bar?.focus({ preventScroll: true });
+    bar?.addEventListener('keydown', keys, true);
+    // **A focus inside the bar is the keyboard's too.** A take's landing and
+    // the push-to-talk key both put the caret in the feedback field while the
+    // picture still holds AppKit's first responder, so the shell is asked to
+    // hand it over rather than leaving a caret no key can reach.
+    const keepKeyboard = (): void => {
+      barFocused = true;
+      if (!pageHoldsKeyboard()) return;
+      const ask = focusBar();
+      if (ask !== null) {
+        void ask.catch((why: unknown) => console.warn('the keyboard did not come in', why));
+      }
+    };
+    // The hint is for the pane that does NOT have the keyboard, so it goes as
+    // soon as the focus is in the bar and comes back when it leaves.
+    const leftBar = (event: FocusEvent): void => {
+      if (!bar?.contains(event.relatedTarget as Node | null)) barFocused = false;
+    };
+    bar?.addEventListener('focusin', keepKeyboard);
+    bar?.addEventListener('focusout', leftBar);
+    const toBar = (): void => {
+      bar?.focus({ preventScroll: true });
+    };
+    const toPage = (): void => {
+      const active = document.activeElement;
+      if (active instanceof HTMLElement && bar?.contains(active) === true) active.blur();
+    };
+    window.addEventListener('forge-bar-focus', toBar);
+    window.addEventListener('forge-page-focus', toPage);
+    if (!pagePaneUp()) bar?.focus({ preventScroll: true });
     // **Everything behind the bar is inert, and the bar is inside that page**:
     // the walk marks each sibling on the bar's own path, so the chat, rail
     // and composer stop being tabbable while the picture covers them. **The
@@ -203,7 +286,11 @@
       node = parent;
     }
     return () => {
-      bar?.removeEventListener('keydown', trap, true);
+      bar?.removeEventListener('keydown', keys, true);
+      bar?.removeEventListener('focusin', keepKeyboard);
+      bar?.removeEventListener('focusout', leftBar);
+      window.removeEventListener('forge-bar-focus', toBar);
+      window.removeEventListener('forge-page-focus', toPage);
       for (const behind of gated) behind.removeAttribute('inert');
       // **Only focus this bar still holds goes back**: a person who clicked
       // elsewhere has chosen their own place. A detached bar leaves focus on
@@ -214,6 +301,21 @@
       }
       restoreTo = null;
     };
+  });
+
+  /**
+   * **A failed page holds no keyboard, so the bar takes it.** The native
+   * picture is taken down with the failure and the failure sentence has no
+   * control of its own, so the bar's answers are what the keyboard has left
+   * to act on.
+   */
+  $effect(() => {
+    if (surface.phase !== 'failed') return;
+    const bar = barEl;
+    if (bar === null) return;
+    const active = document.activeElement;
+    if (active instanceof HTMLElement && bar.contains(active)) return;
+    bar.focus({ preventScroll: true });
   });
 
   // The page area starts under the bar; a row the bar grows by (a take's card)
@@ -278,6 +380,7 @@
   class="takeover-bar"
   role="region"
   aria-label="the browser takeover"
+  aria-keyshortcuts={pagePaneUp() ? 'Meta+Alt+ArrowDown Meta+Alt+ArrowUp' : undefined}
   tabindex="-1"
   bind:this={barEl}
 >
@@ -306,6 +409,12 @@
       </button>
     </span>
     <span class="tb-title">{title}</span>
+    {#if pagePaneUp() && !barFocused}
+      <!-- **The keyboard is in the page and this bar is one chord away.** A
+           keyboard-only reader who cannot see this has to conclude the bar is
+           mouse-only, which is the defect the pane routing fixed. -->
+      <span class="tb-hint"><kbd>Cmd</kbd> <kbd>Opt</kbd> <kbd>Down</kbd> to focus the bar</span>
+    {/if}
     {#if tabs.length > 0}
       <select
         class="tb-pick"

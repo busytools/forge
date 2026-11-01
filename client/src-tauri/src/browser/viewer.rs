@@ -14,7 +14,19 @@
 
 use std::sync::{Arc, Mutex};
 
+use super::cef::surface::KeyboardHolder;
 use super::{Rect, Viewport};
+
+/// The pane a holder string names, or `None` for one this shell does not
+/// have. **A swapped pair here moves the keyboard to the wrong pane with
+/// every other test green**, which is why it is its own function.
+fn pane_of(holder: &str) -> Option<KeyboardHolder> {
+    match holder {
+        "bar" => Some(KeyboardHolder::Bar),
+        "page" => Some(KeyboardHolder::Page),
+        _ => None,
+    }
+}
 
 /// What the viewer knows about the surface the person has open.
 struct State {
@@ -130,6 +142,20 @@ impl Viewer {
         }
     }
 
+    /// **The keyboard goes to the page or to the bar's document**, whichever
+    /// the page asked for: the overlay's view holds it for the picture, and
+    /// the webview it was attached with holds the bar's.
+    pub fn focus(&self, holder: &str) {
+        match pane_of(holder) {
+            Some(KeyboardHolder::Bar) => super::cef::surface::focus_bar(&self.app),
+            Some(KeyboardHolder::Page) => super::cef::surface::focus_page(&self.app),
+            None => tauri_plugin_log::log::warn!(
+                "the page asked for a keyboard holder this shell does not have ({holder}) \
+                 (event_name client_keyboard_unknown_holder)"
+            ),
+        }
+    }
+
     /// One relayed frame, as the socket carried it: the host's own frame
     /// wire - profile id, tab, sequence, view size, format, key flag and the
     /// page's viewport, then the encoded pixels.
@@ -231,9 +257,26 @@ pub fn browser_surface_rect(viewer: tauri::State<'_, Arc<Viewer>>, rect: Rect, v
     viewer.set_rect(rect, viewport);
 }
 
+/// Hand the keyboard to the pane the page names: `bar` or `page`.
+#[tauri::command]
+pub fn browser_surface_focus(viewer: tauri::State<'_, Arc<Viewer>>, holder: String) {
+    viewer.focus(&holder);
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Belonging, belongs};
+    use super::{Belonging, KeyboardHolder, belongs, pane_of};
+
+    /// **The two holder strings name the panes they say.** The page sends
+    /// `bar` for the webview and `page` for the picture, and a swapped pair
+    /// would move the keyboard to the wrong one with every other test green.
+    #[test]
+    fn the_holder_strings_name_the_panes_they_say() {
+        assert_eq!(pane_of("bar"), Some(KeyboardHolder::Bar), "bar is the webview");
+        assert_eq!(pane_of("page"), Some(KeyboardHolder::Page), "page is the picture");
+        assert_eq!(pane_of("Bar"), None, "the wire is lower case, and a typo moves nothing");
+        assert_eq!(pane_of(""), None);
+    }
 
     /// **A frame for another tab never paints, and the first picture is
     /// adopted.** The desktop overlay draws one tab at a time, so a frame

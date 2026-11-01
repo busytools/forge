@@ -4,7 +4,9 @@
  * The server sends the update and the client applies it, which is what the
  * view this client replaced always did - so a page follows a busy seat without
  * asking for the whole session again on every frame. A read is for a cold
- * load, a reconnect and a seat swap: every slice has a frame.
+ * load, a reconnect and a seat swap: every slice a frame can carry has one.
+ * `diff`, `reviews`, `tree_reviews` and `resume_sessions` are the four it
+ * cannot, and a whole read is the only thing that moves them.
  *
  * **The record's shape is `crates/forge-server/src/transport/wire.rs`', and the
  * payload's is `crates/forge-workspace/src/protocol.rs`'s `SessionUpdate`. The
