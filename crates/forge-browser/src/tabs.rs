@@ -245,7 +245,16 @@ impl TabRegistry {
     /// The sessions other than `except` holding a tab, each with how long it
     /// has held its oldest one: what a host end must not take with it.
     pub fn other_owners(&self, except: &SessionSlot) -> Vec<(SessionSlot, Duration)> {
-        let now = Instant::now();
+        self.other_owners_at(except, Instant::now())
+    }
+
+    /// [`Self::other_owners`] against a clock the caller owns, so a test
+    /// needs no instant older than the machine's boot.
+    pub fn other_owners_at(
+        &self,
+        except: &SessionSlot,
+        now: Instant,
+    ) -> Vec<(SessionSlot, Duration)> {
         let mut held: Vec<(SessionSlot, Instant)> = Vec::new();
         for tab in self.tabs.values() {
             if &tab.owner == except {
@@ -373,28 +382,38 @@ mod tests {
         registry.adopt(2, worker.clone(), "T2", "", "").expect("the worker's first");
         registry.adopt(3, worker.clone(), "T3", "", "").expect("the worker's second");
         registry.adopt(4, other.clone(), "T4", "", "").expect("another seat's tab");
-        let now = Instant::now();
-        let old = now.checked_sub(Duration::from_secs(5 * 60)).expect("an earlier instant");
-        let new = now.checked_sub(Duration::from_secs(60)).expect("a later instant");
-        registry.tabs.get_mut(&2).expect("the worker's first").since = old;
-        registry.tabs.get_mut(&3).expect("the worker's second").since = new;
-        registry.tabs.get_mut(&4).expect("another seat's tab").since = new;
+        // **The clock is the test's own**, so no instant older than the
+        // machine's boot is ever needed.
+        let base = Instant::now();
+        let now = base + Duration::from_secs(5 * 60);
+        registry.tabs.get_mut(&2).expect("the worker's first").since = base;
+        registry.tabs.get_mut(&3).expect("the worker's second").since =
+            base + Duration::from_secs(4 * 60);
+        registry.tabs.get_mut(&4).expect("another seat's tab").since =
+            base + Duration::from_secs(4 * 60);
 
-        let holders = registry.other_owners(&lead);
+        let holders = registry.other_owners_at(&lead, now);
         assert_eq!(
             holders.len(),
             2,
             "one entry per foreign seat, the caller left out: {holders:?}"
         );
         assert_eq!(holders[0].0, worker);
-        assert!(
-            holders[0].1 >= Duration::from_secs(4 * 60),
+        assert_eq!(
+            holders[0].1,
+            Duration::from_secs(5 * 60),
             "the oldest tab is the worker's clock, not its newest: {:?}",
             holders[0].1,
         );
         assert_eq!(holders[1].0, other);
+        assert_eq!(
+            holders[1].1,
+            Duration::from_secs(60),
+            "the other seat's clock is its own tab's age: {:?}",
+            holders[1].1,
+        );
         assert!(
-            registry.other_owners(&worker).iter().all(|(seat, _)| seat != &worker),
+            registry.other_owners_at(&worker, now).iter().all(|(seat, _)| seat != &worker),
             "a seat is never its own holder",
         );
     }

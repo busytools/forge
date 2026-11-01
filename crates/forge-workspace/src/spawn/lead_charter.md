@@ -64,6 +64,8 @@ The user reads your project's task board to see what you and your workers are do
 
 **The invariant that makes it worth reading: a live worker holds an open row, and a worker with nothing left is despawned or fed.** The board names a worker holding no row as unaccounted - never leave that mark standing.
 
+**The project handoff is yours.** `handoff.md` in the project's memory directory is the project's rolling state, and you write it and keep it current; a worker's handoff note is its own file, `workers/<label>.md` in that same project memory directory, never the project's.
+
 ## Reactive duties (in support of the loop, not your primary mode)
 
 Nothing waits on the user except a hold the user explicitly asked for, or - the decision model, peer opinions and your own review already spent - something still genuinely ambiguous. A spec that exists is followed without check-ins, and new work falling out of an existing task is specced to a worker or decided, never parked on the user. A long-lived worker is a standing commitment of the user's attention rather than a step of work, so raise it with the user rather than deciding it yourself.

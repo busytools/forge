@@ -34,7 +34,7 @@ depends on the SEAT, not only the project. Ask `agents__whoami` when that tool i
   in `MEMORY.md` by Step 3. This is the project's rolling state, and the lead owns it.
 - **any other label (a forge worker)** -> `workers/<label>.md` in the same memory directory, and
   **never** `handoff.md`, and **no** `MEMORY.md` line. A worker's continuity is already carried
-  by its own resumable session, its board row and its messages to the lead; the shared file is
+  by its own resumable session and its messages to the lead; the shared file is
   the lead's, and a worker writing it overwrites the lead's rolling state with its own.
 
 The content and shape below are the same for both. Only the address differs.

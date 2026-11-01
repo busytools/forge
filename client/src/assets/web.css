@@ -3622,7 +3622,7 @@ details.leaf.cmd > summary .tn { min-width: 0; white-space: normal;
 
    Transform and opacity only, and the rise does not reach the scroller's
    overflow in this shape (measured: a 50px translate moves scrollHeight by 0,
-   the list's sized container draws no extra scrollable box), so the entrance
+   because virtua sets layout containment on the item wrapper), so the entrance
    cannot pull the foot pin after it. A row mid-reveal keeps its own flash. */
 @keyframes arrive-fade {
   from { opacity: .35; }

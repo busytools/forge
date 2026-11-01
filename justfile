@@ -41,6 +41,7 @@ ui-word-count:
 script-tests:
     python3 scripts/test_update_manifest.py
     python3 scripts/test_client_deps.py
+    python3 scripts/test_quit_running_client.py
     python3 scripts/test_check_groups.py
     python3 scripts/test_check_lock.py
     python3 scripts/test_ui_word_count.py
@@ -478,16 +479,18 @@ client-android-check: client-android-warnings
 # `--bundles app` overrides the config's `bundle.targets`, so the dmg target -
 # the one that mounts the image and opens a Finder window - is never invoked.
 #
-# A client already running from that bundle is refused rather than replaced:
-# overwriting the bundle a live process is executing out of is the one way
-# this fails quietly. The check is on the bundle's own executable, so a client
-# running from a checkout's target dir does not block a release - it goes on
-# executing the image it started from, which this neither disturbs nor updates.
+# A client already running from that bundle is quit first - a graceful SIGTERM
+# and a bounded wait - and refused rather than replaced if the quit does not
+# take: overwriting the bundle a live process is executing out of is the one
+# way this fails quietly. The check is on the bundle's own executable, so a
+# client running from a checkout's target dir does not block a release - it
+# goes on executing the image it started from, which this neither disturbs nor
+# updates.
 #
 # The version is read back off the built app rather than assumed, because a
 # stale bundle from an earlier build installs exactly as quietly as a fresh one.
 #
-# Install the client: app-only bundle, refused while in use, swapped in.
+# Install the client: app-only bundle, the running client quit first, swapped in.
 #
 # The install is refreshed first (`client-release-deps`), unconditionally:
 # the bundle is built from the lockfile, never from whatever `node_modules`
@@ -500,18 +503,8 @@ client-release version: client-release-deps
     app=/Applications/forge.app
     built=client/src-tauri/target/release/bundle/macos/forge.app
 
-    refuse_if_in_use() {
-        # Fails closed: without lsof the check cannot answer, and proceeding
-        # is the failure it exists to prevent.
-        command -v lsof >/dev/null 2>&1 || {
-            echo "[ERROR] lsof not found - cannot tell whether the client is running" >&2
-            exit 1
-        }
-        # No bundle, nothing in use - and lsof prints its banner and usage for
-        # a path it cannot find.
-        [ -e "$app/Contents/MacOS/forge-client" ] || return 0
-        if pids=$(lsof -t "$app/Contents/MacOS/forge-client"); then
-            echo "[ERROR] $app is in use (pid $pids) - quit the client before releasing" >&2
+    quit_or_refuse() {
+        if ! ./scripts/quit-running-client.sh "$app"; then
             echo "        then run: just client-release {{version}}" >&2
             exit 1
         fi
@@ -519,7 +512,7 @@ client-release version: client-release-deps
 
     # Before the build as well as before the swap: the build is minutes, and a
     # client started inside that window would be replaced just as quietly.
-    refuse_if_in_use
+    quit_or_refuse
 
     # The update tarball and its signature from any earlier build, removed so
     # what the read-back below finds was produced by THIS build: a stale pair
@@ -577,7 +570,7 @@ client-release version: client-release-deps
 
     # Again here, after the copy, so what follows the check is the two renames
     # and not the copy.
-    refuse_if_in_use
+    quit_or_refuse
 
     # A stale aside is cleared before the move-aside: with it in place the
     # rename would land inside it, fail on the occupied path, and abort before
