@@ -7,9 +7,9 @@
 //! shows up" on its own. Neither test alone distinguishes a working writer
 //! from a degenerate one.
 //!
-//! Resolutions here are illustrative inputs to the writer, NOT measured
-//! values. The real ones get set from observed spread once there is a
-//! pipeline to time.
+//! Resolutions here are the measured spreads `tests/bench.rs` documents,
+//! kept local because these tests pin the writer's behaviour rather than the
+//! measurement.
 
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
@@ -186,7 +186,7 @@ fn what_render_writes_is_what_committed_reads_back() {
 /// the committed figures have to survive.
 ///
 /// Measured cold numbers, not invented: `model_load` 6977 ms and a 10694 ms
-/// wall clock against a warm committed 3548 ms with a 500 ms band.
+/// wall clock against a warm measured 3548 ms with a 500 ms band.
 /// Committing the raw total relocates the anchor, so one anomalous run
 /// becomes a permanent step in the trend - the failure any bimodal figure
 /// causes under a deadband.
