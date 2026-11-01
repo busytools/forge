@@ -522,7 +522,7 @@ describe('the reviewable document', () => {
     );
     expect(nudge?.text).toContain(`doc:${PATH}`);
     expect(nudge?.text, 'and names no review tool the asking seat may lack').not.toContain(
-      'review__list',
+      'review__',
     );
   });
 
