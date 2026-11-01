@@ -1,0 +1,21 @@
+[package]
+name = "forge-tts"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "Speech synthesis: text in, audio chunks out. Local text-to-speech with verified model files. Depends on no other forge crate."
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+tokio = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+# The leaf-invariant guard reads cargo's own metadata.
+serde_json = { workspace = true }

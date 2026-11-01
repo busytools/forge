@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/forge-sdk", "crates/forge-primitives", "crates/forge-capture", "crates/forge-dictate", "crates/forge-system-one", "crates/forge-gateway", "crates/forge-connectors", "crates/forge-browser", "crates/forge-agent", "crates/forge-workspace", "crates/forge-server", "crates/forge-test-harness"]
+members = ["crates/forge-sdk", "crates/forge-primitives", "crates/forge-capture", "crates/forge-dictate", "crates/forge-tts", "crates/forge-system-one", "crates/forge-gateway", "crates/forge-connectors", "crates/forge-browser", "crates/forge-agent", "crates/forge-workspace", "crates/forge-server", "crates/forge-test-harness"]
 
 [workspace.package]
 version = "1.1.38"
@@ -99,6 +99,7 @@ forge-connectors = { path = "crates/forge-connectors", version = "=1.1.38" }
 forge-sdk = { path = "crates/forge-sdk", version = "=1.1.38" }
 forge-agent = { path = "crates/forge-agent", version = "=1.1.38" }
 forge-dictate = { path = "crates/forge-dictate", version = "=1.1.38" }
+forge-tts = { path = "crates/forge-tts", version = "=1.1.38" }
 forge-system-one = { path = "crates/forge-system-one", version = "=1.1.38" }
 forge-workspace = { path = "crates/forge-workspace", version = "=1.1.38" }
 forge-browser = { path = "crates/forge-browser", version = "=1.1.38" }
