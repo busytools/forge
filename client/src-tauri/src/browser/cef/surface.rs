@@ -935,14 +935,15 @@ fn page_y(height: f64, y: f64, rect_height: f64, flipped: bool) -> f64 {
 /// **Nothing in the closure may emit or announce.** On the main thread it
 /// runs inline while the dispatcher's window lock is held, and both reach
 /// `eval_script`, which takes that same lock on the same thread: a
-/// self-deadlock the person sees as a beachball (measured 2026-11-01 on the
-/// hand-off Open).
+/// self-deadlock that hangs the client (measured 2026-11-01 on the hand-off
+/// Open).
 pub fn attach(app: &tauri::AppHandle, rect: Rect, viewport: super::super::Viewport) {
     let rect = rect.sane();
     let viewport = viewport.sane();
     let app_for_view = app.clone();
     // Whether this call laid a view of its own (rather than moving the one
-    // already up): the page is told it holds the keyboard only then.
+    // already up): the page is told it holds the keyboard only then, so a
+    // re-layout does not take the keys off the bar.
     let laid = Arc::new(AtomicBool::new(false));
     let laid_here = Arc::clone(&laid);
     // Whether the closure ran at all: a caller on another thread posts it and
@@ -1112,8 +1113,9 @@ pub fn attach(app: &tauri::AppHandle, rect: Rect, viewport: super::super::Viewpo
     }
     if !entered.load(Ordering::Relaxed) {
         tauri_plugin_log::log::warn!(
-            "the webview closure did not run, so the page is not told it holds the keyboard; \
-             attach must be called on the main thread (event_name client_browser_attach_off_main)"
+            "the webview closure had not run when this call returned, so the page is not told it \
+             holds the keyboard; attach must be called on the main thread (event_name \
+             client_browser_attach_off_main)"
         );
         return;
     }
@@ -1379,16 +1381,16 @@ mod tests {
         );
     }
 
-    /// **`attach`'s closure makes no direct emit or announce, its laid flag is
-    /// set on the fresh-lay path only, and the one announcement is the exact
-    /// guarded block after the webview's answer.**
+    /// **What this file says about `attach`'s closure is pinned here**: no
+    /// direct emit or announce inside it, a false default and one fresh-lay
+    /// store after the moved-view return, and the one announce as the exact
+    /// guarded block after the webview's answer.
     ///
-    /// On the main thread the closure runs inline while the dispatcher's
-    /// window lock is held, and an emit or an announce there reaches
-    /// `eval_script`, which takes that same lock on the same thread: the
-    /// client wedges with no error and no log line (measured 2026-11-01 on
-    /// the hand-off Open). This pins the file's text: a guard-clause refactor
-    /// fails it, and so does a string literal that names one of these calls.
+    /// The hazard those pins stand for - an emit or an announce inside the
+    /// closure reaches `eval_script` under the dispatcher's window lock, and
+    /// the client hangs - is [`attach`]'s to tell. This pins the file's text,
+    /// not reachability: a guard-clause refactor fails it, and so does a
+    /// string literal that names one of these calls.
     #[test]
     fn the_attach_never_emits_from_inside_its_lay() {
         let source = include_str!("surface.rs");
@@ -1431,8 +1433,8 @@ mod tests {
             code.push_str(line);
             code.push('\n');
         }
-        // Every `Emitter` method starts `.emit`, `::emit(` is the UFCS
-        // spelling, and a direct eval is reachable by name.
+        // Every method call through an `Emitter` starts `.emit`, `::emit(` is
+        // the UFCS spelling, and a direct eval is reachable by name.
         for forbidden in [".emit", "::emit(", ".eval", "eval_script", "announce_page_keyboard("] {
             assert!(
                 !code.contains(forbidden),
