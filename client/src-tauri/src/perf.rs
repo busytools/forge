@@ -156,13 +156,13 @@ pub struct ClientPerfRecord {
     /// A `paint`: the frame's own sequence on its tab.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seq: Option<u32>,
-    /// Whether a slow frame's gap overlapped a hidden window (#2569).
+    /// Whether a `frame` or a `tick` overlapped a hidden window (#2569).
     ///
-    /// The page samples it at measurement, because a deferred write can
-    /// outlast the hidden period it describes - and a hidden window produces
-    /// no frames at all, so the gap is the visibility gate rather than a
-    /// blocked thread. A field this struct does not name is parsed away
-    /// before the write, so it has to be here to reach the log.
+    /// The page measures it when the span is timed, because a deferred write
+    /// can outlast the hidden period it describes - and a hidden window
+    /// produces no frames at all, so the gap is the visibility gate rather
+    /// than a blocked thread. A field this struct does not name is parsed
+    /// away before the write, so it has to be here to reach the log.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hidden: Option<bool>,
 }
