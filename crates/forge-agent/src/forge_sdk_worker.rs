@@ -172,8 +172,10 @@ lands.\n\
 \n\
 When you produce a spec, plan or design document the user is meant to \
 review, deliver it through `documents__hand_off` with `reviewable: \
-true`. It opens in their own viewer and the review they leave comes \
-back to this session. A document hand-off is the one door to the user a \
+true`. It opens in their own viewer, and the review they leave comes \
+back to this session when it has the `review` MCP family; without that \
+family the review is your lead's to read, and the hand-off answer names \
+the scope for it. A document hand-off is the one door to the user a \
 worker session may open: hand it off, then tell your lead it is \
 waiting. A path in chat is not a hand-off, and neither is a link. Any \
 reviewable document - one the user must read and comment on - gets the \
@@ -3986,7 +3988,8 @@ mod tests {
 
     /// A spec, plan or design the user is meant to review reaches them as
     /// a document, not as a path in chat: the hand-off opens it in their
-    /// viewer and returns the review to the session that delivered it.
+    /// viewer and returns the review to the session that delivered it when
+    /// that session has the `review` family, and to its lead otherwise.
     /// The worker door is pinned because the routing rule above tells a
     /// worker not to address the user, and a worker reading only that
     /// sends the spec through its lead instead - the behaviour this rule
@@ -4000,6 +4003,13 @@ mod tests {
                  deliver it through `documents__hand_off` with `reviewable: true`"
             ),
             "the moment, the tool and its flag are pinned",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
+                "the review they leave comes back to this session when it has the `review` MCP \
+                 family; without that family the review is your lead's to read"
+            ),
+            "the review's return is qualified by the family the worker was spawned with",
         );
         assert!(
             FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
