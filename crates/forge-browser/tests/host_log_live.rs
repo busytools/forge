@@ -40,11 +40,12 @@ fn a_passing_host_prints_nothing() {
     let scratch = tempfile::tempdir().expect("a scratch dir");
     let exe = stand_in(scratch.path(), "#!/bin/sh\necho \"cef host: stub\" >&2\nexec sleep 30\n");
     let log = scratch.path().join("host.log");
+    let ring = RingOnly(format!("/forge-quiet-{}", std::process::id()));
     let host = support::Host::start(
         &exe,
         &scratch.path().join("profile"),
         1,
-        "/forge-stub",
+        &ring.0,
         "800x600",
         &[],
         &log,
@@ -63,11 +64,12 @@ fn an_empty_log_is_said_in_words() {
     let scratch = tempfile::tempdir().expect("a scratch dir");
     let exe = stand_in(scratch.path(), "#!/bin/sh\nexec sleep 30\n");
     let log = scratch.path().join("host.log");
+    let ring = RingOnly(format!("/forge-empty-{}", std::process::id()));
     let host = support::Host::start(
         &exe,
         &scratch.path().join("profile"),
         1,
-        "/forge-stub",
+        &ring.0,
         "800x600",
         &[],
         &log,
@@ -100,8 +102,10 @@ fn a_failed_bound_carries_the_hosts_last_words() {
     // for the direct child alone, so the log is not settled when it returns.
     // The seeded pair is what the failure is asserted against: the joined
     // form cannot come from a full-log print, and a line written after it
-    // does not move the pair the way it would move a window.
+    // does not move the pair the way it would move a window. So the tail is
+    // only seeded once a helper still on its way out has finished writing.
     host.terminate(Duration::from_secs(15));
+    wait_for_the_log_to_settle(&log);
     let mut file = std::fs::OpenOptions::new().append(true).open(&log).expect("the host log");
     writeln!(file, "seed line one").expect("the seeded line");
     writeln!(file, "seed line two").expect("the seeded line");
@@ -126,6 +130,27 @@ fn stand_in(scratch: &Path, body: &str) -> PathBuf {
     std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755))
         .expect("the stand-in is executable");
     exe
+}
+
+/// Wait for the log to stop growing before appending to it. **An inherited
+/// stderr can write after the host is gone**, and a line landing after the
+/// seeds pushes them out of the tail's window.
+fn wait_for_the_log_to_settle(log: &Path) {
+    const QUIET: Duration = Duration::from_millis(500);
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let mut seen = std::fs::metadata(log).map_or(0, |meta| meta.len());
+    let mut quiet_since = Instant::now();
+    loop {
+        std::thread::sleep(Duration::from_millis(50));
+        let len = std::fs::metadata(log).map_or(0, |meta| meta.len());
+        if len != seen {
+            seen = len;
+            quiet_since = Instant::now();
+        } else if quiet_since.elapsed() >= QUIET {
+            return;
+        }
+        assert!(Instant::now() < deadline, "the host log never stopped growing");
+    }
 }
 
 /// Wait for the stand-in to write its own line, so the quiet a passing test
