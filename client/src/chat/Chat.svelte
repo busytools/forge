@@ -94,8 +94,8 @@
    * overhang check holds the pin until it is.
    */
   const ROW_ESTIMATE_PX = 120;
-  /** How long a row's arrival mark stays on it, past the animation. */
-  const ARRIVE_MS = 300;
+  /** How long a row's arrival mark stays on it, past the longest animation. */
+  const ARRIVE_MS = 340;
   /** The longest a return's hold waits for a paint before it lifts anyway. */
   const HOLD_MAX_MS = 250;
   /** How far above the last pin counts as the reader when no input preceded it. */
@@ -306,13 +306,18 @@
   /** Mark one row as having just arrived, and take the mark back after it. */
   function enter(row: HTMLElement): void {
     row.classList.add('arrive');
-    // **The mark goes when the rise ends**, not when the fade does: the two
-    // animations run at different lengths, and a class left on the node
-    // would restart both if the row were moved in the document. The timer is
-    // the fallback for a node the animation never reaches (a stilled one).
+    // **The mark goes when the LAST animation ends**, not when the shorter
+    // one does: a fade outlasting the rise would be cut short by a clear
+    // keyed on the rise. Both are awaited, and the timer is the fallback for
+    // a node a stilled animation never reaches.
     let timer: ReturnType<typeof setTimeout> | null = null;
+    let sawFade = false;
+    let sawRise = false;
     const clear = (event: AnimationEvent): void => {
-      if (event.animationName !== 'arrive-rise') return;
+      if (event.animationName === 'arrive-fade') sawFade = true;
+      else if (event.animationName === 'arrive-rise') sawRise = true;
+      else return;
+      if (!sawFade || !sawRise) return;
       row.classList.remove('arrive');
       row.removeEventListener('animationend', clear);
       if (timer !== null) clearTimeout(timer);

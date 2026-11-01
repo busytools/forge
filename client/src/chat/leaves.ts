@@ -182,6 +182,24 @@ export interface ToolLeaf {
    * reader's own.
    */
   imageNote: string | null;
+  /**
+   * The permission refusal the CLI reported for this call, absent for a call
+   * it let run.
+   *
+   * A refusal arrives as a `system/permission_denied` frame with no result of
+   * its own, and the call it names is where it draws: the frame's subtype is
+   * the row's chip and its reason the row's words, rather than a notice under
+   * the call repeating what the call already says (#2764).
+   */
+  denied?: Denial;
+}
+
+/** The permission refusal a call's own row carries. */
+export interface Denial {
+  /** The wire's type for the refusal, which is what the row's chip says. */
+  mark: string;
+  /** Why the CLI refused it, or `null` where the frame gave no reason. */
+  reason: string | null;
 }
 
 /**
@@ -724,6 +742,7 @@ export function leafOf(
   task: TaskFact | undefined = undefined,
   abandoned = false,
   stop: string | null = null,
+  denied: Denial | null = null,
 ): ToolLeaf {
   const body = mutationBody(name, input, record);
   // A backgrounded call is held open by its TASK fact and nothing else: the
@@ -738,17 +757,29 @@ export function leafOf(
         ? task.status
         : settledBy(result, abandoned);
   const forge = forgeCardOf(name, input, result);
-  const drawn = drawnBody(name, body, result, settled === 'failed' || settled === 'killed');
+  // **What the RESULT said**, which is not the same as a body with lines in
+  // it: a mutation's body is its diff, drawn from the call's own input, so a
+  // refused Edit opens onto a diff whether or not the CLI said a word.
+  const answered =
+    result === undefined
+      ? []
+      : bodyOf(result.content, settled === 'failed' || settled === 'killed');
+  const drawn = drawnBody(name, body, result, answered);
   // A settled call with nothing to open onto says so in words, whichever way
   // it settled: the summary carries no text mark of its own, so the tone alone
   // would be the state's only carrier, and the chevron would open an empty
   // body (#1836, rule 22). A clean answer that drew no line leaves one just as
   // surely as a failure does, and a call still out is the one state that has
   // an empty body and no words, because its body is not written yet.
+  // A refusal is a settled call the result never spoke for, so the CLI's
+  // reason is the words the row owes: "no result" would name the wrong fact
+  // about a call the CLI answered, and a diff would leave the reason nowhere.
   const shown =
-    drawn.length === 0 && settled !== 'pending' && settled !== 'in_progress'
-      ? [{ kind: 'text' as const, text: 'no result' }]
-      : drawn;
+    denied !== null && denied.reason !== null && answered.length === 0
+      ? [...drawn, { kind: 'text' as const, text: denied.reason }]
+      : drawn.length === 0 && settled !== 'pending' && settled !== 'in_progress'
+        ? [{ kind: 'text' as const, text: 'no result' }]
+        : drawn;
   return {
     id,
     row: rowOf(name),
@@ -778,6 +809,7 @@ export function leafOf(
     skill: null,
     image: imageOf(result),
     imageNote: null,
+    ...(denied === null ? {} : { denied }),
   };
 }
 
@@ -815,10 +847,9 @@ function drawnBody(
   name: string,
   body: CallBody[],
   result: Block | undefined,
-  failed: boolean,
+  answered: CallBody[],
 ): CallBody[] {
   if (result === undefined) return body;
-  const answered = bodyOf(result.content, failed);
   if (result.is_error !== true && isEdit(name) && body.some((part) => part.kind !== 'text')) {
     return body;
   }

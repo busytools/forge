@@ -50,6 +50,7 @@ import {
   leafOf,
   omittedRecord,
   type Block,
+  type Denial,
   type TaskFact,
   type ToolLeaf,
 } from './leaves';
@@ -1984,13 +1985,15 @@ export function fold(
   /** What the wire reported about each backgrounded call, by call. */
   const tasks = new Map<string, TaskFact>();
   /**
-   * The calls the CLI refused on permission grounds.
+   * The permission refusal frames, by the call each names.
    *
    * **A refusal is not a result**, so no frame will ever settle the call:
    * the mark has to be taken here, in the pass that runs before the row is
-   * built, or the refused row spins forever.
+   * built, or the refused row spins forever. Read as the frame rather than
+   * as a flag because the arm that draws the call carries it on that row
+   * (#2764): the refusal is folded onto the row it names, never dropped.
    */
-  const denied = new Set<string>();
+  const refusals = new Map<string, Denial>();
   /** The call a task belongs to, which the frames that carry one name. */
   const owners = new Map<string, string>();
   /**
@@ -2020,7 +2023,15 @@ export function fold(
       const task = str(frame, 'task_id');
       const call = str(frame, 'tool_use_id');
       if (frame.subtype === 'permission_denied' && call !== null) {
-        denied.add(call);
+        // The CLI's `message` is the line written for a reader and
+        // `decision_reason` the fallback, read the way the api error's own
+        // pair is: by the first that is not blank, since an empty `message`
+        // would otherwise swallow a reason that is there.
+        const reason =
+          [str(frame, 'message'), str(frame, 'decision_reason')].find(
+            (line): line is string => line !== null && line.trim() !== '',
+          ) ?? null;
+        refusals.set(call, { mark: 'permission_denied', reason });
       }
       if (frame.subtype === 'task_started' && call !== null) {
         if (task !== null) owners.set(task, call);
@@ -2165,6 +2176,17 @@ export function fold(
    * units sharing a key, which stops the whole turn from mounting.
    */
   const drawnDenials = new Set<string>();
+  /**
+   * The calls this fold draws a row of their own for, by wire id.
+   *
+   * A refusal folds onto that row (#2764), because the row already says the
+   * call failed and a notice under it said the same thing twice. A refusal
+   * naming a call this fold holds no row for - a page opened after it, or a
+   * peer message drawn as a card, which is the one card a call never also
+   * draws a row for - still draws its notice, since a missing frame is worse
+   * than a second one.
+   */
+  const callRows = new Set<string>();
 
   /**
    * Hang a skill's body on the call that loaded it.
@@ -2575,6 +2597,10 @@ export function fold(
       // is visible and can be decided later rather than dropped (rule 25).
       if (frame.subtype === 'permission_denied') {
         const id = str(frame, 'tool_use_id');
+        // The call row already carries the refusal it was settled by: its
+        // chip names the frame's subtype and its body the reason. A second
+        // row under it repeated the same fact (#2764).
+        if (id !== null && callRows.has(id)) continue;
         const key = id === null ? keyOf(at, frame, 'permission_denied') : `denied-${id}`;
         if (!drawnDenials.has(key)) {
           drawnDenials.add(key);
@@ -3379,7 +3405,7 @@ export function fold(
           // a record the page capped has no answers to read (#2374), a refusal
           // never ran, and a failure's words are the result's own.
           const ownLeaf =
-            omittedRecord(record) !== null || denied.has(id) || result?.is_error === true;
+            omittedRecord(record) !== null || refusals.has(id) || result?.is_error === true;
           // A question is settled once its own result lands or the turn
           // closes; until then the dock holds it.
           const settled = abandoned || result !== undefined;
@@ -3408,9 +3434,13 @@ export function fold(
           tasks.get(id),
           // A call the CLI refused on permission grounds is settled by that
           // refusal: no result frame follows it.
-          abandoned || denied.has(id),
+          abandoned || refusals.has(id),
           stops.settled.get(id) ?? null,
+          refusals.get(id) ?? null,
         );
+        // Recorded before the row is pushed: whatever settles a call later,
+        // this fold drew a row for it, and a refusal it names belongs here.
+        if (id !== '') callRows.add(id);
         if (name.toLowerCase() === 'skill') {
           // A skill's body follows its call as a user frame; the claim is
           // recorded here, and the body attaches to this row when it arrives.

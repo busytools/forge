@@ -561,6 +561,12 @@
            ending for it, so this is the stop's only mark without opening. -->
       <span class="fam-chip bad" title={`stopped task ${call.stop}`}>stopped</span>
     {/if}
+    {#if call.denied !== undefined}
+      <!-- The CLI's own subtype, worn where the refusal settled the row: the
+           frame draws here rather than as a notice under a call it repeated
+           (#2764). -->
+      <span class="fam-chip bad">{call.denied.mark}</span>
+    {/if}
     {#if card !== undefined && card.agent_type !== null}
       <span class="sg-ty">{card.agent_type}</span>
     {/if}

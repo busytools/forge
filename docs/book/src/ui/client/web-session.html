@@ -1967,7 +1967,7 @@
 
       <div class="work">
         <div class="prose">
-          <p>Every call, message and thought on its own row, in the order it arrived, the kind's glyph leading it - and a call opens on its own. Edits are the exception: their diff is already there. A row of the turn being written enters once, the first time it is drawn: a 150ms fade and a 6px rise over 180ms, so a row landing as the turn ends enters too. A row the list draws again - a scroll back, a rebuild - does not replay it, and a settled page draws still; a page that lands on a turn still being written carries rows the reader has not seen, and those enter. None of it runs under reduced motion.</p>
+          <p>Every call, message and thought on its own row, in the order it arrived, the kind's glyph leading it - and a call opens on its own. Edits are the exception: their diff is already there. A row of the turn being written enters once, the first time it is drawn: a 260ms fade and a 6px rise over 220ms on one gentle curve, so a row landing as the turn ends enters too. A row the list draws again - a scroll back, a rebuild - does not replay it, and a settled page draws still; a page that lands on a turn still being written carries rows the reader has not seen, and those enter. None of it runs under reduced motion.</p>
         </div>
 
         <!-- The units a message's markdown can carry, drawn: a heading, a
@@ -2778,11 +2778,24 @@ docs: The sprite a row draws, by the class it belongs to.</div>
         </div>
 
         <div class="leaves">
-          <!-- A frame the page has no face for yet draws as itself, open here:
-               the wire's own type as a chip, the frame's fields as labelled
-               values under it, and the frame itself one control further in
-               (rule 25 keeps it reachable). This one also settles the call it
-               refused, which no result will. -->
+          <!-- A permission refusal draws on the call row it refused, which
+               no result will ever settle: the wire's own subtype is the row's
+               chip and the CLI's reason is the row's body, so one refusal is
+               one row. A refusal whose call row the page does not hold still
+               draws as a provisional notice of its own. -->
+          <details class="leaf">
+            <summary><svg class="ic gl err"><use href="#i-square-terminal"/></svg><span class="tn">Print the home directory</span><span class="fam-chip bad">permission_denied</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <div class="body">
+              <div class="panel bodytext"><span class="pfx">$</span> echo $HOME
+Contains simple_expansion</div>
+            </div>
+          </details>
+
+          <!-- The same refusal where the page holds no call row for it - a
+               page opened after the call, or a peer message drawn as a card:
+               it draws as itself, open here, with the wire's own type as the
+               chip and the frame's fields under it (rule 25 keeps it
+               reachable). -->
           <details class="leaf nrow" open>
             <summary><span class="lead"><svg class="ic gl err"><use href="#i-error"/></svg><span class="tn">Bash refused: Contains simple_expansion</span></span><span class="chip">permission_denied</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
             <div class="body">
