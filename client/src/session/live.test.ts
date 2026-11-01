@@ -3269,9 +3269,10 @@ describe('the read, and the answer a frame has outrun', () => {
 
   /**
    * **An answer the frames have outrun is dropped, and asks for nothing.**
-   * Every slice of the record has a frame, so the record the frames carried
-   * forward IS the record - one more encode would be outrun too (#1472) - and
-   * asking for it again is a whole server encode apiece (#2563).
+   * Everything a frame can carry is in the record the frames carried forward -
+   * one more encode would be outrun too (#1472) - so asking for it again is a
+   * whole server encode apiece; the four slices no frame carries are taken
+   * from the answer itself (#2563).
    */
   it('drops an answer the frames have outrun without asking again', () => {
     const connection = drivable();
@@ -3832,6 +3833,18 @@ describe('the seat sequence', () => {
     };
   }
 
+  /** One range of rows, as the server answers a range ask. */
+  function rangeOf(from: number, to: number): ServerMessage {
+    const frames = [];
+    for (let at = from; at <= to; at += 1) {
+      frames.push({
+        seq: at,
+        update: { chat_appended: { key: LEAD, msg: spoke(`row ${at}`, `u${at}`) } },
+      });
+    }
+    return { kind: 'seat_frames', slot: LEAD, epoch: null, frames };
+  }
+
   it('applies the successor, asks for a hole, and folds the answer into it', () => {
     const connection = drivable();
     const page = watch(connection);
@@ -3945,6 +3958,52 @@ describe('the seat sequence', () => {
     ).toHaveLength(1);
     expect(words, 'the frames the cap released were lost').toContain('three');
     page.stop();
+  });
+
+  /**
+   * **Two owed ranges are both drawn, whichever answer lands first.** A frame
+   * minted past a held run books the stretch between them, and an answer
+   * fills only the range it carries; the other stays owed (#2564). The
+   * single-hole model dropped the later answer as already drawn and the rows
+   * vanished.
+   */
+  it('draws two owed ranges whichever answer lands first', () => {
+    const expected = Array.from({ length: 31 }, (_, at) => `row ${at + 1}`);
+    const orders = [
+      [
+        [2, 10],
+        [20, 30],
+        [12, 30],
+      ],
+      [
+        [20, 30],
+        [2, 10],
+        [12, 30],
+      ],
+    ] as const;
+
+    for (const order of orders) {
+      const connection = drivable();
+      const page = watch(connection);
+      page.land(snapshotOf(LEAD, {}, { seq: 1 }));
+      page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke('row 1', 'u1') } }, 1));
+      // Two frames minted past the drawn run: 2..10 and 12..30 are owed.
+      page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke('row 11', 'u11') } }, 11));
+      page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke('row 31', 'u31') } }, 31));
+      expect(connection.ranges, 'both holes are asked for').toEqual([
+        { slot: LEAD, epoch: null, from: 2, to: 10 },
+        { slot: LEAD, epoch: null, from: 12, to: 30 },
+      ]);
+
+      for (const [from, to] of order) page.land(rangeOf(from, to));
+      paint();
+
+      expect(
+        spoken(page),
+        `the rows are not all drawn once, in order (answers ${order.map((range) => range.join('..')).join(', ')})`,
+      ).toEqual(expected);
+      page.stop();
+    }
   });
 
   /**
@@ -4067,10 +4126,10 @@ describe('the seat sequence', () => {
 describe('the review read', () => {
   /**
    * **The review scope belongs to the seat, not to one ask.** A read dropped
-   * for one in flight, an answer the frames outran, a replacement frame and a
-   * reconnect are all asks the page did not choose; each must carry the scope
-   * the page holds, or the diff is answered `unverified` for a refresh nobody
-   * asked for.
+   * for one in flight, a want served when an answer lands, a replacement
+   * frame and a reconnect are all asks the page did not choose; each must
+   * carry the scope the page holds, or the diff is answered `unverified` for
+   * a refresh nobody asked for.
    */
   it('rides every re-ask the page did not choose, and goes when the page lets it go', () => {
     const connection = drivable();

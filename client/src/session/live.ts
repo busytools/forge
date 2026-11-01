@@ -40,6 +40,7 @@ import type { Store } from '../stores';
 import type { SessionSlot } from '../wire/types';
 import { applyUpdate, REPLACES, variantOf } from './apply';
 import { markReturn } from './returns';
+import { cover as coverRanges, filled as fillRanges, type Range } from './stream';
 import { sessionFrom, type SessionRecord } from './wire';
 
 /** What the session page has to draw from, and why it has nothing when it does not. */
@@ -179,26 +180,23 @@ interface Seat {
    */
   askedAt: number;
   /**
-   * The first number the repair in flight is asking for, `null` when none is.
-   */
-  repairFrom: number | null;
-  /**
-   * The newest number the repair in flight is asking for, `null` when none
-   * is.
+   * The stretches this record has SEEN but never applied, sorted and merged.
    *
-   * The hole is `repairFrom..repairTo`, and its frames are the ones the
-   * record never applied - even after the hold cap has drawn what crossed
-   * above them, which is why the already-drawn rule reads them as a hole and
-   * not as numbers `lastSeq` has passed (#2564).
+   * **A hole can open above another**, so one range is not enough: a frame
+   * minted past a held run books the stretch between them too (#2564), and a
+   * later answer fills only the range it carries. Each is asked once, when it
+   * is booked, and a number inside one is drawn however far `lastSeq` has
+   * travelled - a hold-cap flush can carry the record past a hole whose
+   * frames were never drawn.
    */
-  repairTo: number | null;
+  owed: Range[];
   /**
-   * Frames that arrived above a hole while its repair was on the way.
+   * Frames that arrived above an owed range, waiting for it to fill.
    *
    * **Held rather than drawn.** A repaired user row applied after the
    * assistant frames that streamed past it opens a turn of its own at the
-   * foot, so the frames above a hole wait for the hole and draw in sequence
-   * with it.
+   * foot, so a frame waits until its number is the drawn run's successor and
+   * then draws in sequence with it.
    */
   repairHeld: { seq: number; span: number; update: SessionUpdate }[];
   /** Release the seat because its session ended: see `end`. */
@@ -269,6 +267,26 @@ const REFUSED_RETRY_MS = 2_000;
  * fallback is the arrival order the hold replaced.
  */
 const REPAIR_HELD_CAP = 256;
+
+/** Whether any owed range overlaps `from..to`. */
+function overlaps(ranges: Range[], from: number, to: number): boolean {
+  return ranges.some((range) => range.from <= to && range.to >= from);
+}
+
+/** The parts of `from..to` no owed range already covers. */
+function uncovered(ranges: Range[], from: number, to: number): Range[] {
+  const fresh: Range[] = [];
+  let at = from;
+  for (const range of ranges) {
+    if (range.to < at) continue;
+    if (range.from > to) break;
+    if (range.from > at) fresh.push({ from: at, to: range.from - 1 });
+    at = Math.max(at, range.to + 1);
+    if (at > to) return fresh;
+  }
+  if (at <= to) fresh.push({ from: at, to });
+  return fresh;
+}
 
 /**
  * Put a repository mutation on the strip as it arrives.
@@ -564,8 +582,7 @@ function createSeat(
     lastSeq: 0,
     seen: 0,
     askedAt: 0,
-    repairFrom: null,
-    repairTo: null,
+    owed: [],
     repairHeld: [],
     end,
     open,
@@ -1012,38 +1029,99 @@ function createSeat(
   }
 
   /**
-   * Draw the frames held while a repair was in flight, oldest first.
+   * Book a stretch the record has seen but not applied, and ask for it once.
    *
-   * A seal among them is a new occupant and takes its own path (a wipe and a
-   * fresh read), which is why they go back through [`applyFrame`] rather than
-   * straight to the record.
+   * **Each uncovered part is asked separately**, so a hole that grows at its
+   * top asks only the new stretch, and a range another reader already asked
+   * for is not asked twice.
    */
-  function flushRepaired(): void {
-    const waiting = seat.repairHeld.splice(0).sort((a, b) => a.seq - b.seq);
-    seat.repairFrom = null;
-    seat.repairTo = null;
-    for (const frame of waiting) applyFrame(frame, true);
+  function owe(from: number, to: number): void {
+    if (to < from) return;
+    const fresh = uncovered(seat.owed, from, to);
+    coverRanges(seat.owed, { from, to });
+    for (const range of fresh) {
+      if (!askRange(range.from, range.to)) {
+        // A socket that is not open cannot ask, so nothing is coming: the
+        // held frames draw rather than waiting forever.
+        releaseHeld();
+        return;
+      }
+    }
   }
 
   /**
-   * Draw the frames that crossed the hole, leaving the hole itself owed.
+   * Draw every held frame, oldest first, and forget the owed ranges.
+   *
+   * The fallback for a socket that cannot ask: nothing is coming, and the
+   * reconnect's snapshot is what answers the holes later.
+   */
+  function releaseHeld(): void {
+    const waiting = seat.repairHeld.splice(0).sort((a, b) => a.seq - b.seq);
+    seat.owed.length = 0;
+    for (const frame of waiting) {
+      seat.lastSeq = Math.max(seat.lastSeq, frame.seq + frame.span - 1);
+      draw(frame.update);
+    }
+  }
+
+  /**
+   * Draw the frames that crossed the owed ranges, leaving the holes owed.
    *
    * **The hold cap must not swallow the hole it is waiting on** (#2564). A
-   * held frame inside `repairFrom..repairTo` stands for numbers the record
-   * never applied; drawing it here as though it had would make the late
-   * answer's copy read as already drawn, and the row would vanish with
-   * nothing left to ask for it. What crossed above the hole draws unordered;
-   * the hole's own frames wait for their answer.
+   * held frame inside an owed range stands for numbers the record never
+   * applied; drawing it here as though it had would make the late answer's
+   * copy read as already drawn, and the row would vanish with nothing left to
+   * ask for it. What crossed above the holes draws unordered; the holes
+   * themselves wait for their answers.
    */
-  function flushHeldAbove(): void {
+  function releaseHeldAbove(): void {
     const above: Seat['repairHeld'] = [];
     const inside: Seat['repairHeld'] = [];
     for (const frame of seat.repairHeld) {
-      if (seat.repairTo === null || frame.seq > seat.repairTo) above.push(frame);
-      else inside.push(frame);
+      const reach = frame.seq + frame.span - 1;
+      if (overlaps(seat.owed, frame.seq, reach)) inside.push(frame);
+      else above.push(frame);
     }
     seat.repairHeld = inside;
-    for (const frame of above.sort((a, b) => a.seq - b.seq)) applyFrame(frame, true);
+    for (const frame of above.sort((a, b) => a.seq - b.seq)) {
+      seat.lastSeq = Math.max(seat.lastSeq, frame.seq + frame.span - 1);
+      draw(frame.update);
+    }
+  }
+
+  /** Whether a drain is already running: one that re-enters its own loop returns. */
+  let draining = false;
+
+  /**
+   * Draw the held frames whose numbers have become the drawn run's successors.
+   *
+   * **In sequence, or not at all.** A frame that jumps the run books its own
+   * hole and waits (`owe`), so a second hole inside a held run is asked for
+   * rather than stepped over - and a frame the record has already passed is
+   * dropped, unless a hole still owes its numbers.
+   */
+  function drain(): void {
+    if (draining) return;
+    draining = true;
+    try {
+      for (;;) {
+        seat.repairHeld = seat.repairHeld.filter(
+          (frame) =>
+            frame.seq + frame.span - 1 > seat.lastSeq ||
+            overlaps(seat.owed, frame.seq, frame.seq + frame.span - 1),
+        );
+        const at = seat.lastSeq + 1;
+        const index = seat.repairHeld.findIndex(
+          (frame) => frame.seq <= at && at < frame.seq + frame.span,
+        );
+        if (index < 0) return;
+        const [next] = seat.repairHeld.splice(index, 1);
+        if (next === undefined) return;
+        applyFrame(next);
+      }
+    } finally {
+      draining = false;
+    }
   }
 
   /**
@@ -1060,17 +1138,13 @@ function createSeat(
    */
   function takeOutrun(from: number): void {
     // The newest number the stream has shown, applied or held. Everything
-    // above the answer's encode point is inside the range asked below.
+    // above the answer's encode point is inside the range owed below.
     const above = seat.seen;
     seat.repairHeld.length = 0;
-    seat.repairFrom = null;
-    seat.repairTo = null;
+    seat.owed.length = 0;
     seat.lastSeq = from - 1;
     answeredRead();
-    if (above < from) return;
-    seat.repairFrom = from;
-    seat.repairTo = above;
-    if (!askRange(from, above)) flushRepaired();
+    owe(from, above);
   }
 
   /**
@@ -1102,25 +1176,7 @@ function createSeat(
    * number throws nothing (a delivery the server forged for this connection
    * is drawn as the turn it reaches the model as, and stands in no sequence).
    */
-  function applyFrame(
-    frame: {
-      seq?: unknown;
-      span?: unknown;
-      update: SessionUpdate;
-    },
-    /**
-     * Whether this frame arrived in a repaired stretch rather than live.
-     *
-     * **A repaired frame is exempt from the hold and the hole, not from the
-     * number rule.** It fills the gap rather than opening one - but a range
-     * can start below what this record already applied, because a stale
-     * whole-read answer rewinds the ordering gate's count, and a repaired row
-     * the record carries must not be drawn a second time (#2564). The one
-     * exception is the seat's own pending hole: those frames were never
-     * drawn, even when a hold-cap flush carried the record past them.
-     */
-    repaired = false,
-  ): void {
+  function applyFrame(frame: { seq?: unknown; span?: unknown; update: SessionUpdate }): void {
     const [name, payload] = variantOf(frame.update);
 
     // The three variants that REPLACE the record rather than patching it: a
@@ -1139,8 +1195,7 @@ function createSeat(
         seat.seen = 0;
         // Frames held under the old epoch are not the new one's to draw.
         seat.repairHeld.length = 0;
-        seat.repairFrom = null;
-        seat.repairTo = null;
+        seat.owed.length = 0;
       }
       reread();
       return;
@@ -1183,51 +1238,38 @@ function createSeat(
       // appends crosses as the one frame they draw as - and it carries the
       // OLDEST of them.
       const reach = seq + span - 1;
+      const seen = seat.seen;
       seat.seen = Math.max(seat.seen, reach);
       // A number this record already holds is already drawn: a repeat, a
-      // replay, a reorder - or a repaired range which starts below the
-      // record's newest number, which a stale answer's rewound count can ask
-      // for. Such a row is never drawn a second time (#2564). **The pending
-      // hole is the exception**: its frames were never drawn, even when a
-      // hold-cap flush has carried the record past them.
-      const inHole =
-        repaired &&
-        seat.repairFrom !== null &&
-        seat.repairTo !== null &&
-        reach >= seat.repairFrom &&
-        reach <= seat.repairTo;
-      if (reach <= seat.lastSeq && !inHole) return;
-      if (!repaired) {
-        // **A hole holds everything above it until its repair lands.** Drawn
-        // at once, a repaired user row would land below the assistant frames
-        // that streamed past it and open a turn of its own at the foot; held,
-        // the stretch draws in sequence - the hole, then what crossed it.
-        if (seat.repairFrom !== null) {
-          seat.repairHeld.push({ seq, span, update: frame.update });
-          if (seat.repairHeld.length >= REPAIR_HELD_CAP) {
-            // What crossed the hole draws; the hole itself stays owed.
-            flushHeldAbove();
-            // A hold that is all hole is still released rather than growing
-            // without bound - the fallback the cap has always been.
-            if (seat.repairHeld.length >= REPAIR_HELD_CAP) flushRepaired();
-          }
-          return;
+      // replay, a reorder, or a repaired range below the drawn run - a stale
+      // answer's rewound count can ask for numbers every reader has. One
+      // inside an owed range is the exception: a hold-cap release can carry
+      // `lastSeq` past frames that were never drawn (#2564).
+      if (reach <= seat.lastSeq && !overlaps(seat.owed, seq, reach)) return;
+      // **A jump past everything seen leaves a hole**, even when this frame
+      // itself waits above one already owed - the stretch between the newest
+      // number seen and this frame's is numbers nobody delivered (#2564).
+      if (seq > seen + 1) owe(seen + 1, seq - 1);
+      // **Everything above a hole waits.** Drawn at once, a repaired user row
+      // would land below the assistant frames that streamed past it and open
+      // a turn of its own at the foot; held, it draws in sequence once its
+      // numbers are the run's successors.
+      if (seq > seat.lastSeq + 1) {
+        seat.repairHeld.push({ seq, span, update: frame.update });
+        if (seat.repairHeld.length >= REPAIR_HELD_CAP) {
+          // What crossed the holes draws; the holes themselves stay owed.
+          releaseHeldAbove();
+          // A hold that is all hole is still released rather than growing
+          // without bound - the fallback the cap has always been.
+          if (seat.repairHeld.length >= REPAIR_HELD_CAP) releaseHeld();
         }
-        if (seq > seat.lastSeq + 1) {
-          seat.repairFrom = seat.lastSeq + 1;
-          seat.repairTo = seq - 1;
-          seat.repairHeld.push({ seq, span, update: frame.update });
-          if (!askRange(seat.repairFrom, seat.repairTo)) {
-            // A socket that is not open cannot ask, so nothing is coming:
-            // the held frames draw rather than waiting forever.
-            flushRepaired();
-          }
-          return;
-        }
+        return;
       }
-      // A repaired stretch can arrive either side of the frame that opened
-      // the hole, so the record's number is the newest it has seen.
       seat.lastSeq = Math.max(seat.lastSeq, reach);
+      fillRanges(seat.owed, seq, reach);
+      draw(frame.update);
+      drain();
+      return;
     }
 
     draw(frame.update);
@@ -1295,8 +1337,7 @@ function createSeat(
           // The frames held above the hole belong to the epoch the refusal
           // just ended; the whole read that follows answers for the new one.
           seat.repairHeld.length = 0;
-          seat.repairFrom = null;
-          seat.repairTo = null;
+          seat.owed.length = 0;
           reread();
         }
         return;
@@ -1316,6 +1357,9 @@ function createSeat(
           seat.epoch = reach.epoch;
           seat.lastSeq = reach.seq === null ? 0 : reach.seq - 1;
           seat.seen = seat.lastSeq;
+          // Old-epoch holds and holes answer for a stream that is gone.
+          seat.owed.length = 0;
+          seat.repairHeld.length = 0;
           answeredRead();
           return;
         }
@@ -1361,16 +1405,14 @@ function createSeat(
         answeredRead();
         return;
       }
-      // A repaired stretch, in answer to a range ask this seat made: the
-      // frames fold through the SAME path a live frame does - the sequence
-      // decides where each one lands - so the gap fills underneath the reader
-      // rather than arriving as a second kind of drawing.
+      // A repaired stretch, in answer to a range ask this seat made or to one
+      // the ordering gate did: the frames fold through the SAME path a live
+      // frame does - the sequence decides where each one lands - so a gap
+      // fills underneath the reader rather than arriving as a second kind of
+      // drawing, and a range nobody here asked for lands the same way.
       if (message.kind === 'seat_frames') {
         if (subjectKey({ session: message.slot }) !== key) return;
-        for (const frame of message.frames) applyFrame(frame, true);
-        // The hole is filled, so what crossed it draws now - in sequence,
-        // which is the order the hold was for.
-        flushRepaired();
+        for (const frame of message.frames) applyFrame(frame);
         return;
       }
       if (message.kind !== 'update') return;
