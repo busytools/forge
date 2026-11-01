@@ -1809,7 +1809,7 @@ interface Driveable extends Omit<Connection, 'status'> {
 /** A seat the server holds no session for, worded as it words the refusal. */
 const NO_SESSION = 'forge holds no session for this seat';
 
-function drivable(refusedAtFirst = false): Driveable {
+function drivable(refusedAtFirst = false, rangeAskFails = false): Driveable {
   const listeners = new Set<(message: ServerMessage) => void>();
   const watchers = new Set<(status: ConnectionStatus) => void>();
   const snapshot = new Map<string, unknown>();
@@ -1882,7 +1882,7 @@ function drivable(refusedAtFirst = false): Driveable {
     readDocument: () => false,
     seatRange: (slot, epoch, from, to) => {
       ranges.push({ slot, epoch, from, to });
-      return true;
+      return !rangeAskFails;
     },
     frame: () => false,
     browserInput: () => false,
@@ -4004,6 +4004,100 @@ describe('the seat sequence', () => {
       ).toEqual(expected);
       page.stop();
     }
+  });
+
+  /**
+   * **An answer fills the holes below its encode point** (#2564). The record
+   * it carries holds every number under `seq - 1`, so a hole there is no
+   * longer owed - and a live repeat inside that stretch must not draw a
+   * second time through the owed-range exception.
+   */
+  it('does not draw a live repeat inside a hole the answer already filled', () => {
+    const connection = drivable();
+    const page = watch(connection);
+    page.land(snapshotOf(LEAD, {}, { epoch: 'one', seq: 1 }));
+    page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke('row 1', 'u1') } }, 1));
+    // A frame at 11 books [2,10] and waits.
+    page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke('row 11', 'u11') } }, 11));
+    expect(connection.ranges, 'precondition: the hole is asked for').toEqual([
+      { slot: LEAD, epoch: 'one', from: 2, to: 10 },
+    ]);
+
+    // An accepted answer carrying 1..5: not outrun, and the same occupant.
+    const carried = Array.from({ length: 5 }, (_, at) => spoke(`row ${at + 1}`, `u${at + 1}`));
+    page.land(
+      snapshotOf(
+        LEAD,
+        { conversation: { turns: [{ key: 'streamed', messages: carried }], compaction_count: 0 } },
+        { epoch: 'one', seq: 6 },
+      ),
+    );
+    paint();
+
+    // The same number lands again as a live frame.
+    page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke('row 5', 'u5') } }, 5));
+    paint();
+
+    expect(
+      spoken(page).filter((word) => word === 'row 5'),
+      'a repeat inside the answer-filled stretch was drawn twice',
+    ).toHaveLength(1);
+    page.stop();
+  });
+
+  /**
+   * **A cap release leaves every hole owed, and an answer fills only its own**
+   * (#2564). What crossed the holes draws at the cap; the ranges stay owed, so
+   * the later answer for the second range still lands its rows.
+   */
+  it('keeps the second range owed across a cap release and one answer', () => {
+    const connection = drivable();
+    const page = watch(connection);
+    page.land(snapshotOf(LEAD, {}, { seq: 1 }));
+    page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke('row 1', 'u1') } }, 1));
+    page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke('row 11', 'u11') } }, 11));
+    page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke('row 31', 'u31') } }, 31));
+    // Enough frames above both holes to trip the hold cap.
+    for (let at = 32; at <= 32 + 300; at += 1) {
+      page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke(`row ${at}`, `u${at}`) } }, at));
+    }
+    paint();
+
+    // The first range's answer fills only that range.
+    page.land(rangeOf(2, 10));
+    paint();
+    page.land(rangeOf(12, 30));
+    paint();
+
+    const words = spoken(page);
+    for (let at = 1; at <= 31; at += 1) {
+      expect(words, `row ${at} was lost after the cap`).toContain(`row ${at}`);
+    }
+    expect(
+      words.filter((word) => word === 'row 12'),
+      'row 12 was drawn twice',
+    ).toHaveLength(1);
+    page.stop();
+  });
+
+  /**
+   * **A frame whose hole cannot be asked for draws rather than waits.** A
+   * socket that closed between the frame and its ask has nothing coming: the
+   * hold is released and the frame lands unordered, the fallback a closed
+   * socket has always had.
+   */
+  it('draws the frame whose hole a closed socket cannot ask for', () => {
+    const connection = drivable(false, true);
+    const page = watch(connection);
+    page.land(snapshotOf(LEAD, {}, { seq: 1 }));
+    page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke('one') } }, 1));
+    page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke('three', 'u3') } }, 3));
+    paint();
+
+    expect(spoken(page), 'the frame a closed socket could not repair was held forever').toContain(
+      'three',
+    );
+    page.stop();
   });
 
   /**

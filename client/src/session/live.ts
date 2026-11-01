@@ -1032,8 +1032,8 @@ function createSeat(
    * Book a stretch the record has seen but not applied, and ask for it once.
    *
    * **Each uncovered part is asked separately**, so a hole that grows at its
-   * top asks only the new stretch, and a range another reader already asked
-   * for is not asked twice.
+   * top asks only the new stretch, and a range already owed is not asked
+   * again.
    */
   function owe(from: number, to: number): boolean {
     if (to < from) return true;
@@ -1048,6 +1048,18 @@ function createSeat(
       }
     }
     return true;
+  }
+
+  /**
+   * The whole-record answer carries every number below its encode point.
+   *
+   * **A hole below that point is filled by the record itself**, and a held
+   * frame under it too: leaving them owed lets a repeat inside the stretch
+   * draw a second time through the owed-range exception (#2564).
+   */
+  function acceptCarry(): void {
+    fillRanges(seat.owed, 0, seat.lastSeq);
+    seat.repairHeld = seat.repairHeld.filter((frame) => frame.seq + frame.span - 1 > seat.lastSeq);
   }
 
   /**
@@ -1409,6 +1421,7 @@ function createSeat(
         if (reach.seq !== null) {
           seat.lastSeq = reach.seq - 1;
           seat.seen = Math.max(seat.seen, seat.lastSeq);
+          acceptCarry();
         }
         answeredRead();
         return;
