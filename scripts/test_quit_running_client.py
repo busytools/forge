@@ -8,8 +8,13 @@ release quits it first - a graceful SIGTERM and a bounded wait - and refuses
 only when the quit does not take: a client that ignores the signal still leaves
 the bundle in use, and replacing it is the one way this fails quietly.
 
-Stdlib only, like the other script tests: python3 is already a check
-dependency.
+The query must name the process EXECUTING the client, not every process with
+the binary open, so a file-holder that ignores TERM is neither signalled nor
+waited on. The stand-in is a compiled stub because `lsof -d txt` reports the
+executable mapping, which a script's interpreter owns rather than the script.
+
+Stdlib only, like the other script tests: python3 and cc are already check
+dependencies, and the file is macOS-only by way of lsof.
 """
 
 import subprocess
@@ -20,6 +25,28 @@ from pathlib import Path
 
 SCRIPT = Path(__file__).resolve().parent / "quit-running-client.sh"
 
+# Terminates on the default SIGTERM disposition. An ignoring client is the
+# same stub launched through a shell that ignores TERM before the exec, so
+# the ignore is in place from the process's first instant rather than from a
+# line of C that could lose a race with the signal.
+STUB = """\
+#include <unistd.h>
+
+int main(void) {
+    for (;;) {
+        pause();
+    }
+}
+"""
+
+# Holds the client's binary open and records any TERM that reaches it.
+HOLDER = """\
+#!/bin/sh
+trap 'echo hit > "$2"' TERM
+exec 3<"$1"
+while :; do sleep 0.1; done
+"""
+
 
 class QuitRunningClientTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -28,24 +55,49 @@ class QuitRunningClientTest(unittest.TestCase):
         self.root = Path(scratch.name)
         self.app = self.root / "forge.app"
         self.exe = self.app / "Contents" / "MacOS" / "forge-client"
-
-    def stand_in(self, body: str) -> "subprocess.Popen[bytes]":
         self.exe.parent.mkdir(parents=True)
-        self.exe.write_text(body)
-        self.exe.chmod(0o755)
-        proc = subprocess.Popen([str(self.exe)])
+        source = self.root / "stub.c"
+        source.write_text(STUB)
+        built = subprocess.run(
+            ["cc", "-o", str(self.exe), str(source)], capture_output=True, text=True
+        )
+        self.assertEqual(built.returncode, 0, built.stderr)
+
+    def reap(self, proc: "subprocess.Popen[bytes]") -> None:
         self.addCleanup(proc.wait)
         self.addCleanup(proc.kill)
-        self.wait_until_in_use()
+
+    def client(self, ignore: bool = False) -> "subprocess.Popen[bytes]":
+        if ignore:
+            wrapper = self.root / "ignore.sh"
+            wrapper.write_text(f'#!/bin/sh\ntrap "" TERM\nexec "{self.exe}"\n')
+            wrapper.chmod(0o755)
+            proc = subprocess.Popen([str(wrapper)])
+        else:
+            proc = subprocess.Popen([str(self.exe)])
+        self.reap(proc)
+        self.wait_until_in_use(proc)
         return proc
 
-    def wait_until_in_use(self) -> None:
-        deadline = time.monotonic() + 5
+    def holder(self) -> "tuple[subprocess.Popen[bytes], Path]":
+        marker = self.root / "marker"
+        script = self.root / "holder.sh"
+        script.write_text(HOLDER)
+        script.chmod(0o755)
+        proc = subprocess.Popen([str(script), str(self.exe), str(marker)])
+        self.reap(proc)
+        self.wait_until_in_use(proc)
+        return proc, marker
+
+    def wait_until_in_use(self, proc: "subprocess.Popen[bytes]") -> None:
+        deadline = time.monotonic() + 10
         while time.monotonic() < deadline:
             if self.running_pids():
                 return
+            if proc.poll() is not None:
+                self.fail(f"the stand-in exited with {proc.returncode} instead of holding {self.exe}")
             time.sleep(0.05)
-        self.fail(f"the stand-in client never came up at {self.exe}")
+        self.fail(f"the stand-in never held {self.exe}")
 
     def running_pids(self) -> "list[str]":
         result = subprocess.run(["lsof", "-t", str(self.exe)], capture_output=True, text=True)
@@ -63,7 +115,7 @@ class QuitRunningClientTest(unittest.TestCase):
         )
 
     def test_a_client_that_exits_on_quit_is_waited_for(self) -> None:
-        self.stand_in('#!/bin/sh\ntrap "exit 0" TERM\nwhile :; do sleep 0.1; done\n')
+        self.client()
 
         result = self.quit()
 
@@ -71,12 +123,14 @@ class QuitRunningClientTest(unittest.TestCase):
         self.assertEqual(self.running_pids(), [], "the client outlived the quit")
 
     def test_a_client_that_ignores_quit_is_refused(self) -> None:
-        self.stand_in('#!/bin/sh\ntrap "" TERM\nwhile :; do sleep 0.1; done\n')
+        self.client(ignore=True)
 
         result = self.quit(bound="1")
 
         self.assertNotEqual(
-            result.returncode, 0, "a client that ignored SIGTERM was not refused"
+            result.returncode,
+            0,
+            f"a client that ignored SIGTERM was not refused: {result.stderr}",
         )
         self.assertIn(
             "the client did not quit",
@@ -84,6 +138,15 @@ class QuitRunningClientTest(unittest.TestCase):
             "the refusal must say the quit did not take, not only that the bundle is in use",
         )
         self.assertNotEqual(self.running_pids(), [], "the refusal fired for a client that quit")
+
+    def test_a_file_holder_is_neither_signalled_nor_waited_for(self) -> None:
+        holder, marker = self.holder()
+
+        result = self.quit(bound="1")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(marker.exists(), "a process that only held the binary open was signalled")
+        self.assertIsNone(holder.poll(), "the file-holder was killed")
 
 
 if __name__ == "__main__":

@@ -4,6 +4,12 @@
 # is a refusal, because swapping the bundle underneath a live process is the
 # one way this fails quietly.
 #
+# **The query names the process EXECUTING the client, not every process with
+# its file open**: `-d txt` is the executable mapping, so an XPC or helper
+# service that merely holds the binary open is neither signalled nor waited
+# on. Without it, a file-holder that ignores TERM would refuse a release that
+# should go ahead.
+#
 # The check is on the bundle's own executable, so a client running from a
 # checkout's target dir does not block a release - it goes on executing the
 # image it started from, which this neither disturbs nor updates.
@@ -25,7 +31,7 @@ command -v lsof >/dev/null 2>&1 || {
 # it cannot find.
 [ -e "$exe" ] || exit 0
 
-pids=$(lsof -t "$exe" || true)
+pids=$(lsof -a -t -d txt "$exe" || true)
 [ -n "$pids" ] || exit 0
 
 echo "[INFO] quitting the client at $app (pid $(echo "$pids" | tr '\n' ' '))" >&2
@@ -35,7 +41,7 @@ kill $pids 2>/dev/null || true
 
 deadline=$((SECONDS + bound))
 while :; do
-    pids=$(lsof -t "$exe" || true)
+    pids=$(lsof -a -t -d txt "$exe" || true)
     [ -n "$pids" ] || exit 0
     if [ "$SECONDS" -ge "$deadline" ]; then
         echo "[ERROR] $app is in use (pid $(echo "$pids" | tr '\n' ' ')) - the client did not quit within ${bound}s" >&2
