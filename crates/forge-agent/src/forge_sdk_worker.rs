@@ -272,8 +272,8 @@ asks.\n\
 \n\
 The project handoff (`handoff.md`) in the project's memory directory is \
 the lead's. A worker never writes it and never edits the `MEMORY.md` \
-index there: a worker's continuity is its own resumable session, its \
-board row and its messages to the lead. A worker that must record \
+index there: a worker's continuity is its own resumable session and \
+its messages to the lead. A worker that must record \
 something durable writes `workers/<label>.md` in that same project \
 memory directory, never the project's handoff.\n\
 \n\
@@ -3908,8 +3908,8 @@ mod tests {
         );
         assert!(
             FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
-                "a worker's continuity is its own resumable session, its board row and its \
-                 messages to the lead"
+                "a worker's continuity is its own resumable session and its messages to the \
+                 lead"
             ),
             "why a worker needs no shared file is pinned",
         );
