@@ -1007,6 +1007,18 @@ describe('the open a conversation begins', () => {
       h.records.flat().filter((record) => record.kind === 'painted'),
       'a placeholder leaves the arm for the content that follows',
     ).toHaveLength(1);
+
+    // And neither does a refusal: it is the column's line about an ask, not
+    // the seat's answer, and the content drawing that follows brings the
+    // rows. Only `empty` drops the arm.
+    h.probe.noteConversationOpened('Busytools/forge/lead');
+    h.probe.noteDrawn('refused');
+    h.advance(50);
+    h.probe.notePainted();
+    expect(
+      h.records.flat().filter((record) => record.kind === 'painted'),
+      'a refusal leaves the arm too',
+    ).toHaveLength(2);
   });
 
   /**
