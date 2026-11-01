@@ -141,10 +141,8 @@ impl CardTracker {
                                 }
                                 Some(parent) => {
                                     // The parent may itself be a dispatch a
-                                    // deeper agent fired: resolve the chain so
-                                    // this call joins the same card the read
-                                    // path gives it, rather than the cardless
-                                    // call it names.
+                                    // deeper agent fired, so resolve the chain
+                                    // to the card the read path would give it.
                                     let slot = self
                                         .owning_dispatch(parent)
                                         .and_then(|owner| self.at.get(owner).copied());
@@ -153,6 +151,13 @@ impl CardTracker {
                                         self.instances[slot]
                                             .children
                                             .push(child_of(id, name, input));
+                                    } else {
+                                        tracing::debug!(
+                                            event_name = "subagent_call_without_a_card",
+                                            call = %id,
+                                            parent = %parent,
+                                            "a parented call resolves to no card; it stays where the wire put it",
+                                        );
                                     }
                                 }
                                 None => {}
@@ -310,11 +315,12 @@ impl CardTracker {
     ///
     /// The CLI's `permission_denied` frame names the agent and never the
     /// dispatch, and the agent is the task id the roster opened the dispatch
-    /// with. A dispatch a sub-agent fired has no card of its own - a second
+    /// with. A dispatch a sub-agent fired has no card of its own: a second
     /// level's call is a child line of the instance that fired it, and a
-    /// third level's is only a parent link - so both resolve to the owning
-    /// instance; a task no instance owns answers `None`, and the frame stays
-    /// where it was.
+    /// third level's call names that child line as its parent - which is why
+    /// the walk needs a second hop. Both resolve to the owning instance; a
+    /// task no instance owns answers `None`, and the frame stays where it
+    /// was.
     pub(crate) fn dispatch_of(&self, task_id: &str) -> Option<&str> {
         let linked =
             self.task_ids.get(task_id).map(String::as_str).filter(|id| !id.trim().is_empty())?;
@@ -327,9 +333,9 @@ impl CardTracker {
     ///
     /// One hop is not enough. A depth-2 agent's `Task` call is a child line
     /// of the outer card, but the dispatch a depth-3 agent ran under was
-    /// made by the depth-2 agent, which the tracker holds only as a parent
-    /// link - so a frame from that agent named an id no card owns and drew
-    /// at the session's level.
+    /// made by the depth-2 agent: its parent is that child line, not a card,
+    /// so a frame from that agent named an id no card owns and drew at the
+    /// session's level.
     pub(crate) fn owning_dispatch(&self, call: &str) -> Option<&str> {
         let mut cursor = call;
         // Bounded, so a parent link pair naming each other cannot spin: the
@@ -925,10 +931,10 @@ mod tests {
     /// **A dispatch three levels down resolves to the card that owns it.**
     /// Only a parentless `Task`/`Agent` call opens a card; a dispatch a
     /// sub-agent made is a call inside the instance that fired it, and one
-    /// the depth-2 agent made is not even a child line the tracker holds -
-    /// so its own agent's frames named an id no card owns and drew nowhere.
-    /// The parent link on every assistant tool-use id is what walks the
-    /// chain back to the top-level dispatch.
+    /// the depth-2 agent made names that child line as its parent - so its
+    /// own agent's frames named an id no card owns and drew nowhere. The
+    /// parent link on every assistant tool-use id is what walks the chain
+    /// back to the top-level dispatch.
     #[test]
     fn a_dispatch_three_levels_down_resolves_to_the_card_that_owns_it() {
         let messages = [
@@ -976,6 +982,24 @@ mod tests {
             tracker.instances[0].children.iter().map(|child| child.id.as_str()).collect::<Vec<_>>(),
             vec!["toolu_inner", "toolu_deeper"],
             "both deeper calls belong to the card's own call list",
+        );
+        // A nested call's result settles through the same index.
+        let result = serde_json::json!({
+            "type": "user",
+            "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_deeper", "content": "done"}]},
+            "uuid": "u-deep",
+            "session_id": "s",
+        });
+        tracker.apply(&serde_json::from_value(result).expect("a result frame"));
+        let settled = tracker.instances[0]
+            .children
+            .iter()
+            .find(|child| child.id == "toolu_deeper")
+            .map(|child| child.status);
+        assert_eq!(
+            settled,
+            Some(forge_primitives::runtime::SubagentCallStatus::Completed),
+            "the third-level call settles on its own result",
         );
 
         // A chain that never reaches a card resolves to nothing: the refusal
