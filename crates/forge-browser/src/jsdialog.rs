@@ -1,13 +1,15 @@
-//! The page's JavaScript dialogs, answered on a deadline.
+//! The page's JavaScript dialogs, held until someone answers them.
 //!
 //! **The host implements no JS dialog handler upstream**, so a page's
 //! `confirm()` opens a modal nothing on this side answers: the page's own
 //! thread stops, and every page-domain CDP call on it waits for ever, which is
 //! how one paused tab held every session's browser calls (#2732). The handler
-//! takes every dialog CEF raises, and dismisses one nobody answered after
-//! [`DEADLINE_MS`]. The agent's own `browser_handle_dialog` still lands first
-//! when it comes: it closes the dialog through the page's CDP session, which
-//! cancels this deadline. Every raise and every dismissal is a host event.
+//! takes every dialog CEF raises and holds it: **a person's prompt is never
+//! answered behind their back**, so nothing here dismisses one on a clock
+//! (#2754). The agent's `browser_handle_dialog` answers it, and the browser
+//! service refuses any call that would drive the held tab until it is
+//! answered, which is what keeps #2732's stalled attach out. Every raise and
+//! every answer is a host event.
 
 #![allow(
     clippy::transmute_ptr_to_ptr,
@@ -25,25 +27,18 @@ use cef::{
 
 use crate::control::{self, HostEvent, JsDialogState};
 
-/// How long a dialog nobody answers stays open. **The agent's answer is the
-/// one that matters**: its `browser_handle_dialog` closes the dialog through
-/// the page's CDP session, which reaches [`JsDialogHandler::on_dialog_closed`]
-/// and cancels this deadline.
-pub const DEADLINE_MS: u64 = 5_000;
-
 // The dialogs CEF has raised and nobody answered yet, keyed by the tab that
 // raised them: **a page has one dialog at a time**, and the handler's own tab
 // is what `on_dialog_closed` can name.
 //
 // **The callbacks live on the UI thread that raised them.** CEF's callback is
-// thread-affine, and the host's pump - the thread that expires it - is the
-// same thread.
+// thread-affine, and the answers that reach it - the ring's own dialog line -
+// are delivered on that same thread.
 thread_local! {
     static OPEN: RefCell<HashMap<u16, Open>> = RefCell::new(HashMap::new());
 }
 
 struct Open {
-    at: u64,
     dialog: &'static str,
     message: String,
     callback: JsdialogCallback,
@@ -83,8 +78,8 @@ cef::wrap_jsdialog_handler! {
         }
 
         /// **A beforeunload prompt blocks the renderer the same way**, so it
-        /// gets the same deadline rather than a host that cannot close a tab
-        /// whose page is asking.
+        /// is held the same way: answering it lets the page leave, and closing
+        /// the tab is the other way out.
         fn on_before_unload_dialog(
             &self,
             _browser: Option<&mut cef::Browser>,
@@ -115,12 +110,11 @@ cef::wrap_jsdialog_handler! {
 
 /// Register one dialog and announce it.
 fn raise(tab: u16, dialog: &'static str, message: String, callback: &JsdialogCallback) {
-    let at = crate::engine::elapsed_ms();
     // **A page has one dialog at a time**, so a second raise replaces the
     // first: its callback is answered rather than leaked.
     if let Some(previous) = OPEN.with(|open| {
         open.borrow_mut()
-            .insert(tab, Open { at, dialog, message: message.clone(), callback: callback.clone() })
+            .insert(tab, Open { dialog, message: message.clone(), callback: callback.clone() })
     }) {
         previous.callback.cont(0, None);
     }
@@ -141,7 +135,7 @@ pub fn forget(tab: u16) {
 
 /// Answer one dialog: `accept` is the button the agent chose, `prompt` the
 /// text a prompt asks for. `false` names a tab no dialog is open on, **which
-/// is not an error**: the deadline may have answered it first.
+/// is not an error**: the page may have left the dialog on its own.
 ///
 /// **Called on the UI thread** by the host's pump, the thread that raised the
 /// callback.
@@ -157,35 +151,6 @@ pub fn answer(tab: u16, accept: bool, prompt: Option<&str>) -> bool {
         state: JsDialogState::Answered,
     });
     true
-}
-
-/// Dismiss every dialog past its deadline. **Called on the UI thread** by the
-/// host's pump, the thread that raised them.
-pub fn expire(now: u64) {
-    let due: Vec<(u16, Open)> = OPEN.with(|open| {
-        let mut open = open.borrow_mut();
-        let due: Vec<u16> = open
-            .iter()
-            .filter(|(_, dialog)| now.saturating_sub(dialog.at) >= DEADLINE_MS)
-            .map(|(tab, _)| *tab)
-            .collect();
-        due.into_iter().filter_map(|tab| open.remove(&tab).map(|dialog| (tab, dialog))).collect()
-    });
-    for (tab, dialog) in due {
-        dialog.callback.cont(0, None);
-        control::emit(&HostEvent::JsDialog {
-            tab,
-            dialog: dialog.dialog.to_owned(),
-            message: dialog.message,
-            state: JsDialogState::Expired,
-        });
-        tracing::debug!(
-            event_name = "cef_js_dialog_dismissed",
-            tab,
-            dialog = dialog.dialog,
-            "a JavaScript dialog nobody answered was dismissed at its deadline"
-        );
-    }
 }
 
 /// The handler the host's tab hands CEF.
