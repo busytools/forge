@@ -104,7 +104,17 @@ class QuitRunningClientTest(unittest.TestCase):
         return result.stdout.split()
 
     def quit(self, bound: str = "2") -> "subprocess.CompletedProcess[str]":
-        return subprocess.run([str(SCRIPT), str(self.app), bound], capture_output=True, text=True)
+        # A regression in the script's own deadline would otherwise hang the
+        # gate; the bound here only has to outlast the longest wait above.
+        try:
+            return subprocess.run(
+                [str(SCRIPT), str(self.app), bound],
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+        except subprocess.TimeoutExpired:
+            self.fail(f"the quit script hung past 15s with its own bound at {bound}")
 
     def test_no_client_is_not_in_use(self) -> None:
         result = self.quit()
