@@ -11,7 +11,7 @@
 import { modelStateFrom, narrow, type DictateModelState } from './types';
 
 /** What a model is for, as this page words it. `other` is a role this client is older than. */
-export type ModelRole = 'transcribing' | 'normalization' | 'other';
+export type ModelRole = 'transcribing' | 'normalization' | 'speaking' | 'other';
 
 /** Facts the pin declares about its checkpoint. */
 export interface ModelFacts {
@@ -290,7 +290,7 @@ export interface DictateModelsWire {
 }
 
 /** The roles the core names. */
-const ROLES: Exclude<ModelRole, 'other'>[] = ['transcribing', 'normalization'];
+const ROLES: Exclude<ModelRole, 'other'>[] = ['transcribing', 'normalization', 'speaking'];
 
 /** The check states the server writes; the fifth is this client's own. */
 const CHECK_STATES = ['never', 'checking', 'fresh', 'unreachable'] as const;

@@ -78,6 +78,8 @@ export function roleWord(role: ModelRole): string {
       return 'transcribing';
     case 'normalization':
       return 'cleanup';
+    case 'speaking':
+      return 'speaking';
     // A role the core added after this client: the row is still a model, and
     // saying so keeps it drawn rather than hidden.
     case 'other':
@@ -626,12 +628,18 @@ export function benchTargets(
   updates: ModelUpdate[],
   feed: CatalogueRow[] = [],
 ): BenchRow[] {
+  // The speaking role has its own bench; this one scores speech in.
   const rows: BenchRow[] = inUse
-    .filter((model) => model.state === 'ready')
+    .filter((model) => model.state === 'ready' && model.role !== 'speaking')
     .map((model) => ({
       target: {
         file: model.file,
-        role: model.role === 'normalization' ? 'cleanup' : model.role,
+        role:
+          model.role === 'normalization'
+            ? 'cleanup'
+            : model.role === 'transcribing'
+              ? 'transcribing'
+              : 'other',
         pinned: model.from.from === 'config',
       },
       variant: model.catalogue?.variant ?? null,

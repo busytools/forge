@@ -128,6 +128,35 @@ describe('the models page as it draws', () => {
   });
 
   /**
+   * The speaking role is a model the page draws like the other two: its own
+   * role word, its file, and the licence its facts carry. It comes from the
+   * core's speaking role, not from the speech feed.
+   */
+  it('draws the speaking role beside the dictation roles', () => {
+    const host = open({
+      ...modelsWire,
+      in_use: [
+        ...modelsWire.in_use,
+        {
+          role: 'speaking',
+          file: 'Qwen3-TTS-12Hz-1.7B-Base-Q8_0.gguf',
+          size: 1_847_874_400,
+          sha256: null,
+          state: 'ready',
+          facts: { quant: 'Q8_0', params: null, license: 'Apache-2.0', runtime: 'llama.cpp' },
+          catalogue: null,
+          from: { from: 'pin' },
+          at: null,
+        },
+      ],
+    });
+    const html = host.innerHTML;
+    expect(html).toContain('speaking');
+    expect(html).toContain('Qwen3-TTS-12Hz-1.7B-Base-Q8_0.gguf');
+    expect(html).toContain('Apache-2.0');
+  });
+
+  /**
    * The proposal's comparison, both sides of both numbers, and the link an
    * adoption takes: the note under it says a proposal becomes a pull request.
    */

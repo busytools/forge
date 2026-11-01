@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { settingsWire } from '../dev/settings.fixture';
+import type { SettingsArea } from '../wire/settings';
 import { builtInFor, classesOf, groupsOf, selectedArea } from './view';
 
 function area(id: string) {
@@ -66,6 +67,39 @@ describe('the settings page view', () => {
 
   it('splits the server area into its two tables', () => {
     expect(groupsOf(area('server')).map((group) => group.label)).toEqual(['browser', 'server']);
+  });
+
+  it('draws the voice area with its dictate and tts groups', () => {
+    // The server groups the two tables into one area; the page passes the
+    // area through and draws the groups the server names.
+    const voice: SettingsArea = {
+      id: 'voice',
+      name: 'voice',
+      note: 'the two directions: a take becomes text, and a reply becomes speech',
+      keys: [
+        {
+          path: 'dictate.enabled',
+          leaf: 'enabled',
+          group: ['dictate'],
+          pattern: 'dictate.enabled',
+          class: 'restart',
+          classLabel: 'restart',
+          value: { kind: 'bool', text: 'true' },
+          edit: { kind: 'bool', allowed: [], required: false, group: null },
+        },
+        {
+          path: 'tts.enabled',
+          leaf: 'enabled',
+          group: ['tts'],
+          pattern: 'tts.enabled',
+          class: 'restart',
+          classLabel: 'restart',
+          value: { kind: 'bool', text: 'false' },
+          edit: { kind: 'bool', allowed: [], required: false, group: null },
+        },
+      ],
+    };
+    expect(groupsOf(voice).map((group) => group.label)).toEqual(['dictate', 'tts']);
   });
 
   it('lists every class an area holds, in the legend order', () => {

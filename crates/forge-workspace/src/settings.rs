@@ -1330,7 +1330,9 @@ fn split_row(area: &str, path: &str, config: &LoadedConfig) -> (Vec<String>, Str
                 return (vec![name.to_owned()], tail.to_owned());
             }
         }
-        "server" => {
+        // The two directions of one conversation, each in its own box: the
+        // table a key belongs to is its group, as it is for `[server]`.
+        "server" | "voice" => {
             if let Some((table, tail)) = path.split_once('.') {
                 return (vec![table.to_owned()], tail.to_owned());
             }
@@ -2113,6 +2115,13 @@ models = ["m"]
                 .iter()
                 .all(|key| key.path.starts_with("dictate.") || key.path.starts_with("tts.")),
             "no other table's key rides in the voice area",
+        );
+        let groups: BTreeSet<Vec<String>> =
+            voice.keys.iter().map(|key| key.group.clone()).collect();
+        assert_eq!(
+            groups,
+            [vec!["dictate".to_owned()], vec!["tts".to_owned()]].into_iter().collect(),
+            "each direction draws as its own box in the one voice area",
         );
         let client = document
             .areas

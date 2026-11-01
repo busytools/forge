@@ -117,6 +117,7 @@ describe('the marks and words the page draws', () => {
   it('words a role, and keeps an unknown one as a row', () => {
     expect(roleWord('transcribing')).toBe('transcribing');
     expect(roleWord('normalization')).toBe('cleanup');
+    expect(roleWord('speaking')).toBe('speaking');
     expect(roleWord('other')).toBe('model');
   });
 
