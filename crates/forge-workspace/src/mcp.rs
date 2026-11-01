@@ -333,9 +333,9 @@ pub fn build_forge_server(
     builder = browser::add_tools(builder, browser, slot.clone());
     // Unconditional for the same reason: a hand-off reads the caller's own
     // tree, so every session may hand a document and no project has anything
-    // to withhold. The review family still rides along: a session without it
-    // can hand a document off but cannot read the review back, so its answer
-    // says so.
+    // to withhold. The tool still takes the caller's review family, because a
+    // session without it can hand a document off but cannot read the review
+    // back, so its answer says so.
     let review_available = families.contains(&McpFamily::Review);
     builder = documents::add_tools(builder, documents, slot.clone(), review_available);
     if review_available {
