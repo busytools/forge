@@ -45,7 +45,12 @@ const drawnMark = vi.hoisted(() =>
   vi.fn<(state: string, geometry?: () => ColumnMeasure | undefined) => void>(),
 );
 const openedMark = vi.hoisted(() => vi.fn());
-vi.mock('../perf', () => ({ noteDrawn: drawnMark, noteConversationOpened: openedMark }));
+const paintedMark = vi.hoisted(() => vi.fn());
+vi.mock('../perf', () => ({
+  noteDrawn: drawnMark,
+  noteConversationOpened: openedMark,
+  notePainted: paintedMark,
+}));
 
 const LEAD: SessionSlot = { org: 'Busytools', project: 'forge', label: 'lead' };
 
@@ -2234,10 +2239,14 @@ describe('the drawn mark', () => {
     expect(columnMeasure(drawnMark), 'the rows mark carries the column measure').toEqual(
       NOTHING_LAID_OUT,
     );
+    // This seat's first row gets a box, which is its painted mark.
+    resized(120);
+    expect(paintedMark, 'the first seat reports its own first row').toHaveBeenCalled();
 
     // The switch: the new seat's own conversation opens, and its own page is
     // what puts the drawn mark down for it.
     drawnMark.mockClear();
+    paintedMark.mockClear();
     openedMark.mockClear();
     column.flip();
     flushSync();
@@ -2265,6 +2274,77 @@ describe('the drawn mark', () => {
     expect(columnMeasure(drawnMark), "and it carries that seat's own measure").toEqual(
       NOTHING_LAID_OUT,
     );
+
+    // **The painted mark is per open, not per column**: the seat that came
+    // next paints its own first row, and a column that kept the flag from the
+    // seat it left would stop reporting them.
+    resized(120);
+    expect(paintedMark, 'the switched-to seat reports its own first row').toHaveBeenCalled();
+  });
+
+  /**
+   * **The drawn mark is the model, so the column reports the pixels too**
+   * (#2733, #2752). `drawn` lands on the flush that first holds the seat's
+   * turns, before that flush's own DOM exists - so it cannot say when a reader
+   * first had a row to look at. The first row the browser gives a box is the
+   * other half, and a row that reports no height is no paint.
+   */
+  it('marks the first row the browser gave a box', async () => {
+    const server = stub();
+    paintedMark.mockClear();
+    app = mount(Chat, {
+      target: document.body,
+      props: { slot: LEAD, connection: server.connection },
+    });
+    flushSync();
+    server.answer([turn('t1')]);
+    await painted();
+    expect(paintedMark, 'no row has a box until the browser gives one').not.toHaveBeenCalled();
+
+    resized(120);
+    const afterBox = paintedMark.mock.calls.length;
+    expect(afterBox, 'the rows the browser laid out are the painted mark').toBeGreaterThan(0);
+
+    // A held row draws nothing and reports nothing, so it must not read as
+    // a reader's first row.
+    resized(0);
+    expect(paintedMark.mock.calls.length, 'a zero-height report is no paint').toBe(afterBox);
+  });
+
+  /**
+   * **A held row is a box with nothing in it** (#2754 review). The hold keeps
+   * the wrapper mounted and reserves its last measured height while it draws
+   * nothing, so a height-only guard reads the queued send's empty row as the
+   * reader's first row. The drain's own row is what paints.
+   */
+  it('does not mark a held row as the first painted row', async () => {
+    const server = stub();
+    paintedMark.mockClear();
+    draw({}, server);
+    server.answer([]);
+    server.send({
+      kind: 'update',
+      update: {
+        chat_appended: {
+          key: LEAD,
+          msg: {
+            type: 'user',
+            uuid: 'u-held',
+            message: { role: 'user', content: [{ type: 'text', text: 'held words' }] },
+          },
+        },
+      },
+    });
+    await painted();
+    server.send({
+      kind: 'update',
+      update: { prompt_queued: { key: LEAD, uuid: 'u-held', source: 'you', text: 'held words' } },
+    });
+    await painted();
+
+    expect(document.querySelectorAll('[data-t]'), 'one row, the held one').toHaveLength(1);
+    resized(120);
+    expect(paintedMark, 'the held wrapper has a box and no row in it').not.toHaveBeenCalled();
   });
 
   /**

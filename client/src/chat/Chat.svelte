@@ -5,7 +5,7 @@
 
   import Icon from '../components/Icon.svelte';
   import { cannotPaint } from '../paint';
-  import { noteConversationOpened, noteDrawn, type DrawnGeometry } from '../perf';
+  import { noteConversationOpened, noteDrawn, notePainted, type DrawnGeometry } from '../perf';
   import { MORE_TURNS, subjectKey } from '../protocol';
   import { scrollAsk } from '../session/scroll-ask';
   import type { Connection } from '../socket';
@@ -147,6 +147,12 @@
   let placed: number | null = null;
   /** The seat `placed` was recorded on, so a re-run for the same seat keeps it. */
   let placedFor: string | null = null;
+  /**
+   * Whether this open has already reported its first painted row. The probe
+   * keeps one per open; this keeps the turn lookup that feeds it off the
+   * resize path once the record is written.
+   */
+  let paintNoted = false;
   /** When the reader's own input was last seen; null until a hand touches the column. */
   let readerAt: number | null = null;
   /** When the reader's own input was last seen heading toward the foot; null until a hand aims there. */
@@ -615,12 +621,41 @@
    * so.
    */
   /**
+   * Whether the turn `key` names is held right now.
+   *
+   * **Read at measurement time, not captured with the row.** The attachment
+   * does not re-run when the fold hands the column a new turn object, so a
+   * held row's own closure still carries the turn it mounted with - which is
+   * a `held: false` for a row that is held now.
+   */
+  function turnIsHeld(key: string): boolean {
+    return held.turns.some((turn) => turn.key === key && turn.held === true);
+  }
+
+  /**
    * Record what a turn's row measures, so a row the send's pull-and-return
    * keeps mounted holds its own space while it draws nothing (#1890).
    */
-  function measureTurn(node: HTMLElement, key: string): () => void {
+  function measureTurn(node: HTMLElement, turn: HeldTurn): () => void {
     const observer = new ResizeObserver((entries) => {
-      for (const entry of entries) rowSizes.remember(key, entry.contentRect.height);
+      for (const entry of entries) {
+        const height = entry.contentRect.height;
+        rowSizes.remember(turn.key, height);
+        // **The open's painted mark is the first row with a box** (#2733,
+        // #2752). The drawn mark is the model and lands before this flush's
+        // DOM exists, so only this one can say when a reader first had a row
+        // to look at. The probe keeps one per open, so a list that reports
+        // every row it measures writes one record in total.
+        //
+        // **A held row is a box with nothing in it** (#2754 review): it keeps
+        // its wrapper mounted and reserves a height while it draws nothing,
+        // so it is skipped rather than read as the reader's first row. The
+        // lookup runs only until this open has its mark.
+        if (!paintNoted && height > 0 && !turnIsHeld(turn.key)) {
+          paintNoted = true;
+          notePainted();
+        }
+      }
       // **The row's own report wakes the fill.** A landing's rows measure
       // AFTER the size watcher's batch has already read them as unmeasured,
       // and a row that measures at the list's estimate leaves the content
@@ -1009,6 +1044,9 @@
       arrived = {};
       seenTurn = {};
       placed = null;
+      // The painted mark belongs to the open that just started, not the one
+      // that is going, so the column takes it again with the seat.
+      paintNoted = false;
       // The place a reader held was a row of the conversation that is going.
       anchor = null;
       // And so were the sizes and the last event, which read that element.
@@ -2123,7 +2161,7 @@
         class="turn"
         data-t={turn.key}
         style:min-height={turn.held ? heldReserve(rowSizes.sizeOf(turn.key)) : undefined}
-        {@attach (node: HTMLElement) => measureTurn(node, turn.key)}
+        {@attach (node: HTMLElement) => measureTurn(node, turn)}
       >
         <Turn
           {turn}

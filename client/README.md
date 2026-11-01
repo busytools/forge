@@ -182,14 +182,27 @@ opens (the column taking the seat on - a click, a deep link, a reload, a
 reconnect), `drawn` when the seat's terminal state is on screen, carrying
 which state it was - `conversation` or `empty` is the seat's own answer;
 `waking` (the waking line and the not-running line) or `refused` is the
-column saying something else - and `quiet` when the frame loop is back to
+column saying something else - `painted` when the first row the browser
+gave a box is on screen, and `quiet` when the frame loop is back to
 a normal cadence. An open can carry two drawings: a placeholder
 (`waking`/`refused`) does not end it, and the content's own drawing
 follows with the total time since the switch; only a
 `conversation`/`empty` drawing is followed by `quiet`, and never one
-between a placeholder and the content. The last two records carry the
-time since the switch. Slow frames are what the file is for; a quiet log
-is a client that is keeping up.
+between a placeholder and the content. **`painted` is the pixels where
+`drawn` is the model**: the drawn mark is written on the flush that first
+holds the seat's turns, before that flush's own DOM exists, so it cannot
+say when a reader first had a row to look at - an open that drew at 80 ms
+and painted at 10 s is two different stories, and only this record tells
+them apart. It is written once per open, by the first row that is not a
+held row and whose measured height is above zero - a held row keeps its
+wrapper mounted and reserves a height while it draws nothing - and dropped
+with the seat that opened; an open the seat answers `empty` drops it too,
+so the first message that arrives minutes later is not stamped with the
+whole wait. `ms` covers the open as a whole, including any period the
+window was hidden or occluded: the mark waits for a measured row, and
+unlike `frame` this record carries no hidden flag. The drawn, painted and
+quiet records carry the time since the switch. Slow frames are what the file is for; a
+quiet log is a client that is keeping up.
 
 **A switch's client-side gap has marks of its own (#2513).** `click` is
 written at the shell's delegated click handler, before the route moves, and
