@@ -92,30 +92,6 @@
         border-radius: 10px;
         padding: 52px 60px 44px;
       }
-      .doc-body h1 {
-        font-size: 30px;
-        line-height: 1.25;
-        font-weight: 500;
-        letter-spacing: -0.01em;
-        margin: 0 0 18px;
-      }
-      .doc-body h2 {
-        font-size: 19px;
-        font-weight: 500;
-        margin: 38px 0 12px;
-        padding-top: 22px;
-        border-top: 1px solid var(--line);
-      }
-      .doc-body h3 {
-        font-size: 16px;
-        font-weight: 500;
-        margin: 26px 0 8px;
-      }
-      .doc-body p,
-      .doc-body li {
-        font-size: 15px;
-        line-height: 1.72;
-      }
       /* a readable markdown or text document: every top-level block is a
          comment target - the block under the pointer is marked and a press
          opens the composer under it. The door belongs to the document, so a
@@ -123,10 +99,14 @@
       .doc-blocks {
         font-size: var(--fs-base);
       }
+      /* a block is a prose root: its rendered marks read the chat's own rules
+         through `.prose`, and with no vertical padding the first and last
+         child margins collapse through the box, so the blocks space
+         themselves by the sheet's own rhythm */
       .doc-block {
         position: relative;
         border-radius: 6px;
-        padding: 2px 10px;
+        padding: 0 10px;
         margin: 0 -10px;
         cursor: pointer;
       }
@@ -135,11 +115,21 @@
         background: var(--s1);
         box-shadow: inset 2px 0 0 var(--accent);
       }
-      .doc-block > :first-child {
-        margin-top: 0;
+      /* `p + p` cannot see across two block boxes */
+      .doc-block:has(> p) + .doc-block:has(> p) > p {
+        margin-top: 20px;
       }
-      .doc-block > :last-child {
-        margin-bottom: 0;
+      /* a rule's target and hover band are drawn around the hairline, so its
+         row does not move */
+      .doc-block:has(> hr)::before {
+        content: '';
+        position: absolute;
+        inset: -10px 0;
+        border-radius: 6px;
+      }
+      .doc-block:has(> hr):hover::before,
+      .doc-block:has(> hr).target::before {
+        box-shadow: inset 2px 0 0 var(--accent);
       }
       .doc-note {
         display: flex;
@@ -296,6 +286,34 @@
         background: var(--line);
         margin: 20px 0;
       }
+      /* The sheet's own reading scale. In web.css these win by specificity
+         (`.doc-page .doc-body h2` over `.prose h2`); here both are equal, so
+         their place after the prose block is what carries the override. */
+      .doc-body h1 {
+        font-size: 30px;
+        line-height: 1.25;
+        font-weight: 500;
+        letter-spacing: -0.01em;
+        margin: 0 0 18px;
+      }
+      .doc-body h2 {
+        font-size: 19px;
+        font-weight: 500;
+        letter-spacing: -0.005em;
+        margin: 38px 0 12px;
+        padding-top: 22px;
+        border-top: 1px solid var(--line);
+      }
+      .doc-body h3 {
+        font-size: 16px;
+        font-weight: 500;
+        margin: 26px 0 8px;
+      }
+      .doc-body p,
+      .doc-body li {
+        font-size: 15px;
+        line-height: 1.72;
+      }
       .prose .code {
         margin: 20px 0;
         background: var(--s1);
@@ -346,7 +364,7 @@
       .strip .doc-block {
         position: relative;
         border-radius: 6px;
-        padding: 2px 10px;
+        padding: 0 10px;
         margin: 0 -10px;
       }
       .strip .doc-block.target {
@@ -599,10 +617,10 @@
     <main class="wrap doc-page">
       <article class="doc-body">
         <div class="doc-blocks">
-          <div class="doc-block">
+          <div class="doc-block prose">
             <h1>Forge file hand-off &middot; the plan</h1>
           </div>
-          <div class="doc-block">
+          <div class="doc-block prose">
             <p>
               The agent hands the reader a document, and it opens here: the
               client's own viewer, on every surface the client runs. This
@@ -612,14 +630,20 @@
               handed over or opened cold.
             </p>
           </div>
-          <div class="doc-block target">
+          <div class="doc-block prose">
+            <p>
+              A second paragraph block follows the first, so the gap the sheet
+              states between two of them is drawn here as the chat draws it.
+            </p>
+          </div>
+          <div class="doc-block target prose">
             <h2>The ask, and the done</h2>
           </div>
           <div class="doc-note">
             <span class="doc-who">you</span>
             <div class="prose"><p>name the two verbs here</p></div>
           </div>
-          <div class="doc-block">
+          <div class="doc-block prose">
             <ul>
               <li>
                 The hand-off arrives as the dock's ask - <strong>Open</strong>
@@ -633,7 +657,7 @@
               </li>
             </ul>
           </div>
-          <div class="doc-block">
+          <div class="doc-block prose">
             <blockquote>
               <p>
                 Not now answers the decline; the open answers nothing; the done
@@ -641,7 +665,7 @@
               </p>
             </blockquote>
           </div>
-          <div class="doc-block">
+          <div class="doc-block prose">
             <p>A fence takes the chat's own code panel:</p>
             <div class="code">
               <div class="head">toml</div>
@@ -650,7 +674,7 @@
 max_size_mib = 10</pre>
             </div>
           </div>
-          <div class="doc-block">
+          <div class="doc-block prose">
             <table>
               <thead>
                 <tr>
@@ -674,8 +698,10 @@ max_size_mib = 10</pre>
               </tbody>
             </table>
           </div>
-          <hr />
-          <div class="doc-block">
+          <div class="doc-block prose">
+            <hr />
+          </div>
+          <div class="doc-block prose">
             <p>
               The document sits on the app as a page on a desk: one panel at a
               reading measure, a hairline over every section, and a plain-text
@@ -725,10 +751,10 @@ max_size_mib = 10</pre>
             marked block is the one the comment is anchored to
           </div>
           <div class="doc-blocks">
-            <div class="doc-block">
+            <div class="doc-block prose">
               <h1>Forge file hand-off &middot; the plan</h1>
             </div>
-            <div class="doc-block">
+            <div class="doc-block prose">
               <p>
                 The agent hands the reader a document, and it opens here.
                 <strong>Markdown renders</strong>, and every block of it is a
@@ -743,7 +769,7 @@ max_size_mib = 10</pre>
                 <span class="rv-a">delete</span>
               </div>
             </div>
-            <div class="doc-block target">
+            <div class="doc-block target prose">
               <p>
                 A review left arrives filed under the document's scope - the
                 block under the pointer is the one a press comments on.
@@ -787,7 +813,7 @@ max_size_mib = 10</pre>
                 <span class="mic"><svg class="ic"><use href="#i-mic" /></svg></span>
               </div>
             </div>
-            <div class="doc-block">
+            <div class="doc-block prose">
               <p>
                 The hand-off waits for the done, and the done answers it with
                 the review.

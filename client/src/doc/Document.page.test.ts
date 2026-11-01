@@ -325,6 +325,10 @@ describe('the reviewable document', () => {
       blocks[0]?.getAttribute('aria-label'),
       'the row itself is the target, named for what it does',
     ).toBe('comment on this part of the document');
+    expect(
+      [...blocks].every((block) => block.classList.contains('prose')),
+      'each block carries the chat prose rules, so its marks draw as the chat draws them',
+    ).toBe(true);
     expect(document.querySelector('button.doc-lnum'), 'no number strip').toBeNull();
   });
 

@@ -100,12 +100,13 @@ own pre-org `shared/` and per-seat `profiles/<name>/cef` trees, then writes
 profiles live one level deeper, at `profiles/<org>/<name>/cef`, and a stray
 file under `profiles/` is not a profile.
 
-**A hand-off names a tab.** `browser_hand_off` requires the number of one of
-the session's own tabs, and **Open** raises that tab. The tab is held while
-the ask is parked: the idle clock and the dead-seat sweep both leave it
-alone, the strip marks it **held**, and the hand-off's card names it. Any
-answer releases it - Done, Not now or feedback - and a session that went
-while the tab was held takes it with it when the ask resolves.
+**A hand-off names a tab.** `browser_hand_off` requires the page id of one of
+the session's own tabs, as `browser_tabs` prints it, and **Open** raises that
+tab. A page id no tab carries is refused with the tabs as they stand. The tab
+is held while the ask is parked: the idle clock and the dead-seat sweep both
+leave it alone, the strip marks it **held**, and the hand-off's card names
+it. Any answer releases it - Done, Not now or feedback - and a session that
+went while the tab was held takes it with it when the ask resolves.
 
 **A page context that dies is rebuilt and answered in the client's words**,
 never handed back as the driver's `_page` TypeError. A driver that cannot
@@ -161,10 +162,10 @@ the first tab and take it away when the last one closes.
 
 **Show and hide are this client's own.** The marks come from the server's tab
 list - the row's dot means the profile's host is connected (an idle dot means
-the host is up with no driver), and a tab's own mark says in use, idle or held
-- but each row's button reads this page's own surface: a phone or a web page
-shows **show** while the desktop holds the picture on that tab, and lowering
-here gives only this client's viewer back.
+the host is up with no driver), and a tab's own mark says in use, idle or
+held - but each row's button reads this page's own surface: a phone or a web
+page shows **show** while the desktop holds the picture on that tab, and
+lowering here gives only this client's viewer back.
 
 **A windowless page must stay a visible page.** The host asks CEF for a
 visible, focused page (`WasHidden(0)`, `SetFocus(1)`) and drives its frames

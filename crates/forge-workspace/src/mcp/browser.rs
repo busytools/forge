@@ -133,13 +133,28 @@ impl BrowserTool {
         else {
             return Err("browser_hand_off needs `reason`: what the person should do".to_owned());
         };
-        let Some(tab) = args.get("tab").and_then(Value::as_u64) else {
+        if args.get("tab").is_none() && args.get("index").is_some() {
             return Err(
-                "browser_hand_off needs `tab`: the number of one of this session's tabs".to_owned()
+                "browser_hand_off takes `tab`, the page id its listing prints first; `index` is \
+                 gone"
+                    .to_owned(),
             );
-        };
-        let Ok(tab) = u16::try_from(tab) else {
-            return Err(format!("`tab` is a tab's number, not {tab}"));
+        }
+        let tab = match args.get("tab") {
+            Some(Value::String(tab)) if !tab.trim().is_empty() => tab.trim(),
+            Some(Value::String(_)) => return Err("a page id cannot be blank".to_owned()),
+            Some(_) => {
+                return Err(
+                    "browser_hand_off needs `tab` as a page id string, not a number".to_owned()
+                );
+            }
+            None => {
+                return Err(
+                    "browser_hand_off needs `tab`, the page id string of one of this session's \
+                     tabs, from browser_tabs list"
+                        .to_owned(),
+                );
+            }
         };
         match self.facade.hand_off(&self.slot, reason, tab).await? {
             HandOffEnding::Done => Ok(vec![BrowserPart::Text {
@@ -450,7 +465,7 @@ mod tests {
         };
 
         let out = tool
-            .call(ToolInput { value: json!({ "reason": "solve the CAPTCHA", "tab": 3 }) })
+            .call(ToolInput { value: json!({ "reason": "solve the CAPTCHA", "tab": "T3" }) })
             .await;
 
         assert!(!out.is_error, "{:?}", out.blocks);
@@ -460,7 +475,7 @@ mod tests {
         );
         assert_eq!(
             mock.hand_offs.lock().as_slice(),
-            [("solve the CAPTCHA".to_owned(), 3)],
+            [("solve the CAPTCHA".to_owned(), "T3".to_owned())],
             "the reason and the tab cross to the park verbatim",
         );
         let text = crate::mcp::test_support::block_text(&out.blocks[0]);
@@ -479,7 +494,7 @@ mod tests {
             slot: seat(),
         };
 
-        let out = tool.call(ToolInput { value: json!({ "reason": "sign in", "tab": 2 }) }).await;
+        let out = tool.call(ToolInput { value: json!({ "reason": "sign in", "tab": "T2" }) }).await;
 
         assert!(out.is_error, "{:?}", out.blocks);
         let text = crate::mcp::test_support::block_text(&out.blocks[0]);
@@ -500,7 +515,7 @@ mod tests {
             slot: seat(),
         };
 
-        let out = tool.call(ToolInput { value: json!({ "reason": "sign in", "tab": 2 }) }).await;
+        let out = tool.call(ToolInput { value: json!({ "reason": "sign in", "tab": "T2" }) }).await;
 
         assert!(!out.is_error, "{:?}", out.blocks);
         let text = crate::mcp::test_support::block_text(&out.blocks[0]);
@@ -527,6 +542,62 @@ mod tests {
         assert!(mock.hand_offs.lock().is_empty(), "and nothing was parked");
     }
 
+    /// **A page id is a string, and the field an upgrade retired is named.**
+    /// A resumed seat's catalogue predates both changes, and a number must not
+    /// be read as a missing argument.
+    #[tokio::test]
+    async fn a_hand_off_requires_a_page_id_string_and_names_the_retired_field() {
+        let mock = Arc::new(MockBrowserFacade::new());
+        let tool = BrowserTool {
+            spec: spec_named("browser_hand_off"),
+            facade: Arc::clone(&mock) as Arc<dyn BrowserFacade>,
+            slot: seat(),
+        };
+
+        let numeric =
+            tool.call(ToolInput { value: json!({ "reason": "sign in", "tab": 2 }) }).await;
+        assert!(numeric.is_error, "{:?}", numeric.blocks);
+        let text = crate::mcp::test_support::block_text(&numeric.blocks[0]);
+        assert!(text.contains("page id string"), "{text}");
+        assert!(text.contains("not a number"), "{text}");
+
+        let retired =
+            tool.call(ToolInput { value: json!({ "reason": "sign in", "index": 2 }) }).await;
+        assert!(retired.is_error, "{:?}", retired.blocks);
+        let text = crate::mcp::test_support::block_text(&retired.blocks[0]);
+        assert!(text.contains("`index` is gone"), "{text}");
+
+        // **A blank string is its own refusal**, not a number by another name.
+        let blank =
+            tool.call(ToolInput { value: json!({ "reason": "sign in", "tab": "   " }) }).await;
+        assert!(blank.is_error, "{:?}", blank.blocks);
+        let text = crate::mcp::test_support::block_text(&blank.blocks[0]);
+        assert!(text.contains("cannot be blank"), "{text}");
+        assert!(mock.hand_offs.lock().is_empty(), "and nothing was parked");
+    }
+
+    /// **A page id is trimmed before it parks.** A listing an agent copied
+    /// with a stray space must not send the person to a page nobody named.
+    #[tokio::test]
+    async fn a_hand_off_trims_its_page_id() {
+        let mock = Arc::new(MockBrowserFacade::new());
+        let tool = BrowserTool {
+            spec: spec_named("browser_hand_off"),
+            facade: Arc::clone(&mock) as Arc<dyn BrowserFacade>,
+            slot: seat(),
+        };
+
+        let out =
+            tool.call(ToolInput { value: json!({ "reason": "sign in", "tab": " T1 " }) }).await;
+
+        assert!(!out.is_error, "{:?}", out.blocks);
+        assert_eq!(
+            mock.hand_offs.lock().as_slice(),
+            [("sign in".to_owned(), "T1".to_owned())],
+            "the trimmed id is what parks",
+        );
+    }
+
     /// A blank reason is no reason: it would park an ask that says nothing to
     /// the person, so the call is refused before anything reaches them.
     #[tokio::test]
@@ -538,7 +609,7 @@ mod tests {
             slot: seat(),
         };
 
-        let out = tool.call(ToolInput { value: json!({ "reason": "   ", "tab": 2 }) }).await;
+        let out = tool.call(ToolInput { value: json!({ "reason": "   ", "tab": "T2" }) }).await;
 
         assert!(out.is_error, "{:?}", out.blocks);
         let text = crate::mcp::test_support::block_text(&out.blocks[0]);
@@ -577,7 +648,7 @@ mod tests {
             slot: seat(),
         };
 
-        let out = tool.call(ToolInput { value: json!({ "reason": "sign in", "tab": 2 }) }).await;
+        let out = tool.call(ToolInput { value: json!({ "reason": "sign in", "tab": "T2" }) }).await;
 
         assert!(out.is_error, "{:?}", out.blocks);
         let text = crate::mcp::test_support::block_text(&out.blocks[0]);

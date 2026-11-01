@@ -45,7 +45,12 @@ const drawnMark = vi.hoisted(() =>
   vi.fn<(state: string, geometry?: () => ColumnMeasure | undefined) => void>(),
 );
 const openedMark = vi.hoisted(() => vi.fn());
-vi.mock('../perf', () => ({ noteDrawn: drawnMark, noteConversationOpened: openedMark }));
+const paintedMark = vi.hoisted(() => vi.fn());
+vi.mock('../perf', () => ({
+  noteDrawn: drawnMark,
+  noteConversationOpened: openedMark,
+  notePainted: paintedMark,
+}));
 
 const LEAD: SessionSlot = { org: 'Busytools', project: 'forge', label: 'lead' };
 
@@ -1278,6 +1283,47 @@ describe('the chat column as it draws', () => {
     }
   });
 
+  it('records the result the pin is holding when the beat lets go', async () => {
+    // **A second Result can land inside the beat.** The pin holds the row that
+    // is newest at release, not the one it held when the beat began - both
+    // draw in the turn when it lets go, so both have arrived.
+    vi.useFakeTimers();
+    try {
+      const server = stub();
+      draw({}, server);
+      server.answer([]);
+      server.send(appended(prompting('go')));
+      server.send(appended(frame('a-run', 100)));
+      await painted();
+      expect(pinnedRow.of(PIN), 'precondition: the running row is pinned').not.toBeNull();
+
+      server.send(ended());
+      // The first Result starts the beat; the second lands inside it.
+      server.send(appended(settledFrame('r-1', 12.5)));
+      await painted();
+      server.send(appended(settledFrame('r-2', 9)));
+      await painted();
+
+      const turnKey =
+        [...document.querySelectorAll('.conv [data-t]')].at(-1)?.getAttribute('data-t') ?? '';
+      expect(turnKey, 'the live turn is not drawn').not.toBe('');
+
+      vi.advanceTimersByTime(450);
+      flushSync();
+      await painted();
+
+      const row = [...document.querySelectorAll<HTMLElement>('.conv [data-k]')].find(
+        (candidate) => candidate.getAttribute('data-k') === `${turnKey}:r-2`,
+      );
+      expect(row, 'the second result row did not draw').not.toBeUndefined();
+      expect(row?.classList.contains('arrive'), 'the result the pin held at release entered').toBe(
+        false,
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('pins the row of the newest turn, not of the first one the column holds', async () => {
     const server = stub();
     draw({}, server);
@@ -1677,55 +1723,63 @@ describe('the arrival mark', () => {
     ],
   });
 
-  /**
-   * **The mark rides the item through the list's own `itemProps`.** Keyed on
-   * the turn's tail instead, the rule marks every mounted turn at once - and a
-   * stub that drops `itemProps` sees neither mistake.
-   */
-  it('marks the arriving item through the list, and only it', async () => {
+  /** Every row key the page currently draws. */
+  const rowKeys = (): Set<string> =>
+    new Set(
+      [...document.querySelectorAll('.conv [data-k]')].map(
+        (row) => row.getAttribute('data-k') ?? '',
+      ),
+    );
+
+  it('enters the row that arrives, and only that row', async () => {
+    // **A row's key is the whole of what says it is new.** A settled page is
+    // history rather than arrival, so nothing it draws enters; from the frame
+    // that opens a live turn on, every row drawn for the first time enters,
+    // and no row already on the page is marked. (A page that lands on a turn
+    // still being written is the case tested further down.)
     vi.useFakeTimers();
     try {
       const server = stub();
       draw({}, server);
       server.answer([turn('t1'), turn('t2')]);
       await painted();
-
-      const items = [...document.querySelectorAll('.conv > *')];
-      expect(items.length, 'the list drew no items').toBe(2);
       expect(
-        items[1]?.classList.contains('arriving'),
-        "the arriving item's wrapper lost its mark",
-      ).toBe(true);
-      expect(
-        items[0]?.classList.contains('arriving'),
-        'a settled item carried the arrival mark',
-      ).toBe(false);
+        document.querySelectorAll('.conv [data-k].arrive'),
+        'a row a page drew entered',
+      ).toHaveLength(0);
 
-      vi.advanceTimersByTime(300);
+      const before = rowKeys();
+      server.send(appended(prompting('go')));
+      await painted();
+
+      const rows = [...document.querySelectorAll<HTMLElement>('.conv [data-k]')];
+      const fresh = rows.filter((row) => !before.has(row.getAttribute('data-k') ?? ''));
+      expect(fresh.length, 'the frame drew no new row').toBeGreaterThan(0);
+      for (const row of fresh) {
+        expect(row.classList.contains('arrive'), 'the arriving row lost its mark').toBe(true);
+      }
+
+      vi.advanceTimersByTime(450);
       flushSync();
-
       expect(
-        document.querySelector('.conv .arriving'),
-        'the mark outlived its window, and would replay on a remount',
+        document.querySelector('.conv [data-k].arrive'),
+        'the mark outlived its window',
       ).toBeNull();
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it('marks the newest turn again when its closing row lands as it settles', async () => {
-    // **The mark is keyed on the turn GROWING, not on the core's running
-    // answer.** A turn takes its last rows after that answer clears - the
-    // closing text is the one the reader is waiting for - so a settled turn
-    // has to take the mark back when a row lands on it.
+  it('enters the closing row of a live turn after the core says it is over', async () => {
+    // **The closing rows are the ones the reader is waiting for.** The turn
+    // stays live after the core's running answer clears, so the frames that
+    // join it last enter like any other - and only the new keys are marked.
     vi.useFakeTimers();
     try {
       const server = stub();
       draw({}, server);
-      server.answer([]);
-      // A frame opens a live turn, and the core then says the turn is over -
-      // the row stays live, which is how a closing unit still lands in it.
-      server.send(appended(frame('a-open', 100)));
+      server.answer([turn('t0')]);
+      server.send(appended(prompting('go')));
       await painted();
       server.send({
         kind: 'snapshot',
@@ -1736,20 +1790,400 @@ describe('the arrival mark', () => {
       vi.advanceTimersByTime(450);
       flushSync();
       expect(
-        document.querySelector('.conv .arriving'),
-        'the settled turn outlived its window',
+        document.querySelector('.conv [data-k].arrive'),
+        'the mark outlived its window',
       ).toBeNull();
 
-      // The closing row, joining the SAME turn after the core said it was over.
+      // The closing row joins the SAME live turn after the core said it was
+      // over, and nothing it did not draw is marked.
+      const liveTurn = [...document.querySelectorAll('.conv [data-t]')]
+        .at(-1)
+        ?.getAttribute('data-t');
+      const before = rowKeys();
       server.send(appended(frame('a-closing', 120)));
       await painted();
 
-      const items = [...document.querySelectorAll('.conv > *')];
-      expect(items.length, 'the closing row opened a second turn').toBe(1);
+      const after = [...document.querySelectorAll('.conv [data-t]')].at(-1)?.getAttribute('data-t');
+      expect(after, 'the closing row opened a second turn').toBe(liveTurn);
+      const rows = [...document.querySelectorAll<HTMLElement>('.conv [data-k]')];
+      const fresh = rows.filter((row) => !before.has(row.getAttribute('data-k') ?? ''));
+      expect(fresh.length, 'the closing frame drew no new row').toBeGreaterThan(0);
+      for (const row of fresh) {
+        expect(row.classList.contains('arrive'), 'a closing row did not enter').toBe(true);
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not enter the rows a settled page draws', async () => {
+    // **A settled turn is history, not arrival.** The list is already mounted,
+    // so the rows a page brings are observed like any other addition - and a
+    // scroll up or a refresh of a turn nobody is writing must not make the
+    // history enter. A page that lands on a turn still being written is the
+    // different case, tested below: it carries rows the reader never saw.
+    const server = stub();
+    draw({}, server);
+    server.answer([turn('t1')]);
+    await painted();
+    const before = rowKeys();
+
+    server.answer([turn('t0')]);
+    await painted();
+
+    const fresh = [...document.querySelectorAll<HTMLElement>('.conv [data-k]')].filter(
+      (row) => !before.has(row.getAttribute('data-k') ?? ''),
+    );
+    expect(fresh.length, 'the page drew no new row').toBeGreaterThan(0);
+    for (const row of fresh) {
+      expect(row.classList.contains('arrive'), 'a row a page drew entered').toBe(false);
+    }
+  });
+
+  it('does not replay the entrance for a row the list draws again', async () => {
+    // **The defect the wrapper mark could not see**: the list re-creates a
+    // row's node as it leaves and re-enters its window, and a fold rebuild
+    // re-creates it in place. A fresh node with a key already shown comes up
+    // still, whatever put it there.
+    vi.useFakeTimers();
+    try {
+      const server = stub();
+      draw({}, server);
+      server.answer([turn('t0')]);
+      server.send(appended(prompting('go')));
+      await painted();
+
+      const marked = [...document.querySelectorAll<HTMLElement>('.conv [data-k].arrive')];
+      expect(marked.length, 'the live row did not enter').toBeGreaterThan(0);
+      const key = marked[0]?.getAttribute('data-k') ?? '';
+      vi.advanceTimersByTime(450);
+      flushSync();
+
+      const turnNode = [...document.querySelectorAll('.conv [data-t]')].at(-1);
+      const again = document.createElement('div');
+      again.setAttribute('data-k', key);
+      turnNode?.appendChild(again);
+      // The observer's callback is a microtask, and the entrance it may add
+      // rides on it.
+      await painted();
+
       expect(
-        items.at(-1)?.classList.contains('arriving'),
-        'a row landing as the turn settled did not enter',
-      ).toBe(true);
+        again.classList.contains('arrive'),
+        'a row re-created with a key already shown replayed the entrance',
+      ).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('enters the rows a page merges onto a turn being written', async () => {
+    // **A page is not history when it lands on a live turn.** A reconnect or
+    // a refresh reads the transcript while the turn is still written, and the
+    // rows the frames never drew are ones the reader has not seen: they enter.
+    vi.useFakeTimers();
+    try {
+      const server = stub();
+      draw({}, server);
+      server.answer([turn('t0')]);
+      server.send(appended(prompting('go')));
+      await painted();
+      const live = [...document.querySelectorAll('.conv [data-t]')].at(-1)?.getAttribute('data-t');
+      expect(live, 'the frame opened no live turn').not.toBeNull();
+
+      const before = rowKeys();
+      // The same turn, with one row the frames did not draw.
+      server.answer([{ key: live, messages: [prompting('go'), frame('a-from-page', 100)] }]);
+      await painted();
+
+      const fresh = [...document.querySelectorAll<HTMLElement>('.conv [data-k]')].filter(
+        (row) => !before.has(row.getAttribute('data-k') ?? ''),
+      );
+      expect(fresh.length, 'the page merged no new row').toBeGreaterThan(0);
+      for (const row of fresh) {
+        expect(row.classList.contains('arrive'), 'a row a live page carried did not enter').toBe(
+          true,
+        );
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('enters the rows that join a page turn the seat opened mid-flight', async () => {
+    // **`live` is "built by frames", not "still being written".** A seat
+    // opened while a turn runs gets its newest row from a page (`live: false`,
+    // `running: true`) and the frames join that row - so the gate is
+    // `beingWritten`, the predicate the fold and the pin both use.
+    vi.useFakeTimers();
+    try {
+      const server = stub();
+      draw({}, server);
+      server.answer([turn('t0')]);
+      server.send({
+        kind: 'snapshot',
+        subject: { session: LEAD },
+        data: { header: { turn_in_flight: true } },
+      });
+      await painted();
+
+      const before = rowKeys();
+      server.send(appended(frame('a-joining', 100)));
+      await painted();
+
+      const fresh = [...document.querySelectorAll<HTMLElement>('.conv [data-k]')].filter(
+        (row) => !before.has(row.getAttribute('data-k') ?? ''),
+      );
+      expect(fresh.length, 'the frame drew no row into the page turn').toBeGreaterThan(0);
+      for (const row of fresh) {
+        expect(
+          row.classList.contains('arrive'),
+          'a row joining a mid-flight page turn did not enter',
+        ).toBe(true);
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not enter the rows of a live turn drawn whole on a return', async () => {
+    // **A return draws what the frames kept current, whole.** Its newest turn
+    // is still `live`, so only a record seeded from the model before the draw
+    // can tell that its rows have already arrived.
+    vi.useFakeTimers();
+    try {
+      const server = stub();
+      const column = mount(SeatSwitch, {
+        target: document.body,
+        props: { connection: server.connection, first: LEAD, second: { ...LEAD, label: 'w1' } },
+      }) as unknown as { flip: () => void };
+      app = column;
+      flushSync();
+
+      server.answer([turn('t0')]);
+      server.send(appended(prompting('go')));
+      await painted();
+      expect(
+        document.querySelectorAll('.conv [data-k]').length,
+        'the live turn drew no row',
+      ).toBeGreaterThan(0);
+
+      column.flip();
+      await painted();
+      column.flip();
+      await painted();
+
+      expect(
+        document.querySelectorAll('.conv [data-k].arrive'),
+        'a live turn drawn whole on a return entered its rows',
+      ).toHaveLength(0);
+
+      // The return recorded what it drew from the model: a node re-created
+      // with one of those keys comes up still. The stub draws synchronously
+      // on the remount, so this is the half a DOM scan could not see.
+      const turnNode = [...document.querySelectorAll('.conv [data-t]')].at(-1);
+      const key = turnNode?.querySelector('[data-k]')?.getAttribute('data-k') ?? '';
+      const again = document.createElement('div');
+      again.setAttribute('data-k', key);
+      turnNode?.appendChild(again);
+      await painted();
+      expect(again.classList.contains('arrive'), 'the return did not record the rows it drew').toBe(
+        false,
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not enter a page drawn while the core says a turn is in flight', async () => {
+    // **A load is not an arrival, even mid-flight.** The page lands after the
+    // column attaches, so the model's keys are the only record that its rows
+    // have already been drawn - and the core's running answer is what makes
+    // the gate let them through otherwise.
+    vi.useFakeTimers();
+    try {
+      const server = stub();
+      draw({}, server);
+      server.send({
+        kind: 'snapshot',
+        subject: { session: LEAD },
+        data: { header: { turn_in_flight: true } },
+      });
+      await painted();
+
+      server.answer([turn('t0')]);
+      await painted();
+
+      expect(
+        document.querySelectorAll('.conv [data-k].arrive'),
+        'a page drawn while a turn was in flight entered its rows',
+      ).toHaveLength(0);
+
+      // The load recorded what it drew: a node re-created with one of its
+      // keys comes up still. The stub draws the page synchronously, so this
+      // is the half a DOM scan could not see.
+      const turnNode = document.querySelector('.conv [data-t]');
+      const key = turnNode?.querySelector('[data-k]')?.getAttribute('data-k') ?? '';
+      const again = document.createElement('div');
+      again.setAttribute('data-k', key);
+      turnNode?.appendChild(again);
+      await painted();
+      expect(again.classList.contains('arrive'), 'the load did not record the rows it drew').toBe(
+        false,
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('records a nested call key but enters only the unit that brought it', async () => {
+    // **A call bundled in a new unit enters with the unit, and its own key
+    // still has to be known** - otherwise a later re-create of that leaf
+    // replays. And entering both would run the entrance inside itself.
+    vi.useFakeTimers();
+    try {
+      const server = stub();
+      draw({}, server);
+      server.answer([turn('t0')]);
+      server.send(appended(prompting('go')));
+      await painted();
+      const turnNode = [...document.querySelectorAll('.conv [data-t]')].at(-1);
+      expect(turnNode, 'the live turn is not drawn').not.toBeNull();
+      const turnKey = turnNode?.getAttribute('data-t') ?? '';
+
+      // The node the list inserts is the row's container, not the row: the
+      // outermost row is what enters, and the call inside it is recorded but
+      // not entered.
+      const wrapper = document.createElement('div');
+      const unit = document.createElement('div');
+      unit.setAttribute('data-k', `${turnKey}:u-new`);
+      const call = document.createElement('div');
+      call.setAttribute('data-k', 'call-c-new');
+      unit.appendChild(call);
+      wrapper.appendChild(unit);
+      turnNode?.appendChild(wrapper);
+      await painted();
+
+      expect(unit.classList.contains('arrive'), 'the unit did not enter').toBe(true);
+      expect(call.classList.contains('arrive'), 'a nested call entered inside its unit').toBe(
+        false,
+      );
+
+      vi.advanceTimersByTime(450);
+      flushSync();
+      const again = document.createElement('div');
+      again.setAttribute('data-k', 'call-c-new');
+      turnNode?.appendChild(again);
+      await painted();
+      expect(
+        again.classList.contains('arrive'),
+        'a nested call re-created on its own replayed',
+      ).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not enter a rebuilt run whose every row already arrived', async () => {
+    // **A run is keyed by its head, which a fold rebuild can move.** A rebuilt
+    // run carrying a call the reader has seen is a move, not an arrival; one
+    // carrying a key they have not seen is a real arrival.
+    vi.useFakeTimers();
+    try {
+      const server = stub();
+      draw({}, server);
+      server.answer([turn('t0')]);
+      server.send(appended(prompting('go')));
+      await painted();
+      const turnNode = [...document.querySelectorAll('.conv [data-t]')].at(-1);
+      expect(turnNode, 'the live turn is not drawn').not.toBeNull();
+      const turnKey = turnNode?.getAttribute('data-t') ?? '';
+
+      const bring = (unitKey: string, callKey: string): HTMLElement => {
+        const unit = document.createElement('div');
+        unit.setAttribute('data-k', `${turnKey}:${unitKey}`);
+        const call = document.createElement('div');
+        call.setAttribute('data-k', `call-${callKey}`);
+        unit.appendChild(call);
+        turnNode?.appendChild(unit);
+        return unit;
+      };
+
+      // The first run brings its call, which arrives with it.
+      const first = bring('u-one', 'c-known');
+      await painted();
+      expect(first.classList.contains('arrive'), 'the first run did not enter').toBe(true);
+
+      // A rebuilt run whose inner row has already been seen is the same run in
+      // a new shell: it moves, it does not enter.
+      const rebuilt = bring('u-two', 'c-known');
+      await painted();
+      expect(
+        rebuilt.classList.contains('arrive'),
+        'a rebuilt run whose row already arrived entered',
+      ).toBe(false);
+
+      // A run carrying a key the reader has not seen is an arrival.
+      const fresh = bring('u-three', 'c-new');
+      await painted();
+      expect(fresh.classList.contains('arrive'), 'a run with a new row did not enter').toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not enter a row the queue pulls back before it paints', async () => {
+    // **The queue's own transient is not an arrival.** A prompt sent during a
+    // turn draws its row and the queue retracts it a frame or two later; the
+    // rise in between reads as a gap over a row that is already leaving.
+    vi.useFakeTimers();
+    try {
+      const server = stub();
+      draw({}, server);
+      server.answer([turn('t0')]);
+      server.send(appended(prompting('go')));
+      await painted();
+      const turnNode = [...document.querySelectorAll('.conv [data-t]')].at(-1);
+      expect(turnNode, 'the live turn is not drawn').not.toBeNull();
+
+      const row = document.createElement('div');
+      row.setAttribute('data-k', 'queued-row');
+      turnNode?.appendChild(row);
+      // The observer sees the row while it is still there - it queues the
+      // entrance for the next paint - and the queue takes it back before that
+      // paint.
+      await Promise.resolve();
+      row.remove();
+      await painted();
+
+      expect(row.classList.contains('arrive'), 'a row pulled back before its paint entered').toBe(
+        false,
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('enters nothing into a turn that is not the one being written', async () => {
+    // **The turn's own `data-t` decides whose rows these are.** A row added to
+    // an older turn is history, however it got there.
+    vi.useFakeTimers();
+    try {
+      const server = stub();
+      draw({}, server);
+      server.answer([turn('t0')]);
+      server.send(appended(prompting('go')));
+      await painted();
+      const turns = [...document.querySelectorAll('.conv [data-t]')];
+      const older = turns[0];
+      const live = turns.at(-1);
+      expect(older?.getAttribute('data-t')).not.toBe(live?.getAttribute('data-t'));
+
+      const row = document.createElement('div');
+      row.setAttribute('data-k', 't0:late');
+      older?.appendChild(row);
+      await painted();
+
+      expect(row.classList.contains('arrive'), 'a row added to an older turn entered').toBe(false);
     } finally {
       vi.useRealTimers();
     }
@@ -1805,10 +2239,14 @@ describe('the drawn mark', () => {
     expect(columnMeasure(drawnMark), 'the rows mark carries the column measure').toEqual(
       NOTHING_LAID_OUT,
     );
+    // This seat's first row gets a box, which is its painted mark.
+    resized(120);
+    expect(paintedMark, 'the first seat reports its own first row').toHaveBeenCalled();
 
     // The switch: the new seat's own conversation opens, and its own page is
     // what puts the drawn mark down for it.
     drawnMark.mockClear();
+    paintedMark.mockClear();
     openedMark.mockClear();
     column.flip();
     flushSync();
@@ -1836,6 +2274,77 @@ describe('the drawn mark', () => {
     expect(columnMeasure(drawnMark), "and it carries that seat's own measure").toEqual(
       NOTHING_LAID_OUT,
     );
+
+    // **The painted mark is per open, not per column**: the seat that came
+    // next paints its own first row, and a column that kept the flag from the
+    // seat it left would stop reporting them.
+    resized(120);
+    expect(paintedMark, 'the switched-to seat reports its own first row').toHaveBeenCalled();
+  });
+
+  /**
+   * **The drawn mark is the model, so the column reports the pixels too**
+   * (#2733, #2752). `drawn` lands on the flush that first holds the seat's
+   * turns, before that flush's own DOM exists - so it cannot say when a reader
+   * first had a row to look at. The first row the browser gives a box is the
+   * other half, and a row that reports no height is no paint.
+   */
+  it('marks the first row the browser gave a box', async () => {
+    const server = stub();
+    paintedMark.mockClear();
+    app = mount(Chat, {
+      target: document.body,
+      props: { slot: LEAD, connection: server.connection },
+    });
+    flushSync();
+    server.answer([turn('t1')]);
+    await painted();
+    expect(paintedMark, 'no row has a box until the browser gives one').not.toHaveBeenCalled();
+
+    resized(120);
+    const afterBox = paintedMark.mock.calls.length;
+    expect(afterBox, 'the rows the browser laid out are the painted mark').toBeGreaterThan(0);
+
+    // A held row draws nothing and reports nothing, so it must not read as
+    // a reader's first row.
+    resized(0);
+    expect(paintedMark.mock.calls.length, 'a zero-height report is no paint').toBe(afterBox);
+  });
+
+  /**
+   * **A held row is a box with nothing in it** (#2754 review). The hold keeps
+   * the wrapper mounted and reserves its last measured height while it draws
+   * nothing, so a height-only guard reads the queued send's empty row as the
+   * reader's first row. The drain's own row is what paints.
+   */
+  it('does not mark a held row as the first painted row', async () => {
+    const server = stub();
+    paintedMark.mockClear();
+    draw({}, server);
+    server.answer([]);
+    server.send({
+      kind: 'update',
+      update: {
+        chat_appended: {
+          key: LEAD,
+          msg: {
+            type: 'user',
+            uuid: 'u-held',
+            message: { role: 'user', content: [{ type: 'text', text: 'held words' }] },
+          },
+        },
+      },
+    });
+    await painted();
+    server.send({
+      kind: 'update',
+      update: { prompt_queued: { key: LEAD, uuid: 'u-held', source: 'you', text: 'held words' } },
+    });
+    await painted();
+
+    expect(document.querySelectorAll('[data-t]'), 'one row, the held one').toHaveLength(1);
+    resized(120);
+    expect(paintedMark, 'the held wrapper has a box and no row in it').not.toHaveBeenCalled();
   });
 
   /**
