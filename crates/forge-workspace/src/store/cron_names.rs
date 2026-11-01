@@ -272,6 +272,11 @@ mod tests {
         // The stamp is the boot's own instant, so the row ages out one window
         // from the upgrade rather than never.
         assert_eq!(
+            prune_expired(&db, at(secs(now) + RETENTION_SECS - 1)).expect("inside the window"),
+            0,
+            "one second short of the window the row stays, which a stamp of the epoch would fail",
+        );
+        assert_eq!(
             prune_expired(&db, at(secs(now) + RETENTION_SECS + 1)).expect("second sweep"),
             1,
             "once stamped, the legacy row obeys the window"
