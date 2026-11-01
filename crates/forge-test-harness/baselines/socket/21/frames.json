@@ -1006,7 +1006,8 @@
         "forge_version_short",
         "projects",
         "service_status",
-        "unseen"
+        "unseen",
+        "voice"
       ],
       "/data/accounts": [
         "all_loaded",
@@ -1119,6 +1120,10 @@
         "branch",
         "changed",
         "gate"
+      ],
+      "/data/voice": [
+        "enabled",
+        "models_dir"
       ]
     }
   },
