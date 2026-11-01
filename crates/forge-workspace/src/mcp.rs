@@ -840,8 +840,14 @@ mod tests {
                 })
                 .await
                 .expect("a tools/call is answered");
-            let encoded = format!("{answer:?}");
-            assert!(encoded.contains(expected), "expected '{expected}' in {encoded}");
+            let result = serde_json::to_value(answer.result.expect("the call is answered"))
+                .expect("serializes");
+            assert!(
+                result["content"][0]["text"]
+                    .as_str()
+                    .is_some_and(|text| text.contains(expected)),
+                "expected '{expected}' in {result}",
+            );
         }
     }
 
