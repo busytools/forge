@@ -228,6 +228,11 @@ mod tests {
     fn a_sweep_leaves_a_record_it_cannot_read_alone() {
         let dir = tempdir().expect("tempdir");
         let db = Db::open(&dir.path().join("db.redb")).expect("open db");
+        let now = at(10_000_000);
+        // The unreadable row sorts first and the row beside it is past the
+        // window, so a sweep that gives up on the decode failure answers zero
+        // and leaves the expired row behind: the count below catches both.
+        put(&db, "expired", &name(None), at(secs(now) - RETENTION_SECS - 1)).expect("write");
         let txn = db.database().begin_write().expect("begin write");
         {
             let mut table = txn.open_table(CRON_NAMES).expect("open table");
@@ -235,14 +240,18 @@ mod tests {
         }
         txn.commit().expect("commit");
 
-        let removed = prune_expired(&db, at(10_000_000)).expect("sweep");
+        let removed = prune_expired(&db, now).expect("sweep");
 
-        assert_eq!(removed, 0, "a row this build cannot date is not guessed away");
+        assert_eq!(removed, 1, "the decodable row past the window goes, and only it");
         let txn = db.database().begin_read().expect("begin read");
         let table = txn.open_table(CRON_NAMES).expect("open table");
         assert!(
             table.get("broken").expect("get").is_some(),
             "a record that will not decode stays readable to a build that can"
+        );
+        assert!(
+            table.get("expired").expect("get").is_none(),
+            "the row beside it was dated and swept"
         );
     }
 
