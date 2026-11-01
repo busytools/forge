@@ -162,10 +162,10 @@ the first tab and take it away when the last one closes.
 
 **Show and hide are this client's own.** The marks come from the server's tab
 list - the row's dot means the profile's host is connected (an idle dot means
-the host is up with no driver), and a tab's own mark says in use, idle or held
-- but each row's button reads this page's own surface: a phone or a web page
-shows **show** while the desktop holds the picture on that tab, and lowering
-here gives only this client's viewer back.
+the host is up with no driver), and a tab's own mark says in use, idle or
+held - but each row's button reads this page's own surface: a phone or a web
+page shows **show** while the desktop holds the picture on that tab, and
+lowering here gives only this client's viewer back.
 
 **A windowless page must stay a visible page.** The host asks CEF for a
 visible, focused page (`WasHidden(0)`, `SetFocus(1)`) and drives its frames
