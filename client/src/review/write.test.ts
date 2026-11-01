@@ -261,12 +261,12 @@ describe('the finish', () => {
   const LANDED = { id: 'r9', number: 4, summary: null, created_at: 'x' };
 
   /**
-   * **The nudge is what the view this client replaced sent on its own seal**:
-   * a prompt into the session whose branch the review belongs to, one line
-   * naming the round and pointing at the review MCP - so the worker hears a
-   * review is ready and reads it back, live and on a fresh read.
+   * **The nudge is the one-line shape the view this client replaced sent on
+   * its own seal**: a prompt into the session whose branch the review belongs
+   * to, naming the round and its scope - so the worker hears a review is
+   * ready and reads it back, live and on a fresh read.
    */
-  it('seals the round, then nudges the seat with the line the terminal sent', async () => {
+  it('seals the round, then nudges the seat with the line the view this client replaced sent', async () => {
     const { sent, sends } = recordingSends(LANDED);
 
     const sealed = await finishRound(sends, WORKER, 'work/review-nudge', ['t1'], 'pass one', true);
@@ -281,8 +281,11 @@ describe('the finish', () => {
       nudge?.prompt_under?.['key'],
       'the nudge goes to the seat the review belongs to',
     ).toEqual(WORKER);
-    expect(nudge?.prompt_under?.['text'], 'the words are the view this client replaced sent').toBe(
-      'Review #4 ready - address it via the review MCP (`review__list`).',
+    expect(
+      nudge?.prompt_under?.['text'],
+      'the line is the one-line nudge the view this client replaced sent',
+    ).toBe(
+      'Review #4 ready - scope work/review-nudge. Read it back under that scope, or hand the scope to your lead if you do not have the review tools.',
     );
     expect(nudge?.prompt_under?.['source'], 'the bubble reads as the reader own words').toBe('you');
     expect(nudge?.prompt_under?.['attachments'], 'a nudge carries no images').toEqual([]);
@@ -376,8 +379,11 @@ describe('the reopen', () => {
       nudge?.prompt_under?.['key'],
       'the nudge goes to the seat the review belongs to',
     ).toEqual(WORKER);
-    expect(nudge?.prompt_under?.['text'], 'the words are the view this client replaced sent').toBe(
-      'Reopened a comment in review #2 - take another look via the review MCP (`review__get`).',
+    expect(
+      nudge?.prompt_under?.['text'],
+      'the line is the one-line nudge the view this client replaced sent',
+    ).toBe(
+      'Reopened a comment in review #2 - scope work/review-nudge. Take another look under that scope, or hand the scope to your lead if you do not have the review tools.',
     );
     expect(nudge?.prompt_under?.['source'], 'the line reads as the reader own words').toBe('you');
   });
@@ -389,8 +395,11 @@ describe('the reopen', () => {
     await reopenThread(sends, WORKER, 'work/review-nudge', 't1', null);
 
     const nudge = sent[1] as { prompt_under?: Record<string, unknown> } | undefined;
-    expect(nudge?.prompt_under?.['text'], 'the words are the view this client replaced sent').toBe(
-      'Reopened a review comment - take another look via the review MCP (`review__list`).',
+    expect(
+      nudge?.prompt_under?.['text'],
+      'the line is the one-line nudge the view this client replaced sent',
+    ).toBe(
+      'Reopened a review comment - scope work/review-nudge. Take another look under that scope, or hand the scope to your lead if you do not have the review tools.',
     );
   });
 

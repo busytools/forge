@@ -3,12 +3,12 @@ src/ui/client/browser.md 4585
 src/ui/client/composer.md 2364
 src/ui/client/connect.md 1773
 src/ui/client/dictate-models.md 4020
-src/ui/client/document.md 2612
+src/ui/client/document.md 2678
 src/ui/client/extensions.md 1780
-src/ui/client/files.md 1896
+src/ui/client/files.md 1917
 src/ui/client/home.md 2830
 src/ui/client/index.md 719
 src/ui/client/queue.md 772
-src/ui/client/review.md 5321
+src/ui/client/review.md 5405
 src/ui/client/session.md 5582
 src/ui/client/settings.md 1879

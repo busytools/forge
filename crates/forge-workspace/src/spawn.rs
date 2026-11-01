@@ -9752,6 +9752,23 @@ mod lead_charter_tests {
         }
     }
 
+    /// A worker handed off a reviewable document and had no `review__*`
+    /// tools to read the comments with. The spawn step is where a lead
+    /// picks the family selection, so the requirement ships there - pinned
+    /// so a paraphrase cannot drop it.
+    #[test]
+    fn the_charter_names_the_review_family_for_a_document_worker() {
+        assert!(
+            DEFAULT_LEAD_CHARTER.contains(
+                "If you narrow a worker's `mcp_families`, include `review` for a worker whose \
+                 deliverable can be handed off as a reviewable document - a fresh spawn that \
+                 omits the field gives every family; a resume adopts the stored selection."
+            ),
+            "the spawn step scopes the requirement to a narrowed selection and states what a \
+             fresh spawn and a resume each do",
+        );
+    }
+
     /// **The project handoff is the lead's**, and a worker's note is never
     /// the project's: the project's memory directory holds the lead's rolling
     /// handoff, so a worker writing `handoff.md` there overwrites it. Both

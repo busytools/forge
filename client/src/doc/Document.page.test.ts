@@ -281,6 +281,7 @@ function drawReviewable(
     reviewable: true,
     content_hash: '42',
   },
+  handoff: string | null = 'h-1',
 ): ReturnType<typeof fakeDoc> {
   fake = fakeDoc(answer);
   app = mount(Document, {
@@ -289,7 +290,7 @@ function drawReviewable(
       slot: SLOT,
       path: PATH,
       reviewable: true,
-      handoff: 'h-1',
+      handoff,
       connection: fake.connection,
     },
   });
@@ -520,6 +521,52 @@ describe('the reviewable document', () => {
       'Review #4 ready on the document',
     );
     expect(nudge?.text).toContain(`doc:${PATH}`);
+    expect(nudge?.text, 'and names no review tool the asking seat may lack').not.toContain(
+      'review__',
+    );
+  });
+
+  /** **A reload of the address mounts the viewer with no hand-off**, and
+   *  the read still answers reviewable, so a review can be filed with no
+   *  parked call behind it. The line must stand alone: nothing that follows
+   *  will tell the agent how to read the review back. */
+  it('files a review with no hand-off and sends a self-contained line', async () => {
+    const page = drawReviewable(undefined, null);
+
+    blockTarget('line two').click();
+    flushSync();
+    const box = document.querySelector('textarea');
+    if (!(box instanceof HTMLTextAreaElement)) throw new Error('no composer');
+    box.value = 'hello';
+    box.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    buttonByText('comment').click();
+    flushSync();
+
+    page.submitAnswer = { body: { id: 'r9', number: 4, summary: null, created_at: 'x' } };
+    buttonByText('done (1)').click();
+    await vi.waitFor(() => {
+      expect(document.querySelector('.doc-left')?.textContent).toContain('review left (R4)');
+    });
+
+    const nudge = (page.sent as Record<string, Record<string, unknown>>[]).find(
+      (command) => 'prompt_under' in command,
+    )?.['prompt_under'] as { text?: unknown } | undefined;
+    expect(nudge?.text, 'the line names the review and the scope').toContain(
+      'Review #4 ready on the document',
+    );
+    expect(nudge?.text).toContain(`doc:${PATH}`);
+    expect(nudge?.text).toContain('Read it back under that scope');
+    expect(nudge?.text, 'and hands the scope to the lead when it lacks the tools').toContain(
+      'or hand the scope to your lead',
+    );
+    expect(nudge?.text, 'and promises no hand-off answer that never comes').not.toContain(
+      'hand-off answer',
+    );
+    const answered = (page.sent as Record<string, Record<string, unknown>>[]).find(
+      (command) => 'answer_document_hand_off' in command,
+    );
+    expect(answered, 'no parked call exists to answer').toBeUndefined();
   });
 
   /** **A link inside the block is the link's.** A click landing on an anchor

@@ -285,8 +285,9 @@ pub struct ForgeServerFacades {
 /// register for both kinds - unlike the four lead-only `agents__*` verbs. What
 /// each acts on is scoped rather than gated on session kind: a review
 /// conversation belongs to a project and branch, crons and subscriptions to
-/// the caller that made them, and tasks to the caller's project. A worker is
-/// exactly the session a review nudge lands on, so it needs `review__*`.
+/// the caller that made them, and tasks to the caller's project. A review
+/// nudge lands on a worker seat, so the family must be offered to workers
+/// and the nudge must stay usable when it is withheld.
 ///
 /// All submodules share the server name so the LLM sees a single
 /// namespace (`mcp__forge__<group>__*`) and the auto-approve fast-path
@@ -333,9 +334,12 @@ pub fn build_forge_server(
     builder = browser::add_tools(builder, browser, slot.clone());
     // Unconditional for the same reason: a hand-off reads the caller's own
     // tree, so every session may hand a document and no project has anything
-    // to withhold.
-    builder = documents::add_tools(builder, documents, slot.clone());
-    if families.contains(&McpFamily::Review) {
+    // to withhold. The tool still takes the caller's review family, because a
+    // session without it can hand a document off but cannot read the review
+    // back, so its answer says so.
+    let review_available = families.contains(&McpFamily::Review);
+    builder = documents::add_tools(builder, documents, slot.clone(), review_available);
+    if review_available {
         builder = review::add_tools(builder, review, slot.clone());
     }
     if families.contains(&McpFamily::Cron) {
@@ -786,6 +790,61 @@ mod tests {
             }),
             "no toggleable family registers for a lead with everything withheld: {lead:?}"
         );
+    }
+
+    /// The documents tool's own tests inject the flag, so only a built
+    /// server proves it comes from the caller's families.
+    #[tokio::test]
+    async fn the_document_hand_off_knows_whether_the_session_has_review() {
+        let withheld: std::collections::BTreeSet<McpFamily> =
+            McpFamily::all().into_iter().filter(|family| *family != McpFamily::Review).collect();
+        for (families, expected) in [
+            (McpFamily::all(), "read them back with review__get"),
+            (withheld, "spawned without the `review` MCP family"),
+        ] {
+            let documents = MockDocumentFacade::new();
+            *documents.answer.lock() = Ok((
+                "/proj/docs/plan.md".to_owned(),
+                forge_primitives::document::DocumentHandOffEnding::Done {
+                    review_id: Some("r-9".to_owned()),
+                },
+            ));
+            let server = build_forge_server(
+                ForgeServerFacades {
+                    workspace: MockWorkspaceFacade::new().into_arc(),
+                    worker: MockWorkerFacade::new().into_arc(),
+                    browser: MockBrowserFacade::new().into_arc(),
+                    documents: documents.into_arc(),
+                    review: MockReviewFacade::new().into_arc(),
+                    cron: MockCronFacade::new().into_arc(),
+                    gotify: MockGotifyFacade::new().into_arc(),
+                    slack: MockSlackFacade::new().into_arc(),
+                    tasks: MockTasksFacade::new().into_arc(),
+                    systemone: None,
+                },
+                &families,
+                fake_key("test"),
+                SessionKind::Worker,
+            );
+            let answer = server
+                .dispatch(&forge_sdk::mcp::protocol::JsonRpcRequest {
+                    jsonrpc: "2.0".to_owned(),
+                    id: Some(serde_json::json!(1)),
+                    method: "tools/call".to_owned(),
+                    params: Some(serde_json::json!({
+                        "name": "documents__hand_off",
+                        "arguments": { "path": "docs/plan.md", "reviewable": true },
+                    })),
+                })
+                .await
+                .expect("a tools/call is answered");
+            let result = serde_json::to_value(answer.result.expect("the call is answered"))
+                .expect("serializes");
+            assert!(
+                result["content"][0]["text"].as_str().is_some_and(|text| text.contains(expected)),
+                "expected '{expected}' in {result}",
+            );
+        }
     }
 
     /// A narrow selection registers exactly the core plus the chosen
