@@ -61,6 +61,8 @@ interface Frame {
    * which every other shape nests an envelope in, so they are read off the
    * raw record below. */
   tool_name?: unknown;
+  /** The reason token a refusal may carry instead of a message. */
+  decision_reason?: unknown;
   task_id?: unknown;
   spawn_depth?: unknown;
   task_type?: unknown;
@@ -184,14 +186,16 @@ export function dispatchFrames(messages: Iterable<unknown>, dispatchId: string):
   /** The task id the CLI assigned a child call, so its ending can be placed. */
   const owners = new Map<string, string>();
   /**
-   * The calls the CLI refused on permission grounds.
+   * The calls the CLI refused on permission grounds, by the refusal's own
+   * words.
    *
    * **A refusal is not a result**, so no frame settles the call it names -
-   * the mark has to be taken here. It settles the call rather than drawing a
-   * line of its own, because the call's own row carries the refusal's words
-   * and a second row would repeat them.
+   * and a settled call with nothing to open onto would draw `no result` over
+   * the refusal. The refusal settles the call and supplies the body the
+   * result would have carried, so the row reads the same whether the CLI's
+   * errored result followed or not.
    */
-  const denied = new Set<string>();
+  const refused = new Map<string, Block>();
   /** What the roster said about each child call, by call id. */
   const tasks = new Map<string, TaskFact>();
   let brief: string | null = null;
@@ -230,15 +234,20 @@ export function dispatchFrames(messages: Iterable<unknown>, dispatchId: string):
       // arrived (rule 25).
       if (frame.subtype === 'permission_denied') {
         const call = str(frame.tool_use_id);
+        const words = str(obj(frame)['message']) ?? str(frame.decision_reason) ?? '';
         if (call === null || !at.has(call)) {
           const tool = str(frame.tool_name) ?? 'a tool';
-          const reason = str(obj(frame)['message']);
           lines.push({
             kind: 'notice',
-            text: `${tool} refused${reason === null ? '' : `: ${reason}`}`,
+            text: `${tool} refused${words === '' ? '' : `: ${words}`}`,
           });
         } else {
-          denied.add(call);
+          refused.set(call, {
+            type: 'tool_result',
+            tool_use_id: call,
+            content: words,
+            is_error: true,
+          });
         }
       }
       continue;
@@ -375,12 +384,13 @@ export function dispatchFrames(messages: Iterable<unknown>, dispatchId: string):
               line.id,
               line.name,
               line.input,
-              line.result,
+              // A refused call is settled by the refusal, which no result
+              // frame will ever answer - and the refusal's words stand in for
+              // the result's body so the row loses nothing when it never came.
+              line.result ?? refused.get(line.id),
               line.record,
               tasks.get(line.id),
-              // A refused call is settled by the refusal, which no result
-              // frame will ever answer.
-              denied.has(line.id),
+              refused.has(line.id),
             ),
           }
         : line,

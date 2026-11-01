@@ -86,10 +86,12 @@ describe('a dispatch read into its timeline', () => {
     expect(first?.kind === 'call' && first.leaf.status).toBe('completed');
   });
 
-  it('settles the call a refusal names, and draws it once', () => {
+  it('draws no second row for a refusal the call itself already carries', () => {
     // The refusal is session-scoped on the wire and the server stamps it with
     // the dispatch; a timeline that drew it as its own line would show the
-    // same refusal twice, beside the call row that already carries it.
+    // same refusal twice, beside the call row that already carries it. The
+    // answer supplies the status and the words here, so the only property
+    // this pins is the absent second row.
     const frames = dispatchFrames(
       [
         dispatch(),
@@ -109,8 +111,10 @@ describe('a dispatch read into its timeline', () => {
     ).toContain('has been denied');
   });
 
-  it('settles a refused call whose result never arrives', () => {
-    // A refusal is not a result, so nothing else will settle the call.
+  it('settles a refused call whose result never arrives, and keeps its words', () => {
+    // A refusal is not a result, so nothing else will settle the call - and a
+    // settled call with nothing to open onto would draw `no result` over the
+    // one thing the reader needs.
     const frames = dispatchFrames(
       [dispatch(), call('c1', 'Bash', { command: 'rm -rf /tmp/x' }), refusal('c1')],
       'tu-task',
@@ -118,6 +122,10 @@ describe('a dispatch read into its timeline', () => {
 
     const first = frames.lines[0];
     expect(first?.kind === 'call' && first.leaf.status).toBe('failed');
+    expect(
+      first?.kind === 'call' ? JSON.stringify(first.leaf.body) : '',
+      'the refusal words survive the missing result',
+    ).toContain('has been denied');
   });
 
   it('draws a refusal that names no call on the page as itself', () => {
