@@ -9761,11 +9761,11 @@ mod lead_charter_tests {
         assert!(
             DEFAULT_LEAD_CHARTER.contains(
                 "If you narrow a worker's `mcp_families`, include `review` for a worker whose \
-                 deliverable can be handed off as a reviewable document - omitting the field \
-                 gives every family."
+                 deliverable can be handed off as a reviewable document - a fresh spawn that \
+                 omits the field gives every family; a resume adopts the stored selection."
             ),
-            "the spawn step scopes the requirement to a narrowed selection and names the \
-             default it overrides",
+            "the spawn step scopes the requirement to a narrowed selection and states what a \
+             fresh spawn and a resume each do",
         );
     }
 
