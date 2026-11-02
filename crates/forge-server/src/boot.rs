@@ -768,7 +768,7 @@ mod tests {
         let forge = dir.path().join("forge");
         std::fs::create_dir_all(&forge).expect("forge/");
         let pinned = if resume_lead {
-            "resume_lead = true\n\n[[orgs.projects]]\nname = \"notes\"\npath = \"/tmp\"\n"
+            "\n[[orgs.projects]]\nname = \"notes\"\npath = \"/tmp\"\nresume_lead = true\n"
         } else {
             ""
         };
@@ -835,10 +835,11 @@ port = {port}
     }
 
     /// **The boot wave is the only production site that asks for the
-    /// restart note**, and only for the projects pinned to resume: a
-    /// project without `resume_lead` is not in the wave at all. The
-    /// intercept replaces the spawn, so what is read here is the command
-    /// the wave would send.
+    /// restart note.** On a bare launch it is sent only for the projects
+    /// pinned to resume, so an unpinned project is not in the wave at
+    /// all; a project named on the command line starts whether or not it
+    /// is pinned. The intercept replaces the spawn, so what is read here
+    /// is the command the wave would send.
     #[tokio::test]
     async fn the_boot_wave_pins_each_resume_lead_project_with_the_restart_note() {
         let (workspace, _dir) = fixture(false, true);
@@ -854,7 +855,8 @@ port = {port}
 
         let spawned = spawned_projects(&workspace).await;
         assert_eq!(spawned.len(), 1, "only the pinned project is in the wave: {spawned:?}");
-        assert_eq!(spawned[0].0, "forge", "and it is the project that set the key");
+        assert_eq!(spawned[0].0, "notes", "and it is the project that set the key");
+        assert!(!spawned[0].1.force_new, "a normal launch is not a --new one");
         assert_eq!(
             spawned[0].1.resume_kick.as_deref(),
             Some(forge_workspace::LEAD_RESTART_NOTE),
@@ -879,6 +881,7 @@ port = {port}
 
         let spawned = spawned_projects(&workspace).await;
         assert_eq!(spawned.len(), 1, "only the pinned project is in the wave: {spawned:?}");
+        assert!(spawned[0].1.force_new, "--new reaches the command");
         assert_eq!(
             spawned[0].1.resume_kick.as_deref(),
             Some(forge_workspace::LEAD_RESTART_NOTE),
