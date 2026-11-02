@@ -54,9 +54,11 @@ impl QwenTts {
                         return;
                     }
                     while let Some(job) = queue.blocking_recv() {
-                        // A send failure is the host stopping playback, so
-                        // this render's result has nowhere to go.
-                        let _ = job.reply.blocking_send(core.render(&job.request));
+                        if let Err(error) = core.render(&job.request, &job.reply) {
+                            // A send failure is the host stopping playback,
+                            // so the error has nowhere to go either.
+                            let _ = job.reply.blocking_send(Err(error));
+                        }
                     }
                 }
                 Err(error) => {
@@ -133,5 +135,12 @@ mod tests {
         let first = chunks.recv().await.expect("a chunk").expect("a render");
         assert!(first.sample_rate > 0);
         assert!(!first.pcm.is_empty());
+        // The audio arrives as it renders rather than in one clip at the end.
+        let mut rest = 0;
+        while let Some(next) = chunks.recv().await {
+            next.expect("a render");
+            rest += 1;
+        }
+        assert!(rest > 0, "a sentence streams more than one chunk");
     }
 }

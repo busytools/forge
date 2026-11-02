@@ -96,10 +96,10 @@ connection that held that client goes away: a closed client or a dropped
 socket empties the seat's listener set too. A seat change pauses the switch
 and a return to a seat the reader had on reconnects it, so moving between
 seats does not toggle the agent. A closed client or a dropped socket turns
-the switch off. The clips play in the order the engine rendered them, each
-sentence following the one before, and a reconnect discards the queue rather
-than playing a conversation with holes in it, then resubscribes the switch if
-this client still wants voice.
+the switch off. The audio is scheduled back to back as the engine renders it,
+so a sentence that arrives in runs sounds as one voice rather than a stutter,
+and a reconnect discards the queue rather than playing a conversation with
+holes in it, then resubscribes the switch if this client still wants voice.
 
 ## Dictation
 

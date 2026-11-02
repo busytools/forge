@@ -1,14 +1,15 @@
 /**
- * The playback queue: a clip starts the moment it arrives, each later one
- * follows the moment the last ends, and a reconnect throws the queue away
- * rather than playing speech from a seat nobody is watching any more.
+ * The playback queue: a clip is scheduled the moment it arrives, behind the
+ * ones before it, so a stream of short clips sounds continuous; a reconnect
+ * throws every scheduled clip away rather than playing speech from a seat
+ * nobody is watching any more.
  */
 
 import { describe, expect, it } from 'vitest';
 
 import { Playback, type Speaker } from './playback.svelte';
 
-/** A speaker that records what it played and finishes only when told to. */
+/** A speaker that records what it scheduled and finishes only when told to. */
 class FakeSpeaker implements Speaker {
   played: { pcm: number[]; rate: number }[] = [];
   private readonly endings: (() => void)[] = [];
@@ -22,7 +23,7 @@ class FakeSpeaker implements Speaker {
 
   stop(): void {
     this.stopped += 1;
-    this.finish();
+    this.finishAll();
   }
 
   close(): void {
@@ -33,6 +34,11 @@ class FakeSpeaker implements Speaker {
   finish(): void {
     this.endings.shift()?.();
   }
+
+  /** Let every scheduled clip end, as a device stop does. */
+  finishAll(): void {
+    for (const ending of this.endings.splice(0)) ending();
+  }
 }
 
 /** Let the player's own promise chain run. */
@@ -41,7 +47,7 @@ async function settle(): Promise<void> {
 }
 
 describe('the playback queue', () => {
-  it('starts playback on the first chunk and keeps the order', async () => {
+  it('schedules every chunk on arrival, in order, and clears at the last end', async () => {
     const speaker = new FakeSpeaker();
     const playback = new Playback(speaker);
 
@@ -55,19 +61,22 @@ describe('the playback queue', () => {
 
     playback.push(Int16Array.from([2]), 24_000);
     await settle();
-    expect(speaker.played.length, 'the second clip waits for the first to end').toBe(1);
+    expect(
+      speaker.played.map((clip) => clip.pcm),
+      'the next clip is scheduled behind it rather than waiting for it to end',
+    ).toEqual([[1], [2]]);
+    expect(playback.playing, 'the switch is lit while any clip is queued').toBe(true);
 
     speaker.finish();
     await settle();
-    expect(speaker.played.map((clip) => clip.pcm)).toEqual([[1], [2]]);
-    expect(playback.playing).toBe(true);
+    expect(playback.playing, 'still one clip sounding').toBe(true);
 
     speaker.finish();
     await settle();
     expect(playback.playing).toBe(false);
   });
 
-  it('drops the queue when the socket reconnects', async () => {
+  it('drops every scheduled clip when the socket reconnects', async () => {
     const speaker = new FakeSpeaker();
     const playback = new Playback(speaker);
     playback.push(Int16Array.from([1]), 24_000);
@@ -75,13 +84,9 @@ describe('the playback queue', () => {
     await settle();
 
     playback.drop();
-    speaker.finish();
     await settle();
-    expect(
-      speaker.played.map((clip) => clip.pcm),
-      'the queued clip never sounds',
-    ).toEqual([[1]]);
-    expect(playback.playing).toBe(false);
+    expect(speaker.stopped, 'the scheduled clips are stopped').toBe(1);
+    expect(playback.playing, 'and the switch goes off with them').toBe(false);
   });
 
   it('stops the sounding clip when a drop is followed by a push', async () => {
@@ -93,12 +98,13 @@ describe('the playback queue', () => {
 
     // The socket drops while the first clip is still sounding, then the
     // reconnected socket delivers a new one. The old clip is stopped, so the
-    // new one never sounds on top of it.
+    // new one is the only thing scheduled afterwards.
     playback.drop();
     playback.push(Int16Array.from([2]), 24_000);
     await settle();
     expect(speaker.stopped, 'the sounding clip is stopped').toBe(1);
     expect(speaker.played.map((clip) => clip.pcm)).toEqual([[1], [2]]);
+    expect(playback.playing, 'the new clip keeps the switch lit').toBe(true);
 
     speaker.finish();
     await settle();

@@ -7,6 +7,7 @@ use std::ptr;
 use std::sync::Once;
 
 use llama_cpp_sys_2 as sys;
+use tokio::sync::mpsc;
 
 use crate::{Chunk, Error, SpeakRequest};
 
@@ -95,7 +96,14 @@ impl Core {
         Ok(core)
     }
 
-    pub(super) fn render(&mut self, request: &SpeakRequest) -> Result<Chunk, Error> {
+    /// Render one utterance, sending each run of decoded audio as it is
+    /// produced. A send failure is the host stopping playback, so the render
+    /// stops rather than draining the rest.
+    pub(super) fn render(
+        &mut self,
+        request: &SpeakRequest,
+        reply: &mpsc::Sender<Result<Chunk, Error>>,
+    ) -> Result<(), Error> {
         let text = CString::new(request.text.as_str())
             .map_err(|_| Error::Render("the text contains a NUL".to_owned()))?;
         let language = option_cstring(request.language.as_deref())?;
@@ -146,6 +154,8 @@ impl Core {
             return Err(Error::Render("the backbone produced no state".to_owned()));
         }
 
+        let mut sent = 0_usize;
+        let mut rate = self.sample_rate;
         for _ in 0..MAX_FRAMES {
             let mut next: *const f32 = ptr::null();
             let mut stop = false;
@@ -165,18 +175,38 @@ impl Core {
                 break;
             }
             state = next;
+            // **The codec decodes what it has.** `get_output` flushes the
+            // buffered codes and hands back the whole clip so far, so the tail
+            // past `sent` is the audio this frame added.
+            if !self.emit(&audio, &mut sent, &mut rate, reply)? {
+                return Ok(());
+            }
             code = sampler.sample(self.context);
             sampler.accept(code);
         }
+        // A last read flushes what the final frame left buffered.
+        let _ = self.emit(&audio, &mut sent, &mut rate, reply)?;
 
-        let mut rate = i32::try_from(self.sample_rate).unwrap_or(0);
+        Ok(())
+    }
+
+    /// Read the clip so far and send the samples past `sent`. Answers whether
+    /// the host is still reading.
+    fn emit(
+        &self,
+        audio: &Gen,
+        sent: &mut usize,
+        rate: &mut u32,
+        reply: &mpsc::Sender<Result<Chunk, Error>>,
+    ) -> Result<bool, Error> {
+        let mut sample_rate = i32::try_from(self.sample_rate).unwrap_or(0);
         let mut data: *const std::os::raw::c_char = ptr::null();
         let mut len = 0_usize;
         let mut n_samples = 0_i64;
         let status = unsafe {
             sys::mtmd_helper_gen_audio_get_output(
                 audio.raw,
-                &raw mut rate,
+                &raw mut sample_rate,
                 &raw mut data,
                 &raw mut len,
                 &raw mut n_samples,
@@ -186,16 +216,16 @@ impl Core {
             return Err(Error::Render("the audio could not be read back".to_owned()));
         }
         let count = usize::try_from(n_samples).unwrap_or(0);
-        let pcm = if data.is_null() || count == 0 {
-            Vec::new()
-        } else {
-            // SAFETY: a non-streaming read hands back the whole clip as f32
-            // samples, valid until the next call on this context.
-            let floats = unsafe { std::slice::from_raw_parts(data.cast::<f32>(), count) };
-            to_pcm(floats)
-        };
-
-        Ok(Chunk { seq: 0, sample_rate: u32::try_from(rate).unwrap_or(self.sample_rate), pcm })
+        if data.is_null() || count <= *sent {
+            return Ok(true);
+        }
+        // SAFETY: the read hands back the whole clip as f32 samples, valid
+        // until the next call on this context.
+        let floats = unsafe { std::slice::from_raw_parts(data.cast::<f32>(), count) };
+        let pcm = to_pcm(&floats[*sent..]);
+        *sent = count;
+        *rate = u32::try_from(sample_rate).unwrap_or(self.sample_rate);
+        Ok(reply.blocking_send(Ok(Chunk { seq: 0, sample_rate: *rate, pcm })).is_ok())
     }
 }
 
