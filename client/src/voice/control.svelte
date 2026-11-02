@@ -30,7 +30,7 @@
   // svelte-ignore state_referenced_locally
   const voiceKey = boxKey(slot);
   // svelte-ignore state_referenced_locally
-  const voice = voiceFor(voiceKey, connectionPort(connection, slot));
+  const voice = voiceFor(voiceKey, slot, connectionPort(connection, slot));
   let button = $state<HTMLElement | null>(null);
 
   // The seat's store is where every frame the server sends lands, so each

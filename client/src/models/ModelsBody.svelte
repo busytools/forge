@@ -427,7 +427,7 @@
       </div>
     {:else}
       {#each wire.in_use as model (`${model.role}/${model.file}`)}
-        {@const chip = modelChip(model.state, model.role)}
+        {@const chip = modelChip(model.state)}
         {@const factsOf = inUseRowFacts(model)}
         {@const source = sourceLine(model)}
         <div class="model" class:shown={shownRole === model.role}>
@@ -475,9 +475,9 @@
       {/if}
       {#if wire.speaking_models_dir !== null}
         <p class="note">
-          the speaking model is placed by hand: its weights and mmproj projector live in
-          <code>{wire.speaking_models_dir}</code>, and the engine checks both against the digests
-          their entries declare before it loads them
+          the speaking model's weights and mmproj projector land in
+          <code>{wire.speaking_models_dir}</code> &middot; its entry carries both files and their sha256,
+          and the engine checks both before it loads them
         </p>
       {/if}
     {/if}
@@ -509,14 +509,14 @@
     {/if}
 
     {#if shownRole === 'speaking'}
-      <!-- The speaking role has no feed at all: its model is placed by hand,
-           so there is nothing to compare and nothing to propose. Said here
-           rather than left to the empty-role note, which would claim the feed
-           measured it and found nothing. -->
+      <!-- The speaking role's entry is forge's own: neither feed carries a
+           speaking kind, so there is nothing to compare and nothing to
+           propose. Said here rather than left to the empty-role note, which
+           would claim the feed measured it and found nothing. -->
       <p class="note">
-        the speaking model is placed by hand, so no feed proposes one &middot; its weights and
-        mmproj projector live in the directory named above, and the engine checks both against the
-        digests their entries declare before it loads them
+        the speaking model is forge's built-in entry, so no feed proposes another &middot; its
+        weights and mmproj projector install from that entry, and the engine checks both against the
+        digests it declares before it loads them
       </p>
     {:else if shownRole === 'normalization'}
       <!-- The cleanup role's own view: no feed publishes speed or error for

@@ -94,13 +94,8 @@ export function roleWord(role: ModelRole): string {
  * already uses for the same state, and the shape that carries it without
  * colour.
  */
-export function modelChip(
-  state: DictateModelState,
-  role?: ModelRole,
-): { mark: string; text: string } {
-  // The speaking model is placed by hand: its files being present is not a
-  // load, so the chip says `placed` rather than claiming the engine has it.
-  const text = role === 'speaking' && state === 'ready' ? 'placed' : modelState(state);
+export function modelChip(state: DictateModelState): { mark: string; text: string } {
+  const text = modelState(state);
   if (typeof state === 'object' && 'downloading' in state) {
     const { downloaded, total } = state.downloading;
     const percent = total > 0 ? ` ${Math.floor((downloaded / total) * 100)}%` : '';
@@ -389,14 +384,20 @@ export function activeSource(from: ActiveFrom): string {
 }
 
 /**
- * Where an in-use row's model came from, in the row's own words. The speaking
- * model is placed by hand, so its row names the `[tts]` models_dir instead.
+ * Where an in-use row's model came from, in the row's own words. A speaking
+ * pin names the `[tts]` key, which is the table that holds it.
  */
 export function sourceLine(model: InUseModel): string {
-  if (model.role === 'speaking') {
-    return 'placed by hand: the weights and their mmproj projector under the [tts] models_dir';
+  return sourceLineFor(model.role, model.from);
+}
+
+/** [`sourceLine`] from the two facts it reads, for a surface that holds the
+ * resolved role rather than its in-use row. */
+export function sourceLineFor(role: ModelRole, from: ActiveFrom): string {
+  if (role === 'speaking' && from.from === 'config') {
+    return `pinned by [tts] ${from.key}`;
   }
-  return activeSource(model.from);
+  return activeSource(from);
 }
 
 /**

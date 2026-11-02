@@ -3,6 +3,7 @@ import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import type { Connection } from '../socket';
+import { fakeConnection } from '../models/testing';
 import Settings from './Settings.svelte';
 import { settingsFrame } from './frame';
 import { emptyHome, settingsWire } from '../dev/settings.fixture';
@@ -18,10 +19,12 @@ afterEach(async () => {
   document.body.innerHTML = '';
 });
 
-const connection = {
-  onMessage: () => () => {},
+/** The page now reads the models snapshot for its speaking section, so the
+ * connection is the shared fake with the save door added. */
+const connection: Connection = {
+  ...fakeConnection().connection,
   settingsEdit: () => true,
-} as unknown as Connection;
+};
 
 function draw(): void {
   app = mount(Settings, {

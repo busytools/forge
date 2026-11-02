@@ -6,6 +6,7 @@ import type { ServerMessage } from '../protocol';
 import { currentRoute, goTo } from '../routes';
 import { get } from 'svelte/store';
 import type { Connection } from '../socket';
+import { fakeConnection } from '../models/testing';
 import type { SettingsDocument, SettingsEditWire } from '../wire/settings';
 import Settings from './Settings.svelte';
 import { settingsFrame } from './frame';
@@ -23,6 +24,7 @@ let accepts: boolean;
 
 function connection(): Connection {
   return {
+    ...fakeConnection().connection,
     onMessage: (fn: (message: ServerMessage) => void) => {
       listeners.add(fn);
       return () => listeners.delete(fn);
@@ -31,7 +33,7 @@ function connection(): Connection {
       sent.push({ fingerprint, edits, id });
       return accepts;
     },
-  } as unknown as Connection;
+  };
 }
 
 /** Deliver one server frame to every listener the page installed. */

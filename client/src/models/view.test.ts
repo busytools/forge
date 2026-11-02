@@ -133,7 +133,6 @@ describe('the marks and words the page draws', () => {
    */
   it('draws a model state as a word and a shape', () => {
     expect(modelChip('ready')).toEqual({ mark: 'ok', text: 'loaded' });
-    expect(modelChip('ready', 'speaking')).toEqual({ mark: 'ok', text: 'placed' });
     expect(modelChip('pending')).toEqual({ mark: 'off', text: 'waiting' });
     expect(modelChip('loading')).toEqual({ mark: 'live', text: 'loading' });
     expect(modelChip({ failed: { other: { message: 'x' } } }).mark).toBe('failed');
@@ -550,12 +549,9 @@ describe("where a role's model came from", () => {
     expect(activeSource({ from: 'unknown' })).toBe('set by a newer forge');
   });
 
-  /** **The speaking model says it is placed by hand.** The catalogue's
-   * install path fetches one file per variant from the speech feed, and the
-   * speaking model is a two-file family that feed does not carry, so the row
-   * states where its files belong instead of leaving a waiting chip with no
-   * door under it. */
-  it('says the speaking model is placed by hand', () => {
+  /** **The speaking row reads its source like every other role's**, and a
+   * speaking pin names the `[tts]` key rather than a `[dictate]` one. */
+  it('reads the speaking row from where its model came from', () => {
     const speaking: InUseModel = {
       role: 'speaking',
       file: 'Qwen3-TTS-12Hz-1.7B-Base-Q8_0.gguf',
@@ -567,9 +563,16 @@ describe("where a role's model came from", () => {
       from: { from: 'pin' },
       at: null,
     };
-    expect(sourceLine(speaking)).toContain('placed by hand');
-    expect(sourceLine(speaking)).toContain('[tts] models_dir');
-    expect(sourceLine({ ...speaking, role: 'transcribing' })).toBe('compiled default');
+    expect(sourceLine(speaking)).toBe('compiled default');
+    expect(
+      sourceLine({
+        ...speaking,
+        from: { from: 'config', key: 'speaking_model', variant: 'qwen3-tts-12hz-1.7b-base' },
+      }),
+    ).toBe('pinned by [tts] speaking_model');
+    expect(sourceLine({ ...speaking, from: { from: 'installed', variant: 'qwen3-tts' } })).toBe(
+      'installed here',
+    );
   });
 });
 

@@ -1,10 +1,13 @@
 <script lang="ts">
   import type { HomeRead } from '../home/live';
+  import { watchModels, type ModelsRead } from '../models/live';
   import { goTo, holdRoute, type Route } from '../routes';
   import type { Connection } from '../socket';
   import type { SettingsDocument, SettingsEditRequest, SettingsKey } from '../wire/settings';
   import ConfirmDialog from '../components/ConfirmDialog.svelte';
+  import { listeningVoice } from '../voice/registry';
   import SettingsBody from './SettingsBody.svelte';
+  import Speaking from './Speaking.svelte';
   import { settingsFrame } from './frame';
   import {
     addEntry,
@@ -35,6 +38,70 @@
   const frame = $derived($settingsFrame);
   const cliVersion = $derived(home.wire?.cli_version?.installed ?? null);
   const frameFingerprint = $derived(frame.status === 'ready' ? frame.document.fingerprint : null);
+
+  /**
+   * The speaking section's read: the same models snapshot the models page
+   * draws, because the role's install and activation are that page's own
+   * commands rather than keys in this document.
+   */
+  let models = $state<ModelsRead>({ wire: null, refused: null });
+  /** The core's own words for a refused speaking action. */
+  let speakingRefusal = $state<string | null>(null);
+
+  $effect(() => {
+    return watchModels(connection).subscribe((value) => {
+      models = value;
+    });
+  });
+
+  $effect(() => {
+    return connection.onMessage((message) => {
+      if (message.kind === 'error' && message.what === 'dispatch') {
+        speakingRefusal = message.why;
+      }
+    });
+  });
+
+  /** The seat a preview plays through, in the words the section draws. */
+  const listening = $derived.by(() => {
+    const found = listeningVoice();
+    return found === null ? null : `${found.slot.org}/${found.slot.project}/${found.slot.label}`;
+  });
+
+  /**
+   * **A preview is heard on the seat's own stream.** The settings route has
+   * no seat, so this page keeps the listening seat's frames pumping into the
+   * voice the reader already has on; the switch itself stays on its seat.
+   */
+  $effect(() => {
+    const found = listeningVoice();
+    if (found === null) return;
+    const held = connection.store({ session: found.slot });
+    const store = held ?? connection.subscribe({ session: found.slot });
+    const stop = store.value.subscribe(() => found.voice.pump());
+    found.voice.resume();
+    return () => {
+      stop();
+      if (held === undefined) connection.unsubscribe({ session: found.slot });
+    };
+  });
+
+  /** Dispatch one speaking action and re-read the snapshot it changes. */
+  function speakingAct(command: Record<string, Record<string, unknown>>): void {
+    speakingRefusal = null;
+    try {
+      void connection.dispatch(command);
+    } catch (why) {
+      speakingRefusal = why instanceof Error ? why.message : String(why);
+    }
+    connection.refresh('dictate_models');
+  }
+
+  function previewVoice(speaker: string): void {
+    const found = listeningVoice();
+    if (found === null) return;
+    speakingAct({ voice_preview: { key: found.slot, voice: speaker } });
+  }
 
   type EntryTarget = {
     area: string;
@@ -492,7 +559,20 @@
       onUndoRemove={(path: string) => undoRemove(draft, path)}
       errorPath={refusal?.keyPath ?? null}
       onBack={goHome}
-    />
+    >
+      {#snippet speaking()}
+        <Speaking
+          wire={models.wire}
+          {listening}
+          refusal={speakingRefusal}
+          oninstall={(variant: string) => speakingAct({ dictate_install: { variant } })}
+          onactivate={(file: string) =>
+            speakingAct({ dictate_activate: { role: 'speaking', file } })}
+          ondeactivate={() => speakingAct({ dictate_deactivate: { role: 'speaking' } })}
+          onpreview={previewVoice}
+        />
+      {/snippet}
+    </SettingsBody>
 
     {#if editing && (dirty > 0 || saving || refusal !== null || saved || conflict !== null || restart.length > 0)}
       <div class="settings-dock">

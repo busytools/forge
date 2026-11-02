@@ -296,6 +296,25 @@ export type CatalogueCheck =
   | { state: 'unreachable'; error: string }
   | { state: 'unknown' };
 
+/** One voice the installed public corpus can speak in. */
+export interface VoiceChoiceWire {
+  /** The LibriSpeech speaker id, which is what `[tts] voice` names. */
+  speaker: string;
+  /** The reference clip's length in whole seconds. */
+  seconds: number;
+}
+
+/** The speaking role, resolved: what it runs and where the choice came from. */
+export interface SpeakingModelWire {
+  /** The catalogue variant an install names. */
+  variant: string;
+  /** The weights' file name; the projector rides with it. */
+  file: string;
+  state: DictateModelState;
+  from: ActiveFrom;
+  at: string | null;
+}
+
 /** Everything the models page draws, in one read. */
 export interface DictateModelsWire {
   enabled: boolean;
@@ -313,6 +332,16 @@ export interface DictateModelsWire {
   speaking_bench: SpeakingBenchState;
   speaking_results: SpeakingBenchResult[];
   read_aloud: ReadAloudState;
+  /** The speaking role's resolved model, when `[tts]` is on. */
+  speaking: SpeakingModelWire | null;
+  /** Why the speaking model could not be resolved, when it could not. */
+  speaking_error: string | null;
+  /** The voices the installed public corpus carries, one row per speaker. */
+  voices: VoiceChoiceWire[];
+  /** The voice `[tts] voice` names, when it names one. */
+  voice: string | null;
+  /** Why the configured voice cannot be used, when it cannot. */
+  voice_error: string | null;
 }
 
 /** The roles the core names. */
@@ -400,6 +429,20 @@ export function modelsFrom(data: DictateModelsWire): DictateModelsWire {
       (result) => typeof result.file === 'string' && typeof result.at === 'string',
     ),
     read_aloud: readAloudFrom(data.read_aloud),
+    speaking:
+      data.speaking === null || data.speaking === undefined
+        ? null
+        : {
+            ...data.speaking,
+            state: modelStateFrom(data.speaking.state),
+            from: fromFrom(data.speaking.from),
+          },
+    speaking_error: data.speaking_error ?? null,
+    voices: (data.voices ?? []).filter(
+      (row) => typeof row.speaker === 'string' && typeof row.seconds === 'number',
+    ),
+    voice: data.voice ?? null,
+    voice_error: data.voice_error ?? null,
   };
 }
 

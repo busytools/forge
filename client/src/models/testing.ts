@@ -124,6 +124,20 @@ export const modelsWire: DictateModelsWire = modelsFrom({
   results: [],
   speaking_bench: { state: 'idle' },
   speaking_results: [],
+  speaking: {
+    variant: 'qwen3-tts-12hz-1.7b-base',
+    file: 'Qwen3-TTS-12Hz-1.7B-Base-Q8_0.gguf',
+    state: 'ready',
+    from: { from: 'pin' },
+    at: null,
+  },
+  speaking_error: null,
+  voices: [
+    { speaker: '6930', seconds: 4 },
+    { speaker: '3575', seconds: 5 },
+  ],
+  voice: '6930',
+  voice_error: null,
   read_aloud: {
     recordings: [],
     recording: false,

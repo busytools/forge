@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { flushSync } from 'svelte';
+  import { flushSync, type Snippet } from 'svelte';
 
   import Brand from '../components/Brand.svelte';
   import ClassMark from '../components/ClassMark.svelte';
@@ -36,6 +36,7 @@
     focusAdd = null,
     errorPath = null,
     onBack = () => {},
+    speaking,
   }: {
     document: SettingsDocument;
     mark: string | null;
@@ -65,6 +66,9 @@
     errorPath?: string | null;
     /** The back link, intercepted while the draft is dirty. */
     onBack?: (event: MouseEvent) => void;
+    /** The voice area's speaking section: the role's model and its voices,
+     * which are the core's state rather than keys in this document. */
+    speaking?: Snippet;
   } = $props();
 
   const shown = $derived(selectedArea(document, selected));
@@ -288,6 +292,9 @@
             {/each}
           </InstanceCard>
         {/each}
+        {#if speaking !== undefined && area.id === 'voice'}
+          {@render speaking()}
+        {/if}
         {#each added as entry (entry.path)}
           {@const fields = ENTRY_FIELDS[entry.group] ?? []}
           <InstanceCard label={entry.label} headingId={`card-add-${entry.path}`} fresh>
