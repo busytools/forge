@@ -1204,6 +1204,7 @@ mod tests {
             models: forge_workspace::catalogue::DictateModelsSnapshot {
                 enabled: true,
                 models_dir: None,
+                speaking_models_dir: None,
                 in_use: Vec::new(),
                 check: forge_workspace::catalogue::CatalogueCheck::Never,
                 updates: Vec::new(),
@@ -1213,6 +1214,8 @@ mod tests {
                 installed: Vec::new(),
                 bench: forge_workspace::bench::BenchState::Idle,
                 results: Vec::new(),
+                speaking_bench: forge_workspace::bench::SpeakingBenchState::Idle,
+                speaking_results: Vec::new(),
                 read_aloud: forge_workspace::bench::ReadAloudState {
                     recordings: Vec::new(),
                     recording: false,

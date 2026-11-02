@@ -267,7 +267,7 @@ describe('axe over the rendered pages', () => {
     // Inside the landmark its page gives it: the composer is a slot in the
     // session page's own `<main>`, and rendered alone every one of its states
     // reports the page-level `region` rule instead of anything about itself.
-    const draw = (held: ComposerRecord, dictation = false) =>
+    const draw = (held: ComposerRecord, dictation = false, voice = false) =>
       `<main>${
         render(Composer, {
           props: {
@@ -276,6 +276,7 @@ describe('axe over the rendered pages', () => {
             seat: seatRead(),
             connection: wire().connection,
             dictation,
+            voice,
             reading: false,
           } satisfies ComposerProps,
         }).body
@@ -283,6 +284,10 @@ describe('axe over the rendered pages', () => {
 
     expect(await idsOf(draw(record())), 'the box').toEqual([]);
     expect(await idsOf(draw(record(), true)), 'the box with the mic').toEqual([]);
+    expect(
+      await idsOf(draw(record(), true, true)),
+      'the box with the mic and the voice switch',
+    ).toEqual([]);
     expect(await idsOf(draw(record({ pending_asks: [permissionAsk()] }))), 'a permission').toEqual(
       [],
     );
@@ -376,6 +381,7 @@ describe('axe over the rendered pages', () => {
             seat: seatRead(),
             connection: wire().connection,
             dictation: false,
+            voice: false,
             reading: false,
           } satisfies ComposerProps,
         }).body
@@ -817,6 +823,8 @@ describe('axe over the rendered pages', () => {
         ondeactivate: () => {},
         onbench: () => {},
         onbenchstop: () => {},
+        onspeakbench: () => {},
+        onspeakbenchstop: () => {},
         onrecord: () => {},
         onrecordstop: () => {},
         onrecorddelete: () => {},
@@ -908,6 +916,8 @@ describe('axe over the rendered pages', () => {
         ondeactivate: () => {},
         onbench: () => {},
         onbenchstop: () => {},
+        onspeakbench: () => {},
+        onspeakbenchstop: () => {},
         onrecord: () => {},
         onrecordstop: () => {},
         onrecorddelete: () => {},
@@ -947,6 +957,8 @@ describe('axe over the rendered pages', () => {
         ondeactivate: () => {},
         onbench: () => {},
         onbenchstop: () => {},
+        onspeakbench: () => {},
+        onspeakbenchstop: () => {},
         onrecord: () => {},
         onrecordstop: () => {},
         onrecorddelete: () => {},
@@ -983,6 +995,8 @@ describe('axe over the rendered pages', () => {
         ondeactivate: () => {},
         onbench: () => {},
         onbenchstop: () => {},
+        onspeakbench: () => {},
+        onspeakbenchstop: () => {},
         onrecord: () => {},
         onrecordstop: () => {},
         onrecorddelete: () => {},
@@ -994,7 +1008,7 @@ describe('axe over the rendered pages', () => {
         onuninstall: () => {},
       },
     }).body;
-    expect(html).toContain('dictation is off');
+    expect(html).toContain('no model is in use');
     expect(html).toContain('read only with');
     expect(await idsOf(html)).toEqual([]);
   });

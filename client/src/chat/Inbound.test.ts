@@ -78,6 +78,19 @@ describe('the inbound delivery row', () => {
     expect(named, 'not an emphasis element').not.toContain('<em>');
   });
 
+  it('leads a voice note with the speaker glyph the sprite carries', () => {
+    const note = draw({
+      kind: 'voice',
+      title: 'The user is listening to this seat.',
+      body: 'The user is listening to this seat.\n\nAnything they should hear goes through mcp__forge__voice__say.',
+    });
+    expect(note, 'the voice glyph').toContain('#i-sound');
+    expect(note, 'not a kind-named glyph the sprite lacks').not.toContain('#i-voice');
+    expect(summaryWords(note), 'the note first line as the title').toContain(
+      'The user is listening to this seat.',
+    );
+  });
+
   it('draws a tail that adds to the title, and none that repeats it', () => {
     // A cron fire named by its schedule: the title is the schedule and the
     // tail is the prompt, which is the one thing the row can add.

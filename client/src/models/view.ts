@@ -27,6 +27,8 @@ import type {
   ModelRole,
   ModelUpdate,
   ReadAloudRecording,
+  SpeakingBenchResult,
+  SpeakingBenchState,
   UpdateVerdict,
 } from '../wire/models';
 import type { DictateModelState } from '../wire/types';
@@ -78,6 +80,8 @@ export function roleWord(role: ModelRole): string {
       return 'transcribing';
     case 'normalization':
       return 'cleanup';
+    case 'speaking':
+      return 'speaking';
     // A role the core added after this client: the row is still a model, and
     // saying so keeps it drawn rather than hidden.
     case 'other':
@@ -90,8 +94,13 @@ export function roleWord(role: ModelRole): string {
  * already uses for the same state, and the shape that carries it without
  * colour.
  */
-export function modelChip(state: DictateModelState): { mark: string; text: string } {
-  const text = modelState(state);
+export function modelChip(
+  state: DictateModelState,
+  role?: ModelRole,
+): { mark: string; text: string } {
+  // The speaking model is placed by hand: its files being present is not a
+  // load, so the chip says `placed` rather than claiming the engine has it.
+  const text = role === 'speaking' && state === 'ready' ? 'placed' : modelState(state);
   if (typeof state === 'object' && 'downloading' in state) {
     const { downloaded, total } = state.downloading;
     const percent = total > 0 ? ` ${Math.floor((downloaded / total) * 100)}%` : '';
@@ -380,6 +389,17 @@ export function activeSource(from: ActiveFrom): string {
 }
 
 /**
+ * Where an in-use row's model came from, in the row's own words. The speaking
+ * model is placed by hand, so its row names the `[tts]` models_dir instead.
+ */
+export function sourceLine(model: InUseModel): string {
+  if (model.role === 'speaking') {
+    return 'placed by hand: the weights and their mmproj projector under the [tts] models_dir';
+  }
+  return activeSource(model.from);
+}
+
+/**
  * What one catalogue row offers, from the page's own state.
  *
  * The order is the rule the core enforces: an installed model can be made
@@ -589,6 +609,8 @@ export function tierWord(tier: BenchTier): string {
       return 'your own takes';
     case 'read_aloud':
       return 'the read-aloud passage';
+    case 'public':
+      return 'the public corpus';
     case 'other':
       return 'a corpus this client cannot name';
   }
@@ -626,12 +648,18 @@ export function benchTargets(
   updates: ModelUpdate[],
   feed: CatalogueRow[] = [],
 ): BenchRow[] {
+  // The speaking role has its own bench; this one scores speech in.
   const rows: BenchRow[] = inUse
-    .filter((model) => model.state === 'ready')
+    .filter((model) => model.state === 'ready' && model.role !== 'speaking')
     .map((model) => ({
       target: {
         file: model.file,
-        role: model.role === 'normalization' ? 'cleanup' : model.role,
+        role:
+          model.role === 'normalization'
+            ? 'cleanup'
+            : model.role === 'transcribing'
+              ? 'transcribing'
+              : 'other',
         pinned: model.from.from === 'config',
       },
       variant: model.catalogue?.variant ?? null,
@@ -1103,6 +1131,58 @@ export function benchLine(bench: BenchState): OpLine | null {
         percent: null,
       };
   }
+}
+
+/** The speaking bench's line: what is running, or what stopped it. */
+export function speakingBenchLine(bench: SpeakingBenchState): OpLine | null {
+  switch (bench.state) {
+    case 'idle':
+      return null;
+    case 'running': {
+      const percent = bench.clips > 0 ? Math.floor((bench.clip / bench.clips) * 100) : null;
+      return {
+        mark: 'live',
+        title: 'scoring the speaking loop',
+        detail: `clip ${bench.clip} of ${bench.clips} \u{b7} spoken, heard back and scored`,
+        percent,
+      };
+    }
+    case 'failed':
+      return {
+        mark: 'failed',
+        title: 'the speaking bench did not finish',
+        detail: bench.reason,
+        percent: null,
+      };
+    case 'unknown':
+      return {
+        mark: 'off',
+        title: 'the speaking bench state is one this client cannot read',
+        detail: 'this client is older than the forge serving it',
+        percent: null,
+      };
+  }
+}
+
+/**
+ * One speaking result's facts: the loop's own figures first - the round
+ * trip, how soon the first audio starts, and the loop's pace - then what
+ * ran and over how many clips.
+ */
+export function speakingResultFacts(result: SpeakingBenchResult): FactPart[] {
+  const metrics = result.metrics;
+  return [
+    { text: `round-trip WER ${(metrics.round_trip_wer * 100).toFixed(1)}%`, hl: true },
+    { text: `first audio ${(metrics.first_audio_ms / 1000).toFixed(1)}s`, hl: true },
+    { text: `${metrics.realtime_factor.toFixed(2)}\u{d7} realtime` },
+    { text: `${metrics.clips} ${metrics.clips === 1 ? 'clip' : 'clips'}` },
+  ];
+}
+
+/** When one speaking result ran, on the words bench's terms. */
+export function speakingWhen(result: SpeakingBenchResult): string | null {
+  const at = clock(result.at);
+  return at === null ? null : `measured ${at}`;
 }
 
 /**

@@ -144,6 +144,13 @@ export interface ComposerProps {
    */
   dictation: boolean;
   /**
+   * Whether this install can speak replies aloud: `[tts] enabled`, stated
+   * from the home wire for the same reason as `dictation` - a control the
+   * install cannot honour is worse than none, and a silent default is worse
+   * than both.
+   */
+  voice: boolean;
+  /**
    * Whether this seat's first conversation page is still out.
    *
    * **The band is where every narrative state speaks**, so the read wait is a

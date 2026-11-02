@@ -444,6 +444,11 @@ impl forge_workspace::browser::BrowserHost for HostedBrowser {
 /// `start_*` call the wave drops is invisible to any test that starts its
 /// subsystem directly.
 fn start_subsystems(workspace: &Arc<Workspace>) {
+    // llama.cpp's backend registry is a bare static with no lock, so its
+    // first call must not race: take it here, before any render or the
+    // dictation preflight can start.
+    forge_workspace::init_voice_backend();
+
     // Kick off the per-account boot-time loading state machine (one task
     // per `[[accounts]]` entry) in the background. Each task drives its
     // account from `Loading` through to a terminal `Ready` or `Bailed`.

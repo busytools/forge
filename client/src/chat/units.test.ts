@@ -1370,6 +1370,30 @@ describe('one turn folded into the units a view draws', () => {
     expect(rows[1]?.body, 'no leading blank line').toBe('the morning sweep');
   });
 
+  it('draws the voice note as a delivery, not as the reader turn', () => {
+    // The note is forge telling the agent the reader is listening. It is a
+    // message for the agent and information for the reader, so it takes the
+    // delivery row every other forge-sourced envelope takes.
+    const note = heard([
+      text(
+        '[Voice]\n\nThe user is listening to this seat.\n\nAnything they should hear goes through mcp__forge__voice__say; the text written in the chat is not spoken.',
+      ),
+    ]);
+    const rows = inboundsOf(fold([note])[0]);
+
+    expect(
+      rows.map((row) => row.kind),
+      'a voice note is its own delivery kind',
+    ).toEqual(['voice']);
+    expect(rows[0]?.title, 'titled by the note first line').toBe(
+      'The user is listening to this seat.',
+    );
+    expect(rows[0]?.body, 'the whole note stays the body').toBe(
+      'The user is listening to this seat.\n\nAnything they should hear goes through mcp__forge__voice__say; the text written in the chat is not spoken.',
+    );
+    expect(rows[0]?.elevated, 'a note is not elevated').toBe(false);
+  });
+
   it('names a fired cron by its schedule when the delivery frame said which', () => {
     // The prose carries the prompt and never the schedule, so the name comes
     // from the pairing: the delivery frame while it lands, or the conversation

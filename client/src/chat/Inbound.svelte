@@ -9,7 +9,8 @@
   import type { InboundLeaf } from './units';
 
   /**
-   * One inbound delivery: a cron fire, a Slack message or a Gotify push.
+   * One inbound delivery: a cron fire, a Slack message, a Gotify push or a
+   * voice note.
    *
    * The row is a tool row like any other - its mark says which way it went,
    * and the title and the body's first line read as the call's own title does -
@@ -53,7 +54,9 @@
   const title = $derived(row.kind === 'cron' ? renderInlineProse(joinedLine(row.title)) : null);
 
   /** The kind's own glyph, which the row leads with. */
-  const glyph = $derived(row.kind === 'cron' ? 'schedules' : row.kind);
+  const glyph = $derived(
+    row.kind === 'cron' ? 'schedules' : row.kind === 'voice' ? 'sound' : row.kind,
+  );
 </script>
 
 <details class="leaf inboundrow" bind:open={opened}>

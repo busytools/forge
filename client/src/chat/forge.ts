@@ -476,21 +476,23 @@ export function forgeCardOf(
       ? parsedTextPastClock(result.content)
       : parsedText(result.content);
   const card =
-    family === 'tasks'
-      ? tasksCard(verbOf(name), input, answer)
-      : family === 'cron'
-        ? cronCard(verbOf(name), answer)
-        : family === 'gotify'
-          ? gotifyCard(verbOf(name), answer)
-          : family === 'slack'
-            ? slackCard(verbOf(name), input, answer)
-            : family === 'review'
-              ? reviewCard(verbOf(name), input, answer)
-              : family === 'documents'
-                ? documentsCard(verbOf(name), input)
-                : family === 'handoff'
-                  ? handoffCard(input, answer)
-                  : agentsCard(verbOf(name), input, answer);
+    family === 'voice'
+      ? voiceCard(input, firstText(result.content))
+      : family === 'tasks'
+        ? tasksCard(verbOf(name), input, answer)
+        : family === 'cron'
+          ? cronCard(verbOf(name), answer)
+          : family === 'gotify'
+            ? gotifyCard(verbOf(name), answer)
+            : family === 'slack'
+              ? slackCard(verbOf(name), input, answer)
+              : family === 'review'
+                ? reviewCard(verbOf(name), input, answer)
+                : family === 'documents'
+                  ? documentsCard(verbOf(name), input)
+                  : family === 'handoff'
+                    ? handoffCard(input, answer)
+                    : agentsCard(verbOf(name), input, answer);
   // A result that said more than the one block the card reads draws the rest
   // beside the card: the card replaces the body, and a block it swallowed
   // would be the one thing a reader could not find.
@@ -518,6 +520,7 @@ const FAMILY_NOUN: Record<ForgeFamily, string> = {
   review: 'reviews',
   agents: 'workers',
   handoff: 'handoff',
+  voice: 'speech',
 };
 
 /** The last segment of a path, which is the name a row calls a file by. */
@@ -559,6 +562,10 @@ export function forgeRowTitle(
   } else {
     const pending = pendingCard(family, verb, input);
     if (pending !== null) return pending.title;
+  }
+  if (family === 'voice') {
+    const spoken = str(held, 'text');
+    if (spoken !== null && spoken.trim() !== '') return `speaking \u{b7} ${spoken}`;
   }
   const said = str(held, 'subject') ?? str(held, 'label');
   if (said !== null && said.trim() !== '') return said;
@@ -919,6 +926,29 @@ function agentsCard(verb: string, input: unknown, answer: unknown): ForgeCard | 
     chips,
     figure: session.slice(0, 6),
     pieces,
+  };
+}
+
+/**
+ * The voice family's card: one utterance, and what became of it.
+ *
+ * The spoken words are the subject, so the row is titled by them - the closed
+ * row ellipsises them and opening it reads the whole - and the result's own
+ * word says whether anyone heard it.
+ */
+function voiceCard(input: unknown, answer: string | null): ForgeCard | null {
+  const said = str(obj(input), 'text');
+  if (said === null || said.trim() === '') return null;
+  const status = answer === null ? '' : answer.trim();
+  const chips: ForgeChip[] = [];
+  if (status === 'spoken: queued') chips.push({ text: status, tone: 'ok' });
+  else if (status === 'no listener') chips.push({ text: status, tone: 'warn' });
+  else if (status !== '') chips.push({ text: status, tone: 'plain' });
+  return {
+    title: `speaking \u{b7} ${said}`,
+    chips,
+    figure: null,
+    pieces: [{ kind: 'quote', text: said }],
   };
 }
 

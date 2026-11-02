@@ -57,7 +57,7 @@ read as one system.
   web, lsp, skill, tool search, config, worktree, tool, and the one
   mutation row every edit draws whatever tool it was.
 - **A forge call** draws a card for its family - tasks, agents, cron,
-  documents, gotify, handoff, review, slack - and the System One decisions
+  documents, gotify, handoff, review, slack, voice - and the System One decisions
   draw as their own family, so a reader scanning for what the session decided
   does not find the three decision calls mixed among its cron and peer calls.
   The handoff's exit call is its own family: its family is handoff, it wears
@@ -67,8 +67,9 @@ read as one system.
 - **A peer message** draws a card saying which way it went: `sent to` and
   `from` name the counterparty and its org, `failed` carries the
   delivery's own reason, and `whoami` and `list` open onto their facts.
-- **A delivery** - a cron fire, a Slack message, a Gotify push - is a row
-  of its own kind, a cron fire titled by the schedule that fired it. A
+- **A delivery** - a cron fire, a Slack message, a Gotify push, a voice
+  note - is a row of its own kind, a cron fire titled by the schedule that
+  fired it and a voice note by the note's own first line. A
   Slack row whose block is late adds its age to the title, so a week-old
   message reads as history before the row is opened.
 - **A notice is a tool row, in the run's own inset.** An info, warning or

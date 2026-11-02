@@ -65,6 +65,29 @@ describe("the models page's snapshot, narrowed once where it enters", () => {
     expect(wire.check).toEqual({ state: 'unknown' });
   });
 
+  /** An older server sends neither directory: the page's own `null` is
+   * what it draws, not the word `undefined`. */
+  it('defaults a missing models directory to null', () => {
+    const wire = modelsFrom(payload({ models_dir: undefined, speaking_models_dir: undefined }));
+
+    expect(wire.models_dir).toBeNull();
+    expect(wire.speaking_models_dir).toBeNull();
+  });
+
+  /** The speaking bench's state is narrowed at the same boundary: a page
+   * that trusted an unknown tag would draw a run that is not there. */
+  it('narrows a speaking bench state outside the shipped set to unknown', () => {
+    const wire = modelsFrom(payload({ speaking_bench: { state: 'paused' } }));
+
+    expect(wire.speaking_bench).toEqual({ state: 'unknown' });
+  });
+
+  it('keeps a running speaking bench with its tick', () => {
+    const wire = modelsFrom(payload({ speaking_bench: { state: 'running', clip: 3, clips: 12 } }));
+
+    expect(wire.speaking_bench).toEqual({ state: 'running', clip: 3, clips: 12 });
+  });
+
   it('keeps the four known check states as the server wrote them', () => {
     // The check is a tagged enum, so even its bare states cross as an object
     // carrying the tag - `catalogue.rs`'s own test pins those names.

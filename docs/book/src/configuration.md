@@ -518,6 +518,46 @@ page, is checked against the feed's own byte length and the engine's own
 load instead: those files publish no digest, and nothing forge prints calls
 one verified.
 
+## `[tts]`
+
+Optional. Absent means the speaking role is off, which is also what an
+explicit `enabled = false` means. It is the other direction of the voice
+area `[dictate]` opens: a take becomes text, and a reply becomes speech.
+
+| Key                     | Type    | Default            | Notes                                                                                                                                                                                                                          |
+| ----------------------- | ------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `enabled`               | boolean | `false`            | Off unless asked for. Turning it on needs the two model files placed under `models_dir` by hand, about 2.29 GB together.                                                                                                        |
+| `models_dir`            | string  | platform cache dir | Where the model files live. `~` is expanded.                                                                                                                                                                                     |
+| `language`              | string  | english            | Spoken language hint for the rendered voice. Unset leaves the pipeline's own default, English.                                                                                                                                   |
+| `max_utterance_seconds` | integer | `120`              | Upper bound on one `voice__say`'s text, not on one sentence.                                                                                                                                                                     |
+
+The model's default voice is used. There is no speaker selection in this
+cut.
+
+An unrecognised key here fails the load, as one in `[dictate]` does: a
+mistyped `models_dir` would otherwise leave the engine looking in a
+directory that has no model, and the failure would arrive only at the first
+`say`.
+
+The speaking model is Qwen3-TTS 12Hz 1.7B Base, Q8_0, with the `mmproj`
+projector that carries its audio codec: two files, about 2.29 GB together,
+both published by ggml-org with a per-file SHA-256. The weights and
+tokenizer are Apache-2.0 and llama.cpp is MIT. ggml-org publishes no 0.6B
+GGUF, which is why the pinned build is the 1.7B Base.
+
+Rendering is in process: forge links the published llama.cpp through
+`llama-cpp-sys-2` the way dictation links its recognizer, and splits a
+`say` into sentences so the first audio starts while later sentences render
+behind it. A sentence's audio arrives when it finishes rendering; nothing
+streams inside one sentence.
+
+**forge does not fetch these two files.** They are placed under
+`models_dir` by hand, and the engine is warmed when the first client turns
+voice on; a failed warm is retried by the first `say`, and a missing file is
+reported by its own path. The engine checks both
+files against the SHA-256 their entries declare before it loads them, so a
+truncated or substituted file is refused by name rather than loaded.
+
 ## `[gotify]`
 
 Optional. Absent means the Gotify integration stays dormant.

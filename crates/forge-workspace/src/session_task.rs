@@ -515,6 +515,9 @@ impl SessionTask {
                     // and a boot resolves this session from its row.
                     if let Some(workspace) = self.workspace.upgrade() {
                         workspace.note_running_session_id(&self.key, &session_id);
+                        // The listener set is keyed by seat, so a swap leaves
+                        // it alone: the successor has to be told it is heard.
+                        workspace.voice_occupant_changed(&self.key);
                     }
                     self.emit(SessionUpdate::SessionReplaced {
                         key: key.clone(),
@@ -662,6 +665,10 @@ impl SessionTask {
                     // next boot to guess wrong.
                     if let Some(workspace) = self.workspace.upgrade() {
                         workspace.note_running_session_id(&self.key, &session_id);
+                        // A `/resume` on a seat with no live task arrives
+                        // here rather than through `SessionReplaced`, so the
+                        // successor is told it is heard on this path too.
+                        workspace.voice_occupant_changed(&self.key);
                     }
                     self.emit(SessionUpdate::Connected {
                         key: key.clone(),
@@ -2801,6 +2808,8 @@ pub(crate) fn execute_command_via_handle(
         | Command::DictateDeactivate { .. }
         | Command::DictateBench { .. }
         | Command::DictateBenchStop
+        | Command::VoiceBenchStart
+        | Command::VoiceBenchStop
         | Command::DictateReadAloudStart { .. }
         | Command::DictateReadAloudStop { .. }
         | Command::DictateReadAloudDelete { .. }
@@ -2824,7 +2833,8 @@ pub(crate) fn execute_command_via_handle(
         | Command::PluginUpdateAll
         | Command::PluginCheckUpdates
         | Command::MarketplaceAdd { .. }
-        | Command::MarketplaceRepair { .. }) => {
+        | Command::MarketplaceRepair { .. }
+        | Command::VoiceMode { .. }) => {
             tracing::warn!(
                 target: "forge_workspace::session_task",
                 slot = %key.display(),
@@ -3820,6 +3830,7 @@ mod tests {
     use crate::update_fanout::{SeatUpdate, SubscriberRole};
     use forge_agent::Agent;
     use forge_agent::client::SpawnFailureKind;
+    use forge_primitives::{ContentBlock, Message};
 
     fn empty_domain() -> DomainSession {
         let (handle, _rx) = Agent::testing_stub();
@@ -10380,6 +10391,122 @@ provider = "anthropic"
         assert!(
             !saw_plain_connected,
             "a session-replacing re-spawn must not emit a fresh Connected"
+        );
+    }
+
+    /// A replacement under a listening seat tells the successor it is heard:
+    /// `/new` and `/resume` leave the listener set alone, so the note has to
+    /// fire on the occupant change rather than on a listener transition.
+    #[tokio::test]
+    async fn a_replaced_seat_tells_the_successor_it_is_heard() {
+        struct Silent;
+        impl forge_tts::Engine for Silent {
+            fn speak(
+                &self,
+                _request: forge_tts::SpeakRequest,
+            ) -> tokio::sync::mpsc::Receiver<Result<forge_tts::Chunk, forge_tts::Error>>
+            {
+                let (sender, receiver) = tokio::sync::mpsc::channel(1);
+                drop(sender);
+                receiver
+            }
+        }
+
+        let (workspace, mut update_rx) = crate::Workspace::testing_stub();
+        workspace.install_voice_engine_for_test(Arc::new(Silent));
+        let session_key = SessionSlot::from_str_for_test("voice-respawn-uuid");
+        workspace.voice_service().set_listening(&session_key, 1, true, false);
+        // The seat has no command sender yet, so this note cannot be delivered:
+        // it must forge no row, or the page would draw a note the agent never got.
+        while let Ok(frame) = update_rx.try_recv() {
+            assert!(
+                !matches!(&*frame.update, SessionUpdate::ChatAppended { .. }),
+                "a note that was not delivered draws no row",
+            );
+        }
+        let (command_tx, mut command_rx) = tokio::sync::mpsc::unbounded_channel();
+        workspace.command_senders.lock().insert(session_key.clone(), command_tx);
+
+        let domain =
+            Arc::new(parking_lot::Mutex::new(DomainSession::new(session_key.clone(), None)));
+        let (handle, _agent_cmd_rx) = Agent::testing_stub();
+        let (_cmd_tx, command_rx_task) =
+            tokio::sync::mpsc::unbounded_channel::<crate::protocol::Command>();
+        let update_tx = workspace.update_sender();
+        let mut task = SessionTask {
+            key: session_key.clone(),
+            handle: Arc::new(handle),
+            command_rx: command_rx_task,
+            domain,
+            update_tx,
+            connected_once: true,
+            workspace: Arc::downgrade(&workspace),
+            compaction_count: 0,
+            successor: None,
+            teardown_done: None,
+        };
+
+        task.translate_event(AgentEvent::Connected {
+            session_id: session_key.display(),
+            cwd: "/tmp/respawn".to_owned(),
+            current_model: forge_primitives::CurrentModel {
+                resolved_id: "claude".to_owned(),
+                display_name_short: "claude".to_owned(),
+                display_name_long: "claude".to_owned(),
+                requested_id: None,
+                catalog_id: None,
+                supports_effort: false,
+                supported_effort_levels: Vec::new(),
+                supports_auto_mode: None,
+                supports_adaptive_thinking: None,
+                is_authoritative: true,
+            },
+            available_models: Vec::new(),
+            mode: None,
+            history_updates: Some(Vec::new()),
+            compaction_count: 0,
+        });
+
+        let mut note = None;
+        let mut note_uuid = None;
+        while let Ok(command) = command_rx.try_recv() {
+            if let crate::protocol::Command::PromptUnder { text, uuid, .. } = command {
+                note = Some(text);
+                note_uuid = Some(uuid);
+            }
+        }
+        assert!(
+            note.as_deref().is_some_and(|text| text.contains("The user is listening")),
+            "the successor is told it is heard, got: {note:?}",
+        );
+
+        let mut row = None;
+        while let Ok(frame) = update_rx.try_recv() {
+            if let SessionUpdate::ChatAppended { key, msg, source, .. } = &*frame.update
+                && key == &session_key
+            {
+                row = Some(((*msg).clone(), *source));
+            }
+        }
+        let (row, source) = row.expect("the delivered note forges the row a page draws");
+        assert_eq!(source, Some(PromptSource::Forge), "the row is forge's own delivery");
+        let Message::User { message, uuid, timestamp, .. } = &row else {
+            panic!("a voice note draws as an information row, not the reader's turn: {row:?}");
+        };
+        assert_eq!(uuid, &note_uuid, "the row and the prompt share one id");
+        assert!(timestamp.is_some(), "the row carries forge's clock");
+        let text = message
+            .content
+            .iter()
+            .find_map(|block| match block {
+                ContentBlock::Text { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .expect("the row carries the note's words");
+        assert_eq!(Some(text), note.as_deref(), "the row carries exactly the prose the agent got");
+        assert!(
+            text.starts_with("[Voice]\n\n"),
+            "the envelope is what makes the view draw it as information, got: {text:?}",
         );
     }
 

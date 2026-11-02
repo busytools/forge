@@ -1201,3 +1201,32 @@ describe('the worker lifecycle cards', () => {
     });
   });
 });
+
+describe('the voice card', () => {
+  it('titles the row by the utterance and says what became of it', () => {
+    const card = forgeCardOf(
+      'mcp__forge__voice__say',
+      { text: 'The build is green and the branch is pushed.' },
+      result('spoken: queued'),
+    );
+    expect(card?.title, 'the words spoken, not the tool').toBe(
+      'speaking \u{b7} The build is green and the branch is pushed.',
+    );
+    expect(card?.chips, "the result's own word").toEqual([{ text: 'spoken: queued', tone: 'ok' }]);
+    expect(card?.pieces, 'and the whole utterance, which the closed row ellipsises').toEqual([
+      { kind: 'quote', text: 'The build is green and the branch is pushed.' },
+    ]);
+  });
+
+  it('chips a say nobody heard as the refusal it is', () => {
+    const card = forgeCardOf('mcp__forge__voice__say', { text: 'Hello.' }, result('no listener'));
+    expect(card?.chips).toEqual([{ text: 'no listener', tone: 'warn' }]);
+  });
+
+  it('titles a say still out by the utterance it is speaking', () => {
+    expect(
+      forgeRowTitle('mcp__forge__voice__say', { text: 'One moment.' }, 'running'),
+      'a call still out names what it is saying',
+    ).toBe('speaking \u{b7} One moment.');
+  });
+});

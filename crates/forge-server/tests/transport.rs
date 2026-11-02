@@ -56,6 +56,14 @@ async fn a_server_with_state() -> (String, Fleet, Arc<TransportState>) {
     (url, fleet, state)
 }
 
+/// A server whose fixture has `[tts] enabled`, for the voice tests: the
+/// shared fixture leaves it off so no other test synthesises.
+async fn a_server_with_tts() -> (String, Fleet) {
+    let fleet = Fleet::new_with_tts(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+    let (url, _state) = serve_fleet(&fleet, Heartbeat::default()).await;
+    (url, fleet)
+}
+
 /// The socket a fleet answers on, for a test that built its own fleet (and
 /// so owns the config the server reads).
 ///
@@ -927,6 +935,169 @@ async fn a_take_is_heard_by_its_own_connection_and_no_other() {
             other => panic!("waited for the marker, heard {other:?}"),
         }
     }
+}
+
+/// A voice engine that records what it was asked to speak and answers one
+/// clip per request, so the wire's order is the render's order.
+struct RecordingVoice {
+    requests: Arc<Mutex<Vec<String>>>,
+}
+
+impl forge_tts::Engine for RecordingVoice {
+    fn speak(
+        &self,
+        request: forge_tts::SpeakRequest,
+    ) -> tokio::sync::mpsc::Receiver<Result<forge_tts::Chunk, forge_tts::Error>> {
+        self.requests.lock().expect("unpoisoned").push(request.text);
+        let (sender, receiver) = tokio::sync::mpsc::channel(2);
+        tokio::spawn(async move {
+            let _ = sender
+                .send(Ok(forge_tts::Chunk { seq: 0, sample_rate: 24_000, pcm: vec![1, 2, 3] }))
+                .await;
+        });
+        receiver
+    }
+}
+
+/// The voice channel crosses the socket: the switch is answered with the
+/// seat's listener count, and every rendered clip reaches the connection
+/// subscribed to that seat in render order.
+#[tokio::test]
+async fn a_voice_switch_is_answered_and_its_clips_reach_the_subscriber() {
+    let (url, fleet) = a_server_with_tts().await;
+    let _agent = fleet.install_agent("TestOrg", "proj", "lead");
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    fleet.workspace().install_voice_engine_for_test(Arc::new(RecordingVoice {
+        requests: Arc::clone(&requests),
+    }));
+
+    let mut client = connect(&url).await;
+    send(
+        &mut client,
+        ClientMessage::Subscribe {
+            what: Subject::Session(lead_seat()),
+            answering: true,
+            review: false,
+        },
+    )
+    .await;
+    let _ = snapshot_answering(&mut client).await;
+
+    send(
+        &mut client,
+        ClientMessage::Command {
+            command: Box::new(Command::VoiceMode {
+                key: lead_seat(),
+                on: true,
+                explicit: false,
+                initiator: None,
+            }),
+            reply_to: None,
+        },
+    )
+    .await;
+    let heard = update_until(&mut client, "the seat's voice state", |update| {
+        matches!(update, SessionUpdate::VoiceModeState { listeners: 1, .. })
+    })
+    .await;
+    assert!(
+        matches!(heard, SessionUpdate::VoiceModeState { ref key, .. } if *key == lead_seat()),
+        "the state is the seat's own: {heard:?}",
+    );
+
+    fleet
+        .workspace()
+        .voice_say_for_test(&lead_seat(), "One. Two.".to_owned())
+        .await
+        .expect("queued");
+
+    let mut seqs = Vec::new();
+    while seqs.len() < 2 {
+        match next_server_within(&mut client, 5_000).await {
+            Some(ServerMessage::Update { update, .. }) => {
+                if let SessionUpdate::VoiceAudio { key, seq, sample_rate, pcm } = *update {
+                    assert_eq!(key, lead_seat(), "a clip is the seat's own");
+                    assert_eq!(sample_rate, 24_000);
+                    assert!(!pcm.is_empty());
+                    seqs.push(seq);
+                }
+            }
+            other => panic!("waited for a clip, heard {other:?}"),
+        }
+    }
+    assert_eq!(seqs, vec![0, 1], "the clips cross in render order");
+    assert_eq!(
+        requests.lock().expect("unpoisoned").as_slice(),
+        ["One.".to_owned(), "Two.".to_owned()],
+        "one request per sentence, in order",
+    );
+}
+
+/// A listener that drops without saying goodbye leaves the seat's count: the
+/// server's own connection teardown takes it off, and a client still
+/// listening hears the count fall.
+#[tokio::test]
+async fn a_dropped_listener_leaves_the_seats_count() {
+    let (url, fleet) = a_server_with_tts().await;
+    fleet.install_agent("TestOrg", "proj", "lead");
+    fleet.workspace().install_voice_engine_for_test(Arc::new(RecordingVoice {
+        requests: Arc::new(Mutex::new(Vec::new())),
+    }));
+
+    let mut watcher = connect(&url).await;
+    send(
+        &mut watcher,
+        ClientMessage::Subscribe {
+            what: Subject::Session(lead_seat()),
+            answering: true,
+            review: false,
+        },
+    )
+    .await;
+    let _ = snapshot_answering(&mut watcher).await;
+    send(
+        &mut watcher,
+        ClientMessage::Command {
+            command: Box::new(Command::VoiceMode {
+                key: lead_seat(),
+                on: true,
+                explicit: false,
+                initiator: None,
+            }),
+            reply_to: None,
+        },
+    )
+    .await;
+    update_until(&mut watcher, "the first listener", |update| {
+        matches!(update, SessionUpdate::VoiceModeState { listeners: 1, .. })
+    })
+    .await;
+
+    // A second connection turns voice on and then simply goes away.
+    let mut leaver = connect(&url).await;
+    send(
+        &mut leaver,
+        ClientMessage::Command {
+            command: Box::new(Command::VoiceMode {
+                key: lead_seat(),
+                on: true,
+                explicit: false,
+                initiator: None,
+            }),
+            reply_to: None,
+        },
+    )
+    .await;
+    update_until(&mut watcher, "the second listener", |update| {
+        matches!(update, SessionUpdate::VoiceModeState { listeners: 2, .. })
+    })
+    .await;
+    drop(leaver);
+
+    update_until(&mut watcher, "the count falling back", |update| {
+        matches!(update, SessionUpdate::VoiceModeState { listeners: 1, .. })
+    })
+    .await;
 }
 
 /// **The surface a client names on its take crosses the socket into its

@@ -33,6 +33,7 @@
   import { DEFAULT_SETTINGS, type ClientSettings, type SessionSlot } from '../wire/types';
   import { clientAxes, ownSettingsFrame, settingsFrame } from '../settings/frame';
   import { installBrowser, uninstallBrowser } from '../browser/surface.svelte';
+  import { forgetVoices } from '../voice/registry';
   import Router from './Router.svelte';
 
   // The connect screen is the front door: it is the first thing a person
@@ -395,6 +396,10 @@
     // subscribed to the home and still re-reading it, for the rest of the
     // session - and nothing would be drawing what it was keeping current.
     connection?.close();
+    // **Every cached voice closes over the connection it was built on.** Kept
+    // across a connect-elsewhere, a seat's voice would draw `listening` while
+    // its frames and commands went to the socket that just closed.
+    forgetVoices();
     // The axes come from the settings frame; the greeting's are the
     // pre-attach copy of the same values and would be a second writer.
     ownSettingsFrame(connected.connection.settingsOwner ?? connected.connection);

@@ -19,6 +19,7 @@ pub mod reviews;
 pub mod roster;
 pub mod session;
 pub mod usage;
+pub mod voice;
 pub mod workers;
 
 use std::path::{Path, PathBuf};
