@@ -108,11 +108,11 @@ describe("one seat's voice", () => {
   });
 
   it('closes a capture that arrived after the hold ended', async () => {
-    let settle: ((capture: VoiceCapture) => void) | null = null;
+    const pending: { resolve: ((capture: VoiceCapture) => void) | null } = { resolve: null };
     const at = voice(
       () =>
         new Promise((resolve) => {
-          settle = resolve;
+          pending.resolve = resolve;
         }),
     );
     at.voice.turnOn();
@@ -120,7 +120,7 @@ describe("one seat's voice", () => {
     await at.voice.endTalk();
 
     const late = new FakeCapture();
-    settle?.(late);
+    pending.resolve?.(late as unknown as VoiceCapture);
     await opening;
 
     expect(late.cancelled, 'a device whose hold ended is closed on arrival').toBe(true);
@@ -238,7 +238,7 @@ describe("one seat's voice", () => {
     const store = stores.open({ session: SLOT });
     store.push({ voice_audio: { key: SLOT, seq: 0, sample_rate: 24_000, pcm: [1, 2] } });
     const port = connectionPort(
-      { store: (subject) => stores.get(subject), dispatch: () => {} },
+      { store: (subject) => stores.get(subject), dispatch: () => Promise.resolve(null) },
       SLOT,
     );
 
@@ -248,7 +248,7 @@ describe("one seat's voice", () => {
     expect(fresh).toHaveLength(1);
     expect((fresh[0] as { voice_audio: { pcm: number[] } }).voice_audio.pcm).toEqual([3, 4]);
     expect(
-      store.updates().filter((update) => 'voice_audio' in update),
+      store.updates().filter((update) => typeof update === 'object' && 'voice_audio' in update),
       'consumed audio does not stay in the retained tail',
     ).toEqual([]);
   });

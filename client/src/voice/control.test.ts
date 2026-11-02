@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 /**
  * The voice switch: a press turns this client's voice on for the seat, the
- * seat's own count reaches it, and leaving the seat turns it back off rather
- * than leaving a listener behind.
+ * seat's own count reaches it, and a body swap unmounts the control without
+ * sending the listener away.
  */
 
 import { readFileSync } from 'node:fs';
@@ -114,8 +114,7 @@ describe('the voice switch', () => {
 
     const off = at.shared.sent.filter(
       (sent) =>
-        'voice_mode' in sent.command &&
-        (sent.command.voice_mode as { on: boolean }).on === false,
+        'voice_mode' in sent.command && (sent.command.voice_mode as { on: boolean }).on === false,
     );
     expect(off, 'unmounting the control is not leaving the seat').toEqual([]);
   });

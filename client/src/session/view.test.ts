@@ -817,7 +817,7 @@ describe('the tree the strip draws', () => {
     const worktree = gitStrip(
       {
         ...withGit({}, { work: { branch: 'work/schedule-row', changed: 0, gate: 'in_repo' } }),
-        state: { scan_cwd: '/w/forge/.claude/worktrees/session-design' },
+        state: { scan_cwd: '/w/forge/.claude/worktrees/session-design', voice_listeners: 0 },
         pr: null,
         closes: [],
       },
