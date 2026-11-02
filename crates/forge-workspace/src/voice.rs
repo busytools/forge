@@ -3,14 +3,11 @@
 use std::collections::{BTreeSet, HashMap};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use forge_primitives::{Message, SessionSlot};
 use forge_tts::{Chunk, Engine, SpeakRequest};
 use tokio::sync::{mpsc, oneshot};
-
-/// How long a loaded engine stays resident after the last listener leaves.
-const IDLE_RELEASE: Duration = Duration::from_secs(5 * 60);
+use tracing::Instrument;
 
 /// What one utterance renders with, from the `[tts]` section.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -71,8 +68,9 @@ fn note_envelope(text: &str) -> String {
 type Loader = Arc<dyn Fn() -> Result<Arc<dyn Engine>, String> + Send + Sync>;
 
 /// The per-seat voice service. One render queue per seat, so a second `say`
-/// waits behind the first, and one engine for the whole process, warmed on
-/// the first listener; a failed warm is retried by the first `say`.
+/// waits behind the first, and one engine for the whole process, loaded at
+/// boot and kept for the process's life; a failed warm is retried by the
+/// first `say`.
 #[derive(Clone)]
 pub struct VoiceService {
     loader: Loader,
@@ -164,9 +162,6 @@ impl VoiceService {
                     } else {
                         state.live.fetch_add(1, Ordering::SeqCst);
                     }
-                    if first {
-                        self.warm_engine();
-                    }
                     if first && !state.noted {
                         state.noted = true;
                         Some(LISTENING_NOTE)
@@ -180,7 +175,6 @@ impl VoiceService {
                         seat.clone(),
                         Seat { listeners: BTreeSet::from([client]), queue, live, noted: true },
                     );
-                    self.warm_engine();
                     Some(LISTENING_NOTE)
                 }
             } else {
@@ -209,9 +203,6 @@ impl VoiceService {
         };
         if let Some(text) = note {
             self.notes.note(seat, text);
-        }
-        if !on {
-            self.schedule_idle_release();
         }
     }
 
@@ -253,9 +244,6 @@ impl VoiceService {
         for seat in &emptied {
             self.notes.note(seat, NOT_LISTENING_NOTE);
         }
-        if !emptied.is_empty() {
-            self.schedule_idle_release();
-        }
         changed
     }
 
@@ -280,49 +268,10 @@ impl VoiceService {
         }
     }
 
-    /// Load the engine in the background on the first listener, so the first
-    /// `say` does not pay the load.
-    fn warm_engine(&self) {
-        let Ok(handle) = tokio::runtime::Handle::try_current() else {
-            return;
-        };
-        let warm = self.clone();
-        handle.spawn(async move {
-            if let Err(error) = warm.engine().await {
-                tracing::warn!(
-                    event_name = "voice_engine_warm_failed",
-                    %error,
-                    "the voice engine did not load; the first say will retry"
-                );
-            }
-        });
-    }
-
-    /// Drop the engine once no seat has a listener and no render holds it.
-    /// A new `say` loads it again, so the release costs a reload rather than
-    /// leaving 2.3 GB resident for the process's life.
-    fn schedule_idle_release(&self) {
-        let Ok(handle) = tokio::runtime::Handle::try_current() else {
-            return;
-        };
-        let engine = Arc::clone(&self.engine);
-        let seats = Arc::clone(&self.seats);
-        handle.spawn(async move {
-            tokio::time::sleep(IDLE_RELEASE).await;
-            let quiet = {
-                let Ok(seats) = seats.lock() else {
-                    return;
-                };
-                seats.values().all(|state| state.listeners.is_empty())
-            };
-            if !quiet {
-                return;
-            }
-            let mut slot = engine.lock().await;
-            if slot.as_ref().is_some_and(|held| Arc::strong_count(held) == 1) {
-                *slot = None;
-            }
-        });
+    /// Load the engine ahead of the first `say`. A failed load leaves the
+    /// slot empty, so the first `say` retries it.
+    pub(crate) async fn warm(&self) -> Result<(), SayError> {
+        self.engine().await.map(|_held| ())
     }
 
     /// The engine, loading it on the first caller. The mutex is held across
@@ -369,8 +318,9 @@ impl VoiceService {
 }
 
 impl crate::Workspace {
-    /// The voice service, built on first use. Its sink and note dispatch hold
-    /// a `Weak<Workspace>`, which is why this waits for an `Arc<Self>` rather
+    /// The voice service, built on first use - the boot prewarm is the first
+    /// caller when `[tts]` is on. Its sink and note dispatch hold a
+    /// `Weak<Workspace>`, which is why this waits for an `Arc<Self>` rather
     /// than being built with the rest of the value.
     pub(crate) fn voice_service(self: &Arc<Self>) -> Arc<VoiceService> {
         self.voice
@@ -387,6 +337,40 @@ impl crate::Workspace {
                 Arc::new(self.build_voice_service(loader))
             })
             .clone()
+    }
+
+    /// Load the speaking engine beside boot, so the first `say` pays no
+    /// model load. One task per forge run, spawned rather than awaited; a
+    /// failed load leaves the slot empty, which the first `say` fills.
+    pub fn start_voice_prewarm(self: &Arc<Self>) {
+        // Before the gate below, so the flag reads "the boot wave asked for
+        // the prewarm" and a second call cannot start a second one.
+        if self.voice_prewarm_started.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        if !self.config_arc().tts.enabled {
+            return;
+        }
+        let service = self.voice_service();
+        let started = std::time::Instant::now();
+        let span = tracing::info_span!("voice_prewarm");
+        tokio::spawn(
+            async move {
+                match service.warm().await {
+                    Ok(()) => tracing::info!(
+                        event_name = "voice_prewarm_ready",
+                        elapsed_ms = started.elapsed().as_millis(),
+                        "the speaking engine is resident; a say pays no load"
+                    ),
+                    Err(error) => tracing::warn!(
+                        event_name = "voice_prewarm_failed",
+                        failure = %error,
+                        "the speaking engine did not load; the first say will retry"
+                    ),
+                }
+            }
+            .instrument(span),
+        );
     }
 
     /// Whether speech is on, as the running system answers it: the built
@@ -868,17 +852,45 @@ mod tests {
         );
     }
 
+    /// The boot prewarm's failure is not terminal: it leaves the slot empty,
+    /// and the first `say` loads again.
     #[tokio::test]
-    async fn the_first_listener_warms_the_engine() {
-        let fixture = service_with(|| StubEngine::new(Arc::new(Mutex::new(Vec::new()))));
-        fixture.service.set_listening(&seat(), 1, true, false);
-        for _ in 0..200 {
-            if fixture.loads.load(Ordering::SeqCst) == 1 {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-        panic!("the first listener did not warm the engine");
+    async fn a_failed_warm_is_retried_by_the_first_say() {
+        let loads = Arc::new(AtomicUsize::new(0));
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let service = VoiceService::new(
+            {
+                let loads = Arc::clone(&loads);
+                let requests = Arc::clone(&requests);
+                Arc::new(move || {
+                    if loads.fetch_add(1, Ordering::SeqCst) == 0 {
+                        return Err("the first load failed".to_owned());
+                    }
+                    Ok(Arc::new(StubEngine::new(Arc::clone(&requests))) as Arc<dyn Engine>)
+                })
+            },
+            VoiceSettings::default(),
+            Arc::new(RecordingSink { chunks: Mutex::new(Vec::new()) }),
+            Arc::new(RecordingNotes { said: Mutex::new(Vec::new()) }),
+        );
+
+        let warm = service.warm().await;
+        assert!(
+            matches!(&warm, Err(SayError::Engine(reason)) if reason.contains("the first load failed")),
+            "the prewarm's own failure names the load, got: {warm:?}",
+        );
+
+        service.set_listening(&seat(), 1, true, false);
+        assert_eq!(
+            service.say(&seat(), "Hello.".to_owned()).await,
+            Ok(()),
+            "the first say retries the failed load",
+        );
+        assert_eq!(
+            loads.load(Ordering::SeqCst),
+            2,
+            "the load ran twice: the failed warm, then the say",
+        );
     }
 
     #[tokio::test]
@@ -986,6 +998,72 @@ mod tests {
             requests.lock().expect("unpoisoned").clone(),
             vec!["One.".to_owned(), "Two.".to_owned()],
         );
+    }
+
+    /// The engine is one instance for the process's life: the last listener
+    /// leaving stops the queue, not the engine. The clock is advanced past
+    /// the old idle window, which is the change that would take it.
+    #[tokio::test(start_paused = true)]
+    async fn the_engine_stays_loaded_after_the_last_listener_leaves() {
+        struct Dropped(Arc<AtomicUsize>);
+        impl Drop for Dropped {
+            fn drop(&mut self) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+        struct WarmEngine {
+            _dropped: Dropped,
+        }
+        impl Engine for WarmEngine {
+            fn speak(&self, _request: SpeakRequest) -> mpsc::Receiver<Result<Chunk, Error>> {
+                let (sender, receiver) = mpsc::channel(1);
+                tokio::spawn(async move {
+                    let _ =
+                        sender.send(Ok(Chunk { seq: 0, sample_rate: 24_000, pcm: vec![1] })).await;
+                });
+                receiver
+            }
+        }
+
+        let loads = Arc::new(AtomicUsize::new(0));
+        let drops = Arc::new(AtomicUsize::new(0));
+        let service = VoiceService::new(
+            {
+                let loads = Arc::clone(&loads);
+                let drops = Arc::clone(&drops);
+                Arc::new(move || {
+                    loads.fetch_add(1, Ordering::SeqCst);
+                    Ok(Arc::new(WarmEngine { _dropped: Dropped(Arc::clone(&drops)) })
+                        as Arc<dyn Engine>)
+                })
+            },
+            VoiceSettings::default(),
+            Arc::new(RecordingSink { chunks: Mutex::new(Vec::new()) }),
+            Arc::new(RecordingNotes { said: Mutex::new(Vec::new()) }),
+        );
+        service.set_listening(&seat(), 1, true, false);
+        service.say(&seat(), "One.".to_owned()).await.expect("rendered");
+        assert_eq!(loads.load(Ordering::SeqCst), 1, "premise: the engine loaded");
+
+        service.set_listening(&seat(), 1, false, true);
+        // Let a release task reach its sleep before the clock jumps, or it
+        // registers its deadline after the jump and the mutation survives.
+        for _ in 0..5 {
+            tokio::task::yield_now().await;
+        }
+        tokio::time::advance(Duration::from_secs(10 * 60)).await;
+        for _ in 0..20 {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(drops.load(Ordering::SeqCst), 0, "the engine outlives the last listener");
+        assert!(
+            service.engine.lock().await.is_some(),
+            "the parked engine stays in the slot after the seat empties",
+        );
+
+        service.set_listening(&seat(), 1, true, false);
+        service.say(&seat(), "Two.".to_owned()).await.expect("rendered");
+        assert_eq!(loads.load(Ordering::SeqCst), 1, "the next say reuses the parked engine");
     }
 
     #[tokio::test]

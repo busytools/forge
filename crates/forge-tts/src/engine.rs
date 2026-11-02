@@ -30,8 +30,8 @@ struct Job {
 
 impl QwenTts {
     /// Load the backbone and its codec projector once, on a thread of their
-    /// own. A caller may warm it ahead of the first `say`, and a failed warm
-    /// is retried by the next one. Both files are checked against the
+    /// own. The boot path warms it ahead of the first `say`, and a failed
+    /// warm is retried by the next one. Both files are checked against the
     /// digests their entries declare before the load.
     pub fn load(files: &ModelFiles) -> Result<Self, Error> {
         let Some(projector) = files.projector.as_ref() else {

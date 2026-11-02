@@ -552,11 +552,12 @@ behind it. A sentence's audio arrives when it finishes rendering; nothing
 streams inside one sentence.
 
 **forge does not fetch these two files.** They are placed under
-`models_dir` by hand, and the engine is warmed when the first client turns
-voice on; a failed warm is retried by the first `say`, and a missing file is
-reported by its own path. The engine checks both
-files against the SHA-256 their entries declare before it loads them, so a
-truncated or substituted file is refused by name rather than loaded.
+`models_dir` by hand. The engine is loaded once at boot when `[tts]` is on
+and stays resident for the process's life; a failed load is retried by the
+first `say`, and a missing file is reported by its own path. The engine
+checks both files against the SHA-256 their entries declare before it loads
+them, so a truncated or substituted file is refused by name rather than
+loaded.
 
 ## `[gotify]`
 
