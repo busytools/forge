@@ -1979,6 +1979,7 @@ details.leaf > summary .sg-fig + .arw { margin-left: 8px; }
   font-size: var(--fs-data); }
 .bz-list .bz-it .ring { width: 9px; height: 9px; flex: none; }
 .bz-list .bz-it .dot { width: 9px; height: 9px; flex: none; }
+.bz-list .bz-it .tx.bz-dialog { color: var(--warn); flex: none; }
 .bz-list .bz-it .ic.bad { color: var(--bad); flex: none; }
 .bz-list .bz-it .nm { color: var(--accent); font-weight: 500; font-family: var(--mono); flex: none; }
 .bz-list .bz-it .tx { color: var(--dim); font-family: var(--mono); min-width: 0;

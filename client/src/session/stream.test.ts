@@ -212,6 +212,134 @@ describe('the stream gate', () => {
     expect(gate.inbound(update(3))).toHaveLength(0);
   });
 
+  it('a stale answer does not rewind the count', () => {
+    // An answer encoded before frames this gate already delivered says where
+    // the stream stood at encode time, not now. Adopting it rewinds the count
+    // onto numbers every reader holds, and the next live frame opens a hole
+    // over them.
+    const { gate, asked } = aGate();
+    gate.inbound(snap('occ', 1));
+    gate.inbound(update(1));
+    gate.inbound(update(2));
+    gate.askSent(LEAD);
+    // The answer's travel is the outrun: live frames land while it is out.
+    gate.inbound(update(3));
+    gate.inbound(snap('occ', 2));
+    expect(gate.inbound(update(4)), 'the next frame is a successor').toHaveLength(1);
+    expect(asked, 'and no range is asked for').toEqual([]);
+  });
+
+  it('two answers in flight are judged one ask each', () => {
+    // Two asks can be out at once (a read bound retries while the first
+    // answer travels). Each answer is judged by the ask it answers, not by
+    // the newest one.
+    const { gate, asked } = aGate();
+    gate.inbound(snap('occ', 1));
+    gate.inbound(update(1));
+    gate.inbound(update(2));
+    gate.askSent(LEAD);
+    gate.inbound(update(3));
+    gate.askSent(LEAD);
+    // The first answer was encoded before frame 3, the second after it, so
+    // each must be judged by the ask it answers - oldest first.
+    gate.inbound(snap('occ', 2));
+    gate.inbound(snap('occ', 4));
+    expect(gate.inbound(update(4)), 'the next frame is a successor').toHaveLength(1);
+    expect(asked, 'and no range is asked for').toEqual([]);
+  });
+
+  it('a fresh subscribe adopts a busy seat answer', () => {
+    // Production order: the ask goes out before the seat's state exists, and
+    // the answer names a number far above 1. Refusing it would ask for the
+    // whole history - the cost the gate exists to close.
+    const { gate, asked } = aGate();
+    gate.askSent(LEAD);
+    gate.inbound(snap('occ', 4000));
+    expect(gate.inbound(update(4000)), 'the first live frame is a successor').toHaveLength(1);
+    expect(asked, 'and nothing is asked for').toEqual([]);
+  });
+
+  it('a revisit after a release adopts the seat answer', () => {
+    const { gate, asked } = aGate();
+    gate.inbound(snap('occ', 1));
+    gate.inbound(update(1));
+    gate.releaseSeat(LEAD);
+    gate.askSent(LEAD);
+    gate.inbound(snap('occ', 900));
+    expect(gate.inbound(update(900)), 'the seat continues from its answer').toHaveLength(1);
+    expect(asked, 'and nothing is asked for').toEqual([]);
+  });
+
+  it('an answer that outlived a seal is not the new run first number', () => {
+    // The ask went out, the run restarted, and the answer - encoded under the
+    // old numbering - lands after the new run has already delivered. Taking
+    // it as the anchor would hide every frame below its number.
+    const { gate, asked } = aGate();
+    gate.inbound(snap('occ', 1));
+    gate.inbound(update(1));
+    gate.askSent(LEAD);
+    gate.inbound(seal('occ', 2));
+    gate.inbound(update(1));
+    gate.inbound(update(2));
+    gate.inbound(snap('occ', 50));
+    expect(gate.inbound(update(9)), 'a frame above the new count is held').toHaveLength(0);
+    expect(asked, 'and its range is asked for').toEqual([{ from: 3, to: 8 }]);
+  });
+
+  it('an answer from before a seal is refused with no frames after it', () => {
+    // The refusal must not lean on frames landing since the ask: here the
+    // answer lands before any frame of the restarted run, so only the
+    // generation mark can tell it from the new run's own first answer.
+    const { gate, asked } = aGate();
+    gate.inbound(snap('occ', 1));
+    gate.inbound(update(1));
+    gate.askSent(LEAD);
+    gate.inbound(seal('occ', 2));
+    gate.inbound(snap('occ', 50));
+    expect(gate.inbound(update(9)), 'the restarted run owes its numbers from one').toHaveLength(0);
+    expect(asked, 'and the gap is asked for').toEqual([{ from: 1, to: 8 }]);
+  });
+
+  it('an ask sent before the first frame still judges its answer', () => {
+    // Two readers can ask before the seat's first frame lands; both marks
+    // have to survive, or the second answer is taken for a fresh anchor.
+    const { gate, asked } = aGate();
+    gate.askSent(LEAD);
+    gate.askSent(LEAD);
+    gate.inbound(snap('occ', 1));
+    gate.inbound(update(1));
+    gate.inbound(update(2));
+    gate.inbound(snap('occ', 2));
+    expect(gate.inbound(update(3)), 'the next frame is a successor').toHaveLength(1);
+    expect(asked, 'and no phantom range').toEqual([]);
+  });
+
+  it('an answer to a quiet ask still restarts the count', () => {
+    const { gate, asked } = aGate();
+    gate.inbound(snap('occ', 1));
+    gate.inbound(update(1));
+    gate.inbound(update(2));
+    gate.askSent(LEAD);
+    // Nothing arrived after the ask, so the answer is the authority.
+    gate.inbound(snap('occ', 1));
+    expect(gate.inbound(update(1)), 'a frame at 1 passes').toHaveLength(1);
+    expect(gate.inbound(update(3)), 'and 3 opens a hole').toHaveLength(0);
+    expect(asked, 'over the restarted count').toEqual([{ from: 2, to: 2 }]);
+  });
+
+  it('a repair that lands while settled advances the count', () => {
+    const { gate, asked } = aGate();
+    gate.inbound(snap('occ', 1));
+    gate.inbound(update(1));
+    gate.inbound(update(2));
+    expect(gate.inbound(repaired(3)), 'the repair still reaches the readers').toHaveLength(1);
+    // A duplicate repair for numbers already delivered must not rewind the
+    // count either, or the next live frame waits on a phantom gap.
+    expect(gate.inbound(repaired(2)), 'the duplicate passes through').toHaveLength(1);
+    expect(gate.inbound(update(4)), 'the next frame is a successor').toHaveLength(1);
+    expect(asked, 'no phantom ask').toEqual([]);
+  });
+
   it('a seal passes at once and starts the count over', () => {
     const { gate, emitted } = aGate();
     gate.inbound(snap('occ', 1));

@@ -1191,6 +1191,7 @@ fn frames_record() -> Value {
                 url: "https://x/".to_owned(),
                 owner: seat.clone(),
                 state: forge_primitives::browser::BrowserTabState::InUse,
+                dialog: None,
             }],
         }),
     );

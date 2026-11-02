@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use forge_primitives::SessionSlot;
-use forge_primitives::browser::{BrowserTabRow, BrowserTabState};
+use forge_primitives::browser::{BrowserTabDialog, BrowserTabRow, BrowserTabState};
 use serde::Deserialize;
 
 /// One tab as the driver lists it.
@@ -352,7 +352,12 @@ impl TabRegistry {
     /// person is being asked about it, which is the fact worth seeing. **A
     /// tab a person is driving is in use**, like one a call is driving: the
     /// spec's in-use is either.
-    pub fn rows(&self, held: &HashSet<u16>, controlled: &HashSet<u16>) -> Vec<BrowserTabRow> {
+    pub fn rows(
+        &self,
+        held: &HashSet<u16>,
+        controlled: &HashSet<u16>,
+        dialogs: &HashMap<u16, BrowserTabDialog>,
+    ) -> Vec<BrowserTabRow> {
         self.tabs
             .iter()
             .map(|(number, tab)| BrowserTabRow {
@@ -367,6 +372,7 @@ impl TabRegistry {
                 } else {
                     BrowserTabState::Idle
                 },
+                dialog: dialogs.get(number).cloned(),
             })
             .collect()
     }
@@ -384,8 +390,8 @@ impl TabRegistry {
 mod tests {
     use super::{DriverTab, TabRegistry, orphan_targets, parse_export, strip_export};
     use forge_primitives::SessionSlot;
-    use forge_primitives::browser::BrowserTabState;
-    use std::collections::HashSet;
+    use forge_primitives::browser::{BrowserTabDialog, BrowserTabState};
+    use std::collections::{HashMap, HashSet};
     use std::time::{Duration, Instant};
 
     #[test]
@@ -502,23 +508,29 @@ mod tests {
         let busy =
             registry.adopt(2, worker.clone(), "t2", "two", "http://b/").expect("the busy tab");
         registry.mark_busy(busy, true);
-        let rows = registry.rows(&HashSet::from([held]), &HashSet::new());
+        let dialogs = HashMap::from([(
+            held,
+            BrowserTabDialog { kind: "confirm".to_owned(), message: "Leave?".to_owned() },
+        )]);
+        let rows = registry.rows(&HashSet::from([held]), &HashSet::new(), &dialogs);
         assert_eq!(rows[0].state, BrowserTabState::Held);
         assert_eq!(rows[1].state, BrowserTabState::InUse);
         assert_eq!(rows[0].owner, lead);
         assert_eq!(rows[1].owner, worker);
+        assert_eq!(rows[0].dialog.as_ref().map(|dialog| dialog.kind.as_str()), Some("confirm"));
+        assert_eq!(rows[1].dialog, None, "a tab with no dialog carries none");
 
         // **A person's control is a use too.** A tab nobody's call is driving
         // reads in use while a viewer holds its role.
         let driven =
             registry.adopt(3, worker.clone(), "t3", "three", "http://c/").expect("the driven tab");
-        let rows = registry.rows(&HashSet::from([held]), &HashSet::from([driven]));
+        let rows = registry.rows(&HashSet::from([held]), &HashSet::from([driven]), &dialogs);
         assert_eq!(rows[2].state, BrowserTabState::InUse, "the controlled tab is in use");
 
         // A neighbour's close moves no number and leaves the held tab held.
         registry.close(busy);
         registry.close(driven);
-        let rows = registry.rows(&HashSet::from([held]), &HashSet::new());
+        let rows = registry.rows(&HashSet::from([held]), &HashSet::new(), &dialogs);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].number, held, "the held tab keeps the number the person was shown");
         assert_eq!(rows[0].state, BrowserTabState::Held);

@@ -47,6 +47,7 @@ function row(over: Record<string, unknown> = {}): BrowserTabList['rows'][number]
     url: 'https://x/',
     owner: { org: 'TestOrg', project: 'proj', label: 'lead' },
     state: 'idle',
+    dialog: null,
     ...over,
   };
 }
@@ -106,6 +107,27 @@ const toggle = (target: HTMLElement): HTMLButtonElement => {
 const list = (): HTMLElement | null => document.body.querySelector('.bz-list');
 
 describe('the browser segment', () => {
+  it("names a tab's page dialog beside its state", async () => {
+    vi.mocked(listTabs).mockResolvedValue(
+      tabs({
+        rows: [row({ dialog: { kind: 'confirm', message: 'Leave this page?' } })],
+      }),
+    );
+    const shown = show();
+    await vi.waitFor(() => {
+      expect(
+        shown.target.querySelector('.bz-tog .n')?.textContent,
+        'the count reads once the list has answered',
+      ).toBe('1 tab');
+    });
+    toggle(shown.target).click();
+    flushSync();
+    const mark = list()?.querySelector('.bz-dialog');
+    expect(mark?.textContent?.trim(), 'the dialog is named on the row').toBe('confirm waiting');
+    expect(mark?.getAttribute('title'), 'and its words ride the hover').toBe('Leave this page?');
+    shown.stop();
+  });
+
   it('rests on the tab count and opens onto the profile', async () => {
     vi.mocked(listTabs).mockResolvedValue(tabs({ rows: [row()] }));
     const shown = show();

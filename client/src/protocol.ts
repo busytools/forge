@@ -260,6 +260,8 @@ export interface BrowserTabRow {
   /** The server's own word, kept whole: a state this page has not seen is
    *  drawn as itself rather than as a neighbour it does not mean. */
   state: string;
+  /** The page dialog holding this tab, when one is open. */
+  dialog: { kind: string; message: string } | null;
 }
 
 /** One profile's tabs and how the profile itself is doing. */
