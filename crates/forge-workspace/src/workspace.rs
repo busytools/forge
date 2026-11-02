@@ -1028,8 +1028,9 @@ pub struct Workspace {
     /// Followed threads whose next walk is their first since the row was
     /// created, keyed the same way.
     pub(crate) slack_thread_first_walks: Mutex<std::collections::HashSet<(String, String, String)>>,
-    /// The newest edit stamp a whole read has judged, keyed the same way: an
-    /// edit is measured against this, never against the reply cursor.
+    /// Cache of each thread row's persisted edit stamp, keyed the same way: an
+    /// edit is measured against this, never against the reply cursor. A miss
+    /// reads the row, because the stamp has to outlive the process.
     pub(crate) slack_thread_edit_watermarks:
         Mutex<std::collections::HashMap<(String, String, String), String>>,
     /// Conversations whose own-post ledger could not be read this run,

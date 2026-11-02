@@ -610,6 +610,7 @@ impl Workspace {
                 created = true;
                 forge_primitives::slack::SlackThreadRecord {
                     cursor: since.to_owned(),
+                    edit_watermark: Some(since.to_owned()),
                     owners: Vec::new(),
                     participating: false,
                 }
@@ -797,6 +798,7 @@ impl Workspace {
             Ok(Some(record)) => record,
             Ok(None) => forge_primitives::slack::SlackThreadRecord {
                 cursor: ts.to_owned(),
+                edit_watermark: None,
                 owners: Vec::new(),
                 participating: false,
             },
@@ -811,6 +813,7 @@ impl Workspace {
         };
         let advanced = forge_primitives::slack::SlackThreadRecord {
             cursor: ts.to_owned(),
+            edit_watermark: record.edit_watermark,
             owners: record.owners,
             participating: record.participating,
         };
@@ -821,6 +824,98 @@ impl Workspace {
                 target: "forge_workspace::slack",
                 %error,
                 "writing a Slack thread cursor failed",
+            );
+        }
+    }
+
+    /// A thread's newest judged edit stamp. The map is a cache; a miss reads
+    /// the row, so a restart judges edits against what the last process
+    /// delivered instead of re-offering the thread's whole edit history.
+    pub(crate) fn slack_thread_edit_watermark(
+        &self,
+        workspace: &str,
+        conversation: &str,
+        parent_ts: &str,
+    ) -> Option<String> {
+        let key = (workspace.to_owned(), conversation.to_owned(), parent_ts.to_owned());
+        if let Some(mark) = self.slack_thread_edit_watermarks.lock().get(&key).cloned() {
+            return Some(mark);
+        }
+        let db = self.db.lock();
+        let db = db.as_ref()?;
+        let mut record = match crate::store::slack::thread(db, workspace, conversation, parent_ts) {
+            Ok(Some(record)) => record,
+            Ok(None) => return None,
+            Err(error) => {
+                tracing::warn!(
+                    target: "forge_workspace::slack",
+                    %error,
+                    "reading a Slack thread failed; its edits are judged from the beginning",
+                );
+                return None;
+            }
+        };
+        // A row written before the stamp was stored has none. Its cursor is
+        // the last position the row judged, so it is the safe seed: anything
+        // edited after that has a later stamp and still arrives.
+        let mark = match record.edit_watermark.clone() {
+            Some(mark) => mark,
+            None => {
+                let seed = record.cursor.clone();
+                record.edit_watermark = Some(seed.clone());
+                if let Err(error) =
+                    crate::store::slack::set_thread(db, workspace, conversation, parent_ts, &record)
+                {
+                    tracing::warn!(
+                        target: "forge_workspace::slack",
+                        %error,
+                        "writing a legacy Slack thread's edit stamp failed",
+                    );
+                }
+                seed
+            }
+        };
+        self.slack_thread_edit_watermarks.lock().insert(key, mark.clone());
+        Some(mark)
+    }
+
+    /// Advance a thread's judged edit stamp, through the store so a restart
+    /// does not re-offer the correction it clears.
+    pub(crate) fn set_slack_thread_edit_watermark(
+        &self,
+        workspace: &str,
+        conversation: &str,
+        parent_ts: &str,
+        ts: &str,
+    ) {
+        self.slack_thread_edit_watermarks.lock().insert(
+            (workspace.to_owned(), conversation.to_owned(), parent_ts.to_owned()),
+            ts.to_owned(),
+        );
+        let db = self.db.lock();
+        let Some(db) = db.as_ref() else { return };
+        let mut record = match crate::store::slack::thread(db, workspace, conversation, parent_ts) {
+            Ok(Some(record)) => record,
+            // No row: there is nothing durable to stamp, and a row created
+            // later seeds its own.
+            Ok(None) => return,
+            Err(error) => {
+                tracing::warn!(
+                    target: "forge_workspace::slack",
+                    %error,
+                    "reading a Slack thread failed; its edit stamp was not advanced",
+                );
+                return;
+            }
+        };
+        record.edit_watermark = Some(ts.to_owned());
+        if let Err(error) =
+            crate::store::slack::set_thread(db, workspace, conversation, parent_ts, &record)
+        {
+            tracing::warn!(
+                target: "forge_workspace::slack",
+                %error,
+                "writing a Slack thread's edit stamp failed; a restart may re-offer it",
             );
         }
     }
@@ -1152,6 +1247,7 @@ impl Workspace {
                     &parent_ts,
                     &SlackThreadRecord {
                         cursor: record.cursor,
+                        edit_watermark: record.edit_watermark,
                         owners: kept,
                         participating: record.participating,
                     },
@@ -1495,10 +1591,7 @@ impl SlackHost for SlackSubsystemHost {
         parent_ts: &str,
     ) -> Option<String> {
         let ws = self.0.upgrade()?;
-        ws.slack_thread_edit_watermarks
-            .lock()
-            .get(&(workspace.to_owned(), conversation.to_owned(), parent_ts.to_owned()))
-            .cloned()
+        ws.slack_thread_edit_watermark(workspace, conversation, parent_ts)
     }
 
     fn set_thread_edit_watermark(
@@ -1509,10 +1602,7 @@ impl SlackHost for SlackSubsystemHost {
         ts: &str,
     ) {
         let Some(ws) = self.0.upgrade() else { return };
-        ws.slack_thread_edit_watermarks.lock().insert(
-            (workspace.to_owned(), conversation.to_owned(), parent_ts.to_owned()),
-            ts.to_owned(),
-        );
+        ws.set_slack_thread_edit_watermark(workspace, conversation, parent_ts, ts);
     }
 
     fn first_author_failure(&self, workspace: &str, user: &str) -> bool {
@@ -3021,6 +3111,83 @@ mod tests {
             "and the edit watermark with it",
         );
         assert_eq!(host.thread_full_read_at("acme", "C1", "100.0"), None, "as is the stamp");
+    }
+
+    /// **A correction already delivered must not come back after a restart.**
+    /// The thread's edit stamp lives on its durable row; a process-lifetime
+    /// map holding it empties on restart, and the next whole read then judges
+    /// every edited reply against nothing and hands them all over again -
+    /// "5d old ... edited" for a correction the session already had.
+    #[test]
+    fn a_restart_does_not_re_offer_a_thread_edit_already_delivered() {
+        let (ws, dir, _rx) = workspace_with_one_slack_workspace("acme");
+        ws.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        let since = format!(
+            "{}.000000",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("the clock is past the epoch")
+                .as_secs()
+        );
+        let owner =
+            SlackThreadOwner { project: "forge".to_owned(), team_role: Some("tester".to_owned()) };
+        ws.follow_slack_thread("acme", "C1", "100.0", owner, &since);
+        let host = SlackSubsystemHost::new(&ws);
+        // The pump hands over a reply's correction and records its stamp; a
+        // newer reply then moves the reply cursor past it.
+        host.set_thread_edit_watermark("acme", "C1", "100.0", "990.0");
+        host.set_thread_watermark("acme", "C1", "100.0", "995.0");
+
+        // A restart keeps the store and drops every process-lifetime clock.
+        ws.forget_thread_clocks("acme", "C1", "100.0");
+
+        assert_eq!(
+            host.thread_edit_watermark("acme", "C1", "100.0").as_deref(),
+            Some("990.0"),
+            "the delivered correction's stamp has to survive the restart, or the next whole \
+             read re-offers it",
+        );
+    }
+
+    /// A row written before the edit stamp was stored has none. Its cursor is
+    /// the last position the row judged, so it reads as its stamp: without
+    /// the fallback the first restart after an upgrade re-offers every
+    /// correction the thread ever had.
+    #[test]
+    fn a_thread_row_without_a_stored_edit_stamp_reads_its_cursor() {
+        let (ws, dir, _rx) = workspace_with_one_slack_workspace("acme");
+        ws.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        let legacy = forge_primitives::slack::SlackThreadRecord {
+            cursor: "500.0".to_owned(),
+            edit_watermark: None,
+            owners: vec![SlackThreadOwner {
+                project: "forge".to_owned(),
+                team_role: Some("tester".to_owned()),
+            }],
+            participating: true,
+        };
+        {
+            let db = ws.db.lock();
+            crate::store::slack::set_thread(
+                db.as_ref().expect("db installed"),
+                "acme",
+                "C1",
+                "100.0",
+                &legacy,
+            )
+            .expect("seed a row from an older build");
+        }
+
+        let host = SlackSubsystemHost::new(&ws);
+        assert_eq!(
+            host.thread_edit_watermark("acme", "C1", "100.0").as_deref(),
+            Some("500.0"),
+            "an older row judges up to its cursor, not from the beginning",
+        );
     }
 
     /// A cursor survives while ANY subscription still covers its
