@@ -148,7 +148,7 @@ fn failed_at(history: &[TaskTransition], id: &TaskId) -> Option<SystemTime> {
 
 /// When the row entered waiting, if the history says: the newest transition
 /// into waiting is the episode a user nudge is deduped on.
-fn waiting_since(history: &[TaskTransition], id: &TaskId) -> Option<SystemTime> {
+pub(crate) fn waiting_since(history: &[TaskTransition], id: &TaskId) -> Option<SystemTime> {
     history
         .iter()
         .filter(|transition| transition.task_id == *id && transition.to == TaskStatus::Waiting)

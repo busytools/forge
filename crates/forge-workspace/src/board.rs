@@ -188,6 +188,25 @@ fn retro_ran(task: &Task) -> bool {
     task.links.iter().any(|l| l.label.as_deref() == Some("retro"))
 }
 
+/// The ask's own words, as the mark and its popover word it.
+///
+/// A detail-less wait - and a verification park, which often carries none -
+/// would otherwise draw a blank line and notify with an empty body; the row's
+/// own detail, the look a park is owed, and the subject are each a truer
+/// answer than nothing.
+fn attention_words(task: &Task) -> String {
+    let said = task.waiting_on.as_ref().and_then(|wait| wait.detail.as_deref());
+    for words in [said, task.detail.as_deref()] {
+        if let Some(words) = words.map(str::trim).filter(|words| !words.is_empty()) {
+            return words.to_owned();
+        }
+    }
+    if task.waiting_on.as_ref().is_some_and(|wait| wait.verification) {
+        return "the look is owed".to_owned();
+    }
+    task.subject.clone()
+}
+
 impl Workspace {
     /// Every live row of `project`, with its derived facts.
     pub fn board_rows(&self, project: &str, now: SystemTime, stale_secs: u64) -> Vec<BoardRow> {
@@ -288,6 +307,18 @@ impl Workspace {
                     .iter()
                     .filter(|t| t.status == TaskStatus::Waiting && crate::tasks::parked_on_user(t))
                     .count();
+                // The wait's own start, off the history the board read also
+                // derives from: `updated_at` moves on any edit of a waiting
+                // row, and a notification keyed on it would fire again for
+                // an edit that answered nothing.
+                let history = {
+                    let guard = self.db.lock();
+                    match guard.as_ref() {
+                        Some(db) => crate::store::task_history::list_for_project(db, &name)
+                            .unwrap_or_default(),
+                        None => Vec::new(),
+                    }
+                };
                 let attention = tasks
                     .iter()
                     .filter(|t| t.status == TaskStatus::Waiting && crate::tasks::parked_on_user(t))
@@ -298,12 +329,8 @@ impl Workspace {
                             .as_ref()
                             .map_or_else(|| "lead".to_owned(), |seat| seat.label().to_owned()),
                         subject: t.subject.clone(),
-                        words: t
-                            .waiting_on
-                            .as_ref()
-                            .and_then(|wait| wait.detail.clone())
-                            .unwrap_or_default(),
-                        at: t.updated_at,
+                        words: attention_words(t),
+                        at: crate::chase::waiting_since(&history, &t.id).unwrap_or(t.updated_at),
                     })
                     .collect();
                 let mut misses = Vec::new();
@@ -855,7 +882,103 @@ mod tests {
         assert_eq!(item.owner, "w-1", "the seat that raised it");
         assert_eq!(item.subject, "ship the parser", "the row's subject");
         assert_eq!(item.words, "sign this off", "the ask's own words");
-        assert_eq!(item.at, epoch(1_700_000_000), "and when it began, off the row's own update");
+        assert_eq!(
+            item.at,
+            epoch(1_700_000_000),
+            "when it began; a row with no history falls back to its own update"
+        );
+    }
+
+    /// **The wait is dated from its own start, not the row's last edit.** A
+    /// waiting row that gains a link, is parked or is dragged moves
+    /// `updated_at`, and a notification keyed on that fires again for an edit
+    /// that answered nothing.
+    #[test]
+    fn a_wait_is_dated_from_its_own_start_not_its_last_edit() {
+        let dir = tempdir().expect("tempdir");
+        let ws = fixture(dir.path());
+        let mut decision = task("t-decision", TaskStatus::Waiting);
+        decision.updated_at = epoch(1_700_000_500);
+        decision.waiting_on = Some(Waiting {
+            kind: Some(WaitingKind::Decision),
+            detail: Some("sign this off".to_owned()),
+            on: None,
+            verification: false,
+            parked: false,
+        });
+        ws.seed_test_task(decision);
+        {
+            let db = ws.db.lock();
+            crate::store::task_history::append(
+                db.as_ref().expect("db"),
+                &[transition(
+                    "t-decision",
+                    TaskStatus::InProgress,
+                    TaskStatus::Waiting,
+                    1_700_000_000,
+                )],
+            )
+            .expect("history");
+        }
+
+        let row =
+            ws.fleet_rows().into_iter().find(|r| r.project == PROJECT).expect("the project's row");
+        assert_eq!(
+            row.attention[0].at,
+            epoch(1_700_000_000),
+            "the wait's own start, not the edit that moved the row",
+        );
+    }
+
+    /// **A wait with no words still says something.** A verification park and
+    /// a detail-less decision wait would otherwise draw a blank line and
+    /// notify with an empty body; the row's detail, the look a park is owed
+    /// and the subject are each a truer answer than nothing.
+    #[test]
+    fn a_wait_without_words_falls_back_to_the_row() {
+        let dir = tempdir().expect("tempdir");
+        let ws = fixture(dir.path());
+
+        let mut blank = task("t-blank", TaskStatus::Waiting);
+        blank.detail = Some("the plan is in the row".to_owned());
+        blank.waiting_on = Some(Waiting {
+            kind: Some(WaitingKind::Decision),
+            detail: Some("   ".to_owned()),
+            on: None,
+            verification: false,
+            parked: false,
+        });
+        ws.seed_test_task(blank);
+
+        let mut look = task("t-look", TaskStatus::Waiting);
+        look.verify = Some(Verify::User);
+        look.waiting_on = Some(Waiting {
+            kind: Some(WaitingKind::Decision),
+            detail: None,
+            on: None,
+            verification: true,
+            parked: false,
+        });
+        ws.seed_test_task(look);
+
+        let mut bare = task("t-bare", TaskStatus::Waiting);
+        bare.waiting_on = Some(Waiting {
+            kind: Some(WaitingKind::Decision),
+            detail: None,
+            on: None,
+            verification: false,
+            parked: false,
+        });
+        ws.seed_test_task(bare);
+
+        let row =
+            ws.fleet_rows().into_iter().find(|r| r.project == PROJECT).expect("the project's row");
+        let words = |task: &str| {
+            row.attention.iter().find(|item| item.task == task).expect("the item").words.clone()
+        };
+        assert_eq!(words("t-blank"), "the plan is in the row", "a blank detail takes the row's");
+        assert_eq!(words("t-look"), "the look is owed", "a verification park says what it wants");
+        assert_eq!(words("t-bare"), "subject t-bare", "nothing anywhere takes the subject");
     }
 
     #[test]
