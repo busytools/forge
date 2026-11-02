@@ -9,18 +9,32 @@ pub mod bench;
 mod engine;
 mod error;
 mod model;
+mod resample;
 mod split;
+
+use std::sync::Arc;
 
 pub use engine::{QwenTts, init_backend};
 pub use error::Error;
 pub use model::ModelFiles;
 pub use split::{sentences, within_bound};
 
+/// A speaker reference: the audio a render clones its voice from, and the
+/// rate it was recorded at. The engine converts it to the codec's own rate.
+#[derive(Debug, Clone, PartialEq)]
+pub struct VoiceReference {
+    pub pcm: Vec<f32>,
+    pub sample_rate: u32,
+}
+
 /// One utterance to render, with the model's own voice settings.
 #[derive(Debug, Clone)]
 pub struct SpeakRequest {
     pub text: String,
     pub language: Option<String>,
+    /// The voice this utterance is rendered in, or `None` for the model's
+    /// default. Shared rather than copied so a sentence's request is cheap.
+    pub voice: Option<Arc<VoiceReference>>,
 }
 
 /// A rendered run of audio, in arrival order.

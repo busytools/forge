@@ -130,6 +130,7 @@ mod tests {
         let mut chunks = engine.speak(SpeakRequest {
             text: "Ready when you are.".to_owned(),
             language: Some("en".to_owned()),
+            voice: None,
         });
         let first = chunks.recv().await.expect("a chunk").expect("a render");
         assert!(first.sample_rate > 0);

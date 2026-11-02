@@ -8,7 +8,7 @@ use std::sync::Once;
 
 use llama_cpp_sys_2 as sys;
 
-use crate::{Chunk, Error, SpeakRequest};
+use crate::{Chunk, Error, SpeakRequest, VoiceReference};
 
 /// llama.cpp's backend registry is a bare static with no lock, so two
 /// concurrent first calls race on registration. Every caller goes through
@@ -96,10 +96,6 @@ impl Core {
     }
 
     pub(super) fn render(&mut self, request: &SpeakRequest) -> Result<Chunk, Error> {
-        let text = CString::new(request.text.as_str())
-            .map_err(|_| Error::Render("the text contains a NUL".to_owned()))?;
-        let language = option_cstring(request.language.as_deref())?;
-
         let n_batch =
             i32::try_from(unsafe { sys::llama_n_batch(self.context) }).unwrap_or(i32::MAX);
 
@@ -111,21 +107,8 @@ impl Core {
 
         let sampler = Sampler::new();
         let audio = Gen::new(self.context, self.projector)?;
-
-        // The published v0.6.0 header has no `inp_default`, and its struct
-        // carries no stream/n_past/out_mode/voice fields. Zeroed is the
-        // default the v0.8.0 helper fills in: PCM output and auto mode are 0.
-        let mut input: sys::mtmd_helper_gen_audio_inp = unsafe { std::mem::zeroed() };
-        input.seq_id = 0;
-        input.prompt = text.as_ptr();
-        input.prompt_len = request.text.len();
-        input.speaker_ref = ptr::null_mut();
-        input.lang = language.as_ref().map_or(ptr::null(), |value| value.as_ptr());
-        input.top_k = TOP_K;
-        input.top_p = TOP_P;
-        input.seed = VOICE_SEED;
-        input.out_type = sys::MTMD_HELPER_GEN_AUDIO_OUTTYPE_PCM;
-        if unsafe { sys::mtmd_helper_gen_audio_set_input(audio.raw, &raw const input) } != 0 {
+        let input = RenderInput::new(request, self.sample_rate)?;
+        if unsafe { sys::mtmd_helper_gen_audio_set_input(audio.raw, &raw const input.inp) } != 0 {
             return Err(Error::Render("the text could not be turned into a prompt".to_owned()));
         }
 
@@ -215,6 +198,76 @@ impl Drop for Core {
     }
 }
 
+/// The helper's input for one render, with the buffers its raw pointers
+/// name held beside it.
+///
+/// Kept apart from [`Core::render`] so the speaker reference's mapping is
+/// testable without a loaded model.
+struct RenderInput {
+    /// Held so `inp.prompt` stays valid.
+    _text: CString,
+    /// Held so `inp.lang` stays valid.
+    _language: Option<CString>,
+    /// Held so `inp.speaker_ref` stays valid until `set_input` encodes it.
+    _reference: Option<Reference>,
+    inp: sys::mtmd_helper_gen_audio_inp,
+}
+
+impl RenderInput {
+    fn new(request: &SpeakRequest, codec_rate: u32) -> Result<Self, Error> {
+        let text = CString::new(request.text.as_str())
+            .map_err(|_| Error::Render("the text contains a NUL".to_owned()))?;
+        let language = option_cstring(request.language.as_deref())?;
+        let reference = request
+            .voice
+            .as_ref()
+            .map(|voice| Reference::new(voice, codec_rate))
+            .transpose()?;
+
+        // The published v0.6.0 header has no `inp_default`, and its struct
+        // carries no stream/n_past/out_mode/voice fields. Zeroed is the
+        // default the v0.8.0 helper fills in: PCM output and auto mode are 0.
+        let mut inp: sys::mtmd_helper_gen_audio_inp = unsafe { std::mem::zeroed() };
+        inp.seq_id = 0;
+        inp.prompt = text.as_ptr();
+        inp.prompt_len = request.text.len();
+        inp.speaker_ref = reference.as_ref().map_or(ptr::null_mut(), |held| held.raw);
+        inp.lang = language.as_ref().map_or(ptr::null(), |value| value.as_ptr());
+        inp.top_k = TOP_K;
+        inp.top_p = TOP_P;
+        inp.seed = VOICE_SEED;
+        inp.out_type = sys::MTMD_HELPER_GEN_AUDIO_OUTTYPE_PCM;
+
+        Ok(Self { _text: text, _language: language, _reference: reference, inp })
+    }
+}
+
+/// A speaker reference the encoder can read: the clip resampled to the
+/// codec's own rate and copied into a bitmap.
+struct Reference {
+    raw: *mut sys::mtmd_bitmap,
+}
+
+impl Reference {
+    fn new(voice: &VoiceReference, codec_rate: u32) -> Result<Self, Error> {
+        if voice.pcm.is_empty() {
+            return Err(Error::Render("the voice reference carries no audio".to_owned()));
+        }
+        let pcm = crate::resample::resample_mono(&voice.pcm, voice.sample_rate, codec_rate)?;
+        let raw = unsafe { sys::mtmd_bitmap_init_from_audio(pcm.len(), pcm.as_ptr()) };
+        if raw.is_null() {
+            return Err(Error::Render("the voice reference could not be built".to_owned()));
+        }
+        Ok(Self { raw })
+    }
+}
+
+impl Drop for Reference {
+    fn drop(&mut self) {
+        unsafe { sys::mtmd_bitmap_free(self.raw) };
+    }
+}
+
 /// The audio-generation context; freed on every exit path.
 struct Gen {
     raw: *mut sys::mtmd_helper_gen_audio,
@@ -287,4 +340,39 @@ fn option_cstring(value: Option<&str>) -> Result<Option<CString>, Error> {
             CString::new(text).map_err(|_| Error::Render("a voice setting has a NUL".to_owned()))
         })
         .transpose()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::{RenderInput, sys};
+    use crate::{SpeakRequest, VoiceReference};
+
+    fn request(voice: Option<Arc<VoiceReference>>) -> SpeakRequest {
+        SpeakRequest { text: "Hello.".to_owned(), language: None, voice }
+    }
+
+    /// **The chosen voice is the input's speaker reference, and no voice is
+    /// none.** The clip arrives at its recording's rate and reaches the
+    /// encoder at the codec's own: no model load is needed to hold this.
+    #[test]
+    fn a_chosen_voice_reaches_the_input_and_none_when_unset() {
+        let plain = RenderInput::new(&request(None), 24_000).expect("an input is built");
+        assert!(plain.inp.speaker_ref.is_null(), "no voice chosen, no speaker reference");
+
+        let clip = VoiceReference { pcm: vec![0.25; 16_000], sample_rate: 16_000 };
+        let voiced =
+            RenderInput::new(&request(Some(Arc::new(clip))), 24_000).expect("an input is built");
+        assert!(!voiced.inp.speaker_ref.is_null(), "the chosen voice reaches the render");
+        assert!(
+            unsafe { sys::mtmd_bitmap_is_audio(voiced.inp.speaker_ref) },
+            "the reference is an audio bitmap"
+        );
+        assert_eq!(
+            unsafe { sys::mtmd_bitmap_get_nx(voiced.inp.speaker_ref) },
+            24_000,
+            "one second at 16 kHz reaches the codec as one second at 24 kHz"
+        );
+    }
 }
