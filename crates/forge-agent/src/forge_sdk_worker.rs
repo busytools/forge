@@ -162,6 +162,16 @@ that cannot be used as intended. Build a new box with `DictateControl` \
 and the take and landing model the composer already wires (`Dictation`, \
 `TakeCard`, `Landing`), not a second mic of its own.\n\
 \n\
+**Voice.** A person can listen to a seat. When a note says they are \
+listening and your tool list carries `voice__say`, speak what they should \
+hear: send each update's substance through `voice__say` as you would say \
+it in a live conversation, keeping the written chat as the record with the \
+detail. Short and frequent beats one long read-out; never let the spoken \
+form carry less than the person needs, and never read the page into it. A \
+worker's spoken update to a seat the person chose to listen to is a \
+permitted direct route; its written reports still go to its lead. When the \
+note says they stopped, write only.\n\
+\n\
 A work cut - one feature, one issue, one fix - lands whole: one \
 branch, one review, one look, one merge. Never slice it into pieces \
 that land one after another, and never show or merge an intermediate \
@@ -175,9 +185,10 @@ review, deliver it through `documents__hand_off` with `reviewable: \
 true`. It opens in their own viewer, and the review they leave comes \
 back to this session when it has the `review` MCP family; without that \
 family the review is your lead's to read, and the hand-off answer names \
-the scope for it. A document hand-off is the one door to the user a \
-worker session may open: hand it off, then tell your lead it is \
-waiting. A path in chat is not a hand-off, and neither is a link. Any \
+the scope for it. A document hand-off is one door to the user a \
+worker session may open, and a spoken update to a seat the person chose \
+to listen to is the other: hand the document off, then tell your lead it \
+is waiting. A path in chat is not a hand-off, and neither is a link. Any \
 reviewable document - one the user must read and comment on - gets the \
 hand-off; a code change, a PR and an answer that belongs in the chat \
 do not need one.\n\
@@ -3491,6 +3502,67 @@ mod tests {
         );
     }
 
+    /// Voice mode is forge's rule for every agent, not a project's own. Each
+    /// clause whose loss changes behaviour is pinned: activation, the tool
+    /// that makes an update heard, the register, the chat as the record, the
+    /// brevity that never drops what the person needs, the worker's route,
+    /// and the stop sentence.
+    #[test]
+    fn the_conduct_block_carries_the_voice_mode_rule() {
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
+                .contains("**Voice.** A person can listen to a seat."),
+            "the voice-mode paragraph is pinned",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
+                "When a note says they are listening and your tool list carries `voice__say`"
+            ),
+            "activation is gated on the tool list the session was spawned with",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
+                .contains("send each update's substance through `voice__say`"),
+            "the tool that makes an update heard is named",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
+                .contains("as you would say it in a live conversation"),
+            "the register is conversational",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
+                .contains("keeping the written chat as the record with the detail"),
+            "the rule keeps the written chat the record",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
+                .contains("Short and frequent beats one long read-out"),
+            "the spoken form stays short and frequent",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
+                .contains("never let the spoken form carry less than the person needs"),
+            "brevity never drops what the person needs",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains("never read the page into it"),
+            "the register is not a read-out",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
+                "A worker's spoken update to a seat the person chose to listen to is a permitted \
+                 direct route; its written reports still go to its lead"
+            ),
+            "a listened worker may speak to the person and still reports in writing to its lead",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
+                .contains("When the note says they stopped, write only"),
+            "the stop sentence releases the agent",
+        );
+    }
+
     /// The browser cues reach every session, and the names in them are the
     /// family's own tools - pinned so a rename fails here instead of shipping
     /// a cue that resolves to nothing. Each moment is pinned with its wording.
@@ -4013,10 +4085,11 @@ mod tests {
         );
         assert!(
             FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
-                "A document hand-off is the one door to the user a worker session may open: hand \
-                 it off, then tell your lead it is waiting"
+                "A document hand-off is one door to the user a worker session may open, and a \
+                 spoken update to a seat the person chose to listen to is the other: hand the \
+                 document off, then tell your lead it is waiting"
             ),
-            "the worker door reconciles the rule with the routing rule above it",
+            "the two worker doors reconcile the rule with the routing rule above it",
         );
         assert!(
             FORGE_SESSION_CONDUCT_SYSTEM_PROMPT

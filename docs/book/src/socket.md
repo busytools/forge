@@ -778,12 +778,13 @@ seat it is showing. It is that connection's own switch, not the seat's: two
 clients can watch one seat and only one of them be listening. The transport
 stamps the connection on it, so the listener set counts connections; the seat
 answers with a `voice_mode_state` carrying the count, to every subscriber
-of that seat. The first client in puts a short note into the session, so the
-agent is told once that the person is listening and that anything they should
-hear goes through `mcp__forge__voice__say`. The last client out tells the
-agent the person stopped when the off is `explicit`, the reader's own switch,
-and when the connection that held it goes away: a closed client or a dropped
-socket empties the seat's listener set too, so the same note fires. A client
+of that seat. The first client in puts a note into the session, so the
+agent is told once that the person is listening and to send each update's
+substance through `mcp__forge__voice__say` in a live-conversation register.
+The last client out tells the agent the person stopped and that it may stop
+speaking when the off is `explicit`, the reader's own switch, and when the
+connection that held it goes away: a closed client or a dropped socket
+empties the seat's listener set too, so the same note fires. A client
 that moves to another seat sends `explicit: false` and keeps its intent, so
 the seat pauses without toggling the agent and a return reconnects. The note
 rides a `[Voice]` envelope, so the transcript draws it as a delivery row
