@@ -68,9 +68,9 @@
    * seat's: the engine is process-wide, and the page's own wire carries it.
    */
   const dictate = $derived(home.wire === null ? false : dictationOffered(home.wire.dictate));
-  // Speech in needs dictation: a hold sends an utterance the core transcribes
-  // with the same engine, so a switch without it would only draw a refusal.
-  const voice = $derived(home.wire !== null && home.wire.voice.enabled && dictate);
+  // The switch is speech out only, so it needs `[tts]` and nothing of
+  // dictation's: the mic is how the user speaks, and this control only hears.
+  const voice = $derived(home.wire !== null && home.wire.voice.enabled);
 
   /**
    * The board's own read (#2517): the session rail and the board page draw
