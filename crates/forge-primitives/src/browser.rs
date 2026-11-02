@@ -123,9 +123,10 @@ pub enum MouseAction {
 /// One input event a controlling viewer sends, in CSS pixels for the page's
 /// viewport.
 ///
-/// **The wire carries the person's gesture, not the browser's protocol.** The
-/// server is what turns a press into `Input.dispatchMouseEvent`; a client
-/// speaks about a click, and the CDP method names stay on the server.
+/// **The wire carries the person's gesture, not the browser's protocol.** A
+/// press and a wheel reach CEF's own mouse calls and a key or text reach
+/// CDP's `Input.*`; a client speaks about a click, and the protocol's method
+/// names stay on the server.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum BrowserInputEvent {
@@ -138,13 +139,9 @@ pub enum BrowserInputEvent {
         clicks: i32,
         modifiers: InputModifiers,
     },
-    Wheel {
-        x: f64,
-        y: f64,
-        delta_x: f64,
-        delta_y: f64,
-        modifiers: InputModifiers,
-    },
+    /// A wheel's deltas in the page's own sign: positive scrolls down and
+    /// right. The server turns the sign back for CEF.
+    Wheel { x: f64, y: f64, delta_x: f64, delta_y: f64, modifiers: InputModifiers },
     /// A key with no text of its own: an arrow, Enter, Escape, a modifier.
     Key {
         down: bool,
@@ -155,9 +152,7 @@ pub enum BrowserInputEvent {
         modifiers: InputModifiers,
     },
     /// The person's own text, inserted as text rather than replayed keycodes.
-    Text {
-        text: String,
-    },
+    Text { text: String },
 }
 
 /// One encoded browser frame as the socket relays it.
