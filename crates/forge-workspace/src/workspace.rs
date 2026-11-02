@@ -15047,18 +15047,24 @@ provider = "anthropic"
 
         workspace.reload_config().expect("the new file is valid");
 
-        let spawned: Vec<String> = workspace
+        let spawned: Vec<(String, SessionLaunchSettings)> = workspace
             .drain_test_dispatch_buffer()
             .into_iter()
             .filter_map(|command| match command {
-                Command::SpawnProject { project_name, .. } => Some(project_name),
+                Command::SpawnProject { project_name, launch_settings } => {
+                    Some((project_name, launch_settings))
+                }
                 _ => None,
             })
             .collect();
         assert_eq!(
-            spawned,
-            vec!["fresh".to_owned()],
+            spawned.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>(),
+            vec!["fresh"],
             "only the project the edit added starts; the running one is left alone",
+        );
+        assert!(
+            spawned[0].1.resume_kick.is_none(),
+            "a config reload starts the project without the boot restart note",
         );
     }
 
