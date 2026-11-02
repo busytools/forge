@@ -4736,7 +4736,7 @@ provider = "anthropic"
     }
 
     #[test]
-    fn default_project_is_alpha_first_resume_lead() {
+    fn default_project_prefers_a_pinned_project_over_alphabetical() {
         let dir = tempdir().expect("tempdir");
         write_config(
             dir.path(),
@@ -4751,7 +4751,6 @@ resume_lead = true
 [[orgs.projects]]
 name = "alpha"
 path = "~/Projects/alpha"
-resume_lead = true
 [[orgs.projects]]
 name = "middle"
 path = "~/Projects/middle"
@@ -4763,8 +4762,10 @@ provider = "anthropic"
 "#,
         );
         let config = load_from_dir(dir.path()).expect("happy path");
-        // Pinned projects: alpha + zebra. Alphabetical-first: alpha.
-        assert_eq!(config.default_project().name, "alpha");
+        // zebra is the only pinned project, so the pin outranks the
+        // alphabetically-first alpha. With alpha pinned too, a config that
+        // ignored the key entirely would still answer alpha.
+        assert_eq!(config.default_project().name, "zebra");
     }
 
     #[test]
@@ -4823,6 +4824,36 @@ provider = "anthropic"
         let config = load_from_dir(dir.path()).expect("happy path");
         let names: Vec<&str> = config.resume_lead_projects().map(|p| p.name.as_str()).collect();
         assert_eq!(names, vec!["alpha", "gamma"]);
+    }
+
+    /// The renamed key's predecessor is refused by name, so a stale config
+    /// cannot boot with its pin silently dropped by an ignored field.
+    #[test]
+    fn a_stale_auto_start_key_is_refused_by_name() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Stargate"]
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+auto_start = true
+[[accounts]]
+display_name = "Stargate"
+token = "t"
+models = ["claude-sonnet-5"]
+provider = "anthropic"
+"#,
+        );
+        let error = load_from_dir(dir.path()).expect_err("the old key is no longer read");
+        let rendered = format!("{error}");
+        assert!(
+            rendered.contains("auto_start"),
+            "the refusal names the key the user has to rename: {rendered}",
+        );
     }
 
     #[test]
