@@ -342,6 +342,11 @@ impl crate::Workspace {
     /// Load the speaking engine beside boot, so the first `say` pays no
     /// model load. One task per forge run, spawned rather than awaited; a
     /// failed load leaves the slot empty, which the first `say` fills.
+    ///
+    /// The slot is only ever filled, never emptied, so a `say` cannot see
+    /// the engine released underneath it; a `say` that arrives while this
+    /// load is still running waits on the same lock rather than answering
+    /// [`SayError::NotReady`].
     pub fn start_voice_prewarm(self: &Arc<Self>) {
         // Before the gate below, so the flag reads "the boot wave asked for
         // the prewarm" and a second call cannot start a second one.
@@ -1064,6 +1069,64 @@ mod tests {
         service.set_listening(&seat(), 1, true, false);
         service.say(&seat(), "Two.".to_owned()).await.expect("rendered");
         assert_eq!(loads.load(Ordering::SeqCst), 1, "the next say reuses the parked engine");
+    }
+
+    /// A `say` that lands while the boot prewarm is still loading waits for
+    /// that load: the engine is never released underneath a say, and a load
+    /// in flight is not answered as `NotReady`.
+    #[tokio::test]
+    async fn a_say_waits_for_the_prewarm_instead_of_answering_not_ready() {
+        // A dropped sender releases the load, so a failing assertion unwinds
+        // instead of leaving the blocking loader parked for ever.
+        let (release, hold) = std::sync::mpsc::channel::<()>();
+        let hold = Arc::new(Mutex::new(hold));
+        let loads = Arc::new(AtomicUsize::new(0));
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let service = VoiceService::new(
+            {
+                let hold = Arc::clone(&hold);
+                let loads = Arc::clone(&loads);
+                let requests = Arc::clone(&requests);
+                Arc::new(move || {
+                    loads.fetch_add(1, Ordering::SeqCst);
+                    let _ = hold.lock().expect("unpoisoned").recv();
+                    Ok(Arc::new(StubEngine::new(Arc::clone(&requests))) as Arc<dyn Engine>)
+                })
+            },
+            VoiceSettings::default(),
+            Arc::new(RecordingSink { chunks: Mutex::new(Vec::new()) }),
+            Arc::new(RecordingNotes { said: Mutex::new(Vec::new()) }),
+        );
+        service.set_listening(&seat(), 1, true, false);
+        let warm = tokio::spawn({
+            let service = service.clone();
+            async move { service.warm().await }
+        });
+        for _ in 0..200 {
+            if loads.load(Ordering::SeqCst) == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(loads.load(Ordering::SeqCst), 1, "premise: the prewarm is mid-load");
+
+        let say = tokio::spawn({
+            let service = service.clone();
+            async move { service.say(&seat(), "Hello.".to_owned()).await }
+        });
+        for _ in 0..50 {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+        assert!(!say.is_finished(), "premise: the say is waiting on the load, not answered");
+
+        release.send(()).expect("the loader is waiting");
+        warm.await.expect("joined").expect("warmed");
+        assert_eq!(
+            say.await.expect("joined"),
+            Ok(()),
+            "the say waits for the prewarm instead of answering NotReady",
+        );
+        assert_eq!(loads.load(Ordering::SeqCst), 1, "one load served both");
     }
 
     #[tokio::test]
