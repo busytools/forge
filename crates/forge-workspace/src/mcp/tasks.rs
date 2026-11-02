@@ -759,9 +759,10 @@ impl Tool for Wait {
          task it names, not on the user. A blocker parked on the user's look has not ended, so the chain keeps \
          waiting until the user approves it. The waiting row is not itself waiting on the \
          user: a row's `verify: user` gates its own completion, not its dependency \
-         wait, so the row stays movable and deletable. Route a decision to the user only when the user \
-         explicitly asked for a hold, or something is still genuinely ambiguous after the \
-         decision model, peer opinions and the team's own review. Only the lead mints a \
+         wait, so the row stays movable and deletable. Route a decision to the user when the user \
+         asked for a hold, when something is still genuinely ambiguous after the decision model, \
+         peer opinions and the team's own review, or when the person should look at the work when \
+         they come back. Only the lead mints a \
          user-decision wait: a worker that believes the call is the user's hands it to its \
          lead, because a decision a worker parks outlives its answer and the lead cannot close \
          it afterward. `detail` is the words. \
@@ -1381,9 +1382,10 @@ mod tests {
         let wait = Wait { facade: MockTasksFacade::new().into_arc(), slot: lead_slot() };
         let desc = wait.description();
         for clause in [
-            "Route a decision to the user only when the user explicitly asked for a hold",
+            "Route a decision to the user when the user asked for a hold",
             "something is still genuinely ambiguous after the decision model, peer opinions and \
              the team's own review",
+            "when the person should look at the work when they come back",
         ] {
             assert!(desc.contains(clause), "the wait description owes {clause:?}: {desc}");
         }

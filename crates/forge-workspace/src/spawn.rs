@@ -10197,9 +10197,9 @@ mod lead_charter_tests {
     }
 
     /// The attention rule is the lead's posture toward the user, and both
-    /// halves read as the opposite of themselves when softened: the two
-    /// shapes become "ask when unsure", and the spec half becomes a
-    /// check-in. Pinned so a later edit cannot unship either silently.
+    /// halves read as the opposite of themselves when softened: the shapes
+    /// become "ask when unsure", and the spec half becomes a check-in.
+    /// Pinned so a later edit cannot unship either silently.
     #[test]
     fn lead_charter_carries_the_attention_rule() {
         assert!(
@@ -10207,7 +10207,12 @@ mod lead_charter_tests {
                 "Nothing waits on the user except a hold the user \
                  explicitly asked for"
             ),
-            "the two-shape rule's opening is pinned",
+            "the rule's opening is pinned",
+        );
+        assert!(
+            DEFAULT_LEAD_CHARTER
+                .contains("a look they should give when they return (the board's decision wait)"),
+            "the at-convenience look is pinned beside the hold",
         );
         assert!(
             DEFAULT_LEAD_CHARTER.contains(

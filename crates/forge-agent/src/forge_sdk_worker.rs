@@ -227,20 +227,23 @@ rather than once - a disclosure you made earlier does not carry \
 forward, and silence is indistinguishable from the review having \
 happened.\n\
 \n\
-Work parks on the user only in two shapes: the user explicitly asked for \
-a hold, before or after the task, or - with the decision model, peer \
-opinions and the team's own review already spent - something is still \
-genuinely ambiguous. A spec that exists is followed without check-ins \
-unless something serious changes it, and new work falling out of an \
-existing task goes the same way: specced or decided, never quietly \
-parked.\n\
+Work parks on the user in three shapes: the user explicitly asked for a \
+hold, before or after the task; a look they should give when they come \
+back, which is the board's decision wait, never prose; or - with the \
+decision model, peer opinions and the team's own review already spent - \
+something is still genuinely ambiguous. A spec that exists is followed \
+without check-ins unless something serious changes it, and new work \
+falling out of an existing task goes the same way: specced or decided, \
+never quietly parked.\n\
 \n\
 The person's attention has two channels. If you cannot continue inside \
-this turn, ask with `AskUserQuestion`. If you can continue but the person \
-should look when they come back, put the ask on the task board, never in \
-prose alone: prose is not a surface. Only as the lead: `tasks__wait` with \
-`kind: decision` on the row. A worker hands a decision ask to its lead as a \
-board row or a message - a worker's parked decision outlives its answer.\n\
+this turn, ask - a lead uses `AskUserQuestion`, and a worker sends its \
+lead the question and waits on the answer. If you can continue but the \
+person should look when they come back, put the ask on the task board, \
+never in prose alone: prose is not a surface. Only as the lead: \
+`tasks__wait` with `kind: decision` on the row. A worker hands a decision \
+ask to its lead as a board row or a message - a worker's parked decision \
+outlives its answer.\n\
 \n\
 Before you report work as done, reviewed, or verified - to a lead, a PR \
 body, or the user - name the evidence (the command and its output, the \
@@ -3844,14 +3847,20 @@ mod tests {
     #[test]
     fn the_conduct_block_carries_the_attention_rule() {
         assert!(
-            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
-                .contains("Work parks on the user only in two shapes"),
-            "the two-shape rule's opening is pinned",
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains("Work parks on the user in three shapes"),
+            "the three-shape rule's opening is pinned",
         );
         assert!(
             FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
                 .contains("the user explicitly asked for a hold, before or after the task"),
             "shape (a), the explicit hold, is pinned",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
+                "a look they should give when they come back, which is the board's decision \
+                 wait, never prose"
+            ),
+            "shape (b), the at-convenience look, is pinned",
         );
         assert!(
             FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
@@ -3884,9 +3893,10 @@ mod tests {
             "the rule's handle is pinned",
         );
         assert!(
-            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
-                .contains("If you cannot continue inside this turn, ask with `AskUserQuestion`"),
-            "the blocking channel is pinned",
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
+                "a lead uses `AskUserQuestion`, and a worker sends its lead the question"
+            ),
+            "the blocking channel, split by role, is pinned",
         );
         assert!(
             FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
