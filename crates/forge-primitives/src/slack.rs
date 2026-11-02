@@ -333,7 +333,9 @@ pub struct SlackThreadRecord {
     /// The newest edit stamp this thread has already handed over. Durable
     /// with the row: held in memory only, a restart re-offers every
     /// correction in the thread on the next whole read. A row written before
-    /// this field existed reads as `None` and is judged up to its cursor.
+    /// this field existed reads as `None` and is approximated by its cursor,
+    /// which drops an unjudged edit below that cursor and can re-offer an
+    /// already-handed one above it.
     pub edit_watermark: Option<String>,
     pub owners: Vec<SlackThreadOwner>,
     /// Whether the user is in this thread, once that has been read off its
