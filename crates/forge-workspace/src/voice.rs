@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use forge_primitives::SessionSlot;
+use forge_primitives::{Message, SessionSlot};
 use forge_tts::{Chunk, Engine, SpeakRequest};
 use tokio::sync::{mpsc, oneshot};
 
@@ -477,11 +477,12 @@ impl NoteDispatch for WorkspaceNotes {
             return;
         };
         let uuid = forge_sdk::request_id::next_prompt_id();
+        let prose = note_envelope(text);
         if let Err(error) = workspace.dispatch_workspace_prompt_under(
             seat,
-            note_envelope(text),
+            prose.clone(),
             crate::PromptSource::Forge,
-            uuid,
+            uuid.clone(),
         ) {
             tracing::warn!(
                 event_name = "voice_note_not_delivered",
@@ -489,7 +490,18 @@ impl NoteDispatch for WorkspaceNotes {
                 %error,
                 "the listener note did not reach the seat; the agent will not know it is heard"
             );
+            return;
         }
+        // The CLI does not echo a prompt, so this display row is what the
+        // reader's page draws: the same forged turn a delivery carries.
+        let mut row = Message::display_only_user(prose, uuid);
+        row.stamp_if_absent(&crate::install::rfc3339_now());
+        let _ = workspace.update_sender().send(crate::SessionUpdate::ChatAppended {
+            key: seat.clone(),
+            msg: row,
+            origin: None,
+            source: Some(crate::PromptSource::Forge),
+        });
     }
 }
 
