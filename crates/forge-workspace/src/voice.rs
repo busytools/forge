@@ -164,6 +164,9 @@ impl VoiceService {
                     } else {
                         state.live.fetch_add(1, Ordering::SeqCst);
                     }
+                    if first {
+                        self.warm_engine();
+                    }
                     if first && !state.noted {
                         state.noted = true;
                         Some(LISTENING_NOTE)
@@ -177,6 +180,7 @@ impl VoiceService {
                         seat.clone(),
                         Seat { listeners: BTreeSet::from([client]), queue, live, noted: true },
                     );
+                    self.warm_engine();
                     Some(LISTENING_NOTE)
                 }
             } else {
@@ -274,6 +278,24 @@ impl VoiceService {
         if listening {
             self.notes.note(seat, LISTENING_NOTE);
         }
+    }
+
+    /// Load the engine in the background on the first listener, so the first
+    /// `say` does not pay the load.
+    fn warm_engine(&self) {
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let warm = self.clone();
+        handle.spawn(async move {
+            if let Err(error) = warm.engine().await {
+                tracing::warn!(
+                    event_name = "voice_engine_warm_failed",
+                    %error,
+                    "the voice engine did not load; the first say will retry"
+                );
+            }
+        });
     }
 
     /// Drop the engine once no seat has a listener and no render holds it.
@@ -844,6 +866,19 @@ mod tests {
             format!("[Voice]\n\n{NOT_LISTENING_NOTE}"),
             "the withdrawal rides the same envelope",
         );
+    }
+
+    #[tokio::test]
+    async fn the_first_listener_warms_the_engine() {
+        let fixture = service_with(|| StubEngine::new(Arc::new(Mutex::new(Vec::new()))));
+        fixture.service.set_listening(&seat(), 1, true, false);
+        for _ in 0..200 {
+            if fixture.loads.load(Ordering::SeqCst) == 1 {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        panic!("the first listener did not warm the engine");
     }
 
     #[tokio::test]
