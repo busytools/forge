@@ -21,7 +21,7 @@
 import { canHost } from './browser/host';
 import { orgOf } from './home/view';
 import { subjectKey } from './protocol';
-import { goTo } from './routes';
+import { goTo, type Route } from './routes';
 import type { AgentRow, HomeWire, PendingKind, WireTime } from './wire/home';
 import type { SessionSlot } from './wire/types';
 
@@ -48,7 +48,7 @@ export interface WaitNotice {
   slot: SessionSlot;
   task: string;
   words: string;
-  /** The other waits the same read carries for this seat. */
+  /** The other raises the same read carries for this seat. */
   more: number;
 }
 
@@ -210,22 +210,27 @@ export function notifiesFromThePage(): boolean {
 
 /** One notification, as the page's own surface carries it. */
 interface Held {
-  slot: SessionSlot;
   words: { title: string; body: string };
   /** What the platform replaces by: an ask and a wait on one seat are two. */
   tag: string;
+  /** Where a click lands: the ask's seat, or the board a wait lives on. */
+  route: Route;
 }
 
 /** Raise one ask's notification on a page with no shell. */
 export function deliverAsk(notice: AskNotice): void {
   const tag = `ask:${subjectKey({ session: notice.slot })}`;
-  notifyPage({ slot: notice.slot, words: askWords(notice), tag });
+  notifyPage({ words: askWords(notice), tag, route: { name: 'session', slot: notice.slot } });
 }
 
 /** Raise one decision wait's notification on a page with no shell. */
 export function deliverWait(notice: WaitNotice): void {
   const tag = `wait:${subjectKey({ session: notice.slot })}`;
-  notifyPage({ slot: notice.slot, words: waitWords(notice), tag });
+  notifyPage({
+    words: waitWords(notice),
+    tag,
+    route: { name: 'board', org: notice.slot.org, project: notice.slot.project },
+  });
 }
 
 /** What waits for a gesture that can carry the permission prompt. */
@@ -254,7 +259,7 @@ function notifyPage(held: Held): void {
   arm();
 }
 
-/** One notification, whose click opens the seat it was raised for. */
+/** One notification, whose click opens where its ask can be answered. */
 function show(held: Held): void {
   const note = new Notification(held.words.title, {
     body: held.words.body,
@@ -262,7 +267,7 @@ function show(held: Held): void {
   });
   note.onclick = () => {
     window.focus();
-    goTo({ name: 'session', slot: held.slot });
+    goTo(held.route);
     note.close();
   };
 }

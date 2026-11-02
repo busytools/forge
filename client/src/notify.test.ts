@@ -265,6 +265,20 @@ describe('which decision waits are news', () => {
     ]);
   });
 
+  /// **The task is half the mark**: two waits entering waiting at the same
+  /// moment on one seat are two raises, and the second is news.
+  it('announces a second task that began at the same moment', () => {
+    const state = askState();
+    waitsRising(state, [{ slot: LEAD, task: 't1', words: 'sign this off', at: at(5) }]);
+    expect(
+      waitsRising(state, [
+        { slot: LEAD, task: 't1', words: 'sign this off', at: at(5) },
+        { slot: LEAD, task: 't2', words: 'look at this', at: at(5) },
+      ]),
+      'the task, not only the moment, makes a wait distinct',
+    ).toEqual([{ slot: LEAD, task: 't2', words: 'look at this', more: 0 }]);
+  });
+
   /// **The wait's moment is its identity**: the same task raised again with a
   /// later start is news, and a restart (which changes no task data) is not.
   it('announces a wait raised again at a new moment', () => {
@@ -513,6 +527,46 @@ describe('delivering an ask', () => {
     if (note === undefined) throw new Error('no notification was shown');
     note.onclick?.();
     expect(get(routes.currentRoute)).toEqual({ name: 'session', slot: OTHER });
+  });
+
+  /// **A wait's click opens its board, not the seat.** A wait raised by a
+  /// since-gone worker has no seat page to land on, and the popover's card
+  /// goes to the board too. The tag keeps an ask and a wait on one seat
+  /// apart, so either can replace only its own.
+  it('opens the board for a wait, under its own tag', async () => {
+    vi.resetModules();
+    const shown: { onclick: (() => void) | null; options: { tag: string } }[] = [];
+    class Note {
+      static permission: NotificationPermission = 'granted';
+      static requestPermission = vi.fn(() => Promise.resolve('granted' as const));
+      onclick: (() => void) | null = null;
+      constructor(
+        _title: string,
+        public options: { body: string; tag: string },
+      ) {
+        shown.push(this);
+      }
+      close(): void {}
+    }
+    vi.stubGlobal('Notification', Note);
+    vi.spyOn(window, 'focus').mockImplementation(() => undefined);
+    const fresh = await import('./notify');
+    const routes = await import('./routes');
+    fresh.deliverAsk({ slot: OTHER, kind: 'question' });
+    fresh.deliverWait({ slot: OTHER, task: 't1', words: 'sign this off', more: 0 });
+    expect(
+      shown.map((note) => note.options.tag),
+      'an ask and a wait on one seat carry their own tags',
+    ).toEqual([
+      'ask:session:Busytools\u0000forge\u0000worker',
+      'wait:session:Busytools\u0000forge\u0000worker',
+    ]);
+    shown[1]?.onclick?.();
+    expect(get(routes.currentRoute), 'a wait opens its board').toEqual({
+      name: 'board',
+      org: 'Busytools',
+      project: 'forge',
+    });
   });
 
   /// **A shell's page raises none**: its Rust half does, so the page does not

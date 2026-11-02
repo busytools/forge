@@ -297,6 +297,19 @@ export function attentionFrom(value: unknown): AttentionRow {
   ) {
     throw new Error('a decision wait this page cannot read');
   }
+  // The age is drawn off both numbers: an object without them is no time,
+  // and a NaN would draw as `NaNd` rather than as unreadable.
+  const { secs_since_epoch, nanos_since_epoch } = at as Record<string, unknown>;
+  if (
+    typeof secs_since_epoch !== 'number' ||
+    !Number.isInteger(secs_since_epoch) ||
+    secs_since_epoch < 0 ||
+    typeof nanos_since_epoch !== 'number' ||
+    !Number.isInteger(nanos_since_epoch) ||
+    nanos_since_epoch < 0
+  ) {
+    throw new Error('a decision wait this page cannot read');
+  }
   return { task, owner, subject, words, at: at as WireTime };
 }
 

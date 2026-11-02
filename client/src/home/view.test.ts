@@ -81,6 +81,10 @@ describe('a decision wait from the wire', () => {
     expect(() => attentionFrom({ task: 't1' }), 'a missing field is refused').toThrow(
       'a decision wait this page cannot read',
     );
+    expect(
+      () => attentionFrom({ ...wait, at: {} }),
+      'an object with no numbers is no time, and would draw NaNd',
+    ).toThrow('a decision wait this page cannot read');
   });
 
   /// **One unreadable wait does not blank the home.** The bad item is
