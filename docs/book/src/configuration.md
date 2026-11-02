@@ -552,8 +552,9 @@ behind it. A sentence's audio arrives when it finishes rendering; nothing
 streams inside one sentence.
 
 **forge does not fetch these two files.** They are placed under
-`models_dir` by hand, and the engine loads them when the first `say`
-arrives; a missing file is reported by its own path. The engine checks both
+`models_dir` by hand, and the engine is warmed when the first client turns
+voice on; a failed warm is retried by the first `say`, and a missing file is
+reported by its own path. The engine checks both
 files against the SHA-256 their entries declare before it loads them, so a
 truncated or substituted file is refused by name rather than loaded.
 

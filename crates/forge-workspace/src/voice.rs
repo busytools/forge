@@ -71,8 +71,8 @@ fn note_envelope(text: &str) -> String {
 type Loader = Arc<dyn Fn() -> Result<Arc<dyn Engine>, String> + Send + Sync>;
 
 /// The per-seat voice service. One render queue per seat, so a second `say`
-/// waits behind the first, and one engine for the whole process, loaded on
-/// the first utterance that needs it.
+/// waits behind the first, and one engine for the whole process, warmed on
+/// the first listener; a failed warm is retried by the first `say`.
 #[derive(Clone)]
 pub struct VoiceService {
     loader: Loader,
