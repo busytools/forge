@@ -511,10 +511,9 @@ impl Workspace {
         if !self.config_arc().dictate.enabled {
             return Err(DispatchError::DictateOff);
         }
-        if self.bench_running() {
-            return Err(DispatchError::BenchRunning);
-        }
+        self.claim_bench()?;
         if let Some(holder) = self.dictate_runtime.lock().live_holder() {
+            self.release_bench();
             return Err(DispatchError::TakeLive { holder });
         }
         *self.dictate_bench.lock() =
@@ -566,8 +565,26 @@ impl Workspace {
     /// Both benches count: each loads its own engines, and a swap under
     /// either would pull a model out from under a run.
     pub(crate) fn bench_running(&self) -> bool {
-        matches!(*self.dictate_bench.lock(), BenchState::Running { .. })
+        self.bench_claim.load(Ordering::SeqCst)
+            || matches!(*self.dictate_bench.lock(), BenchState::Running { .. })
             || matches!(*self.speaking_bench.lock(), SpeakingBenchState::Running { .. })
+    }
+
+    /// Take the one bench slot, or answer that another run holds it. The
+    /// claim is a single atomic, so two presses cannot both pass the check
+    /// and load two engines.
+    fn claim_bench(&self) -> Result<(), DispatchError> {
+        if self.bench_running() {
+            return Err(DispatchError::BenchRunning);
+        }
+        self.bench_claim
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .map(|_| ())
+            .map_err(|_| DispatchError::BenchRunning)
+    }
+
+    fn release_bench(&self) {
+        self.bench_claim.store(false, Ordering::SeqCst);
     }
 
     /// The speaking bench's state, for the page's read.
@@ -601,15 +618,19 @@ impl Workspace {
         if !config.tts.enabled {
             return Err(DispatchError::VoiceOff { reason: "[tts] enabled is false".to_owned() });
         }
+        if !config.dictate.enabled {
+            return Err(DispatchError::VoiceOff {
+                reason: "[dictate] enabled is false, so the recognizer half cannot run".to_owned(),
+            });
+        }
         let Some(files) = config.tts.files() else {
             return Err(DispatchError::VoiceOff {
                 reason: "no models directory resolves".to_owned(),
             });
         };
-        if self.bench_running() {
-            return Err(DispatchError::BenchRunning);
-        }
+        self.claim_bench()?;
         if let Some(holder) = self.dictate_runtime.lock().live_holder() {
+            self.release_bench();
             return Err(DispatchError::TakeLive { holder });
         }
         *self.speaking_bench.lock() = SpeakingBenchState::Running { clip: 0, clips: 0 };
@@ -631,6 +652,7 @@ impl Workspace {
             this.push_models();
         });
         if let Err(error) = spawned {
+            self.release_bench();
             *self.speaking_bench.lock() = SpeakingBenchState::Failed {
                 reason: format!("the bench thread did not start: {error}"),
             };
@@ -690,7 +712,7 @@ impl Workspace {
         let total = clips.len();
         *self.speaking_bench.lock() = SpeakingBenchState::Running { clip: 0, clips: total };
 
-        let engine = match forge_tts::QwenTts::load(&files.model, files.projector.as_deref()) {
+        let engine = match forge_tts::QwenTts::load(&files) {
             Ok(engine) => engine,
             Err(error) => return self.settle_speaking_bench(Err(error.to_string())),
         };
@@ -763,6 +785,7 @@ impl Workspace {
     /// A speaking run that ended: a result is saved, a stop is idle, and
     /// any other ending is a failure with its own reason.
     fn settle_speaking_bench(&self, outcome: Result<SpeakingBenchResult, String>) {
+        self.release_bench();
         match outcome {
             Ok(result) => {
                 self.save_speaking_result(&result);
@@ -891,6 +914,7 @@ impl Workspace {
     /// request - a partial corpus is not a result, and nothing is saved -
     /// and failed with its own reason otherwise.
     fn settle_bench(&self, target: &BenchTarget, reason: String) {
+        self.release_bench();
         if self.dictate_bench_cancel.load(Ordering::Relaxed) {
             *self.dictate_bench.lock() = BenchState::Idle;
         } else {
@@ -899,6 +923,7 @@ impl Workspace {
     }
 
     fn fail_bench(&self, target: BenchTarget, reason: String) {
+        self.release_bench();
         *self.dictate_bench.lock() = BenchState::Failed { target, reason };
     }
 
@@ -1046,6 +1071,37 @@ mod tests {
         let (ws, _updates, _config, _models) = voice_stub();
         let err = ws.dispatch(crate::Command::VoiceBenchStop).expect_err("nothing to stop");
         assert!(matches!(err, crate::DispatchError::BenchNotRunning), "got: {err:?}");
+    }
+
+    /// A stopped speaking run settles to idle and saves nothing: a partial
+    /// corpus is not a result.
+    #[test]
+    fn a_stopped_speaking_run_settles_to_idle_and_saves_nothing() {
+        let (ws, _updates, _config, _models) = voice_stub();
+        let dir = tempfile::tempdir().unwrap();
+        ws.install_db_for_test(crate::store::Db::open(&dir.path().join("db.redb")).unwrap());
+        *ws.speaking_bench.lock() = SpeakingBenchState::Running { clip: 3, clips: 12 };
+        ws.speaking_bench_cancel.store(true, Ordering::Relaxed);
+
+        ws.settle_speaking_bench(Err("stopped".to_owned()));
+
+        assert!(matches!(*ws.speaking_bench.lock(), SpeakingBenchState::Idle));
+        assert!(ws.speaking_bench_results().is_empty(), "a stop saves nothing");
+    }
+
+    /// A run that failed without a stop settles to failed with its reason.
+    #[test]
+    fn a_failed_speaking_run_settles_to_failed() {
+        let (ws, _updates, _config, _models) = voice_stub();
+        *ws.speaking_bench.lock() = SpeakingBenchState::Running { clip: 0, clips: 1 };
+
+        ws.settle_speaking_bench(Err("the model is missing".to_owned()));
+
+        assert!(
+            matches!(&*ws.speaking_bench.lock(), SpeakingBenchState::Failed { reason } if reason.contains("missing")),
+            "got: {:?}",
+            *ws.speaking_bench.lock(),
+        );
     }
 
     /// **Speech switched off refuses by name**: there is no speaking model

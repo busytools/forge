@@ -41,8 +41,8 @@ impl Tool for Say {
 
     fn description(&self) -> &'static str {
         "Speak one utterance to the person listening to this seat. Use it for anything they should \
-         hear; the text you write in the chat is not spoken. Returns `spoken: queued` when it is \
-         queued, or `no listener` when no client has voice on for this seat."
+         hear; the text you write in the chat is not spoken. Returns `spoken: queued` once the \
+         render starts, or `no listener` when no client has voice on for this seat."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -131,6 +131,10 @@ mod tests {
     async fn an_empty_text_is_refused() {
         let output = say("   ").await;
         assert!(output.is_error, "an empty utterance is refused");
+        let ToolOutputBlock::Text { text } = &output.blocks[0] else {
+            panic!("the refusal is a line of text");
+        };
+        assert_eq!(text, "nothing to say: the utterance is empty");
     }
 
     #[test]

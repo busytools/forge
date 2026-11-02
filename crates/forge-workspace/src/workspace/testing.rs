@@ -442,6 +442,7 @@ impl Workspace {
             dictate_bench_cancel: std::sync::atomic::AtomicBool::new(false),
             speaking_bench: Mutex::new(crate::bench::SpeakingBenchState::default()),
             speaking_bench_cancel: std::sync::atomic::AtomicBool::new(false),
+            bench_claim: std::sync::atomic::AtomicBool::new(false),
             read_aloud_error: Mutex::new(None),
             #[cfg(any(test, feature = "testing"))]
             test_catalogue_source: Mutex::new(None),

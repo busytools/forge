@@ -373,7 +373,9 @@ pub fn build_forge_server(
     if families.contains(&McpFamily::Slack) {
         builder = slack::add_tools(builder, slack, slot.clone());
     }
-    if families.contains(&McpFamily::Voice) {
+    // Doubly gated like `systemone`: a switched-off `[tts]` leaves no tool a
+    // session could try, even when the family is selected.
+    if families.contains(&McpFamily::Voice) && voice.enabled() {
         builder = voice::add_tools(builder, voice, slot);
     }
     builder.instructions(TASK_BOARD_INSTRUCTIONS).build()

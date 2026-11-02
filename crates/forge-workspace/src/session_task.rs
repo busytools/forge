@@ -515,6 +515,9 @@ impl SessionTask {
                     // and a boot resolves this session from its row.
                     if let Some(workspace) = self.workspace.upgrade() {
                         workspace.note_running_session_id(&self.key, &session_id);
+                        // The listener set is keyed by seat, so a swap leaves
+                        // it alone: the successor has to be told it is heard.
+                        workspace.voice_occupant_changed(&self.key);
                     }
                     self.emit(SessionUpdate::SessionReplaced {
                         key: key.clone(),

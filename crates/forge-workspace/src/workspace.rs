@@ -728,6 +728,10 @@ pub struct Workspace {
     /// Read by the models page through `speaking_bench` and its results.
     pub(crate) speaking_bench: Mutex<crate::bench::SpeakingBenchState>,
     pub(crate) speaking_bench_cancel: std::sync::atomic::AtomicBool,
+    /// One bench at a time across both directions: a single claim taken
+    /// before either state is written, so two presses cannot both pass the
+    /// check and load two engines.
+    pub(crate) bench_claim: std::sync::atomic::AtomicBool,
     /// The last read-aloud write's failure, when there was one: a stop
     /// whose write fails has no dispatch left to answer, so the page reads
     /// it here instead. Cleared when the next recording starts.
@@ -2433,6 +2437,7 @@ impl Workspace {
             dictate_bench_cancel: std::sync::atomic::AtomicBool::new(false),
             speaking_bench: Mutex::new(crate::bench::SpeakingBenchState::default()),
             speaking_bench_cancel: std::sync::atomic::AtomicBool::new(false),
+            bench_claim: std::sync::atomic::AtomicBool::new(false),
             read_aloud_error: Mutex::new(None),
             #[cfg(any(test, feature = "testing"))]
             test_catalogue_source: Mutex::new(None),
@@ -6424,7 +6429,9 @@ impl Workspace {
                 Command::VoiceMode { key, on, initiator } => {
                     let client = initiator.unwrap_or(0);
                     let voice = self.voice_service();
-                    voice.set_listening(&key, client, on);
+                    if voice.enabled() {
+                        voice.set_listening(&key, client, on);
+                    }
                     let listeners = u32::try_from(voice.listeners(&key)).unwrap_or(u32::MAX);
                     let _ =
                         self.update_sender().send(SessionUpdate::VoiceModeState { key, listeners });

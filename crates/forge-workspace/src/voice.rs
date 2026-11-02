@@ -1,22 +1,28 @@
 //! The per-seat voice service: listeners, the sentence queue, and synthesis.
 
 use std::collections::{BTreeSet, HashMap};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use forge_primitives::SessionSlot;
 use forge_tts::{Chunk, Engine, SpeakRequest};
 use tokio::sync::{mpsc, oneshot};
 
+/// How long a loaded engine stays resident after the last listener leaves.
+const IDLE_RELEASE: Duration = Duration::from_secs(5 * 60);
+
 /// What one utterance renders with, from the `[tts]` section.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VoiceSettings {
+    pub enabled: bool,
     pub max_utterance_seconds: u64,
     pub language: Option<String>,
 }
 
 impl Default for VoiceSettings {
     fn default() -> Self {
-        Self { max_utterance_seconds: 120, language: None }
+        Self { enabled: true, max_utterance_seconds: 120, language: None }
     }
 }
 
@@ -35,6 +41,9 @@ pub enum SayError {
     /// The engine has no load to offer, or the queue is gone.
     #[error("the voice engine is not ready")]
     NotReady,
+    /// `[tts] enabled` is false, so nothing may synthesise.
+    #[error("speech is off")]
+    Disabled,
 }
 
 /// Where a rendered clip goes.
@@ -71,6 +80,10 @@ pub struct VoiceService {
 struct Seat {
     listeners: BTreeSet<u64>,
     queue: mpsc::UnboundedSender<Job>,
+    /// The listener count the render task reads, so it stops between
+    /// sentences the moment the last one leaves rather than draining a
+    /// queue nobody will hear.
+    live: Arc<AtomicUsize>,
 }
 
 struct Job {
@@ -100,8 +113,9 @@ impl VoiceService {
     /// rendered, so a named engine failure reaches the caller rather than
     /// disappearing into a playback queue.
     pub async fn say(&self, seat: &SessionSlot, text: String) -> Result<(), SayError> {
-        forge_tts::within_bound(&text, self.settings.max_utterance_seconds)
-            .map_err(|error| SayError::TooLong(error.to_string()))?;
+        if !self.settings.enabled {
+            return Err(SayError::Disabled);
+        }
         let queue = {
             let seats = self.seats.lock().map_err(|_| SayError::NotReady)?;
             match seats.get(seat) {
@@ -109,6 +123,8 @@ impl VoiceService {
                 _ => return Err(SayError::NoListener),
             }
         };
+        forge_tts::within_bound(&text, self.settings.max_utterance_seconds)
+            .map_err(|error| SayError::TooLong(error.to_string()))?;
 
         let engine = self.engine().await?;
         let (first, outcome) = oneshot::channel();
@@ -127,10 +143,15 @@ impl VoiceService {
                 if let Some(state) = seats.get_mut(seat) {
                     let first = state.listeners.is_empty();
                     state.listeners.insert(client);
+                    state.live.fetch_add(1, Ordering::SeqCst);
                     first
                 } else {
-                    let queue = self.spawn_queue(seat);
-                    seats.insert(seat.clone(), Seat { listeners: BTreeSet::from([client]), queue });
+                    let live = Arc::new(AtomicUsize::new(1));
+                    let queue = self.spawn_queue(seat, Arc::clone(&live));
+                    seats.insert(
+                        seat.clone(),
+                        Seat { listeners: BTreeSet::from([client]), queue, live },
+                    );
                     true
                 }
             } else {
@@ -140,13 +161,19 @@ impl VoiceService {
                 let removed = state.listeners.remove(&client);
                 let last = removed && state.listeners.is_empty();
                 if last {
+                    state.live.store(0, Ordering::SeqCst);
                     seats.remove(seat);
+                } else if removed {
+                    state.live.fetch_sub(1, Ordering::SeqCst);
                 }
                 last
             }
         };
         if transition {
             self.notes.note(seat, if on { LISTENING_NOTE } else { NOT_LISTENING_NOTE });
+            if !on {
+                self.schedule_idle_release();
+            }
         }
     }
 
@@ -159,11 +186,8 @@ impl VoiceService {
     }
 
     /// A connection has gone: take it off every seat it was listening to,
-    /// and answer the seats whose count changed.
-    ///
-    /// **A socket that dies says no goodbye**, so the core's own teardown is
-    /// what lowers the count; without it a dropped client listens forever
-    /// and the last-listener note never arrives.
+    /// and answer the seats whose count changed. A socket that dies says no
+    /// goodbye, so this teardown is what lowers the count.
     pub fn release(&self, client: u64) -> Vec<SessionSlot> {
         let (changed, emptied) = {
             let Ok(mut seats) = self.seats.lock() else {
@@ -177,7 +201,10 @@ impl VoiceService {
                 }
                 changed.push(seat.clone());
                 if state.listeners.is_empty() {
+                    state.live.store(0, Ordering::SeqCst);
                     emptied.push(seat.clone());
+                } else {
+                    state.live.fetch_sub(1, Ordering::SeqCst);
                 }
             }
             for seat in &emptied {
@@ -188,7 +215,58 @@ impl VoiceService {
         for seat in &emptied {
             self.notes.note(seat, NOT_LISTENING_NOTE);
         }
+        if !emptied.is_empty() {
+            self.schedule_idle_release();
+        }
         changed
+    }
+
+    /// Whether `[tts] enabled` is set. A disabled service registers no tool
+    /// and refuses every `say`.
+    pub fn enabled(&self) -> bool {
+        self.settings.enabled
+    }
+
+    /// The seat's occupant changed under a listening client: tell the new
+    /// session it is heard, because the note fires on the listener set's
+    /// transitions and a `/new` or `/resume` leaves that set alone.
+    pub fn occupant_changed(&self, seat: &SessionSlot) {
+        let listening = self
+            .seats
+            .lock()
+            .ok()
+            .and_then(|seats| seats.get(seat).map(|state| !state.listeners.is_empty()))
+            .unwrap_or(false);
+        if listening {
+            self.notes.note(seat, LISTENING_NOTE);
+        }
+    }
+
+    /// Drop the engine once no seat has a listener and no render holds it.
+    /// A new `say` loads it again, so the release costs a reload rather than
+    /// leaving 2.3 GB resident for the process's life.
+    fn schedule_idle_release(&self) {
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let engine = Arc::clone(&self.engine);
+        let seats = Arc::clone(&self.seats);
+        handle.spawn(async move {
+            tokio::time::sleep(IDLE_RELEASE).await;
+            let empty = {
+                let Ok(seats) = seats.lock() else {
+                    return;
+                };
+                seats.is_empty()
+            };
+            if !empty {
+                return;
+            }
+            let mut slot = engine.lock().await;
+            if slot.as_ref().is_some_and(|held| Arc::strong_count(held) == 1) {
+                *slot = None;
+            }
+        });
     }
 
     /// The engine, loading it on the first caller. The mutex is held across
@@ -207,17 +285,23 @@ impl VoiceService {
         Ok(engine)
     }
 
-    /// The seat's render loop. It ends when the last listener leaves and
-    /// drops the queue.
-    fn spawn_queue(&self, seat: &SessionSlot) -> mpsc::UnboundedSender<Job> {
+    /// The seat's render loop. It stops the moment the last listener leaves,
+    /// so a queued utterance is not rendered into a seat nobody hears.
+    fn spawn_queue(&self, seat: &SessionSlot, live: Arc<AtomicUsize>) -> mpsc::UnboundedSender<Job> {
         let (queue, mut jobs) = mpsc::unbounded_channel::<Job>();
         let sink = Arc::clone(&self.sink);
         let settings = self.settings.clone();
         let seat = seat.clone();
         tokio::spawn(async move {
             let mut seq = 0_u32;
-            while let Some(job) = jobs.recv().await {
-                seq = render(job, &seat, &settings, sink.as_ref(), seq).await;
+            while live.load(Ordering::SeqCst) > 0 {
+                let Some(job) = jobs.recv().await else {
+                    break;
+                };
+                if live.load(Ordering::SeqCst) == 0 {
+                    break;
+                }
+                seq = render(job, &seat, &settings, sink.as_ref(), &live, seq).await;
             }
         });
         queue
@@ -236,7 +320,7 @@ impl crate::Workspace {
                 let loader: Loader = Arc::new(move || {
                     let files =
                         files.clone().ok_or_else(|| "no models directory resolves".to_owned())?;
-                    let engine = forge_tts::QwenTts::load(&files.model, files.projector.as_deref())
+                    let engine = forge_tts::QwenTts::load(&files)
                         .map_err(|error| error.to_string())?;
                     Ok(Arc::new(engine) as Arc<dyn Engine>)
                 });
@@ -245,10 +329,13 @@ impl crate::Workspace {
             .clone()
     }
 
-    /// The clients with voice on for `seat`. Zero before the service has
-    /// been built, which is the truth: nobody could have toggled it yet.
-    pub fn voice_listeners(&self, seat: &SessionSlot) -> usize {
-        self.voice.get().map_or(0, |service| service.listeners(seat))
+    /// The seat's occupant changed under a listening client: tell the new
+    /// session it is heard. A no-op before the service exists, because
+    /// nobody could have toggled voice on.
+    pub fn voice_occupant_changed(&self, seat: &SessionSlot) {
+        if let Some(service) = self.voice.get() {
+            service.occupant_changed(seat);
+        }
     }
 
     /// A connection has left: take it off every seat it was listening to and
@@ -289,6 +376,7 @@ impl crate::Workspace {
     fn build_voice_service(self: &Arc<Self>, loader: Loader) -> VoiceService {
         let config = self.config_arc();
         let settings = VoiceSettings {
+            enabled: config.tts.enabled,
             max_utterance_seconds: config.tts.max_utterance_seconds,
             language: config.tts.language.clone(),
         };
@@ -352,13 +440,19 @@ impl crate::Workspace {
                 return;
             }
         };
+        self.handle_transcript(&key, outcome);
+    }
+
+    /// A transcription's outcome: the words become the reader's own prompt,
+    /// and an empty one draws a notice instead of dispatching nothing.
+    fn handle_transcript(self: &Arc<Self>, key: &SessionSlot, outcome: forge_dictate::Outcome) {
         let words = match outcome {
             forge_dictate::Outcome::Transcript(transcript) => transcript.text,
             forge_dictate::Outcome::NoAudio { .. } => String::new(),
         };
         if words.trim().is_empty() {
             self.notice(
-                &key,
+                key,
                 crate::NoticeSeverity::Error,
                 "voice: nothing was heard in that utterance",
             );
@@ -366,7 +460,7 @@ impl crate::Workspace {
         }
         let uuid = forge_sdk::request_id::next_prompt_id();
         if let Err(error) =
-            self.dispatch_workspace_prompt_under(&key, words, crate::PromptSource::You, uuid)
+            self.dispatch_workspace_prompt_under(key, words, crate::PromptSource::You, uuid)
         {
             tracing::warn!(
                 event_name = "voice_prompt_not_delivered",
@@ -389,6 +483,11 @@ impl AudioSink for WorkspaceSink {
         let Some(workspace) = self.workspace.upgrade() else {
             return;
         };
+        // A seat that has ended has no one to speak to, even if a stale
+        // listener remains.
+        if workspace.domain_session_for(seat).is_none() {
+            return;
+        }
         let _ = workspace.update_sender().send(crate::SessionUpdate::VoiceAudio {
             key: seat.clone(),
             seq: chunk.seq,
@@ -431,17 +530,24 @@ async fn render(
     seat: &SessionSlot,
     settings: &VoiceSettings,
     sink: &dyn AudioSink,
+    live: &AtomicUsize,
     mut seq: u32,
 ) -> u32 {
     let Job { text, engine, first } = job;
     let mut first = Some(first);
     for sentence in forge_tts::sentences(&text) {
+        if live.load(Ordering::SeqCst) == 0 {
+            return seq;
+        }
         let mut chunks = engine.speak(SpeakRequest {
             text: sentence,
             language: settings.language.clone(),
             speaker: None,
         });
         while let Some(result) = chunks.recv().await {
+            if live.load(Ordering::SeqCst) == 0 {
+                return seq;
+            }
             match result {
                 Ok(chunk) => {
                     if let Some(sender) = first.take() {
@@ -453,6 +559,7 @@ async fn render(
                 Err(error) => {
                     tracing::warn!(
                         event_name = "voice_render_failed",
+                        slot = %seat.display(),
                         %error,
                         "a sentence did not render; the rest of the utterance is dropped"
                     );
@@ -544,17 +651,21 @@ mod tests {
         sink: Arc<RecordingSink>,
         notes: Arc<RecordingNotes>,
         requests: Arc<Mutex<Vec<String>>>,
+        loads: Arc<AtomicUsize>,
     }
 
     fn service_with(engine: impl Fn() -> StubEngine + Send + Sync + 'static) -> Fixture {
         let requests = Arc::new(Mutex::new(Vec::new()));
         let sink = Arc::new(RecordingSink { chunks: Mutex::new(Vec::new()) });
         let notes = Arc::new(RecordingNotes { said: Mutex::new(Vec::new()) });
+        let loads = Arc::new(AtomicUsize::new(0));
         let factory = Arc::new(engine);
         let loader = {
             let factory = Arc::clone(&factory);
             let requests = Arc::clone(&requests);
+            let loads = Arc::clone(&loads);
             move || {
+                loads.fetch_add(1, Ordering::SeqCst);
                 let mut engine = factory();
                 engine.requests = Arc::clone(&requests);
                 Ok(Arc::new(engine) as Arc<dyn Engine>)
@@ -570,6 +681,7 @@ mod tests {
             sink,
             notes,
             requests,
+            loads,
         }
     }
 
@@ -589,6 +701,157 @@ mod tests {
         let outcome = fixture.service.say(&seat(), "Hello.".to_owned()).await;
         assert_eq!(outcome, Err(SayError::NoListener));
         assert!(fixture.requests.lock().expect("unpoisoned").is_empty(), "the engine is untouched");
+        assert_eq!(fixture.loads.load(Ordering::SeqCst), 0, "the 2.3 GB model is never loaded");
+    }
+
+    #[tokio::test]
+    async fn a_disabled_service_refuses_a_say() {
+        let fixture = service_with(|| StubEngine::new(Arc::new(Mutex::new(Vec::new()))));
+        let service = VoiceService::new(
+            Arc::new(|| Err("no model loads in this test".to_owned())),
+            VoiceSettings { enabled: false, ..VoiceSettings::default() },
+            Arc::clone(&fixture.sink) as Arc<dyn AudioSink>,
+            Arc::clone(&fixture.notes) as Arc<dyn NoteDispatch>,
+        );
+        service.set_listening(&seat(), 1, true);
+        assert_eq!(service.say(&seat(), "Hello.".to_owned()).await, Err(SayError::Disabled));
+    }
+
+    #[tokio::test]
+    async fn a_chunk_error_reaches_the_caller() {
+        struct Failing;
+        impl Engine for Failing {
+            fn speak(&self, _request: SpeakRequest) -> mpsc::Receiver<Result<Chunk, Error>> {
+                let (sender, receiver) = mpsc::channel(1);
+                tokio::spawn(async move {
+                    let _ = sender.send(Err(Error::Render("the render died".to_owned()))).await;
+                });
+                receiver
+            }
+        }
+        let sink = Arc::new(RecordingSink { chunks: Mutex::new(Vec::new()) });
+        let notes = Arc::new(RecordingNotes { said: Mutex::new(Vec::new()) });
+        let service = VoiceService::new(
+            Arc::new(|| Ok(Arc::new(Failing) as Arc<dyn Engine>)),
+            VoiceSettings::default(),
+            Arc::clone(&sink) as Arc<dyn AudioSink>,
+            Arc::clone(&notes) as Arc<dyn NoteDispatch>,
+        );
+        service.set_listening(&seat(), 1, true);
+        let outcome = service.say(&seat(), "Hello.".to_owned()).await;
+        assert!(
+            matches!(&outcome, Err(SayError::Engine(reason)) if reason.contains("the render died")),
+            "the caller hears the engine's own failure, got: {outcome:?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn the_queue_stops_when_the_last_listener_leaves() {
+        let gate = Arc::new(tokio::sync::Semaphore::new(0));
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::new(RecordingSink { chunks: Mutex::new(Vec::new()) });
+        let notes = Arc::new(RecordingNotes { said: Mutex::new(Vec::new()) });
+        let engine = {
+            let mut engine = StubEngine::new(Arc::clone(&requests));
+            engine.gate = Some(Arc::clone(&gate));
+            Arc::new(engine) as Arc<dyn Engine>
+        };
+        let service = VoiceService::new(
+            Arc::new(move || Ok(Arc::clone(&engine))),
+            VoiceSettings::default(),
+            Arc::clone(&sink) as Arc<dyn AudioSink>,
+            Arc::clone(&notes) as Arc<dyn NoteDispatch>,
+        );
+        service.set_listening(&seat(), 1, true);
+        let first = tokio::spawn({
+            let service = service.clone();
+            async move { service.say(&seat(), "One.".to_owned()).await }
+        });
+        let second = tokio::spawn({
+            let service = service.clone();
+            async move { service.say(&seat(), "Two.".to_owned()).await }
+        });
+        for _ in 0..20 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(requests.lock().expect("unpoisoned").clone(), vec!["One.".to_owned()]);
+
+        // The last listener leaves while the first render is held: the
+        // queued utterance must not render into a seat nobody hears.
+        service.set_listening(&seat(), 1, false);
+        gate.add_permits(2);
+        let _ = first.await.expect("joined");
+        let _ = second.await.expect("joined");
+        for _ in 0..20 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(
+            requests.lock().expect("unpoisoned").clone(),
+            vec!["One.".to_owned()],
+            "the queued utterance never starts",
+        );
+        assert!(sink.chunks.lock().expect("unpoisoned").is_empty(), "nothing reaches the sink");
+    }
+
+    /// A transcript becomes the reader's own prompt, through the same command
+    /// the composer's own send uses.
+    #[tokio::test]
+    async fn a_transcript_is_dispatched_as_the_readers_prompt() {
+        let (workspace, _updates) = crate::Workspace::testing_stub();
+        workspace.enable_test_dispatch_intercept();
+        let seat = seat();
+        workspace.handle_transcript(
+            &seat,
+            forge_dictate::Outcome::Transcript(forge_dictate::Transcript {
+                text: "hello there".to_owned(),
+                asr: "hello there".to_owned(),
+                stages: forge_dictate::Stages::default(),
+                truncated: false,
+            }),
+        );
+
+        let dispatched = workspace.drain_test_dispatch_buffer();
+        assert!(
+            dispatched.iter().any(|command| matches!(
+                command,
+                crate::Command::PromptUnder { text, source: crate::PromptSource::You, .. }
+                    if text == "hello there"
+            )),
+            "the transcript is the reader's prompt, got: {dispatched:?}",
+        );
+    }
+
+    /// The transcript half of the utterance path, without a model: an empty
+    /// transcription draws a notice and dispatches nothing.
+    #[tokio::test]
+    async fn an_empty_transcript_draws_a_notice_and_dispatches_nothing() {
+        let (workspace, mut updates) = crate::Workspace::testing_stub();
+        let seat = seat();
+        workspace.handle_transcript(
+            &seat,
+            forge_dictate::Outcome::NoAudio { peak: f32::NEG_INFINITY, audio: Duration::ZERO },
+        );
+
+        let update = updates.try_recv().expect("a notice");
+        match &*update.update {
+            crate::SessionUpdate::Notice { key, text, .. } => {
+                assert_eq!(key, &seat);
+                assert!(text.contains("nothing was heard"), "got: {text}");
+            }
+            other => panic!("expected a notice, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn an_occupant_change_tells_the_new_session_it_is_heard() {
+        let fixture = service_with(|| StubEngine::new(Arc::new(Mutex::new(Vec::new()))));
+        fixture.service.set_listening(&seat(), 1, true);
+        fixture.service.occupant_changed(&seat());
+        assert_eq!(
+            fixture.notes.said.lock().expect("unpoisoned").clone(),
+            vec![LISTENING_NOTE.to_owned(), LISTENING_NOTE.to_owned()],
+            "the new occupant is told again",
+        );
     }
 
     #[tokio::test]
@@ -599,6 +862,15 @@ mod tests {
         wait_for(&fixture.sink, 2).await;
         let requests = fixture.requests.lock().expect("unpoisoned").clone();
         assert_eq!(requests, vec!["One.".to_owned(), "Two.".to_owned()]);
+        let seqs: Vec<u32> = fixture
+            .sink
+            .chunks
+            .lock()
+            .expect("unpoisoned")
+            .iter()
+            .map(|(_, chunk)| chunk.seq)
+            .collect();
+        assert_eq!(seqs, vec![0, 1], "the sink hears the sentences in render order");
     }
 
     #[tokio::test]
@@ -635,23 +907,32 @@ mod tests {
     #[tokio::test]
     async fn a_dropped_connection_leaves_every_seat_it_listened_to() {
         let fixture = service_with(|| StubEngine::new(Arc::new(Mutex::new(Vec::new()))));
-        let seat = seat();
-        fixture.service.set_listening(&seat, 1, true);
-        fixture.service.set_listening(&seat, 2, true);
+        let first = seat();
+        let second = SessionSlot::new("Org", "project", "worker");
+        fixture.service.set_listening(&first, 1, true);
+        fixture.service.set_listening(&first, 2, true);
+        fixture.service.set_listening(&second, 2, true);
 
         // A socket dies without a goodbye: the core's teardown is the only
-        // thing that can take its listener off.
+        // thing that can take its listener off, and it must leave every seat
+        // the connection was on, not just the first one it finds.
         let changed = fixture.service.release(2);
-        assert_eq!(changed, vec![seat.clone()], "the seat's count moved");
-        assert_eq!(fixture.service.listeners(&seat), 1);
+        assert_eq!(changed.len(), 2, "both seats' counts moved");
+        assert!(changed.contains(&first) && changed.contains(&second), "got: {changed:?}");
+        assert_eq!(fixture.service.listeners(&first), 1);
+        assert_eq!(fixture.service.listeners(&second), 0);
         assert_eq!(
             fixture.notes.said.lock().expect("unpoisoned").len(),
-            1,
-            "one client still listens, so nothing is withdrawn",
+            3,
+            "two listening notes and one withdrawal: the first seat still has a listener",
+        );
+        assert_eq!(
+            fixture.notes.said.lock().expect("unpoisoned").last().map(String::as_str),
+            Some(NOT_LISTENING_NOTE),
         );
 
         fixture.service.release(1);
-        assert_eq!(fixture.service.listeners(&seat), 0);
+        assert_eq!(fixture.service.listeners(&first), 0);
         assert_eq!(
             fixture.notes.said.lock().expect("unpoisoned").last().map(String::as_str),
             Some(NOT_LISTENING_NOTE),
