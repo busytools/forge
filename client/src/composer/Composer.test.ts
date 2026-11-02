@@ -10128,8 +10128,7 @@ describe('the voice switch across a body swap', () => {
     const harness = open({ voice: true });
     const button = document.querySelector('.voice');
     if (!(button instanceof HTMLButtonElement)) throw new Error('the voice switch did not draw');
-    button.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }));
-    button.dispatchEvent(new MouseEvent('pointerup', { bubbles: true }));
+    button.click();
     flushSync();
     expect(harness.sent.some((sent) => 'voice_mode' in sent.command)).toBe(true);
 
@@ -10145,25 +10144,24 @@ describe('the voice switch across a body swap', () => {
     ).toEqual([]);
   });
 
-  it('turns voice off when the seat changes', async () => {
+  it('pauses the old seat when the seat changes, without telling the agent it stopped', () => {
     const harness = open({ voice: true });
     const button = document.querySelector('.voice');
     if (!(button instanceof HTMLButtonElement)) throw new Error('the voice switch did not draw');
-    button.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }));
-    button.dispatchEvent(new MouseEvent('pointerup', { bubbles: true }));
+    button.click();
     flushSync();
 
     harness.page.slot = { ...SLOT, project: 'other-project' };
     flushSync();
-    // The release is one tick late so a body swap's remount can cancel it.
-    await new Promise((resolve) => setTimeout(resolve, 0));
 
+    const off = harness.sent.filter(
+      (sent) =>
+        'voice_mode' in sent.command && (sent.command.voice_mode as { on: boolean }).on === false,
+    );
+    expect(off, 'the old seat is told it is no longer heard').toHaveLength(1);
     expect(
-      harness.sent.some(
-        (sent) =>
-          'voice_mode' in sent.command && (sent.command.voice_mode as { on: boolean }).on === false,
-      ),
-      'the old seat is told it is no longer heard',
-    ).toBe(true);
+      (off[0]?.command as { voice_mode: { explicit: boolean } }).voice_mode.explicit,
+      'a seat change pauses; only the reader own off tells the agent it stopped',
+    ).toBe(false);
   });
 });

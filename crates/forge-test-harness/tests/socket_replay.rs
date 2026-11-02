@@ -335,7 +335,7 @@ census!(Command,
         SetReviewThreadStatus struct,
         CloseSession struct, UpsertReviewThread struct, DeleteReviewThread struct,
         SubmitReview struct,
-        VoiceUtterance struct, VoiceMode struct,
+        VoiceMode struct,
     ],
     command_census, COMMAND_VARIANTS);
 

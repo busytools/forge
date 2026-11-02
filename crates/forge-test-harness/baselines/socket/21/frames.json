@@ -163,8 +163,7 @@
     "UpsertReviewThread": "upsert_review_thread",
     "VoiceBenchStart": "voice_bench_start",
     "VoiceBenchStop": "voice_bench_stop",
-    "VoiceMode": "voice_mode",
-    "VoiceUtterance": "voice_utterance"
+    "VoiceMode": "voice_mode"
   },
   "client_message": {
     "BrowserControl": "browser_control",

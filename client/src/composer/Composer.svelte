@@ -17,8 +17,7 @@
   import TakeCard from './TakeCard.svelte';
   import DictateControl from './DictateControl.svelte';
   import VoiceControl from '../voice/control.svelte';
-  import { VoiceCapture } from '../voice/capture.svelte';
-  import { dropVoice } from '../voice/registry';
+  import { pauseVoice } from '../voice/registry';
   import DictationPanel from './DictationPanel.svelte';
   import Dock from './Dock.svelte';
   import Field from './Field.svelte';
@@ -107,7 +106,7 @@
     if (untrack(() => box) !== next) box = next;
     const left = untrack(() => previousSeat);
     if (left !== key) {
-      dropVoice(left);
+      pauseVoice(left);
       previousSeat = key;
     }
   });
@@ -1582,11 +1581,7 @@
            listener behind. -->
       {#if voice}
         {#key boxKey(slot)}
-          <VoiceControl
-            {connection}
-            {slot}
-            open={() => VoiceCapture.open(deviceFor(boxKey(slot)))}
-          />
+          <VoiceControl {connection} {slot} />
         {/key}
       {/if}
       {#if running}

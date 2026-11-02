@@ -2834,7 +2834,6 @@ pub(crate) fn execute_command_via_handle(
         | Command::PluginCheckUpdates
         | Command::MarketplaceAdd { .. }
         | Command::MarketplaceRepair { .. }
-        | Command::VoiceUtterance { .. }
         | Command::VoiceMode { .. }) => {
             tracing::warn!(
                 target: "forge_workspace::session_task",
@@ -10415,7 +10414,7 @@ provider = "anthropic"
         let (workspace, _update_rx) = crate::Workspace::testing_stub();
         workspace.install_voice_engine_for_test(Arc::new(Silent));
         let session_key = SessionSlot::from_str_for_test("voice-respawn-uuid");
-        workspace.voice_service().set_listening(&session_key, 1, true);
+        workspace.voice_service().set_listening(&session_key, 1, true, false);
         let (command_tx, mut command_rx) = tokio::sync::mpsc::unbounded_channel();
         workspace.command_senders.lock().insert(session_key.clone(), command_tx);
 

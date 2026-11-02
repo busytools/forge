@@ -1,6 +1,6 @@
 /**
- * One seat's voice, as this client holds it: the switch, the hold that
- * becomes an utterance, and the speech coming back.
+ * One seat's voice, as this client holds it: the switch and the speech coming
+ * back.
  *
  * The mode belongs to the client, not the seat's record: two clients can
  * watch one seat and only one of them be listening.
@@ -9,49 +9,29 @@
 import type { Connection } from '../socket';
 import type { SessionSlot } from '../wire/types';
 import type { SessionUpdate } from '../protocol';
-import { MAX_HOLD_SECONDS, VoiceCapture, type HeldClip } from './capture.svelte';
 import { Playback, type Speaker } from './playback.svelte';
 
 /** What one seat's control can show. */
-export type VoiceState = 'off' | 'listening' | 'talking' | 'speaking';
+export type VoiceState = 'off' | 'listening' | 'speaking';
 
 /** How the driver reaches the core: one command out, the seat's frames in. */
 export interface VoicePort {
-  send(command: 'voice_mode', body: { on: boolean }): void;
-  send(command: 'voice_utterance', body: { pcm: number[] }): void;
+  send(command: 'voice_mode', body: { on: boolean; explicit: boolean }): void;
   /** The seat's frames since the last call, in arrival order. */
   frames(): SessionUpdate[];
   /** The listener count the seat's last read carried, before any frame. */
   seed(): number;
 }
 
-/** How a hold opens a microphone; a seam so a test needs no audio stack. */
-export type OpenCapture = () => Promise<VoiceCapture>;
-
 export class Voice {
   /** Whether this client has voice on for the seat. */
   on = $state(false);
   /** Clients with voice on for the seat, this one included. */
   listeners = $state(0);
-  /** A line the control draws: a failed open, or a hold that was cut. */
+  /** A line the control draws: a send on a socket that is down. */
   line = $state<string | null>(null);
-  /** The hold in progress, so the control can draw its level and clock. */
-  clip = $state.raw<HeldClip | null>(null);
 
-  /** The hold's device. Reactive so the control's `data-state` follows it. */
-  private capture = $state.raw<VoiceCapture | null>(null);
   private readonly playback: Playback;
-  /**
-   * Whether the microphone is still opening. A press during the open is not
-   * a second open, and a release or cancel during it must not be a no-op.
-   */
-  #opening = false;
-  /**
-   * Counts opens. A device that arrives after its hold ended - the release,
-   * cancel or unmount landed while the permission prompt was up - is closed
-   * on arrival rather than left capturing into a clip nobody will release.
-   */
-  #openToken = 0;
   /**
    * Whether this client wants voice on, which survives a dropped socket:
    * the mode resubscribes when the connection comes back.
@@ -60,7 +40,6 @@ export class Voice {
 
   constructor(
     private readonly port: VoicePort,
-    private readonly open: OpenCapture = () => VoiceCapture.open(null),
     speaker?: Speaker,
   ) {
     this.playback = speaker === undefined ? new Playback() : new Playback(speaker);
@@ -70,7 +49,6 @@ export class Voice {
   }
 
   get state(): VoiceState {
-    if (this.capture !== null) return 'talking';
     if (this.playback.playing) return 'speaking';
     return this.on ? 'listening' : 'off';
   }
@@ -80,16 +58,15 @@ export class Voice {
     this.#wanted = true;
     this.on = true;
     this.line = null;
-    if (!this.send('voice_mode', { on: true })) this.on = false;
+    if (!this.send({ on: true, explicit: false })) this.on = false;
   }
 
   turnOff(): void {
-    this.cancelTalk();
     this.playback.drop();
     this.#wanted = false;
     if (!this.on) return;
     this.on = false;
-    this.send('voice_mode', { on: false });
+    this.send({ on: false, explicit: true });
   }
 
   /**
@@ -99,7 +76,6 @@ export class Voice {
    * send on a closed socket would throw.
    */
   forget(): void {
-    this.cancelTalk();
     this.playback.drop();
     this.#wanted = false;
     this.on = false;
@@ -110,82 +86,15 @@ export class Voice {
     if (this.#wanted && !this.on) this.turnOn();
   }
 
-  /** Send one command, turning the switch off when the socket is down. */
-  private send(command: 'voice_mode', body: { on: boolean }): boolean;
-  private send(command: 'voice_utterance', body: { pcm: number[] }): boolean;
-  private send(
-    command: 'voice_mode' | 'voice_utterance',
-    body: { on: boolean } | { pcm: number[] },
-  ): boolean {
+  /** Send the switch, turning it off when the socket is down. */
+  private send(body: { on: boolean; explicit: boolean }): boolean {
     try {
-      if (command === 'voice_mode') this.port.send('voice_mode', body as { on: boolean });
-      else this.port.send('voice_utterance', body as { pcm: number[] });
+      this.port.send('voice_mode', body);
       return true;
     } catch {
       this.line = 'the socket is down, so that was not sent';
       return false;
     }
-  }
-
-  /** Begin a hold. A press on a switched-off control turns it on instead. */
-  async startTalk(): Promise<void> {
-    if (!this.on) {
-      this.turnOn();
-      return;
-    }
-    if (this.capture !== null || this.#opening) return;
-    const token = ++this.#openToken;
-    this.#opening = true;
-    try {
-      const capture = await this.open();
-      // The hold ended while the device opened: the release, cancel or seat
-      // change already bumped the token, so close it rather than holding a
-      // microphone nobody is holding. Nothing was captured before the open
-      // resolved, so there is no clip to lose.
-      if (token !== this.#openToken || !this.on) {
-        capture.cancel();
-        return;
-      }
-      this.capture = capture;
-      this.clip = capture.clip;
-      this.line = null;
-    } catch (why) {
-      // A failure for an open whose hold is already gone is not the
-      // reader's to see: they cancelled, and the next hold is a new one.
-      if (token === this.#openToken) this.line = micFailure(why);
-    } finally {
-      this.#opening = false;
-    }
-  }
-
-  /** End the hold: the whole clip crosses as one utterance. */
-  async endTalk(): Promise<void> {
-    // A release while the device opens means the hold is already over. The
-    // open's device closes on arrival instead of starting a clip the next
-    // press would send.
-    if (this.#opening) {
-      this.#openToken += 1;
-      return;
-    }
-    const capture = this.capture;
-    if (capture === null) return;
-    this.capture = null;
-    this.clip = null;
-    const clip = await capture.release();
-    if (clip.capped) this.line = `that hold ran past ${MAX_HOLD_SECONDS}s and was cut there`;
-    const pcm = clip.take();
-    if (pcm.length > 0) this.send('voice_utterance', { pcm: Array.from(pcm) });
-  }
-
-  /** Throw the hold away: nothing is sent. */
-  cancelTalk(): void {
-    // A cancel while the device opens closes it on arrival: the open's
-    // device must not outlive the hold it was opened for.
-    this.#openToken += 1;
-    const capture = this.capture;
-    this.capture = null;
-    this.clip = null;
-    capture?.cancel();
   }
 
   /** Take the seat's new frames: its listener count, and its clips. */
@@ -198,16 +107,9 @@ export class Voice {
       const state = (update as { voice_mode_state?: { listeners?: unknown } }).voice_mode_state;
       if (state !== undefined) {
         this.listeners = typeof state.listeners === 'number' ? state.listeners : 0;
-        // The core says nobody is listening any more - the last other client
-        // left, or this connection's own mode was never registered - so the
-        // switch follows rather than showing an off seat as on, and the
-        // queued speech goes with it.
-        //
-        // A `listeners: 0` from before this client's own turn-on can arrive
+        // A `listeners: 0` from before this client's own turn-on can land
         // after the optimistic switch, and the server's later `listeners: 1`
-        // does not turn it back on. The frames are ordered per seat, so this
-        // only bites when two clients toggle near-simultaneously; the
-        // server's set is correct, and the next toggle reconciles the switch.
+        // does not turn it back on; the next toggle reconciles.
         if (this.listeners === 0 && this.on) {
           this.on = false;
           this.playback.drop();
@@ -234,14 +136,15 @@ export class Voice {
   }
 
   /**
-   * Leave the seat: turn its voice off for this client, then forget what was
-   * held. A client showing another seat is no longer listening to this one,
-   * so the count the agent was told about has to fall.
+   * The reader moved to another seat: stop this seat's audio and tell the
+   * server this client is no longer listening, but keep the intent so a
+   * return reconnects.
    */
-  detach(): void {
-    this.#wanted = false;
-    if (this.on) this.send('voice_mode', { on: false });
-    this.reset();
+  pause(): void {
+    this.playback.drop();
+    if (!this.on) return;
+    this.on = false;
+    this.send({ on: false, explicit: false });
   }
 
   /**
@@ -251,23 +154,11 @@ export class Voice {
    * already dropped this connection from the listener set.
    */
   reset(): void {
-    this.cancelTalk();
     this.playback.close();
     this.on = false;
     this.listeners = 0;
     this.line = null;
   }
-}
-
-/** Why a microphone would not open, in the reader's words. */
-export function micFailure(why: unknown): string {
-  const name = why instanceof DOMException ? why.name : '';
-  if (name === 'NotAllowedError' || name === 'SecurityError') {
-    return 'the microphone was refused \u{b7} allow it and hold again';
-  }
-  if (name === 'NotFoundError')
-    return 'no microphone is available \u{b7} connect one and hold again';
-  return 'the microphone did not open \u{b7} check the input and hold again';
 }
 
 /**

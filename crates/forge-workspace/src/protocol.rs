@@ -853,22 +853,16 @@ pub enum Command {
         #[serde(skip)]
         respond: Option<oneshot::Sender<Option<forge_primitives::ReviewSet>>>,
     },
-    /// One complete hold-to-talk clip: mono 16-bit samples, transcribed by
-    /// the seat's live dictation role and dispatched into the seat as a
-    /// prompt. Hold-to-talk produces a whole clip, so nothing streams.
-    VoiceUtterance {
-        key: SessionSlot,
-        pcm: Vec<i16>,
-        /// The connection that sent it, stamped by the transport that
-        /// received it. `None` is this process's own capture.
-        #[serde(skip)]
-        initiator: Option<u64>,
-    },
     /// A client turned voice on or off for the seat. The listener set is per
     /// connection, so the transport stamps which one.
     VoiceMode {
         key: SessionSlot,
         on: bool,
+        /// Whether this off is the reader's own, which is what tells the
+        /// session it has stopped listening. A move to another seat pauses
+        /// without the note, so a seat switch does not toggle the agent.
+        #[serde(default)]
+        explicit: bool,
         #[serde(skip)]
         initiator: Option<u64>,
     },
@@ -896,7 +890,6 @@ impl Command {
             | Self::RespondQuestion { key, .. }
             | Self::SetDictateOverride { key, .. }
             | Self::ResetDictateOverrides { key }
-            | Self::VoiceUtterance { key, .. }
             | Self::VoiceMode { key, .. } => Some(key),
             Self::SpawnProject { .. }
             | Self::DictateStream { .. }
@@ -1216,11 +1209,6 @@ impl std::fmt::Debug for Command {
             Self::MarketplaceRepair { name } => {
                 f.debug_struct("MarketplaceRepair").field("name", name).finish()
             }
-            Self::VoiceUtterance { key, pcm, .. } => f
-                .debug_struct("VoiceUtterance")
-                .field("key", key)
-                .field("samples", &pcm.len())
-                .finish_non_exhaustive(),
             Self::VoiceMode { key, on, .. } => {
                 f.debug_struct("VoiceMode").field("key", key).field("on", on).finish()
             }
@@ -2800,21 +2788,12 @@ mod session_update_variants {
         use crate::SessionSlot;
 
         let key = SessionSlot::from_str_for_test("voice");
-        let utterance = super::Command::VoiceUtterance {
+        let mode = super::Command::VoiceMode {
             key: key.clone(),
-            pcm: vec![1, -2, 3],
+            on: true,
+            explicit: false,
             initiator: None,
         };
-        let json = serde_json::to_string(&utterance).expect("a command serialises");
-        let super::Command::VoiceUtterance { key: decoded, pcm, .. } =
-            serde_json::from_str(&json).expect("a command decodes")
-        else {
-            panic!("a voice utterance came back as another command");
-        };
-        assert_eq!(decoded, key);
-        assert_eq!(pcm, vec![1, -2, 3]);
-
-        let mode = super::Command::VoiceMode { key: key.clone(), on: true, initiator: None };
         let json = serde_json::to_string(&mode).expect("a command serialises");
         let super::Command::VoiceMode { key: decoded, on, .. } =
             serde_json::from_str(&json).expect("a command decodes")

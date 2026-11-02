@@ -311,8 +311,8 @@ variant's own name rather than on `kind`:
 }
 ```
 
-A command's variant is its name around its field bag - `Command` has 61
-variants, 55 of them struct variants; the six unit variants,
+A command's variant is its name around its field bag - `Command` has 60
+variants, 54 of them struct variants; the six unit variants,
 `dictate_catalogue_check`, `dictate_bench_stop`, `voice_bench_start`,
 `voice_bench_stop`, `plugin_update_all` and `plugin_check_updates`, cross as
 the name alone. An update is the same
@@ -763,24 +763,19 @@ no longer holds is dropped rather than placed in another box; the composer
 is the exception, and re-places its own carried landing after a remount.
 Pressing enter sends the words as an ordinary prompt every view then sees.
 
-**`voice_mode {key, on}`** - a client turns voice on or off for the seat it
-is showing. It is that connection's own switch, not the seat's: two clients
-can watch one seat and only one of them be listening. The transport stamps
-the connection on it, so the listener set counts connections; the seat
+**`voice_mode {key, on, explicit}`** - a client turns voice on or off for the
+seat it is showing. It is that connection's own switch, not the seat's: two
+clients can watch one seat and only one of them be listening. The transport
+stamps the connection on it, so the listener set counts connections; the seat
 answers with a `voice_mode_state` carrying the count, to every subscriber
-of that seat. The first client in and the last client out also put a short
-note into the session, so the agent is told once that the person is
-listening and that anything they should hear goes through
-`mcp__forge__voice__say`. The note is forge's own prompt, so the transcript
-draws it with a forge chip rather than as the reader's turn.
-
-**`voice_utterance {key, pcm}`** - one complete hold-to-talk clip, mono
-16-bit samples at 16 kHz. Holding and releasing makes a whole clip, so
-nothing streams: the array is the utterance, carried as a JSON number array
-rather than as a binary frame. The server transcribes it with
-the seat's live dictation role and dispatches the words into the seat as
-the reader's own prompt; a clip that cannot be transcribed, or that carries
-no speech, draws a notice row and dispatches nothing.
+of that seat. The first client in puts a short note into the session, so the
+agent is told once that the person is listening and that anything they should
+hear goes through `mcp__forge__voice__say`. The last client out puts the
+stopped-listening note only when `explicit` is true, the reader's own off; a
+client that moves to another seat sends `explicit: false` and keeps its
+intent, so the seat pauses without toggling the agent and a return reconnects.
+The note is forge's own prompt, so the transcript draws it with a forge chip
+rather than as the reader's turn.
 
 **`voice_audio {key, seq, sample_rate, pcm}`** - one rendered clip of the
 seat's speech, mono 16-bit samples at `sample_rate`. Clips arrive in `seq`

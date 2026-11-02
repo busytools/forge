@@ -2948,13 +2948,10 @@ details.leaf.nrow details.raw pre { margin: 4px 0 2px; padding: 6px 9px; border:
   display: grid; place-items: center; color: var(--dim); background: none;
   border: 0; padding: 0; cursor: pointer; }
 .voice:hover, .voice.on { color: var(--accent); }
+/* A mark while the agent's reply is sounding, so the speaker shows it is
+   talking now rather than only that the switch is on. */
 .voice .dot { position: absolute; top: 0; right: 0; width: 6px; height: 6px;
-  border-radius: 50%; background: var(--bad); }
-/* The hold's level, under the icon: a bar that follows the last frame's peak,
-   so a hold that is recording is visible without watching the clock. */
-.voice .meter { position: absolute; left: 2px; right: 2px; bottom: 1px;
-  height: 2px; border-radius: 1px; background: var(--line); overflow: hidden; }
-.voice .meter .fill { display: block; height: 100%; background: var(--accent); }
+  border-radius: 50%; background: var(--accent); }
 /* The room, when more than this client is listening: the count beside the
    icon, so a second listener is visible rather than only announced. */
 .voice .room { position: absolute; left: -3px; bottom: -3px; font-family: var(--mono);

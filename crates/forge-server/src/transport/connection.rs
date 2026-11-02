@@ -1464,11 +1464,9 @@ fn stamp(command: Command, me: u64) -> Command {
             Command::DictateReadAloudStop { keep, initiator: Some(me) }
         }
         // The listener set is per connection, so the switch has to say which
-        // one; an utterance carries the stamp for symmetry and a log that can
-        // name the connection it came from.
-        Command::VoiceMode { key, on, .. } => Command::VoiceMode { key, on, initiator: Some(me) },
-        Command::VoiceUtterance { key, pcm, .. } => {
-            Command::VoiceUtterance { key, pcm, initiator: Some(me) }
+        // one.
+        Command::VoiceMode { key, on, explicit, .. } => {
+            Command::VoiceMode { key, on, explicit, initiator: Some(me) }
         }
         Command::RespondBrowserHandOff { key, id, mut answer } => {
             answer.client = Some(me);

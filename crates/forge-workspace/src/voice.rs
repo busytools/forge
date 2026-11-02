@@ -85,6 +85,10 @@ struct Seat {
     /// sentences the moment the last one leaves rather than draining a
     /// queue nobody will hear.
     live: Arc<AtomicUsize>,
+    /// The session has been told the user is listening and not yet told they
+    /// stopped. A pause keeps it true, so a seat switch does not toggle the
+    /// agent; an explicit off clears it.
+    noted: bool,
 }
 
 struct Job {
@@ -134,9 +138,11 @@ impl VoiceService {
     }
 
     /// Turn one client's voice on or off for `seat`. The session is told on
-    /// the first client in and the last client out, and nowhere between.
-    pub fn set_listening(&self, seat: &SessionSlot, client: u64, on: bool) {
-        let transition = {
+    /// the first client in, and on the last client out only when the reader
+    /// turned it off themselves: a move to another seat pauses the seat
+    /// without toggling the agent.
+    pub fn set_listening(&self, seat: &SessionSlot, client: u64, on: bool, explicit: bool) {
+        let note = {
             let Ok(mut seats) = self.seats.lock() else {
                 return;
             };
@@ -144,37 +150,59 @@ impl VoiceService {
                 if let Some(state) = seats.get_mut(seat) {
                     let first = state.listeners.is_empty();
                     state.listeners.insert(client);
-                    state.live.fetch_add(1, Ordering::SeqCst);
-                    first
+                    if first {
+                        // The previous queue task stopped when the last
+                        // listener left; a return gets a fresh one.
+                        let live = Arc::new(AtomicUsize::new(1));
+                        state.queue = self.spawn_queue(seat, Arc::clone(&live));
+                        state.live = live;
+                    } else {
+                        state.live.fetch_add(1, Ordering::SeqCst);
+                    }
+                    if first && !state.noted {
+                        state.noted = true;
+                        Some(LISTENING_NOTE)
+                    } else {
+                        None
+                    }
                 } else {
                     let live = Arc::new(AtomicUsize::new(1));
                     let queue = self.spawn_queue(seat, Arc::clone(&live));
                     seats.insert(
                         seat.clone(),
-                        Seat { listeners: BTreeSet::from([client]), queue, live },
+                        Seat { listeners: BTreeSet::from([client]), queue, live, noted: true },
                     );
-                    true
+                    Some(LISTENING_NOTE)
                 }
             } else {
                 let Some(state) = seats.get_mut(seat) else {
                     return;
                 };
-                let removed = state.listeners.remove(&client);
-                let last = removed && state.listeners.is_empty();
-                if last {
-                    state.live.store(0, Ordering::SeqCst);
-                    seats.remove(seat);
-                } else if removed {
-                    state.live.fetch_sub(1, Ordering::SeqCst);
+                if !state.listeners.remove(&client) {
+                    return;
                 }
-                last
+                if state.listeners.is_empty() {
+                    state.live.store(0, Ordering::SeqCst);
+                    if explicit {
+                        state.noted = false;
+                        seats.remove(seat);
+                        Some(NOT_LISTENING_NOTE)
+                    } else {
+                        // A pause: the seat keeps its note, so a return does
+                        // not tell the agent it came back.
+                        None
+                    }
+                } else {
+                    state.live.fetch_sub(1, Ordering::SeqCst);
+                    None
+                }
             }
         };
-        if transition {
-            self.notes.note(seat, if on { LISTENING_NOTE } else { NOT_LISTENING_NOTE });
-            if !on {
-                self.schedule_idle_release();
-            }
+        if let Some(text) = note {
+            self.notes.note(seat, text);
+        }
+        if !on {
+            self.schedule_idle_release();
         }
     }
 
@@ -254,13 +282,13 @@ impl VoiceService {
         let seats = Arc::clone(&self.seats);
         handle.spawn(async move {
             tokio::time::sleep(IDLE_RELEASE).await;
-            let empty = {
+            let quiet = {
                 let Ok(seats) = seats.lock() else {
                     return;
                 };
-                seats.is_empty()
+                seats.values().all(|state| state.listeners.is_empty())
             };
-            if !empty {
+            if !quiet {
                 return;
             }
             let mut slot = engine.lock().await;
@@ -372,8 +400,8 @@ impl crate::Workspace {
         changed
     }
 
-    /// Put an already-built engine behind the service, so a test can drive
-    /// the utterance path without loading a model.
+    /// Put an already-built engine behind the service, so a test can drive a
+    /// render without loading a model.
     #[cfg(any(test, feature = "test-helpers"))]
     pub fn install_voice_engine_for_test(self: &Arc<Self>, engine: Arc<dyn Engine>) {
         let loader: Loader = Arc::new(move || Ok(Arc::clone(&engine)));
@@ -404,89 +432,6 @@ impl crate::Workspace {
             Arc::new(WorkspaceSink { workspace: Arc::downgrade(self) }),
             Arc::new(WorkspaceNotes { workspace: Arc::downgrade(self) }),
         )
-    }
-
-    /// One complete clip from a client: transcribe it with the seat's live
-    /// dictation role and dispatch the words as the reader's own prompt.
-    /// A clip nothing can transcribe draws a notice row and dispatches
-    /// nothing.
-    pub(crate) async fn voice_utterance(self: Arc<Self>, key: SessionSlot, pcm: Vec<i16>) {
-        let engine = self.dictate.engine.lock().clone();
-        let Some(engine) = engine else {
-            self.notice(
-                &key,
-                crate::NoticeSeverity::Error,
-                "voice: dictation is not ready, so this utterance was not transcribed",
-            );
-            return;
-        };
-        let samples: Vec<f32> =
-            pcm.iter().map(|sample| f32::from(*sample) / f32::from(i16::MAX)).collect();
-        let answer = tokio::task::spawn_blocking(move || {
-            let ticket = engine.transcribe(forge_dictate::Samples::mono(samples))?;
-            ticket.recv()
-        })
-        .await;
-        let outcome = match answer {
-            Ok(Ok(outcome)) => outcome,
-            Ok(Err(error)) => {
-                tracing::debug!(
-                    event_name = "voice_transcribe_failed",
-                    slot = %key.display(),
-                    %error,
-                    "the utterance did not transcribe"
-                );
-                self.notice(
-                    &key,
-                    crate::NoticeSeverity::Error,
-                    "voice: the utterance did not transcribe",
-                );
-                return;
-            }
-            Err(error) => {
-                tracing::warn!(
-                    event_name = "voice_transcribe_unjoined",
-                    slot = %key.display(),
-                    %error,
-                    "the transcription task failed to join"
-                );
-                self.notice(
-                    &key,
-                    crate::NoticeSeverity::Error,
-                    "voice: the utterance did not transcribe",
-                );
-                return;
-            }
-        };
-        self.handle_transcript(&key, outcome);
-    }
-
-    /// A transcription's outcome: the words become the reader's own prompt,
-    /// and an empty one draws a notice instead of dispatching nothing.
-    fn handle_transcript(self: &Arc<Self>, key: &SessionSlot, outcome: forge_dictate::Outcome) {
-        let words = match outcome {
-            forge_dictate::Outcome::Transcript(transcript) => transcript.text,
-            forge_dictate::Outcome::NoAudio { .. } => String::new(),
-        };
-        if words.trim().is_empty() {
-            self.notice(
-                key,
-                crate::NoticeSeverity::Error,
-                "voice: nothing was heard in that utterance",
-            );
-            return;
-        }
-        let uuid = forge_sdk::request_id::next_prompt_id();
-        if let Err(error) =
-            self.dispatch_workspace_prompt_under(key, words, crate::PromptSource::You, uuid)
-        {
-            tracing::warn!(
-                event_name = "voice_prompt_not_delivered",
-                slot = %key.display(),
-                %error,
-                "the transcript did not reach the seat"
-            );
-        }
     }
 }
 
@@ -728,7 +673,7 @@ mod tests {
             Arc::clone(&fixture.sink) as Arc<dyn AudioSink>,
             Arc::clone(&fixture.notes) as Arc<dyn NoteDispatch>,
         );
-        service.set_listening(&seat(), 1, true);
+        service.set_listening(&seat(), 1, true, false);
         assert_eq!(service.say(&seat(), "Hello.".to_owned()).await, Err(SayError::Disabled));
     }
 
@@ -752,7 +697,7 @@ mod tests {
             Arc::clone(&sink) as Arc<dyn AudioSink>,
             Arc::clone(&notes) as Arc<dyn NoteDispatch>,
         );
-        service.set_listening(&seat(), 1, true);
+        service.set_listening(&seat(), 1, true, false);
         let outcome = service.say(&seat(), "Hello.".to_owned()).await;
         assert!(
             matches!(&outcome, Err(SayError::Engine(reason)) if reason.contains("the render died")),
@@ -777,7 +722,7 @@ mod tests {
             Arc::clone(&sink) as Arc<dyn AudioSink>,
             Arc::clone(&notes) as Arc<dyn NoteDispatch>,
         );
-        service.set_listening(&seat(), 1, true);
+        service.set_listening(&seat(), 1, true, false);
         let first = tokio::spawn({
             let service = service.clone();
             async move { service.say(&seat(), "One.".to_owned()).await }
@@ -793,7 +738,7 @@ mod tests {
 
         // The last listener leaves while the first render is held: the
         // queued utterance must not render into a seat nobody hears.
-        service.set_listening(&seat(), 1, false);
+        service.set_listening(&seat(), 1, false, false);
         gate.add_permits(2);
         let _ = first.await.expect("joined");
         let _ = second.await.expect("joined");
@@ -808,64 +753,10 @@ mod tests {
         assert!(sink.chunks.lock().expect("unpoisoned").is_empty(), "nothing reaches the sink");
     }
 
-    /// A transcript becomes the reader's own prompt, through the same command
-    /// the composer's own send uses.
-    #[tokio::test]
-    async fn a_transcript_is_dispatched_as_the_readers_prompt() {
-        let (workspace, _updates) = crate::Workspace::testing_stub();
-        workspace.enable_test_dispatch_intercept();
-        let seat = seat();
-        workspace.handle_transcript(
-            &seat,
-            forge_dictate::Outcome::Transcript(forge_dictate::Transcript {
-                text: "hello there".to_owned(),
-                asr: "hello there".to_owned(),
-                stages: forge_dictate::Stages::default(),
-                truncated: false,
-            }),
-        );
-
-        let dispatched = workspace.drain_test_dispatch_buffer();
-        assert!(
-            dispatched.iter().any(|command| matches!(
-                command,
-                crate::Command::PromptUnder { text, source: crate::PromptSource::You, .. }
-                    if text == "hello there"
-            )),
-            "the transcript is the reader's prompt, got: {dispatched:?}",
-        );
-    }
-
-    /// The transcript half of the utterance path, without a model: an empty
-    /// transcription draws a notice and dispatches nothing.
-    #[tokio::test]
-    async fn an_empty_transcript_draws_a_notice_and_dispatches_nothing() {
-        let (workspace, mut updates) = crate::Workspace::testing_stub();
-        workspace.enable_test_dispatch_intercept();
-        let seat = seat();
-        workspace.handle_transcript(
-            &seat,
-            forge_dictate::Outcome::NoAudio { peak: f32::NEG_INFINITY, audio: Duration::ZERO },
-        );
-
-        let update = updates.try_recv().expect("a notice");
-        match &*update.update {
-            crate::SessionUpdate::Notice { key, text, .. } => {
-                assert_eq!(key, &seat);
-                assert!(text.contains("nothing was heard"), "got: {text}");
-            }
-            other => panic!("expected a notice, got: {other:?}"),
-        }
-        assert!(
-            workspace.drain_test_dispatch_buffer().is_empty(),
-            "an empty transcript dispatches nothing into the seat",
-        );
-    }
-
     #[tokio::test]
     async fn an_occupant_change_tells_the_new_session_it_is_heard() {
         let fixture = service_with(|| StubEngine::new(Arc::new(Mutex::new(Vec::new()))));
-        fixture.service.set_listening(&seat(), 1, true);
+        fixture.service.set_listening(&seat(), 1, true, false);
         fixture.service.occupant_changed(&seat());
         assert_eq!(
             fixture.notes.said.lock().expect("unpoisoned").clone(),
@@ -877,7 +768,7 @@ mod tests {
     #[tokio::test]
     async fn two_sentences_reach_the_sink_in_order() {
         let fixture = service_with(|| StubEngine::new(Arc::new(Mutex::new(Vec::new()))));
-        fixture.service.set_listening(&seat(), 1, true);
+        fixture.service.set_listening(&seat(), 1, true, false);
         fixture.service.say(&seat(), "One. Two.".to_owned()).await.expect("queued");
         wait_for(&fixture.sink, 2).await;
         let requests = fixture.requests.lock().expect("unpoisoned").clone();
@@ -896,7 +787,7 @@ mod tests {
     #[tokio::test]
     async fn an_utterance_past_the_bound_is_refused_by_name() {
         let fixture = service_with(|| StubEngine::new(Arc::new(Mutex::new(Vec::new()))));
-        fixture.service.set_listening(&seat(), 1, true);
+        fixture.service.set_listening(&seat(), 1, true, false);
         let long = "word ".repeat(2_000);
         let outcome = fixture.service.say(&seat(), long).await;
         assert!(
@@ -909,17 +800,17 @@ mod tests {
         let fixture = service_with(|| StubEngine::new(Arc::new(Mutex::new(Vec::new()))));
         let said = |fixture: &Fixture| fixture.notes.said.lock().expect("unpoisoned").clone();
 
-        fixture.service.set_listening(&seat(), 1, true);
+        fixture.service.set_listening(&seat(), 1, true, false);
         assert_eq!(said(&fixture), vec![LISTENING_NOTE.to_owned()]);
-        fixture.service.set_listening(&seat(), 2, true);
+        fixture.service.set_listening(&seat(), 2, true, false);
         assert_eq!(
             said(&fixture),
             vec![LISTENING_NOTE.to_owned()],
             "the second client says nothing"
         );
-        fixture.service.set_listening(&seat(), 1, false);
+        fixture.service.set_listening(&seat(), 1, false, false);
         assert_eq!(said(&fixture).len(), 1, "one client is still listening");
-        fixture.service.set_listening(&seat(), 2, false);
+        fixture.service.set_listening(&seat(), 2, false, true);
         assert_eq!(said(&fixture), vec![LISTENING_NOTE.to_owned(), NOT_LISTENING_NOTE.to_owned()],);
         assert_eq!(fixture.service.listeners(&seat()), 0);
     }
@@ -929,9 +820,9 @@ mod tests {
         let fixture = service_with(|| StubEngine::new(Arc::new(Mutex::new(Vec::new()))));
         let first = seat();
         let second = SessionSlot::new("Org", "project", "worker");
-        fixture.service.set_listening(&first, 1, true);
-        fixture.service.set_listening(&first, 2, true);
-        fixture.service.set_listening(&second, 2, true);
+        fixture.service.set_listening(&first, 1, true, false);
+        fixture.service.set_listening(&first, 2, true, false);
+        fixture.service.set_listening(&second, 2, true, false);
 
         // A socket dies without a goodbye: the core's teardown is the only
         // thing that can take its listener off, and it must leave every seat
@@ -977,7 +868,7 @@ mod tests {
             Arc::clone(&sink) as Arc<dyn AudioSink>,
             Arc::clone(&notes) as Arc<dyn NoteDispatch>,
         );
-        service.set_listening(&seat(), 1, true);
+        service.set_listening(&seat(), 1, true, false);
 
         let first = tokio::spawn({
             let service = service.clone();
@@ -1028,7 +919,7 @@ mod tests {
             Arc::clone(&notes) as Arc<dyn NoteDispatch>,
         );
         let seat = seat();
-        service.set_listening(&seat, 1, true);
+        service.set_listening(&seat, 1, true, false);
 
         let (first, second) = tokio::join!(
             service.say(&seat, "One.".to_owned()),

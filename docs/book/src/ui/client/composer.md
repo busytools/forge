@@ -72,34 +72,32 @@ CLI's row of the same name - one name, one row.
 
 ## Voice
 
-A second control sits beside the mic when `[tts] enabled` and `[dictate]
-enabled` are both set: the switch for this client on the seat it shows. A
-press on a switched-off control turns voice on and the seat's listener
-count comes back; while it is on, a press starts a hold and the release
-sends the whole clip as one utterance, and a tap that said nothing is the
-way back off. The control draws its state as a shape, not a colour: a
-struck-through mic when off, a plain one listening, the same with a mark
-over the box and a level bar under it while it records, and a speaker while
-a reply plays, with a line beside it for a refused microphone or a hold cut
-at its bound. A hold past the bound ends itself rather than running until
-release. While more than one client is listening, the switch draws the
-room's count beside the icon and its title names it; the count is the
-seat's own answer, seeded from the seat read on a late attach.
+A second control sits beside the mic when `[tts] enabled` is set: the
+switch for the agent's voice on the seat this client shows. It is off by
+default. A click turns it on and the seat's listener count comes back; a
+second click turns it off. The control draws its state as a shape, not a
+colour: a struck-through speaker when off, a plain speaker when on, and a
+mark beside it while a reply is sounding.
+While more than one client is listening, the switch draws the room's count
+beside the icon and its title names it; the count is the seat's own answer,
+seeded from the seat read on a late attach.
 
-**Dictation and voice are different actions, so they keep different
-controls.** The mic fills the box with text and stops there; the voice
-control sends the utterance as a prompt and speaks the reply. One control
-doing both would hide which of the two a press was about to do.
+**Dictation and voice are different directions.** The mic is how the user
+speaks to the agent: it fills the box with text and stops there. The voice
+switch is how the agent's replies are heard: it turns the seat's speech on
+or off for this client and does nothing else.
 
 **Voice is per client and per seat.** Enabling subscribes this client to
-the seat's clips; the first client in and the last client out put a short
-note into the session, so the agent is told once that the person is
-listening. A seat change, a closed client or a dropped socket turns the
-switch back off - a client showing another seat is no longer listening to
-this one. The clips play in the order the engine rendered them, each
-sentence following the one before, and a reconnect discards the queue
-rather than playing a conversation with holes in it, then resubscribes the
-switch if this client still wants voice.
+the seat's clips; the first client in puts a short note into the session,
+so the agent is told once that the person is listening, and the last client
+out puts the stopped-listening note only when the reader turned the switch
+off themselves. A seat change pauses the switch and a return to a seat the
+reader had on reconnects it, so moving between seats does not toggle the
+agent. A closed client or a dropped socket turns the switch off. The clips
+play in the order the engine rendered them, each sentence following the one
+before, and a reconnect discards the queue rather than playing a
+conversation with holes in it, then resubscribes the switch if this client
+still wants voice.
 
 ## Dictation
 
@@ -182,8 +180,8 @@ catch at either layer can reach it.
 | Not running | `not running` and the seat's own reason: a worker's seat has no spawn coming, and says so |
 | Reading | `Reading the conversation...` above the field while the seat's first page is still out, with the sweep; the field stays live |
 | A take that does not come up | the body stays, with the line above it: the microphone did not come up, or the device layer's own named failure |
-| Voice on | the voice switch beside the mic in the accent: `listening`, or `talking` with a mark over the box while a hold records, or the speaker glyph while a reply plays |
-| Voice off | the same switch, struck through and dim, meaning this client is not listening to this seat |
+| Voice on | the voice switch beside the mic in the accent: a plain speaker, with a mark beside it while a reply is sounding |
+| Voice off | the same switch, a struck-through speaker and dim, meaning this client is not listening to this seat |
 | Failed | `Input disabled due to error` and what to do: quit and start forge again |
 
 **A blocked state replaces the body entirely and always says why.** The

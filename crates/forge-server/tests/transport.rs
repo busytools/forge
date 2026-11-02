@@ -960,13 +960,12 @@ impl forge_tts::Engine for RecordingVoice {
 }
 
 /// The voice channel crosses the socket: the switch is answered with the
-/// seat's listener count, every rendered clip reaches the connection
-/// subscribed to that seat in render order, and a clip nothing can
-/// transcribe draws a notice rather than reaching the agent.
+/// seat's listener count, and every rendered clip reaches the connection
+/// subscribed to that seat in render order.
 #[tokio::test]
 async fn a_voice_switch_is_answered_and_its_clips_reach_the_subscriber() {
     let (url, fleet) = a_server_with_tts().await;
-    let mut agent = fleet.install_agent("TestOrg", "proj", "lead");
+    let _agent = fleet.install_agent("TestOrg", "proj", "lead");
     let requests = Arc::new(Mutex::new(Vec::new()));
     fleet.workspace().install_voice_engine_for_test(Arc::new(RecordingVoice {
         requests: Arc::clone(&requests),
@@ -987,7 +986,12 @@ async fn a_voice_switch_is_answered_and_its_clips_reach_the_subscriber() {
     send(
         &mut client,
         ClientMessage::Command {
-            command: Box::new(Command::VoiceMode { key: lead_seat(), on: true, initiator: None }),
+            command: Box::new(Command::VoiceMode {
+                key: lead_seat(),
+                on: true,
+                explicit: false,
+                initiator: None,
+            }),
             reply_to: None,
         },
     )
@@ -1027,29 +1031,6 @@ async fn a_voice_switch_is_answered_and_its_clips_reach_the_subscriber() {
         ["One.".to_owned(), "Two.".to_owned()],
         "one request per sentence, in order",
     );
-
-    // No dictation engine is armed in this fixture, so the utterance cannot
-    // be transcribed: it draws a notice and reaches no agent.
-    send(
-        &mut client,
-        ClientMessage::Command {
-            command: Box::new(Command::VoiceUtterance {
-                key: lead_seat(),
-                pcm: vec![0; 1_600],
-                initiator: None,
-            }),
-            reply_to: None,
-        },
-    )
-    .await;
-    update_until(&mut client, "the utterance's refusal", |update| {
-        matches!(update, SessionUpdate::Notice { .. })
-    })
-    .await;
-    // The dispatch half is pinned in `forge-workspace`'s own tests, where a
-    // transcript becomes a `PromptUnder` and an empty one dispatches nothing;
-    // this fixture has no session task to deliver a prompt to.
-    assert!(agent.try_recv().is_err(), "an untranscribable utterance reaches no agent");
 }
 
 /// A listener that drops without saying goodbye leaves the seat's count: the
@@ -1077,7 +1058,12 @@ async fn a_dropped_listener_leaves_the_seats_count() {
     send(
         &mut watcher,
         ClientMessage::Command {
-            command: Box::new(Command::VoiceMode { key: lead_seat(), on: true, initiator: None }),
+            command: Box::new(Command::VoiceMode {
+                key: lead_seat(),
+                on: true,
+                explicit: false,
+                initiator: None,
+            }),
             reply_to: None,
         },
     )
@@ -1092,7 +1078,12 @@ async fn a_dropped_listener_leaves_the_seats_count() {
     send(
         &mut leaver,
         ClientMessage::Command {
-            command: Box::new(Command::VoiceMode { key: lead_seat(), on: true, initiator: None }),
+            command: Box::new(Command::VoiceMode {
+                key: lead_seat(),
+                on: true,
+                explicit: false,
+                initiator: None,
+            }),
             reply_to: None,
         },
     )

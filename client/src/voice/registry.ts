@@ -5,30 +5,32 @@
  * **An ask swaps the composer's body and unmounts the switch with it**, which
  * is not the reader leaving the seat: a control-owned `Voice` would send
  * `voice_mode off` on every permission, question or hand-off and post a
- * "stopped listening" row the reader never asked for. The composer drops the
+ * "stopped listening" row the reader never asked for. The composer pauses the
  * seat's entry when the reader moves, and that is the only place the switch is
  * turned off for a seat.
  */
 
-import { Voice, type OpenCapture, type VoicePort } from './voice.svelte';
+import { Voice, type VoicePort } from './voice.svelte';
 
 const voices = new Map<string, Voice>();
 
 /** The seat's `Voice`, created on the first mount and reused by a remount. */
-export function voiceFor(key: string, port: VoicePort, open: OpenCapture | undefined): Voice {
+export function voiceFor(key: string, port: VoicePort): Voice {
   const existing = voices.get(key);
   if (existing !== undefined) return existing;
-  const voice = new Voice(port, open);
+  const voice = new Voice(port);
   voices.set(key, voice);
   return voice;
 }
 
-/** The reader left the seat: turn its voice off and forget the instance. */
-export function dropVoice(key: string): void {
-  const voice = voices.get(key);
-  if (voice === undefined) return;
-  voices.delete(key);
-  voice.detach();
+/**
+ * The reader left this seat: its voice stops and tells the server it is no
+ * longer heard, but the instance stays, so a return to a seat the reader had
+ * on reconnects. Only the seat being left is touched - the one being entered
+ * may already be cached, and pausing it would race its own resume.
+ */
+export function pauseVoice(key: string): void {
+  voices.get(key)?.pause();
 }
 
 /**

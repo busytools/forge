@@ -1,28 +1,26 @@
 <script lang="ts">
   /**
-   * The voice control beside the mic: the switch for this client on this
-   * seat, and the hold that becomes an utterance.
+   * The agent's voice for this seat: one switch for this client, on or off.
    *
-   * A press on a switched-off control turns voice on; while it is on, a
-   * press starts the hold and the release sends what was said, and a tap
-   * that said nothing is the way back off.
+   * Off by default. The first client to turn it on tells the seat's agent the
+   * user is listening; the last to turn it off explicitly tells it the user
+   * has stopped. The dictation mic is how the user speaks to the agent, so
+   * this control carries no microphone of its own.
    *
-   * Mounted per seat: the page keys it by the seat, so a seat change tears
-   * the old instance down and its own voice_mode off goes with it.
+   * Mounted per seat: the page keys it by the seat, so a seat change tears the
+   * old instance down and its own voice_mode off goes with it.
    */
   import Icon from '../components/Icon.svelte';
   import type { Connection } from '../socket';
   import type { SessionSlot } from '../wire/types';
   import { boxKey } from '../composer/box.svelte';
-  import { MAX_HOLD_SECONDS } from './capture.svelte';
   import { voiceFor } from './registry';
-  import { connectionPort, type OpenCapture } from './voice.svelte';
+  import { connectionPort } from './voice.svelte';
 
   let {
     connection,
     slot,
     element = () => {},
-    open,
   }: {
     /** The narrowed connection the composer holds: its commands, its store
      * and its status, which is everything the switch needs. */
@@ -30,13 +28,7 @@
     slot: SessionSlot;
     /** The button, for a surface that keeps the caret on it. */
     element?: (el: HTMLElement | null) => void;
-    /** How a hold opens the microphone; a seam so a test needs no audio stack. */
-    open?: OpenCapture;
   } = $props();
-
-  /** A release sooner than this, having said nothing, is a tap: it turns
-   * voice off rather than sending a clip of pure silence. */
-  const TAP_MS = 300;
 
   // The seat's key is fixed for this instance's life: the composer keys the
   // control by the seat, and the registry keeps the voice across an ask's
@@ -44,10 +36,7 @@
   // svelte-ignore state_referenced_locally
   const voiceKey = boxKey(slot);
   // svelte-ignore state_referenced_locally
-  const voice = voiceFor(voiceKey, connectionPort(connection, slot), open);
-  let pressedAt = 0;
-  let holding = false;
-  let capTimer: ReturnType<typeof setTimeout> | null = null;
+  const voice = voiceFor(voiceKey, connectionPort(connection, slot));
   let button = $state<HTMLElement | null>(null);
 
   // The seat's store is where every frame the server sends lands, so each
@@ -61,12 +50,10 @@
       if (status === 'open') voice.resume();
       else voice.reset();
     });
+    // A return to a seat the reader had on: the intent outlived the seat
+    // change, so the switch comes back on with the control.
+    voice.resume();
     return () => {
-      if (capTimer !== null) clearTimeout(capTimer);
-      // **A hold interrupted by an unmount stops with it.** The pointerup
-      // never reaches a removed element, so without this the microphone keeps
-      // recording and the next press sends the audio held through the ask.
-      voice.cancelTalk();
       stop?.();
       offStatus();
       // The voice itself is the registry's, not this instance's: a body swap
@@ -79,59 +66,20 @@
     return () => element(null);
   });
 
-  function press(): void {
-    pressedAt = Date.now();
-    if (!voice.on) {
-      voice.turnOn();
-      return;
-    }
-    holding = true;
-    // A hold past the bound ends itself rather than running until release.
-    capTimer = setTimeout(() => {
-      if (holding) release();
-    }, MAX_HOLD_SECONDS * 1000);
-    void voice.startTalk();
+  function toggle(): void {
+    if (voice.on) voice.turnOff();
+    else voice.turnOn();
   }
 
-  function release(): void {
-    if (capTimer !== null) {
-      clearTimeout(capTimer);
-      capTimer = null;
-    }
-    if (!holding) return;
-    holding = false;
-    const frames = voice.clip?.frames ?? 0;
-    if (Date.now() - pressedAt < TAP_MS && frames === 0) {
-      voice.cancelTalk();
-      voice.turnOff();
-      return;
-    }
-    void voice.endTalk();
-  }
-
-  function key(event: KeyboardEvent): void {
-    if (event.key !== ' ' && event.key !== 'Enter') return;
-    event.preventDefault();
-    if (event.repeat) return;
-    if (event.type === 'keydown') press();
-    else release();
-  }
-
-  const label = $derived(
-    voice.state === 'talking'
-      ? 'talking'
-      : voice.state === 'speaking'
-        ? 'speaking'
-        : voice.state === 'listening'
-          ? 'listening'
-          : 'voice off',
-  );
   /** The room, when more than this client is in it. */
   const room = $derived(voice.listeners > 1 ? `${voice.listeners} clients listening` : null);
   const title = $derived(
     voice.on
-      ? `hold to talk, tap to turn voice off${room === null ? '' : ` \u{b7} ${room}`}`
-      : `turn voice on${room === null ? '' : ` \u{b7} ${room}`}`,
+      ? `tap to turn off voice${room === null ? '' : ` \u{b7} ${room}`}`
+      : `tap to turn on voice${room === null ? '' : ` \u{b7} ${room}`}`,
+  );
+  const label = $derived(
+    voice.state === 'speaking' ? 'the agent is speaking' : voice.on ? 'voice on' : 'voice off',
   );
 </script>
 
@@ -143,30 +91,17 @@
   data-state={voice.state}
   data-listeners={voice.listeners}
   {title}
-  aria-label={voice.on ? `${label} \u{b7} ${title}` : title}
+  aria-label={`${label} \u{b7} ${title}`}
   aria-pressed={voice.on}
-  onpointerdown={(event: PointerEvent) => {
-    if (event.button !== 0) return;
-    event.preventDefault();
-    press();
-  }}
-  onpointerup={release}
-  onpointerleave={release}
-  onpointercancel={release}
-  onkeydown={key}
-  onkeyup={key}
+  onclick={toggle}
   oncontextmenu={(event: MouseEvent) => event.preventDefault()}
 >
-  <Icon name={voice.state === 'speaking' ? 'sound' : voice.on ? 'mic' : 'mic-off'} />
+  <Icon name={voice.on ? 'sound' : 'sound-off'} />
   {#if room !== null}
     <span class="room" aria-hidden="true">{voice.listeners}</span>
   {/if}
-  {#if voice.state === 'talking'}
-    <span class="dot" aria-hidden="true"></span>
-    <span class="meter" aria-hidden="true"
-      ><span class="fill" style:width={`${Math.round((voice.clip?.level ?? 0) * 100)}%`}
-      ></span></span
-    >
+  {#if voice.state === 'speaking'}
+    <span class="dot speaking" aria-hidden="true"></span>
   {/if}
 </button>
 {#if voice.line !== null}

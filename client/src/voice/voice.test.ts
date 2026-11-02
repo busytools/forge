@@ -1,7 +1,6 @@
 /**
- * One seat's voice, over a fake port and a fake microphone: the hold that
- * becomes an utterance, the switch that follows the seat's count, and the
- * speech that plays only while this client is listening.
+ * One seat's voice, over a fake port: the switch that follows the seat's
+ * count, and the speech that plays only while this client is listening.
  */
 
 import { describe, expect, it } from 'vitest';
@@ -9,7 +8,6 @@ import { describe, expect, it } from 'vitest';
 import { SLOT } from '../composer/testing';
 import type { SessionUpdate } from '../protocol';
 import { Stores } from '../stores';
-import { HeldClip, type VoiceCapture } from './capture.svelte';
 import type { Speaker } from './playback.svelte';
 import { Voice, connectionPort, type VoicePort } from './voice.svelte';
 
@@ -18,9 +16,7 @@ class FakePort implements VoicePort {
   queue: SessionUpdate[] = [];
   down = false;
 
-  send(command: 'voice_mode', body: { on: boolean }): void;
-  send(command: 'voice_utterance', body: { pcm: number[] }): void;
-  send(command: 'voice_mode' | 'voice_utterance', body: { on: boolean } | { pcm: number[] }): void {
+  send(command: 'voice_mode', body: { on: boolean; explicit: boolean }): void {
     if (this.down) throw new Error('the socket is closed');
     this.sent.push({ command, body });
   }
@@ -36,19 +32,6 @@ class FakePort implements VoicePort {
   }
 
   seeded = 0;
-}
-
-class FakeCapture {
-  clip = new HeldClip();
-  cancelled = false;
-
-  release(): Promise<HeldClip> {
-    return Promise.resolve(this.clip);
-  }
-
-  cancel(): void {
-    this.cancelled = true;
-  }
 }
 
 class FakeSpeaker implements Speaker {
@@ -70,110 +53,14 @@ class FakeSpeaker implements Speaker {
   }
 }
 
-function voice(open?: () => Promise<VoiceCapture>): {
-  voice: Voice;
-  port: FakePort;
-  speaker: FakeSpeaker;
-} {
+function voice(): { voice: Voice; port: FakePort; speaker: FakeSpeaker } {
   const port = new FakePort();
   const speaker = new FakeSpeaker();
-  const instance = new Voice(
-    port,
-    open ?? (() => Promise.resolve(new FakeCapture() as unknown as VoiceCapture)),
-    speaker,
-  );
+  const instance = new Voice(port, speaker);
   return { voice: instance, port, speaker };
 }
 
-/** One 20 ms frame: a codec byte, then little-endian i16 samples. */
-function frame(...samples: number[]): Uint8Array {
-  const bytes = new Uint8Array(1 + samples.length * 2);
-  samples.forEach((sample, at) => {
-    bytes[1 + at * 2] = sample & 0xff;
-    bytes[2 + at * 2] = (sample >> 8) & 0xff;
-  });
-  return bytes;
-}
-
 describe("one seat's voice", () => {
-  it('sends the whole clip as one utterance on release', async () => {
-    const at = voice();
-    at.voice.turnOn();
-    await at.voice.startTalk();
-    at.voice.clip?.push(frame(1, 2));
-    await at.voice.endTalk();
-
-    expect(at.port.sent.map((sent) => sent.command)).toEqual(['voice_mode', 'voice_utterance']);
-    expect(at.port.sent.at(-1)?.body).toEqual({ pcm: [1, 2] });
-  });
-
-  it('closes a capture that arrived after the hold ended', async () => {
-    const pending: { resolve: ((capture: VoiceCapture) => void) | null } = { resolve: null };
-    const at = voice(
-      () =>
-        new Promise((resolve) => {
-          pending.resolve = resolve;
-        }),
-    );
-    at.voice.turnOn();
-    const opening = at.voice.startTalk();
-    await at.voice.endTalk();
-
-    const late = new FakeCapture();
-    pending.resolve?.(late as unknown as VoiceCapture);
-    await opening;
-
-    expect(late.cancelled, 'a device whose hold ended is closed on arrival').toBe(true);
-    expect(at.voice.state).toBe('listening');
-  });
-
-  it('does not open a second microphone while one is opening', async () => {
-    let opens = 0;
-    const at = voice(() => {
-      opens += 1;
-      return new Promise(() => {});
-    });
-    at.voice.turnOn();
-    void at.voice.startTalk();
-    void at.voice.startTalk();
-    await Promise.resolve();
-
-    expect(opens, 'the second press is not a second open').toBe(1);
-  });
-
-  it('sends nothing for a hold that said nothing', async () => {
-    const at = voice();
-    at.voice.turnOn();
-    await at.voice.startTalk();
-    at.voice.cancelTalk();
-    at.voice.turnOff();
-
-    expect(at.port.sent.map((sent) => sent.command)).toEqual(['voice_mode', 'voice_mode']);
-    expect(at.port.sent.at(-1)?.body).toEqual({ on: false });
-  });
-
-  it('draws the reason a microphone would not open', async () => {
-    const at = voice(() => Promise.reject(new DOMException('denied', 'NotAllowedError')));
-    at.voice.turnOn();
-    await at.voice.startTalk();
-
-    expect(at.voice.line).toContain('refused');
-    expect(at.voice.state).toBe('listening');
-  });
-
-  it('says when a hold ran past its bound', async () => {
-    const at = voice();
-    at.voice.turnOn();
-    await at.voice.startTalk();
-    const clip = at.voice.clip;
-    if (clip === null) throw new Error('the hold did not open');
-    clip.capped = true;
-    clip.push(frame(1));
-    await at.voice.endTalk();
-
-    expect(at.voice.line).toContain('60s');
-  });
-
   it('forgets the switch and closes the speaker on a reset', () => {
     const at = voice();
     at.voice.turnOn();
@@ -212,9 +99,7 @@ describe("one seat's voice", () => {
   it('seeds the room from the seat read', () => {
     const port = new FakePort();
     port.seeded = 2;
-    const instance = new Voice(port, () =>
-      Promise.resolve(new FakeCapture() as unknown as VoiceCapture),
-    );
+    const instance = new Voice(port);
 
     expect(instance.listeners, 'a late attach reads the room rather than zero').toBe(2);
   });
@@ -272,11 +157,16 @@ describe("one seat's voice", () => {
     expect(at.voice.line).toContain('socket is down');
   });
 
-  it("turns the seat's voice off when the control leaves it", () => {
+  it("pauses the seat's voice when the reader moves, and resumes on return", () => {
     const at = voice();
     at.voice.turnOn();
-    at.voice.detach();
+    at.voice.pause();
 
-    expect(at.port.sent.at(-1)?.body).toEqual({ on: false });
+    expect(at.voice.on).toBe(false);
+    expect(at.port.sent.at(-1)?.body).toEqual({ on: false, explicit: false });
+
+    at.voice.resume();
+    expect(at.voice.on).toBe(true);
+    expect(at.port.sent.at(-1)?.body).toEqual({ on: true, explicit: false });
   });
 });
