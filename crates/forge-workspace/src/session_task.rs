@@ -77,11 +77,8 @@ pub(crate) fn emit_prompt_frame(update_tx: &UpdateFanout, key: &SessionSlot, cmd
         return;
     };
     let images = forge_primitives::display_blocks(attachments);
-    let mut framed = forge_primitives::Message::display_only_user_with_blocks(
-        text.clone(),
-        images,
-        uuid.clone(),
-    );
+    let mut framed =
+        forge_primitives::Message::display_only_prompt(text.clone(), images, uuid.clone());
     framed.stamp_if_absent(&crate::install::rfc3339_now());
     let _ = update_tx.send(SessionUpdate::ChatAppended {
         key: key.clone(),

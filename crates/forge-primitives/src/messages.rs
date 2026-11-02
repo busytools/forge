@@ -819,6 +819,39 @@ impl Message {
         }
     }
 
+    /// The extras key marking a display row for a prompt the CLI takes.
+    ///
+    /// **Not a wire field of its own**: it rides the unmodelled extras, so a
+    /// reader that does not know it decodes the row unchanged.
+    const AWAITS_DELIVERY: &str = "forge_awaits_delivery";
+
+    /// A display row for a prompt being handed to the CLI.
+    ///
+    /// **The CLI writes its own row when it takes the prompt, not here.** A
+    /// prompt sent while a turn runs waits for that turn to end, so the CLI's
+    /// row lands after the assistant text still being written - while this
+    /// frame lands before it. A conversation copy that places this row where
+    /// it was dispatched draws the reader's words above the answer they
+    /// followed (#2816), so the transport holds it until the turn ends.
+    pub fn display_only_prompt(text: String, images: Vec<ContentBlock>, uuid: String) -> Self {
+        let mut message = Self::display_only_user_with_blocks(text, images, uuid);
+        if let Self::User { extras, .. } = &mut message {
+            extras.insert(Self::AWAITS_DELIVERY.to_owned(), Value::Bool(true));
+        }
+        message
+    }
+
+    /// Whether this row is a [`Self::display_only_prompt`], whose prompt the
+    /// CLI delivers at the end of the running turn.
+    pub fn awaits_delivery(&self) -> bool {
+        match self {
+            Self::User { extras, .. } => {
+                extras.get(Self::AWAITS_DELIVERY).and_then(Value::as_bool) == Some(true)
+            }
+            _ => false,
+        }
+    }
+
     /// Attach `stamp` to a frame that carries none.
     ///
     /// **Each kind takes it in the slot the wire's own stamp occupies**, so a
