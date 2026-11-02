@@ -17,6 +17,7 @@
               call, the pointers are CEF's own, and the casts are the C API's widths"
 )]
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use forge_primitives::browser::{BrowserInputEvent, MouseAction};
@@ -926,16 +927,35 @@ fn page_y(height: f64, y: f64, rect_height: f64, flipped: bool) -> f64 {
 /// the dev stack).
 ///
 /// **Placed on the main thread**: the view is AppKit's, and the call is made
-/// from a command that already runs there.
+/// from a command that already runs there. **The contract is that thread**:
+/// called from another one, `with_webview` posts its closure and returns
+/// before it runs, so the lay happens later and the announcement below is
+/// skipped - which is logged rather than passed over.
+///
+/// **Nothing in the closure may emit or announce.** On the main thread it
+/// runs inline while the dispatcher's window lock is held, and both reach
+/// `eval_script`, which takes that same lock on the same thread: a
+/// self-deadlock that hangs the client (measured 2026-11-01 on the hand-off
+/// Open).
 pub fn attach(app: &tauri::AppHandle, rect: Rect, viewport: super::super::Viewport) {
     let rect = rect.sane();
     let viewport = viewport.sane();
     let app_for_view = app.clone();
+    // Whether this call laid a view of its own (rather than moving the one
+    // already up): the page is told it holds the keyboard only then, so a
+    // re-layout does not take the keys off the bar.
+    let laid = Arc::new(AtomicBool::new(false));
+    let laid_here = Arc::clone(&laid);
+    // Whether the closure ran at all: a caller on another thread posts it and
+    // returns before it runs, which the check below reports.
+    let entered = Arc::new(AtomicBool::new(false));
+    let entered_here = Arc::clone(&entered);
     let Some(window) = app.get_webview_window("main") else {
         tauri_plugin_log::log::warn!("the client window is not there; the surface is not laid");
         return;
     };
     let scheduled = window.with_webview(move |platform| {
+        entered_here.store(true, Ordering::Relaxed);
         // SAFETY: this runs on the main thread, and the platform view is the
         // webview's own NSView for the window's lifetime.
         unsafe {
@@ -1066,7 +1086,7 @@ pub fn attach(app: &tauri::AppHandle, rect: Rect, viewport: super::super::Viewpo
                             let responder: &NSResponder = &overlay;
                             take_keyboard(&window, responder, "the page");
                         }
-                        overlay.emit(KEYBOARD_EVENT, page_keyboard());
+                        laid_here.store(true, Ordering::Relaxed);
                         let view = &*overlay as *const OverlayView as usize;
                         *overlay_slot() = Some(Overlay {
                             view,
@@ -1089,7 +1109,25 @@ pub fn attach(app: &tauri::AppHandle, rect: Rect, viewport: super::super::Viewpo
     });
     if let Err(why) = scheduled {
         tauri_plugin_log::log::warn!("the window's webview cannot be reached: {why}");
+        return;
     }
+    if !entered.load(Ordering::Relaxed) {
+        tauri_plugin_log::log::warn!(
+            "the webview closure had not run when this call returned, so the page is not told it \
+             holds the keyboard; attach must be called on the main thread (event_name \
+             client_browser_attach_off_main)"
+        );
+        return;
+    }
+    if laid.load(Ordering::Relaxed) {
+        announce_page_keyboard(app);
+    }
+}
+
+/// Tell the page the picture holds the keyboard. **Only the end of [`attach`]
+/// may call this**, never the lay closure.
+fn announce_page_keyboard(app: &tauri::AppHandle) {
+    let _ = app.emit(KEYBOARD_EVENT, page_keyboard());
 }
 
 /// Draw one decoded frame on the main thread.
@@ -1341,6 +1379,112 @@ mod tests {
             Some(false),
             "the left goes up"
         );
+    }
+
+    /// **What this file says about `attach`'s closure is pinned here**: no
+    /// direct emit or announce inside it, a false default and one fresh-lay
+    /// store after the moved-view return, and the one announce as the exact
+    /// guarded block after the webview's answer.
+    ///
+    /// The hazard those pins stand for - an emit or an announce inside the
+    /// closure reaches `eval_script` under the dispatcher's window lock, and
+    /// the client hangs - is [`attach`]'s to tell. This pins the file's text,
+    /// not reachability: a guard-clause refactor fails it, and so does a
+    /// string literal that names one of these calls.
+    #[test]
+    fn the_attach_never_emits_from_inside_its_lay() {
+        let source = include_str!("surface.rs");
+        // Production only: the test's own literals name the same calls.
+        let production = &source[..source.find("\nmod tests {").expect("the tests module")];
+        let start = production.find("pub fn attach(").expect("attach is in this file");
+        let attach = &production[start..];
+        let ended = attach.find("\nfn announce_page_keyboard(").expect("attach ends at its helper");
+        let attach = &attach[..ended];
+
+        // The flag starts false: a true default announces on every attach.
+        assert!(
+            attach.contains("let laid = Arc::new(AtomicBool::new(false));"),
+            "the laid flag no longer starts false"
+        );
+
+        // The closure, from the call to the `});` that closes it.
+        let open = attach.find("window.with_webview(").expect("attach lays through the webview");
+        let close = attach[open..]
+            .find("\n    });")
+            .expect("attach's webview call no longer closes on its own `});` line");
+        let closure = &attach[open..open + close];
+
+        // Comments may name these calls to explain the hazard; only code counts.
+        let mut code = String::new();
+        let mut in_block = false;
+        for line in closure.lines() {
+            let trimmed = line.trim_start();
+            if in_block {
+                in_block = !trimmed.contains("*/");
+                continue;
+            }
+            if trimmed.starts_with("//") {
+                continue;
+            }
+            if trimmed.starts_with("/*") {
+                in_block = !trimmed.contains("*/");
+                continue;
+            }
+            code.push_str(line);
+            code.push('\n');
+        }
+        // Every method call through an `Emitter` starts `.emit`, `::emit(` is
+        // the UFCS spelling, and a direct eval is reachable by name.
+        for forbidden in [".emit", "::emit(", ".eval", "eval_script", "announce_page_keyboard("] {
+            assert!(
+                !code.contains(forbidden),
+                "attach's lay closure calls {forbidden}: it runs inline under the window lock on \
+                 the main thread, and the call re-locks it, wedging the client"
+            );
+        }
+
+        // The flag is set once, after the moved-view branch's early return: a
+        // store before it would announce for a view this call only moved.
+        let store = "laid_here.store(true, Ordering::Relaxed);";
+        assert_eq!(closure.matches(store).count(), 1, "attach must record exactly one fresh lay");
+        let same = closure.find("if same {").expect("the moved-view branch");
+        let moved = same + closure[same..].find("return;").expect("the moved-view return");
+        let stored = closure.find(store).expect("the fresh-lay store");
+        assert!(
+            stored > moved,
+            "the laid flag is set on the moved-view path: a re-layout would announce and take the \
+             keys off the bar"
+        );
+
+        // The one announcement: the exact guarded block, after the webview's
+        // answer, with the off-main check ahead of it.
+        let after = &attach[open + close..];
+        assert_eq!(
+            after.matches("announce_page_keyboard(app);").count(),
+            1,
+            "attach must announce the page's keyboard exactly once"
+        );
+        assert!(
+            after.contains(
+                "if laid.load(Ordering::Relaxed) {\n        announce_page_keyboard(app);\n    }"
+            ),
+            "the announcement is not the exact guarded block: an emptied guard would announce for \
+             a moved view, and a weakened condition could too"
+        );
+        assert!(
+            after.contains("client_browser_attach_off_main"),
+            "the off-main warning lost its event name"
+        );
+        let answered = after.find("if let Err(").expect("attach reads the webview's answer");
+        let call = after.find("announce_page_keyboard(app);").expect("the announcement");
+        assert!(answered < call, "the announcement runs before the webview's answer is checked");
+        assert!(
+            after[answered..call].contains("= scheduled"),
+            "the check ahead of the announcement is not the webview's answer"
+        );
+        let entered =
+            after.find("if !entered.load(Ordering::Relaxed)").expect("the off-main check is gone");
+        assert!(entered < call, "the off-main check runs after the announcement");
     }
 
     /// **The overlay's events cross a language boundary as literals.** A
