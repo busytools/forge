@@ -578,7 +578,7 @@ mod tests {
             "restore_owed",
             "pin",
         ] {
-            assert!(lines[1].get(key).is_none(), "a frame carries no scroll field ({key}): {text}",);
+            assert!(lines[1].get(key).is_none(), "a frame carries no scroll field ({key}): {text}");
         }
     }
 
