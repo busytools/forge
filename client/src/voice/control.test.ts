@@ -13,6 +13,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { SLOT, wire as fakeWire, type Wire } from '../composer/testing';
 import { HeldClip, type VoiceCapture } from './capture.svelte';
 import VoiceControl from './control.svelte';
+import { resetVoices } from './registry';
 import type { OpenCapture } from './voice.svelte';
 
 let app: Record<string, unknown> | null = null;
@@ -20,6 +21,7 @@ let app: Record<string, unknown> | null = null;
 afterEach(() => {
   if (app !== null) void unmount(app);
   app = null;
+  resetVoices();
   document.body.innerHTML = '';
 });
 
@@ -102,13 +104,20 @@ describe('the voice switch', () => {
     expect(at.button().getAttribute('aria-label')).toContain('listening');
   });
 
-  it('turns voice off when the seat changes', () => {
+  it('keeps the switch when its control unmounts for a body swap', async () => {
     const at = drawn();
     press(at);
     if (app !== null) void unmount(app);
     app = null;
     flushSync();
-    expect(at.shared.sent.at(-1)?.command).toEqual({ voice_mode: { key: SLOT, on: false } });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const off = at.shared.sent.filter(
+      (sent) =>
+        'voice_mode' in sent.command &&
+        (sent.command.voice_mode as { on: boolean }).on === false,
+    );
+    expect(off, 'unmounting the control is not leaving the seat').toEqual([]);
   });
 
   it('draws the seat count the core reports', () => {
@@ -116,6 +125,9 @@ describe('the voice switch', () => {
     press(at);
     state(at, 2);
     expect(at.button().getAttribute('aria-pressed')).toBe('true');
+    expect(at.button().querySelector('.room')?.textContent, 'the room is drawn').toBe('2');
+    state(at, 1);
+    expect(at.button().querySelector('.room'), 'one listener is no room to draw').toBeNull();
     state(at, 0);
     expect(at.button().getAttribute('aria-pressed')).toBe('false');
     expect(at.button().getAttribute('aria-label')).toBe('turn voice on');

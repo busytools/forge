@@ -21,6 +21,8 @@ export interface VoicePort {
   send(command: 'voice_utterance', body: { pcm: number[] }): void;
   /** The seat's frames since the last call, in arrival order. */
   frames(): SessionUpdate[];
+  /** The listener count the seat's last read carried, before any frame. */
+  seed(): number;
 }
 
 /** How a hold opens a microphone; a seam so a test needs no audio stack. */
@@ -62,6 +64,9 @@ export class Voice {
     speaker?: Speaker,
   ) {
     this.playback = speaker === undefined ? new Playback() : new Playback(speaker);
+    // A late attach reads the room from the seat's own snapshot rather than
+    // showing zero until the next toggle.
+    this.listeners = port.seed();
   }
 
   get state(): VoiceState {
@@ -104,7 +109,7 @@ export class Voice {
       else this.port.send('voice_utterance', body as { pcm: number[] });
       return true;
     } catch {
-      this.line = 'the voice switch was not sent - the socket is down';
+      this.line = 'the socket is down, so that was not sent';
       return false;
     }
   }
@@ -204,6 +209,8 @@ export class Voice {
       // watching the seat still receives its frames, and playing them would
       // speak into a room that asked for silence.
       if (audio !== undefined && this.on) {
+        // The wire's pcm is a JSON number array of i16 samples; the cast is
+        // this boundary's own.
         const pcm = Array.isArray(audio.pcm) ? Int16Array.from(audio.pcm as number[]) : null;
         if (pcm !== null) {
           const rate = typeof audio.sample_rate === 'number' ? audio.sample_rate : 24_000;
@@ -272,14 +279,24 @@ export function connectionPort(
     send(command, body) {
       void connection.dispatch({ [command]: { key: slot, ...body } });
     },
+    seed() {
+      const snapshot = connection.store({ session: slot })?.snapshot();
+      if (snapshot === null || typeof snapshot !== 'object') return 0;
+      const state = (snapshot as { state?: { voice_listeners?: unknown } }).state;
+      return typeof state?.voice_listeners === 'number' ? state.voice_listeners : 0;
+    },
     frames() {
       const store = connection.store({ session: slot });
       if (store === undefined) return [];
       const held = store.updates();
       const lost = store.dropped();
       if (seen === null) {
+        // Seed at the end of what is there, and drop the audio history: a
+        // remount over an old seat store must not replay speech it already
+        // heard, and no other reader takes these frames.
         seen = held.length;
         dropped = lost;
+        store.takeAudio();
         return [];
       }
       if (lost > dropped) {
@@ -291,7 +308,7 @@ export function connectionPort(
       if (seen > held.length) seen = 0;
       const fresh = held.slice(seen);
       seen = held.length;
-      return fresh;
+      return [...fresh, ...store.takeAudio()];
     },
   };
 }

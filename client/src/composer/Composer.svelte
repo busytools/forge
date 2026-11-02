@@ -18,6 +18,7 @@
   import DictateControl from './DictateControl.svelte';
   import VoiceControl from '../voice/control.svelte';
   import { VoiceCapture } from '../voice/capture.svelte';
+  import { dropVoice } from '../voice/registry';
   import DictationPanel from './DictationPanel.svelte';
   import Dock from './Dock.svelte';
   import Field from './Field.svelte';
@@ -95,10 +96,20 @@
   // takes it from there, and this is the one read that is not a re-render.
   // svelte-ignore state_referenced_locally
   let box = $state.raw<Box>(boxes.of(boxKey(slot)));
+  // The seat being left, so its voice switch can be turned off and forgotten.
+  // A body swap is not a seat change, so this is the only place the switch is
+  // dropped for a reader who moved.
+  // svelte-ignore state_referenced_locally
+  let previousSeat = $state.raw(boxKey(slot));
   $effect.pre(() => {
     const key = boxKey(slot);
     const next = boxes.of(key);
     if (untrack(() => box) !== next) box = next;
+    const left = untrack(() => previousSeat);
+    if (left !== key) {
+      dropVoice(left);
+      previousSeat = key;
+    }
   });
 
   /**

@@ -42,10 +42,6 @@ export class HeldClip {
   /** Whether the hold ran past [`MAX_HOLD_SECONDS`] and was cut there. */
   capped = $state(false);
 
-  get seconds(): number {
-    return this.held.length / SAMPLE_RATE;
-  }
-
   push(bytes: Uint8Array): void {
     if (this.capped) return;
     this.frames += 1;

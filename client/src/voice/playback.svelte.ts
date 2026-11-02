@@ -28,6 +28,10 @@ export function webSpeaker(): Speaker {
     async play(pcm: Int16Array, sampleRate: number): Promise<void> {
       const audio = context ?? new AudioContext({ sampleRate });
       context = audio;
+      // A context built outside a gesture starts suspended: without this the
+      // source schedules silently and `onended` never fires, stalling the
+      // queue behind it.
+      void audio.resume();
       const buffer = audio.createBuffer(1, Math.max(pcm.length, 1), sampleRate);
       const channel = buffer.getChannelData(0);
       for (let at = 0; at < pcm.length; at += 1) channel[at] = (pcm[at] ?? 0) / 32768;
@@ -68,11 +72,8 @@ export class Playback {
     void this.pump();
   }
 
-  /**
-   * Discard everything queued and stop the clip sounding now. `playing`
-   * stays true until the stopped clip's own promise resolves, so a push
-   * during it waits rather than starting a second clip on top of the first.
-   */
+  /// Discard everything queued and stop the clip sounding now; `playing`
+  /// stays true until that clip's own promise resolves.
   drop(): void {
     this.queue = [];
     this.speaker.stop();
@@ -85,15 +86,8 @@ export class Playback {
     this.speaker.close();
   }
 
-  /**
-   * Play queued clips until the queue is empty.
-   *
-   * The loop is the queue's one player: every push starts it and finds it
-   * already running, so two clips can never sound at once. A drop while a
-   * clip sounds clears the queue but leaves that clip to finish; a push
-   * during it joins the new queue and waits for the speaker rather than
-   * starting a second clip over the first.
-   */
+  /// Play queued clips until the queue is empty. Every push starts this
+  /// loop and finds it already running, so two clips never sound at once.
   private async pump(): Promise<void> {
     if (this.playing) return;
     this.playing = true;

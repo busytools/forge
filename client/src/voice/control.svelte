@@ -13,8 +13,10 @@
   import Icon from '../components/Icon.svelte';
   import type { Connection } from '../socket';
   import type { SessionSlot } from '../wire/types';
+  import { boxKey } from '../composer/box.svelte';
   import { MAX_HOLD_SECONDS } from './capture.svelte';
-  import { Voice, connectionPort, type OpenCapture } from './voice.svelte';
+  import { voiceFor } from './registry';
+  import { connectionPort, type OpenCapture } from './voice.svelte';
 
   let {
     connection,
@@ -36,10 +38,13 @@
    * voice off rather than sending a clip of pure silence. */
   const TAP_MS = 300;
 
-  // Both props are fixed for this instance's life: the composer keys the
-  // control by the seat, so a new seat is a new control.
+  // The seat's key is fixed for this instance's life: the composer keys the
+  // control by the seat, and the registry keeps the voice across an ask's
+  // body swap, which unmounts this instance without leaving the seat.
   // svelte-ignore state_referenced_locally
-  const voice = new Voice(connectionPort(connection, slot), open);
+  const voiceKey = boxKey(slot);
+  // svelte-ignore state_referenced_locally
+  const voice = voiceFor(voiceKey, connectionPort(connection, slot), open);
   let pressedAt = 0;
   let holding = false;
   let capTimer: ReturnType<typeof setTimeout> | null = null;
@@ -60,7 +65,8 @@
       if (capTimer !== null) clearTimeout(capTimer);
       stop?.();
       offStatus();
-      voice.detach();
+      // The voice itself is the registry's, not this instance's: a body swap
+      // unmounts the control without leaving the seat.
     };
   });
 
@@ -116,6 +122,13 @@
           ? 'listening'
           : 'voice off',
   );
+  /** The room, when more than this client is in it. */
+  const room = $derived(voice.listeners > 1 ? `${voice.listeners} clients listening` : null);
+  const title = $derived(
+    voice.on
+      ? `hold to talk, tap to turn voice off${room === null ? '' : ` \u{b7} ${room}`}`
+      : `turn voice on${room === null ? '' : ` \u{b7} ${room}`}`,
+  );
 </script>
 
 <button
@@ -124,8 +137,9 @@
   type="button"
   bind:this={button}
   data-state={voice.state}
-  title={voice.on ? 'hold to talk, tap to turn voice off' : 'turn voice on'}
-  aria-label={voice.on ? `${label} \u{b7} hold to talk, tap to turn voice off` : 'turn voice on'}
+  data-listeners={voice.listeners}
+  {title}
+  aria-label={voice.on ? `${label} \u{b7} ${title}` : title}
   aria-pressed={voice.on}
   onpointerdown={(event: PointerEvent) => {
     if (event.button !== 0) return;
@@ -140,6 +154,9 @@
   oncontextmenu={(event: MouseEvent) => event.preventDefault()}
 >
   <Icon name={voice.state === 'speaking' ? 'sound' : voice.on ? 'mic' : 'mic-off'} />
+  {#if room !== null}
+    <span class="room" aria-hidden="true">{voice.listeners}</span>
+  {/if}
   {#if voice.state === 'talking'}
     <span class="dot" aria-hidden="true"></span>
     <span class="meter" aria-hidden="true"

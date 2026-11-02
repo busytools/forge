@@ -6,10 +6,12 @@
 
 import { describe, expect, it } from 'vitest';
 
+import { SLOT } from '../composer/testing';
 import type { SessionUpdate } from '../protocol';
+import { Stores } from '../stores';
 import { HeldClip, type VoiceCapture } from './capture.svelte';
 import type { Speaker } from './playback.svelte';
-import { Voice, type VoicePort } from './voice.svelte';
+import { Voice, connectionPort, type VoicePort } from './voice.svelte';
 
 class FakePort implements VoicePort {
   sent: { command: string; body: unknown }[] = [];
@@ -28,6 +30,12 @@ class FakePort implements VoicePort {
     this.queue = [];
     return out;
   }
+
+  seed(): number {
+    return this.seeded;
+  }
+
+  seeded = 0;
 }
 
 class FakeCapture {
@@ -99,6 +107,40 @@ describe("one seat's voice", () => {
     expect(at.port.sent.at(-1)?.body).toEqual({ pcm: [1, 2] });
   });
 
+  it('closes a capture that arrived after the hold ended', async () => {
+    let settle: ((capture: VoiceCapture) => void) | null = null;
+    const at = voice(
+      () =>
+        new Promise((resolve) => {
+          settle = resolve;
+        }),
+    );
+    at.voice.turnOn();
+    const opening = at.voice.startTalk();
+    await at.voice.endTalk();
+
+    const late = new FakeCapture();
+    settle?.(late);
+    await opening;
+
+    expect(late.cancelled, 'a device whose hold ended is closed on arrival').toBe(true);
+    expect(at.voice.state).toBe('listening');
+  });
+
+  it('does not open a second microphone while one is opening', async () => {
+    let opens = 0;
+    const at = voice(() => {
+      opens += 1;
+      return new Promise(() => {});
+    });
+    at.voice.turnOn();
+    void at.voice.startTalk();
+    void at.voice.startTalk();
+    await Promise.resolve();
+
+    expect(opens, 'the second press is not a second open').toBe(1);
+  });
+
   it('sends nothing for a hold that said nothing', async () => {
     const at = voice();
     at.voice.turnOn();
@@ -167,13 +209,48 @@ describe("one seat's voice", () => {
     expect(at.speaker.stopped, 'the old occupant is not speaking any more').toBe(1);
   });
 
-  it('turns the switch off when the seat reports no listeners', () => {
+  it('seeds the room from the seat read', () => {
+    const port = new FakePort();
+    port.seeded = 2;
+    const instance = new Voice(port, () =>
+      Promise.resolve(new FakeCapture() as unknown as VoiceCapture),
+    );
+
+    expect(instance.listeners, 'a late attach reads the room rather than zero').toBe(2);
+  });
+
+  it('turns the switch off and stops playback when the seat reports no listeners', () => {
     const at = voice();
     at.voice.turnOn();
+    at.port.queue.push({ voice_audio: { key: {}, seq: 0, sample_rate: 24_000, pcm: [1] } });
+    at.voice.pump();
+    expect(at.speaker.played.length).toBe(1);
+
     at.port.queue.push({ voice_mode_state: { key: {}, listeners: 0 } });
     at.voice.pump();
 
     expect(at.voice.on).toBe(false);
+    expect(at.speaker.stopped, 'the queued speech goes with the switch').toBe(1);
+  });
+
+  it('seeds at the end of a store that already holds audio', () => {
+    const stores = new Stores();
+    const store = stores.open({ session: SLOT });
+    store.push({ voice_audio: { key: SLOT, seq: 0, sample_rate: 24_000, pcm: [1, 2] } });
+    const port = connectionPort(
+      { store: (subject) => stores.get(subject), dispatch: () => {} },
+      SLOT,
+    );
+
+    expect(port.frames(), 'the first read replays nothing').toEqual([]);
+    store.push({ voice_audio: { key: SLOT, seq: 1, sample_rate: 24_000, pcm: [3, 4] } });
+    const fresh = port.frames();
+    expect(fresh).toHaveLength(1);
+    expect((fresh[0] as { voice_audio: { pcm: number[] } }).voice_audio.pcm).toEqual([3, 4]);
+    expect(
+      store.updates().filter((update) => 'voice_audio' in update),
+      'consumed audio does not stay in the retained tail',
+    ).toEqual([]);
   });
 
   it('resubscribes after a reconnect when the client still wants voice', () => {

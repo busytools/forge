@@ -346,7 +346,7 @@ export interface ReviewsRecord {
 /** One session, as this shell reads it. */
 export interface SessionRecord {
   slot: SessionSlot;
-  state: { scan_cwd: string };
+  state: { scan_cwd: string; voice_listeners: number };
   header: SessionHeader;
   mcp: McpServers | null;
   processes: ProcessSnapshot | null;
@@ -606,7 +606,10 @@ export function sessionFrom(data: unknown): SessionRecord {
     // page dispatches and every update it routes carries one, and the server
     // is the only thing that decides what a valid one looks like.
     slot: held['slot'] as SessionSlot,
-    state: { scan_cwd: text(state['scan_cwd']) ?? '' },
+    state: {
+      scan_cwd: text(state['scan_cwd']) ?? '',
+      voice_listeners: number(state['voice_listeners']) ?? 0,
+    },
     queue: queuedFrom(state['queue']),
     // A read carries what is waiting, never what left: an ending is this
     // view's own observation, so a seat read starts with none.
