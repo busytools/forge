@@ -97,6 +97,9 @@ fn driver_call(tool: &str, args: Value) -> Result<DriverCall<'_>, String> {
 /// since gone is dropped**: a successor numbers its tabs from one again, so an
 /// old-numbered hold would refuse the new host's tab of that number for ever
 /// (#2763 review).
+///
+/// Answers whether the event applied: `false` is a generation the host has
+/// already left, so nothing was recorded and no row changed.
 fn note_dialog(
     profile: &Profile,
     generation: u64,
@@ -3467,11 +3470,11 @@ impl BrowserService {
                         )
                     })
                     .collect();
-                let rows = profile
-                    .tabs
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .rows(&held, &controlled, &dialogs);
+                let rows = profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).rows(
+                    &held,
+                    &controlled,
+                    &dialogs,
+                );
                 let closing_at_ms = idle.filter(|_| up).map(|idle| {
                     let remaining = (touch.at + idle).saturating_duration_since(Instant::now());
                     let now = std::time::SystemTime::now()
@@ -5006,9 +5009,7 @@ impl Profile {
                                                 kind: dialog.clone(),
                                                 message: message.clone(),
                                             }),
-                                            JsDialogState::Answered | JsDialogState::Closed => {
-                                                None
-                                            }
+                                            JsDialogState::Answered | JsDialogState::Closed => None,
                                         };
                                     }
                                 });
