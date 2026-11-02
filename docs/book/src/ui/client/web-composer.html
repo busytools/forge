@@ -142,6 +142,10 @@
      icon's shape (a struck mic when off, a speaker while a reply plays). */
   .voice { position: relative; color: var(--dim); }
   .voice.on { color: var(--accent); }
+  /* The room, when more than this client is listening: the count beside
+     the icon, so a second listener is visible rather than only announced. */
+  .voice .room { position: absolute; left: -3px; bottom: -3px;
+    font-family: var(--mono); font-size: 9px; line-height: 1; color: var(--accent); }
   .send { color: var(--accent); }
   .stop { color: var(--dim); }
   .hints { display: inline-flex; align-items: center; gap: 4px; flex: none;
@@ -398,14 +402,15 @@ not fit collapse behind <span class="mono">+N</span>, which lists them.</p>
           <span class="txt ph">Type a message...</span>
           <span class="ctls">
             <span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span>
-            <span class="voice" title="turn voice on"><svg class="ic"><use href="#i-mic-off"/></svg></span>
+            <span class="voice" title="turn voice on &middot; 2 clients listening"><svg class="ic"><use href="#i-mic-off"/></svg><span class="room">2</span></span>
           </span>
         </div></div>
       </div></div>
       <p class="note" style="margin:8px 0 0">Nothing to report, so the live row does not draw
       and the field is the whole bar. The voice switch beside the mic draws when
       <span class="mono">[tts] enabled</span> is set; a press turns it on, a hold talks, and a
-      reply plays in the order the engine rendered it.</p>
+      reply plays in the order the engine rendered it. The count beside the icon is the room:
+      two clients are listening, this one included, and the title names it.</p>
     </div>
     <div class="col">
       <div class="lab">idle, a live seat <span class="h">82px</span></div>

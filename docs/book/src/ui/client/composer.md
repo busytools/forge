@@ -82,7 +82,9 @@ struck-through mic when off, a plain one listening, the same with a mark
 over the box and a level bar under it while it records, and a speaker while
 a reply plays, with a line beside it for a refused microphone or a hold cut
 at its bound. A hold past the bound ends itself rather than running until
-release.
+release. While more than one client is listening, the switch draws the
+room's count beside the icon and its title names it; the count is the
+seat's own answer, seeded from the seat read on a late attach.
 
 **Dictation and voice are different actions, so they keep different
 controls.** The mic fills the box with text and stops there; the voice
