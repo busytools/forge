@@ -1283,9 +1283,12 @@ dependencies = [
 name = "forge-tts"
 version = "1.1.38"
 dependencies = [
+ "hex",
  "llama-cpp-sys-2",
  "serde",
  "serde_json",
+ "sha2",
+ "tempfile",
  "thiserror 2.0.21",
  "tokio",
 ]

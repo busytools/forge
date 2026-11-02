@@ -11,7 +11,7 @@ mod error;
 mod model;
 mod split;
 
-pub use engine::QwenTts;
+pub use engine::{QwenTts, init_backend};
 pub use error::Error;
 pub use model::ModelFiles;
 pub use split::{sentences, within_bound};

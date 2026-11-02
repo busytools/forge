@@ -2,18 +2,22 @@
 
 mod ffi;
 
-use std::path::Path;
-
 use tokio::sync::mpsc;
 
+use crate::model::ModelFiles;
 use crate::{Chunk, Engine, Error, SpeakRequest};
 
+/// Initialise llama.cpp's backend registry once, from the boot path, so no
+/// later caller can race the load. Idempotent.
+pub fn init_backend() {
+    ffi::init_backend();
+}
+
 /// A loaded Qwen3-TTS pipeline. One render thread per engine, so a second
-/// utterance queues behind the first and the model is never shared mid-render.
+/// utterance queues behind the first.
 ///
-/// **The thread is joined on drop**, because the model lives on it and the
-/// process's own exit frees ggml's Metal device after it: a detached thread
-/// still holding buffers at exit trips the device's residency-set assert.
+/// The thread is joined on drop: a detached thread still holding buffers at
+/// exit trips ggml's Metal residency-set assert.
 pub struct QwenTts {
     jobs: Option<mpsc::UnboundedSender<Job>>,
     worker: std::sync::Mutex<Option<std::thread::JoinHandle<()>>>,
@@ -26,20 +30,22 @@ struct Job {
 
 impl QwenTts {
     /// Load the backbone and its codec projector once, on a thread of their
-    /// own, so the first utterance is not the first load.
-    pub fn load(model: &Path, projector: Option<&Path>) -> Result<Self, Error> {
-        let Some(projector) = projector else {
+    /// own, so the first utterance is not the first load. Both files are
+    /// checked against the digests their entries declare before the load.
+    pub fn load(files: &ModelFiles) -> Result<Self, Error> {
+        let Some(projector) = files.projector.as_ref() else {
             return Err(Error::ModelMissing("a TTS model needs its projector".to_owned()));
         };
-        for path in [model, projector] {
+        for path in [&files.model, projector] {
             if !path.is_file() {
                 return Err(Error::ModelMissing(path.display().to_string()));
             }
         }
+        files.verify()?;
 
         let (jobs, mut queue) = mpsc::unbounded_channel::<Job>();
         let (ready, loaded) = std::sync::mpsc::channel();
-        let (model_path, projector_path) = (model.to_path_buf(), projector.to_path_buf());
+        let (model_path, projector_path) = (files.model.clone(), projector.clone());
         let worker = std::thread::Builder::new()
             .name("forge-tts".to_owned())
             .spawn(move || match ffi::Core::load(&model_path, &projector_path) {
@@ -119,7 +125,7 @@ mod tests {
             "Qwen3-TTS-12Hz-1.7B-Base-Q8_0.gguf",
             Some("mmproj-Qwen3-TTS-12Hz-1.7B-Base-Q8_0.gguf"),
         );
-        let engine = QwenTts::load(&files.model, files.projector.as_deref()).expect("loads");
+        let engine = QwenTts::load(&files).expect("loads");
         let mut chunks = engine.speak(SpeakRequest {
             text: "Ready when you are.".to_owned(),
             language: Some("en".to_owned()),

@@ -4,10 +4,20 @@
 use std::ffi::CString;
 use std::path::Path;
 use std::ptr;
+use std::sync::Once;
 
 use llama_cpp_sys_2 as sys;
 
 use crate::{Chunk, Error, SpeakRequest};
+
+/// llama.cpp's backend registry is a bare static with no lock, so two
+/// concurrent first calls race on registration. Every caller goes through
+/// this one gate, and the boot path calls it before any render can start.
+static BACKEND: Once = Once::new();
+
+pub(super) fn init_backend() {
+    BACKEND.call_once(|| unsafe { sys::llama_backend_init() });
+}
 
 /// The backbone's own defaults for sampling semantic codes.
 const TOP_K: i32 = 40;
@@ -39,8 +49,7 @@ impl Core {
             sample_rate: 0,
         };
 
-        // Idempotent: forge-dictate narrates its own first call.
-        unsafe { sys::llama_backend_init() };
+        init_backend();
 
         let model_path = utf8(model)?;
         let name =

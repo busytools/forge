@@ -5,7 +5,7 @@
 //! and owns no model of the other direction, so the caller supplies whatever
 //! pair actually transcribes on this machine. What the bench measures is the
 //! loop a person hears - words in, speech out, the same words recognized
-//! again - plus how soon the first audio starts and how far the render runs
+//! again - plus how soon the first audio starts and how far the loop runs
 //! ahead of real time.
 
 use std::time::{Duration, Instant};
@@ -49,6 +49,7 @@ pub async fn run(
     let mut audio_seconds = 0.0_f64;
     let mut edits_total = 0_usize;
     let mut words_total = 0_usize;
+    let mut scored = 0_usize;
 
     for (index, clip) in corpus.iter().enumerate() {
         let started = Instant::now();
@@ -73,6 +74,7 @@ pub async fn run(
             // would add is a number about an empty clip.
             continue;
         };
+        scored += 1;
         first_audio += first;
         if rate > 0 {
             let count = u32::try_from(samples.len()).unwrap_or(u32::MAX);
@@ -89,10 +91,10 @@ pub async fn run(
 
     let wall = started_at.elapsed().as_secs_f64();
     Ok(TtsBenchResult {
-        clips: corpus.len(),
+        clips: scored,
         round_trip_wer: ratio(edits_total, words_total),
         first_audio_ms: u64::try_from(first_audio.as_millis()).unwrap_or(u64::MAX)
-            / u64::try_from(corpus.len()).unwrap_or(1),
+            / u64::try_from(scored).unwrap_or(1),
         realtime_factor: if wall > 0.0 { audio_seconds / wall } else { 0.0 },
     })
 }
@@ -170,6 +172,7 @@ mod tests {
         assert_eq!(result.clips, 1);
         assert_eq!(result.round_trip_wer, 0.0, "the exact words came back");
         assert!(result.realtime_factor > 0.0, "a render with audio has a pace");
+        assert!(result.first_audio_ms <= 1_000, "the stub answers at once, got {}", result.first_audio_ms);
     }
 
     #[tokio::test]
@@ -182,7 +185,42 @@ mod tests {
         )
         .await
         .expect("the run lands");
-        assert!(result.round_trip_wer > 0.0, "a changed word is an edit");
+        assert_eq!(
+            result.round_trip_wer, 0.25,
+            "one changed word in four is a quarter, not the clip count",
+        );
+    }
+
+    /// A clip whose channel closes with no chunk is not scored, and the mean
+    /// latency divides by the clips that rendered rather than the corpus.
+    #[tokio::test]
+    async fn a_clip_that_renders_nothing_is_not_counted() {
+        struct Selective;
+        impl Engine for Selective {
+            fn speak(&self, request: SpeakRequest) -> mpsc::Receiver<Result<Chunk, crate::Error>> {
+                let (sender, receiver) = mpsc::channel(2);
+                let silent = request.text == "silent";
+                tokio::spawn(async move {
+                    if !silent {
+                        let _ = sender
+                            .send(Ok(Chunk { seq: 0, sample_rate: 24_000, pcm: vec![1; 2_400] }))
+                            .await;
+                    }
+                });
+                receiver
+            }
+        }
+        let corpus = vec![
+            BenchClip { transcript: "silent".to_owned() },
+            BenchClip { transcript: "heard".to_owned() },
+        ];
+        let result = run(&Selective, &corpus, |_, _| "heard".to_owned(), |_| {
+            std::ops::ControlFlow::Continue(())
+        })
+        .await
+        .expect("the run lands");
+        assert_eq!(result.clips, 1, "only the clip that rendered is scored");
+        assert_eq!(result.round_trip_wer, 0.0);
     }
 
     #[tokio::test]

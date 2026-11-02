@@ -114,6 +114,12 @@ pub use protocol::{
 };
 pub use target::{ProjectKey, SessionSlot, SessionTarget};
 pub use tts::{TtsSettings, TtsSnapshot, TtsView};
+
+/// Initialise llama.cpp's backend registry once, from the boot path, before
+/// any render or dictation preflight can start.
+pub fn init_voice_backend() {
+    forge_tts::init_backend();
+}
 pub use update_fanout::SeatUpdate;
 pub use views::{
     AccountGatewayView, AccountLoadingRow, AccountPoolView, AccountUsageView, ProjectView,

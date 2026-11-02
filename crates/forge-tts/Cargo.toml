@@ -60,6 +60,9 @@ llama-cpp-sys-2 = { workspace = true, features = ["mtmd"] }
 serde = { workspace = true }
 tokio = { workspace = true }
 thiserror = { workspace = true }
+# The model files are verified against the digests their entries declare.
+sha2 = { workspace = true }
+hex = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 llama-cpp-sys-2 = { workspace = true, features = ["metal", "mtmd"] }
@@ -67,3 +70,4 @@ llama-cpp-sys-2 = { workspace = true, features = ["metal", "mtmd"] }
 [dev-dependencies]
 # The leaf-invariant guard reads cargo's own metadata.
 serde_json = { workspace = true }
+tempfile = { workspace = true }
