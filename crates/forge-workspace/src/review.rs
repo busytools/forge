@@ -1243,8 +1243,8 @@ mod tests {
         assert_eq!(slashed, 0, "and renaming its default branch does not turn the guard off");
     }
 
-    /// Auto-start and the kick dispatcher are creating worker worktrees at
-    /// the moment the sweep runs, so a registered worker's branch being
+    /// The boot wave and the kick dispatcher are creating worker worktrees
+    /// at the moment the sweep runs, so a registered worker's branch being
     /// absent right now is routine rather than evidence it is gone.
     #[test]
     fn the_sweep_spares_a_branch_a_live_worker_has_yet_to_create() {

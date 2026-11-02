@@ -101,7 +101,7 @@ and start that session again.
 | ------------ | ------ | -------- | ------- | ------------------------------------------------------------------------------------------------ |
 | `name`       | string | yes      |         | Must be unique across _all_ orgs, not just within one.                                           |
 | `path`       | string | yes      |         | A leading `~/` is expanded to the home directory. The un-expanded string is kept for display.    |
-| `resume_lead` | bool  | no       | `false` | When true, the project's lead session spawns at forge launch, resuming the session forge stored for it. A lead that actually resumes is handed one restart note as its first turn, so it continues without a prompt. Any number of projects may set it. |
+| `resume_lead` | bool  | no       | `false` | When true, the project's lead session spawns at forge launch, resuming the session forge stored for it. A lead this launch resumes is handed one restart note as its first turn, so it continues without a prompt; a project added later by a config reload starts without one. Any number of projects may set it. |
 
 Project names are the argument `forge <PROJECT>` takes, and the key
 per-project settings hang off.
@@ -1065,11 +1065,11 @@ next request. The screen names both.
 
 Every project carrying `resume_lead = true` still spawns its lead session
 in the background, resuming the session forge stored for it, but none of
-them is focused: you pick one from the picker to enter chat. A lead whose
-session resumed is handed one restart note as its first turn, telling it
+them is focused: you pick one from the picker to enter chat. A lead this
+launch resumed is handed one restart note as its first turn, telling it
 to read the project handoff and the task board and to continue where it
-left off; a lead with no stored session, or a `--new` boot, starts fresh
-and gets none.
+left off; a lead with no stored session, a `--new` boot, or a project
+added later by a config reload starts without one.
 
 `resume_lead` therefore controls what is warm when you arrive, not what
 you land on.

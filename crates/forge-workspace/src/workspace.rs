@@ -2650,9 +2650,10 @@ impl Workspace {
         if reload.moved("accounts.") {
             self.announce_accounts_changed();
         }
-        // A project the edit added starts as it would at boot; one already
-        // declared keeps whatever it is running, and a removed one is left
-        // alone.
+        // A project the edit added starts as a boot spawn would, but
+        // without the restarted lead's note: only the launch hands that
+        // one out. One already declared keeps whatever it is running, and
+        // a removed one is left alone.
         let added: Vec<(String, String)> = self
             .config_arc()
             .projects
@@ -2702,7 +2703,7 @@ impl Workspace {
             }) {
                 tracing::warn!(
                     target: "forge_workspace::workspace",
-                    event_name = "config_reload_autostart_failed",
+                    event_name = "config_reload_resume_lead_failed",
                     project = %project_name,
                     error = %error,
                     "a resume_lead project the reload added did not start",
@@ -17017,7 +17018,7 @@ provider = "anthropic"
 
     /// Any second wake of a live project reaches the fast path: a cron,
     /// a peer prompt, a gotify message, a slack delivery or the boot
-    /// auto-start wave landing after one of them. It announces the same
+    /// wave landing after one of them. It announces the same
     /// key the live session already holds, so a view has one bucket
     /// rather than a second one to retire.
     #[test]
