@@ -25,7 +25,7 @@ import type { ClientSettings, SessionSlot } from './wire/types';
  * rail footer carries both halves' build and socket numbers, and a mismatch
  * raises the notice beside it. Nothing refuses a connection over it.
  */
-export const PROTOCOL_VERSION = 21;
+export const PROTOCOL_VERSION = 22;
 
 /**
  * The release this client was built from, baked in by the build.
@@ -375,6 +375,20 @@ export type ClientMessage =
       seat: SessionSlot;
       tab: number | null;
       /** Answers the attach when the sender waits; the shell's does. */
+      reply_to?: number | null;
+    }
+  /**
+   * Open the page a parked hand-off named, addressed by its CDP target.
+   *
+   * **A tab number is not an identity across a host restart**: the successor
+   * host's first tab takes number 1 again, so a hand-off that outlived the
+   * replacement is opened by page and refused by name when the page is gone.
+   */
+  | {
+      kind: 'browser_view_page';
+      seat: SessionSlot;
+      target: string;
+      /** Answers the attach, as `browser_view`'s does. */
       reply_to?: number | null;
     }
   /**

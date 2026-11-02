@@ -305,6 +305,28 @@ impl forge_workspace::browser::BrowserHost for HostedBrowser {
         })
     }
 
+    async fn attach_page(
+        &self,
+        viewer: u64,
+        seat: &forge_primitives::SessionSlot,
+        target: &str,
+    ) -> Result<forge_workspace::browser::BrowserAttachment, String> {
+        let attachment = self.0.attach_page(viewer, seat, target).await?;
+        Ok(forge_workspace::browser::BrowserAttachment {
+            key: attachment.key,
+            id: attachment.id,
+            tab: attachment.tab,
+            frames: attachment.frames,
+            view: attachment.view,
+            tabs: attachment.tabs,
+            nav: attachment.nav,
+            failures: attachment.failures,
+            files: attachment.files,
+            downloads: attachment.downloads,
+            audio: attachment.audio,
+        })
+    }
+
     async fn answer_files(
         &self,
         profile: &str,

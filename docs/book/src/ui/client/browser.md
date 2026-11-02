@@ -3,7 +3,10 @@
 The server's Chromium, as a full-window takeover under a slim client bar.
 A browser hand-off's **Open** and the strip's browser row both open it; the
 sessions drive the same tabs while it is closed, and opening one shows the
-tab as they left it. The drawing it is held against is
+tab as they left it. **A hand-off opens by its page's id, not its tab
+number**: a parked ask can outlive the host that minted the number, and the
+successor's first tab takes number 1 again, so a page id is what makes Open
+raise the page the session prepared. The drawing it is held against is
 [web-browser.html](./web-browser.html), beside this page.
 
 **The browser is the server's.** The server ships its own CEF host - a signed
@@ -48,7 +51,7 @@ in-process node any more.
 | A tab row | the host's number, the title (else its URL), the owner as `org/project/label`, and its state - **in use**, **idle** or **held** - with the mark that says which; a tab holding a page dialog adds `<kind> waiting` beside it, with the dialog's message on hover | the tab list's rows |
 | The engine line | the panel's own line when no close is scheduled: `the server's own Chromium`, on every client, or `nothing to run a page` | the tab list |
 | The states | `opening the browser…`, the server's sentence when it failed, the host's own death sentence - `the browser host exited (signal 9; pid 1234); the next call brings it back` - when a host dies under the surface (the cause is a signal or an exit code), and the page's own error page when a load fails | the page's surface state, and the server's failure frame |
-| A refusal | the server's own words: `tab N is not open`, the profile has no tab to show yet, the host is not answering, or a page area that could not be placed. **A take the bar's mic pressed and could not open says why above the feedback row**: the composer's own notice row is behind the picture while the takeover is up | the attach's answer, the surface's failure frame, and the take's own line |
+| A refusal | the server's own words: `tab N is not open`, the profile has no tab to show yet, the host is not answering, a page area that could not be placed, or - for a hand-off - `the page the hand-off named (X) is gone from profile ...` with the tabs open now, which its **try again** reaches too. **A take the bar's mic pressed and could not open says why above the feedback row**: the composer's own notice row is behind the picture while the takeover is up | the attach's answer, the surface's failure frame, and the take's own line |
 
 ## The rules
 

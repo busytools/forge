@@ -238,6 +238,33 @@ impl TabRegistry {
         self.tabs.get(&tab).map(|tab| tab.target.as_str())
     }
 
+    /// The tab a page target names, or `None` when that page is gone.
+    ///
+    /// **The identity an open resolves**: a tab number survives a host
+    /// replacement in name only, and the successor's first tab takes number 1
+    /// again.
+    pub fn number_of(&self, target: &str) -> Option<u16> {
+        // **An empty target is not a page**, and a tab whose page a listing
+        // could not name holds one; resolving it would open the wrong tab
+        // for a caller that named nothing.
+        if target.is_empty() {
+            return None;
+        }
+        self.tabs.iter().find(|(_, tab)| tab.target == target).map(|(number, _)| *number)
+    }
+
+    /// The tabs as one line, for a refusal that names what is open now.
+    pub fn listing(&self) -> String {
+        if self.tabs.is_empty() {
+            return "no tabs are open".to_owned();
+        }
+        self.tabs
+            .iter()
+            .map(|(number, tab)| format!("{number}: {}", tab.url))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
     /// A tab's title and url, for the listing the tools answer with.
     pub fn title_url(&self, tab: u16) -> Option<(&str, &str)> {
         self.tabs.get(&tab).map(|tab| (tab.title.as_str(), tab.url.as_str()))
@@ -450,6 +477,26 @@ mod tests {
             registry.other_owners_at(&worker, now).iter().all(|(seat, _)| seat != &worker),
             "a seat is never its own holder",
         );
+    }
+
+    /// **A page target outlives a tab number.** The replace case is the one
+    /// this exists for: a successor host's first tab is number 1 again.
+    #[test]
+    fn a_page_target_resolves_to_its_tab_and_a_gone_one_names_the_listing() {
+        let lead = SessionSlot::lead("O", "p");
+        let mut registry = TabRegistry::default();
+        registry.adopt(1, lead.clone(), "t1", "one", "http://a/").expect("the tab");
+        // **The page, not just the only tab**: a second page proves the
+        // lookup resolves the target rather than answering the first row.
+        registry.adopt(2, lead.clone(), "t2", "two", "http://b/").expect("the second tab");
+        // **A row whose page a listing could not name carries an empty
+        // target**, and it must not answer a caller that named nothing.
+        registry.adopt(3, lead, "", "three", "http://c/").expect("a row with no page named");
+        assert_eq!(registry.number_of("t1"), Some(1));
+        assert_eq!(registry.number_of("t2"), Some(2));
+        assert_eq!(registry.number_of("t9"), None);
+        assert_eq!(registry.number_of(""), None, "a page nobody named is not a page");
+        assert_eq!(registry.listing(), "1: http://a/, 2: http://b/, 3: http://c/");
     }
 
     #[test]

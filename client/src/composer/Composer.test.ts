@@ -6474,13 +6474,14 @@ describe('the dock', () => {
    *  stayed up, and Done left the takeover covering the chat. */
   it('lowers the seat-own browser of a hand-off with no readable tab', async () => {
     vi.mocked(showBrowser).mockResolvedValueOnce({ profile: 'forge-lead', tab: 1 });
-    open({ record: record({ pending_asks: [browserHandOffAsk({ tab: null })] }) });
+    open({ record: record({ pending_asks: [browserHandOffAsk({ tab: null, target: null })] }) });
 
     action('Open browser').click();
     await vi.waitFor(() =>
       expect(showBrowser, 'the raise names no tab and carries the seat').toHaveBeenCalledWith(
         null,
         SLOT,
+        null,
         null,
       ),
     );
@@ -6788,8 +6789,8 @@ describe('the dock', () => {
     expect(showBrowser).toHaveBeenCalledTimes(2);
     expect(
       showBrowser,
-      'the retry asks for the profile current tab, not the parked ask dead tab',
-    ).toHaveBeenLastCalledWith(null, SLOT, null);
+      'the retry asks for the page the hand-off named, not a tab number',
+    ).toHaveBeenLastCalledWith(null, SLOT, null, 'page-2');
     expect(surface.phase, 'the second ask landed').toBe('live');
   });
 
@@ -7334,7 +7335,12 @@ describe('the dock', () => {
 
     action('Open browser').click();
     await vi.waitFor(() =>
-      expect(showBrowser, 'the raise the approval is for').toHaveBeenCalledWith(null, SLOT, 2),
+      expect(showBrowser, 'the raise the approval is for').toHaveBeenCalledWith(
+        null,
+        SLOT,
+        2,
+        'page-2',
+      ),
     );
   });
 

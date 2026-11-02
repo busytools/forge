@@ -100,27 +100,28 @@ describe('the ask as the composer reads it', () => {
 
 describe('the browser hand-off read', () => {
   /**
-   * **The tab is the ask.** It is what the person's Open raises, so a frame
-   * whose tab this page cannot read opens the seat's own current tab rather
-   * than a guessed number.
+   * **The page is the ask.** Open resolves the hand-off's page id, which is
+   * the tab's identity across a host replacement; the tab is what the bar
+   * names. A frame whose values this page cannot read opens the seat's own
+   * current tab rather than a guessed number.
    */
-  it('reads the tab a hand-off names, and nothing for one it cannot', () => {
+  it('reads the page and tab a hand-off names, and nothing for ones it cannot', () => {
     const named = askFrom({
       kind: 'browser_hand_off',
-      request: { id: 'h1', reason: 'solve the CAPTCHA', tab: 3 },
+      request: { id: 'h1', reason: 'solve the CAPTCHA', tab: 3, target: 'page-3' },
     });
     expect(named).toEqual({
       kind: 'browser_hand_off',
-      request: { id: 'h1', reason: 'solve the CAPTCHA', tab: 3 },
+      request: { id: 'h1', reason: 'solve the CAPTCHA', tab: 3, target: 'page-3' },
     });
 
     const unreadable = askFrom({
       kind: 'browser_hand_off',
-      request: { id: 'h2', reason: 'solve the CAPTCHA', tab: 'three' },
+      request: { id: 'h2', reason: 'solve the CAPTCHA', tab: 'three', target: 7 },
     });
     expect(unreadable).toEqual({
       kind: 'browser_hand_off',
-      request: { id: 'h2', reason: 'solve the CAPTCHA', tab: null },
+      request: { id: 'h2', reason: 'solve the CAPTCHA', tab: null, target: null },
     });
   });
 });

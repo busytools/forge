@@ -2550,6 +2550,30 @@ impl BrowserService {
         seat: &SessionSlot,
         tab: Option<u16>,
     ) -> Result<Attachment, String> {
+        self.attach_at(viewer, seat, tab, None).await
+    }
+
+    /// Attach a viewer to the tab a page target names.
+    ///
+    /// **A hand-off opens by page, not by number**: a parked ask outlives the
+    /// host that minted its tab number, and the successor's first tab takes
+    /// number 1 again.
+    pub async fn attach_page(
+        &self,
+        viewer: u64,
+        seat: &SessionSlot,
+        target: &str,
+    ) -> Result<Attachment, String> {
+        self.attach_at(viewer, seat, None, Some(target)).await
+    }
+
+    async fn attach_at(
+        &self,
+        viewer: u64,
+        seat: &SessionSlot,
+        tab: Option<u16>,
+        page: Option<&str>,
+    ) -> Result<Attachment, String> {
         self.note_live(seat);
         let key = self.target(seat)?;
         let was =
@@ -2561,7 +2585,16 @@ impl BrowserService {
             self.detach(viewer).await;
         }
         let profile = self.open(seat).await?;
-        let tab = if let Some(tab) = tab {
+        let tab = if let Some(target) = page {
+            let tabs = profile.tabs.lock().unwrap_or_else(PoisonError::into_inner);
+            tabs.number_of(target).ok_or_else(|| {
+                format!(
+                    "the page the hand-off named ({target}) is gone from profile '{}'; {}",
+                    profile.key,
+                    tabs.listing()
+                )
+            })?
+        } else if let Some(tab) = tab {
             tab
         } else {
             let tabs = profile.tabs.lock().unwrap_or_else(PoisonError::into_inner);
@@ -9776,6 +9809,28 @@ mod tests {
 
         let why = service.nav(&profile.key, tab, 8, true).await.expect_err("a watcher is refused");
         assert!(why.contains("not the browser's controller"), "{why}");
+    }
+
+    /// **A hand-off opens by page**, so the number it was minted with cannot
+    /// raise a successor host's first tab. A page that is gone is refused
+    /// with the tabs open now.
+    #[tokio::test]
+    async fn an_attach_by_page_resolves_the_target_and_refuses_a_gone_one() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let root = dir.path().join("browser");
+        let service = BrowserService::at(root.clone(), root.join("stack"));
+        let seat = SessionSlot::lead("TestOrg", "proj");
+        service.install_fake(&seat, FakeDriver::with_blank("T1")).await;
+        service.call(&seat, "browser_snapshot", json!({})).await.expect("the tab is adopted");
+
+        let attachment = service.attach_page(7, &seat, "T1").await.expect("the page resolves");
+        assert_eq!(attachment.tab, 1, "the page names the tab");
+
+        let Err(why) = service.attach_page(8, &seat, "GONE").await else {
+            panic!("a gone page is refused");
+        };
+        assert!(why.contains("GONE"), "the refusal names the page: {why}");
+        assert!(why.contains("1:"), "and the tabs that are open now: {why}");
     }
 
     /// **A re-attach of the same viewer to the same tab keeps its role, and

@@ -65,7 +65,18 @@ export interface BrowserLink {
    * path - while a browser tab's Back would otherwise leave the seat.
    */
   readonly usesPageHistory: boolean;
-  show(profile: string | null, seat: SessionSlot | null, tab: number | null): Promise<OpenAnswer>;
+  /**
+   * Open a seat's browser at a tab, or at the page a hand-off named.
+   *
+   * `page` is the hand-off's CDP target: **a number names a different tab
+   * after a host replacement**, so a parked ask opens by page.
+   */
+  show(
+    profile: string | null,
+    seat: SessionSlot | null,
+    tab: number | null,
+    page?: string | null,
+  ): Promise<OpenAnswer>;
   hide(profile: string | null, seat: SessionSlot | null): Promise<HideAnswer>;
   /** The page area's box, for a shell to place its native layer in. */
   reportRect(
@@ -230,8 +241,9 @@ export function showBrowser(
   profile: string | null,
   seat: SessionSlot | null,
   tab: number | null,
+  page: string | null = null,
 ): Promise<OpenAnswer> {
-  return browserLink().show(profile, seat, tab);
+  return browserLink().show(profile, seat, tab, page);
 }
 
 export function hideBrowser(

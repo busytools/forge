@@ -48,9 +48,14 @@ function shellLink(): BrowserLink {
     /** The shell's own hardware Back lowers the takeover. */
     usesPageHistory: false,
 
-    async show(profile, seat, tab): Promise<OpenAnswer> {
+    async show(profile, seat, tab, page = null): Promise<OpenAnswer> {
       try {
-        const answer: unknown = await invokeShell('client_browser_view', { seat, tab });
+        // **A hand-off opens by page**: its tab number names a different tab
+        // after a host replacement.
+        const answer: unknown =
+          page === null
+            ? await invokeShell('client_browser_view', { seat, tab })
+            : await invokeShell('client_browser_view_page', { seat, target: page });
         await invokeShell('browser_takeover', { on: true });
         void profile;
         const attached = attachedFrom(answer);
