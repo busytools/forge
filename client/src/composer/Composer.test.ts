@@ -3438,6 +3438,28 @@ function baseRule(selector: string): string {
 }
 
 /**
+ * A rule's left padding, from its `padding` shorthand or its own property.
+ *
+ * Reading only `padding-left` is how a shorthand inset went unseen: a notice
+ * written `padding: 8px 14px 0` carried the field's inset while the guard that
+ * asked for one found nothing to match.
+ */
+function leftInset(declared: string): number {
+  const own = /(?:^|[;{])\s*padding-left:\s*(-?[\d.]+)px/.exec(declared);
+  if (own !== null) return Number(own[1]);
+  const shorthand = /(?:^|[;{])\s*padding:\s*([^;]+)/.exec(declared)?.[1];
+  if (shorthand === undefined) return 0;
+  // 1 value: every side; 2: vertical horizontal; 3: top horizontal bottom;
+  // 4: top right bottom left.
+  const parts = shorthand
+    .trim()
+    .split(/\s+/)
+    .map((part) => Number.parseFloat(part));
+  const left = parts.length === 1 ? parts[0] : parts.length === 4 ? parts[3] : parts[1];
+  return left ?? 0;
+}
+
+/**
  * The ring the box draws, resolved the way a browser resolves it.
  *
  * The ring's colour is a precedence question rather than a text one: a rule
@@ -3717,28 +3739,31 @@ describe('the frame', () => {
   });
 
   /**
-   * One box, one left margin. The field, the notice and the blocking states
-   * all start where the field starts; the take's card is the one thing that
-   * does not, because it rides the box's right corner rather than the column.
+   * One box, one left margin. The field's words, a notice and the blocking
+   * states all start at the same inset from the card's edge; the take's card
+   * is the one thing that does not, because it rides the box's right corner
+   * rather than the column.
    *
-   * Measured in a browser before this: the notice's and the (then) dictation
-   * row's TEXT sat 25.00px right of the field's, at 1600 and at 430 - a gutter
-   * inherited from the view this client replaced rather than chosen, and 13px
-   * more than the issue that found it believed. A sheet assertion cannot see
-   * that offset; what it can do is keep the inset from coming back, which is
-   * the change someone would plausibly make.
-   *
-   * **What it reads: the base rules only.** A `padding-left` added inside a
-   * media block passes this, because the guard resolves the first rule each
-   * selector has. The shipped sheet is right either way; the limit is stated
-   * so a reader does not take this for wider than it is.
+   * The field's text is inset by its ROW's padding, so a notice with no
+   * padding of its own starts 14px left of every word typed below it -
+   * measured in the app at 1600, the reading line at 333 against the
+   * placeholder's 347. The notice therefore carries the drawing's own
+   * `8px 14px 0`, and this compares the two insets as one number. jsdom
+   * performs no layout, so the declarations are what is read.
    */
-  it('starts every row at the left edge of the field', () => {
-    for (const row of ['.comp .notice', '.blocked', '.blocked .b2']) {
-      expect(baseRule(row), `${row} carries a left inset the field does not`).not.toMatch(
-        /padding-left:\s*[1-9]/,
-      );
-    }
+  it("starts the notice and the blocked lines at the field's own left inset", () => {
+    const field = leftInset(sheetRule('.surf .slot > .line'));
+    expect(field, 'the field row lost the left inset the rows above the draft match').toBe(14);
+    expect(sheetRule('.comp .notice'), "the notice lost the drawing's own inset").toContain(
+      'padding: 8px 14px 0',
+    );
+    expect(leftInset(sheetRule('.comp .notice')), 'the notice starts left of the field').toBe(
+      field,
+    );
+    expect(leftInset(sheetRule('.blocked')), 'a blocked line starts left of the field').toBe(field);
+    expect(leftInset(sheetRule('.blocked .b2')), 'the blocking sub-line insets itself twice').toBe(
+      0,
+    );
   });
 
   /**
@@ -3834,8 +3859,8 @@ describe('the frame', () => {
     expect(sheet, 'a bare notice rule strips chrome a delivery needs').not.toMatch(
       /(^|,)\s*[a-z]*\.notice[^,{}]*\{[^}]*padding:\s*0/m,
     );
-    expect(sheetRule('.comp .notice'), 'the row does not state its own chrome').toMatch(
-      /padding:\s*0/,
+    expect(sheetRule('.comp .notice'), 'the row does not state its own chrome').toContain(
+      'padding: 8px 14px 0',
     );
   });
 

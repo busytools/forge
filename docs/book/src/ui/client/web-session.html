@@ -1284,7 +1284,9 @@
   .tc .ticks i { width: 18px; height: 6px; border-radius: 999px; background: var(--s3); }
   .tc .ticks i.on { background: var(--blue); }
   .line.takeline { align-items: center; }
-  .mnotice { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); }
+  .mnotice { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim);
+    padding: 8px 14px 0; }
+  .mnotice + .line { margin-top: 8px; }
 
   /* The list is a popover over the conversation, not a lane of the bar: it
      hangs above the card and the bar's height does not move with it. */
