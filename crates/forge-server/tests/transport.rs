@@ -56,6 +56,14 @@ async fn a_server_with_state() -> (String, Fleet, Arc<TransportState>) {
     (url, fleet, state)
 }
 
+/// A server whose fixture has `[tts] enabled`, for the voice tests: the
+/// shared fixture leaves it off so no other test synthesises.
+async fn a_server_with_tts() -> (String, Fleet) {
+    let fleet = Fleet::new_with_tts(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+    let (url, _state) = serve_fleet(&fleet, Heartbeat::default()).await;
+    (url, fleet)
+}
+
 /// The socket a fleet answers on, for a test that built its own fleet (and
 /// so owns the config the server reads).
 ///
@@ -957,7 +965,7 @@ impl forge_tts::Engine for RecordingVoice {
 /// transcribe draws a notice rather than reaching the agent.
 #[tokio::test]
 async fn a_voice_switch_is_answered_and_its_clips_reach_the_subscriber() {
-    let (url, fleet) = a_server().await;
+    let (url, fleet) = a_server_with_tts().await;
     let mut agent = fleet.install_agent("TestOrg", "proj", "lead");
     let requests = Arc::new(Mutex::new(Vec::new()));
     fleet.workspace().install_voice_engine_for_test(Arc::new(RecordingVoice {
@@ -1038,10 +1046,10 @@ async fn a_voice_switch_is_answered_and_its_clips_reach_the_subscriber() {
         matches!(update, SessionUpdate::Notice { .. })
     })
     .await;
-    assert!(
-        agent.try_recv().is_err(),
-        "an untranscribable utterance dispatches nothing into the seat",
-    );
+    // The dispatch half is pinned in `forge-workspace`'s own tests, where a
+    // transcript becomes a `PromptUnder` and an empty one dispatches nothing;
+    // this fixture has no session task to deliver a prompt to.
+    assert!(agent.try_recv().is_err(), "an untranscribable utterance reaches no agent");
 }
 
 /// A listener that drops without saying goodbye leaves the seat's count: the
@@ -1049,7 +1057,7 @@ async fn a_voice_switch_is_answered_and_its_clips_reach_the_subscriber() {
 /// listening hears the count fall.
 #[tokio::test]
 async fn a_dropped_listener_leaves_the_seats_count() {
-    let (url, fleet) = a_server().await;
+    let (url, fleet) = a_server_with_tts().await;
     fleet.install_agent("TestOrg", "proj", "lead");
     fleet.workspace().install_voice_engine_for_test(Arc::new(RecordingVoice {
         requests: Arc::new(Mutex::new(Vec::new())),

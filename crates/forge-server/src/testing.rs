@@ -117,7 +117,24 @@ impl Fleet {
     ) -> Result<Self, FixtureError> {
         let forge = config_dir.join("forge");
         std::fs::create_dir_all(&forge)?;
-        std::fs::write(forge.join("forge.toml"), config(config_dir, orgs, server, env))?;
+        std::fs::write(forge.join("forge.toml"), config(config_dir, orgs, server, env, false))?;
+        Self::open(config_dir)
+    }
+
+    /// A fleet with `[tts] enabled`, for a test that drives the voice
+    /// service: the fixture's own section stays off so no other test
+    /// synthesises.
+    pub fn new_with_tts(orgs: &[(&str, &[&str])]) -> Result<Self, FixtureError> {
+        let dir = tempfile::tempdir()?;
+        let forge = dir.path().join("forge");
+        std::fs::create_dir_all(&forge)?;
+        std::fs::write(forge.join("forge.toml"), config(dir.path(), orgs, "", &[], true))?;
+        let mut fleet = Self::open(dir.path())?;
+        fleet.owned_dir = Some(dir);
+        Ok(fleet)
+    }
+
+    fn open(config_dir: &Path) -> Result<Self, FixtureError> {
         // `new_for_test` opens the store under `config_dir`'s own
         // app-support base, so a fixture gets a durable layer without
         // opening a second handle on the same file.
@@ -645,6 +662,7 @@ fn config(
     orgs: &[(&str, &[&str])],
     server: &str,
     env: &[(&str, &str)],
+    tts_enabled: bool,
 ) -> String {
     let mut sections: Vec<String> = Vec::new();
     if !server.is_empty() {
@@ -680,9 +698,12 @@ fn config(
         config_dir.join("models").display()
     ));
     // The speaking role's own directory, so a fixture pins a path under the
-    // fixture rather than this machine's cache dir. The section stays off:
-    // nothing in a fleet test synthesises.
-    sections.push(format!("[tts]\nmodels_dir = \"{}\"\n", config_dir.join("models").display()));
+    // fixture rather than this machine's cache dir. The section stays off
+    // unless a test asks for it: nothing else in a fleet test synthesises.
+    sections.push(format!(
+        "[tts]\nenabled = {tts_enabled}\nmodels_dir = \"{}\"\n",
+        config_dir.join("models").display()
+    ));
     sections.concat()
 }
 
