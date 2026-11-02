@@ -2,8 +2,18 @@
 import { get } from 'svelte/store';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { askState, askWords, notifiesFromThePage, rising, type AskState } from './notify';
-import type { AgentRow } from './wire/home';
+import { homeWire } from './dev/fixture.data';
+import {
+  askState,
+  askWords,
+  notifiesFromThePage,
+  rising,
+  waitsRising,
+  waitRows,
+  waitWords,
+  type AskState,
+} from './notify';
+import type { AgentRow, HomeWire } from './wire/home';
 import type { SessionSlot } from './wire/types';
 
 const LEAD: SessionSlot = { org: 'Busytools', project: 'forge', label: 'lead' };
@@ -190,6 +200,122 @@ describe('which asks are news', () => {
   });
 });
 
+describe('which decision waits are news', () => {
+  const at = (secs: number) => ({ secs_since_epoch: secs, nanos_since_epoch: 0 });
+
+  /// **A fleet row's waits are named with the seat that raised them**, and
+  /// the seat carries its project's org - the fleet row names only the
+  /// project, and a route built from an empty org opens nothing.
+  it('reads the waits off the home wire with their seat and org', () => {
+    const wire: HomeWire = {
+      ...homeWire,
+      fleet: [
+        {
+          project: 'proj',
+          live_workers: 1,
+          slots: 2,
+          queue: 0,
+          waiting_on_user: 1,
+          attention: [
+            {
+              task: 't1',
+              owner: 'w1',
+              subject: 'the parser',
+              words: 'sign this off',
+              at: at(5),
+            },
+          ],
+          rows: 1,
+          misses: [],
+        },
+      ],
+    };
+    expect(waitRows(wire)).toEqual([
+      {
+        slot: { org: 'TestOrg', project: 'proj', label: 'w1' },
+        task: 't1',
+        words: 'sign this off',
+        at: at(5),
+      },
+    ]);
+  });
+
+  /// **A wait is announced once, and a launch announces none.** Its identity
+  /// is the task and the moment the wait began - task data, so a server
+  /// restart leaves the same open waits the same, and a re-read is not news.
+  it('announces a decision wait once, and nothing at boot', () => {
+    const state = askState();
+    const first = waitsRising(state, [
+      { slot: LEAD, task: 't1', words: 'sign this off', at: at(5) },
+    ]);
+    expect(first, 'the launch seeds').toEqual([]);
+    const again = waitsRising(state, [
+      { slot: LEAD, task: 't1', words: 'sign this off', at: at(5) },
+    ]);
+    expect(again, 'the same wait is not news').toEqual([]);
+    const second = waitsRising(state, [
+      { slot: LEAD, task: 't1', words: 'sign this off', at: at(5) },
+      { slot: LEAD, task: 't2', words: 'look at this', at: at(9) },
+    ]);
+    expect(second, 'the raise is one notice naming the one new ask').toEqual([
+      { slot: LEAD, task: 't2', words: 'look at this', more: 0 },
+    ]);
+    expect(second.map(waitWords), 'the notification names the seat and the ask').toEqual([
+      { title: 'forge \u{b7} forge', body: 'look at this' },
+    ]);
+  });
+
+  /// **The task is half the mark**: two waits entering waiting at the same
+  /// moment on one seat are two raises, and the second is news.
+  it('announces a second task that began at the same moment', () => {
+    const state = askState();
+    waitsRising(state, [{ slot: LEAD, task: 't1', words: 'sign this off', at: at(5) }]);
+    expect(
+      waitsRising(state, [
+        { slot: LEAD, task: 't1', words: 'sign this off', at: at(5) },
+        { slot: LEAD, task: 't2', words: 'look at this', at: at(5) },
+      ]),
+      'the task, not only the moment, makes a wait distinct',
+    ).toEqual([{ slot: LEAD, task: 't2', words: 'look at this', more: 0 }]);
+  });
+
+  /// **The wait's moment is its identity**: the same task raised again with a
+  /// later start is news, and a restart (which changes no task data) is not.
+  it('announces a wait raised again at a new moment', () => {
+    const state = askState();
+    waitsRising(state, [{ slot: LEAD, task: 't1', words: 'sign this off', at: at(5) }]);
+    expect(
+      waitsRising(state, [{ slot: LEAD, task: 't1', words: 'sign this off', at: at(9) }]),
+      'the same task, raised again, is news',
+    ).toEqual([{ slot: LEAD, task: 't1', words: 'sign this off', more: 0 }]);
+  });
+
+  /// **Two raises in one push are one notification**, naming the first ask
+  /// and the count of the others raised with it - not one ping per row.
+  it('collapses two raises in one push into one notice', () => {
+    const state = askState();
+    waitsRising(state, []);
+    expect(
+      waitsRising(state, [
+        { slot: LEAD, task: 't1', words: 'sign this off', at: at(5) },
+        { slot: LEAD, task: 't2', words: 'look at this', at: at(9) },
+      ]),
+      'one notice, and the first ask is the one it names',
+    ).toEqual([{ slot: LEAD, task: 't1', words: 'sign this off', more: 1 }]);
+  });
+
+  /// **A wait has no focus exemption**, so the rule takes no shown seat at
+  /// all: the app being frontmost does not mean its project is being looked
+  /// at.
+  it("announces a raise on the project's own lead", () => {
+    const state = askState();
+    waitsRising(state, []);
+    expect(
+      waitsRising(state, [{ slot: LEAD, task: 't1', words: 'sign this off', at: at(5) }]),
+    ).toEqual([{ slot: LEAD, task: 't1', words: 'sign this off', more: 0 }]);
+  });
+});
+
 describe('a cold start from a notification', () => {
   /** A page that believes it has a shell, and the shell's own answer. */
   function shellAnswers(answer: unknown): ReturnType<typeof vi.fn> {
@@ -210,8 +336,52 @@ describe('a cold start from a notification', () => {
     vi.resetModules();
     const invoke = shellAnswers(OTHER);
     const fresh = await import('./notify');
-    expect(await fresh.launchSeat()).toEqual(OTHER);
+    expect(await fresh.launchSeat()).toEqual({ name: 'session', slot: OTHER });
     expect(invoke).toHaveBeenCalledWith('client_tap_seat');
+  });
+
+  /// **A wait's cold start opens its board**, not the seat's chat: the shell
+  /// remembers the target beside the seat, and the page routes on it.
+  it('opens the board when the tap named a wait', async () => {
+    vi.resetModules();
+    shellAnswers({ ...OTHER, board: true });
+    const fresh = await import('./notify');
+    expect(await fresh.launchSeat()).toEqual({
+      name: 'board',
+      org: OTHER.org,
+      project: OTHER.project,
+    });
+  });
+
+  /// **A click's route follows the target**: a wait's notification opens its
+  /// project's board, an ask's opens the seat.
+  it('routes a clicked notification by its target', async () => {
+    vi.resetModules();
+    Object.defineProperty(window, '__TAURI_INTERNALS__', { value: {}, configurable: true });
+    const handlers: ((event: { payload: unknown }) => void)[] = [];
+    vi.doMock('@tauri-apps/api/event', () => ({
+      listen: (_name: string, fn: (event: { payload: unknown }) => void) => {
+        handlers.push(fn);
+        return Promise.resolve(() => undefined);
+      },
+    }));
+    const fresh = await import('./notify');
+    const routes = await import('./routes');
+    await fresh.watchNotificationClicks();
+    const handler = handlers[0];
+    if (handler === undefined) throw new Error('the click listener was not registered');
+    handler({ payload: { ...OTHER, board: true } });
+    expect(get(routes.currentRoute), 'a wait opens its board').toEqual({
+      name: 'board',
+      org: OTHER.org,
+      project: OTHER.project,
+    });
+    handler({ payload: { ...OTHER, board: false } });
+    expect(get(routes.currentRoute), 'an ask opens its seat').toEqual({
+      name: 'session',
+      slot: OTHER,
+    });
+    vi.doUnmock('@tauri-apps/api/event');
   });
 
   /// A launch no notification opened names nothing, and the page routes as
@@ -401,6 +571,46 @@ describe('delivering an ask', () => {
     if (note === undefined) throw new Error('no notification was shown');
     note.onclick?.();
     expect(get(routes.currentRoute)).toEqual({ name: 'session', slot: OTHER });
+  });
+
+  /// **A wait's click opens its board, not the seat.** A wait raised by a
+  /// since-gone worker has no seat page to land on, and the popover's card
+  /// goes to the board too. The tag keeps an ask and a wait on one seat
+  /// apart, so either can replace only its own.
+  it('opens the board for a wait, under its own tag', async () => {
+    vi.resetModules();
+    const shown: { onclick: (() => void) | null; options: { tag: string } }[] = [];
+    class Note {
+      static permission: NotificationPermission = 'granted';
+      static requestPermission = vi.fn(() => Promise.resolve('granted' as const));
+      onclick: (() => void) | null = null;
+      constructor(
+        _title: string,
+        public options: { body: string; tag: string },
+      ) {
+        shown.push(this);
+      }
+      close(): void {}
+    }
+    vi.stubGlobal('Notification', Note);
+    vi.spyOn(window, 'focus').mockImplementation(() => undefined);
+    const fresh = await import('./notify');
+    const routes = await import('./routes');
+    fresh.deliverAsk({ slot: OTHER, kind: 'question' });
+    fresh.deliverWait({ slot: OTHER, task: 't1', words: 'sign this off', more: 0 });
+    expect(
+      shown.map((note) => note.options.tag),
+      'an ask and a wait on one seat carry their own tags',
+    ).toEqual([
+      'ask:session:Busytools\u0000forge\u0000worker',
+      'wait:session:Busytools\u0000forge\u0000worker',
+    ]);
+    shown[1]?.onclick?.();
+    expect(get(routes.currentRoute), 'a wait opens its board').toEqual({
+      name: 'board',
+      org: 'Busytools',
+      project: 'forge',
+    });
   });
 
   /// **A shell's page raises none**: its Rust half does, so the page does not

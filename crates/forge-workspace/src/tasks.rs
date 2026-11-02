@@ -543,6 +543,7 @@ impl Workspace {
                     on: None,
                     verification: true,
                     parked: false,
+                    since: Some(at),
                 });
                 next.status = TaskStatus::Waiting;
             }
@@ -712,6 +713,7 @@ impl Workspace {
         project_name: &str,
         id: &TaskId,
     ) -> Result<Option<Task>, MoveError> {
+        let at = SystemTime::now();
         self.move_task(project_name, id, By::User, false, |task| {
             if task.attested.is_none() {
                 return Err(MoveError::NotAttested);
@@ -724,6 +726,7 @@ impl Workspace {
                 on: None,
                 verification: true,
                 parked: false,
+                since: Some(at),
             });
             task.status = TaskStatus::Waiting;
             append_words(task, "Reopened by the user: the look is owed again.");
@@ -975,8 +978,24 @@ impl Workspace {
                 None => None,
             };
             let prior = tasks[index].status;
-            tasks[index].waiting_on =
-                Some(Waiting { kind: Some(kind), detail, on, verification: false, parked: false });
+            // **A repeated identical wait is the same wait**: keep its start,
+            // so its age and a notification's identity do not move under a
+            // caller re-stating what the row already holds.
+            let same = tasks[index].waiting_on.as_ref().filter(|wait| {
+                wait.kind == Some(kind)
+                    && wait.detail.as_deref() == detail.as_deref()
+                    && wait.on.as_ref() == on.as_ref()
+                    && !wait.verification
+            });
+            let since = same.and_then(|wait| wait.since).unwrap_or(at);
+            tasks[index].waiting_on = Some(Waiting {
+                kind: Some(kind),
+                detail,
+                on,
+                verification: false,
+                parked: false,
+                since: Some(since),
+            });
             tasks[index].status = TaskStatus::Waiting;
             tasks[index].updated_at = at;
             self.persist_task(&tasks[index]);
@@ -1757,6 +1776,7 @@ mod tests {
                 on: None,
                 verification: false,
                 parked: false,
+                since: None,
             }),
             ..sample_task("t-1", "proj")
         });
@@ -1807,6 +1827,11 @@ mod tests {
             "and parked on the user: {:?}",
             reopened.waiting_on,
         );
+        assert!(
+            reopened.waiting_on.as_ref().and_then(|wait| wait.since).is_some(),
+            "and the wait starts at the reopen, not whenever it was first parked: {:?}",
+            reopened.waiting_on,
+        );
         let history = history_of(&ws, "proj");
         let last = history.last().expect("a last transition");
         assert_eq!((last.from, last.to), (Some(TaskStatus::Completed), TaskStatus::Waiting));
@@ -1842,6 +1867,7 @@ mod tests {
             on: None,
             verification: false,
             parked: false,
+            since: None,
         });
         ws.push_task(waiting);
 
@@ -2528,17 +2554,19 @@ mod tests {
         let stored = ws.tasks_for_project("proj");
         let row = stored.iter().find(|task| task.id == TaskId::from("t-1")).expect("the row");
         assert_eq!(row.status, TaskStatus::Waiting, "the row keeps the status it held");
+        let held = row.waiting_on.as_ref().expect("the wait it held");
         assert_eq!(
-            row.waiting_on,
-            Some(Waiting {
-                kind: Some(WaitingKind::Dependency),
-                detail: Some("the board read has to land first".to_owned()),
-                on: Some(TaskId::from("blocker")),
-                verification: false,
-                parked: false,
-            }),
+            (held.kind, held.detail.as_deref(), held.on.as_ref(), held.verification, held.parked),
+            (
+                Some(WaitingKind::Dependency),
+                Some("the board read has to land first"),
+                Some(&TaskId::from("blocker")),
+                false,
+                false
+            ),
             "and the wait it held, not a look park the caller never asked for",
         );
+        assert!(held.since.is_some(), "the stored wait keeps its own start");
     }
 
     /// The recovery the refusal advertises (#2414): moving the row off
@@ -2607,6 +2635,7 @@ mod tests {
                 on: None,
                 verification: false,
                 parked: false,
+                since: None,
             }),
             ..sample_task("t-1", "proj")
         });
@@ -2616,9 +2645,85 @@ mod tests {
             .expect("no refusal")
             .expect("the row is there");
         assert_eq!(landed.status, TaskStatus::Waiting, "the drag lands as a look park");
+        let wait = landed.waiting_on.as_ref().expect("the re-parked look");
+        assert!(wait.verification, "with the look the user's own completion is owed: {landed:?}");
         assert!(
-            landed.waiting_on.as_ref().is_some_and(|wait| wait.verification),
-            "with the look the user's own completion is owed: {landed:?}",
+            wait.since.is_some(),
+            "a re-parked look on a row already waiting is stamped, so its age and a \
+             notification's identity are the new wait's: {landed:?}",
+        );
+    }
+
+    /// **A pre-upgrade look park is stamped when it is rebuilt.** A row
+    /// stored before `since` existed holds a value-identical verification
+    /// park with no stamp; the drag to completed rebuilds it, and the
+    /// construction site is where the new start is written - a comparison
+    /// against the old value could not tell the two apart.
+    #[test]
+    fn a_pre_upgrade_look_park_is_stamped_when_re_parked() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-pre-upgrade-park");
+        ws.push_task(Task {
+            verify: Some(Verify::User),
+            status: TaskStatus::Waiting,
+            waiting_on: Some(Waiting {
+                kind: Some(WaitingKind::Decision),
+                detail: None,
+                on: None,
+                verification: true,
+                parked: false,
+                since: None,
+            }),
+            ..sample_task("t-1", "proj")
+        });
+
+        let landed = ws
+            .user_move_task("proj", &TaskId::from("t-1"), TaskStatus::Completed)
+            .expect("no refusal")
+            .expect("the row is there");
+        let wait = landed.waiting_on.as_ref().expect("the rebuilt look park");
+        assert!(wait.verification, "it is still the look: {landed:?}");
+        assert!(wait.since.is_some(), "the rebuilt park carries its own start: {landed:?}");
+    }
+
+    /// **Re-stating the same wait keeps its start.** A repeated `tasks__wait`
+    /// with the same kind, words and blocker is the same ask: its age must
+    /// not reset and its identity must not change into a second
+    /// notification.
+    #[test]
+    fn a_repeated_identical_wait_keeps_its_start() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-repeat-wait");
+        let seat = SessionSlot::worker("TestOrg", "proj", "w-1");
+        ws.push_task(Task { owner: Some(seat.clone()), ..sample_task("t-1", "proj") });
+
+        let first = ws
+            .wait_task(
+                "proj",
+                &TaskId::from("t-1"),
+                &seat,
+                WaitingKind::Decision,
+                Some("sign this off".to_owned()),
+                None,
+            )
+            .expect("the owner may wait its own row");
+        let started = first.waiting_on.as_ref().and_then(|wait| wait.since).expect("stamped");
+        let again = ws
+            .wait_task(
+                "proj",
+                &TaskId::from("t-1"),
+                &seat,
+                WaitingKind::Decision,
+                Some("sign this off".to_owned()),
+                None,
+            )
+            .expect("a repeated wait is allowed");
+        assert_eq!(
+            again.waiting_on.as_ref().and_then(|wait| wait.since),
+            Some(started),
+            "the same wait keeps its start",
         );
     }
 
@@ -2632,6 +2737,7 @@ mod tests {
             on,
             verification: false,
             parked: false,
+            since: None,
         };
         assert_eq!(wait_words(None), "a wait", "no stored wait");
         assert_eq!(wait_words(Some(&wait(None, None))), "a wait", "a legacy unstated wait");
@@ -2893,6 +2999,7 @@ mod tests {
                 on: None,
                 verification: true,
                 parked: false,
+                since: None,
             }),
             ..sample_task_with_parent("t-1", Some("epic"), "proj")
         });
@@ -3149,6 +3256,7 @@ mod tests {
                 on: Some(TaskId::from("blocker")),
                 verification: false,
                 parked: false,
+                since: None,
             }),
             ..sample_task_with_parent("t-1", Some("epic"), "proj")
         });
@@ -3313,17 +3421,13 @@ mod tests {
             .expect("no refusal")
             .expect("the row is there");
         assert_eq!(moved.status, TaskStatus::Waiting, "the gate lands it in waiting");
+        let wait = moved.waiting_on.expect("the wait is the verify gate");
         assert_eq!(
-            moved.waiting_on,
-            Some(Waiting {
-                kind: Some(WaitingKind::Decision),
-                detail: None,
-                on: None,
-                verification: true,
-                parked: false,
-            }),
+            (wait.kind, wait.detail, wait.on, wait.verification, wait.parked),
+            (Some(WaitingKind::Decision), None, None, true, false),
             "the wait is the verify gate, which the board draws as approve / send back",
         );
+        assert!(wait.since.is_some(), "the wait is stamped as it begins");
     }
 
     #[test]

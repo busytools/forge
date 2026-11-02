@@ -991,6 +991,7 @@ mod tests {
             on: None,
             verification,
             parked: false,
+            since: None,
         });
         row.updated_at = epoch(updated);
         ws.seed_test_task(row);
@@ -1067,6 +1068,7 @@ mod tests {
             on: None,
             verification: false,
             parked: true,
+            since: None,
         });
         row.updated_at = epoch(0);
         ws.seed_test_task(row);
@@ -1096,6 +1098,7 @@ mod tests {
             on: None,
             verification: false,
             parked: true,
+            since: None,
         });
         row.updated_at = epoch(0);
         ws.seed_test_task(row);
@@ -1168,6 +1171,7 @@ mod tests {
             on: None,
             verification: true,
             parked: false,
+            since: None,
         });
         inherited.updated_at = epoch(0);
         ws.seed_test_task(inherited);
@@ -1306,6 +1310,7 @@ mod tests {
             on: None,
             verification: false,
             parked: false,
+            since: None,
         });
         row.updated_at = epoch(100);
         ws.seed_test_task(row);
@@ -1350,6 +1355,7 @@ mod tests {
                 on: None,
                 verification: false,
                 parked: false,
+                since: None,
             });
             row.updated_at = epoch(0);
             ws.seed_test_task(row);
@@ -1387,6 +1393,7 @@ mod tests {
             on: None,
             verification: false,
             parked: false,
+            since: None,
         });
         row.updated_at = epoch(0);
         ws.seed_test_task(row);

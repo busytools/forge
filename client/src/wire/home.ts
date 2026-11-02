@@ -66,6 +66,8 @@ export interface WaitingWire {
   verification: boolean;
   /** The lead parked the wait by design: the chase leaves it alone. */
   parked?: boolean;
+  /** When the wait began; absent on a row stored before the field existed. */
+  since?: WireTime | null;
 }
 
 /** What a link points at. Generic to any VCS. */
@@ -259,9 +261,56 @@ export interface FleetRow {
   queue: number;
   /** Rows waiting on the user's decision. */
   waiting_on_user: number;
+  /** The waits themselves, so a mark can say what is being asked. */
+  attention: AttentionRow[];
   /** Every row the project holds, which the home's header totals. */
   rows: number;
   misses: MissRow[];
+}
+
+/** One wait that is on the person, as the rail names it. */
+export interface AttentionRow {
+  /** The task's id: the wait's identity. */
+  task: string;
+  /** The seat that raised it, by its label (`lead` for the project's own). */
+  owner: string;
+  subject: string;
+  /** The ask's own words, verbatim. */
+  words: string;
+  at: WireTime;
+}
+
+/** One wait narrowed where it enters; an unreadable item refuses the read. */
+export function attentionFrom(value: unknown): AttentionRow {
+  const held = (typeof value === 'object' && value !== null ? value : {}) as Record<
+    string,
+    unknown
+  >;
+  const { task, owner, subject, words, at } = held;
+  if (
+    typeof task !== 'string' ||
+    typeof owner !== 'string' ||
+    typeof subject !== 'string' ||
+    typeof words !== 'string' ||
+    typeof at !== 'object' ||
+    at === null
+  ) {
+    throw new Error('a decision wait this page cannot read');
+  }
+  // The age is drawn off both numbers: an object without them is no time,
+  // and a NaN would draw as `NaNd` rather than as unreadable.
+  const { secs_since_epoch, nanos_since_epoch } = at as Record<string, unknown>;
+  if (
+    typeof secs_since_epoch !== 'number' ||
+    !Number.isInteger(secs_since_epoch) ||
+    secs_since_epoch < 0 ||
+    typeof nanos_since_epoch !== 'number' ||
+    !Number.isInteger(nanos_since_epoch) ||
+    nanos_since_epoch < 0
+  ) {
+    throw new Error('a decision wait this page cannot read');
+  }
+  return { task, owner, subject, words, at: at as WireTime };
 }
 
 /** One of a project's schedules. */
@@ -817,6 +866,17 @@ export function homeFrom(data: HomeWire): HomeWire {
     fleet: (Array.isArray(data.fleet) ? data.fleet : []).map((row) => ({
       ...row,
       rows: typeof row.rows === 'number' ? row.rows : 0,
+      // **One unreadable wait is dropped, not the home.** A bad item would
+      // otherwise fail the whole snapshot and leave every page on a read it
+      // never recovers from; the rest of the fleet is still true.
+      attention: (Array.isArray(row.attention) ? row.attention : []).flatMap((item) => {
+        try {
+          return [attentionFrom(item)];
+        } catch (why) {
+          console.warn('a decision wait this page cannot read was dropped', why);
+          return [];
+        }
+      }),
       misses: (Array.isArray(row.misses) ? row.misses : []).map(missFrom),
     })),
     accounts: accountsFrom(data.accounts),

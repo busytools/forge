@@ -1,5 +1,6 @@
 <script lang="ts">
   import Icon from '../components/Icon.svelte';
+  import AttentionMark from '../home/AttentionMark.svelte';
   import { hrefForSlot } from '../routes';
   import type { Connection } from '../socket';
   import type { BoardWire } from '../wire/board';
@@ -129,6 +130,7 @@
             ><a class="rail-go" href={hrefForSlot(project.row.slot)}>{project.name}</a></span
           >
           <span class="org">{project.org}</span>
+          <AttentionMark waits={project.waits} org={project.org} project={project.name} {now} />
           {#if project.asleep}
             <span class="age">{project.age}</span>
           {:else}
@@ -147,6 +149,7 @@
             <span class="nm"
               ><a class="rail-go" href={hrefForSlot(worker.slot)}>{worker.slot.label}</a></span
             >
+            <AttentionMark waits={worker.waits} org={project.org} project={project.name} {now} />
             <CloseChip name={worker.slot.label} onclose={() => close(worker.slot)} />
           </div>
           <!-- The failure draws under the row that failed, dim the way the

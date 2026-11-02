@@ -262,6 +262,40 @@ describe('the rail', () => {
     ).toBe('asked you a question');
   });
 
+  /// **A wait whose seat has no row still lifts the project into needs-you.**
+  /// A sleeping project's worker leaves no row of its own, so the seed is the
+  /// project's waits - the rail's half of the rank fix.
+  it('lifts a project into needs you for a wait with no seat row', () => {
+    const home = withHome({
+      agents: [{ ...lead(), pending: null }],
+      fleet: [
+        {
+          project: 'proj',
+          live_workers: 1,
+          slots: 2,
+          queue: 0,
+          waiting_on_user: 1,
+          attention: [
+            {
+              task: 't1',
+              owner: 'gone',
+              subject: 'the parser',
+              words: 'sign this off',
+              at: { secs_since_epoch: 5, nanos_since_epoch: 0 },
+            },
+          ],
+          rows: 0,
+          misses: [],
+        },
+      ],
+    });
+    const needs = railGroups(home, LEAD, 0).find((group) => group.heading === 'needs you');
+    expect(
+      needs?.projects.map((entry) => entry.name),
+      'the wait lifted the project out of working',
+    ).toEqual(['proj']);
+  });
+
   /** **A parked hand-off is a third ask, and the row names it as itself**
    *  rather than borrowing the permission line. */
   it('names a held hand-off on the row', () => {
@@ -1146,6 +1180,41 @@ describe("the palette's rows", () => {
       .filter((row) => row.lead === true);
     expect(leads, 'two orgs sharing a project name both wore the chip').toHaveLength(1);
     expect(leads[0]?.id, 'the wrong org wore it').toBe('TestOrg/proj/lead');
+  });
+
+  /// **A decision wait ranks a seat with the asks**, as the rail ranks it: a
+  /// seat in needs-you on the rail must not sit under working in Cmd+K.
+  it('puts a seat holding a decision wait in needs you', () => {
+    const wire = withHome({
+      agents: [agent('runner', { lifecycle: 'Running' }), agent('waiting')],
+      fleet: [
+        {
+          project: 'proj',
+          live_workers: 2,
+          slots: 2,
+          queue: 0,
+          waiting_on_user: 1,
+          attention: [
+            {
+              task: 't1',
+              owner: 'waiting',
+              subject: 'the parser',
+              words: 'sign this off',
+              at: { secs_since_epoch: 5, nanos_since_epoch: 0 },
+            },
+          ],
+          rows: 1,
+          misses: [],
+        },
+      ],
+    });
+    const sections = paletteRows(wire, LEAD);
+    expect(
+      sections[0]?.rows.map((row) => row.label),
+      'the wait lifted its seat',
+    ).toEqual(['waiting']);
+    expect(sections[0]?.rows[0]?.detail, 'and the line says needs you').toContain('needs you');
+    expect(sections[1]?.rows.map((row) => row.label)).toEqual(['runner']);
   });
 
   /**

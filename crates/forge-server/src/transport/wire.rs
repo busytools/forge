@@ -3847,6 +3847,16 @@ mod tests {
     /// a session's fields would be `null`, and a field renamed to `null`
     /// would still pass.
     async fn fixture_state(root: &Path) -> TransportState {
+        fixture_state_seeded(root, |_| {}).await
+    }
+
+    /// [`fixture_state`] with one more seed of the test's own, laid down
+    /// before the surface is built - for a test that pins a shape the default
+    /// fixture deliberately leaves empty.
+    async fn fixture_state_seeded(
+        root: &Path,
+        seed: impl FnOnce(&crate::testing::Fleet),
+    ) -> TransportState {
         let fleet =
             crate::testing::Fleet::in_dir(root, &[("TestOrg", &["proj"])]).expect("the fleet");
         fleet.start("TestOrg", "proj").expect("the project starts");
@@ -3922,6 +3932,7 @@ mod tests {
                 ..ViewFacts::default()
             },
         );
+        seed(&fleet);
         // A scan the fixture pins the working tree, the PR row and the
         // diff content from. It is taken of a repository of its own beside
         // the fleet rather than of the seat's project directory: building
@@ -4034,6 +4045,70 @@ mod tests {
             Value::Object(fields) => fields.values_mut().for_each(|field| normalise(field, forms)),
             _ => {}
         }
+    }
+
+    /// **The home's attention item is the whole ask.** The default fixture
+    /// pins an empty list, so a shape no test ever draws could be renamed
+    /// unseen; this seeds one waiting row and reads the item the fleet row
+    /// encodes - the task, the seat, the subject, the ask's words and the
+    /// moment the wait began.
+    #[tokio::test]
+    async fn a_decision_wait_crosses_with_its_ask() {
+        let dir = fixture_dir();
+        let state = fixture_state_seeded(dir.path(), |fleet| {
+            fleet.seed_task(forge_primitives::tasks::Task {
+                id: forge_primitives::tasks::TaskId::from("t-wait"),
+                project_name: "proj".to_owned(),
+                subject: "ship the parser".to_owned(),
+                active_form: None,
+                detail: None,
+                status: forge_primitives::tasks::TaskStatus::Waiting,
+                owner: Some(forge_primitives::SessionSlot::worker("TestOrg", "proj", "w1")),
+                parent: None,
+                waiting_on: Some(forge_primitives::tasks::Waiting {
+                    kind: Some(forge_primitives::tasks::WaitingKind::Decision),
+                    detail: Some("sign this off".to_owned()),
+                    on: None,
+                    verification: false,
+                    parked: false,
+                    since: Some(
+                        std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(5),
+                    ),
+                }),
+                estimate: None,
+                rank: None,
+                verify: None,
+                attested: None,
+                reserved: None,
+                links: Vec::new(),
+                attempt: 0,
+                archived_at: None,
+                created_at: std::time::SystemTime::UNIX_EPOCH,
+                // An edit after the wait began must not move the item's date.
+                updated_at: std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(9),
+            });
+        })
+        .await;
+
+        let mut encoded = encode_subject(&state, &Subject::Home).await.expect("encode");
+        normalise(&mut encoded, &volatile(dir.path()));
+        let row = encoded["fleet"]
+            .as_array()
+            .expect("the fleet")
+            .iter()
+            .find(|row| row["project"] == "proj")
+            .expect("the project's row");
+        assert_eq!(row["waiting_on_user"], 1, "the wait counts");
+        let item = &row["attention"][0];
+        assert_eq!(item["task"], "t-wait", "the row's id");
+        assert_eq!(item["owner"], "w1", "the seat that raised it");
+        assert_eq!(item["subject"], "ship the parser", "the row's subject");
+        assert_eq!(item["words"], "sign this off", "the ask's own words");
+        assert_eq!(
+            item["at"],
+            serde_json::json!({ "secs_since_epoch": 5, "nanos_since_epoch": 0 }),
+            "the moment the wait began",
+        );
     }
 
     /// Every subject a client can watch, with the fixture that pins its wire

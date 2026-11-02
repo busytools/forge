@@ -751,13 +751,18 @@ impl Tool for Wait {
     fn description(&self) -> &'static str {
         "Put one of YOUR rows into waiting and state what it waits on. `kind` is decision \
          (which routes to the user), dependency (another task: put its id in `on`), or resource \
-         (an account, a CI run, a machine). A dependency wait is on the task it names, not on \
-         the user. A blocker parked on the user's look has not ended, so the chain keeps \
+         (an account, a CI run, a machine). A decision wait is the at-convenience channel to \
+         the user: a lead who can continue but wants the person's look puts the ask here on a \
+         board row rather than saying it in prose, because prose is not a surface and a wait \
+         left in prose is invisible once your turn ends. Do not use it to park work the \
+         decision model, your peers or the review can settle. A dependency wait is on the \
+         task it names, not on the user. A blocker parked on the user's look has not ended, so the chain keeps \
          waiting until the user approves it. The waiting row is not itself waiting on the \
          user: a row's `verify: user` gates its own completion, not its dependency \
-         wait, so the row stays movable and deletable. Route a decision to the user only when the user \
-         explicitly asked for a hold, or something is still genuinely ambiguous after the \
-         decision model, peer opinions and the team's own review. Only the lead mints a \
+         wait, so the row stays movable and deletable. Route a decision to the user when the user \
+         asked for a hold, when something is still genuinely ambiguous after the decision model, \
+         peer opinions and the team's own review, or when the person should look at the work when \
+         they come back. Only the lead mints a \
          user-decision wait: a worker that believes the call is the user's hands it to its \
          lead, because a decision a worker parks outlives its answer and the lead cannot close \
          it afterward. `detail` is the words. \
@@ -1377,9 +1382,10 @@ mod tests {
         let wait = Wait { facade: MockTasksFacade::new().into_arc(), slot: lead_slot() };
         let desc = wait.description();
         for clause in [
-            "Route a decision to the user only when the user explicitly asked for a hold",
+            "Route a decision to the user when the user asked for a hold",
             "something is still genuinely ambiguous after the decision model, peer opinions and \
              the team's own review",
+            "when the person should look at the work when they come back",
         ] {
             assert!(desc.contains(clause), "the wait description owes {clause:?}: {desc}");
         }
@@ -1510,6 +1516,26 @@ mod tests {
             "tasks__delete does not separate a dependency wait from the user's asks: {}",
             delete.description(),
         );
+    }
+
+    /// **The wait is the at-convenience channel as well as the hold**:
+    /// without it a seat writes its look request in prose, which reaches
+    /// nobody once the turn ends.
+    #[test]
+    fn the_wait_description_states_the_at_convenience_channel() {
+        let facade = MockTasksFacade::new().into_arc();
+        let wait = Wait { facade, slot: lead_slot() };
+        for clause in [
+            "A decision wait is the at-convenience channel to the user",
+            "puts the ask here on a board row rather than saying it in prose",
+            "prose is not a surface",
+        ] {
+            assert!(
+                wait.description().contains(clause),
+                "tasks__wait does not state the channel ({clause}): {}",
+                wait.description(),
+            );
+        }
     }
 
     /// A wait left on an ended row reads that its target has ended

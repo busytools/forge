@@ -38,7 +38,9 @@
               desktop keeps the one async shape the picker awaits"
 )]
 
+use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::hash::Hasher;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
@@ -175,6 +177,14 @@ struct State {
     /// subject again - the home encode walks every project's working tree, on
     /// the platform this cut exists for.
     refreshed: HashMap<String, Instant>,
+    /// The last `tasks_changed` set announced per project, as a digest: the
+    /// page's own coalescing key (#2540), so an unchanged set asks for no
+    /// roster read.
+    last_tasks: HashMap<String, u64>,
+    /// A board change landed while a home read was already on the wire: the
+    /// snapshot may predate it, so the roster is asked for again when that
+    /// read lands (the page's own stale flag, #2540).
+    home_stale: bool,
     /// The takeover's live viewer, re-attached on every reconnect while it
     /// is set; a lower clears it.
     attach: Option<Attach>,
@@ -200,6 +210,8 @@ struct State {
 /// `PlatformAlerts`, which hands each notice to the notification thread.
 trait Alerts: Send + Sync {
     fn raise(&self, seat: &SessionSlot, kind: crate::asks::AskKind);
+    /// A decision wait on the board, announced once per raise.
+    fn raise_wait(&self, notice: &crate::asks::WaitNotice);
 }
 
 /// The shell's delivery: one job per notice on the notification thread.
@@ -210,6 +222,10 @@ struct PlatformAlerts {
 impl Alerts for PlatformAlerts {
     fn raise(&self, seat: &SessionSlot, kind: crate::asks::AskKind) {
         crate::notify::raise(&self.app, seat, kind);
+    }
+
+    fn raise_wait(&self, notice: &crate::asks::WaitNotice) {
+        crate::notify::raise_wait(&self.app, notice);
     }
 }
 
@@ -295,6 +311,8 @@ impl Bridge {
                 parked: VecDeque::new(),
                 refreshing: HashSet::new(),
                 refreshed: HashMap::new(),
+                last_tasks: HashMap::new(),
+                home_stale: false,
                 attach: None,
                 attach_generation: 0,
                 view_profile: None,
@@ -719,6 +737,7 @@ impl Bridge {
             state.last_beat = Some(Instant::now());
             state.suppressed = 0;
             state.refreshing.clear();
+            state.home_stale = false;
             let mut wanted = Vec::with_capacity(state.order.len());
             for key in &state.order {
                 if let Some(watch) = state.held.get(key) {
@@ -817,6 +836,8 @@ impl Bridge {
         // never makes.
         let notices = self.asks_moved();
         self.raise(notices);
+        let waits = self.waits_moved();
+        self.raise_waits(waits);
     }
 
     /// The seat the page has on screen, as the last `showing` said.
@@ -941,11 +962,34 @@ impl Bridge {
             .unwrap_or_default()
     }
 
+    /// The decision waits the held home read raises, over the same roster.
+    ///
+    /// **The rule is the page's** (`crate::asks`), as the asks' is, and it
+    /// reads the fleet rows the same snapshot carries.
+    fn waits_moved(&self) -> Vec<crate::asks::WaitNotice> {
+        let mut state = self.lock();
+        let State { records, asks, .. } = &mut *state;
+        records
+            .read("home")
+            .and_then(Result::ok)
+            .map(|data| asks.waits_rising(data))
+            .unwrap_or_default()
+    }
+
     /// Raise one roster read's notices where this bridge has a delivery.
     fn raise(&self, notices: Vec<(SessionSlot, crate::asks::AskKind)>) {
         let Some(alerts) = self.alerts.as_ref() else { return };
         for (seat, kind) in notices {
             alerts.raise(&seat, kind);
+        }
+    }
+
+    /// Raise one roster read's decision waits where this bridge has a
+    /// delivery.
+    fn raise_waits(&self, notices: Vec<crate::asks::WaitNotice>) {
+        let Some(alerts) = self.alerts.as_ref() else { return };
+        for notice in notices {
+            alerts.raise_wait(&notice);
         }
     }
 
@@ -965,6 +1009,8 @@ impl Bridge {
         self.attention.store(looking, Ordering::Relaxed);
         let notices = self.asks_moved();
         self.raise(notices);
+        let waits = self.waits_moved();
+        self.raise_waits(waits);
         if let Some(app) = self.app.as_ref() {
             crate::notify::review(app);
         }
@@ -988,13 +1034,43 @@ impl Bridge {
         ]
         .iter()
         .any(|key| update.get(*key).is_some());
-        if !ask {
+        if ask {
+            if self.lock().held.contains_key("home") {
+                // A roster refresh states no scope: the held declaration decides.
+                self.refresh(&json!("home"), None);
+            }
             return;
         }
-        if self.lock().held.contains_key("home") {
-            // A roster refresh states no scope: the held declaration decides.
-            self.refresh(&json!("home"), None);
+        self.board_moved(update);
+    }
+
+    /// A board change's door: the fleet row's waits ride the home snapshot, so
+    /// a task update that is never read would leave a raise unannounced while
+    /// the page is parked - the one state notifications exist for.
+    ///
+    /// **The page's own coalescing, not a read per frame**: an unchanged task
+    /// set is no news (#2540), and a read already out for the roster answers
+    /// the frame that arrived behind it only if it was ENCODED after the
+    /// write - which nothing guarantees, so a change that lands behind an
+    /// in-flight read marks the roster stale and it is asked for again when
+    /// that read lands. The digest is the project and its tasks, the key the
+    /// page keeps beside it.
+    fn board_moved(&self, update: &Value) {
+        let Some((project, digest)) = tasks_digest(update) else { return };
+        let mut state = self.lock();
+        if state.last_tasks.get(&project) == Some(&digest) {
+            return;
         }
+        state.last_tasks.insert(project, digest);
+        if !state.held.contains_key("home") || state.socket.is_none() {
+            return;
+        }
+        if !state.refreshing.insert("home".to_owned()) {
+            state.home_stale = true;
+            return;
+        }
+        drop(state);
+        self.refresh(&json!("home"), None);
     }
 
     /// What the page reads at the start and on every `Connection` notice.
@@ -1283,6 +1359,7 @@ impl Bridge {
                 state.last_beat = Some(Instant::now());
                 state.suppressed = 0;
                 state.refreshing.clear();
+                state.home_stale = false;
             }
             // A drop keeps the records: the reconnect's snapshots replace
             // them whole, and nothing else on this side has to move (a take
@@ -1385,6 +1462,21 @@ impl Bridge {
                 if key == "home" {
                     let notices = self.asks_moved();
                     self.raise(notices);
+                    let waits = self.waits_moved();
+                    self.raise_waits(waits);
+                    // **A board change that landed behind this read is
+                    // re-asked**: the snapshot may have been encoded before
+                    // the write, and the digest already consumed the frame,
+                    // so nothing else would ask for the newer roster.
+                    let mut state = self.lock();
+                    if std::mem::take(&mut state.home_stale)
+                        && state.held.contains_key("home")
+                        && state.socket.is_some()
+                        && state.refreshing.insert("home".to_owned())
+                    {
+                        drop(state);
+                        self.refresh(&json!("home"), None);
+                    }
                 }
             }
             "update" => {
@@ -1663,6 +1755,29 @@ impl Bridge {
 /// the obvious marks: a `prompt_queued` row is folded by the PAGE (the
 /// record's `state.queue` is only the snapshot's copy), so a park that ate
 /// it would lose the row from the pile a reader is looking at.
+/// The project a `tasks_changed` frame speaks for, and a digest of its set -
+/// the coalescing key the page keeps beside its own read (#2540).
+///
+/// The frame names its project in the update's key, or, on an older server,
+/// by the first row's `project_name`; a frame with neither names no project
+/// this side can compare, and asks for nothing.
+fn tasks_digest(update: &Value) -> Option<(String, u64)> {
+    let payload = update.get("tasks_changed")?;
+    let tasks = payload.get("tasks")?;
+    let rows = tasks.as_array()?;
+    let named = rows.first().and_then(|row| row.get("project_name")).and_then(Value::as_str);
+    let project = payload
+        .get("key")
+        .and_then(|key| key.get("project"))
+        .and_then(Value::as_str)
+        .or(named)
+        .filter(|name| !name.is_empty())?;
+    let encoded = serde_json::to_vec(tasks).ok()?;
+    let mut hasher = DefaultHasher::new();
+    hasher.write(&encoded);
+    Some((project.to_owned(), hasher.finish()))
+}
+
 fn rebuilt_by_records(message: &Value) -> bool {
     message.get("kind").and_then(Value::as_str) == Some("update")
         && message
@@ -2150,17 +2265,26 @@ mod tests {
     #[derive(Default)]
     struct Recorded {
         notices: Mutex<Vec<(SessionSlot, crate::asks::AskKind)>>,
+        waits: Mutex<Vec<crate::asks::WaitNotice>>,
     }
 
     impl Recorded {
         fn take(&self) -> Vec<(SessionSlot, crate::asks::AskKind)> {
             self.notices.lock().unwrap_or_else(PoisonError::into_inner).clone()
         }
+
+        fn waits(&self) -> Vec<crate::asks::WaitNotice> {
+            self.waits.lock().unwrap_or_else(PoisonError::into_inner).clone()
+        }
     }
 
     impl Alerts for Recorded {
         fn raise(&self, seat: &SessionSlot, kind: crate::asks::AskKind) {
             self.notices.lock().unwrap_or_else(PoisonError::into_inner).push((seat.clone(), kind));
+        }
+
+        fn raise_wait(&self, notice: &crate::asks::WaitNotice) {
+            self.waits.lock().unwrap_or_else(PoisonError::into_inner).push(notice.clone());
         }
     }
 
@@ -2606,6 +2730,101 @@ mod tests {
         assert_eq!(again["answering"], true, "with the declaration the home is held under");
     }
 
+    /// **A board change is the wait's door too.** The fleet row's waits ride
+    /// the home snapshot, so a `tasks_changed` frame asks for the roster even
+    /// when the page looks awake - a raise that landed in the beat's window
+    /// would otherwise raise no banner.
+    #[tokio::test]
+    async fn a_tasks_changed_frame_reads_the_home_whatever_the_beat_says() {
+        let mut server = stub().await;
+        let (bridge, _rx) = bridge();
+        bridge.connect(server.url.clone());
+        connected(&bridge).await;
+        bridge.subscribe(json!("home"), true, false);
+        let _ = server.heard_until(|v| v["kind"] == "subscribe").await;
+        bridge.heartbeat();
+
+        sent(
+            &bridge,
+            json!({
+                "kind": "update",
+                "update": { "tasks_changed": { "key": { "project": "forge" }, "tasks": [] } },
+            }),
+        );
+        let _ = server.heard_until(|v| v["kind"] == "unsubscribe").await;
+        let again = server.heard_until(|v| v["kind"] == "subscribe").await;
+        assert_eq!(
+            again["what"],
+            json!("home"),
+            "the board change reads the roster inside the beat"
+        );
+
+        // The read answered, and the same set announced again is no news
+        // (#2540): a read per frame is the loop the page already coalesces.
+        sent(&bridge, home_snapshot(json!({ "boot_id": "run-1", "agents": [] })));
+        sent(
+            &bridge,
+            json!({
+                "kind": "update",
+                "update": { "tasks_changed": { "key": { "project": "forge" }, "tasks": [] } },
+            }),
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), server.heard.recv()).await.is_err(),
+            "an unchanged task set asks for no second read",
+        );
+        // A changed set is a read.
+        sent(
+            &bridge,
+            json!({
+                "kind": "update",
+                "update": {
+                    "tasks_changed": {
+                        "key": { "project": "forge" },
+                        "tasks": [{ "id": "t-1", "project_name": "forge" }],
+                    },
+                },
+            }),
+        );
+        let _ = server.heard_until(|v| v["kind"] == "unsubscribe").await;
+        let changed = server.heard_until(|v| v["kind"] == "subscribe").await;
+        assert_eq!(changed["what"], json!("home"), "a changed set reads the roster");
+    }
+
+    /// **A board change that lands behind an in-flight read is not lost.**
+    /// The read on the wire may have been encoded before the write, and the
+    /// frame's digest is already consumed - so the shell marks the roster
+    /// stale and asks again when the first snapshot lands, which is the case
+    /// the parked page's notification depends on.
+    #[tokio::test]
+    async fn a_board_change_behind_a_read_asks_again_when_it_lands() {
+        let mut server = stub().await;
+        let (bridge, _rx) = bridge();
+        bridge.connect(server.url.clone());
+        connected(&bridge).await;
+        bridge.subscribe(json!("home"), true, false);
+        let _ = server.heard_until(|v| v["kind"] == "subscribe").await;
+
+        // The first change starts a read.
+        sent(&bridge, board_frame("forge", &json!([])));
+        let _ = server.heard_until(|v| v["kind"] == "unsubscribe").await;
+        let first = server.heard_until(|v| v["kind"] == "subscribe").await;
+        assert_eq!(first["what"], json!("home"), "the board change reads");
+
+        // A second change lands while that read is out: no second ask yet.
+        sent(&bridge, board_frame("forge", &json!([{ "id": "t-1", "project_name": "forge" }])));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), server.heard.recv()).await.is_err(),
+            "a read is already out",
+        );
+
+        // The read lands, and the stale roster is asked for again.
+        sent(&bridge, home_snapshot(json!({ "boot_id": "run-1", "agents": [] })));
+        let _ = server.heard_until(|v| v["kind"] == "unsubscribe").await;
+        let again = server.heard_until(|v| v["kind"] == "subscribe").await;
+        assert_eq!(again["what"], json!("home"), "the change behind the read is re-asked");
+    }
+
     /// **A screen holding no home reads nothing for an ask.** The connect
     /// screen has no roster behind it, so an ask frame there must put no
     /// read on the wire - dropping the held-home guard would subscribe a
@@ -2660,6 +2879,67 @@ mod tests {
             vec![(SessionSlot::worker("Busytools", "forge", "w1"), crate::asks::AskKind::Question)],
             "the new ask is the one raised",
         );
+    }
+
+    /// One decision wait, as the fleet row carries it.
+    fn wait(task: &str, owner: &str, words: &str) -> Value {
+        json!({
+            "task": task,
+            "owner": owner,
+            "subject": "the parser",
+            "words": words,
+            "at": { "secs_since_epoch": 5, "nanos_since_epoch": 0 },
+        })
+    }
+
+    /// A `tasks_changed` frame for `project`.
+    fn board_frame(project: &str, tasks: &Value) -> Value {
+        json!({
+            "kind": "update",
+            "update": {
+                "tasks_changed": { "key": { "project": project }, "tasks": tasks },
+            },
+        })
+    }
+
+    /// A home read whose one project holds `waits`.
+    fn waiting_home(waits: &Value) -> Value {
+        json!({
+            "boot_id": "run-1",
+            "agents": [],
+            "projects": [{ "project": { "org": "Busytools", "name": "forge" } }],
+            "fleet": [{ "project": "forge", "attention": waits }],
+        })
+    }
+
+    /// **A decision wait is news once**, on the same home read the asks ride:
+    /// the launch announces none, a raise announces one, and the re-read that
+    /// still carries it announces nothing.
+    #[tokio::test]
+    async fn a_home_read_raises_a_new_decision_wait_once() {
+        let (bridge, _rx, recorded) = bridge_recording();
+        let mut server = stub().await;
+        bridge.connect(server.url.clone());
+        connected(&bridge).await;
+        bridge.subscribe(json!("home"), true, false);
+        let _ = server.heard_until(|v| v["kind"] == "subscribe").await;
+
+        sent(&bridge, home_snapshot(waiting_home(&json!([]))));
+        assert!(recorded.waits().is_empty(), "launch is not news");
+
+        sent(&bridge, home_snapshot(waiting_home(&json!([wait("t1", "lead", "sign this off")]))));
+        assert_eq!(
+            recorded.waits(),
+            vec![crate::asks::WaitNotice {
+                slot: SessionSlot::lead("Busytools", "forge"),
+                task: "t1".to_owned(),
+                words: "sign this off".to_owned(),
+                more: 0,
+            }],
+            "the new wait is the one raised",
+        );
+        sent(&bridge, home_snapshot(waiting_home(&json!([wait("t1", "lead", "sign this off")]))));
+        assert_eq!(recorded.waits().len(), 1, "the same wait is not news");
     }
 
     /// **Clearing the shown seat is what announces the ask it held.** The ask
