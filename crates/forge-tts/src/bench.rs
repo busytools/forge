@@ -172,7 +172,11 @@ mod tests {
         assert_eq!(result.clips, 1);
         assert_eq!(result.round_trip_wer, 0.0, "the exact words came back");
         assert!(result.realtime_factor > 0.0, "a render with audio has a pace");
-        assert!(result.first_audio_ms <= 1_000, "the stub answers at once, got {}", result.first_audio_ms);
+        assert!(
+            result.first_audio_ms <= 1_000,
+            "the stub answers at once, got {}",
+            result.first_audio_ms
+        );
     }
 
     #[tokio::test]
@@ -214,9 +218,12 @@ mod tests {
             BenchClip { transcript: "silent".to_owned() },
             BenchClip { transcript: "heard".to_owned() },
         ];
-        let result = run(&Selective, &corpus, |_, _| "heard".to_owned(), |_| {
-            std::ops::ControlFlow::Continue(())
-        })
+        let result = run(
+            &Selective,
+            &corpus,
+            |_, _| "heard".to_owned(),
+            |_| std::ops::ControlFlow::Continue(()),
+        )
         .await
         .expect("the run lands");
         assert_eq!(result.clips, 1, "only the clip that rendered is scored");

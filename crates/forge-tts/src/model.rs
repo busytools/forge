@@ -31,11 +31,7 @@ impl ModelFiles {
     }
 
     /// Carry the digests the entries declare, so a load can verify them.
-    pub fn with_digests(
-        mut self,
-        model: Option<String>,
-        projector: Option<String>,
-    ) -> Self {
+    pub fn with_digests(mut self, model: Option<String>, projector: Option<String>) -> Self {
         self.model_sha256 = model;
         self.projector_sha256 = projector;
         self
@@ -117,8 +113,8 @@ mod tests {
             hasher.update(b"weights");
             hex::encode(hasher.finalize())
         };
-        let files = ModelFiles::from_dir(dir.path(), "model.gguf", None)
-            .with_digests(Some(digest), None);
+        let files =
+            ModelFiles::from_dir(dir.path(), "model.gguf", None).with_digests(Some(digest), None);
         files.verify().expect("the declared digest matches");
     }
 }

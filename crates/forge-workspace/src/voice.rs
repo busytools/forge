@@ -287,7 +287,11 @@ impl VoiceService {
 
     /// The seat's render loop. It stops the moment the last listener leaves,
     /// so a queued utterance is not rendered into a seat nobody hears.
-    fn spawn_queue(&self, seat: &SessionSlot, live: Arc<AtomicUsize>) -> mpsc::UnboundedSender<Job> {
+    fn spawn_queue(
+        &self,
+        seat: &SessionSlot,
+        live: Arc<AtomicUsize>,
+    ) -> mpsc::UnboundedSender<Job> {
         let (queue, mut jobs) = mpsc::unbounded_channel::<Job>();
         let sink = Arc::clone(&self.sink);
         let settings = self.settings.clone();
@@ -320,8 +324,8 @@ impl crate::Workspace {
                 let loader: Loader = Arc::new(move || {
                     let files =
                         files.clone().ok_or_else(|| "no models directory resolves".to_owned())?;
-                    let engine = forge_tts::QwenTts::load(&files)
-                        .map_err(|error| error.to_string())?;
+                    let engine =
+                        forge_tts::QwenTts::load(&files).map_err(|error| error.to_string())?;
                     Ok(Arc::new(engine) as Arc<dyn Engine>)
                 });
                 Arc::new(self.build_voice_service(loader))

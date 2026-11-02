@@ -143,9 +143,7 @@ pub fn public_corpus(dir: &Path) -> Result<Vec<Clip>, Error> {
         // cannot vouch for, because the digest comes from the same manifest.
         let relative = Path::new(&entry.file);
         if relative.is_absolute()
-            || relative
-                .components()
-                .any(|part| matches!(part, std::path::Component::ParentDir))
+            || relative.components().any(|part| matches!(part, std::path::Component::ParentDir))
         {
             return Err(Error::Bench {
                 message: format!("{}: the manifest names a path outside the corpus", entry.file),

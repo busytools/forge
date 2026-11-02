@@ -156,7 +156,6 @@ impl crate::Workspace {
         };
         TtsView { enabled: settings.enabled, snapshot, models_dir: settings.models_dir() }
     }
-
 }
 
 #[cfg(test)]
