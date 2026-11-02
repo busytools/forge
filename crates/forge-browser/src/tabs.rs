@@ -244,6 +244,12 @@ impl TabRegistry {
     /// replacement in name only, and the successor's first tab takes number 1
     /// again.
     pub fn number_of(&self, target: &str) -> Option<u16> {
+        // **An empty target is not a page**, and a tab whose page a listing
+        // could not name holds one; resolving it would open the wrong tab
+        // for a caller that named nothing.
+        if target.is_empty() {
+            return None;
+        }
         self.tabs.iter().find(|(_, tab)| tab.target == target).map(|(number, _)| *number)
     }
 

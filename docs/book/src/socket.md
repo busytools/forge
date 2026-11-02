@@ -417,9 +417,13 @@ refused attach drops whatever the connection was viewing and is recorded too
 connection that goes is detached with it. **A hand-off's tab is the tool
 call's own**:
 `browser_hand_off` names it by the page id its listing printed, an id no tab
-carries is refused before any ask is parked, the ask crosses as the seat's
-parked ask carrying the tab that id resolved to, and the surface's Open is
-this message naming that tab.
+carries is refused before any ask is parked, and the ask crosses as the
+seat's parked ask carrying both the tab that id resolved to and the page id
+itself. **The surface's Open is `browser_view_page`** - the page id rather
+than the tab number, because a parked ask outlives the host that minted the
+number and a successor host's first tab takes number 1 again. A page that is
+gone is refused with the tabs open now; a number-addressed `browser_view` is
+still what the strip's own rows send.
 
 **`browser_detach`** - stop viewing the attached tab. Lowering the takeover
 sends this: an attached viewer counts as a use, so a lowered surface gives
