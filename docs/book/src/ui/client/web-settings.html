@@ -252,6 +252,30 @@
   .settings-dialog .t { font-size: 17px; font-weight: 500; color: var(--text); }
   .settings-dialog .s { font-size: var(--fs-data); color: var(--muted); margin: 8px 0 16px; }
   .settings-dialog .acts { display: flex; justify-content: flex-end; gap: 8px; }
+
+  /* The speaking card: the voice area's own block, above its key cards. */
+  .voice-demo { margin-top: 44px; }
+  .speaking-card { border: 1px solid var(--line); border-radius: 12px;
+    padding: 14px 16px; margin-bottom: 14px; background: var(--s1); }
+  .speaking-card > .t { font-size: 13px; font-weight: 500; margin-bottom: 8px; }
+  .settings-note { font-size: 11.5px; color: var(--dim); margin: 6px 0; }
+  .settings-note code { font-family: var(--mono); color: var(--muted); }
+  .speaking-row { display: flex; align-items: center; gap: 10px;
+    padding: 5px 0; flex-wrap: wrap; }
+  .speaking-row .nm { font-family: var(--mono); font-size: 12px; }
+  .speaking-row .meta { font-family: var(--mono); font-size: 11px; color: var(--dim); }
+  .speaking-row .state { font-size: 11px; color: var(--dim); }
+  .speaking-row .state.on { color: var(--ok); }
+  .gfold summary { display: flex; align-items: center; gap: 8px;
+    cursor: pointer; font-family: var(--mono); font-size: 12px; padding: 6px 0; }
+  .gfold .cn { color: var(--dim); font-size: 11px; }
+  .voices { list-style: none; }
+  .voice { display: flex; align-items: center; gap: 10px; padding: 5px 0;
+    border-bottom: 1px solid var(--line); }
+  .voice:last-child { border-bottom: 0; }
+  .voice code { font-family: var(--mono); font-size: 12px; }
+  .voice.on code { font-weight: 500; }
+  .voice .state { font-size: 11px; color: var(--dim); }
 </style>
 </head>
 <body>
@@ -288,7 +312,7 @@
       <button class="settings-rail-item"><span class="settings-rail-name">connectors</span><span class="settings-rail-class"><span class="chip settings-class icon" data-class="live"><span class="settings-class-mark"></span></span> <span class="chip settings-class icon" data-class="next_session"><span class="settings-class-mark"></span></span> <span class="chip settings-class icon" data-class="restart"><span class="settings-class-mark"></span></span> <span class="chip settings-class icon" data-class="not_read_yet"><span class="settings-class-mark"></span></span></span><span class="settings-rail-count">16</span></button>
       <button class="settings-rail-item"><span class="settings-rail-name">server</span><span class="settings-rail-class"><span class="chip settings-class icon" data-class="live"><span class="settings-class-mark"></span></span> <span class="chip settings-class icon" data-class="next_session"><span class="settings-class-mark"></span></span> <span class="chip settings-class icon" data-class="restart"><span class="settings-class-mark"></span></span></span><span class="settings-rail-count">9</span></button>
       <button class="settings-rail-item"><span class="settings-rail-name">client</span><span class="settings-rail-class"><span class="chip settings-class icon" data-class="live"><span class="settings-class-mark"></span></span></span><span class="settings-rail-count">3</span></button>
-      <button class="settings-rail-item"><span class="settings-rail-name">voice</span><span class="settings-rail-class"><span class="chip settings-class icon" data-class="live"><span class="settings-class-mark"></span></span> <span class="chip settings-class icon" data-class="next_session"><span class="settings-class-mark"></span></span> <span class="chip settings-class icon" data-class="restart"><span class="settings-class-mark"></span></span></span><span class="settings-rail-count">16</span></button>
+      <button class="settings-rail-item"><span class="settings-rail-name">voice</span><span class="settings-rail-class"><span class="chip settings-class icon" data-class="live"><span class="settings-class-mark"></span></span> <span class="chip settings-class icon" data-class="next_session"><span class="settings-class-mark"></span></span> <span class="chip settings-class icon" data-class="restart"><span class="settings-class-mark"></span></span></span><span class="settings-rail-count">17</span></button>
       <button class="settings-rail-item"><span class="settings-rail-name">models</span><span class="settings-rail-class"><span class="chip settings-class icon" data-class="next_session"><span class="settings-class-mark"></span></span></span><span class="settings-rail-count">1</span></button>
       <button class="settings-rail-item"><span class="settings-rail-name">handoff</span><span class="settings-rail-class"><span class="chip settings-class icon" data-class="live"><span class="settings-class-mark"></span></span></span><span class="settings-rail-count">3</span></button>
       <button class="settings-rail-item"><span class="settings-rail-name">documents</span><span class="settings-rail-class"><span class="chip settings-class icon" data-class="live"><span class="settings-class-mark"></span></span></span><span class="settings-rail-count">1</span></button>
@@ -378,6 +402,71 @@
               <span class="settings-card-grow"></span>
             </header>
             <div class="settings-setting"><span class="settings-setting-label"><code title="plugins.auto_update">auto_update</code><span class="chip settings-class" data-class="not_read_yet"><span class="settings-class-mark"></span><span class="settings-class-word">not read yet</span></span></span><span class="settings-setting-value">true</span></div>
+          </div>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <div class="voice-demo">
+    <header class="top pagetop">
+      <span class="brand">
+        <span class="mark"><svg viewBox="0 0 24 24" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="2.4"><rect x="3.2" y="3.2" width="17.6" height="17.6" rx="4"/><path d="M13.6 3.2V20.8"/></g><path fill="currentColor" d="M4.4 6.4a2 2 0 0 1 2-2h4v15.2h-4a2 2 0 0 1-2-2Z"/></svg></span>
+        <span class="word">forge</span>
+      </span>
+      <span class="title">
+        <span class="t">settings</span>
+        <span class="s">the effective config, as loaded</span>
+      </span>
+      <span class="settings-meta">
+        <span class="versions"><span class="build"><span class="k">server</span> <b>v1.1.34</b></span> &middot; <span class="build"><span class="k">socket</span> <b>v22</b></span></span>
+        <span class="totals"><span class="n">251</span> keys &middot; <span class="n">12</span> areas &middot; <code>~/.claude/forge/forge.toml</code></span>
+      </span>
+      <a class="back" href="#">&larr; home</a>
+      <button class="settings-mode">edit</button>
+    </header>
+
+    <div class="settings-split">
+      <nav class="settings-rail" aria-label="config areas">
+        <button class="settings-rail-item"><span class="settings-rail-name">accounts</span><span class="settings-rail-class"><span class="chip settings-class icon" data-class="live"><span class="settings-class-mark"></span></span> <span class="chip settings-class icon" data-class="next_session"><span class="settings-class-mark"></span></span></span><span class="settings-rail-count">31</span></button>
+        <button class="settings-rail-item"><span class="settings-rail-name">projects</span><span class="settings-rail-class"><span class="chip settings-class icon" data-class="live"><span class="settings-class-mark"></span></span> <span class="chip settings-class icon" data-class="next_session"><span class="settings-class-mark"></span></span></span><span class="settings-rail-count">162</span></button>
+        <button class="settings-rail-item on" aria-pressed="true"><span class="settings-rail-name">voice</span><span class="settings-rail-class"><span class="chip settings-class icon" data-class="live"><span class="settings-class-mark"></span></span> <span class="chip settings-class icon" data-class="next_session"><span class="settings-class-mark"></span></span> <span class="chip settings-class icon" data-class="restart"><span class="settings-class-mark"></span></span></span><span class="settings-rail-count">17</span></button>
+        <button class="settings-rail-item"><span class="settings-rail-name">server</span><span class="settings-rail-class"><span class="chip settings-class icon" data-class="live"><span class="settings-class-mark"></span></span> <span class="chip settings-class icon" data-class="next_session"><span class="settings-class-mark"></span></span> <span class="chip settings-class icon" data-class="restart"><span class="settings-class-mark"></span></span></span><span class="settings-rail-count">9</span></button>
+      </nav>
+      <section class="settings-pane">
+        <header class="settings-pane-head">
+          <h2 class="t">voice</h2>
+          <span class="settings-pane-note">the two directions: a take becomes text, and a reply becomes speech</span>
+          <span class="settings-pane-summary">17 keys / 2 groups</span>
+        </header>
+        <div class="settings-pane-body">
+          <section class="speaking-card" aria-labelledby="speaking-demo">
+            <h3 class="t" id="speaking-demo">speaking</h3>
+            <p class="settings-note">hexgrad/Kokoro-82M is installed from the Hugging Face Hub as an ONNX export and the style files for its named voices &middot; every file is checked against its digest before the engine loads it</p>
+            <div class="speaking-row"><code class="nm">kokoro-82m-int8</code><span class="meta">int8 &middot; 92 MB</span><span class="state on">active</span><span class="settings-card-grow"></span><button class="settings-btn">use the default</button></div>
+            <p class="settings-note">the files live in <code>~/Library/Caches/forge-tts</code></p>
+            <p class="settings-note">every reply renders in the chosen voice (<code>bf_emma</code>) &middot; this model carries 54 voices, and the choice is saved with the page's other edits</p>
+            <details class="gfold" open>
+              <summary><span class="gh">voices</span><span class="cn">54</span></summary>
+              <ul class="voices">
+                <li class="voice on"><code>bf_emma</code><span class="state">chosen</span><span class="settings-card-grow"></span><button class="settings-btn">preview</button></li>
+                <li class="voice"><code>af_heart</code><span class="settings-card-grow"></span><button class="settings-btn">use</button><button class="settings-btn">preview</button></li>
+                <li class="voice"><code>af_alloy</code><span class="settings-card-grow"></span><button class="settings-btn">use</button><button class="settings-btn">preview</button></li>
+                <li class="voice"><code>am_adam</code><span class="settings-card-grow"></span><button class="settings-btn">use</button><button class="settings-btn">preview</button></li>
+              </ul>
+            </details>
+            <p class="settings-note">a preview plays on the seat you were last on, with its speaker switch on</p>
+          </section>
+
+          <div class="settings-card" role="group" aria-labelledby="card-voice-tts">
+            <header class="settings-card-head">
+              <h3 id="card-voice-tts">tts</h3>
+              <span class="settings-card-count">5 keys</span>
+              <span class="settings-card-grow"></span>
+            </header>
+            <div class="settings-setting"><span class="settings-setting-label"><code title="tts.enabled">enabled</code><span class="chip settings-class" data-class="restart"><span class="settings-class-mark"></span><span class="settings-class-word">restart</span></span></span><span class="settings-setting-value">true</span></div>
+            <div class="settings-setting"><span class="settings-setting-label"><code title="tts.speaking_model">speaking_model</code><span class="chip settings-class" data-class="restart"><span class="settings-class-mark"></span><span class="settings-class-word">restart</span></span></span><span class="settings-setting-value">hexgrad/Kokoro-82M</span></div>
+            <div class="settings-setting"><span class="settings-setting-label"><code title="tts.voice">voice</code><span class="chip settings-class" data-class="restart"><span class="settings-class-mark"></span><span class="settings-class-word">restart</span></span></span><span class="settings-setting-value">bf_emma</span></div>
           </div>
         </div>
       </section>

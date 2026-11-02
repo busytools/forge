@@ -47,6 +47,7 @@ timeout the bar reports.
 | Restart banner | After a save lands, exactly the restart-class keys it carried, with no restart button. |
 | A new entry | A dashed card headed by its name and `new <group>`, its fields empty and required-marked, discarded or saved with the batch. |
 | A pending removal | The card head reads `removed on save`, with Undo; its lines are not drawn. |
+| The speaking card | The voice area's own block above its key cards: the speaking model row with its one control - install, activate or use the default - the directory the files live in, and the voices the installed model carries, each with `use` and `preview`. |
 
 ## The rules
 
@@ -108,6 +109,15 @@ timeout the bar reports.
 - **Values are ordinary.** A token is drawn and edited as its value, like
   every other string; there is no redaction here, and the file remains the
   one source.
+- **The speaking card writes once, through the page.** A voice is chosen
+  into the draft like any other key and written by the one Save, so `[tts]
+  voice` has no second writer. Its model controls are the core's own
+  commands: an install and a switch land as model pushes, not as config
+  edits, and every one of them is disabled while one is in flight.
+- **A preview plays on the seat the reader was last on**, through that
+  seat's own voice stream. It needs the seat's speaker switch on, and the
+  card says so rather than opening a second playback path; a core that
+  refuses the switch refusal is drawn in its own words under the card.
 
 ## The states the page can be in
 
@@ -145,6 +155,16 @@ timeout the bar reports.
   discarded or saved with the rest.
 - **A pending removal** - the card reads as removed on save, with Undo,
   until the save lands.
+- **No seat for a preview** - the reader has not opened a session since
+  this client started, so every preview control is disabled and the card
+  says to open one and turn its speaker on.
+- **A speaking model not installed** - the card lists the variants with
+  their install controls, and the voices section says they arrive with the
+  model.
+- **A speaking install or switch in flight** - every speaking control is
+  disabled until the core's own state settles.
+- **An unknown speaking state** - a speaking read this client cannot parse
+  draws as itself rather than as an installable model.
 
 ## The pieces it takes from the pages beside it
 
@@ -153,7 +173,9 @@ the palette tokens, and the `.wrap` root. The rail, the cards and the
 setting lines are its own, scoped under `.settings-page`, because `.row`,
 `.rail` and `.chip` are names other surfaces already use; the class badge
 is the shared `components/ClassMark.svelte` and its rules are not scoped,
-so a second surface can wear it.
+so a second surface can wear it. The speaking card takes the shared
+`GroupFold` for its voice list and the shared `.chip` for its controls,
+because both are vocabulary the pages beside it already draw.
 
 ## The two widths
 
