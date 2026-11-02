@@ -1,11 +1,15 @@
 //! The speaking bench: synthesize a corpus's transcripts, transcribe them
 //! back through a caller-supplied recognizer, and score the round trip with
-//! its first-audio time and realtime factor.
+//! its first-audio time, realtime factor and the resident set it needed.
 //!
 //! The recognizer is a parameter because this crate is a leaf and owns no
 //! model of the other direction.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
+
+use sysinfo::{Pid, ProcessesToUpdate, System};
 
 use crate::{Engine, Error, SpeakRequest};
 
@@ -25,7 +29,73 @@ pub struct TtsBenchResult {
     pub first_audio_ms: u64,
     /// Rendered audio seconds per wall second.
     pub realtime_factor: f64,
+    /// The process's peak resident set while the run rendered, above what it
+    /// held before the first clip.
+    #[serde(default)]
+    pub peak_rss_bytes: u64,
 }
+
+/// A resident-set sampler that runs beside the bench for its duration.
+struct PeakRss {
+    stop: Arc<AtomicBool>,
+    peak: Arc<AtomicU64>,
+    baseline: u64,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl PeakRss {
+    fn start() -> Self {
+        let baseline = resident_bytes();
+        let stop = Arc::new(AtomicBool::new(false));
+        let peak = Arc::new(AtomicU64::new(baseline));
+        let thread_stop = Arc::clone(&stop);
+        let thread_peak = Arc::clone(&peak);
+        let thread = std::thread::Builder::new()
+            .name("forge-tts-rss".to_owned())
+            .spawn(move || {
+                let pid = Pid::from_u32(std::process::id());
+                let mut system = System::new();
+                while !thread_stop.load(Ordering::Relaxed) {
+                    system.refresh_processes(ProcessesToUpdate::Some(&[pid]), true);
+                    let resident = system.process(pid).map_or(0, sysinfo::Process::memory);
+                    thread_peak.fetch_max(resident, Ordering::Relaxed);
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+            })
+            .ok();
+        Self { stop, peak, baseline, thread }
+    }
+
+    fn finish(mut self) -> u64 {
+        self.stop_and_join();
+        self.peak.load(Ordering::Relaxed).saturating_sub(self.baseline)
+    }
+
+    fn stop_and_join(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+impl Drop for PeakRss {
+    fn drop(&mut self) {
+        // A run that stops early still stops its sampler: the guard may be
+        // dropped by a `?` on a failed clip.
+        self.stop_and_join();
+    }
+}
+
+/// This process's resident set, in bytes; zero where the platform will not
+/// answer.
+fn resident_bytes() -> u64 {
+    let pid = Pid::from_u32(std::process::id());
+    let mut system = System::new();
+    system.refresh_processes(ProcessesToUpdate::Some(&[pid]), true);
+    system.process(pid).map_or(0, sysinfo::Process::memory)
+}
+
 
 /// Synthesize every transcript, transcribe the audio back, and score it.
 ///
@@ -42,6 +112,7 @@ pub async fn run(
         return Err(Error::Render("the corpus has no clips to run".to_owned()));
     }
     let started_at = Instant::now();
+    let rss = PeakRss::start();
     let mut first_audio = Duration::ZERO;
     let mut audio_seconds = 0.0_f64;
     let mut edits_total = 0_usize;
@@ -50,8 +121,7 @@ pub async fn run(
 
     for (index, clip) in corpus.iter().enumerate() {
         let started = Instant::now();
-        let mut chunks =
-            engine.speak(SpeakRequest { text: clip.transcript.clone(), language: None });
+        let mut chunks = engine.speak(SpeakRequest { text: clip.transcript.clone(), voice: None });
         let mut samples: Vec<f32> = Vec::new();
         let mut rate = 0_u32;
         let mut first: Option<Duration> = None;
@@ -83,6 +153,7 @@ pub async fn run(
         }
     }
 
+    let peak_rss_bytes = rss.finish();
     let wall = started_at.elapsed().as_secs_f64();
     Ok(TtsBenchResult {
         clips: scored,
@@ -90,6 +161,7 @@ pub async fn run(
         first_audio_ms: u64::try_from(first_audio.as_millis()).unwrap_or(u64::MAX)
             / u64::try_from(scored).unwrap_or(1),
         realtime_factor: if wall > 0.0 { audio_seconds / wall } else { 0.0 },
+        peak_rss_bytes,
     })
 }
 

@@ -11,16 +11,18 @@ mod error;
 mod model;
 mod split;
 
-pub use engine::{QwenTts, init_backend};
+pub use engine::{DEFAULT_VOICE, KokoroTts, SAMPLE_RATE, select_voice};
 pub use error::Error;
 pub use model::ModelFiles;
 pub use split::{sentences, within_bound};
 
-/// One utterance to render, with the model's own voice settings.
+/// One utterance to render, with the voice it renders in.
 #[derive(Debug, Clone)]
 pub struct SpeakRequest {
     pub text: String,
-    pub language: Option<String>,
+    /// The voice id for this utterance. `None` uses [`DEFAULT_VOICE`]; an id
+    /// that is not installed is refused rather than replaced by one.
+    pub voice: Option<String>,
 }
 
 /// A rendered run of audio, in arrival order.
@@ -47,8 +49,31 @@ mod tests {
 
     #[test]
     fn an_error_names_its_stage() {
-        let error = Error::ModelMissing("/models/qwen.gguf".to_owned());
-        assert!(error.to_string().contains("qwen.gguf"));
+        let error = Error::ModelMissing("/models/kokoro.onnx".to_owned());
+        assert!(error.to_string().contains("kokoro.onnx"));
+    }
+
+    /// The engine swap left nothing behind: the crate's manifest carries no
+    /// llama.cpp dependency and the FFI module it lived in is gone.
+    #[test]
+    fn the_qwen_engine_is_gone() {
+        let manifest = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/Cargo.toml"
+        ))
+        .expect("the crate's own manifest reads");
+        assert!(
+            !manifest.contains("llama"),
+            "forge-tts still depends on llama.cpp:\n{manifest}"
+        );
+        assert!(
+            !std::path::Path::new(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/src/engine/ffi.rs"
+            ))
+            .exists(),
+            "the Qwen FFI module is still in the crate"
+        );
     }
 
     /// This crate is a leaf, and depending on a forge-* crate is the one

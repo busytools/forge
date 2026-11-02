@@ -9,8 +9,6 @@ rust-version.workspace = true
 description = "Speech synthesis: text in, audio chunks out. Local text-to-speech with verified model files. Depends on no other forge crate."
 publish = false
 
-# Not `[lints] workspace = true`: the workspace forbids unsafe, and this crate
-# calls llama.cpp's audio-generation C ABI, which the safe binding does not wrap.
 [lints.rust]
 unsafe_code = "deny"
 dead_code = "deny"
@@ -41,19 +39,23 @@ struct_excessive_bools = "allow"
 assert_is_empty = "allow"
 print_stdout = "allow"
 print_stderr = "allow"
-# The FFI layer's signatures carry the pointers the C ABI takes.
-not_unsafe_ptr_arg_deref = "allow"
 # The PCM conversion clamps to [-1, 1] before scaling to i16, so both casts
 # are bounded by the line above them.
 cast_possible_truncation = "allow"
 cast_sign_loss = "allow"
-# The C API hands the PCM buffer back as `char *`; it is a float buffer.
-cast_ptr_alignment = "allow"
+# The resampler's sample positions and lengths are audio counts, far inside
+# f64's exact integer range.
+cast_precision_loss = "allow"
 
 [dependencies]
-# The TTS pipeline lives in libmtmd's C API, which the safe binding does not
-# wrap; `metal` is opted into per-target below.
-llama-cpp-sys-2 = { workspace = true, features = ["mtmd"] }
+# The Kokoro-82M inference path. It brings ONNX Runtime and the Misaki G2P
+# with its bundled espeak-ng.
+kokoro-en = { workspace = true }
+# kokoro-en declares ort with a caret range that resolves past the API it was
+# written against; this pin keeps the resolved RC one it compiles on.
+ort = { workspace = true }
+# The bench samples the process's resident set while it runs.
+sysinfo = { workspace = true }
 # The bench's result crosses the wire to the models page.
 serde = { workspace = true }
 tokio = { workspace = true }
@@ -61,9 +63,6 @@ thiserror = { workspace = true }
 # The model files are verified against the digests their entries declare.
 sha2 = { workspace = true }
 hex = { workspace = true }
-
-[target.'cfg(target_os = "macos")'.dependencies]
-llama-cpp-sys-2 = { workspace = true, features = ["metal", "mtmd"] }
 
 [dev-dependencies]
 # The leaf-invariant guard reads cargo's own metadata.

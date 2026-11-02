@@ -31,6 +31,24 @@ use serde::Deserialize;
 
 use crate::error::WorkspaceError;
 
+/// `[huggingface]`: the token a gated Hub repository needs. The speaking
+/// model's own repository is open, so an absent token changes nothing.
+#[derive(Clone, Default, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct HuggingfaceSettings {
+    #[serde(default)]
+    pub token: Option<String>,
+}
+
+/// Hand-written because the token is a credential.
+impl std::fmt::Debug for HuggingfaceSettings {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HuggingfaceSettings")
+            .field("token", &self.token.as_ref().map(|_| "[redacted]"))
+            .finish()
+    }
+}
+
 /// The whole `forge.toml`. Unknown keys are rejected so a mistyped
 /// section name fails the load instead of being ignored.
 #[derive(Deserialize)]
@@ -55,9 +73,13 @@ struct ForgeToml {
     #[serde(default)]
     dictate: crate::dictate::DictateSettings,
     /// Optional `[tts]` section - speech out. Absent section -> disabled,
-    /// which keeps its hand-placed model files opt-in.
+    /// which keeps the model install opt-in.
     #[serde(default)]
     tts: crate::tts::TtsSettings,
+    /// Optional `[huggingface]` section - the token a gated Hub repository
+    /// needs. Absent section leaves every Hub read untokened.
+    #[serde(default)]
+    huggingface: HuggingfaceSettings,
     /// Optional `[gotify]` section - the inbound-notification server
     /// connection. Absent section → `None` → the Gotify subsystem
     /// stays dormant.
@@ -149,6 +171,7 @@ impl std::fmt::Debug for ForgeToml {
             .field("handoff", &self.handoff)
             .field("dictate", &self.dictate)
             .field("tts", &self.tts)
+            .field("huggingface", &self.huggingface)
             .field("gotify", &self.gotify)
             .field("systemone", &self.systemone)
             .field("slack", &self.slack)
@@ -716,6 +739,8 @@ pub(crate) struct LoadedConfig {
     /// `[tts]` section knobs. Absent section means the speaking role is
     /// off and nothing synthesises.
     pub tts: crate::tts::TtsSettings,
+    /// `[huggingface]` token, or the default when the section is absent.
+    pub huggingface: HuggingfaceSettings,
     /// `[gotify]` server connection, or `None` when the section is
     /// absent (Gotify disabled).
     pub gotify: Option<GotifyConfig>,
@@ -772,6 +797,7 @@ impl std::fmt::Debug for LoadedConfig {
             .field("handoff", &self.handoff)
             .field("dictate", &self.dictate)
             .field("tts", &self.tts)
+            .field("huggingface", &self.huggingface)
             .field("gotify", &self.gotify)
             .field("systemone", &self.systemone)
             .field("slack", &self.slack)
@@ -983,6 +1009,7 @@ impl LoadedConfig {
             handoff: HandoffSettings::default(),
             dictate: crate::dictate::DictateSettings::default(),
             tts: crate::tts::TtsSettings::default(),
+            huggingface: HuggingfaceSettings::default(),
             gotify: None,
             systemone: None,
             slack: Vec::new(),
@@ -1601,6 +1628,12 @@ pub(crate) fn load_from_text(path: PathBuf, raw: &str) -> Result<LoadedConfig, W
         }
     }
 
+    // A speaking model nothing installs is a boot failure, the way an
+    // unknown `[dictate]` model key is.
+    if let Err(reason) = parsed.tts.configured_variant() {
+        return Err(WorkspaceError::ConfigInvalid { path, message: reason });
+    }
+
     Ok(LoadedConfig {
         projects,
         global_env,
@@ -1612,6 +1645,7 @@ pub(crate) fn load_from_text(path: PathBuf, raw: &str) -> Result<LoadedConfig, W
         handoff: parsed.handoff,
         dictate: parsed.dictate,
         tts: parsed.tts,
+        huggingface: parsed.huggingface,
         gotify: parsed.gotify,
         systemone,
         slack: parsed.slack,
@@ -4197,6 +4231,36 @@ base_url = "http://localhost:18765"
         write_config(bare.path(), minimal_config());
         let config = load_from_dir(bare.path()).expect("happy path");
         assert!(!config.dictate.enabled, "an absent section must leave dictation off");
+    }
+
+    /// The speaking model and the voice reach the loaded config, and a model
+    /// nothing installs refuses the boot by the name the file used.
+    #[test]
+    fn the_tts_model_and_voice_reach_the_loaded_config() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            &format!(
+                "{}\n[tts]\nspeaking_model = \"hexgrad/Kokoro-82M\"\nvoice = \"bf_emma\"\n",
+                minimal_config()
+            ),
+        );
+        let config = load_from_dir(dir.path()).expect("happy path");
+        assert_eq!(config.tts.speaking_model.as_deref(), Some("hexgrad/Kokoro-82M"));
+        assert_eq!(config.tts.voice.as_deref(), Some("bf_emma"));
+
+        let unknown = tempdir().expect("tempdir");
+        write_config(
+            unknown.path(),
+            &format!(
+                "{}\n[tts]\nspeaking_model = \"hexgrad/Kokoro-90M\"\n",
+                minimal_config()
+            ),
+        );
+        let error = load_from_dir(unknown.path()).expect_err("an unknown model fails the load");
+        let text = error.to_string();
+        assert!(text.contains("hexgrad/Kokoro-90M"), "got: {text}");
+        assert!(text.contains("speaking_model"), "got: {text}");
     }
 
     #[test]

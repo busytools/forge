@@ -1,5 +1,6 @@
-//! The `[tts]` section: what the speaking role runs, and the read the models
-//! page draws.
+//! The `[tts]` section: what the speaking role runs, the Hugging Face
+//! install that supplies it, and the read the models page and the settings
+//! card draw.
 
 use std::path::PathBuf;
 
@@ -8,48 +9,141 @@ use serde::Deserialize;
 
 use crate::dictate::{DictateModel, DictateModelState, DictateRole};
 
-/// The model files a speaking model is made of. The codec lives in the
-/// projector, so a pipeline without one cannot render.
-pub struct SpeakingModel {
-    pub base: ModelSpec,
-    pub projector: ModelSpec,
+/// The speaking model's own name. `[tts] speaking_model` accepts this, or one
+/// of [`VARIANTS`]' names to pin a quantisation.
+pub const SPEAKING_MODEL: &str = "hexgrad/Kokoro-82M";
+
+/// The Hub repository publishing the ONNX export and the style files the
+/// engine loads.
+pub const HUB_REPO: &str = "onnx-community/Kokoro-82M-v1.0-ONNX";
+
+/// The variant the role runs when nothing chooses another: the int8 model
+/// the local benchmark measured at 1.87% WER, 318 ms to first audio, 8.84x
+/// real time and 417 MiB peak.
+pub const PINNED_VARIANT: &str = "kokoro-82m-int8";
+
+/// One ONNX variant of the model the Hub publishes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SpeakingVariant {
+    /// The name `[tts] speaking_model` accepts.
+    pub variant: &'static str,
+    /// The file's path in the repository.
+    pub path: &'static str,
+    /// The file's own name under the models directory.
+    pub file: &'static str,
+    pub quant: &'static str,
+    /// The release's byte length, for the row drawn before an install.
+    pub size: u64,
+    /// The release's LFS digest, for the row drawn before an install.
+    pub sha256: &'static str,
 }
 
-impl SpeakingModel {
-    /// The compiled entry: Qwen3-TTS 12Hz 1.7B Base, Q8_0, with the projector
-    /// that carries its audio codec. Both blobs declare a SHA-256, and the
-    /// engine checks both before it loads them.
-    ///
-    /// ggml-org publishes no 0.6B GGUF; this is the build the llama.cpp
-    /// tool documents. No parameter count is claimed because the Hub
-    /// listing publishes none.
-    pub fn qwen3_tts() -> Self {
-        let facts = ModelFacts {
-            quant: Some("Q8_0".to_owned()),
-            params: None,
-            license: Some("Apache-2.0".to_owned()),
-            runtime: Some("llama.cpp".to_owned()),
-        };
-        Self {
-            base: ModelSpec {
-                file: "Qwen3-TTS-12Hz-1.7B-Base-Q8_0.gguf".to_owned(),
-                url: "https://huggingface.co/ggml-org/Qwen3-TTS-12Hz-1.7B-Base-GGUF/resolve/main/Qwen3-TTS-12Hz-1.7B-Base-Q8_0.gguf".to_owned(),
-                size: 1_847_874_400,
-                sha256: Some(
-                    "ac7931aeb2e7aad1a6ed6602d353a5679c9d096b18ce8204ac730a8408d572e1".to_owned(),
-                ),
-                facts: facts.clone(),
-            },
-            projector: ModelSpec {
-                file: "mmproj-Qwen3-TTS-12Hz-1.7B-Base-Q8_0.gguf".to_owned(),
-                url: "https://huggingface.co/ggml-org/Qwen3-TTS-12Hz-1.7B-Base-GGUF/resolve/main/mmproj-Qwen3-TTS-12Hz-1.7B-Base-Q8_0.gguf".to_owned(),
-                size: 446_422_912,
-                sha256: Some(
-                    "6fd65188839bcd6ecc91b277ad471e22a0edfada4699a0fe82f1165c18cfcce2".to_owned(),
-                ),
-                facts,
+/// The variants the speaking role can run, the int8 model the benchmark
+/// measured among them.
+pub const VARIANTS: &[SpeakingVariant] = &[
+    SpeakingVariant {
+        variant: "kokoro-82m-fp32",
+        path: "onnx/model.onnx",
+        file: "model.onnx",
+        quant: "fp32",
+        size: 325_532_232,
+        sha256: "8fbea51ea711f2af382e88c833d9e288c6dc82ce5e98421ea61c058ce21a34cb",
+    },
+    SpeakingVariant {
+        variant: "kokoro-82m-fp16",
+        path: "onnx/model_fp16.onnx",
+        file: "model_fp16.onnx",
+        quant: "fp16",
+        size: 163_234_740,
+        sha256: "ba4527a874b42b21e35f468c10d326fdff3c7fc8cac1f85e9eb6c0dfc35c334a",
+    },
+    SpeakingVariant {
+        variant: "kokoro-82m-int8",
+        path: "onnx/model_quantized.onnx",
+        file: "model_quantized.onnx",
+        quant: "int8",
+        size: 92_361_116,
+        sha256: "fbae9257e1e05ffc727e951ef9b9c98418e6d79f1c9b6b13bd59f5c9028a1478",
+    },
+];
+
+impl SpeakingVariant {
+    /// The variant a name selects: the model's own name picks the pin, and a
+    /// variant name picks itself.
+    pub fn named(name: &str) -> Option<Self> {
+        if name == SPEAKING_MODEL {
+            return Some(Self::pinned());
+        }
+        VARIANTS.iter().copied().find(|variant| variant.variant == name)
+    }
+
+    /// The compiled default.
+    pub fn pinned() -> Self {
+        VARIANTS
+            .iter()
+            .copied()
+            .find(|variant| variant.variant == PINNED_VARIANT)
+            .unwrap_or(VARIANTS[0])
+    }
+
+    /// The row a spec-driven read draws before an install lands.
+    pub fn spec(&self) -> ModelSpec {
+        ModelSpec {
+            file: self.file.to_owned(),
+            url: format!("https://huggingface.co/{HUB_REPO}/resolve/main/{}", self.path),
+            size: self.size,
+            sha256: Some(self.sha256.to_owned()),
+            facts: ModelFacts {
+                quant: Some(self.quant.to_owned()),
+                params: Some(82_000_000),
+                license: Some("Apache-2.0".to_owned()),
+                runtime: Some("onnx".to_owned()),
             },
         }
+    }
+}
+
+/// One style file the install fetched.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct VoiceFile {
+    /// The voice id: the file's stem.
+    pub name: String,
+    pub size: u64,
+    pub sha256: String,
+}
+
+/// What one installed variant is made of, as the install recorded it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SpeakingInstall {
+    pub variant: String,
+    /// The Hub revision every file was fetched at, so the set is pinned.
+    pub revision: String,
+    /// The model's file name under the models directory.
+    pub model: String,
+    pub model_size: u64,
+    pub model_sha256: String,
+    /// The style files, by voice id.
+    pub voices: Vec<VoiceFile>,
+    /// RFC 3339.
+    pub at: String,
+}
+
+impl SpeakingInstall {
+    /// The model's spec, off the record rather than off the release.
+    pub fn spec(&self) -> ModelSpec {
+        let variant = SpeakingVariant::named(&self.variant).unwrap_or_else(SpeakingVariant::pinned);
+        ModelSpec {
+            file: self.model.clone(),
+            url: format!("https://huggingface.co/{HUB_REPO}/resolve/{}/{}", self.revision, variant.path),
+            size: self.model_size,
+            sha256: Some(self.model_sha256.clone()),
+            facts: variant.spec().facts,
+        }
+    }
+
+    /// The voice ids this install carried.
+    pub fn voice_names(&self) -> Vec<String> {
+        self.voices.iter().map(|voice| voice.name.clone()).collect()
     }
 }
 
@@ -59,16 +153,21 @@ impl SpeakingModel {
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct TtsSettings {
-    /// Off unless asked for. Turning it on needs the two model files placed
-    /// under `models_dir` by hand, about 2.3 GB together.
+    /// Off unless asked for. Turning it on installs the speaking model from
+    /// the Hub.
     #[serde(default)]
     pub enabled: bool,
     /// Where the model files live. Absent uses the platform cache directory.
     #[serde(default)]
     pub models_dir: Option<String>,
-    /// Spoken language. Absent leaves the pipeline's own default, English.
+    /// The model the role runs. Absent uses the compiled pin; an unknown
+    /// name is refused by name.
     #[serde(default)]
-    pub language: Option<String>,
+    pub speaking_model: Option<String>,
+    /// The voice every utterance renders in. Absent uses the engine's own
+    /// default; an id that is not installed is refused by name.
+    #[serde(default)]
+    pub voice: Option<String>,
     /// Upper bound on one utterance's text, as a character estimate at a
     /// rough speaking pace, not one sentence.
     #[serde(default = "default_max_utterance_seconds")]
@@ -84,18 +183,23 @@ impl Default for TtsSettings {
         Self {
             enabled: false,
             models_dir: None,
-            language: None,
+            speaking_model: None,
+            voice: None,
             max_utterance_seconds: default_max_utterance_seconds(),
         }
     }
 }
 
 impl TtsSettings {
-    /// The compiled model the speaking role runs. There is no key that
-    /// selects another: the two files are placed by hand and the engine
-    /// loads them.
-    pub fn model(&self) -> SpeakingModel {
-        SpeakingModel::qwen3_tts()
+    /// The variant a configured name selects, refusing an unknown name the
+    /// way `[dictate] transcribe_model` does.
+    pub fn configured_variant(&self) -> Result<Option<SpeakingVariant>, String> {
+        let Some(name) = self.speaking_model.as_deref() else {
+            return Ok(None);
+        };
+        SpeakingVariant::named(name)
+            .map(Some)
+            .ok_or_else(|| format!("[tts] speaking_model names {name}, which is not a known model"))
     }
 
     /// Where the model files land.
@@ -106,20 +210,19 @@ impl TtsSettings {
         }
     }
 
-    /// The two files, resolved under the models directory, with the digests
-    /// their entries declare so a load can verify them.
-    pub fn files(&self) -> Option<forge_tts::ModelFiles> {
-        let dir = self.models_dir()?;
-        let model = self.model();
-        Some(
-            forge_tts::ModelFiles::from_dir(&dir, &model.base.file, Some(&model.projector.file))
-                .with_digests(model.base.sha256.clone(), model.projector.sha256.clone()),
-        )
+    /// The directory the style files live in.
+    pub fn voices_dir(&self) -> Option<PathBuf> {
+        self.models_dir().map(|dir| dir.join("voices"))
     }
 
-    /// The role's compiled pin.
-    pub(crate) fn pin(&self) -> ModelSpec {
-        self.model().base
+    /// The model a role runs before anything is installed: the configured
+    /// variant, else the pin.
+    pub fn pin(&self) -> ModelSpec {
+        self.configured_variant()
+            .ok()
+            .flatten()
+            .unwrap_or_else(SpeakingVariant::pinned)
+            .spec()
     }
 }
 
@@ -129,48 +232,167 @@ pub struct TtsSnapshot {
     pub models: Vec<DictateModel>,
 }
 
-/// The voice read: whether `[tts]` is on, where the files land, and the
-/// speaking model's state.
+/// One variant the page draws: whether it is installed, and whether it runs.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SpeakingVariantView {
+    pub variant: String,
+    pub file: String,
+    pub quant: String,
+    pub size: u64,
+    pub installed: bool,
+    pub active: bool,
+}
+
+/// Where the active speaking model came from.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "from", rename_all = "snake_case")]
+pub enum SpeakingFrom {
+    /// `[tts] speaking_model` names it.
+    Config,
+    /// The last pick made on this page.
+    Installed,
+    /// The compiled default.
+    Pin,
+}
+
+/// The voice read: whether `[tts]` is on, where the files land, the speaking
+/// model's state, and the voices that model installed.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct TtsView {
     pub enabled: bool,
     pub snapshot: TtsSnapshot,
     pub models_dir: Option<PathBuf>,
+    /// The model's own name, which `[tts] speaking_model` accepts.
+    pub speaking_model: String,
+    /// The variant the role runs.
+    pub active: SpeakingVariantView,
+    /// Where the active variant's choice came from.
+    pub from: SpeakingFrom,
+    /// Every variant the role can run.
+    pub variants: Vec<SpeakingVariantView>,
+    /// The installed voice ids, sorted.
+    pub voices: Vec<String>,
+    /// The configured voice; absent means the engine's default.
+    pub voice: Option<String>,
 }
 
 impl crate::Workspace {
-    /// The models page's read.
+    /// Every speaking install this machine has recorded.
+    pub fn speaking_installs(&self) -> Vec<SpeakingInstall> {
+        let db = self.db.lock();
+        let Some(db) = db.as_ref() else { return Vec::new() };
+        match crate::store::speaking_models::installed(db) {
+            Ok(rows) => rows,
+            Err(error) => {
+                tracing::warn!(
+                    event_name = "speaking_installed_read_failed",
+                    %error,
+                    "the speaking installs could not be read; the page shows none"
+                );
+                Vec::new()
+            }
+        }
+    }
+
+    /// One installed variant, when this machine has it.
+    pub fn speaking_install(&self, variant: &str) -> Option<SpeakingInstall> {
+        self.speaking_installs().into_iter().find(|install| install.variant == variant)
+    }
+
+    /// The variant the role runs: the configured name, else the runtime
+    /// pick, else the compiled pin.
+    pub fn speaking_variant(&self) -> (SpeakingVariant, SpeakingFrom) {
+        if let Ok(Some(variant)) = self.config_arc().tts.configured_variant() {
+            return (variant, SpeakingFrom::Config);
+        }
+        if let Some(pick) = self.active_choice(DictateRole::Speaking)
+            && let Some(variant) = SpeakingVariant::named(&pick.variant)
+        {
+            return (variant, SpeakingFrom::Installed);
+        }
+        (SpeakingVariant::pinned(), SpeakingFrom::Pin)
+    }
+
+    /// The files the active variant loads, when this machine has them.
+    pub fn speaking_files(&self) -> Option<forge_tts::ModelFiles> {
+        let (variant, _) = self.speaking_variant();
+        let install = self.speaking_install(variant.variant)?;
+        self.files_for_install(&install)
+    }
+
+    /// The files one installed variant is made of.
+    pub fn files_for_install(&self, install: &SpeakingInstall) -> Option<forge_tts::ModelFiles> {
+        let dir = self.config_arc().tts.models_dir()?;
+        let model = dir.join(&install.model);
+        let voices = dir.join("voices");
+        let digests = std::iter::once((model.clone(), install.model_sha256.clone()))
+            .chain(install.voices.iter().map(|voice| {
+                (voices.join(format!("{}.bin", voice.name)), voice.sha256.clone())
+            }))
+            .collect();
+        Some(forge_tts::ModelFiles::new(model, voices).with_digests(digests))
+    }
+
+    /// The models page's and the settings card's read.
     pub fn voices(&self) -> TtsView {
         let config = self.config_arc();
         let settings = &config.tts;
-        let model = settings.model();
-        let fetched = settings.files().is_some_and(|files| {
-            files.model.is_file() && files.projector.is_some_and(|projector| projector.is_file())
-        });
-        let state = if fetched { DictateModelState::Ready } else { DictateModelState::Pending };
+        let (active, from) = self.speaking_variant();
+        let installs = self.speaking_installs();
+        let installed = |variant: &str| installs.iter().any(|row| row.variant == variant);
+        let row = |variant: &SpeakingVariant| SpeakingVariantView {
+            variant: variant.variant.to_owned(),
+            file: variant.file.to_owned(),
+            quant: variant.quant.to_owned(),
+            size: variant.size,
+            installed: installed(variant.variant),
+            active: variant.variant == active.variant,
+        };
+        let active_installed = installed(active.variant);
+        let active_voices = installs
+            .iter()
+            .find(|row| row.variant == active.variant)
+            .map(SpeakingInstall::voice_names)
+            .unwrap_or_default();
+        let state =
+            if active_installed { DictateModelState::Ready } else { DictateModelState::Pending };
         // The running system's flag, not a saved value the restart has not
         // taken: the tool gate and the registered set read the same one.
         let enabled = self.voice_enabled();
-        let snapshot = TtsSnapshot {
-            models: if enabled {
-                vec![DictateModel { role: DictateRole::Speaking, file: model.base.file, state }]
-            } else {
-                Vec::new()
+        TtsView {
+            enabled,
+            snapshot: TtsSnapshot {
+                models: if enabled {
+                    vec![DictateModel {
+                        role: DictateRole::Speaking,
+                        file: active.file.to_owned(),
+                        state,
+                    }]
+                } else {
+                    Vec::new()
+                },
             },
-        };
-        TtsView { enabled, snapshot, models_dir: settings.models_dir() }
+            models_dir: settings.models_dir(),
+            speaking_model: SPEAKING_MODEL.to_owned(),
+            active: row(&active),
+            from,
+            variants: VARIANTS.iter().map(row).collect(),
+            voices: active_voices,
+            voice: settings.voice.clone(),
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::TtsSettings;
+    use super::{PINNED_VARIANT, SPEAKING_MODEL, SpeakingVariant, TtsSettings};
 
     #[test]
     fn an_absent_tts_section_is_off() {
         let settings: TtsSettings = toml::from_str("").expect("parses");
         assert!(!settings.enabled);
         assert_eq!(settings.max_utterance_seconds, 120);
+        assert!(settings.voice.is_none());
     }
 
     #[test]
@@ -179,26 +401,24 @@ mod tests {
         assert!(error.to_string().contains("speek"));
     }
 
-    /// A save marked restart cannot move the read away from the running
-    /// service: the home read and the registered set answer the same flag
-    /// until the restart takes it.
-    #[tokio::test]
-    async fn a_saved_tts_off_does_not_move_the_read_before_the_restart() {
-        let dir = tempfile::tempdir().expect("a temp dir");
-        let mut config = crate::config::LoadedConfig::empty_for_test();
-        config.tts.enabled = true;
-        let (workspace, _updates) =
-            crate::Workspace::testing_stub_with_config(dir.path().to_path_buf(), config)
-                .expect("the stub builds");
-        assert!(workspace.voice_enabled(), "the fixture starts on");
-        let _service = workspace.voice_service();
+    #[test]
+    fn the_models_own_name_selects_the_pinned_variant() {
+        let variant = SpeakingVariant::named(SPEAKING_MODEL).expect("the name is known");
+        assert_eq!(variant.variant, PINNED_VARIANT);
+    }
 
-        // The save lands, and the key is marked restart.
-        let mut saved = crate::config::LoadedConfig::empty_for_test();
-        saved.tts.enabled = false;
-        *workspace.config.write() = std::sync::Arc::new(saved);
+    #[test]
+    fn a_variant_name_selects_itself() {
+        let variant = SpeakingVariant::named("kokoro-82m-fp16").expect("the name is known");
+        assert_eq!(variant.file, "model_fp16.onnx");
+    }
 
-        assert!(workspace.voice_enabled(), "the running service still answers on");
-        assert!(workspace.voices().enabled, "the home read follows the service");
+    #[test]
+    fn a_configured_name_that_is_not_a_model_is_refused_by_name() {
+        let settings: TtsSettings =
+            toml::from_str("speaking_model = \"hexgrad/Kokoro-90M\"").expect("parses");
+        let error = settings.configured_variant().expect_err("refused");
+        assert!(error.contains("hexgrad/Kokoro-90M"), "got: {error}");
+        assert!(error.contains("speaking_model"), "got: {error}");
     }
 }

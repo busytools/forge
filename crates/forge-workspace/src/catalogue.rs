@@ -473,17 +473,34 @@ impl crate::Workspace {
         let mut in_use =
             if settings.enabled { in_use(entries, &active, &preflight) } else { Vec::new() };
         if self.voice_enabled() {
-            let pin = config.tts.pin();
-            for row in &self.voices().snapshot.models {
+            let view = self.voices();
+            let variant = crate::tts::SpeakingVariant::named(&view.active.variant)
+                .unwrap_or_else(crate::tts::SpeakingVariant::pinned);
+            let install = self.speaking_install(&view.active.variant);
+            let (size, sha256) = install.as_ref().map_or_else(
+                || (variant.size, Some(variant.sha256.to_owned())),
+                |row| (row.model_size, Some(row.model_sha256.clone())),
+            );
+            let from = match view.from {
+                crate::tts::SpeakingFrom::Config => crate::install::ActiveFrom::Config {
+                    key: "speaking_model".to_owned(),
+                    variant: variant.variant.to_owned(),
+                },
+                crate::tts::SpeakingFrom::Installed => crate::install::ActiveFrom::Installed {
+                    variant: variant.variant.to_owned(),
+                },
+                crate::tts::SpeakingFrom::Pin => crate::install::ActiveFrom::Pin,
+            };
+            for row in &view.snapshot.models {
                 in_use.push(InUseModel {
                     role: row.role,
                     file: row.file.clone(),
-                    size: pin.size,
-                    sha256: pin.sha256.clone(),
+                    size,
+                    sha256: sha256.clone(),
                     state: row.state.clone(),
-                    facts: pin.facts.clone(),
+                    facts: variant.spec().facts,
                     catalogue: None,
-                    from: crate::install::ActiveFrom::Pin,
+                    from: from.clone(),
                     at: None,
                 });
             }

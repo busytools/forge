@@ -1470,12 +1470,13 @@ fn frames_record() -> Value {
                     reason: "nothing to bench: the bundled public corpus holds no clips".to_owned(),
                 },
                 speaking_results: vec![SpeakingBenchResult {
-                    file: "Qwen3-TTS-12Hz-1.7B-Base-Q8_0.gguf".to_owned(),
+                    file: "model_quantized.onnx".to_owned(),
                     metrics: forge_tts::bench::TtsBenchResult {
                         clips: 12,
                         round_trip_wer: 0.041,
-                        first_audio_ms: 3_400,
-                        realtime_factor: 0.31,
+                        first_audio_ms: 318,
+                        realtime_factor: 8.84,
+                        peak_rss_bytes: 417 << 20,
                     },
                     at: "2026-10-06T19:11:38Z".to_owned(),
                     corpus: CorpusId {
