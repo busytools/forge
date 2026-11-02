@@ -181,6 +181,10 @@ struct State {
     /// page's own coalescing key (#2540), so an unchanged set asks for no
     /// roster read.
     last_tasks: HashMap<String, u64>,
+    /// A board change landed while a home read was already on the wire: the
+    /// snapshot may predate it, so the roster is asked for again when that
+    /// read lands (the page's own stale flag, #2540).
+    home_stale: bool,
     /// The takeover's live viewer, re-attached on every reconnect while it
     /// is set; a lower clears it.
     attach: Option<Attach>,
@@ -308,6 +312,7 @@ impl Bridge {
                 refreshing: HashSet::new(),
                 refreshed: HashMap::new(),
                 last_tasks: HashMap::new(),
+                home_stale: false,
                 attach: None,
                 attach_generation: 0,
                 view_profile: None,
@@ -732,6 +737,7 @@ impl Bridge {
             state.last_beat = Some(Instant::now());
             state.suppressed = 0;
             state.refreshing.clear();
+            state.home_stale = false;
             let mut wanted = Vec::with_capacity(state.order.len());
             for key in &state.order {
                 if let Some(watch) = state.held.get(key) {
@@ -1044,8 +1050,11 @@ impl Bridge {
     ///
     /// **The page's own coalescing, not a read per frame**: an unchanged task
     /// set is no news (#2540), and a read already out for the roster answers
-    /// the frame that arrived behind it. The digest is the project and its
-    /// tasks, the key the page keeps beside it.
+    /// the frame that arrived behind it only if it was ENCODED after the
+    /// write - which nothing guarantees, so a change that lands behind an
+    /// in-flight read marks the roster stale and it is asked for again when
+    /// that read lands. The digest is the project and its tasks, the key the
+    /// page keeps beside it.
     fn board_moved(&self, update: &Value) {
         let Some((project, digest)) = tasks_digest(update) else { return };
         let mut state = self.lock();
@@ -1057,6 +1066,7 @@ impl Bridge {
             return;
         }
         if !state.refreshing.insert("home".to_owned()) {
+            state.home_stale = true;
             return;
         }
         drop(state);
@@ -1349,6 +1359,7 @@ impl Bridge {
                 state.last_beat = Some(Instant::now());
                 state.suppressed = 0;
                 state.refreshing.clear();
+                state.home_stale = false;
             }
             // A drop keeps the records: the reconnect's snapshots replace
             // them whole, and nothing else on this side has to move (a take
@@ -1453,6 +1464,19 @@ impl Bridge {
                     self.raise(notices);
                     let waits = self.waits_moved();
                     self.raise_waits(waits);
+                    // **A board change that landed behind this read is
+                    // re-asked**: the snapshot may have been encoded before
+                    // the write, and the digest already consumed the frame,
+                    // so nothing else would ask for the newer roster.
+                    let mut state = self.lock();
+                    if std::mem::take(&mut state.home_stale)
+                        && state.held.contains_key("home")
+                        && state.socket.is_some()
+                        && state.refreshing.insert("home".to_owned())
+                    {
+                        drop(state);
+                        self.refresh(&json!("home"), None);
+                    }
                 }
             }
             "update" => {
@@ -2767,6 +2791,40 @@ mod tests {
         assert_eq!(changed["what"], json!("home"), "a changed set reads the roster");
     }
 
+    /// **A board change that lands behind an in-flight read is not lost.**
+    /// The read on the wire may have been encoded before the write, and the
+    /// frame's digest is already consumed - so the shell marks the roster
+    /// stale and asks again when the first snapshot lands, which is the case
+    /// the parked page's notification depends on.
+    #[tokio::test]
+    async fn a_board_change_behind_a_read_asks_again_when_it_lands() {
+        let mut server = stub().await;
+        let (bridge, _rx) = bridge();
+        bridge.connect(server.url.clone());
+        connected(&bridge).await;
+        bridge.subscribe(json!("home"), true, false);
+        let _ = server.heard_until(|v| v["kind"] == "subscribe").await;
+
+        // The first change starts a read.
+        sent(&bridge, board_frame("forge", &json!([])));
+        let _ = server.heard_until(|v| v["kind"] == "unsubscribe").await;
+        let first = server.heard_until(|v| v["kind"] == "subscribe").await;
+        assert_eq!(first["what"], json!("home"), "the board change reads");
+
+        // A second change lands while that read is out: no second ask yet.
+        sent(&bridge, board_frame("forge", &json!([{ "id": "t-1", "project_name": "forge" }])));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), server.heard.recv()).await.is_err(),
+            "a read is already out",
+        );
+
+        // The read lands, and the stale roster is asked for again.
+        sent(&bridge, home_snapshot(json!({ "boot_id": "run-1", "agents": [] })));
+        let _ = server.heard_until(|v| v["kind"] == "unsubscribe").await;
+        let again = server.heard_until(|v| v["kind"] == "subscribe").await;
+        assert_eq!(again["what"], json!("home"), "the change behind the read is re-asked");
+    }
+
     /// **A screen holding no home reads nothing for an ask.** The connect
     /// screen has no roster behind it, so an ask frame there must put no
     /// read on the wire - dropping the held-home guard would subscribe a
@@ -2831,6 +2889,16 @@ mod tests {
             "subject": "the parser",
             "words": words,
             "at": { "secs_since_epoch": 5, "nanos_since_epoch": 0 },
+        })
+    }
+
+    /// A `tasks_changed` frame for `project`.
+    fn board_frame(project: &str, tasks: &Value) -> Value {
+        json!({
+            "kind": "update",
+            "update": {
+                "tasks_changed": { "key": { "project": project }, "tasks": tasks },
+            },
         })
     }
 
