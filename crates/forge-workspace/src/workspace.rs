@@ -847,7 +847,7 @@ pub struct Workspace {
     /// Records that the boot wave asked for the prewarm, set before the
     /// `[tts] enabled` gate: the flag reads "the wave asked", which is the
     /// one call a test can watch without the weights. It is not a dispatch
-    /// guard, so a boot with `[tts]` off can still start one once enabled.
+    /// guard; the guard only stops a second load of the same engine.
     pub(crate) voice_prewarm_started: std::sync::atomic::AtomicBool,
     /// Set once the prewarm is dispatched, after the enabled gate, so a
     /// second call cannot spawn a second load of the same engine.

@@ -358,9 +358,8 @@ impl crate::Workspace {
     /// waits on the same lock rather than answering [`SayError::NotReady`].
     pub fn start_voice_prewarm(self: &Arc<Self>) {
         // The wave-asked signal, kept before the gate: it is what a test
-        // reads on a fixture with `[tts]` off. The dispatch is guarded
-        // separately, so a boot that starts with the section off can still
-        // start a load once it is enabled.
+        // reads on a fixture with `[tts]` off. The dispatch has its own
+        // guard, which only stops a second load of the same engine.
         self.voice_prewarm_started.store(true, Ordering::Release);
         let settings = self.config_arc().tts.clone();
         if !settings.enabled {
@@ -1172,8 +1171,8 @@ mod tests {
         panic!("the boot prewarm did not load the engine");
     }
 
-    /// A boot with `[tts]` off has not spent the dispatch: a later call with
-    /// the section on still loads.
+    /// The dispatch guard is not the wave-asked signal: a first call with
+    /// `[tts]` off spends only the signal, and a second call still loads.
     #[tokio::test]
     async fn a_prewarm_call_after_tts_turns_on_dispatches() {
         let (workspace, _dir) = prewarm_workspace(false);
