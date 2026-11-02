@@ -113,8 +113,12 @@ struct Watch {
 #[derive(Clone)]
 struct Attach {
     seat: Value,
-    /// The tab the attach landed on, which is what a reconnect asks for.
+    /// The tab the attach landed on, kept for this side's own calls.
     tab: Option<u16>,
+    /// The page the attach was addressed by, when it came from a hand-off.
+    /// **A reconnect asks for this, not the number**: the number names a
+    /// different tab after a host replacement.
+    page: Option<String>,
 }
 
 struct State {
@@ -333,20 +337,7 @@ impl Bridge {
         let attached = match socket.browser_view(seat.clone(), tab).await {
             Ok(attached) => attached,
             Err(why) => {
-                // **A refused attach is the surface's failure, not the last
-                // tab's picture left standing over it.** The old attachment
-                // is dropped so a reconnect does not ask for the dead tab,
-                // and the overlay is lowered under the sentence.
-                let mut state = self.lock();
-                state.attach = None;
-                state.attach_generation = state.attach_generation.wrapping_add(1);
-                drop(state);
-                if let Some(app) = &self.app {
-                    crate::browser::lost(app);
-                }
-                self.emit(ClientEvent::Inbound(
-                    json!({ "kind": "browser_surface_failed", "reason": why }),
-                ));
+                self.drop_attach(&why);
                 return Err(why);
             }
         };
@@ -357,9 +348,46 @@ impl Bridge {
         let resolved =
             attached.get("tab").and_then(Value::as_u64).and_then(|tab| u16::try_from(tab).ok());
         let mut state = self.lock();
-        state.attach = Some(Attach { seat, tab: resolved });
+        state.attach = Some(Attach { seat, tab: resolved, page: None });
         state.attach_generation = state.attach_generation.wrapping_add(1);
         Ok(attached)
+    }
+
+    /// Open the page a parked hand-off named.
+    ///
+    /// **The page is what a reconnect asks for**: a tab number survives a
+    /// host replacement in name only.
+    pub async fn browser_view_page(&self, seat: Value, target: String) -> Result<Value, String> {
+        let socket = self.socket().ok_or_else(|| "the socket is not open".to_owned())?;
+        let attached = match socket.browser_view_page(seat.clone(), target.clone()).await {
+            Ok(attached) => attached,
+            Err(why) => {
+                self.drop_attach(&why);
+                return Err(why);
+            }
+        };
+        let resolved =
+            attached.get("tab").and_then(Value::as_u64).and_then(|tab| u16::try_from(tab).ok());
+        let mut state = self.lock();
+        state.attach = Some(Attach { seat, tab: resolved, page: Some(target) });
+        state.attach_generation = state.attach_generation.wrapping_add(1);
+        Ok(attached)
+    }
+
+    /// A refused attach is the surface's failure, not the last tab's picture
+    /// left standing over it: the old attachment is dropped, and the overlay
+    /// is lowered under the sentence.
+    fn drop_attach(&self, why: &str) {
+        let mut state = self.lock();
+        state.attach = None;
+        state.attach_generation = state.attach_generation.wrapping_add(1);
+        drop(state);
+        if let Some(app) = &self.app {
+            crate::browser::lost(app);
+        }
+        self.emit(ClientEvent::Inbound(
+            json!({ "kind": "browser_surface_failed", "reason": why }),
+        ));
     }
 
     /// The takeover lowered: stop viewing the profile, so the server's idle
@@ -1282,7 +1310,13 @@ impl Bridge {
     /// A re-attach the server refuses fails the surface instead.
     async fn reattach(self: Arc<Self>, attach: Attach, generation: u64) {
         let Some(socket) = self.socket() else { return };
-        match socket.browser_view(attach.seat, attach.tab).await {
+        // **A hand-off's open asks by page.** The tab number it landed on can
+        // name a different tab after a host replacement.
+        let attached = match &attach.page {
+            Some(page) => socket.browser_view_page(attach.seat.clone(), page.clone()).await,
+            None => socket.browser_view(attach.seat.clone(), attach.tab).await,
+        };
+        match attached {
             Ok(_) => {
                 // A lower (or a second attach) landed while this was in
                 // flight: nobody is showing the viewer this ask created, so
@@ -3244,7 +3278,7 @@ mod tests {
     fn a_detach_sends_only_when_a_takeover_was_attached() {
         let (bridge, _rx) = bridge();
         assert!(take_attach(&mut bridge.lock()).is_none(), "nothing was attached");
-        bridge.lock().attach = Some(Attach { seat: seat(), tab: None });
+        bridge.lock().attach = Some(Attach { seat: seat(), tab: None, page: None });
         assert!(take_attach(&mut bridge.lock()).is_some(), "the first lower finds it");
         assert!(take_attach(&mut bridge.lock()).is_none(), "the second finds nothing");
     }
@@ -3256,11 +3290,11 @@ mod tests {
     #[test]
     fn a_message_for_another_tab_is_not_the_viewed_pages() {
         let (bridge, _rx) = bridge();
-        bridge.lock().attach = Some(Attach { seat: seat(), tab: Some(2) });
+        bridge.lock().attach = Some(Attach { seat: seat(), tab: Some(2), page: None });
         assert!(bridge.for_viewed_tab(&json!({ "tab": 2 })), "the viewed tab's message");
         assert!(!bridge.for_viewed_tab(&json!({ "tab": 3 })), "another tab's is not the page's");
         assert!(bridge.for_viewed_tab(&json!({})), "a message that names no tab is not filtered");
-        bridge.lock().attach = Some(Attach { seat: seat(), tab: None });
+        bridge.lock().attach = Some(Attach { seat: seat(), tab: None, page: None });
         assert!(
             bridge.for_viewed_tab(&json!({ "tab": 3 })),
             "before an attach names its tab, nothing is another tab's",

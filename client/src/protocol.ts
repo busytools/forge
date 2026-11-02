@@ -376,6 +376,20 @@ export type ClientMessage =
       reply_to?: number | null;
     }
   /**
+   * Open the page a parked hand-off named, addressed by its CDP target.
+   *
+   * **A tab number is not an identity across a host restart**: the successor
+   * host's first tab takes number 1 again, so a hand-off that outlived the
+   * replacement is opened by page and refused by name when the page is gone.
+   */
+  | {
+      kind: 'browser_view_page';
+      seat: SessionSlot;
+      target: string;
+      /** Answers the attach, as `browser_view`'s does. */
+      reply_to?: number | null;
+    }
+  /**
    * The tabs of this seat's profile, for a client's strip.
    *
    * Answered through `reply_to` with `{ok: true, tabs}`, where `tabs` is a

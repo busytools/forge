@@ -100,6 +100,10 @@ pub struct HandOff {
     pub reason: String,
     /// The tab the person should see, from the asking session's own tabs.
     pub tab: u16,
+    /// The page's CDP target id. **A number names a different tab after a
+    /// host replacement**; this is the tab's identity, and the attach
+    /// resolves it.
+    pub target: String,
 }
 
 /// The modifier keys a person held for one input event.
@@ -430,12 +434,16 @@ mod tests {
     /// look at.
     #[test]
     fn a_hand_off_names_the_tab_the_person_should_see() {
-        let handoff =
-            HandOff { id: uuid::Uuid::from_u128(7), reason: "CAPTCHA".to_owned(), tab: 3 };
+        let handoff = HandOff {
+            id: uuid::Uuid::from_u128(7),
+            reason: "CAPTCHA".to_owned(),
+            tab: 3,
+            target: "page-7".to_owned(),
+        };
         let encoded = serde_json::to_value(&handoff).expect("a hand-off encodes");
         assert_eq!(
             encoded,
-            serde_json::json!({ "id": "00000000-0000-0000-0000-000000000007", "reason": "CAPTCHA", "tab": 3 }),
+            serde_json::json!({ "id": "00000000-0000-0000-0000-000000000007", "reason": "CAPTCHA", "tab": 3, "target": "page-7" }),
         );
         assert_eq!(serde_json::from_value::<HandOff>(encoded).expect("decodes"), handoff);
     }

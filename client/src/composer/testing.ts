@@ -178,6 +178,7 @@ export function browserHandOffAsk(over: Record<string, unknown> = {}): unknown {
       id: '0192e1c0-0000-7000-8000-0000000000aa',
       reason: 'The sign-in page is showing a CAPTCHA.',
       tab: 2,
+      target: 'page-2',
       ...over,
     },
   };

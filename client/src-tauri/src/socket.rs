@@ -497,6 +497,15 @@ enum Outbound {
         reply: Option<u64>,
         answered: Option<oneshot::Sender<Result<Value, String>>>,
     },
+    /// Open the page a parked hand-off named: the same attach, addressed by
+    /// the page's CDP target rather than a tab number that survives a host
+    /// replacement in name only.
+    BrowserViewPage {
+        seat: Value,
+        target: String,
+        reply: Option<u64>,
+        answered: Option<oneshot::Sender<Result<Value, String>>>,
+    },
     /// Stop viewing the attached tab: the takeover lowered.
     BrowserDetach,
     /// One input event from the controlling viewer.
@@ -732,6 +741,29 @@ impl Socket {
         }
     }
 
+    /// Open the page a parked hand-off named, and wait for the same answer
+    /// `browser_view` gives.
+    pub async fn browser_view_page(&self, seat: Value, target: String) -> Result<Value, String> {
+        let id = self.next_reply.fetch_add(1, Ordering::Relaxed);
+        let (answered, answer) = oneshot::channel();
+        self.tx
+            .send(Outbound::BrowserViewPage {
+                seat,
+                target,
+                reply: Some(id),
+                answered: Some(answered),
+            })
+            .map_err(|_| "the socket is closed".to_owned())?;
+        match tokio::time::timeout(ATTACH_BOUND, answer).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(_)) => Err("the socket dropped before answering the attach".to_owned()),
+            Err(_) => {
+                let _ = self.tx.send(Outbound::ForgetAttach { id });
+                Err("the server did not answer the attach".to_owned())
+            }
+        }
+    }
+
     /// Stop viewing the attached profile: the takeover lowered.
     pub fn browser_detach(&self) {
         let _ = self.tx.send(Outbound::BrowserDetach);
@@ -879,7 +911,8 @@ fn apply_offline(next: Outbound, held: &mut Vec<Held>, awaiting: &mut Vec<String
         }
         // A raise over a down socket fails by name rather than waiting out
         // its bound: no answer is coming. So does a strip ask.
-        Outbound::BrowserView { answered: Some(answered), .. } => {
+        Outbound::BrowserView { answered: Some(answered), .. }
+        | Outbound::BrowserViewPage { answered: Some(answered), .. } => {
             let _ = answered.send(Err("the socket is not open".to_owned()));
             false
         }
@@ -900,6 +933,7 @@ fn apply_offline(next: Outbound, held: &mut Vec<Held>, awaiting: &mut Vec<String
         | Outbound::ForgetReply { .. }
         | Outbound::ForgetAttach { .. }
         | Outbound::BrowserView { .. }
+        | Outbound::BrowserViewPage { .. }
         | Outbound::BrowserDetach
         | Outbound::BrowserInput { .. }
         | Outbound::BrowserControl { .. }
@@ -1348,6 +1382,32 @@ async fn run(
                                         "kind": "browser_view",
                                         "seat": seat,
                                         "tab": tab,
+                                        "reply_to": reply,
+                                    })
+                                        .to_string()
+                                        .into(),
+                                ))
+                                .await
+                                .is_ok();
+                            match (ok, reply, answered) {
+                                (true, Some(id), Some(tx)) => {
+                                    attaches.insert(id, tx);
+                                }
+                                (_, _, Some(tx)) => {
+                                    let _ = tx.send(Err(
+                                        "the socket is open but the frame did not go".to_owned()
+                                    ));
+                                }
+                                (_, _, None) => {}
+                            }
+                        }
+                        Outbound::BrowserViewPage { seat, target, reply, answered } => {
+                            let ok = writer
+                                .send(Message::Text(
+                                    json!({
+                                        "kind": "browser_view_page",
+                                        "seat": seat,
+                                        "target": target,
                                         "reply_to": reply,
                                     })
                                         .to_string()

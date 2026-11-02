@@ -3,7 +3,10 @@
 The server's Chromium, as a full-window takeover under a slim client bar.
 A browser hand-off's **Open** and the strip's browser row both open it; the
 sessions drive the same tabs while it is closed, and opening one shows the
-tab as they left it. The drawing it is held against is
+tab as they left it. **A hand-off opens by its page's id, not its tab
+number**: a parked ask can outlive the host that minted the number, and the
+successor's first tab takes number 1 again, so a page id is what makes Open
+raise the page the session prepared. The drawing it is held against is
 [web-browser.html](./web-browser.html), beside this page.
 
 **The browser is the server's.** The server ships its own CEF host - a signed

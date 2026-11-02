@@ -77,6 +77,17 @@ pub trait BrowserHost: Send + Sync {
         tab: Option<u16>,
     ) -> Result<BrowserAttachment, String>;
 
+    /// Attach to the tab a page target names, for a hand-off that outlived
+    /// the host which minted its number.
+    async fn attach_page(
+        &self,
+        _viewer: u64,
+        _seat: &SessionSlot,
+        _target: &str,
+    ) -> Result<BrowserAttachment, String> {
+        Err("this host cannot open a page by id".to_owned())
+    }
+
     /// A viewer's connection ended.
     async fn detach(&self, viewer: u64);
 
@@ -215,10 +226,10 @@ impl Workspace {
         // would send the person to a document the session never opened: the
         // fleet's refusal is the tool call's refusal, before any ask exists.
         // **The page id becomes the tab number here**, under that same check:
-        // the ask a view draws names the number, and a listing after this call
-        // can never change what it raises.
+        // the ask a view draws names the number, and the page id rides beside
+        // it so an open can resolve the tab again after a host replacement.
         let tab = self.browser_hand_off_started(caller, target).await?;
-        let handoff = HandOff { id, reason: reason.to_owned(), tab };
+        let handoff = HandOff { id, reason: reason.to_owned(), tab, target: target.to_owned() };
         self.browser_handoffs.lock().insert(id, (caller.clone(), handoff.clone(), sender));
         let answerable = self.update_sender().send_answering(
             crate::protocol::SessionUpdate::BrowserHandOffPending { key: caller.clone(), handoff },

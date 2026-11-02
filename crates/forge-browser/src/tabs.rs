@@ -238,6 +238,27 @@ impl TabRegistry {
         self.tabs.get(&tab).map(|tab| tab.target.as_str())
     }
 
+    /// The tab a page target names, or `None` when that page is gone.
+    ///
+    /// **The identity an open resolves**: a tab number survives a host
+    /// replacement in name only, and the successor's first tab takes number 1
+    /// again.
+    pub fn number_of(&self, target: &str) -> Option<u16> {
+        self.tabs.iter().find(|(_, tab)| tab.target == target).map(|(number, _)| *number)
+    }
+
+    /// The tabs as one line, for a refusal that names what is open now.
+    pub fn listing(&self) -> String {
+        if self.tabs.is_empty() {
+            return "no tabs are open".to_owned();
+        }
+        self.tabs
+            .iter()
+            .map(|(number, tab)| format!("{number}: {}", tab.url))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
     /// A tab's title and url, for the listing the tools answer with.
     pub fn title_url(&self, tab: u16) -> Option<(&str, &str)> {
         self.tabs.get(&tab).map(|tab| (tab.title.as_str(), tab.url.as_str()))
@@ -444,6 +465,18 @@ mod tests {
             registry.other_owners_at(&worker, now).iter().all(|(seat, _)| seat != &worker),
             "a seat is never its own holder",
         );
+    }
+
+    /// **A page target outlives a tab number.** The replace case is the one
+    /// this exists for: a successor host's first tab is number 1 again.
+    #[test]
+    fn a_page_target_resolves_to_its_tab_and_a_gone_one_names_the_listing() {
+        let lead = SessionSlot::lead("O", "p");
+        let mut registry = TabRegistry::default();
+        registry.adopt(1, lead, "t1", "one", "http://a/").expect("the tab");
+        assert_eq!(registry.number_of("t1"), Some(1));
+        assert_eq!(registry.number_of("t9"), None);
+        assert_eq!(registry.listing(), "1: http://a/");
     }
 
     #[test]

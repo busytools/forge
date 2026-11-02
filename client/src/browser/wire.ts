@@ -46,7 +46,7 @@ function wireLink(connection: Connection & BrowserWire): BrowserLink {
     /** A tab's Back would leave the seat; it lowers the takeover instead. */
     usesPageHistory: true,
 
-    async show(profile, seat, tab): Promise<OpenAnswer> {
+    async show(profile, seat, tab, page = null): Promise<OpenAnswer> {
       if (seat === null) return 'this page has no seat to attach the browser to';
       void profile;
       // **An attach re-asks the size.** Another client may have moved the
@@ -54,7 +54,11 @@ function wireLink(connection: Connection & BrowserWire): BrowserLink {
       // what the page is laid out at until this page asks again.
       asked = null;
       try {
-        return await connection.browserView(seat, tab);
+        // **A hand-off opens by page**: its tab number names a different tab
+        // after a host replacement.
+        return page === null
+          ? await connection.browserView(seat, tab)
+          : await connection.browserViewPage(seat, page);
       } catch (why) {
         return whyText(why);
       }

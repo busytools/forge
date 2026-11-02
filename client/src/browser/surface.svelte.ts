@@ -256,6 +256,7 @@ export async function openSurface(
   profile: string | null,
   seat: SessionSlot | null = null,
   tab: number | null = null,
+  page: string | null = null,
 ): Promise<string | null> {
   // **A page with no connection draws no browser.** The refusal belongs to
   // the strip's row, not to a full-screen error.
@@ -284,7 +285,7 @@ export async function openSurface(
     // first open already has the listeners a refusal asks through.
     void installSurfaceEvents();
   }
-  const answer = await showBrowser(profile, seat, tab);
+  const answer = await showBrowser(profile, seat, tab, page);
   const why = typeof answer === 'string' ? answer : null;
   // **The phone's takeover is the native one**: its shell raised it, and the
   // page's components are the desktop's.
