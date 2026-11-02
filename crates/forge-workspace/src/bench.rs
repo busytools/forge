@@ -755,6 +755,7 @@ impl Workspace {
         let this = Arc::clone(&self);
         let outcome = forge_tts::bench::run(&engine, &clips, transcribe, |clip| {
             *this.speaking_bench.lock() = SpeakingBenchState::Running { clip, clips: total };
+            this.push_models();
             if this.speaking_bench_cancel.load(Ordering::Relaxed) {
                 std::ops::ControlFlow::Break(())
             } else {
@@ -901,13 +902,22 @@ impl Workspace {
                     at: crate::install::rfc3339_now(),
                     corpus,
                 };
-                self.save_bench_result(&result);
-                *self.dictate_bench.lock() = BenchState::Idle;
+                self.settle_bench_success(&result);
             }
             Ok(Ok((Err(error), _))) => self.settle_bench(&target, error.to_string()),
             Ok(Err(reason)) => self.settle_bench(&target, reason),
             Err(join) => self.settle_bench(&target, join.to_string()),
         }
+    }
+
+    /// A run that produced a result: save it, release the one bench slot,
+    /// and go idle. The release is here rather than only on the failure
+    /// paths, or one successful run would hold the slot for the process's
+    /// life.
+    fn settle_bench_success(&self, result: &BenchResult) {
+        self.save_bench_result(result);
+        self.release_bench();
+        *self.dictate_bench.lock() = BenchState::Idle;
     }
 
     /// A run that ended without a result: idle when it was stopped on
@@ -1256,6 +1266,27 @@ mod tests {
 
         assert_eq!(ws.dictate_bench(), BenchState::Idle, "a stop is not a failure");
         assert!(ws.bench_results().is_empty(), "nothing measured part-way is kept");
+    }
+
+    /// A successful run releases the one bench slot. A leak here would
+    /// refuse every later bench and every install for the process's life.
+    #[test]
+    fn a_successful_bench_releases_the_claim() {
+        let (ws, _updates) = Workspace::testing_stub();
+        let dir = tempfile::tempdir().unwrap();
+        ws.install_db_for_test(crate::store::Db::open(&dir.path().join("db.redb")).unwrap());
+        ws.claim_bench().expect("the claim is free");
+
+        ws.settle_bench_success(&BenchResult {
+            target: target("asr.gguf", BenchRole::Transcribing),
+            tier: forge_dictate::bench::Tier::Consensus,
+            metrics: metrics(3),
+            at: "2026-11-02T00:00:00Z".to_owned(),
+            corpus: corpus_id("abc"),
+        });
+
+        assert!(!ws.bench_running(), "the claim is released");
+        assert_eq!(ws.dictate_bench(), BenchState::Idle);
     }
 
     /// A run that ends any other way lands failed, with its own reason.
