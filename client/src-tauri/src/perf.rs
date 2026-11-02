@@ -89,6 +89,31 @@ pub struct ClientPerfRecord {
     pub rows_visible: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pin_refused: Option<bool>,
+    /// A scroll move's own read (#2802): where the column came from and
+    /// landed, the content and room it moved against, and the flags that say
+    /// whether the hand or the layout moved it. Absent on every other kind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub room: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shrank: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rose: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub foot: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reader: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aimed: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restore_owed: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pin: Option<bool>,
     /// The Web Worker heartbeat spanning a slow frame (#2374): how many
     /// ticks arrived, the WORST lateness among them, when the last one
     /// landed, and the tick interval those are read against.
@@ -343,43 +368,11 @@ mod tests {
             kind: kind.to_owned(),
             run_id: "run-1".to_owned(),
             ts_ms: 12,
-            version: None,
             frame: Some(3),
             ms: Some(120.0),
-            state: None,
-            scroll_top: None,
-            scroll_height: None,
-            client_height: None,
-            rows: None,
-            rows_visible: None,
-            pin_refused: None,
-            worker_beats: None,
-            worker_max_late_ms: None,
-            worker_since_beat_ms: None,
-            worker_expected_beats: None,
-            worker_tick_ms: None,
-            heartbeat: None,
-            name: None,
             surface: Some("session".to_owned()),
             session: Some("forge/lead".to_owned()),
-            window_ms: None,
-            frames: None,
-            slow: None,
-            max_ms: None,
-            auto: None,
-            declare: None,
-            since_click_ms: None,
-            write_waited_ms: None,
-            chars: None,
-            parse_ms: None,
-            subscribes: None,
-            snapshot_chars: None,
-            subscribe_rate: None,
-            snapshot_chars_per_s: None,
-            profile: None,
-            tab: None,
-            seq: None,
-            hidden: None,
+            ..ClientPerfRecord::default()
         }
     }
 
@@ -536,6 +529,57 @@ mod tests {
         assert_eq!(lines[0]["pin_refused"], true, "and a pin that refused itself: {text}");
         assert!(lines[1].get("scroll_top").is_none(), "no geometry on a frame: {text}");
         assert!(lines[1].get("rows").is_none(), "and no row count: {text}");
+    }
+
+    /// **The page's scroll record crosses the shell whole.** This struct is
+    /// the boundary the desktop writes through, and a field it does not name
+    /// is parsed away before the write. The lines below are page-shaped, so
+    /// both the parse and the write are what the assertions exercise; the
+    /// fixture is a hand copy of the page's type, not a link to it.
+    #[test]
+    fn the_pages_scroll_record_survives_the_write() {
+        let line = r#"{"schema":"forge-perf/v1","kind":"scroll","run_id":"r","ts_ms":12,"from":1204.0,"to":1150.0,"height":9000.0,"room":812.0,"shrank":true,"rose":true,"foot":false,"reader":false,"aimed":false,"restore_owed":true,"pin":false,"surface":"session","session":"Busytools/forge/lead"}"#;
+        let parsed: ClientPerfRecord =
+            serde_json::from_str(line).expect("the page's scroll record parses");
+        let frame: ClientPerfRecord = serde_json::from_str(
+            r#"{"schema":"forge-perf/v1","kind":"frame","run_id":"r","ts_ms":18,"frame":3,"ms":12.5,"surface":"session","session":"Busytools/forge/lead"}"#,
+        )
+        .expect("the page's frame record parses");
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        append(dir.path(), &[parsed, frame], MAX_BYTES).expect("append");
+        let text = std::fs::read_to_string(dir.path().join(PERF_LOG_NAME)).expect("read back");
+        let lines: Vec<serde_json::Value> =
+            text.lines().map(|line| serde_json::from_str(line).expect("a JSON line")).collect();
+        let written = &lines[0];
+        assert_eq!(written["from"], 1_204.0, "where the column came from: {text}");
+        assert_eq!(written["to"], 1_150.0, "and landed: {text}");
+        assert_eq!(written["height"], 9_000.0, "the content it moved against: {text}");
+        assert_eq!(written["room"], 812.0, "and the room: {text}");
+        assert_eq!(written["shrank"], true, "the content shrank: {text}");
+        assert_eq!(written["rose"], true, "the foot came up: {text}");
+        assert_eq!(written["foot"], false, "it did not land at the foot: {text}");
+        assert_eq!(written["reader"], false, "no hand moved it: {text}");
+        assert_eq!(written["aimed"], false, "and none was heading to the foot: {text}");
+        assert_eq!(written["restore_owed"], true, "a place was owed: {text}");
+        assert_eq!(written["pin"], false, "the pin did not write it: {text}");
+        // A dropped `skip_serializing_if` on any one field writes nulls on
+        // every kind, so each is checked rather than a sample.
+        for key in [
+            "from",
+            "to",
+            "height",
+            "room",
+            "shrank",
+            "rose",
+            "foot",
+            "reader",
+            "aimed",
+            "restore_owed",
+            "pin",
+        ] {
+            assert!(lines[1].get(key).is_none(), "a frame carries no scroll field ({key}): {text}");
+        }
     }
 
     /// A state the page has not been taught yet is carried rather than
