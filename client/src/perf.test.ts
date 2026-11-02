@@ -938,6 +938,46 @@ describe('the open a conversation begins', () => {
    * seat no conversation opens for: an open marked off the route would write
    * switches that never settle, or that steal the next real open.
    */
+  /**
+   * **A move nobody made is written with its own signals.** A draw says where
+   * the list stands, never that the reader was carried; without this line a
+   * clamp or a restore leaves no record at all.
+   */
+  it('writes a scroll event with the flags that tell a machine move from the reader', () => {
+    const h = harness();
+    // **The steady state is the live seat**, not the open's: a reader scrolls
+    // long after the open settled and cleared its seat.
+    h.probe.setSurface('session', 'Busytools/forge/lead');
+    h.probe.noteScrollMove({
+      from: 900,
+      to: 1200,
+      height: 4000,
+      room: 1000,
+      shrank: false,
+      rose: false,
+      foot: false,
+      reader: false,
+      aimed: false,
+      restore_owed: true,
+      pin: false,
+    });
+    const scrolls = h.records.flat().filter((record) => record.kind === 'scroll');
+    expect(scrolls).toHaveLength(1);
+    expect(scrolls[0]).toMatchObject({
+      from: 900,
+      to: 1200,
+      height: 4000,
+      room: 1000,
+      foot: false,
+      reader: false,
+      aimed: false,
+      restore_owed: true,
+      pin: false,
+      surface: 'session',
+      session: 'Busytools/forge/lead',
+    });
+  });
+
   it('marks nothing for a route change alone', () => {
     const h = harness();
     h.probe.setSurface('board', 'Busytools/forge');

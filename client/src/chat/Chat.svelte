@@ -5,7 +5,13 @@
 
   import Icon from '../components/Icon.svelte';
   import { cannotPaint } from '../paint';
-  import { noteConversationOpened, noteDrawn, notePainted, type DrawnGeometry } from '../perf';
+  import {
+    noteConversationOpened,
+    noteDrawn,
+    notePainted,
+    noteScrollMove,
+    type DrawnGeometry,
+  } from '../perf';
   import { MORE_TURNS, subjectKey } from '../protocol';
   import { scrollAsk } from '../session/scroll-ask';
   import type { Connection } from '../socket';
@@ -533,7 +539,7 @@
   /** The sizes at the last scroll event, which tell a reader moving from a layout moving. */
   let lastSeen = { content: 0, room: 0 };
   /** The offset the last pin wrote, so the event it comes back as is not read as the reader's. */
-  let pinEcho: number | null = null;
+  let pinEcho: { at: number; foot: boolean } | null = null;
   /** How many layout passes the observer has already put a parked reader back for. */
   let restored = 0;
   /**
@@ -1554,7 +1560,12 @@
     // browser fires - a clamp the follow then misreads as the reader.
     const was = viewport.scrollTop;
     viewport.scrollTop = target;
-    if (viewport.scrollTop !== was) pinEcho = viewport.scrollTop;
+    // **Where it landed, and whether that is the foot.** The hold branch
+    // writes short of the maximum on purpose, so the record cannot assume a
+    // pin lands at the foot; the read-back already says which it was.
+    if (viewport.scrollTop !== was) {
+      pinEcho = { at: viewport.scrollTop, foot: viewport.scrollTop >= max };
+    }
     // Where the column last left the reader, which is the foot the browser
     // clamped the pin to.
     placed = viewport.scrollTop;
@@ -1914,6 +1925,7 @@
     // come back down" (2026-10-11). Every event updates the tracker, the
     // pin's echo included: a pin is a write like any other move.
     const towardFoot = offset > movedFrom;
+    const was = movedFrom;
     movedFrom = offset;
     // **An event at the pin's own landing spot is its echo, and reading the
     // layout back for it is the per-frame cost issue #1710 measured.** A
@@ -1928,7 +1940,25 @@
       // takes the token away - a real scroll to the same offset later is
       // read like any other.
       pinEcho = null;
-      if (offset === written) {
+      if (offset === written.at) {
+        // **The pin is the machine move a reader most often feels**, so it is
+        // written before the echo's own early return. The last event's heights
+        // are reused rather than the layout read again - the per-frame cost
+        // #1710 measured is exactly this path's - and a pin lands at the foot
+        // by construction.
+        noteScrollMove({
+          from: was,
+          to: offset,
+          height: lastSeen.content,
+          room: lastSeen.room,
+          shrank: false,
+          rose: false,
+          foot: written.foot,
+          reader: false,
+          aimed: false,
+          restore_owed: owed !== null,
+          pin: true,
+        });
         // **The echo still carries the reach ask.** No reader moved, so none of
         // the reader-state machinery below is the echo's to run - but a landing
         // that puts the foot inside the near-top reach is an event the ask rode
@@ -1978,6 +2008,23 @@
     const foot = atFoot();
     const byReader = readerMoved();
     const aimed = aimedAtFoot();
+    // **Every move is written, flagged.** A machine move has no other record -
+    // the draw says where the list stands and never that the reader was
+    // carried - and the flags are what separate it from the reader's own: a
+    // filter for `reader: false && aimed: false` is the one worth reading.
+    noteScrollMove({
+      from: was,
+      to: offset,
+      height,
+      room,
+      shrank,
+      rose,
+      foot,
+      reader: byReader,
+      aimed,
+      restore_owed: owed !== null,
+      pin: false,
+    });
     if (foot) {
       // **A return that lands at the foot re-arms, whatever the size did.**
       // The clamp skip exists for a foot that closed on the reader, and their

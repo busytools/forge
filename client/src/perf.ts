@@ -95,6 +95,41 @@ export interface DrawnGeometry {
   pin_refused: boolean;
 }
 
+/**
+ * One scroll event on the conversation, as the column's own handler read it.
+ *
+ * **Every field is a signal the handler already computes.** The reader's own
+ * moves are written too, flagged: a machine move is `reader: false && aimed:
+ * false`, which is what lets a log be filtered rather than guessed at.
+ *
+ * Two blind spots are the handler's own windows, and are stated rather than
+ * hidden: hand input within its reader window before a machine move reads as
+ * the reader's, and a size delta is measured against the last event that read
+ * the layout, which a pin echo skips - so the first echo after a seat entry
+ * carries zeros.
+ *
+ * **One line per event is this log's one exception to its slow-only rule.**
+ * A scroll record is written for every move while a hand or the layout moves
+ * the column, which is bounded by the gesture itself and stops when it does.
+ */
+export interface ScrollMove {
+  from: number;
+  to: number;
+  height: number;
+  room: number;
+  shrank: boolean;
+  rose: boolean;
+  foot: boolean;
+  /** The reader's own hand was heard just before this move. */
+  reader: boolean;
+  /** The reader's input was heading toward the foot. */
+  aimed: boolean;
+  /** A restore was owed here, not that one ran. */
+  restore_owed: boolean;
+  /** The pin's own echo: a write the column made, not anything the reader did. */
+  pin: boolean;
+}
+
 /** One line of the perf log, as the shell writes it. */
 export interface PerfRecord {
   schema: string;
@@ -108,6 +143,7 @@ export interface PerfRecord {
     | 'painted'
     | 'quiet'
     | 'heartbeat'
+    | 'scroll'
     | 'click'
     | 'subscribe'
     | 'snapshot'
@@ -280,6 +316,15 @@ interface PerfProbe {
    * from one that was actually on screen (#2733, #2752, #1909).
    */
   notePainted(): void;
+  /**
+   * The column moved the reader without their hand: a clamp, a corrected row,
+   * or a restore.
+   *
+   * **A move with no other record.** A draw says where the list stands; it
+   * never says the reader was carried, so a scroll that nobody asked for is
+   * invisible without this line.
+   */
+  noteScrollMove(move: ScrollMove): void;
   /** A click on a seat, at the handler that takes it (#2513). */
   noteSeatClick(seat: string): void;
   /** A subscribe written to the socket, with the seat its subject names when
@@ -1112,6 +1157,19 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
         session: paintSeat,
       });
     },
+    noteScrollMove(move: ScrollMove): void {
+      emit({
+        schema: SCHEMA,
+        kind: 'scroll',
+        run_id: runId,
+        ts_ms: Date.now(),
+        ...move,
+        surface: 'session',
+        // **The live seat, not the open's.** `openSeat` is cleared the moment
+        // the open settles, which is before a reader has scrolled at all.
+        session: session ?? openSeat,
+      });
+    },
     noteSeatClick(seat: string): void {
       const at = now();
       // **A click on the seat already on screen opens nothing**: no switch,
@@ -1273,6 +1331,11 @@ export function noteDrawn(state: DrawnState, geometry?: () => DrawnGeometry | un
  */
 export function notePainted(): void {
   running?.notePainted();
+}
+
+/** A scroll the column's own handler read as the machine's, not the reader's. */
+export function noteScrollMove(move: ScrollMove): void {
+  running?.noteScrollMove(move);
 }
 
 /** A click landed on `slot`, in the shell's delegated handler (#2513). */
