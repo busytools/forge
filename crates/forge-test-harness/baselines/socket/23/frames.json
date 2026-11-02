@@ -1151,6 +1151,7 @@
         "state"
       ],
       "/data/fleet[]": [
+        "attention",
         "live_workers",
         "misses",
         "project",
