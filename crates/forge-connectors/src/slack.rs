@@ -5929,6 +5929,21 @@ mod tests {
         );
     }
 
+    /// The double mirrors the host's legacy seed: a row with no edit stamp
+    /// answers with its cursor, so a test cannot pass on a mark the real
+    /// host would derive differently.
+    #[test]
+    fn the_fake_host_seeds_an_unstamped_thread_row_from_its_cursor() {
+        let host = FakeHost::default();
+        host.set_thread_watermark("acme", "C1", "100.0", "500.0");
+
+        assert_eq!(
+            host.thread_edit_watermark("acme", "C1", "100.0").as_deref(),
+            Some("500.0"),
+            "a row with no stamp reads its cursor, as the real host does",
+        );
+    }
+
     /// The whole read runs on its own clock: the tick after a whole read is
     /// the cheap one, and only an aged stamp makes the next read whole.
     #[tokio::test]

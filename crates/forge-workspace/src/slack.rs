@@ -3281,6 +3281,10 @@ mod tests {
             "the cache keeps the newer stamp",
         );
         ws.forget_thread_clocks("acme", "C1", "100.0");
+        // With the cache empty the guard has only the row to compare
+        // against: a stale caller arriving after a restart must not roll it
+        // back.
+        host.set_thread_edit_watermark("acme", "C1", "100.0", &older);
         assert_eq!(
             host.thread_edit_watermark("acme", "C1", "100.0").as_deref(),
             Some(newer.as_str()),
