@@ -124,11 +124,8 @@ struct Manifest {
 /// The installed public slice: every clip the manifest names, each verified
 /// against its own digest before anything scores it.
 ///
-/// **A missing manifest is an empty tier, a mismatched digest is a refusal.**
-/// A machine where the slice was never installed has nothing to score, which
-/// the run reports with its own zero; a file whose bytes are not the ones the
-/// manifest names is material nothing can certify, and scoring it would put
-/// a number on the wrong audio. The refusal names the clip.
+/// A missing manifest is an empty tier; a mismatched digest is a refusal
+/// that names the clip.
 pub fn public_corpus(dir: &Path) -> Result<Vec<Clip>, Error> {
     let manifest_path = dir.join("manifest.json");
     let bytes = match std::fs::read(&manifest_path) {
@@ -141,7 +138,20 @@ pub fn public_corpus(dir: &Path) -> Result<Vec<Clip>, Error> {
 
     let mut clips = Vec::with_capacity(manifest.clips.len());
     for entry in manifest.clips {
-        let path = dir.join(&entry.file);
+        // A manifest is data, and a path in it must stay inside the corpus:
+        // an absolute or `..` entry would read a file the digest check
+        // cannot vouch for, because the digest comes from the same manifest.
+        let relative = Path::new(&entry.file);
+        if relative.is_absolute()
+            || relative
+                .components()
+                .any(|part| matches!(part, std::path::Component::ParentDir))
+        {
+            return Err(Error::Bench {
+                message: format!("{}: the manifest names a path outside the corpus", entry.file),
+            });
+        }
+        let path = dir.join(relative);
         let audio_bytes = std::fs::read(&path).map_err(|error| Error::Bench {
             message: format!(
                 "{}: the manifest names a clip that is not there: {error}",
@@ -360,10 +370,8 @@ pub fn terms(passage: &str) -> Vec<String> {
 /// words somebody knows were said.
 pub fn score(text: &str, truth: &str, terms: &[String]) -> (f64, f64) {
     let survived = terms.iter().filter(|term| words(text).contains(term)).count();
-    let truth_words = words(truth);
     let accuracy = ratio(survived, terms.len());
-    let wer = ratio(edits(&words(text), &truth_words), truth_words.len());
-    (accuracy, wer)
+    (accuracy, wer(text, truth))
 }
 
 /// A string's words: lowercased, split on anything that is not a letter or
@@ -448,7 +456,7 @@ pub struct Metrics {
     /// knows were said.
     pub term_accuracy: Option<f64>,
     /// Mean word error rate against every clip that carries a truth,
-    /// which only the read-aloud passage does: `None` on a tier without
+    /// which the read-aloud and public tiers do: `None` on a tier without
     /// one.
     pub wer: Option<f64>,
     /// How many clips the run agreed with word-for-word, of the clips
@@ -527,8 +535,8 @@ pub fn run(
         return Err(Error::Bench { message: "the corpus has no clips to run".to_owned() });
     }
 
-    // The passage is the only truth whose words are known; every other
-    // clip's truth is another model's output.
+    // The read-aloud passage is the one corpus scored by term accuracy; a
+    // take's truth is another model's output.
     let term_accuracy =
         corpus.clips.iter().position(|clip| clip.source == ClipSource::ReadAloud).and_then(
             |index| {
@@ -925,6 +933,36 @@ mod tests {
             error.to_string().contains("clip-0001.wav"),
             "the refusal names the clip it could not trust: {error}",
         );
+    }
+
+    /// A manifest that names a clip the directory does not hold is a refusal,
+    /// not a clip silently skipped: a partial download would otherwise score
+    /// as if it were whole.
+    #[test]
+    fn a_manifest_that_names_a_missing_clip_is_refused_by_name() {
+        let dir = tempfile::tempdir().unwrap();
+        write_public(dir.path(), &[("clip-0001.wav", "the quick brown fox")]);
+        std::fs::remove_file(dir.path().join("clip-0001.wav")).unwrap();
+
+        let Err(error) = corpus(Tier::Public, dir.path(), dir.path(), dir.path()) else {
+            panic!("a manifest naming a missing clip must be refused");
+        };
+        assert!(error.to_string().contains("clip-0001.wav"), "got: {error}");
+    }
+
+    /// A manifest is data, and a path in it must stay inside the corpus.
+    #[test]
+    fn a_manifest_that_names_a_path_outside_the_corpus_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = serde_json::json!({
+            "clips": [{ "file": "../escape.wav", "sha256": "00", "transcript": "x" }],
+        });
+        std::fs::write(dir.path().join("manifest.json"), manifest.to_string()).unwrap();
+
+        let Err(error) = corpus(Tier::Public, dir.path(), dir.path(), dir.path()) else {
+            panic!("a path outside the corpus must be refused");
+        };
+        assert!(error.to_string().contains("outside the corpus"), "got: {error}");
     }
 
     /// A public clip carries words somebody wrote down, so the tier is the
