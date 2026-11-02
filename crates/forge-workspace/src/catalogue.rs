@@ -472,7 +472,7 @@ impl crate::Workspace {
             state.catalogue.as_ref().map_or(&[], |catalogue| catalogue.entries.as_slice());
         let mut in_use =
             if settings.enabled { in_use(entries, &active, &preflight) } else { Vec::new() };
-        if config.tts.enabled {
+        if self.voice_enabled() {
             let pin = config.tts.pin();
             for row in &self.voices().snapshot.models {
                 in_use.push(InUseModel {

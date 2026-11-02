@@ -1699,7 +1699,7 @@ pub(crate) fn handle_spawn_worker(
             &charter,
             families.as_deref(),
             workspace.systemone.read().is_some(),
-            workspace.config_arc().tts.enabled,
+            workspace.voice_enabled(),
         )),
         extra_args: build_worker_extra_args(is_git, label, interactive),
         ..Default::default()

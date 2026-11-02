@@ -139,7 +139,7 @@ pub struct TtsView {
 }
 
 impl crate::Workspace {
-    /// The voice page's read.
+    /// The models page's read.
     pub fn voices(&self) -> TtsView {
         let config = self.config_arc();
         let settings = &config.tts;
@@ -148,14 +148,17 @@ impl crate::Workspace {
             files.model.is_file() && files.projector.is_some_and(|projector| projector.is_file())
         });
         let state = if fetched { DictateModelState::Ready } else { DictateModelState::Pending };
+        // The running system's flag, not a saved value the restart has not
+        // taken: the tool gate and the registered set read the same one.
+        let enabled = self.voice_enabled();
         let snapshot = TtsSnapshot {
-            models: if settings.enabled {
+            models: if enabled {
                 vec![DictateModel { role: DictateRole::Speaking, file: model.base.file, state }]
             } else {
                 Vec::new()
             },
         };
-        TtsView { enabled: settings.enabled, snapshot, models_dir: settings.models_dir() }
+        TtsView { enabled, snapshot, models_dir: settings.models_dir() }
     }
 }
 
@@ -174,5 +177,28 @@ mod tests {
     fn an_unknown_tts_key_fails_the_load() {
         let error = toml::from_str::<TtsSettings>("speek = \"x\"").expect_err("refused");
         assert!(error.to_string().contains("speek"));
+    }
+
+    /// A save marked restart cannot move the read away from the running
+    /// service: the home read and the registered set answer the same flag
+    /// until the restart takes it.
+    #[tokio::test]
+    async fn a_saved_tts_off_does_not_move_the_read_before_the_restart() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let mut config = crate::config::LoadedConfig::empty_for_test();
+        config.tts.enabled = true;
+        let (workspace, _updates) =
+            crate::Workspace::testing_stub_with_config(dir.path().to_path_buf(), config)
+                .expect("the stub builds");
+        assert!(workspace.voice_enabled(), "the fixture starts on");
+        let _service = workspace.voice_service();
+
+        // The save lands, and the key is marked restart.
+        let mut saved = crate::config::LoadedConfig::empty_for_test();
+        saved.tts.enabled = false;
+        *workspace.config.write() = std::sync::Arc::new(saved);
+
+        assert!(workspace.voice_enabled(), "the running service still answers on");
+        assert!(workspace.voices().enabled, "the home read follows the service");
     }
 }

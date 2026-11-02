@@ -334,6 +334,13 @@ impl crate::Workspace {
             .clone()
     }
 
+    /// Whether speech is on, as the running system answers it: the built
+    /// service's own flag when it exists, else the config that would build
+    /// one. A save marked restart cannot move one side without the other.
+    pub(crate) fn voice_enabled(&self) -> bool {
+        self.voice.get().map_or_else(|| self.config_arc().tts.enabled, |service| service.enabled())
+    }
+
     /// The clients with voice on for `seat`. Zero before the service has
     /// been built, which is the truth: nobody could have toggled it yet.
     pub fn voice_listeners(&self, seat: &SessionSlot) -> usize {
