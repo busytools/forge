@@ -110,9 +110,10 @@ export class Voice {
       const state = (update as { voice_mode_state?: { listeners?: unknown } }).voice_mode_state;
       if (state !== undefined) {
         this.listeners = typeof state.listeners === 'number' ? state.listeners : 0;
-        // A `listeners: 0` from before this client's own turn-on can land
-        // after the optimistic switch, and the server's later `listeners: 1`
-        // does not turn it back on; the next toggle reconciles.
+        // Known race, two clients: a `listeners: 0` from the other client's
+        // off can land after this client's optimistic turn-on, turning the
+        // switch off while the server counts this client as listening; the
+        // next toggle reconciles.
         if (this.listeners === 0 && this.on) {
           this.on = false;
           this.playback.drop();
