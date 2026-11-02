@@ -423,7 +423,9 @@ impl Workspace {
     /// The page's re-read, pushed the way a landed check pushes one.
     pub(crate) fn push_models(&self) {
         let models = self.dictate_models();
-        let _ = self.update_sender().send(SessionUpdate::DictateModelsChanged { models });
+        let _ = self
+            .update_sender()
+            .send(SessionUpdate::DictateModelsChanged { models: Box::new(models) });
     }
 
     /// The feed source and the entry a variant names, when both are known.
@@ -532,10 +534,16 @@ impl Workspace {
     /// The two files are the pair the dictation fetch already prepares
     /// concurrently, so both digests are checked by the same path and a
     /// wrong one stops the install by name before anything is recorded.
-    async fn run_speaking_install(self: Arc<Self>, variant: String, model: crate::tts::SpeakingModel) {
+    async fn run_speaking_install(
+        self: Arc<Self>,
+        variant: String,
+        model: crate::tts::SpeakingModel,
+    ) {
         let Some(dir) = self.config_arc().tts.models_dir() else {
-            return self
-                .fail_install(model.base.file, "no [tts] models directory is configured".to_owned());
+            return self.fail_install(
+                model.base.file,
+                "no [tts] models directory is configured".to_owned(),
+            );
         };
         self.install_speaking_files(variant, model, dir).await;
     }
@@ -550,18 +558,19 @@ impl Workspace {
     ) {
         let base = model.base;
         let projector = model.projector;
-        let mut cfg = forge_dictate::Config::default();
-        cfg.models_dir = Some(dir.clone());
-        cfg.digest_cache_dir =
-            forge_sdk::app_support_dir().ok().map(|d| d.join("dictate-digests"));
-        cfg.asr_model = base.clone();
-        cfg.normalizer = Some(projector.clone());
+        let cfg = forge_dictate::Config {
+            models_dir: Some(dir.clone()),
+            digest_cache_dir: forge_sdk::app_support_dir().ok().map(|d| d.join("dictate-digests")),
+            asr_model: base.clone(),
+            normalizer: Some(projector.clone()),
+            ..forge_dictate::Config::default()
+        };
 
         self.set_install_file(&base.file, base.size);
         // The file is named: the page's line can say what is being fetched
         // before the first byte moves.
         self.push_models();
-        let this = Arc::clone(&self);
+        let this = Arc::clone(self);
         let prepared = tokio::task::spawn_blocking(move || {
             let last = Cell::new(u64::MAX);
             forge_dictate::prepare(&cfg, |progress| {
@@ -864,7 +873,9 @@ impl Workspace {
         let speaking = role == DictateRole::Speaking;
         if speaking {
             if !self.config_arc().tts.enabled {
-                return Err(DispatchError::VoiceOff { reason: "[tts] enabled is false".to_owned() });
+                return Err(DispatchError::VoiceOff {
+                    reason: "[tts] enabled is false".to_owned(),
+                });
             }
         } else if !self.config_arc().dictate.enabled {
             return Err(DispatchError::DictateOff);
@@ -874,9 +885,7 @@ impl Workspace {
         }
         // A speaking swap builds the voice service's engine, which no
         // dictation take holds: the guard belongs to the engine a take runs.
-        if !speaking
-            && let Some(holder) = self.dictate_runtime.lock().live_holder()
-        {
+        if !speaking && let Some(holder) = self.dictate_runtime.lock().live_holder() {
             return Err(DispatchError::TakeLive { holder });
         }
         if self.bench_running() {
@@ -912,7 +921,9 @@ impl Workspace {
         let speaking = role == DictateRole::Speaking;
         if speaking {
             if !self.config_arc().tts.enabled {
-                return Err(DispatchError::VoiceOff { reason: "[tts] enabled is false".to_owned() });
+                return Err(DispatchError::VoiceOff {
+                    reason: "[tts] enabled is false".to_owned(),
+                });
             }
         } else if !self.config_arc().dictate.enabled {
             return Err(DispatchError::DictateOff);
@@ -920,9 +931,7 @@ impl Workspace {
         if let Some(key) = self.pinning_key(role) {
             return Err(DispatchError::PinnedRole { section: section_for(role), key });
         }
-        if !speaking
-            && let Some(holder) = self.dictate_runtime.lock().live_holder()
-        {
+        if !speaking && let Some(holder) = self.dictate_runtime.lock().live_holder() {
             return Err(DispatchError::TakeLive { holder });
         }
         if self.bench_running() {
@@ -1063,9 +1072,7 @@ impl Workspace {
             .await
             .map_err(|join| join.to_string())?
             .map_err(|error| error.to_string())?;
-        self.voice_service()
-            .replace_engine(Arc::new(engine) as Arc<dyn forge_tts::Engine>)
-            .await;
+        self.voice_service().replace_engine(Arc::new(engine) as Arc<dyn forge_tts::Engine>).await;
         Ok(rfc3339_now())
     }
 
@@ -1640,7 +1647,7 @@ mod tests_install {
                         let running = matches!(models.install, InstallState::Downloading { .. })
                             || matches!(models.activate, ActivateState::Activating { .. });
                         if !running {
-                            break models;
+                            break *models;
                         }
                     }
                     Some(_) => {}
@@ -2251,11 +2258,9 @@ mod tests_install {
         config.tts.enabled = true;
         config.tts.models_dir = Some(models.path().to_string_lossy().into_owned());
         configure(&mut config);
-        let (ws, updates) = Workspace::testing_stub_with_config(
-            config_dir.path().to_path_buf(),
-            config,
-        )
-        .expect("the stub builds");
+        let (ws, updates) =
+            Workspace::testing_stub_with_config(config_dir.path().to_path_buf(), config)
+                .expect("the stub builds");
         ws.install_db_for_test(
             crate::store::Db::open(&store.path().join("db.redb")).expect("the store opens"),
         );
@@ -2279,7 +2284,10 @@ mod tests_install {
             sha256: Some(digest(bytes)),
             facts: ModelFacts::default(),
         };
-        crate::tts::SpeakingModel { base: spec("weights", bytes[0]), projector: spec("projector", bytes[1]) }
+        crate::tts::SpeakingModel {
+            base: spec("weights", bytes[0]),
+            projector: spec("projector", bytes[1]),
+        }
     }
 
     /// **Both files are verified before either is recorded.** A pair whose
@@ -2302,7 +2310,11 @@ mod tests_install {
         )
         .await;
 
-        assert!(matches!(ws.dictate_install(), InstallState::Idle), "got {:?}", ws.dictate_install());
+        assert!(
+            matches!(ws.dictate_install(), InstallState::Idle),
+            "got {:?}",
+            ws.dictate_install()
+        );
         let installed = ws.installed_models();
         assert_eq!(installed.len(), 2, "one record per file, written together");
         assert!(
@@ -2385,10 +2397,7 @@ mod tests_install {
 
         fixture
             .ws
-            .dispatch(Command::DictateActivate {
-                role: DictateRole::Speaking,
-                file: base.clone(),
-            })
+            .dispatch(Command::DictateActivate { role: DictateRole::Speaking, file: base.clone() })
             .expect("the activation dispatches");
         let landed = await_models(&mut fixture.updates).await;
         assert!(matches!(landed.activate, ActivateState::Idle), "got {:?}", landed.activate);
@@ -2444,6 +2453,9 @@ mod tests_install {
     async fn a_preview_renders_the_chosen_clip_through_the_seat() {
         let VoiceFixture { ws, models, .. } = voice_fixture();
         forge_dictate::bench::install_public_corpus(models.path()).expect("the corpus installs");
+        let speaking = crate::tts::SpeakingModel::qwen3_tts();
+        std::fs::write(models.path().join(&speaking.base.file), b"weights").expect("write");
+        std::fs::write(models.path().join(&speaking.projector.file), b"projector").expect("write");
         let voices = Arc::new(std::sync::Mutex::new(Vec::new()));
         ws.install_voice_engine_for_test(Arc::new(RecordingVoiceEngine {
             voices: Arc::clone(&voices),

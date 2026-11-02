@@ -623,13 +623,11 @@ impl Workspace {
                 reason: "[dictate] enabled is false, so the recognizer half cannot run".to_owned(),
             });
         }
-        let files = match self
-            .resolved_speaking()
-            .and_then(|resolved| self.speaking_files(&resolved))
-        {
-            Ok(files) => files,
-            Err(reason) => return Err(DispatchError::VoiceOff { reason }),
-        };
+        let files =
+            match self.resolved_speaking().and_then(|resolved| self.speaking_files(&resolved)) {
+                Ok(files) => files,
+                Err(reason) => return Err(DispatchError::VoiceOff { reason }),
+            };
         self.claim_bench()?;
         if let Some(holder) = self.dictate_runtime.lock().live_holder() {
             self.release_bench();
@@ -1394,7 +1392,7 @@ mod tests {
             if let crate::SessionUpdate::DictateModelsChanged { models } =
                 std::sync::Arc::unwrap_or_clone(frame.update)
             {
-                found = Some(models);
+                found = Some(*models);
             }
         }
         found
@@ -1436,7 +1434,7 @@ mod tests {
                 {
                     Some(crate::SessionUpdate::DictateModelsChanged { models }) => {
                         if !models.read_aloud.recordings.is_empty() {
-                            break models;
+                            break *models;
                         }
                     }
                     Some(_) => {}

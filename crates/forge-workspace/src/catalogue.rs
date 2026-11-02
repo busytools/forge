@@ -63,6 +63,18 @@ pub struct DictateModelsSnapshot {
     pub speaking_results: Vec<crate::bench::SpeakingBenchResult>,
     /// The read-aloud set: whether this machine has one, and its passage.
     pub read_aloud: crate::bench::ReadAloudState,
+    /// The speaking role, resolved: what it runs and where the choice came
+    /// from. The settings page's section draws from this, because the
+    /// variant is what an install names and the in-use row does not carry it.
+    pub speaking: Option<crate::tts::SpeakingView>,
+    /// Why the speaking model could not be resolved, when it could not.
+    pub speaking_error: Option<String>,
+    /// The voices the installed public corpus carries, one row per speaker.
+    pub voices: Vec<crate::tts::VoiceChoice>,
+    /// The voice `[tts] voice` names, when it names one.
+    pub voice: Option<String>,
+    /// Why the configured voice cannot be used, when it cannot.
+    pub voice_error: Option<String>,
 }
 
 /// What the last catalogue check did.
@@ -475,25 +487,23 @@ impl crate::Workspace {
             state.catalogue.as_ref().map_or(&[], |catalogue| catalogue.entries.as_slice());
         let mut in_use =
             if settings.enabled { in_use(entries, &active, &preflight) } else { Vec::new() };
-        if self.voice_enabled()
+        // The speaking role's read is its own view: the model it resolved,
+        // the voices the corpus carries, and the voice the config names.
+        let voice = self.voices();
+        if let Some(speaking) = &voice.speaking
             && let Ok(resolved) = self.resolved_speaking()
         {
-            let state = if self.speaking_files_present(&resolved) {
-                DictateModelState::Ready
-            } else {
-                DictateModelState::Pending
-            };
             let spec = resolved.model.base;
             in_use.push(InUseModel {
                 role: DictateRole::Speaking,
                 file: spec.file,
                 size: spec.size,
                 sha256: spec.sha256,
-                state,
+                state: speaking.state.clone(),
                 facts: spec.facts,
                 catalogue: None,
-                from: resolved.from,
-                at: resolved.at,
+                from: speaking.from.clone(),
+                at: speaking.at.clone(),
             });
         }
 
@@ -513,6 +523,11 @@ impl crate::Workspace {
             speaking_bench: self.speaking_bench(),
             speaking_results: self.speaking_bench_results(),
             read_aloud: self.read_aloud_state(),
+            speaking: voice.speaking,
+            speaking_error: voice.error,
+            voices: voice.voices,
+            voice: voice.voice,
+            voice_error: voice.voice_error,
         }
     }
 
@@ -600,8 +615,9 @@ impl crate::Workspace {
         tokio::spawn(async move {
             let _ = this.fetch_catalogue_once().await;
             let models = this.dictate_models();
-            let _ =
-                this.update_sender().send(crate::SessionUpdate::DictateModelsChanged { models });
+            let _ = this
+                .update_sender()
+                .send(crate::SessionUpdate::DictateModelsChanged { models: Box::new(models) });
         });
         true
     }
@@ -1442,7 +1458,7 @@ pub(crate) mod tests_catalogue_view {
                     .await
                     .map(|frame| std::sync::Arc::unwrap_or_clone(frame.update))
                 {
-                    Some(SessionUpdate::DictateModelsChanged { models }) => break models,
+                    Some(SessionUpdate::DictateModelsChanged { models }) => break *models,
                     Some(_) => {}
                     None => panic!("the subscription must stay attached"),
                 }

@@ -2128,7 +2128,9 @@ pub enum SessionUpdate {
     /// all here, so a subscriber that was already attached never has to
     /// ask again for what this frame just changed.
     DictateModelsChanged {
-        models: crate::catalogue::DictateModelsSnapshot,
+        /// Boxed: the snapshot is the enum's largest payload by a margin,
+        /// and every other variant would carry its size on the wire's queue.
+        models: Box<crate::catalogue::DictateModelsSnapshot>,
     },
     /// A session handed the reader a document: the ask a client draws -
     /// **open** or **not now** - with the resolved path it opens at.

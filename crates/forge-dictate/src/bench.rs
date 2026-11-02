@@ -164,7 +164,7 @@ pub fn public_voice_list(dir: &Path) -> Result<Vec<VoiceRow>, Error> {
         let seconds = clip_seconds(&dir.join(&entry.file))?;
         match rows.iter_mut().find(|row| row.speaker == speaker) {
             Some(row) if seconds > row.seconds => {
-                row.file = entry.file.clone();
+                row.file.clone_from(&entry.file);
                 row.seconds = seconds;
             }
             Some(_) => {}
@@ -204,8 +204,7 @@ pub fn public_voice_audio(dir: &Path, speaker: &str) -> Result<(Vec<f32>, u32), 
         });
     };
     let path = dir.join(&entry.file);
-    let bytes = std::fs::read(&path)
-        .map_err(|source| Error::Io { path: path.clone(), source })?;
+    let bytes = std::fs::read(&path).map_err(|source| Error::Io { path: path.clone(), source })?;
     let mut hasher = Sha256::new();
     hasher.update(&bytes);
     let actual = hex::encode(hasher.finalize());

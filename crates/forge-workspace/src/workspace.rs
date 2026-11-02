@@ -4082,7 +4082,8 @@ impl Workspace {
                         );
                         state.fail(crate::dictate::DictateFailure::Other { message }, None);
                         let models = this.dictate_models();
-                        let _ = updates.send(SessionUpdate::DictateModelsChanged { models });
+                        let _ = updates
+                            .send(SessionUpdate::DictateModelsChanged { models: Box::new(models) });
                         return;
                     }
                 };
@@ -4091,7 +4092,8 @@ impl Workspace {
                 // config or a runtime pick names is not the pin it read a
                 // moment ago.
                 let models = this.dictate_models();
-                let _ = updates.send(SessionUpdate::DictateModelsChanged { models });
+                let _ =
+                    updates.send(SessionUpdate::DictateModelsChanged { models: Box::new(models) });
 
                 let cfg = crate::dictate::preflight_config(&settings, &resolved);
                 crate::dictate::run_dictate_preflight(cfg, Arc::clone(&state)).await;
@@ -6451,6 +6453,19 @@ impl Workspace {
                             reason: "[tts] enabled is false".to_owned(),
                         });
                     }
+                    // A preview with no model installed would queue a
+                    // render whose engine cannot load, and the press would
+                    // look like it did nothing: refused here by name.
+                    match self.resolved_speaking() {
+                        Ok(resolved) if self.speaking_files_present(&resolved) => {}
+                        Ok(_) => {
+                            return Err(DispatchError::VoiceOff {
+                                reason: "the speaking model's files are not installed yet"
+                                    .to_owned(),
+                            });
+                        }
+                        Err(reason) => return Err(DispatchError::VoiceOff { reason }),
+                    }
                     let audio = self
                         .voice_audio(&voice)
                         .map_err(|_| DispatchError::VoiceUnknown { voice: voice.clone() })?;
@@ -6466,7 +6481,11 @@ impl Workspace {
                     let seat = key.clone();
                     tokio::spawn(async move {
                         if let Err(error) = service
-                            .preview(&seat, crate::voice::PREVIEW_LINE.to_owned(), std::sync::Arc::new(audio))
+                            .preview(
+                                &seat,
+                                crate::voice::PREVIEW_LINE.to_owned(),
+                                std::sync::Arc::new(audio),
+                            )
                             .await
                         {
                             tracing::warn!(

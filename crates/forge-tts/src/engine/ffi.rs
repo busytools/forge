@@ -218,11 +218,8 @@ impl RenderInput {
         let text = CString::new(request.text.as_str())
             .map_err(|_| Error::Render("the text contains a NUL".to_owned()))?;
         let language = option_cstring(request.language.as_deref())?;
-        let reference = request
-            .voice
-            .as_ref()
-            .map(|voice| Reference::new(voice, codec_rate))
-            .transpose()?;
+        let reference =
+            request.voice.as_ref().map(|voice| Reference::new(voice, codec_rate)).transpose()?;
 
         // The published v0.6.0 header has no `inp_default`, and its struct
         // carries no stream/n_past/out_mode/voice fields. Zeroed is the

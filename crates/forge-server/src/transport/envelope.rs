@@ -1201,7 +1201,7 @@ mod tests {
     #[test]
     fn the_models_subject_hears_the_landing_and_the_load() {
         let landing = SessionUpdate::DictateModelsChanged {
-            models: forge_workspace::catalogue::DictateModelsSnapshot {
+            models: Box::new(forge_workspace::catalogue::DictateModelsSnapshot {
                 enabled: true,
                 models_dir: None,
                 speaking_models_dir: None,
@@ -1223,7 +1223,12 @@ mod tests {
                     passage: String::new(),
                     terms: Vec::new(),
                 },
-            },
+                speaking: None,
+                speaking_error: None,
+                voices: Vec::new(),
+                voice: None,
+                voice_error: None,
+            }),
         };
 
         assert!(

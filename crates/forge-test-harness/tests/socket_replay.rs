@@ -1372,7 +1372,7 @@ fn frames_record() -> Value {
     payload_sampled.insert(
         "DictateModelsChanged".to_owned(),
         shape_of(&an_update(SessionUpdate::DictateModelsChanged {
-            models: DictateModelsSnapshot {
+            models: Box::new(DictateModelsSnapshot {
                 enabled: true,
                 models_dir: Some(PathBuf::from("/tmp/models")),
                 speaking_models_dir: Some(PathBuf::from("/tmp/tts-models")),
@@ -1498,7 +1498,21 @@ fn frames_record() -> Value {
                     passage: "I want the forge session to pick up where it left off.".to_owned(),
                     terms: vec!["forge".to_owned()],
                 },
-            },
+                speaking: Some(forge_workspace::SpeakingView {
+                    variant: "qwen3-tts-12hz-1.7b-base".to_owned(),
+                    file: "Qwen3-TTS-12Hz-1.7B-Base-Q8_0.gguf".to_owned(),
+                    state: DictateModelState::Ready,
+                    from: ActiveFrom::Installed { variant: "qwen3-tts-12hz-1.7b-base".to_owned() },
+                    at: Some("2026-11-02T06:12:00Z".to_owned()),
+                }),
+                speaking_error: None,
+                voices: vec![forge_workspace::VoiceChoice {
+                    speaker: "6930".to_owned(),
+                    seconds: 4,
+                }],
+                voice: Some("6930".to_owned()),
+                voice_error: None,
+            }),
         })),
     );
     // **The home snapshot's own shape, which nothing sampled before v8.** The

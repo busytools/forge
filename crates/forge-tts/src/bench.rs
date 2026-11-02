@@ -50,12 +50,11 @@ pub async fn run(
 
     for (index, clip) in corpus.iter().enumerate() {
         let started = Instant::now();
-        let mut chunks =
-            engine.speak(SpeakRequest {
-                text: clip.transcript.clone(),
-                language: None,
-                voice: None,
-            });
+        let mut chunks = engine.speak(SpeakRequest {
+            text: clip.transcript.clone(),
+            language: None,
+            voice: None,
+        });
         let mut samples: Vec<f32> = Vec::new();
         let mut rate = 0_u32;
         let mut first: Option<Duration> = None;

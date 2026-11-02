@@ -1610,4 +1610,51 @@ model = "a"
         assert!(!out.contains("name = \"api.v2\""), "the project is gone: {out}");
         assert!(out.contains("name = \"site\""), "its sibling stayed: {out}");
     }
+
+    /// **The speaking model and the voice the picker chooses save through
+    /// the writer**, and the load answers both back: the choice survives the
+    /// page's own save rather than only a hand edit.
+    #[test]
+    fn the_speaking_model_and_voice_save_through_the_writer() {
+        let raw = r#"[models."deepseek-v4.1-flash"]
+auto_compact_window = 983040
+
+[[accounts]]
+display_name = "One"
+provider = "anthropic"
+token = "one-token"
+models = ["deepseek-v4.1-flash"]
+
+[[orgs]]
+name = "Acme"
+accounts = ["One"]
+
+[[orgs.projects]]
+name = "site"
+path = "/tmp/site"
+model = "deepseek-v4.1-flash"
+
+[tts]
+enabled = true
+speaking_model = ""
+voice = ""
+"#;
+        let document = document(raw);
+        let model = set_edit(
+            &document,
+            "tts.speaking_model",
+            serde_json::json!("qwen3-tts-12hz-1.7b-base"),
+        );
+        let voice = set_edit(&document, "tts.voice", serde_json::json!("6930"));
+
+        let out = apply(raw, &[model, voice], &document).expect("both keys save");
+
+        let dir = tempfile::tempdir().expect("a config dir");
+        let forge = dir.path().join("forge");
+        std::fs::create_dir_all(&forge).expect("forge dir");
+        std::fs::write(forge.join("forge.toml"), out).expect("write");
+        let loaded = crate::config::load_from_dir(dir.path()).expect("the saved file loads");
+        assert_eq!(loaded.tts.speaking_model.as_deref(), Some("qwen3-tts-12hz-1.7b-base"));
+        assert_eq!(loaded.tts.voice.as_deref(), Some("6930"));
+    }
 }

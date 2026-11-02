@@ -81,7 +81,10 @@ impl SpeakingModel {
             display_name: "Qwen3-TTS 1.7B Base".to_owned(),
             family: "qwen3-tts".to_owned(),
             params: None,
-            license: Some(License { spdx: "apache-2.0".to_owned(), display: "Apache-2.0".to_owned() }),
+            license: Some(License {
+                spdx: "apache-2.0".to_owned(),
+                display: "Apache-2.0".to_owned(),
+            }),
             languages: vec!["en".to_owned()],
             capabilities: forge_dictate::catalogue::Capabilities::default(),
             headline_benchmark: None,
@@ -321,7 +324,8 @@ impl crate::Workspace {
         let config = self.config_arc();
         let configured = config.tts.speaking_model.as_deref();
         let installed = self.installed_models();
-        let pick = if configured.is_none() { self.active_choice(DictateRole::Speaking) } else { None };
+        let pick =
+            if configured.is_none() { self.active_choice(DictateRole::Speaking) } else { None };
         resolve_speaking(configured, &installed, pick)
     }
 
@@ -390,9 +394,10 @@ impl crate::Workspace {
             return;
         };
         tokio::spawn(async move {
-            let installed =
-                tokio::task::spawn_blocking(move || forge_dictate::bench::install_public_corpus(&dir))
-                    .await;
+            let installed = tokio::task::spawn_blocking(move || {
+                forge_dictate::bench::install_public_corpus(&dir)
+            })
+            .await;
             match installed {
                 Ok(Ok(())) => {}
                 Ok(Err(error)) => tracing::warn!(
@@ -411,7 +416,7 @@ impl crate::Workspace {
 
     /// The clip one speaker's voice is read from, decoded at its own rate.
     pub(crate) fn voice_audio(&self, speaker: &str) -> Result<forge_tts::VoiceReference, String> {
-        let dir = self.voice_corpus_dir().ok_or_else(|| "no [tts] models directory resolves")?;
+        let dir = self.voice_corpus_dir().ok_or("no [tts] models directory resolves")?;
         let (pcm, sample_rate) = forge_dictate::bench::public_voice_audio(&dir, speaker)
             .map_err(|error| error.to_string())?;
         Ok(forge_tts::VoiceReference { pcm, sample_rate })
@@ -432,7 +437,7 @@ pub(crate) fn unknown_voice(voice: &str, voices: &[VoiceChoice]) -> Option<Strin
 
 #[cfg(test)]
 mod tests {
-    use super::{SPEAKING_VARIANT, TtsSettings, unknown_voice, resolve_speaking};
+    use super::{SPEAKING_VARIANT, TtsSettings, resolve_speaking, unknown_voice};
     use crate::install::{ActiveChoice, ActiveFrom};
 
     #[test]
@@ -499,7 +504,8 @@ mod tests {
             at: "2026-11-02T00:00:00Z".to_owned(),
         };
 
-        let resolved = resolve_speaking(None, &[], Some(pick)).expect("a stranded pick still boots");
+        let resolved =
+            resolve_speaking(None, &[], Some(pick)).expect("a stranded pick still boots");
 
         assert_eq!(resolved.from, ActiveFrom::Pin);
     }

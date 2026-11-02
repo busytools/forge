@@ -835,7 +835,7 @@ mod tests_catalogue {
         .expect("a speaking entry parses");
         assert_eq!(entry.kind, EntryKind::Speaking);
 
-        let value = serde_json::to_value(&entry.kind).expect("the kind serialises");
+        let value = serde_json::to_value(entry.kind).expect("the kind serialises");
         assert_eq!(value, serde_json::json!("speaking"));
     }
 

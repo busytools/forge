@@ -427,9 +427,8 @@ impl crate::Workspace {
                 // activation's pick is what the next engine is built from.
                 let workspace = Arc::downgrade(self);
                 let loader: Loader = Arc::new(move || {
-                    let workspace = workspace
-                        .upgrade()
-                        .ok_or_else(|| "the workspace is gone".to_owned())?;
+                    let workspace =
+                        workspace.upgrade().ok_or_else(|| "the workspace is gone".to_owned())?;
                     let resolved = workspace.resolved_speaking()?;
                     let files = workspace.speaking_files(&resolved)?;
                     let engine =
@@ -503,16 +502,15 @@ impl crate::Workspace {
         // The chosen voice is read once, when the service is built: its
         // clip is the same one every utterance renders with.
         let (voice, voice_error) = match config.tts.voice.as_deref() {
-            Some(id) if config.tts.enabled => match crate::tts::unknown_voice(
-                id,
-                &self.installed_voices(),
-            ) {
-                Some(error) => (None, Some(error)),
-                None => match self.voice_audio(id) {
-                    Ok(audio) => (Some(Arc::new(audio)), None),
-                    Err(error) => (None, Some(error)),
-                },
-            },
+            Some(id) if config.tts.enabled => {
+                match crate::tts::unknown_voice(id, &self.installed_voices()) {
+                    Some(error) => (None, Some(error)),
+                    None => match self.voice_audio(id) {
+                        Ok(audio) => (Some(Arc::new(audio)), None),
+                        Err(error) => (None, Some(error)),
+                    },
+                }
+            }
             _ => (None, None),
         };
         let settings = VoiceSettings {

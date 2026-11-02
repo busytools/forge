@@ -207,10 +207,17 @@ pub mod wire;
 /// wrong tab, so the numbers move. `baselines/socket/21/` is the record a v21
 /// server emitted.
 ///
+/// **v23 auditions a voice.** `voice_preview` is a new variant, and a v22
+/// server reads it as a message it does not know - the audition would fail
+/// silently, with the page saying only that it started - so the numbers
+/// move. The speaking snapshot's new fields ride the same bump: they are
+/// additive on their own, but a v22 client would draw a voice list nobody
+/// sent. `baselines/socket/22/` is the record a v22 server emitted.
+///
 /// **Additive fields do not bump.** `diff.base_error` is one, carried on the
 /// v16-era record: a client older than the field draws the vaguer line it
 /// always drew, and nothing it sends changes.
-pub const PROTOCOL_VERSION: u32 = 22;
+pub const PROTOCOL_VERSION: u32 = 23;
 
 /// The socket's keepalive: how often a connection is asked to prove it is
 /// still there, and how long it may stay silent before it is reaped.
