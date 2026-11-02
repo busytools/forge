@@ -1827,6 +1827,11 @@ mod tests {
             "and parked on the user: {:?}",
             reopened.waiting_on,
         );
+        assert!(
+            reopened.waiting_on.as_ref().and_then(|wait| wait.since).is_some(),
+            "and the wait starts at the reopen, not whenever it was first parked: {:?}",
+            reopened.waiting_on,
+        );
         let history = history_of(&ws, "proj");
         let last = history.last().expect("a last transition");
         assert_eq!((last.from, last.to), (Some(TaskStatus::Completed), TaskStatus::Waiting));
