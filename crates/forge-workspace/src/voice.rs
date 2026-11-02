@@ -124,20 +124,28 @@ impl VoiceService {
         if !self.settings.enabled {
             return Err(SayError::Disabled);
         }
-        let queue = {
-            let seats = self.seats.lock().map_err(|_| SayError::NotReady)?;
-            match seats.get(seat) {
-                Some(state) if !state.listeners.is_empty() => state.queue.clone(),
-                _ => return Err(SayError::NoListener),
-            }
-        };
+        // Refuse before the load, so a seat nobody hears never pays it.
+        self.listening_queue(seat)?;
         forge_tts::within_bound(&text, self.settings.max_utterance_seconds)
             .map_err(|error| SayError::TooLong(error.to_string()))?;
 
         let engine = self.engine().await?;
+        // The listener can leave while the engine loads; ask again so the
+        // say answers the empty seat rather than blaming the engine.
+        let queue = self.listening_queue(seat)?;
         let (first, outcome) = oneshot::channel();
         queue.send(Job { text, engine, first }).map_err(|_| SayError::NotReady)?;
         outcome.await.map_err(|_| SayError::NotReady)?
+    }
+
+    /// The queue of a seat that still has a listener. A `say` reads it again
+    /// after a load, because the seat can empty while the engine loads.
+    fn listening_queue(&self, seat: &SessionSlot) -> Result<mpsc::UnboundedSender<Job>, SayError> {
+        let seats = self.seats.lock().map_err(|_| SayError::NotReady)?;
+        match seats.get(seat) {
+            Some(state) if !state.listeners.is_empty() => Ok(state.queue.clone()),
+            _ => Err(SayError::NoListener),
+        }
     }
 
     /// Turn one client's voice on or off for `seat`. The session is told on
@@ -328,8 +336,9 @@ impl crate::Workspace {
                 let config = self.config_arc();
                 let files = config.tts.files();
                 let loader: Loader = Arc::new(move || {
-                    let files =
-                        files.clone().ok_or_else(|| "no models directory resolves".to_owned())?;
+                    let files = files
+                        .clone()
+                        .ok_or_else(|| "[tts] models_dir resolves to no directory".to_owned())?;
                     let engine =
                         forge_tts::QwenTts::load(&files).map_err(|error| error.to_string())?;
                     Ok(Arc::new(engine) as Arc<dyn Engine>)
@@ -343,32 +352,56 @@ impl crate::Workspace {
     /// model load. One task per forge run, spawned rather than awaited; a
     /// failed load leaves the slot empty, which the first `say` fills.
     ///
-    /// The slot is only ever filled, never emptied, so a `say` cannot see
-    /// the engine released underneath it; a `say` that arrives while this
-    /// load is still running waits on the same lock rather than answering
-    /// [`SayError::NotReady`].
+    /// The slot is only ever filled, never emptied: a loaded engine is never
+    /// taken away, and a `say` that arrives while this load is still running
+    /// waits on the same lock rather than answering [`SayError::NotReady`].
     pub fn start_voice_prewarm(self: &Arc<Self>) {
-        // Before the gate below, so the flag reads "the boot wave asked for
-        // the prewarm" and a second call cannot start a second one.
-        if self.voice_prewarm_started.swap(true, Ordering::AcqRel) {
+        // The wave-asked signal, kept before the gate: it is what a test
+        // reads on a fixture with `[tts]` off. The dispatch is guarded
+        // separately, so a boot that starts with the section off can still
+        // start a load once it is enabled.
+        self.voice_prewarm_started.store(true, Ordering::Release);
+        let settings = self.config_arc().tts.clone();
+        if !settings.enabled {
             return;
         }
-        if !self.config_arc().tts.enabled {
+        if self.voice_prewarm_dispatched.swap(true, Ordering::AcqRel) {
             return;
         }
+        let files = settings.files();
+        let models_dir = settings.models_dir();
+        let model = files
+            .as_ref()
+            .map_or_else(|| "unresolved".to_owned(), |files| files.model.display().to_string());
+        let projector = files
+            .as_ref()
+            .and_then(|files| files.projector.as_ref())
+            .map_or_else(|| "unresolved".to_owned(), |path| path.display().to_string());
+        let dir = models_dir
+            .as_ref()
+            .map_or_else(|| "unresolved".to_owned(), |dir| dir.display().to_string());
         let service = self.voice_service();
         let started = std::time::Instant::now();
         let span = tracing::info_span!("voice_prewarm");
+        tracing::info!(
+            event_name = "voice_prewarm_starting",
+            models_dir = %dir,
+            model = %model,
+            projector = %projector,
+            "loading the speaking engine"
+        );
         tokio::spawn(
             async move {
                 match service.warm().await {
                     Ok(()) => tracing::info!(
                         event_name = "voice_prewarm_ready",
                         elapsed_ms = started.elapsed().as_millis(),
+                        model = %model,
                         "the speaking engine is resident; a say pays no load"
                     ),
                     Err(error) => tracing::warn!(
                         event_name = "voice_prewarm_failed",
+                        model = %model,
                         failure = %error,
                         "the speaking engine did not load; the first say will retry"
                     ),
@@ -1069,6 +1102,110 @@ mod tests {
         service.set_listening(&seat(), 1, true, false);
         service.say(&seat(), "Two.".to_owned()).await.expect("rendered");
         assert_eq!(loads.load(Ordering::SeqCst), 1, "the next say reuses the parked engine");
+    }
+
+    fn prewarm_workspace(tts_enabled: bool) -> (Arc<crate::Workspace>, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let mut config = crate::config::LoadedConfig::empty_for_test();
+        config.tts.enabled = tts_enabled;
+        let (workspace, _updates) =
+            crate::Workspace::testing_stub_with_config(dir.path().to_path_buf(), config)
+                .expect("the stub builds");
+        workspace.install_voice_engine_for_test(Arc::new(StubEngine::new(Arc::new(Mutex::new(
+            Vec::new(),
+        )))));
+        (workspace, dir)
+    }
+
+    /// The boot prewarm loads with `[tts]` on: the stub engine reaches the
+    /// slot. Deleting the dispatch or its spawn leaves this red, which the
+    /// wave-asked guard alone cannot see.
+    #[tokio::test]
+    async fn the_boot_prewarm_loads_the_engine_when_tts_is_on() {
+        let (workspace, _dir) = prewarm_workspace(true);
+        workspace.start_voice_prewarm();
+        assert!(workspace.test_voice_prewarm_started(), "the wave asked for it");
+
+        let service = workspace.voice_service();
+        for _ in 0..200 {
+            if service.engine.lock().await.is_some() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        panic!("the boot prewarm did not load the engine");
+    }
+
+    /// A boot with `[tts]` off has not spent the dispatch: a later call with
+    /// the section on still loads.
+    #[tokio::test]
+    async fn a_prewarm_call_after_tts_turns_on_dispatches() {
+        let (workspace, _dir) = prewarm_workspace(false);
+        workspace.start_voice_prewarm();
+        assert!(workspace.test_voice_prewarm_started(), "the wave asked");
+        assert!(
+            workspace.voice_service().engine.lock().await.is_none(),
+            "nothing loads while the section is off",
+        );
+
+        let mut enabled = crate::config::LoadedConfig::empty_for_test();
+        enabled.tts.enabled = true;
+        *workspace.config.write() = Arc::new(enabled);
+
+        workspace.start_voice_prewarm();
+        let service = workspace.voice_service();
+        for _ in 0..200 {
+            if service.engine.lock().await.is_some() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        panic!("the second call did not dispatch the load");
+    }
+
+    /// A listener can leave while the engine loads: the say answers the
+    /// empty seat rather than a `NotReady` that blames the engine.
+    #[tokio::test]
+    async fn a_say_whose_listener_leaves_during_the_load_answers_no_listener() {
+        let (release, hold) = std::sync::mpsc::channel::<()>();
+        let hold = Arc::new(Mutex::new(hold));
+        let loads = Arc::new(AtomicUsize::new(0));
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let service = VoiceService::new(
+            {
+                let hold = Arc::clone(&hold);
+                let loads = Arc::clone(&loads);
+                let requests = Arc::clone(&requests);
+                Arc::new(move || {
+                    loads.fetch_add(1, Ordering::SeqCst);
+                    let _ = hold.lock().expect("unpoisoned").recv();
+                    Ok(Arc::new(StubEngine::new(Arc::clone(&requests))) as Arc<dyn Engine>)
+                })
+            },
+            VoiceSettings::default(),
+            Arc::new(RecordingSink { chunks: Mutex::new(Vec::new()) }),
+            Arc::new(RecordingNotes { said: Mutex::new(Vec::new()) }),
+        );
+        service.set_listening(&seat(), 1, true, false);
+        let say = tokio::spawn({
+            let service = service.clone();
+            async move { service.say(&seat(), "Hello.".to_owned()).await }
+        });
+        for _ in 0..200 {
+            if loads.load(Ordering::SeqCst) == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(loads.load(Ordering::SeqCst), 1, "premise: the say is mid-load");
+
+        service.set_listening(&seat(), 1, false, true);
+        release.send(()).expect("the loader is waiting");
+        assert_eq!(
+            say.await.expect("joined"),
+            Err(SayError::NoListener),
+            "the seat emptied, so the say answers the seat, not the engine",
+        );
     }
 
     /// A `say` that lands while the boot prewarm is still loading waits for

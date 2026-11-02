@@ -1020,12 +1020,14 @@ port = 49201
         );
     }
 
-    /// The wave starts the speaking engine's prewarm, which is what keeps the
-    /// first `say` from paying the model load: started at boot rather than on
-    /// the first listener, on a task of its own so the multi-gigabyte load is
-    /// not on the boot path. The fixture has `[tts]` off, so the guard is
-    /// what the test reads; the load itself needs the real weights and is
-    /// exercised by forge-tts's own gates.
+    /// The wave asks for the speaking engine's prewarm, which is what keeps
+    /// the first `say` from paying the model load: started at boot rather
+    /// than on the first listener, on a task of its own so the
+    /// multi-gigabyte load is not on the boot path. The fixture has `[tts]`
+    /// off, so this reads the wave-asked guard only; that the dispatch then
+    /// loads the engine is pinned by
+    /// `the_boot_prewarm_loads_the_engine_when_tts_is_on` in
+    /// forge-workspace, which drives a stub load.
     #[tokio::test]
     async fn the_boot_wave_starts_the_voice_prewarm() {
         let (workspace, _dir) = boot_fixture();

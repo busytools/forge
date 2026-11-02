@@ -477,6 +477,7 @@ impl Workspace {
             rotation_announcer_started: std::sync::atomic::AtomicBool::new(false),
             dictate_preflight_started: std::sync::atomic::AtomicBool::new(false),
             voice_prewarm_started: std::sync::atomic::AtomicBool::new(false),
+            voice_prewarm_dispatched: std::sync::atomic::AtomicBool::new(false),
             cron_scheduler_started: std::sync::atomic::AtomicBool::new(false),
             chase_sweep_started: std::sync::atomic::AtomicBool::new(false),
             kick_dispatcher_tx,
