@@ -333,8 +333,14 @@ mod tests {
     /// the board draws it as a miss rather than a blank.
     #[test]
     fn waiting_without_a_kind_is_representable() {
-        let waiting =
-            Waiting { kind: None, detail: None, on: None, verification: false, parked: false, since: None };
+        let waiting = Waiting {
+            kind: None,
+            detail: None,
+            on: None,
+            verification: false,
+            parked: false,
+            since: None,
+        };
         let json = serde_json::to_vec(&waiting).expect("serialize");
         let back: Waiting = serde_json::from_slice(&json).expect("deserialize");
         assert_eq!(back.kind, None);
