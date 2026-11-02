@@ -5,7 +5,13 @@
 
   import Icon from '../components/Icon.svelte';
   import { cannotPaint } from '../paint';
-  import { noteConversationOpened, noteDrawn, notePainted, type DrawnGeometry } from '../perf';
+  import {
+    noteConversationOpened,
+    noteDrawn,
+    notePainted,
+    noteScrollMove,
+    type DrawnGeometry,
+  } from '../perf';
   import { MORE_TURNS, subjectKey } from '../protocol';
   import { scrollAsk } from '../session/scroll-ask';
   import type { Connection } from '../socket';
@@ -1914,6 +1920,7 @@
     // come back down" (2026-10-11). Every event updates the tracker, the
     // pin's echo included: a pin is a write like any other move.
     const towardFoot = offset > movedFrom;
+    const was = movedFrom;
     movedFrom = offset;
     // **An event at the pin's own landing spot is its echo, and reading the
     // layout back for it is the per-frame cost issue #1710 measured.** A
@@ -1978,6 +1985,22 @@
     const foot = atFoot();
     const byReader = readerMoved();
     const aimed = aimedAtFoot();
+    if (!byReader) {
+      // **A move nobody made has no other record.** The draw says where the
+      // list stands and never that the reader was carried, so a scroll that
+      // arrives with no hand behind it is written here, with the signals that
+      // tell a clamp from a restore from a corrected row.
+      noteScrollMove({
+        from: was,
+        to: offset,
+        height,
+        room,
+        shrank,
+        rose,
+        foot,
+        restore: owed !== null,
+      });
+    }
     if (foot) {
       // **A return that lands at the foot re-arms, whatever the size did.**
       // The clamp skip exists for a foot that closed on the reader, and their
