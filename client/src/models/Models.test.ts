@@ -420,7 +420,7 @@ describe('the models page as it draws', () => {
   it('draws the off state, which has no catalogue to search', () => {
     const host = open(offWire());
 
-    expect(host.textContent).toContain('dictation is off');
+    expect(host.textContent).toContain('no model is in use');
     expect(host.textContent).toContain('[dictate] enabled');
     expect(host.textContent).toContain('not checked yet');
     // No search box, and the note says why: the feed is not read.

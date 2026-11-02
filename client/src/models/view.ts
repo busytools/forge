@@ -94,8 +94,13 @@ export function roleWord(role: ModelRole): string {
  * already uses for the same state, and the shape that carries it without
  * colour.
  */
-export function modelChip(state: DictateModelState): { mark: string; text: string } {
-  const text = modelState(state);
+export function modelChip(
+  state: DictateModelState,
+  role?: ModelRole,
+): { mark: string; text: string } {
+  // The speaking model is placed by hand: its files being present is not a
+  // load, so the chip says `placed` rather than claiming the engine has it.
+  const text = role === 'speaking' && state === 'ready' ? 'placed' : modelState(state);
   if (typeof state === 'object' && 'downloading' in state) {
     const { downloaded, total } = state.downloading;
     const percent = total > 0 ? ` ${Math.floor((downloaded / total) * 100)}%` : '';
@@ -373,7 +378,7 @@ export function search(rows: CatalogueRow[], query: string): CatalogueRow[] {
 export function activeSource(from: ActiveFrom): string {
   switch (from.from) {
     case 'config':
-      return `pinned by [dictate] ${from.key}`;
+      return `pinned by [${from.key === 'speaking_model' ? 'tts' : 'dictate'}] ${from.key}`;
     case 'installed':
       return 'installed here';
     case 'pin':
@@ -1165,7 +1170,7 @@ export function speakingBenchLine(bench: SpeakingBenchState): OpLine | null {
 
 /**
  * One speaking result's facts: the loop's own figures first - the round
- * trip, how soon the first audio starts, and the render's pace - then what
+ * trip, how soon the first audio starts, and the loop's pace - then what
  * ran and over how many clips.
  */
 export function speakingResultFacts(result: SpeakingBenchResult): FactPart[] {
@@ -1174,9 +1179,7 @@ export function speakingResultFacts(result: SpeakingBenchResult): FactPart[] {
     { text: `round-trip WER ${(metrics.round_trip_wer * 100).toFixed(1)}%`, hl: true },
     { text: `first audio ${(metrics.first_audio_ms / 1000).toFixed(1)}s`, hl: true },
     { text: `${metrics.realtime_factor.toFixed(2)}\u{d7} realtime` },
-    {
-      text: `${metrics.clips} ${metrics.clips === 1 ? 'clip' : 'clips'} \u{b7} ${result.file}`,
-    },
+    { text: `${metrics.clips} ${metrics.clips === 1 ? 'clip' : 'clips'}` },
   ];
 }
 

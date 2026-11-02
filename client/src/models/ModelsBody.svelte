@@ -384,8 +384,10 @@
       <span class="word">forge</span>
     </div>
     <div class="title">
-      <h1 class="t">Dictation models</h1>
-      <span class="s">transcribing &middot; cleanup &middot; updates &middot; benchmarks</span>
+      <h1 class="t">Models</h1>
+      <span class="s"
+        >transcribing &middot; cleanup &middot; speaking &middot; updates &middot; benchmarks</span
+      >
     </div>
     <a class="back" href="/">&larr; home</a>
   </header>
@@ -411,21 +413,21 @@
   {/if}
 
   <section class="block">
-    <h2 class="hd4">In use <span class="why">what dictation runs on this machine today</span></h2>
+    <h2 class="hd4">In use <span class="why">what forge runs on this machine today</span></h2>
 
     {#if wire.in_use.length === 0}
-      <!-- Dictation off is its own state: an empty list here would read as a
+      <!-- Nothing in use is its own state: an empty list here would read as a
            page that broke rather than as a section nobody switched on. -->
       <div class="empty">
-        <p class="t">dictation is off</p>
+        <p class="t">no model is in use</p>
         <p class="d">
-          <code>[dictate] enabled</code> is not set in <code>forge.toml</code>, so no models are
-          loaded and a take has nothing to run through. Add it and restart forge.
+          <code>[dictate] enabled</code> is not set in <code>forge.toml</code>, so no dictation
+          models are loaded and a take has nothing to run through. Add it and restart forge.
         </p>
       </div>
     {:else}
       {#each wire.in_use as model (`${model.role}/${model.file}`)}
-        {@const chip = modelChip(model.state)}
+        {@const chip = modelChip(model.state, model.role)}
         {@const factsOf = inUseRowFacts(model)}
         {@const source = sourceLine(model)}
         <div class="model" class:shown={shownRole === model.role}>
@@ -466,9 +468,16 @@
       {/each}
       {#if wire.models_dir !== null}
         <p class="note">
-          files live in <code>{wire.models_dir}</code> &middot; a download is checked against what its
-          entry declares: the byte length always, and the sha256 a cleanup feed's blobs publish - the
-          speech feed's files publish none, so those are checked by length and by the load
+          dictation files live in <code>{wire.models_dir}</code> &middot; a download is checked against
+          what its entry declares: the byte length always, and the sha256 a cleanup feed's blobs publish
+          - the speech feed's files publish none, so those are checked by length and by the load
+        </p>
+      {/if}
+      {#if wire.speaking_models_dir !== null}
+        <p class="note">
+          the speaking model is placed by hand: its weights and mmproj projector live in
+          <code>{wire.speaking_models_dir}</code>, and the engine checks both against the digests
+          their entries declare before it loads them
         </p>
       {/if}
     {/if}
@@ -984,7 +993,10 @@
            transcribes, scored over the same public corpus. Its own card
            because its figures - round-trip words, first audio, the render's
            pace - are not the words bench's. -->
-      <div class="status {speakLine?.mark === 'live' ? '' : (speakLine?.mark ?? 'off')}" role="status">
+      <div
+        class="status {speakLine?.mark === 'live' ? '' : (speakLine?.mark ?? 'off')}"
+        role="status"
+      >
         <span class="dot {speakLine?.mark ?? 'off'}"></span>
         <span class="t">
           {speakLine === null ? 'score the speaking loop' : speakLine.title}
@@ -993,7 +1005,11 @@
           <span class="when">{speakLine.detail}</span>
         {/if}
         {#if speakLine !== null && speakLine.percent !== null}
-          <progress class="bar" max="100" value={speakLine.percent} aria-label="speaking bench progress"
+          <progress
+            class="bar"
+            max="100"
+            value={speakLine.percent}
+            aria-label="speaking bench progress"
           ></progress>
         {/if}
         <span class="spacer"></span>

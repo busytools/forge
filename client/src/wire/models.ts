@@ -300,6 +300,7 @@ export type CatalogueCheck =
 export interface DictateModelsWire {
   enabled: boolean;
   models_dir: string | null;
+  speaking_models_dir: string | null;
   in_use: InUseModel[];
   check: CatalogueCheck;
   updates: ModelUpdate[];

@@ -133,6 +133,7 @@ describe('the marks and words the page draws', () => {
    */
   it('draws a model state as a word and a shape', () => {
     expect(modelChip('ready')).toEqual({ mark: 'ok', text: 'loaded' });
+    expect(modelChip('ready', 'speaking')).toEqual({ mark: 'ok', text: 'placed' });
     expect(modelChip('pending')).toEqual({ mark: 'off', text: 'waiting' });
     expect(modelChip('loading')).toEqual({ mark: 'live', text: 'loading' });
     expect(modelChip({ failed: { other: { message: 'x' } } }).mark).toBe('failed');
@@ -777,6 +778,13 @@ describe("the panel's model choices", () => {
       { file: 'asr.gguf', role: 'transcribing', pinned: false },
       { file: 'mystery.gguf', role: 'transcribing', pinned: false },
     ]);
+  });
+
+  /** A TTS model must never be offered as a transcriber: it has its own
+   * bench, and the words bench would load it into the wrong slot. */
+  it('never offers the speaking model to the words bench', () => {
+    const speaking = inUse({ role: 'speaking', file: 'Qwen3-TTS.gguf', catalogue: null });
+    expect(benchTargets([speaking], [], [], []).map((row) => row.target)).toEqual([]);
   });
 });
 
