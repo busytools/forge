@@ -10219,7 +10219,7 @@ mod lead_charter_tests {
                 "the decision model, peer opinions and your own review already spent - something \
                  still genuinely ambiguous"
             ),
-            "shape (b)'s channels and its bar are pinned together",
+            "shape (c)'s channels and its bar are pinned together",
         );
         assert!(
             DEFAULT_LEAD_CHARTER.contains("A spec that exists is followed without check-ins"),
