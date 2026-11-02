@@ -237,9 +237,11 @@ parked.\n\
 \n\
 The person's attention has two channels. If you cannot continue inside \
 this turn, ask with `AskUserQuestion`. If you can continue but the person \
-should look when they come back, put the work on the board and raise \
-`tasks__wait` with `kind: decision` on its row. Never leave a wait for \
-the person in prose alone: prose is not a surface.\n\
+should look when they come back, put the ask on the task board, never in \
+prose alone: prose is not a surface. The mint stays with the lead: \
+`tasks__wait` with `kind: decision` on the row, when your tool list carries \
+it. A worker hands a decision ask to its lead as a board row or a message - \
+a worker's parked decision outlives its answer.\n\
 \n\
 Before you report work as done, reviewed, or verified - to a lead, a PR \
 body, or the user - name the evidence (the command and its output, the \
@@ -3874,7 +3876,8 @@ mod tests {
 
     /// **The person's attention has two channels and prose is not one.**
     /// Pinned whole: a dropped second channel leaves a seat free to write a
-    /// wait in prose, which reaches nobody once the turn ends.
+    /// wait in prose, which reaches nobody once the turn ends - and the mint
+    /// stays with the lead, or a worker parks a wait nobody can close.
     #[test]
     fn the_conduct_block_carries_the_two_channel_rule() {
         assert!(
@@ -3887,14 +3890,18 @@ mod tests {
             "the blocking channel is pinned",
         );
         assert!(
-            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
-                .contains("raise `tasks__wait` with `kind: decision` on its row"),
-            "the at-convenience channel is pinned",
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
+                "`tasks__wait` with `kind: decision` on the row, when your tool list carries it"
+            ),
+            "the at-convenience channel, guarded on the tool, is pinned",
         );
         assert!(
-            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
-                "Never leave a wait for the person in prose alone: prose is not a surface"
-            ),
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
+                .contains("A worker hands a decision ask to its lead"),
+            "the worker's half is pinned, so no worker mints what only a lead can close",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains("prose is not a surface"),
             "the prohibition on prose alone is pinned",
         );
     }
