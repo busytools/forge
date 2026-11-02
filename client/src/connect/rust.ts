@@ -266,6 +266,7 @@ class RustConnection implements Connection {
   /** One bound retry: no scope on the invoke, the held one's deadline. */
   private refreshHeld(what: Subject): boolean {
     if (this.state !== 'open') return false;
+    if (typeof what !== 'string') this.gate.askSent(what.session);
     this.bounds.arm(what, this.passFor(what));
     void invoke('client_refresh', { what }).catch((why: unknown) => {
       report('a refresh could not reach the shell', why);

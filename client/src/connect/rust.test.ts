@@ -517,6 +517,13 @@ describe('frames from the bridge', () => {
       invoke.mock.calls.filter(([command]) => command === 'client_seat_range'),
       'a stale answer asked for a range every reader holds',
     ).toEqual([]);
+    // **A real hole still asks**, so the zero above means the stale answer was
+    // judged rather than this transport never asking at all.
+    frame(6);
+    expect(
+      invoke.mock.calls.filter(([command]) => command === 'client_seat_range'),
+      'a real hole still asks for its range',
+    ).toHaveLength(1);
   });
 
   it('a snapshot seeds its store, and a refusal lands in it and reaches the page', async () => {

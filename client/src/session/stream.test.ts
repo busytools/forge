@@ -238,12 +238,44 @@ describe('the stream gate', () => {
     gate.inbound(update(1));
     gate.inbound(update(2));
     gate.askSent(LEAD);
-    gate.askSent(LEAD);
     gate.inbound(update(3));
+    gate.askSent(LEAD);
+    // The first answer was encoded before frame 3, the second after it, so
+    // each must be judged by the ask it answers - oldest first.
     gate.inbound(snap('occ', 2));
-    gate.inbound(snap('occ', 2));
+    gate.inbound(snap('occ', 4));
     expect(gate.inbound(update(4)), 'the next frame is a successor').toHaveLength(1);
     expect(asked, 'and no range is asked for').toEqual([]);
+  });
+
+  it('an answer that outlived a seal is not the new run first number', () => {
+    // The ask went out, the run restarted, and the answer - encoded under the
+    // old numbering - lands after the new run has already delivered. Taking
+    // it as the anchor would hide every frame below its number.
+    const { gate, asked } = aGate();
+    gate.inbound(snap('occ', 1));
+    gate.inbound(update(1));
+    gate.askSent(LEAD);
+    gate.inbound(seal('occ', 2));
+    gate.inbound(update(1));
+    gate.inbound(update(2));
+    gate.inbound(snap('occ', 50));
+    expect(gate.inbound(update(9)), 'a frame above the new count is held').toHaveLength(0);
+    expect(asked, 'and its range is asked for').toEqual([{ from: 3, to: 8 }]);
+  });
+
+  it('an ask sent before the first frame still judges its answer', () => {
+    // Two readers can ask before the seat's first frame lands; both marks
+    // have to survive, or the second answer is taken for a fresh anchor.
+    const { gate, asked } = aGate();
+    gate.askSent(LEAD);
+    gate.askSent(LEAD);
+    gate.inbound(snap('occ', 1));
+    gate.inbound(update(1));
+    gate.inbound(update(2));
+    gate.inbound(snap('occ', 2));
+    expect(gate.inbound(update(3)), 'the next frame is a successor').toHaveLength(1);
+    expect(asked, 'and no phantom range').toEqual([]);
   });
 
   it('an answer to a quiet ask still restarts the count', () => {
@@ -254,7 +286,7 @@ describe('the stream gate', () => {
     gate.askSent(LEAD);
     // Nothing arrived after the ask, so the answer is the authority.
     gate.inbound(snap('occ', 1));
-    expect(gate.inbound(update(1)), 'a frame at 1 is not held').toHaveLength(1);
+    expect(gate.inbound(update(1)), 'a frame at 1 passes').toHaveLength(1);
     expect(gate.inbound(update(3)), 'and 3 opens a hole').toHaveLength(0);
     expect(asked, 'over the restarted count').toEqual([{ from: 2, to: 2 }]);
   });
