@@ -985,6 +985,17 @@ inspected.
     them - and add the forge rule as an override section rather than rewriting
     his sentences.
 
+29. **A change to what forge can do moves the settings page in the same change.**
+    Ved, 2026-11-02: *"whenever anything is changed in forge, automatic, new
+    additions, or removing old things, the same should be updated on the
+    settings page as well. They go hand in hand."* A new config key, a removed
+    key, a new or removed model, voice, provider, connector, or any other
+    setting-shaped fact arrives with its settings-page surface: the control
+    that sets it, its default shown, its error string drawn, and a removed key
+    taken off the page, all in the same PR. A key that exists only in
+    `forge.toml` is half-shipped, and the settings page is where a person
+    learns it exists at all.
+
 ## Claude Code worktree interop
 
 Non-guessable external conventions, recorded so forge does not reinvent
