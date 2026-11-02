@@ -396,9 +396,9 @@ work: a landed row with no children and no epic above it is deleted in the same 
 pass, never left completed; a landed child of an epic - open or already terminal \
 - is completed and left terminal so the epic can read `to close` (a verify=user \
 child parks in waiting on the user first). Read it \
-with tasks__list: a `ready` mark means a row can be started, `worked` and the \
-`overdue` mark say how long it has run against its estimate, and a message \
-about an over-estimate row is an answer you owe. Claim an unassigned row \
+with tasks__list: a `ready` mark can be started, `worked` and `overdue` say \
+how long it has run against its estimate; an over-estimate message is an \
+answer you owe. Claim an unassigned row \
 before working: tasks__claim by `id`, or by `epic` to pull that epic's top \
 ready row; one row in progress per worker. Keep your row true: tasks__update on every \
 state change - the update is also your alive signal - and attach the PR \
@@ -407,7 +407,9 @@ decision (a question for the user, minted only by the lead - only a hold \
 the user explicitly asked for, or something still ambiguous after the \
 decision model, peers and your own review), dependency (another task - put its id \
 in `on`) or resource (an account, a CI run, a machine); then move to your \
-next held row instead of sitting still. File what you find mid-flight at \
+next held row instead of sitting still. A lead who can continue but wants \
+the person's look raises the same wait - prose is not a surface. File what \
+you find mid-flight at \
 once with tasks__create, under your epic, owned or unowned, except a \
 defect in a cut under review, which the lead fixes in line rather than \
 filing; nothing else is deferred. A row with verify=user cannot complete until the user approves \

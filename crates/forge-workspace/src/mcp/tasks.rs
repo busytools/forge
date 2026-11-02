@@ -1516,6 +1516,26 @@ mod tests {
         );
     }
 
+    /// **The wait is the at-convenience channel as well as the hold**:
+    /// without it a seat writes its look request in prose, which reaches
+    /// nobody once the turn ends.
+    #[test]
+    fn the_wait_description_states_the_at_convenience_channel() {
+        let facade = MockTasksFacade::new().into_arc();
+        let wait = Wait { facade, slot: lead_slot() };
+        for clause in [
+            "A decision wait is the at-convenience channel to the user",
+            "put the ask here on a board row rather than saying it in prose",
+            "prose is not a surface",
+        ] {
+            assert!(
+                wait.description().contains(clause),
+                "tasks__wait does not state the channel ({clause}): {}",
+                wait.description(),
+            );
+        }
+    }
+
     /// A wait left on an ended row reads that its target has ended
     /// forever, so the verb that ends the row owns moving every waiter
     /// off that wait in the same pass. Pinned on both doors, because
