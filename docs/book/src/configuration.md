@@ -530,8 +530,10 @@ area `[dictate]` opens: a take becomes text, and a reply becomes speech.
 | `models_dir`            | string  | platform cache dir | Where the model files live. `~` is expanded.                                                                                                                                                                                     |
 | `speaking_model`        | string  | none               | The model the speaking role runs, by the catalogue's variant name. Set, it pins the role and refuses an activation for it, naming the key; absent leaves the role to the compiled model.                                        |
 | `language`              | string  | autodetect         | Spoken language hint for the rendered voice.                                                                                                                                                                                     |
-| `speaker`               | string  | the model's default | The model's own speaker name.                                                                                                                                                                                                    |
 | `max_utterance_seconds` | integer | `120`              | Upper bound on one `voice__say`'s text, not on one sentence.                                                                                                                                                                     |
+
+The model's default voice is used. There is no speaker selection in this
+cut.
 
 An unrecognised key here fails the load, as one in `[dictate]` does: a
 mistyped `models_dir` would otherwise fetch two gigabytes to the wrong

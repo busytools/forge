@@ -77,9 +77,6 @@ pub struct TtsSettings {
     /// Spoken language. Absent autodetects.
     #[serde(default)]
     pub language: Option<String>,
-    /// The model's own speaker name. Absent uses its default.
-    #[serde(default)]
-    pub speaker: Option<String>,
     /// Upper bound on one utterance's text, not one sentence.
     #[serde(default = "default_max_utterance_seconds")]
     pub max_utterance_seconds: u64,
@@ -96,7 +93,6 @@ impl Default for TtsSettings {
             models_dir: None,
             speaking_model: None,
             language: None,
-            speaker: None,
             max_utterance_seconds: default_max_utterance_seconds(),
         }
     }

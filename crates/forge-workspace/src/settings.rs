@@ -1137,17 +1137,6 @@ const TTS_KEYS: &[ConfigKey] = &[
         },
     },
     ConfigKey {
-        path: "tts.speaker",
-        area: "voice",
-        class: EffectClass::Restart,
-        rows: |config| {
-            vec![text(
-                "tts.speaker",
-                config.tts.speaker.clone().unwrap_or_else(|| "the model's default".to_owned()),
-            )]
-        },
-    },
-    ConfigKey {
         path: "tts.max_utterance_seconds",
         area: "voice",
         class: EffectClass::Restart,
@@ -1545,7 +1534,6 @@ enabled = true
 models_dir = "/tmp/tts-models"
 speaking_model = "qwen3-tts-12hz-1.7b-base"
 language = "en"
-speaker = "default"
 max_utterance_seconds = 60
 
 [gotify]
@@ -2108,13 +2096,17 @@ models = ["m"]
         let document = document(&config, "v", Path::new("/tmp/forge.toml"));
         let voice =
             document.areas.iter().find(|area| area.id == "voice").expect("the voice area is drawn");
-        assert_eq!(voice.keys.len(), 18, "every [dictate] and [tts] key draws there");
+        assert_eq!(voice.keys.len(), 17, "every [dictate] and [tts] key draws there");
         assert!(
             voice
                 .keys
                 .iter()
                 .all(|key| key.path.starts_with("dictate.") || key.path.starts_with("tts.")),
             "no other table's key rides in the voice area",
+        );
+        assert!(
+            !voice.keys.iter().any(|key| key.path == "tts.speaker"),
+            "the speaking model uses its default voice, so there is no speaker key",
         );
         let groups: BTreeSet<Vec<String>> =
             voice.keys.iter().map(|key| key.group.clone()).collect();

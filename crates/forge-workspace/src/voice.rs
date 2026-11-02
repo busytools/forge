@@ -12,12 +12,11 @@ use tokio::sync::{mpsc, oneshot};
 pub struct VoiceSettings {
     pub max_utterance_seconds: u64,
     pub language: Option<String>,
-    pub speaker: Option<String>,
 }
 
 impl Default for VoiceSettings {
     fn default() -> Self {
-        Self { max_utterance_seconds: 120, language: None, speaker: None }
+        Self { max_utterance_seconds: 120, language: None }
     }
 }
 
@@ -292,7 +291,6 @@ impl crate::Workspace {
         let settings = VoiceSettings {
             max_utterance_seconds: config.tts.max_utterance_seconds,
             language: config.tts.language.clone(),
-            speaker: config.tts.speaker.clone(),
         };
         VoiceService::new(
             loader,
@@ -441,7 +439,7 @@ async fn render(
         let mut chunks = engine.speak(SpeakRequest {
             text: sentence,
             language: settings.language.clone(),
-            speaker: settings.speaker.clone(),
+            speaker: None,
         });
         while let Some(result) = chunks.recv().await {
             match result {
