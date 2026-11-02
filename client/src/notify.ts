@@ -117,18 +117,19 @@ export function rising(
  *
  * **A wait is news once, and a launch is the launch's own history**: the
  * first read seeds and announces nothing, so a reload with three open waits
- * fires none. Its identity is the task and the moment it was raised, scoped
- * to the server run - a re-read cannot change it, and a wait answered and
- * raised again is a new one.
+ * fires none. Its identity is the task and the moment the wait began - task
+ * data, not a counter, so the server run is not part of it: a restart leaves
+ * the same open waits the same, and only one that begins or is raised again
+ * is news.
  *
  * **A raise notifies whatever is on screen.** There is no shown-seat
  * exemption here, because the app being frontmost does not mean the project
  * holding the wait is being looked at.
  *
- * A read's waits are grouped by seat, and a seat with any new one raises a
- * single notice naming the first and counting the rest.
+ * A read's waits are grouped by seat, and a seat's raises collapse into a
+ * single notice naming the first and counting the others raised with it.
  */
-export function waitsRising(state: AskState, boot: string, rows: WaitRow[]): WaitNotice[] {
+export function waitsRising(state: AskState, rows: WaitRow[]): WaitNotice[] {
   const first = !state.waitsSeeded;
   state.waitsSeeded = true;
   const live = new Set<string>();
@@ -142,18 +143,18 @@ export function waitsRising(state: AskState, boot: string, rows: WaitRow[]): Wai
   }
   const notices: WaitNotice[] = [];
   for (const { slot, waits } of seats.values()) {
-    let announced = false;
+    const fresh: WaitRow[] = [];
     for (const wait of waits) {
       const key = `${subjectKey({ session: slot })}:${wait.task}`;
       const at = wait.at;
-      const stamp = at === undefined ? '' : `${at.secs_since_epoch}.${at.nanos_since_epoch}`;
-      const mark = `${boot}:${stamp}`;
+      const mark = at === undefined ? '' : `${at.secs_since_epoch}.${at.nanos_since_epoch}`;
       if (state.waitSeen.get(key) === mark) continue;
       state.waitSeen.set(key, mark);
-      if (first) continue;
-      if (announced) continue;
-      announced = true;
-      notices.push({ slot, task: wait.task, words: wait.words, more: waits.length - 1 });
+      if (!first) fresh.push(wait);
+    }
+    const [head] = fresh;
+    if (head !== undefined) {
+      notices.push({ slot, task: head.task, words: head.words, more: fresh.length - 1 });
     }
   }
   // An answered wait leaves no mark, so the same task raised again is news.
@@ -211,16 +212,20 @@ export function notifiesFromThePage(): boolean {
 interface Held {
   slot: SessionSlot;
   words: { title: string; body: string };
+  /** What the platform replaces by: an ask and a wait on one seat are two. */
+  tag: string;
 }
 
 /** Raise one ask's notification on a page with no shell. */
 export function deliverAsk(notice: AskNotice): void {
-  notifyPage({ slot: notice.slot, words: askWords(notice) });
+  const tag = `ask:${subjectKey({ session: notice.slot })}`;
+  notifyPage({ slot: notice.slot, words: askWords(notice), tag });
 }
 
 /** Raise one decision wait's notification on a page with no shell. */
 export function deliverWait(notice: WaitNotice): void {
-  notifyPage({ slot: notice.slot, words: waitWords(notice) });
+  const tag = `wait:${subjectKey({ session: notice.slot })}`;
+  notifyPage({ slot: notice.slot, words: waitWords(notice), tag });
 }
 
 /** What waits for a gesture that can carry the permission prompt. */
@@ -253,7 +258,7 @@ function notifyPage(held: Held): void {
 function show(held: Held): void {
   const note = new Notification(held.words.title, {
     body: held.words.body,
-    tag: subjectKey({ session: held.slot }),
+    tag: held.tag,
   });
   note.onclick = () => {
     window.focus();

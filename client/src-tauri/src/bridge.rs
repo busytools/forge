@@ -2657,6 +2657,36 @@ mod tests {
         assert_eq!(again["answering"], true, "with the declaration the home is held under");
     }
 
+    /// **A board change is the wait's door too.** The fleet row's waits ride
+    /// the home snapshot, so a `tasks_changed` frame asks for the roster even
+    /// when the page looks awake - a raise that landed in the beat's window
+    /// would otherwise raise no banner.
+    #[tokio::test]
+    async fn a_tasks_changed_frame_reads_the_home_whatever_the_beat_says() {
+        let mut server = stub().await;
+        let (bridge, _rx) = bridge();
+        bridge.connect(server.url.clone());
+        connected(&bridge).await;
+        bridge.subscribe(json!("home"), true, false);
+        let _ = server.heard_until(|v| v["kind"] == "subscribe").await;
+        bridge.heartbeat();
+
+        sent(
+            &bridge,
+            json!({
+                "kind": "update",
+                "update": { "tasks_changed": { "key": { "project": "forge" }, "tasks": [] } },
+            }),
+        );
+        let _ = server.heard_until(|v| v["kind"] == "unsubscribe").await;
+        let again = server.heard_until(|v| v["kind"] == "subscribe").await;
+        assert_eq!(
+            again["what"],
+            json!("home"),
+            "the board change reads the roster inside the beat"
+        );
+    }
+
     /// **A screen holding no home reads nothing for an ask.** The connect
     /// screen has no roster behind it, so an ask frame there must put no
     /// read on the wire - dropping the held-home guard would subscribe a

@@ -199,7 +199,6 @@ impl Asks {
         let Some(rows) = data.get("fleet").and_then(Value::as_array) else {
             return Vec::new();
         };
-        let boot = data.get("boot_id").and_then(Value::as_str).unwrap_or_default();
         let mut waits: Vec<(SessionSlot, WaitRow)> = Vec::new();
         for row in rows {
             let Some(project) = row.get("project").and_then(Value::as_str) else {
@@ -236,22 +235,26 @@ impl Asks {
         }
         let mut notices = Vec::new();
         for (slot, group) in seats {
-            let mut announced = false;
+            let mut fresh: Vec<&WaitRow> = Vec::new();
             for wait in &group {
-                let mark = format!("{boot}:{}", wait.at);
+                // **The wait's own moment is its identity**: task data, so a
+                // server restart leaves the same open waits the same, and an
+                // edit that moves the row's `updated_at` is not a new ask.
+                let mark = wait.at.clone();
                 if self.wait_seen.get(&(slot.clone(), wait.task.clone())) == Some(&mark) {
                     continue;
                 }
                 self.wait_seen.insert((slot.clone(), wait.task.clone()), mark);
-                if first || announced {
-                    continue;
+                if !first {
+                    fresh.push(wait);
                 }
-                announced = true;
+            }
+            if let Some(head) = fresh.first() {
                 notices.push(WaitNotice {
                     slot: slot.clone(),
-                    task: wait.task.clone(),
-                    words: wait.words.clone(),
-                    more: group.len() - 1,
+                    task: head.task.clone(),
+                    words: head.words.clone(),
+                    more: fresh.len() - 1,
                 });
             }
         }
@@ -307,12 +310,34 @@ fn org_of(data: &Value, project: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{AskKind, Asks};
+    use super::{AskKind, Asks, WaitNotice};
     use forge_primitives::SessionSlot;
     use serde_json::json;
 
     fn seat(label: &str) -> serde_json::Value {
         json!({ "org": "Busytools", "project": "forge", "label": label })
+    }
+
+    /// A home read whose one project holds `waits`: task, owner, words, and
+    /// the second the wait began.
+    fn waiting(waits: &[(&str, &str, &str, u64)]) -> serde_json::Value {
+        let items: Vec<serde_json::Value> = waits
+            .iter()
+            .map(|(task, owner, words, at)| {
+                json!({
+                    "task": task,
+                    "owner": owner,
+                    "subject": "a row",
+                    "words": words,
+                    "at": { "secs_since_epoch": at, "nanos_since_epoch": 0 },
+                })
+            })
+            .collect();
+        json!({
+            "boot_id": "run-1",
+            "projects": [{ "project": { "org": "Busytools", "name": "forge" } }],
+            "fleet": [{ "project": "forge", "attention": items }],
+        })
     }
 
     fn roster(rows: &[(&str, Option<&str>, u64)]) -> serde_json::Value {
@@ -478,6 +503,70 @@ mod tests {
             asks.rising(&roster(&[("w1", Some("question"), 2)]), None, true),
             vec![(worker(), AskKind::Question)],
             "the ask after it is news",
+        );
+    }
+
+    /// **A read's raises on one seat collapse to one notice**, naming the
+    /// first ask and counting the others raised with it.
+    #[test]
+    fn a_reads_wait_raises_collapse_to_one_notice() {
+        let mut asks = Asks::default();
+        asks.waits_rising(&waiting(&[]));
+        let two = waiting(&[("t1", "lead", "sign this off", 5), ("t2", "lead", "look at this", 9)]);
+        assert_eq!(
+            asks.waits_rising(&two),
+            vec![WaitNotice {
+                slot: lead(),
+                task: "t1".to_owned(),
+                words: "sign this off".to_owned(),
+                more: 1,
+            }],
+        );
+        assert!(asks.waits_rising(&two).is_empty(), "the same read is not news");
+    }
+
+    /// **The wait's moment is its identity and the server run is not**: a
+    /// restart changes no task data, so the open waits it finds are the ones
+    /// already announced; the same task raised again at a later moment is
+    /// news.
+    #[test]
+    fn a_waits_moment_is_its_identity_and_the_run_is_not() {
+        let mut asks = Asks::default();
+        asks.waits_rising(&waiting(&[]));
+        assert_eq!(
+            asks.waits_rising(&waiting(&[("t1", "lead", "sign this off", 5)])).len(),
+            1,
+            "the first raise is news",
+        );
+        assert!(
+            asks.waits_rising(&waiting(&[("t1", "lead", "sign this off", 5)])).is_empty(),
+            "the same wait is not news",
+        );
+        let mut restarted = waiting(&[("t1", "lead", "sign this off", 5)]);
+        restarted["boot_id"] = json!("run-2");
+        assert!(
+            asks.waits_rising(&restarted).is_empty(),
+            "a restart re-announces nothing it already announced",
+        );
+        assert_eq!(
+            asks.waits_rising(&waiting(&[("t1", "lead", "sign this off", 9)])).len(),
+            1,
+            "the same task raised again at a new moment is news",
+        );
+    }
+
+    /// **An answered wait leaves no mark**, so the same task raised again is
+    /// news.
+    #[test]
+    fn an_answered_wait_raised_again_is_news() {
+        let mut asks = Asks::default();
+        asks.waits_rising(&waiting(&[]));
+        assert_eq!(asks.waits_rising(&waiting(&[("t1", "lead", "sign this off", 5)])).len(), 1,);
+        assert!(asks.waits_rising(&waiting(&[])).is_empty(), "answered");
+        assert_eq!(
+            asks.waits_rising(&waiting(&[("t1", "lead", "sign this off", 5)])).len(),
+            1,
+            "raised again after the answer",
         );
     }
 }

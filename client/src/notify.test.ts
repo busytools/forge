@@ -241,37 +241,48 @@ describe('which decision waits are news', () => {
   });
 
   /// **A wait is announced once, and a launch announces none.** Its identity
-  /// is the task and the moment it was raised, scoped to the server run, so
-  /// a re-read is not news and a wait answered and raised again is.
+  /// is the task and the moment the wait began - task data, so a server
+  /// restart leaves the same open waits the same, and a re-read is not news.
   it('announces a decision wait once, and nothing at boot', () => {
     const state = askState();
-    const first = waitsRising(state, 'boot-1', [
+    const first = waitsRising(state, [
       { slot: LEAD, task: 't1', words: 'sign this off', at: at(5) },
     ]);
     expect(first, 'the launch seeds').toEqual([]);
-    const again = waitsRising(state, 'boot-1', [
+    const again = waitsRising(state, [
       { slot: LEAD, task: 't1', words: 'sign this off', at: at(5) },
     ]);
     expect(again, 'the same wait is not news').toEqual([]);
-    const second = waitsRising(state, 'boot-1', [
+    const second = waitsRising(state, [
       { slot: LEAD, task: 't1', words: 'sign this off', at: at(5) },
       { slot: LEAD, task: 't2', words: 'look at this', at: at(9) },
     ]);
-    expect(second, 'the second raise is one notice, naming the count').toEqual([
-      { slot: LEAD, task: 't2', words: 'look at this', more: 1 },
+    expect(second, 'the raise is one notice naming the one new ask').toEqual([
+      { slot: LEAD, task: 't2', words: 'look at this', more: 0 },
     ]);
     expect(second.map(waitWords), 'the notification names the seat and the ask').toEqual([
-      { title: 'forge \u{b7} forge', body: 'look at this (and 1 more)' },
+      { title: 'forge \u{b7} forge', body: 'look at this' },
     ]);
   });
 
+  /// **The wait's moment is its identity**: the same task raised again with a
+  /// later start is news, and a restart (which changes no task data) is not.
+  it('announces a wait raised again at a new moment', () => {
+    const state = askState();
+    waitsRising(state, [{ slot: LEAD, task: 't1', words: 'sign this off', at: at(5) }]);
+    expect(
+      waitsRising(state, [{ slot: LEAD, task: 't1', words: 'sign this off', at: at(9) }]),
+      'the same task, raised again, is news',
+    ).toEqual([{ slot: LEAD, task: 't1', words: 'sign this off', more: 0 }]);
+  });
+
   /// **Two raises in one push are one notification**, naming the first ask
-  /// and the count - not one ping per row.
+  /// and the count of the others raised with it - not one ping per row.
   it('collapses two raises in one push into one notice', () => {
     const state = askState();
-    waitsRising(state, 'boot-1', []);
+    waitsRising(state, []);
     expect(
-      waitsRising(state, 'boot-1', [
+      waitsRising(state, [
         { slot: LEAD, task: 't1', words: 'sign this off', at: at(5) },
         { slot: LEAD, task: 't2', words: 'look at this', at: at(9) },
       ]),
@@ -284,9 +295,9 @@ describe('which decision waits are news', () => {
   /// at.
   it("announces a raise on the project's own lead", () => {
     const state = askState();
-    waitsRising(state, 'boot-1', []);
+    waitsRising(state, []);
     expect(
-      waitsRising(state, 'boot-1', [{ slot: LEAD, task: 't1', words: 'sign this off', at: at(5) }]),
+      waitsRising(state, [{ slot: LEAD, task: 't1', words: 'sign this off', at: at(5) }]),
     ).toEqual([{ slot: LEAD, task: 't1', words: 'sign this off', more: 0 }]);
   });
 });
