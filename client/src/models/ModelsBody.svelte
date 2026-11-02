@@ -473,6 +473,11 @@
           - the speech feed's files publish none, so those are checked by length and by the load
         </p>
       {/if}
+      {#if wire.speaking_error !== null}
+        <!-- A speaking key nothing resolves is the row's own failure, and it
+             would otherwise read as a role that simply is not in use. -->
+        <p class="note bad">{wire.speaking_error}</p>
+      {/if}
       {#if wire.speaking_models_dir !== null}
         <p class="note">
           the speaking model's weights and mmproj projector land in
