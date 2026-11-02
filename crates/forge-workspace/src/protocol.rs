@@ -436,6 +436,13 @@ pub enum Command {
     /// Stop the bench in flight. What ran so far is discarded: a partial
     /// corpus is not a result.
     DictateBenchStop,
+    /// Score the speaking loop on the public corpus: synthesize each
+    /// transcript, hear it back through the transcribing and cleanup pair,
+    /// and report the round-trip words, the first-audio latency and the
+    /// render's pace. App-level, same outcome channel as the words bench.
+    VoiceBenchStart,
+    /// Stop the speaking bench in flight: a partial corpus is not a result.
+    VoiceBenchStop,
     /// Begin recording the read-aloud set: the connection that sent this
     /// feeds the audio as binary frames, like a take a client captures, and
     /// no session owns it. App-level; the recording's own state rides the
@@ -846,6 +853,25 @@ pub enum Command {
         #[serde(skip)]
         respond: Option<oneshot::Sender<Option<forge_primitives::ReviewSet>>>,
     },
+    /// One complete hold-to-talk clip: mono 16-bit samples, transcribed by
+    /// the seat's live dictation role and dispatched into the seat as a
+    /// prompt. Hold-to-talk produces a whole clip, so nothing streams.
+    VoiceUtterance {
+        key: SessionSlot,
+        pcm: Vec<i16>,
+        /// The connection that sent it, stamped by the transport that
+        /// received it. `None` is this process's own capture.
+        #[serde(skip)]
+        initiator: Option<u64>,
+    },
+    /// A client turned voice on or off for the seat. The listener set is per
+    /// connection, so the transport stamps which one.
+    VoiceMode {
+        key: SessionSlot,
+        on: bool,
+        #[serde(skip)]
+        initiator: Option<u64>,
+    },
 }
 
 impl Command {
@@ -869,7 +895,9 @@ impl Command {
             | Self::RespondPermission { key, .. }
             | Self::RespondQuestion { key, .. }
             | Self::SetDictateOverride { key, .. }
-            | Self::ResetDictateOverrides { key } => Some(key),
+            | Self::ResetDictateOverrides { key }
+            | Self::VoiceUtterance { key, .. }
+            | Self::VoiceMode { key, .. } => Some(key),
             Self::SpawnProject { .. }
             | Self::DictateStream { .. }
             | Self::DictateStop { .. }
@@ -886,6 +914,8 @@ impl Command {
             | Self::DictateDeactivate { .. }
             | Self::DictateBench { .. }
             | Self::DictateBenchStop
+            | Self::VoiceBenchStart
+            | Self::VoiceBenchStop
             | Self::DictateReadAloudStart { .. }
             | Self::DictateReadAloudStop { .. }
             | Self::DictateReadAloudDelete { .. }
@@ -1067,6 +1097,8 @@ impl std::fmt::Debug for Command {
                 f.debug_struct("DictateBench").field("target", target).field("tier", tier).finish()
             }
             Self::DictateBenchStop => f.write_str("DictateBenchStop"),
+            Self::VoiceBenchStart => f.write_str("VoiceBenchStart"),
+            Self::VoiceBenchStop => f.write_str("VoiceBenchStop"),
             Self::DictateReadAloudStart { .. } => f.write_str("DictateReadAloudStart"),
             Self::DictateReadAloudStop { keep, .. } => {
                 f.debug_struct("DictateReadAloudStop").field("keep", keep).finish()
@@ -1183,6 +1215,14 @@ impl std::fmt::Debug for Command {
                 .finish(),
             Self::MarketplaceRepair { name } => {
                 f.debug_struct("MarketplaceRepair").field("name", name).finish()
+            }
+            Self::VoiceUtterance { key, pcm, .. } => f
+                .debug_struct("VoiceUtterance")
+                .field("key", key)
+                .field("samples", &pcm.len())
+                .finish_non_exhaustive(),
+            Self::VoiceMode { key, on, .. } => {
+                f.debug_struct("VoiceMode").field("key", key).field("on", on).finish()
             }
         }
     }
@@ -2113,6 +2153,21 @@ pub enum SessionUpdate {
         id: Uuid,
         ending: forge_primitives::document::DocumentHandOffEnding,
     },
+    /// One rendered clip of the seat's speech, mono 16-bit samples at
+    /// `sample_rate`. Chunks arrive in `seq` order and every client with
+    /// voice on for the seat plays them.
+    VoiceAudio {
+        key: SessionSlot,
+        seq: u32,
+        sample_rate: u32,
+        pcm: Vec<i16>,
+    },
+    /// The seat's voice state: how many clients are listening, which is what
+    /// the control draws and what a listener note is injected on.
+    VoiceModeState {
+        key: SessionSlot,
+        listeners: u32,
+    },
 }
 
 impl SessionUpdate {
@@ -2157,6 +2212,8 @@ impl SessionUpdate {
             | Self::BrowserHandOffResolved { key, .. }
             | Self::DocumentHandOffPending { key, .. }
             | Self::DocumentHandOffResolved { key, .. }
+            | Self::VoiceAudio { key, .. }
+            | Self::VoiceModeState { key, .. }
             | Self::ChatAppended { key, .. }
             | Self::HookObservation { key, .. }
             | Self::ContextUsageSnapshot { key, .. }
@@ -2496,6 +2553,18 @@ impl std::fmt::Debug for SessionUpdate {
                 .debug_struct("AccountsChanged")
                 .field("loading", &accounts.loading.len())
                 .finish_non_exhaustive(),
+            Self::VoiceAudio { key, seq, sample_rate, pcm } => f
+                .debug_struct("VoiceAudio")
+                .field("key", key)
+                .field("seq", seq)
+                .field("sample_rate", sample_rate)
+                .field("samples", &pcm.len())
+                .finish(),
+            Self::VoiceModeState { key, listeners } => f
+                .debug_struct("VoiceModeState")
+                .field("key", key)
+                .field("listeners", listeners)
+                .finish(),
         }
     }
 }
@@ -2545,6 +2614,10 @@ pub enum DispatchError {
     /// there are no pinned models for a check to be about.
     #[error("dictation is off, so there is no catalogue to check")]
     DictateOff,
+    /// A speaking action was asked for with `[tts]` switched off or no
+    /// model files resolving: there is nothing to speak with.
+    #[error("speech is off: {reason}")]
+    VoiceOff { reason: String },
     /// An install is already running: one at a time, like a check.
     #[error("a model install is already running")]
     Installing,
@@ -2556,10 +2629,10 @@ pub enum DispatchError {
     /// engine cannot be swapped under it.
     #[error("a dictation take is live on {holder}; wait for it to finish")]
     TakeLive { holder: String },
-    /// `forge.toml` pins this role, so the runtime cannot move it; `key`
-    /// is the `[dictate]` key that does.
-    #[error("[dictate] {key} pins this model in forge.toml; remove the key to change it here")]
-    PinnedRole { key: String },
+    /// `forge.toml` pins this role, so the runtime cannot move it; `section`
+    /// and `key` name the table and key that do.
+    #[error("[{section}] {key} pins this model in forge.toml; remove the key to change it here")]
+    PinnedRole { section: &'static str, key: String },
     /// A bench holds the machine: it is measuring an engine, so a swap or
     /// a second run waits for it to finish or stops it.
     #[error("a bench is running; stop it before changing models")]
@@ -2715,6 +2788,79 @@ mod session_update_variants {
             ending(SlackDraftEnding::Answered { approved: true }),
             serde_json::json!({ "answered": { "approved": true } }),
         );
+    }
+
+    /// The voice frames are additive and rename no field, so a round trip is
+    /// the whole contract. `sample_rate` is a plain number rather than a
+    /// closed set, so a model rendering at a rate this build has never seen
+    /// still reaches a client.
+    #[test]
+    fn the_voice_frames_round_trip() {
+        use crate::SessionSlot;
+
+        let key = SessionSlot::from_str_for_test("voice");
+        let utterance = super::Command::VoiceUtterance {
+            key: key.clone(),
+            pcm: vec![1, -2, 3],
+            initiator: None,
+        };
+        let json = serde_json::to_string(&utterance).expect("a command serialises");
+        let super::Command::VoiceUtterance { key: decoded, pcm, .. } =
+            serde_json::from_str(&json).expect("a command decodes")
+        else {
+            panic!("a voice utterance came back as another command");
+        };
+        assert_eq!(decoded, key);
+        assert_eq!(pcm, vec![1, -2, 3]);
+
+        let mode = super::Command::VoiceMode { key: key.clone(), on: true, initiator: None };
+        let json = serde_json::to_string(&mode).expect("a command serialises");
+        let super::Command::VoiceMode { key: decoded, on, .. } =
+            serde_json::from_str(&json).expect("a command decodes")
+        else {
+            panic!("a voice mode came back as another command");
+        };
+        assert_eq!(decoded, key);
+        assert!(on);
+
+        let audio = super::SessionUpdate::VoiceAudio {
+            key: key.clone(),
+            seq: 7,
+            sample_rate: 24_000,
+            pcm: vec![5, 6],
+        };
+        let json = serde_json::to_string(&audio).expect("an update serialises");
+        let super::SessionUpdate::VoiceAudio { key: decoded, seq, sample_rate, pcm } =
+            serde_json::from_str(&json).expect("an update decodes")
+        else {
+            panic!("a voice audio frame came back as another update");
+        };
+        assert_eq!(decoded, key);
+        assert_eq!((seq, sample_rate, pcm), (7, 24_000, vec![5, 6]));
+
+        let state = super::SessionUpdate::VoiceModeState { key: key.clone(), listeners: 2 };
+        let json = serde_json::to_string(&state).expect("an update serialises");
+        let super::SessionUpdate::VoiceModeState { key: decoded, listeners } =
+            serde_json::from_str(&json).expect("an update decodes")
+        else {
+            panic!("a voice mode frame came back as another update");
+        };
+        assert_eq!((decoded, listeners), (key.clone(), 2));
+
+        let unknown = serde_json::json!({
+            "voice_audio": {
+                "key": serde_json::to_value(&key).expect("a slot renders"),
+                "seq": 0,
+                "sample_rate": 12_345,
+                "pcm": [],
+            }
+        });
+        let super::SessionUpdate::VoiceAudio { sample_rate, .. } =
+            serde_json::from_value(unknown).expect("an unknown rate decodes")
+        else {
+            panic!("a voice audio frame came back as another update");
+        };
+        assert_eq!(sample_rate, 12_345);
     }
 
     /// What one parse of the enum found.

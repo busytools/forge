@@ -2940,10 +2940,25 @@ details.leaf.nrow details.raw pre { margin: 4px 0 2px; padding: 6px 9px; border:
 /* The mic lifts to the primary on hover, matching its sibling controls (the
    send's accent), rather than the sheet's generic text lift. */
 .mic:hover { color: var(--accent); }
-/* A finger's target for the mic, the send and the stop: each is 24px by its own
-   box, and the mic also carries the hold that a drift off 24px would cancel. */
+/* The voice switch beside the mic, in the same 24px box. Its state is the
+   icon's own shape - a struck mic when off, a speaker while a reply plays -
+   with a mark over the box while a hold records, so no state is colour's
+   alone. */
+.voice { position: relative; flex: none; width: 24px; height: 24px;
+  display: grid; place-items: center; color: var(--dim); background: none;
+  border: 0; padding: 0; cursor: pointer; }
+.voice:hover, .voice.on { color: var(--accent); }
+.voice .dot { position: absolute; top: 0; right: 0; width: 6px; height: 6px;
+  border-radius: 50%; background: var(--bad); }
+/* A voice line - a refused open, or a hold cut at its bound - beside the
+   control that caused it. */
+.vline { flex: none; font-family: var(--mono); font-size: var(--fs-label);
+  color: var(--dim); white-space: nowrap; }
+/* A finger's target for the mic, the voice switch, the send and the stop: each
+   is 24px by its own box, and the mic also carries the hold that a drift off
+   24px would cancel. */
 @media (pointer: coarse) {
-  .mic, .send, .stop { min-height: 44px; min-width: 44px; }
+  .mic, .voice, .send, .stop { min-height: 44px; min-width: 44px; }
   .pop .hd .x { min-width: 44px; }
 }
 /* The send, at the mic's 24px box and centred in whatever box it gets, so the

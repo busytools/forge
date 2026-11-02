@@ -21,7 +21,7 @@ place.
 | The queue pile | [queue.md](./queue.md) | `web-queue.html` |
 | Board | [board.md](./board.md) | `web-board.html` |
 | Review | [review.md](./review.md) | `web-review.html` |
-| Dictation models | [dictate-models.md](./dictate-models.md) | `web-dictate-models.html` |
+| Models | [models.md](./models.md) | `web-models.html` |
 | Extensions | [extensions.md](./extensions.md) | `web-extensions.html` |
 | Settings | [settings.md](./settings.md) | `web-settings.html` |
 | Files | [files.md](./files.md) | `web-files.html` |

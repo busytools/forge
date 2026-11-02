@@ -929,6 +929,178 @@ async fn a_take_is_heard_by_its_own_connection_and_no_other() {
     }
 }
 
+/// A voice engine that records what it was asked to speak and answers one
+/// clip per request, so the wire's order is the render's order.
+struct RecordingVoice {
+    requests: Arc<Mutex<Vec<String>>>,
+}
+
+impl forge_tts::Engine for RecordingVoice {
+    fn speak(
+        &self,
+        request: forge_tts::SpeakRequest,
+    ) -> tokio::sync::mpsc::Receiver<Result<forge_tts::Chunk, forge_tts::Error>> {
+        self.requests.lock().expect("unpoisoned").push(request.text);
+        let (sender, receiver) = tokio::sync::mpsc::channel(2);
+        tokio::spawn(async move {
+            let _ = sender
+                .send(Ok(forge_tts::Chunk { seq: 0, sample_rate: 24_000, pcm: vec![1, 2, 3] }))
+                .await;
+        });
+        receiver
+    }
+}
+
+/// The voice channel crosses the socket: the switch is answered with the
+/// seat's listener count, every rendered clip reaches the connection
+/// subscribed to that seat in render order, and a clip nothing can
+/// transcribe draws a notice rather than reaching the agent.
+#[tokio::test]
+async fn a_voice_switch_is_answered_and_its_clips_reach_the_subscriber() {
+    let (url, fleet) = a_server().await;
+    let mut agent = fleet.install_agent("TestOrg", "proj", "lead");
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    fleet.workspace().install_voice_engine_for_test(Arc::new(RecordingVoice {
+        requests: Arc::clone(&requests),
+    }));
+
+    let mut client = connect(&url).await;
+    send(
+        &mut client,
+        ClientMessage::Subscribe {
+            what: Subject::Session(lead_seat()),
+            answering: true,
+            review: false,
+        },
+    )
+    .await;
+    let _ = snapshot_answering(&mut client).await;
+
+    send(
+        &mut client,
+        ClientMessage::Command {
+            command: Box::new(Command::VoiceMode { key: lead_seat(), on: true, initiator: None }),
+            reply_to: None,
+        },
+    )
+    .await;
+    let heard = update_until(&mut client, "the seat's voice state", |update| {
+        matches!(update, SessionUpdate::VoiceModeState { listeners: 1, .. })
+    })
+    .await;
+    assert!(
+        matches!(heard, SessionUpdate::VoiceModeState { ref key, .. } if *key == lead_seat()),
+        "the state is the seat's own: {heard:?}",
+    );
+
+    fleet
+        .workspace()
+        .voice_say_for_test(&lead_seat(), "One. Two.".to_owned())
+        .await
+        .expect("queued");
+
+    let mut seqs = Vec::new();
+    while seqs.len() < 2 {
+        match next_server_within(&mut client, 5_000).await {
+            Some(ServerMessage::Update { update, .. }) => {
+                if let SessionUpdate::VoiceAudio { key, seq, sample_rate, pcm } = *update {
+                    assert_eq!(key, lead_seat(), "a clip is the seat's own");
+                    assert_eq!(sample_rate, 24_000);
+                    assert!(!pcm.is_empty());
+                    seqs.push(seq);
+                }
+            }
+            other => panic!("waited for a clip, heard {other:?}"),
+        }
+    }
+    assert_eq!(seqs, vec![0, 1], "the clips cross in render order");
+    assert_eq!(
+        requests.lock().expect("unpoisoned").as_slice(),
+        ["One.".to_owned(), "Two.".to_owned()],
+        "one request per sentence, in order",
+    );
+
+    // No dictation engine is armed in this fixture, so the utterance cannot
+    // be transcribed: it draws a notice and reaches no agent.
+    send(
+        &mut client,
+        ClientMessage::Command {
+            command: Box::new(Command::VoiceUtterance {
+                key: lead_seat(),
+                pcm: vec![0; 1_600],
+                initiator: None,
+            }),
+            reply_to: None,
+        },
+    )
+    .await;
+    update_until(&mut client, "the utterance's refusal", |update| {
+        matches!(update, SessionUpdate::Notice { .. })
+    })
+    .await;
+    assert!(
+        agent.try_recv().is_err(),
+        "an untranscribable utterance dispatches nothing into the seat",
+    );
+}
+
+/// A listener that drops without saying goodbye leaves the seat's count: the
+/// server's own connection teardown takes it off, and a client still
+/// listening hears the count fall.
+#[tokio::test]
+async fn a_dropped_listener_leaves_the_seats_count() {
+    let (url, fleet) = a_server().await;
+    fleet.install_agent("TestOrg", "proj", "lead");
+    fleet.workspace().install_voice_engine_for_test(Arc::new(RecordingVoice {
+        requests: Arc::new(Mutex::new(Vec::new())),
+    }));
+
+    let mut watcher = connect(&url).await;
+    send(
+        &mut watcher,
+        ClientMessage::Subscribe {
+            what: Subject::Session(lead_seat()),
+            answering: true,
+            review: false,
+        },
+    )
+    .await;
+    let _ = snapshot_answering(&mut watcher).await;
+    send(
+        &mut watcher,
+        ClientMessage::Command {
+            command: Box::new(Command::VoiceMode { key: lead_seat(), on: true, initiator: None }),
+            reply_to: None,
+        },
+    )
+    .await;
+    update_until(&mut watcher, "the first listener", |update| {
+        matches!(update, SessionUpdate::VoiceModeState { listeners: 1, .. })
+    })
+    .await;
+
+    // A second connection turns voice on and then simply goes away.
+    let mut leaver = connect(&url).await;
+    send(
+        &mut leaver,
+        ClientMessage::Command {
+            command: Box::new(Command::VoiceMode { key: lead_seat(), on: true, initiator: None }),
+            reply_to: None,
+        },
+    )
+    .await;
+    update_until(&mut watcher, "the second listener", |update| {
+        matches!(update, SessionUpdate::VoiceModeState { listeners: 2, .. })
+    })
+    .await;
+    drop(leaver);
+
+    update_until(&mut watcher, "the count falling back", |update| {
+        matches!(update, SessionUpdate::VoiceModeState { listeners: 1, .. })
+    })
+    .await;
+}
+
 /// **The surface a client names on its take crosses the socket into its
 /// end.** The transport rebuilds the command to stamp the connection, and a
 /// field dropped there never reaches the record the words are handed back

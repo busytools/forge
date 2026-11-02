@@ -16,6 +16,7 @@
   import Autocomplete from './Autocomplete.svelte';
   import TakeCard from './TakeCard.svelte';
   import DictateControl from './DictateControl.svelte';
+  import VoiceControl from '../voice/control.svelte';
   import DictationPanel from './DictationPanel.svelte';
   import Dock from './Dock.svelte';
   import Field from './Field.svelte';
@@ -58,7 +59,7 @@
   /** How long a landed take's border holds its green beat, which the book states. */
   const BEAT_MS = 450;
 
-  let { record, slot, connection, seat, dictation, reading }: ComposerProps = $props();
+  let { record, slot, connection, seat, dictation, reading, voice }: ComposerProps = $props();
 
   /**
    * Every box this composer has opened, held for as long as it lives: leaving a
@@ -1563,6 +1564,14 @@
             micEl = el;
           }}
         />
+      {/if}
+      <!-- Keyed by the seat: the voice switch belongs to the seat the box
+           shows, and moving seats turns the old one off rather than leaving a
+           listener behind. -->
+      {#if voice}
+        {#key boxKey(slot)}
+          <VoiceControl {connection} {slot} />
+        {/key}
       {/if}
       {#if running}
         <button class="stop" type="button" title="stop" aria-label="stop" onclick={stop}>

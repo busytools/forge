@@ -122,6 +122,8 @@ export const modelsWire: DictateModelsWire = modelsFrom({
   activate: { state: 'idle' },
   bench: { state: 'idle' },
   results: [],
+  speaking_bench: { state: 'idle' },
+  speaking_results: [],
   read_aloud: {
     recordings: [],
     recording: false,

@@ -39,6 +39,9 @@ forge-workspace = { workspace = true, features = ["testing", "test-helpers"] }
 # dictate crate's own facts and bench metrics. Dev-only for the same
 # reason as the deps above.
 forge-dictate = { workspace = true }
+# The speaking bench's result rides that same snapshot, and its metrics
+# are this crate's type.
+forge-tts = { workspace = true }
 # `sdk_scenarios_worktree_spawn` needs a fresh git repo per run to give
 # `--worktree` something to fork off. Dev-only because it's a test fixture
 # concern.

@@ -53,6 +53,11 @@ pub struct DictateModelsSnapshot {
     pub bench: crate::bench::BenchState,
     /// What benches have measured on this machine, newest first.
     pub results: Vec<crate::bench::BenchResult>,
+    /// Where the speaking loop's bench got to: idle, running with its
+    /// tick, or failed with its reason.
+    pub speaking_bench: crate::bench::SpeakingBenchState,
+    /// What speaking benches have measured on this machine, newest first.
+    pub speaking_results: Vec<crate::bench::SpeakingBenchResult>,
     /// The read-aloud set: whether this machine has one, and its passage.
     pub read_aloud: crate::bench::ReadAloudState,
 }
@@ -462,15 +467,29 @@ impl crate::Workspace {
         let state = self.dictate_catalogue.lock();
         let entries: &[CatalogueEntry] =
             state.catalogue.as_ref().map_or(&[], |catalogue| catalogue.entries.as_slice());
+        let mut in_use =
+            if settings.enabled { in_use(entries, &active, &preflight) } else { Vec::new() };
+        if config.tts.enabled {
+            let pin = config.tts.pin();
+            for row in &self.voices().snapshot.models {
+                in_use.push(InUseModel {
+                    role: row.role,
+                    file: row.file.clone(),
+                    size: pin.size,
+                    sha256: pin.sha256.clone(),
+                    state: row.state.clone(),
+                    facts: pin.facts.clone(),
+                    catalogue: None,
+                    from: crate::install::ActiveFrom::Pin,
+                    at: None,
+                });
+            }
+        }
 
         DictateModelsSnapshot {
             enabled: settings.enabled,
             models_dir: settings.models_dir(),
-            in_use: if settings.enabled {
-                in_use(entries, &active, &preflight)
-            } else {
-                Vec::new()
-            },
+            in_use,
             check: state.check.clone(),
             updates: if settings.enabled { updates_for(entries, &specs) } else { Vec::new() },
             rows: entries.iter().map(row_for).collect(),
@@ -479,6 +498,8 @@ impl crate::Workspace {
             installed: self.installed_models(),
             bench: self.dictate_bench(),
             results: self.bench_results(),
+            speaking_bench: self.speaking_bench(),
+            speaking_results: self.speaking_bench_results(),
             read_aloud: self.read_aloud_state(),
         }
     }

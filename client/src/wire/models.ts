@@ -11,7 +11,7 @@
 import { modelStateFrom, narrow, type DictateModelState } from './types';
 
 /** What a model is for, as this page words it. `other` is a role this client is older than. */
-export type ModelRole = 'transcribing' | 'normalization' | 'other';
+export type ModelRole = 'transcribing' | 'normalization' | 'speaking' | 'other';
 
 /** Facts the pin declares about its checkpoint. */
 export interface ModelFacts {
@@ -127,7 +127,7 @@ export interface BenchTarget {
 }
 
 /** Which clips a run scores against, in the core's own names. */
-export type BenchTier = 'consensus' | 'read_aloud' | 'other';
+export type BenchTier = 'consensus' | 'read_aloud' | 'public' | 'other';
 
 /** Where one run's time went, summed over its clips. */
 export interface StageTotals {
@@ -180,6 +180,29 @@ export type BenchState =
     }
   | { state: 'failed'; target: BenchTarget; reason: string }
   | { state: 'unknown' };
+
+/** Where the speaking bench got to, with the same `unknown` rule. */
+export type SpeakingBenchState =
+  | { state: 'idle' }
+  | { state: 'running'; clip: number; clips: number }
+  | { state: 'failed'; reason: string }
+  | { state: 'unknown' };
+
+/** What one speaking run measured: the round trip and the render's pace. */
+export interface SpeakingBenchMetrics {
+  clips: number;
+  round_trip_wer: number;
+  first_audio_ms: number;
+  realtime_factor: number;
+}
+
+/** One finished speaking bench, kept under the model and corpus it ran. */
+export interface SpeakingBenchResult {
+  file: string;
+  metrics: SpeakingBenchMetrics;
+  at: string;
+  corpus: CorpusId;
+}
 
 /** One recording of the read-aloud passage, as the page lists it. */
 export interface ReadAloudRecording {
@@ -286,11 +309,13 @@ export interface DictateModelsWire {
   installed: InstalledModel[];
   bench: BenchState;
   results: BenchResult[];
+  speaking_bench: SpeakingBenchState;
+  speaking_results: SpeakingBenchResult[];
   read_aloud: ReadAloudState;
 }
 
 /** The roles the core names. */
-const ROLES: Exclude<ModelRole, 'other'>[] = ['transcribing', 'normalization'];
+const ROLES: Exclude<ModelRole, 'other'>[] = ['transcribing', 'normalization', 'speaking'];
 
 /** The check states the server writes; the fifth is this client's own. */
 const CHECK_STATES = ['never', 'checking', 'fresh', 'unreachable'] as const;
@@ -307,6 +332,9 @@ const ACTIVATE_STATES = ['idle', 'activating', 'failed'] as const;
 /** The bench states the server writes; the fourth is this client's own. */
 const BENCH_STATES = ['idle', 'running', 'failed'] as const;
 
+/** The speaking bench's states, on the same terms. */
+const SPEAKING_BENCH_STATES = ['idle', 'running', 'failed'] as const;
+
 /** The verdicts the core writes; the fifth is this client's own. */
 const VERDICTS: Exclude<UpdateVerdict, 'unknown'>[] = [
   'recommended',
@@ -316,7 +344,7 @@ const VERDICTS: Exclude<UpdateVerdict, 'unknown'>[] = [
 ];
 
 /** The bench tiers the core names; the last is this client's own. */
-const BENCH_TIERS: Exclude<BenchTier, 'other'>[] = ['consensus', 'read_aloud'];
+const BENCH_TIERS: Exclude<BenchTier, 'other'>[] = ['consensus', 'read_aloud', 'public'];
 
 /** The entry kinds the core names; the last is this client's own. */
 const KINDS: Exclude<CatalogueKind, 'other'>[] = ['asr', 'normalizer'];
@@ -362,8 +390,24 @@ export function modelsFrom(data: DictateModelsWire): DictateModelsWire {
       target: targetFrom(result.target),
       tier: narrow(result.tier, BENCH_TIERS, 'other'),
     })),
+    speaking_bench: speakingBenchFrom(data.speaking_bench),
+    speaking_results: (data.speaking_results ?? []).filter(
+      (result) => typeof result.file === 'string' && typeof result.at === 'string',
+    ),
     read_aloud: readAloudFrom(data.read_aloud),
   };
+}
+
+/**
+ * The speaking bench's state, narrowed where it enters: a page that trusted
+ * this shape would draw a run that is not there.
+ */
+function speakingBenchFrom(value: SpeakingBenchState | undefined): SpeakingBenchState {
+  const state: string | undefined = value?.state;
+  if (typeof state !== 'string' || !(SPEAKING_BENCH_STATES as readonly string[]).includes(state)) {
+    return { state: 'unknown' };
+  }
+  return value as SpeakingBenchState;
 }
 
 /** One catalogue row, with the kind narrowed the way the wire's roles are. */

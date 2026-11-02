@@ -49,7 +49,7 @@ while a seat chip opens its own seat and `open board` opens the
 click, as a sleeping seat is from a session page's rail.
 
 **Four cards are ways in.** The dictation card opens the
-[models page](./dictate-models.md), where the pins, the catalogue check and
+[models page](./models.md), where the pins, the catalogue check and
 the feed are drawn; the extensions card opens the
 [extensions page](./extensions.md), where the plugin inventory, its
 components and the marketplaces are; the settings card opens the

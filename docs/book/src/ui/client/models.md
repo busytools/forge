@@ -1,13 +1,22 @@
-# Dictation models
+# Models
 
-The page that shows which dictation models forge runs, what the runtime's
-own catalogue publishes, which models this machine has downloaded, and how
-to bring a candidate onto the machine and make it the one dictation runs. It
-is drawn from one snapshot of the `dictate_models` subject - the models in
+The page that shows which local models forge runs, what the runtime's own
+catalogue publishes, which models this machine has downloaded, and how to
+bring a candidate onto the machine and make it the one a role runs. It is
+drawn from one snapshot of the `dictate_models` subject - the models in
 use, the catalogue check, the proposals, every row of the feed, the installed
 set and the download/activation state - and redrawn from the update stream
 after it. The drawing it is held against is
-[web-dictate-models.html](./web-dictate-models.html), beside this page.
+[web-models.html](./web-models.html), beside this page.
+
+**Three roles, one page.** The transcribing and cleanup roles are the
+dictation engine's; the speaking role is speech out, pinned to the
+Qwen3-TTS model and its codec projector. Every role's row is drawn the same
+way - the spec's facts, the feed's measurement when it has one, the state
+chip, where the choice came from - and `[tts] speaking_model` pins the
+speaking role exactly as the `[dictate]` keys pin theirs.
+The name is the page's, not a crate's: `forge-dictate` and `forge-tts` stay
+what they are.
 
 It lives at `/models`, which is its own address rather than a session's: the
 models belong to the forge, not to a seat, and the subject carries no slot.
@@ -19,6 +28,7 @@ read and the actions are the server's (`Subject::DictateModels`,
 `Command::DictateActivate`, `Command::DictateDeactivate`,
 `Command::DictateUninstall`, `Command::DictateBench`,
 `Command::DictateBenchStop`, `Command::DictateBenchDelete`,
+`Command::VoiceBenchStart`, `Command::VoiceBenchStop`,
 `Command::DictateReadAloudStart`, `Command::DictateReadAloudStop` and
 `Command::DictateReadAloudDelete`), and this page is the view of either.
 
@@ -31,7 +41,7 @@ read and the actions are the server's (`Subject::DictateModels`,
 | In use | one row per model forge runs: its role - **the selector for the updates below** - its file, the facts the spec declares (size, quant, parameters, digest, licence), the feed's own measurement when it has one, the live state as a chip, and a line saying where the model came from | `in_use` |
 | Updates | what a check reads, the check's own line - up to date, an update, checking, unreachable, or a state this client cannot read - with both roles' news under it, then the selected role's recommendation with the one control that takes it, then the comparison table behind a door; the cleanup role's own view instead, where no feed measures a normalizer: its candidates with each one's own runs under it | `check`, `updates`, `rows`, `installed`, `results` |
 | Find a model | a box that filters the feed's rows as it is typed, with the feed's families and its fastest rows offered before a name is known: the variant, the quant a machine would run, the measured speed and error, the licence, what it transcribes, and the row's control. Each row links to the entry's own document | `rows` |
-| Benchmark | the fixtures first - the read-aloud set's own state with the record control and the count line - then the one press that scores the picks on this machine and leaves a verdict, then two doors: every run scored here, and every model a bench can run, with the control that removes a downloaded model nothing runs | `bench`, `read_aloud`, `results` |
+| Benchmark | the fixtures first - the read-aloud set's own state with the record control and the count line - then the one press that scores the picks on this machine and leaves a verdict, then the speaking loop's own card, then two doors: every run scored here, and every model a bench can run, with the control that removes a downloaded model nothing runs | `bench`, `read_aloud`, `results`, `speaking_bench`, `speaking_results` |
 
 **A model in use is drawn from its spec.** The first fact line comes off the
 `ModelSpec` - the size, quant, parameters, digest and licence the loader
@@ -41,7 +51,11 @@ measurement and its languages. A model with no join says `not in the feed`
 rather than borrowing a measurement. The third line says where the model
 came from: `compiled default`, `installed here`, or `pinned by [dictate]
 <key>` - naming the key, because that key is what has to go for the runtime
-to move the role.
+to move the role. **The speaking row says its files are placed by hand**:
+the catalogue's install path fetches one file per variant from the speech
+feed, and the speaking model is a two-file family that feed does not carry,
+so the row names the `[tts]` models_dir rather than leaving a waiting chip
+with no control under it.
 
 **The check's line is the feed's freshness and its proposal at once.** A
 fresh check with nothing to propose reads `up to date`; the same check with
@@ -128,15 +142,21 @@ row carries the control that takes it, the same install-then-load press the
 sweep's verdict offers, and none at all when the pick IS the model that
 runs: a switch onto what is already running changes nothing.
 
-**The bench scores a model on this machine's own material, and nothing is
-embedded.** A shipped binary carries no audio: a machine with no material
-says so, and the way to get material is to record it. Two tiers. The
+**The bench scores a model on this machine's own material, and on one
+bundled slice.** A shipped binary carries none of the person's audio: a
+machine with no recordings says so, and the way to get material is to record
+it - or to score the public slice, which every binary carries. Three tiers. The
 consensus tier is the takes forge has saved here, the candidate's words read
 against the words the model in use recorded beside each one - speed and
 agreement, and agreement is a signal rather than an error, because the other
 side is another model's output. The read-aloud tier is the one passage
-somebody read aloud on purpose: its words are known, so it is the only corpus
-that can score term accuracy and word error rate. **The page records that
+somebody read aloud on purpose: its words are known, so it is the corpus
+that scores term accuracy as well as word error rate. The public tier is a
+fixed LibriSpeech test-clean slice embedded in the binary with its
+transcripts, digests and attribution; the first bench installs it beside the
+models, so a machine that has never recorded anything still has something to
+score. A clip whose bytes are not the ones its manifest names is refused by
+the clip's own name rather than scored. **The page records that
 passage itself**: the section draws the passage and the record control, and a
 press opens this client's microphone through the composer's own capture. The
 recording is not a take - no session owns it and nothing is transcribed,
@@ -153,10 +173,21 @@ and a stop that discards a partial corpus rather than saving one. Each saved
 result draws its figures, what it means against the model in use on the same
 corpus, and a delete.
 
+**The other direction has its own card.** The speaking model says each
+public transcript, the transcribing pair hears the audio back, and the words
+are scored again: round-trip word error, first audio and the render's pace.
+It sits beside the words bench and never mixes into its results, because the
+two measure different things - one scores a model on audio that exists, the
+other scores the loop from words to audio and back. One press scores it, a
+stop discards a partial corpus, and the newest saved run draws under the
+card. It scores the same bundled public slice the words bench's public tier
+does, so the two directions read on one yardstick.
+
 **The benchmark reads as three things, not seven.** The fixtures come
 first, in a count line and the set's own card - what a run scores on, which
-is the reader's to change. Then the one press. Then the verdict, and under
-it two doors: every run scored here, and every model a bench can run. Both
+is the reader's to change. Then the one press. Then the verdict, the
+speaking loop's own card, and under them two doors: every run scored here,
+and every model a bench can run. Both
 lists are long and neither is what the section is for, so they fold behind
 a heading that carries their count. The catalogue above does not fold: it
 is a lookup a reader opens the page for, not evidence for anything.

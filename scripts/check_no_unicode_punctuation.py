@@ -6,9 +6,9 @@ forge-authored source, docs and config. Ellipsis U+2026 is ALLOWED
 are excluded - they mirror upstream wire payloads byte-for-byte and may
 legitimately carry Unicode prose from the CLI's own logs.
 Nothing else is: forge-authored prose that happens to sit beside captured
-data is still scanned, `VENDOR.md` included. Files git ignores (.gitignore / .git/info/exclude, e.g.
-local audit scratch) are skipped too: the gate polices committable forge
-files, not whatever scratch happens to sit in the working tree.
+data is still scanned. Files git ignores (.gitignore / .git/info/exclude,
+e.g. local audit scratch) are skipped too: the gate polices committable
+forge files, not whatever scratch happens to sit in the working tree.
 
 When a banned codepoint is functionally required (render glyph,
 ASCII-art element, legitimate punctuation in test fixtures), use an
@@ -76,9 +76,7 @@ EXCLUDE_DIRS_ANY_DEPTH = {
 # Somebody else's bytes, which this repo cannot fix and does not author.
 # `reference-captures/` is NOT excluded: its `.jsonl` captures already fall
 # outside INCLUDE_SUFFIXES, and the one thing a path exclusion there would
-# hide is the forge-authored README. The three named files are the web
-# view's vendored scripts; `VENDOR.md` beside them is forge-authored and
-# stays scanned.
+# hide is the forge-authored README.
 #
 # Repo-relative, and matched as a path prefix rather than a substring: these
 # entries began with a leading `/` and were tested with `in`, so neither half
@@ -203,7 +201,7 @@ def main(argv):
     )
     print("  - Ellipsis U+2026 is ALLOWED (truncation glyph).", file=sys.stderr)
     print(
-        "  - Excluded: the captured test baselines, the feed's own doc fixtures, and the three vendored scripts.",
+        "  - Excluded: the captured test baselines and the feed's own doc fixtures.",
         file=sys.stderr,
     )
     print(

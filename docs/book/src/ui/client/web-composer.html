@@ -135,9 +135,13 @@
     vertical-align: text-bottom; animation: blink 1s steps(1) infinite; }
   @keyframes blink { 50% { opacity: 0; } }
   .ctls { margin-left: auto; flex: none; display: flex; align-items: center; gap: 10px; }
-  .mic, .send, .stop { flex: none; width: 24px; height: 24px;
+  .mic, .voice, .send, .stop { flex: none; width: 24px; height: 24px;
     display: grid; place-items: center; }
   .mic { color: var(--dim); }
+  /* The voice switch: the same box as the mic, its state carried by the
+     icon's shape (a struck mic when off, a speaker while a reply plays). */
+  .voice { position: relative; color: var(--dim); }
+  .voice.on { color: var(--accent); }
   .send { color: var(--accent); }
   .stop { color: var(--dim); }
   .hints { display: inline-flex; align-items: center; gap: 4px; flex: none;
@@ -357,6 +361,8 @@
   <symbol id="i-file" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></symbol>
   <symbol id="i-bell" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 6 2 7 2 7H4s2-1 2-7"/><path d="M10.5 20a2 2 0 0 0 3 0"/></symbol>
   <symbol id="i-mic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="10" height="12" x="7" y="3" rx="5"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v3"/></symbol>
+  <symbol id="i-mic-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 2l20 20"/><path d="M9 9v3a3 3 0 0 0 5.12 2.12"/><path d="M15 9.34V5a3 3 0 0 0-5.94-.6"/><path d="M17 16.95A7 7 0 0 1 5 12v-2"/><path d="M19 10v2a7 7 0 0 1-.11 1.23"/><path d="M12 19v3"/></symbol>
+  <symbol id="i-sound" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M19 5a10 10 0 0 1 0 14"/></symbol>
   <symbol id="i-web" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3.5 9h17M3.5 15h17"/><path d="M12 3a14 14 0 0 1 0 18a14 14 0 0 1 0-18z"/></symbol>
   <symbol id="i-question" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M9.1 9a3 3 0 1 1 4.2 2.8c-.8.5-1.3 1.2-1.3 2.2"/><path d="M12 17h.01"/></symbol>
   <symbol id="i-warning" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4"/><path d="M12 17h.01"/></symbol>
@@ -390,11 +396,16 @@ not fit collapse behind <span class="mono">+N</span>, which lists them.</p>
       <div class="comp"><div class="surf">
         <div class="slot"><div class="line">
           <span class="txt ph">Type a message...</span>
-          <span class="ctls"><span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span></span>
+          <span class="ctls">
+            <span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span>
+            <span class="voice" title="turn voice on"><svg class="ic"><use href="#i-mic-off"/></svg></span>
+          </span>
         </div></div>
       </div></div>
       <p class="note" style="margin:8px 0 0">Nothing to report, so the live row does not draw
-      and the field is the whole bar.</p>
+      and the field is the whole bar. The voice switch beside the mic draws when
+      <span class="mono">[tts] enabled</span> is set; a press turns it on, a hold talks, and a
+      reply plays in the order the engine rendered it.</p>
     </div>
     <div class="col">
       <div class="lab">idle, a live seat <span class="h">82px</span></div>

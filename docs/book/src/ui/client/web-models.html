@@ -285,14 +285,16 @@
 <body>
 <div class="page">
 
-  <h1>Dictation models</h1>
+  <h1>Models</h1>
   <p class="sub">The page at <span class="mono">/models</span>, as the client draws it: what is
   pinned, what the transcribe.cpp catalogue proposes, the feed's rows the search reads, and the
-  controls that bring a candidate onto the machine and make it the one dictation runs. One
-  read of <span class="mono">Subject::DictateModels</span> fills all of it; a check landing, the
-  models finishing their load, and a download or activation landing are the updates that move it.
-  The benchmark section's own runs - the takes, the read-aloud set, and the one press that
-  scores the picks - are on the same read.</p>
+  controls that bring a candidate onto the machine and make it the one a role runs. The three
+  roles are the transcribing and cleanup models and the speaking model speech out is drawn
+  from. One read of <span class="mono">Subject::DictateModels</span> fills all of it; a check
+  landing, the models finishing their load, and a download or activation landing are the updates
+  that move it. The benchmark section's own runs - the takes, the read-aloud set, the bundled
+  public slice, the one press that scores the picks and the speaking loop's own card - are on
+  the same read.</p>
 
   <h2>The page</h2>
   <div class="tile">
@@ -337,6 +339,21 @@
             <div class="meta"><b>1.51 GB</b> &middot; F16 &middot; 596M params &middot; sha 0370da4f &middot; Apache-2.0 + naming clause</div>
             <div class="meta">llama.cpp &middot; not in the feed</div>
             <div class="meta src">compiled default</div>
+          </div>
+          <div class="side"><span class="chip"><span class="dot ok"></span>loaded</span></div>
+        </div>
+
+        <!-- The speaking model is a compiled pin whose two files are placed
+             by hand: the catalogue installs one file per variant from the
+             speech feed, and there is no speaking entry to fetch. -->
+        <div class="model">
+          <button class="pick" type="button" aria-pressed="false" aria-label="show the speaking updates" title="show the speaking updates"></button>
+          <span class="role">speaking</span>
+          <div class="facts">
+            <div class="nm">Qwen3-TTS-12Hz-1.7B-Base-Q8_0.gguf</div>
+            <div class="meta"><b>1.85 GB</b> &middot; Q8_0 &middot; sha ac7931ae &middot; Apache-2.0</div>
+            <div class="meta">llama.cpp &middot; not in the feed</div>
+            <div class="meta src">placed by hand: the weights and their mmproj projector under the [tts] models_dir</div>
           </div>
           <div class="side"><span class="chip"><span class="dot ok"></span>loaded</span></div>
         </div>
@@ -397,6 +414,8 @@
         <p class="note">fixtures &middot; the last run scored 42 takes &middot; 1 read-aloud recording</p>
 
         <p class="note">the read-aloud set &middot; every recording is scored against the one passage on 6 known terms &middot; a run over them reads term accuracy and word error, where the takes read agreement</p>
+
+        <p class="note">the public corpus &middot; a fixed LibriSpeech test-clean slice embedded in the binary with its transcripts, installed beside the models on the first bench &middot; a clip whose bytes are not the ones its manifest names is refused by name, and a machine with no recordings still has something to score</p>
         <ul class="list" aria-label="Read-aloud recordings">
           <li>
             <span class="rec"><span class="nm">0:41</span><span class="facts"><b>1 MB</b> &middot; sha 980227df &middot; recorded 06:04:23</span></span>
@@ -437,6 +456,17 @@
           <span class="detail">switching downloads 396 MB again - the sweep took the file back when the verdict came in</span>
         </div>
 
+        <!-- The other direction: the speaking model, the pair that
+             transcribes, and the round trip's own figures. -->
+        <div class="status">
+          <span class="dot off"></span>
+          <span class="t">score the speaking loop</span>
+          <span class="spacer"></span>
+          <button class="chip" type="button">score the loop</button>
+          <span class="detail">the speaking model says each public transcript &middot; the transcribing pair hears it back and the words are scored again &middot; it scores the bundled public corpus</span>
+          <span class="detail">last run, Qwen3-TTS-12Hz-1.7B-Base-Q8_0.gguf &middot; measured 01:42: <b>round-trip WER 4.1%</b> &middot; <b>first audio 3.4s</b> &middot; 0.31&times; realtime &middot; 12 clips &middot; Qwen3-TTS-12Hz-1.7B-Base-Q8_0.gguf</span>
+        </div>
+
         <!-- The doors: what a run measured, and what can be run by hand.
              Both carry their count, so a shut one is never an empty one. -->
         <details class="gfold" open>
@@ -460,6 +490,7 @@
               <span class="bench-row"><span class="nm">cohere-transcribe-03-2026-Q4_K_M.gguf</span><span class="col">transcribing</span><span class="chip">in use</span></span>
               <button class="chip" type="button">bench it</button>
               <button class="chip" type="button">score the read-aloud</button>
+              <button class="chip" type="button">score the public corpus</button>
             </li>
             <li>
               <span class="bench-row"><span class="nm">CeluneNorm-0.6B-v2.0-ctx2048.Q4_K_M.gguf</span><span class="col">cleanup</span></span>
@@ -626,7 +657,7 @@
   </div>
 
   <div class="tile">
-    <div class="tcap">the <b>benchmark</b>'s other states: <b>off</b>, the <b>read-aloud set empty</b>, a set <b>this client cannot read</b>, a <b>recording</b> in flight, a <b>sweep running</b>, the <b>consensus note</b> with <b>benchmark again</b>, a <b>sweep that ended on a corpus move</b>, and a <b>run that did not finish</b> with its close</div>
+    <div class="tcap">the <b>benchmark</b>'s other states: <b>off</b>, the <b>read-aloud set empty</b>, a set <b>this client cannot read</b>, a <b>recording</b> in flight, a <b>sweep running</b>, the <b>consensus note</b> with <b>benchmark again</b>, a <b>sweep that ended on a corpus move</b>, a <b>speaking loop running and failed</b>, and a <b>run that did not finish</b> with its close</div>
     <div class="models-page">
       <p class="note" style="margin-top:0">the bench runs only with <code>[dictate] enabled</code> set &middot; it scores a model on the takes forge has recorded here</p>
       <div class="status" role="status">

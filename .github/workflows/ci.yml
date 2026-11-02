@@ -103,6 +103,9 @@ jobs:
               - 'crates/forge-gateway/**'
               - 'crates/forge-connectors/**'
               - 'crates/forge-dictate/**'
+              # The speaking engine's crate is on the macOS job's build and
+              # its voice facade drives it.
+              - 'crates/forge-tts/**'
               - 'crates/forge-capture/**'
               - 'crates/forge-system-one/**'
               - 'crates/forge-sdk/**'

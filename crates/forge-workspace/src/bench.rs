@@ -65,6 +65,31 @@ pub struct BenchResult {
     pub corpus: forge_dictate::bench::CorpusId,
 }
 
+/// Where the speaking bench got to, as the page draws it.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum SpeakingBenchState {
+    #[default]
+    Idle,
+    /// `clip` of `clips` transcripts have been spoken, heard back and
+    /// scored.
+    Running { clip: usize, clips: usize },
+    /// The run stopped with a reason. Nothing was saved.
+    Failed { reason: String },
+}
+
+/// What one speaking bench measured, kept under the model and corpus it ran.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct SpeakingBenchResult {
+    /// The speaking model's file, as the page names it.
+    pub file: String,
+    pub metrics: forge_tts::bench::TtsBenchResult,
+    /// RFC 3339.
+    pub at: String,
+    /// The corpus it ran over, on the same terms as the words bench's.
+    pub corpus: forge_dictate::bench::CorpusId,
+}
+
 /// What the live roles run on this machine, for a bench that runs outside
 /// forge.
 #[cfg(any(test, feature = "testing"))]
@@ -155,6 +180,8 @@ pub fn resolved_live_roles(config_dir: &Path, app_support: &Path) -> Result<Live
         let configured = match role {
             crate::dictate::DictateRole::Transcribing => settings.transcribe_model.as_deref(),
             crate::dictate::DictateRole::Normalization => settings.cleanup_model.as_deref(),
+            // The bench walks the dictate roles; speaking has its own run.
+            crate::dictate::DictateRole::Speaking => None,
         };
         // The pick is read only when the key does not decide, as the boot
         // does: a row that cannot matter must not fail the bench.
@@ -484,7 +511,7 @@ impl Workspace {
         if !self.config_arc().dictate.enabled {
             return Err(DispatchError::DictateOff);
         }
-        if matches!(*self.dictate_bench.lock(), BenchState::Running { .. }) {
+        if self.bench_running() {
             return Err(DispatchError::BenchRunning);
         }
         if let Some(holder) = self.dictate_runtime.lock().live_holder() {
@@ -536,8 +563,233 @@ impl Workspace {
     }
 
     /// Whether a bench holds the machine, which is what a swap waits on.
+    /// Both benches count: each loads its own engines, and a swap under
+    /// either would pull a model out from under a run.
     pub(crate) fn bench_running(&self) -> bool {
         matches!(*self.dictate_bench.lock(), BenchState::Running { .. })
+            || matches!(*self.speaking_bench.lock(), SpeakingBenchState::Running { .. })
+    }
+
+    /// The speaking bench's state, for the page's read.
+    pub fn speaking_bench(&self) -> SpeakingBenchState {
+        self.speaking_bench.lock().clone()
+    }
+
+    /// Every saved speaking result, newest first, capped like the words
+    /// bench's list.
+    pub fn speaking_bench_results(&self) -> Vec<SpeakingBenchResult> {
+        let db = self.db.lock();
+        db.as_ref()
+            .map(|db| {
+                let mut rows = crate::store::speaking_results::results(db).unwrap_or_default();
+                rows.truncate(RESULTS_SHOWN);
+                rows
+            })
+            .unwrap_or_default()
+    }
+
+    /// Score the speaking loop on the public corpus: synthesize each
+    /// transcript, hear it back through the settled recognizer, and record
+    /// the round trip. Refused while a take is live or another bench runs -
+    /// one at a time, like the words bench.
+    ///
+    /// The run gets a thread of its own with a current-thread runtime: it
+    /// awaits the engine's chunks and blocks on recognition, so it must not
+    /// hold a worker from the server's runtime for minutes.
+    pub(crate) fn start_speaking_bench(self: &Arc<Self>) -> Result<(), DispatchError> {
+        let config = self.config_arc();
+        if !config.tts.enabled {
+            return Err(DispatchError::VoiceOff { reason: "[tts] enabled is false".to_owned() });
+        }
+        let Some(files) = config.tts.files() else {
+            return Err(DispatchError::VoiceOff {
+                reason: "no models directory resolves".to_owned(),
+            });
+        };
+        if self.bench_running() {
+            return Err(DispatchError::BenchRunning);
+        }
+        if let Some(holder) = self.dictate_runtime.lock().live_holder() {
+            return Err(DispatchError::TakeLive { holder });
+        }
+        *self.speaking_bench.lock() = SpeakingBenchState::Running { clip: 0, clips: 0 };
+        self.speaking_bench_cancel.store(false, Ordering::Relaxed);
+
+        let this = Arc::clone(self);
+        let spawned = std::thread::Builder::new().name("forge-tts-bench".into()).spawn(move || {
+            let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+                Ok(runtime) => runtime,
+                Err(error) => {
+                    this.settle_speaking_bench(Err(format!(
+                        "the bench runtime did not build: {error}"
+                    )));
+                    this.push_models();
+                    return;
+                }
+            };
+            runtime.block_on(Arc::clone(&this).run_speaking_bench(files));
+            this.push_models();
+        });
+        if let Err(error) = spawned {
+            *self.speaking_bench.lock() = SpeakingBenchState::Failed {
+                reason: format!("the bench thread did not start: {error}"),
+            };
+        }
+        Ok(())
+    }
+
+    /// Stop the speaking run in flight. What it measured so far is
+    /// discarded rather than saved: a partial corpus is not a result.
+    pub(crate) fn stop_speaking_bench(&self) -> Result<(), DispatchError> {
+        if !matches!(*self.speaking_bench.lock(), SpeakingBenchState::Running { .. }) {
+            return Err(DispatchError::BenchNotRunning);
+        }
+        self.speaking_bench_cancel.store(true, Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// Gather the public corpus, load both engines, and run the loop.
+    async fn run_speaking_bench(self: Arc<Self>, files: forge_tts::ModelFiles) {
+        let settings = self.config_arc().dictate.clone();
+        let active = self.active_models();
+        let cfg = crate::dictate::preflight_config(&settings, &active);
+        let Some(models_dir) = settings.models_dir() else {
+            return self.settle_speaking_bench(Err("no models directory is configured".to_owned()));
+        };
+        let takes_dir = cfg.diagnostics_dir.clone().unwrap_or_else(|| models_dir.clone());
+        let read_aloud_dir = self.read_aloud_dir().unwrap_or_else(|| takes_dir.clone());
+        // The bundled public slice lives beside the models, installed on
+        // first use, as the asset both directions read.
+        let public_dir = models_dir.join("public-corpus");
+        if let Err(error) = forge_dictate::bench::install_public_corpus(&models_dir) {
+            return self.settle_speaking_bench(Err(format!(
+                "the bundled public corpus could not be installed: {error}"
+            )));
+        }
+
+        let corpus = match forge_dictate::bench::corpus(
+            forge_dictate::bench::Tier::Public,
+            &takes_dir,
+            &read_aloud_dir,
+            &public_dir,
+        ) {
+            Ok(corpus) => corpus,
+            Err(error) => return self.settle_speaking_bench(Err(error.to_string())),
+        };
+        let clips: Vec<forge_tts::bench::BenchClip> = corpus
+            .clips
+            .iter()
+            .filter_map(|clip| clip.truth.clone())
+            .map(|transcript| forge_tts::bench::BenchClip { transcript })
+            .collect();
+        if clips.is_empty() {
+            return self.settle_speaking_bench(Err(
+                "nothing to bench: the bundled public corpus holds no clips".to_owned(),
+            ));
+        }
+        let total = clips.len();
+        *self.speaking_bench.lock() = SpeakingBenchState::Running { clip: 0, clips: total };
+
+        let engine = match forge_tts::QwenTts::load(&files.model, files.projector.as_deref()) {
+            Ok(engine) => engine,
+            Err(error) => return self.settle_speaking_bench(Err(error.to_string())),
+        };
+        let recognizer = match forge_dictate::Engine::new(cfg) {
+            Ok(engine) => engine,
+            Err(error) => return self.settle_speaking_bench(Err(error.to_string())),
+        };
+        if let Err(error) = recognizer.wait_ready() {
+            return self.settle_speaking_bench(Err(error.to_string()));
+        }
+
+        // A recognizer failure is the bench's failure, not a clip the model
+        // said nothing on: the first one is kept and the run settles with
+        // it, so a broken pair never reads as a perfect score.
+        let heard_error: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+        let transcribe = |pcm: &[f32], rate: u32| {
+            let record = |said: String| {
+                if let Ok(mut slot) = heard_error.lock()
+                    && slot.is_none()
+                {
+                    *slot = Some(said);
+                }
+                String::new()
+            };
+            let resampled =
+                match forge_dictate::resample_mono(pcm, rate, forge_dictate::SAMPLE_RATE) {
+                    Ok(resampled) => resampled,
+                    Err(error) => return record(error.to_string()),
+                };
+            match recognizer
+                .transcribe(forge_dictate::Samples::mono(resampled))
+                .and_then(forge_dictate::Ticket::recv)
+            {
+                Ok(forge_dictate::Outcome::Transcript(transcript)) => transcript.text,
+                Ok(other) => record(format!("a clip produced no transcript: {other:?}")),
+                Err(error) => record(error.to_string()),
+            }
+        };
+
+        let this = Arc::clone(&self);
+        let outcome = forge_tts::bench::run(&engine, &clips, transcribe, |clip| {
+            *this.speaking_bench.lock() = SpeakingBenchState::Running { clip, clips: total };
+            if this.speaking_bench_cancel.load(Ordering::Relaxed) {
+                std::ops::ControlFlow::Break(())
+            } else {
+                std::ops::ControlFlow::Continue(())
+            }
+        })
+        .await;
+        if let Some(said) = heard_error.lock().ok().and_then(|slot| slot.clone()) {
+            return self.settle_speaking_bench(Err(said));
+        }
+        match outcome {
+            Ok(metrics) => {
+                let file = files.model.file_name().map_or_else(
+                    || files.model.display().to_string(),
+                    |name| name.to_string_lossy().into_owned(),
+                );
+                self.settle_speaking_bench(Ok(SpeakingBenchResult {
+                    file,
+                    metrics,
+                    at: crate::install::rfc3339_now(),
+                    corpus: corpus.id,
+                }));
+            }
+            Err(error) => self.settle_speaking_bench(Err(error.to_string())),
+        }
+    }
+
+    /// A speaking run that ended: a result is saved, a stop is idle, and
+    /// any other ending is a failure with its own reason.
+    fn settle_speaking_bench(&self, outcome: Result<SpeakingBenchResult, String>) {
+        match outcome {
+            Ok(result) => {
+                self.save_speaking_result(&result);
+                *self.speaking_bench.lock() = SpeakingBenchState::Idle;
+            }
+            Err(reason) => {
+                if self.speaking_bench_cancel.load(Ordering::Relaxed) {
+                    *self.speaking_bench.lock() = SpeakingBenchState::Idle;
+                } else {
+                    *self.speaking_bench.lock() = SpeakingBenchState::Failed { reason };
+                }
+            }
+        }
+    }
+
+    fn save_speaking_result(&self, result: &SpeakingBenchResult) {
+        let db = self.db.lock();
+        if let Some(db) = db.as_ref()
+            && let Err(error) = crate::store::speaking_results::save(db, result)
+        {
+            tracing::warn!(
+                event_name = "speaking_bench_save_failed",
+                %error,
+                file = %result.file,
+                "the speaking bench's result was not saved; the numbers are gone with the run"
+            );
+        }
     }
 
     /// Gather the corpus, build the target's config, and run it.
@@ -550,6 +802,9 @@ impl Workspace {
         };
         let takes_dir = cfg.diagnostics_dir.clone();
         let read_aloud_dir = self.read_aloud_dir();
+        // The bundled public slice lives beside the models, installed on
+        // first use: one directory both directions read.
+        let public_dir = models_dir.join("public-corpus");
         // The closure takes its own copy: the caller keeps the target for
         // the failure paths below.
         let ran = target.clone();
@@ -560,8 +815,14 @@ impl Workspace {
                 return Err("no diagnostics directory is configured".to_owned());
             };
             let read_aloud_dir = read_aloud_dir.unwrap_or_else(|| takes_dir.clone());
-            let corpus = forge_dictate::bench::corpus(tier, &takes_dir, &read_aloud_dir)
-                .map_err(|error| error.to_string())?;
+            if tier == forge_dictate::bench::Tier::Public
+                && let Err(error) = forge_dictate::bench::install_public_corpus(&models_dir)
+            {
+                return Err(format!("the bundled public corpus could not be installed: {error}"));
+            }
+            let corpus =
+                forge_dictate::bench::corpus(tier, &takes_dir, &read_aloud_dir, &public_dir)
+                    .map_err(|error| error.to_string())?;
             if corpus.clips.is_empty() {
                 return Err(match tier {
                     forge_dictate::bench::Tier::Consensus => {
@@ -572,6 +833,9 @@ impl Workspace {
                     forge_dictate::bench::Tier::ReadAloud => {
                         "nothing to bench: the read-aloud passage has not been recorded yet"
                             .to_owned()
+                    }
+                    forge_dictate::bench::Tier::Public => {
+                        "nothing to bench: the bundled public corpus holds no clips".to_owned()
                     }
                 });
             }
@@ -749,6 +1013,140 @@ mod tests {
         .expect_err("no file, no config");
 
         assert!(err.to_string().contains("gone.gguf"), "got: {err}");
+    }
+
+    /// Both benches load engines, so neither starts while the other runs.
+    #[tokio::test]
+    async fn the_two_benches_refuse_each_other_by_name() {
+        let (ws, _updates, _config, _models) = voice_stub();
+        *ws.dictate_bench.lock() = BenchState::Running {
+            target: target("asr.gguf", BenchRole::Transcribing),
+            tier: forge_dictate::bench::Tier::Consensus,
+            clip: 0,
+            clips: 0,
+            so_far: None,
+        };
+        let err = ws.start_speaking_bench().expect_err("one bench at a time");
+        assert!(matches!(err, crate::DispatchError::BenchRunning), "got: {err:?}");
+
+        *ws.dictate_bench.lock() = BenchState::Idle;
+        *ws.speaking_bench.lock() = SpeakingBenchState::Running { clip: 0, clips: 1 };
+        let err = ws
+            .dispatch(crate::Command::DictateBench {
+                target: target("asr.gguf", BenchRole::Transcribing),
+                tier: forge_dictate::bench::Tier::Consensus,
+            })
+            .expect_err("the speaking bench holds the machine");
+        assert!(matches!(err, crate::DispatchError::BenchRunning), "got: {err:?}");
+    }
+
+    /// A stop with nothing running is its own refusal.
+    #[test]
+    fn a_speaking_stop_with_nothing_running_is_refused() {
+        let (ws, _updates, _config, _models) = voice_stub();
+        let err = ws.dispatch(crate::Command::VoiceBenchStop).expect_err("nothing to stop");
+        assert!(matches!(err, crate::DispatchError::BenchNotRunning), "got: {err:?}");
+    }
+
+    /// **Speech switched off refuses by name**: there is no speaking model
+    /// for a run to load.
+    #[test]
+    fn a_speaking_bench_with_speech_off_is_refused_by_name() {
+        let (ws, _updates) = Workspace::testing_stub();
+        let err = ws.start_speaking_bench().expect_err("no [tts] section to run");
+        assert!(matches!(err, crate::DispatchError::VoiceOff { .. }), "got: {err:?}");
+    }
+
+    /// **The first speaking run installs the bundled slice, then says what
+    /// it is actually missing.** A machine with no corpus needs nothing
+    /// fetched; the run reaches its model and fails naming that instead.
+    #[tokio::test]
+    async fn a_speaking_bench_installs_the_bundled_corpus_before_scoring() {
+        let (ws, mut updates, _config, models) = voice_stub();
+        ws.dispatch(crate::Command::VoiceBenchStart).expect("the run starts and fails on its own");
+
+        let state = tokio::time::timeout(std::time::Duration::from_secs(15), async {
+            loop {
+                match updates.recv().await {
+                    Some(frame) => {
+                        if let crate::SessionUpdate::DictateModelsChanged { models } =
+                            std::sync::Arc::unwrap_or_clone(frame.update)
+                            && matches!(models.speaking_bench, SpeakingBenchState::Failed { .. })
+                        {
+                            break models.speaking_bench;
+                        }
+                    }
+                    None => panic!("the subscription must stay attached"),
+                }
+            }
+        })
+        .await
+        .expect("the failure must land inside fifteen seconds");
+        let SpeakingBenchState::Failed { reason } = state else {
+            panic!("a run with no speaking model must land failed");
+        };
+        assert!(!reason.contains("public corpus"), "the bundled corpus is not a blocker: {reason}");
+        assert!(reason.contains("Qwen3-TTS"), "the missing model is named: {reason}");
+
+        let installed = forge_dictate::bench::public_corpus(&models.path().join("public-corpus"))
+            .expect("the bundled slice installed");
+        assert_eq!(installed.len(), 32, "the whole slice landed beside the models");
+    }
+
+    /// **A words-bench run over the public tier installs the slice too** -
+    /// the same first use, so both directions score the corpus the binary
+    /// carries rather than something a machine had to find.
+    #[tokio::test]
+    async fn a_public_words_bench_installs_the_bundled_corpus_before_scoring() {
+        let (ws, mut updates, _config, models) = voice_stub();
+        ws.dispatch(crate::Command::DictateBench {
+            target: target("asr.gguf", BenchRole::Transcribing),
+            tier: forge_dictate::bench::Tier::Public,
+        })
+        .expect("the run starts and fails on its own");
+
+        tokio::time::timeout(std::time::Duration::from_secs(15), async {
+            loop {
+                match updates.recv().await {
+                    Some(frame) => {
+                        if let crate::SessionUpdate::DictateModelsChanged { models } =
+                            std::sync::Arc::unwrap_or_clone(frame.update)
+                            && matches!(models.bench, BenchState::Failed { .. })
+                        {
+                            break;
+                        }
+                    }
+                    None => panic!("the subscription must stay attached"),
+                }
+            }
+        })
+        .await
+        .expect("the failure must land inside fifteen seconds");
+
+        let installed = forge_dictate::bench::public_corpus(&models.path().join("public-corpus"))
+            .expect("the bundled slice installed");
+        assert_eq!(installed.len(), 32, "the whole slice landed beside the models");
+    }
+
+    /// A workspace with both directions pointed at temp dirs, so a speaking
+    /// run reaches the corpus before it would load a model.
+    fn voice_stub() -> (
+        Arc<Workspace>,
+        tokio::sync::mpsc::UnboundedReceiver<SeatUpdate>,
+        tempfile::TempDir,
+        tempfile::TempDir,
+    ) {
+        let config_dir = tempfile::tempdir().unwrap();
+        let models = tempfile::tempdir().unwrap();
+        let mut config = crate::config::LoadedConfig::empty_for_test();
+        config.dictate.enabled = true;
+        config.dictate.models_dir = Some(models.path().to_string_lossy().into_owned());
+        config.tts.enabled = true;
+        config.tts.models_dir = Some(models.path().to_string_lossy().into_owned());
+        let (ws, updates) =
+            Workspace::testing_stub_with_config(config_dir.path().to_path_buf(), config)
+                .expect("the stub builds");
+        (ws, updates, config_dir, models)
     }
 
     /// **A bench refuses by name while a take is live** - the microphone is

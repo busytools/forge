@@ -619,6 +619,10 @@ pub struct Workspace {
     /// facade over it. `None` keeps the systemone tools out of every
     /// session. Rebuilt by [`Workspace::reload_config`].
     pub(crate) systemone: parking_lot::RwLock<Option<Arc<forge_system_one::SystemOneClient>>>,
+    /// The per-seat voice service, built on first use: its sink and its note
+    /// dispatch hold a `Weak<Workspace>`, which does not exist while the
+    /// value is still being constructed.
+    pub(crate) voice: std::sync::OnceLock<Arc<crate::voice::VoiceService>>,
     /// Catalog of sessions per project. Populated by the background
     /// catalog scan once [`Workspace::start_catalog_scan`] runs;
     /// mutated in-place by [`Workspace::record_connected_session`]
@@ -720,6 +724,10 @@ pub struct Workspace {
     /// the models page through `dictate_bench` and `bench_results`.
     pub(crate) dictate_bench: Mutex<crate::bench::BenchState>,
     pub(crate) dictate_bench_cancel: std::sync::atomic::AtomicBool,
+    /// Where the speaking loop's bench got to, and the flag its Stop sets.
+    /// Read by the models page through `speaking_bench` and its results.
+    pub(crate) speaking_bench: Mutex<crate::bench::SpeakingBenchState>,
+    pub(crate) speaking_bench_cancel: std::sync::atomic::AtomicBool,
     /// The last read-aloud write's failure, when there was one: a stop
     /// whose write fails has no dispatch left to answer, so the page reads
     /// it here instead. Cleared when the next recording starts.
@@ -2390,6 +2398,7 @@ impl Workspace {
             reload_generation: std::sync::atomic::AtomicU64::new(0),
             reload_gate: std::sync::Mutex::new(()),
             systemone: parking_lot::RwLock::new(systemone),
+            voice: std::sync::OnceLock::new(),
             catalog,
             app_support,
             pool: Mutex::new(HashMap::new()),
@@ -2422,6 +2431,8 @@ impl Workspace {
             dictate_activate: Mutex::new(crate::install::ActivateState::default()),
             dictate_bench: Mutex::new(crate::bench::BenchState::default()),
             dictate_bench_cancel: std::sync::atomic::AtomicBool::new(false),
+            speaking_bench: Mutex::new(crate::bench::SpeakingBenchState::default()),
+            speaking_bench_cancel: std::sync::atomic::AtomicBool::new(false),
             read_aloud_error: Mutex::new(None),
             #[cfg(any(test, feature = "testing"))]
             test_catalogue_source: Mutex::new(None),
@@ -3540,6 +3551,7 @@ impl Workspace {
                     slack: slack_facade,
                     tasks: tasks_facade,
                     systemone: systemone_facade,
+                    voice: self.voice_service(),
                 },
                 &families,
                 session_slot.clone(),
@@ -6267,7 +6279,7 @@ impl Workspace {
     }
 
     /// Emit one line the core has for a view about `key`.
-    fn notice(&self, key: &SessionSlot, severity: NoticeSeverity, text: &str) {
+    pub(crate) fn notice(&self, key: &SessionSlot, severity: NoticeSeverity, text: &str) {
         let _ = self.update_sender().send(SessionUpdate::Notice {
             key: key.clone(),
             severity,
@@ -6405,6 +6417,23 @@ impl Workspace {
                         &key,
                         crate::dictate::DictateOverrideUpdate::Reset,
                     );
+                }
+                // The seat's voice state, and one clip on its way to a
+                // prompt: workspace state and dictation traffic, never agent
+                // traffic, so neither rides the session task.
+                Command::VoiceMode { key, on, initiator } => {
+                    let client = initiator.unwrap_or(0);
+                    let voice = self.voice_service();
+                    voice.set_listening(&key, client, on);
+                    let listeners = u32::try_from(voice.listeners(&key)).unwrap_or(u32::MAX);
+                    let _ =
+                        self.update_sender().send(SessionUpdate::VoiceModeState { key, listeners });
+                    return Ok(());
+                }
+                Command::VoiceUtterance { key, pcm, .. } => {
+                    let this = Arc::clone(self);
+                    tokio::spawn(async move { this.voice_utterance(key, pcm).await });
+                    return Ok(());
                 }
                 _ => {}
             }
@@ -6849,6 +6878,16 @@ impl Workspace {
                 }
                 Command::DictateBenchStop => {
                     return self.stop_bench();
+                }
+                Command::VoiceBenchStart => {
+                    let outcome = self.start_speaking_bench();
+                    self.push_models();
+                    return outcome;
+                }
+                Command::VoiceBenchStop => {
+                    let outcome = self.stop_speaking_bench();
+                    self.push_models();
+                    return outcome;
                 }
                 Command::DictateReadAloudStart { initiator } => {
                     let outcome = self.start_read_aloud(initiator);
@@ -19323,6 +19362,7 @@ mod worker_respawn_tests {
                 gotify: crate::mcp::gotify::facade::ProdGotifyFacade::from_arc(workspace),
                 slack: crate::mcp::slack::facade::ProdSlackFacade::from_arc(workspace),
                 tasks: crate::mcp::tasks::facade::ProdTasksFacade::from_arc(workspace),
+                voice: workspace.voice_service(),
                 systemone: workspace.systemone.read().as_ref().map(|client| {
                     crate::mcp::systemone::facade::ProdSystemOneFacade::new(std::sync::Arc::clone(
                         client,

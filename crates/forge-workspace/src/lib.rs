@@ -90,8 +90,10 @@ pub mod subagent_cards;
 mod systemone;
 mod target;
 mod tasks;
+pub mod tts;
 mod update_fanout;
 mod views;
+pub mod voice;
 pub mod work;
 mod workspace;
 
@@ -111,6 +113,7 @@ pub use protocol::{
     SessionUpdate, TurnErrorClass,
 };
 pub use target::{ProjectKey, SessionSlot, SessionTarget};
+pub use tts::{TtsSettings, TtsSnapshot, TtsView};
 pub use update_fanout::SeatUpdate;
 pub use views::{
     AccountGatewayView, AccountLoadingRow, AccountPoolView, AccountUsageView, ProjectView,

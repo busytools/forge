@@ -2801,6 +2801,8 @@ pub(crate) fn execute_command_via_handle(
         | Command::DictateDeactivate { .. }
         | Command::DictateBench { .. }
         | Command::DictateBenchStop
+        | Command::VoiceBenchStart
+        | Command::VoiceBenchStop
         | Command::DictateReadAloudStart { .. }
         | Command::DictateReadAloudStop { .. }
         | Command::DictateReadAloudDelete { .. }
@@ -2824,7 +2826,9 @@ pub(crate) fn execute_command_via_handle(
         | Command::PluginUpdateAll
         | Command::PluginCheckUpdates
         | Command::MarketplaceAdd { .. }
-        | Command::MarketplaceRepair { .. }) => {
+        | Command::MarketplaceRepair { .. }
+        | Command::VoiceUtterance { .. }
+        | Command::VoiceMode { .. }) => {
             tracing::warn!(
                 target: "forge_workspace::session_task",
                 slot = %key.display(),

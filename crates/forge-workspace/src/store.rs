@@ -46,6 +46,7 @@ pub mod session_tags;
 pub mod sessions;
 pub mod settings;
 pub mod slack;
+pub mod speaking_results;
 pub mod state;
 pub mod task_archive;
 pub mod task_chases;

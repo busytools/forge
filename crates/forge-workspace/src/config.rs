@@ -54,6 +54,10 @@ struct ForgeToml {
     /// -> disabled, which is what keeps a 3 GB model download opt-in.
     #[serde(default)]
     dictate: crate::dictate::DictateSettings,
+    /// Optional `[tts]` section - speech out. Absent section -> disabled,
+    /// which keeps its model download opt-in.
+    #[serde(default)]
+    tts: crate::tts::TtsSettings,
     /// Optional `[gotify]` section - the inbound-notification server
     /// connection. Absent section → `None` → the Gotify subsystem
     /// stays dormant.
@@ -144,6 +148,7 @@ impl std::fmt::Debug for ForgeToml {
             .field("models", &self.models)
             .field("handoff", &self.handoff)
             .field("dictate", &self.dictate)
+            .field("tts", &self.tts)
             .field("gotify", &self.gotify)
             .field("systemone", &self.systemone)
             .field("slack", &self.slack)
@@ -708,6 +713,9 @@ pub(crate) struct LoadedConfig {
     /// `[dictate]` section knobs. Absent section means dictation is
     /// off and preflight skips it entirely.
     pub dictate: crate::dictate::DictateSettings,
+    /// `[tts]` section knobs. Absent section means the speaking role is
+    /// off and nothing synthesises.
+    pub tts: crate::tts::TtsSettings,
     /// `[gotify]` server connection, or `None` when the section is
     /// absent (Gotify disabled).
     pub gotify: Option<GotifyConfig>,
@@ -763,6 +771,7 @@ impl std::fmt::Debug for LoadedConfig {
             .field("models", &self.models)
             .field("handoff", &self.handoff)
             .field("dictate", &self.dictate)
+            .field("tts", &self.tts)
             .field("gotify", &self.gotify)
             .field("systemone", &self.systemone)
             .field("slack", &self.slack)
@@ -973,6 +982,7 @@ impl LoadedConfig {
             models: HashMap::new(),
             handoff: HandoffSettings::default(),
             dictate: crate::dictate::DictateSettings::default(),
+            tts: crate::tts::TtsSettings::default(),
             gotify: None,
             systemone: None,
             slack: Vec::new(),
@@ -1601,6 +1611,7 @@ pub(crate) fn load_from_text(path: PathBuf, raw: &str) -> Result<LoadedConfig, W
         models: parsed.models,
         handoff: parsed.handoff,
         dictate: parsed.dictate,
+        tts: parsed.tts,
         gotify: parsed.gotify,
         systemone,
         slack: parsed.slack,

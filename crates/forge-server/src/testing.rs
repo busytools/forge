@@ -679,6 +679,10 @@ fn config(
         "[dictate]\nenabled = true\nmodels_dir = \"{}\"\nstyling = \"formal\"\n",
         config_dir.join("models").display()
     ));
+    // The speaking role's own directory, so a fixture pins a path under the
+    // fixture rather than this machine's cache dir. The section stays off:
+    // nothing in a fleet test synthesises.
+    sections.push(format!("[tts]\nmodels_dir = \"{}\"\n", config_dir.join("models").display()));
     sections.concat()
 }
 

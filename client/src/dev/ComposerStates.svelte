@@ -184,6 +184,7 @@
       seat: over.seat ?? seat(),
       connection: idle,
       dictation: over.dictation ?? false,
+      voice: over.voice ?? false,
       reading: over.reading ?? false,
     };
   }

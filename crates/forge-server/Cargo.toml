@@ -102,6 +102,8 @@ forge-workspace = { workspace = true, features = ["testing", "test-helpers"] }
 # are `forge-dictate`'s types, so the test that they arrive populated names
 # them here rather than asserting a shape without a value.
 forge-dictate = { workspace = true }
+# The voice socket test drives a stub engine rather than loading a model.
+forge-tts = { workspace = true }
 # The connectors fixture seeds durable subscriptions, which are keyed by id.
 uuid = { workspace = true }
 # A test reads back the records a site emitted, which needs a subscriber to
