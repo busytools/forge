@@ -38,7 +38,9 @@
               desktop keeps the one async shape the picker awaits"
 )]
 
+use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::hash::Hasher;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
@@ -175,6 +177,10 @@ struct State {
     /// subject again - the home encode walks every project's working tree, on
     /// the platform this cut exists for.
     refreshed: HashMap<String, Instant>,
+    /// The last `tasks_changed` set announced per project, as a digest: the
+    /// page's own coalescing key (#2540), so an unchanged set asks for no
+    /// roster read.
+    last_tasks: HashMap<String, u64>,
     /// The takeover's live viewer, re-attached on every reconnect while it
     /// is set; a lower clears it.
     attach: Option<Attach>,
@@ -301,6 +307,7 @@ impl Bridge {
                 parked: VecDeque::new(),
                 refreshing: HashSet::new(),
                 refreshed: HashMap::new(),
+                last_tasks: HashMap::new(),
                 attach: None,
                 attach_generation: 0,
                 view_profile: None,
@@ -1003,8 +1010,7 @@ impl Bridge {
         }
     }
 
-    /// One ask's or decision wait's own frame: read the roster again while
-    /// the home is held.
+    /// One ask's own frame: read the roster again while the home is held.
     ///
     /// **Only a read moves the roster's pending field**, and the page's own
     /// read is not a guarantee: its heartbeat is a page timer, and WebKit
@@ -1013,28 +1019,48 @@ impl Bridge {
     /// roster is always asked for here - one extra encode per ask is the
     /// cost of not missing the ask that lands in that window. A view that is
     /// not holding the home (a connect screen) asks nothing.
-    ///
-    /// **A board change is the same door for a wait**: the fleet row's
-    /// waits ride the home snapshot, so a task update that is never read
-    /// would leave a raise unannounced while the page is parked - the one
-    /// state notifications exist for.
     fn ask_arrived(&self, update: &Value) {
         let ask = [
             "permission_request",
             "question_request",
             "browser_hand_off_pending",
             "document_hand_off_pending",
-            "tasks_changed",
         ]
         .iter()
         .any(|key| update.get(*key).is_some());
-        if !ask {
+        if ask {
+            if self.lock().held.contains_key("home") {
+                // A roster refresh states no scope: the held declaration decides.
+                self.refresh(&json!("home"), None);
+            }
             return;
         }
-        if self.lock().held.contains_key("home") {
-            // A roster refresh states no scope: the held declaration decides.
-            self.refresh(&json!("home"), None);
+        self.board_moved(update);
+    }
+
+    /// A board change's door: the fleet row's waits ride the home snapshot, so
+    /// a task update that is never read would leave a raise unannounced while
+    /// the page is parked - the one state notifications exist for.
+    ///
+    /// **The page's own coalescing, not a read per frame**: an unchanged task
+    /// set is no news (#2540), and a read already out for the roster answers
+    /// the frame that arrived behind it. The digest is the project and its
+    /// tasks, the key the page keeps beside it.
+    fn board_moved(&self, update: &Value) {
+        let Some((project, digest)) = tasks_digest(update) else { return };
+        let mut state = self.lock();
+        if state.last_tasks.get(&project) == Some(&digest) {
+            return;
         }
+        state.last_tasks.insert(project, digest);
+        if !state.held.contains_key("home") || state.socket.is_none() {
+            return;
+        }
+        if !state.refreshing.insert("home".to_owned()) {
+            return;
+        }
+        drop(state);
+        self.refresh(&json!("home"), None);
     }
 
     /// What the page reads at the start and on every `Connection` notice.
@@ -1705,6 +1731,29 @@ impl Bridge {
 /// the obvious marks: a `prompt_queued` row is folded by the PAGE (the
 /// record's `state.queue` is only the snapshot's copy), so a park that ate
 /// it would lose the row from the pile a reader is looking at.
+/// The project a `tasks_changed` frame speaks for, and a digest of its set -
+/// the coalescing key the page keeps beside its own read (#2540).
+///
+/// The frame names its project in the update's key, or, on an older server,
+/// by the first row's `project_name`; a frame with neither names no project
+/// this side can compare, and asks for nothing.
+fn tasks_digest(update: &Value) -> Option<(String, u64)> {
+    let payload = update.get("tasks_changed")?;
+    let tasks = payload.get("tasks")?;
+    let rows = tasks.as_array()?;
+    let named = rows.first().and_then(|row| row.get("project_name")).and_then(Value::as_str);
+    let project = payload
+        .get("key")
+        .and_then(|key| key.get("project"))
+        .and_then(Value::as_str)
+        .or(named)
+        .filter(|name| !name.is_empty())?;
+    let encoded = serde_json::to_vec(tasks).ok()?;
+    let mut hasher = DefaultHasher::new();
+    hasher.write(&encoded);
+    Some((project.to_owned(), hasher.finish()))
+}
+
 fn rebuilt_by_records(message: &Value) -> bool {
     message.get("kind").and_then(Value::as_str) == Some("update")
         && message
@@ -2685,6 +2734,37 @@ mod tests {
             json!("home"),
             "the board change reads the roster inside the beat"
         );
+
+        // The read answered, and the same set announced again is no news
+        // (#2540): a read per frame is the loop the page already coalesces.
+        sent(&bridge, home_snapshot(json!({ "boot_id": "run-1", "agents": [] })));
+        sent(
+            &bridge,
+            json!({
+                "kind": "update",
+                "update": { "tasks_changed": { "key": { "project": "forge" }, "tasks": [] } },
+            }),
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), server.heard.recv()).await.is_err(),
+            "an unchanged task set asks for no second read",
+        );
+        // A changed set is a read.
+        sent(
+            &bridge,
+            json!({
+                "kind": "update",
+                "update": {
+                    "tasks_changed": {
+                        "key": { "project": "forge" },
+                        "tasks": [{ "id": "t-1", "project_name": "forge" }],
+                    },
+                },
+            }),
+        );
+        let _ = server.heard_until(|v| v["kind"] == "unsubscribe").await;
+        let changed = server.heard_until(|v| v["kind"] == "subscribe").await;
+        assert_eq!(changed["what"], json!("home"), "a changed set reads the roster");
     }
 
     /// **A screen holding no home reads nothing for an ask.** The connect

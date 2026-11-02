@@ -107,7 +107,7 @@ pub struct WaitNotice {
     pub task: String,
     /// The ask's own words, verbatim.
     pub words: String,
-    /// The other waits the same read carries for this seat.
+    /// The other raises the same read carries for this seat.
     pub more: usize,
 }
 
@@ -120,8 +120,8 @@ pub struct Asks {
     /// again, and a mark from a dead run must never match a live one.
     seen: HashMap<SessionSlot, (String, AskKind, u64)>,
     seeded: bool,
-    /// The decision waits already announced: a seat and a task, by the run
-    /// and the moment the wait began.
+    /// The decision waits already announced: a seat and a task, by the
+    /// moment the wait began.
     wait_seen: HashMap<(SessionSlot, String), String>,
     waits_seeded: bool,
 }
@@ -187,14 +187,14 @@ impl Asks {
     ///
     /// **A first read is the launch's own history**, exactly as the asks
     /// are, so a relaunch with waits open announces none. The identity is the
-    /// task and the moment the wait began, scoped to the server run: a
-    /// re-read cannot change it, and a wait answered and raised again is a
-    /// new one.
+    /// task and the moment the wait began - task data, not a counter, so the
+    /// server run is not part of it: a restart leaves the same open waits the
+    /// same, and a wait answered and raised again is a new one.
     ///
     /// **A raise notifies whatever is on screen**: the app being frontmost
     /// does not mean the project holding the wait is being looked at. A read
-    /// is grouped by seat, and a seat with any new wait raises one notice
-    /// naming the first and counting the rest.
+    /// is grouped by seat, and a seat's raises collapse into one notice
+    /// naming the first and counting the others raised with it.
     pub fn waits_rising(&mut self, data: &Value) -> Vec<WaitNotice> {
         let Some(rows) = data.get("fleet").and_then(Value::as_array) else {
             return Vec::new();
