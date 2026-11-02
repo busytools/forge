@@ -68,8 +68,8 @@
    * seat's: the engine is process-wide, and the page's own wire carries it.
    */
   const dictate = $derived(home.wire === null ? false : dictationOffered(home.wire.dictate));
-  // The switch is speech out only, so it needs `[tts]` and nothing of
-  // dictation's: the mic is how the user speaks, and this control only hears.
+  // The switch is speech out only, so the gate is `[tts]` and nothing of
+  // dictation's.
   const voice = $derived(home.wire !== null && home.wire.voice.enabled);
 
   /**
