@@ -525,6 +525,48 @@ mod tests {
         assert!(asks.waits_rising(&two).is_empty(), "the same read is not news");
     }
 
+    /// **Only the raises in this read count.** A known wait beside a new one
+    /// is one notice for the new one, `more` 0: the old count named every
+    /// open wait behind it, including the one already announced.
+    #[test]
+    fn a_known_wait_beside_a_new_one_counts_only_the_raise() {
+        let mut asks = Asks::default();
+        asks.waits_rising(&waiting(&[("t1", "lead", "sign this off", 5)]));
+        assert_eq!(
+            asks.waits_rising(&waiting(&[
+                ("t1", "lead", "sign this off", 5),
+                ("t2", "lead", "look at this", 9),
+            ])),
+            vec![WaitNotice {
+                slot: lead(),
+                task: "t2".to_owned(),
+                words: "look at this".to_owned(),
+                more: 0,
+            }],
+        );
+    }
+
+    /// **The task is half the mark**: two waits entering waiting at the same
+    /// moment on one seat are two raises, and the second is news.
+    #[test]
+    fn a_second_task_at_the_same_moment_is_news() {
+        let mut asks = Asks::default();
+        asks.waits_rising(&waiting(&[("t1", "lead", "sign this off", 5)]));
+        assert_eq!(
+            asks.waits_rising(&waiting(&[
+                ("t1", "lead", "sign this off", 5),
+                ("t2", "lead", "look at this", 5),
+            ])),
+            vec![WaitNotice {
+                slot: lead(),
+                task: "t2".to_owned(),
+                words: "look at this".to_owned(),
+                more: 0,
+            }],
+            "the task, not only the moment, makes a wait distinct",
+        );
+    }
+
     /// **The wait's moment is its identity and the server run is not**: a
     /// restart changes no task data, so the open waits it finds are the ones
     /// already announced; the same task raised again at a later moment is

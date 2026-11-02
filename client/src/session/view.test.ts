@@ -262,6 +262,40 @@ describe('the rail', () => {
     ).toBe('asked you a question');
   });
 
+  /// **A wait whose seat has no row still lifts the project into needs-you.**
+  /// A sleeping project's worker leaves no row of its own, so the seed is the
+  /// project's waits - the rail's half of the rank fix.
+  it('lifts a project into needs you for a wait with no seat row', () => {
+    const home = withHome({
+      agents: [{ ...lead(), pending: null }],
+      fleet: [
+        {
+          project: 'proj',
+          live_workers: 1,
+          slots: 2,
+          queue: 0,
+          waiting_on_user: 1,
+          attention: [
+            {
+              task: 't1',
+              owner: 'gone',
+              subject: 'the parser',
+              words: 'sign this off',
+              at: { secs_since_epoch: 5, nanos_since_epoch: 0 },
+            },
+          ],
+          rows: 0,
+          misses: [],
+        },
+      ],
+    });
+    const needs = railGroups(home, LEAD, 0).find((group) => group.heading === 'needs you');
+    expect(
+      needs?.projects.map((entry) => entry.name),
+      'the wait lifted the project out of working',
+    ).toEqual(['proj']);
+  });
+
   /** **A parked hand-off is a third ask, and the row names it as itself**
    *  rather than borrowing the permission line. */
   it('names a held hand-off on the row', () => {
