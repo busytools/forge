@@ -101,6 +101,27 @@ pub enum Miss {
     UnaccountedWorker(String),
 }
 
+/// One wait that is on the person, named for the surface that raises it.
+///
+/// **The board is the store; this is the read.** A decision wait is already a
+/// row with a `waiting_on` block, and the rail draws this beside the count so
+/// the person can see what is being asked without opening the board page.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct AttentionItem {
+    /// The task's id: the wait's identity, so a raise is a new id or a new
+    /// `at` rather than a second item for the same ask.
+    pub task: String,
+    /// The seat that raised it, by its session label.
+    pub owner: String,
+    /// The row's subject, in the row's own words.
+    pub subject: String,
+    /// The ask's own words, verbatim.
+    pub words: String,
+    /// When the wait began, off the row's last update.
+    pub at: SystemTime,
+}
+
 /// One project as the fleet page draws it.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -113,6 +134,9 @@ pub struct FleetRow {
     pub queue: usize,
     /// Rows waiting on the user's decision.
     pub waiting_on_user: usize,
+    /// The waits themselves, so the mark beside the count can say what is
+    /// being asked without the board page.
+    pub attention: Vec<AttentionItem>,
     /// Every row the project holds, which the home's header totals.
     pub rows: usize,
     pub misses: Vec<Miss>,
@@ -264,6 +288,24 @@ impl Workspace {
                     .iter()
                     .filter(|t| t.status == TaskStatus::Waiting && crate::tasks::parked_on_user(t))
                     .count();
+                let attention = tasks
+                    .iter()
+                    .filter(|t| t.status == TaskStatus::Waiting && crate::tasks::parked_on_user(t))
+                    .map(|t| AttentionItem {
+                        task: t.id.as_str().to_owned(),
+                        owner: t
+                            .owner
+                            .as_ref()
+                            .map_or_else(|| "lead".to_owned(), |seat| seat.label().to_owned()),
+                        subject: t.subject.clone(),
+                        words: t
+                            .waiting_on
+                            .as_ref()
+                            .and_then(|wait| wait.detail.clone())
+                            .unwrap_or_default(),
+                        at: t.updated_at,
+                    })
+                    .collect();
                 let mut misses = Vec::new();
                 if queue > 0 && live_workers < slots {
                     misses.push(Miss::StalledQueue);
@@ -275,6 +317,7 @@ impl Workspace {
                     slots: Some(slots),
                     queue,
                     waiting_on_user,
+                    attention,
                     rows: tasks.len(),
                     misses,
                 }
@@ -771,6 +814,48 @@ mod tests {
             .expect("the project's row")
             .waiting_on_user;
         assert_eq!(on_you, 1, "the own-gate park counts; the inherited shape does not");
+    }
+
+    /// A project's fleet row carries the waits it counts, named for the
+    /// surface that raises them (#2756): the row, its seat, its subject, the
+    /// ask's own words, and when it began. A resource wait is counted by
+    /// neither.
+    #[test]
+    fn a_fleet_row_carries_the_waits_it_counts() {
+        let dir = tempdir().expect("tempdir");
+        let ws = fixture(dir.path());
+        let mut decision = task("t-decision", TaskStatus::Waiting);
+        decision.subject = "ship the parser".to_owned();
+        decision.updated_at = epoch(1_700_000_000);
+        decision.owner = Some(SessionSlot::worker("TestOrg", PROJECT, "w-1"));
+        decision.waiting_on = Some(Waiting {
+            kind: Some(WaitingKind::Decision),
+            detail: Some("sign this off".to_owned()),
+            on: None,
+            verification: false,
+            parked: false,
+        });
+        ws.seed_test_task(decision);
+        let mut resource = task("t-resource", TaskStatus::Waiting);
+        resource.waiting_on = Some(Waiting {
+            kind: Some(WaitingKind::Resource),
+            detail: Some("a CI run".to_owned()),
+            on: None,
+            verification: false,
+            parked: false,
+        });
+        ws.seed_test_task(resource);
+
+        let row =
+            ws.fleet_rows().into_iter().find(|r| r.project == PROJECT).expect("the project's row");
+        assert_eq!(row.waiting_on_user, 1, "only the decision wait is on the user");
+        assert_eq!(row.attention.len(), 1, "and only it is carried");
+        let item = &row.attention[0];
+        assert_eq!(item.task, "t-decision", "the row's own id");
+        assert_eq!(item.owner, "w-1", "the seat that raised it");
+        assert_eq!(item.subject, "ship the parser", "the row's subject");
+        assert_eq!(item.words, "sign this off", "the ask's own words");
+        assert_eq!(item.at, epoch(1_700_000_000), "and when it began, off the row's own update");
     }
 
     #[test]
