@@ -54,6 +54,12 @@ impl Core {
 
         let mut params = unsafe { sys::mtmd_context_params_default() };
         params.print_timings = false;
+        // The published llama.cpp builds the TTS attention mask as F32, and
+        // Metal's flash-attention kernel reads it as F16. Disabling flash
+        // attention routes the mask through `ggml_soft_max_ext`, which takes
+        // F32, so the stock v0.6.0 kernel renders correctly without the v0.8.0
+        // F16 cast.
+        params.flash_attn_type = sys::LLAMA_FLASH_ATTN_TYPE_DISABLED;
         let projector_path = utf8(projector)?;
         let name = CString::new(projector_path)
             .map_err(|_| Error::Load("projector path has a NUL".to_owned()))?;
@@ -72,6 +78,10 @@ impl Core {
         // backbone state each generated frame is built from.
         context.n_ctx = 0;
         context.embeddings = true;
+        // Same reason as the projector's params above: the TTS graph hands
+        // the attention mask over as F32, and the Metal flash-attention
+        // kernel reads halves.
+        context.flash_attn_type = sys::LLAMA_FLASH_ATTN_TYPE_DISABLED;
         core.context = unsafe { sys::llama_init_from_model(core.model, context) };
         if core.context.is_null() {
             return Err(Error::Load("llama.cpp could not create a context".to_owned()));
@@ -84,7 +94,6 @@ impl Core {
         let text = CString::new(request.text.as_str())
             .map_err(|_| Error::Render("the text contains a NUL".to_owned()))?;
         let language = option_cstring(request.language.as_deref())?;
-        let voice = option_cstring(request.speaker.as_deref())?;
 
         let n_batch =
             i32::try_from(unsafe { sys::llama_n_batch(self.context) }).unwrap_or(i32::MAX);
@@ -98,16 +107,15 @@ impl Core {
         let sampler = Sampler::new();
         let audio = Gen::new(self.context, self.projector)?;
 
-        let mut input = unsafe { sys::mtmd_helper_gen_audio_inp_default() };
-        input.stream = false;
+        // The published v0.6.0 header has no `inp_default`, and its struct
+        // carries no stream/n_past/out_mode/voice fields. Zeroed is the
+        // default the v0.8.0 helper fills in: PCM output and auto mode are 0.
+        let mut input: sys::mtmd_helper_gen_audio_inp = unsafe { std::mem::zeroed() };
         input.seq_id = 0;
         input.prompt = text.as_ptr();
         input.prompt_len = request.text.len();
-        input.n_past = 0;
-        input.out_mode = sys::MTMD_HELPER_GEN_AUDIO_OUT_AUTO;
         input.speaker_ref = ptr::null_mut();
         input.lang = language.as_ref().map_or(ptr::null(), |value| value.as_ptr());
-        input.voice = voice.as_ref().map_or(ptr::null(), |value| value.as_ptr());
         input.top_k = TOP_K;
         input.top_p = TOP_P;
         input.seed = RANDOM_SEED;

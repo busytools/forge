@@ -55,14 +55,14 @@ cast_ptr_alignment = "allow"
 [dependencies]
 # The TTS pipeline lives in libmtmd's C API, which the safe binding does not
 # wrap; `metal` is opted into per-target below.
-llama-cpp-sys-2 = { version = "0.1.160", default-features = false, features = ["mtmd"] }
+llama-cpp-sys-2 = { workspace = true, features = ["mtmd"] }
 # The bench's result crosses the wire to the models page.
 serde = { workspace = true }
 tokio = { workspace = true }
 thiserror = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-llama-cpp-sys-2 = { version = "0.1.160", default-features = false, features = ["metal", "mtmd"] }
+llama-cpp-sys-2 = { workspace = true, features = ["metal", "mtmd"] }
 
 [dev-dependencies]
 # The leaf-invariant guard reads cargo's own metadata.

@@ -64,6 +64,9 @@ rlimit = "0.11"
 # Default features carry openmp, which has no system library to link
 # against on a stock macOS toolchain.
 llama-cpp-2 = { version = "0.1.160", default-features = false }
+# The raw C API the mtmd audio path calls. Pinned here so forge-tts takes
+# the same build as the safe binding, and a crate cannot drift one of them.
+llama-cpp-sys-2 = { version = "0.1.160", default-features = false }
 # Decodes the detokenizer's bytes; the decoder must persist across tokens
 # or a multi-byte character split between two pieces is replaced.
 encoding_rs = "0.8.35"
@@ -107,14 +110,6 @@ forge-server = { path = "crates/forge-server", version = "=1.1.38" }
 
 # Dev-only
 tempfile = "3"
-
-# The published crates stop at llama.cpp v0.6.0, whose TTS attention mask is F32
-# where Metal's flash-attention kernel reads halves. The vendored copies carry
-# v0.8.0 and the timings fix the safe binding needs to compile against it.
-# See vendor/VENDOR.md.
-[patch.crates-io]
-llama-cpp-2 = { path = "vendor/llama-cpp-2" }
-llama-cpp-sys-2 = { path = "vendor/llama-cpp-sys-2" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
