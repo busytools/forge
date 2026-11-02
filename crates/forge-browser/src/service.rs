@@ -104,13 +104,13 @@ fn note_dialog(
     dialog: &str,
     message: &str,
     state: JsDialogState,
-) {
+) -> bool {
     // **The lock comes first, and the generation is read under it**: a check
     // outside the lock could pass, the host could go and clear, and this line
     // would then insert a dead host's hold after the clear (#2763 review).
     let mut dialogs = profile.dialogs.lock().unwrap_or_else(PoisonError::into_inner);
     if generation != profile.host_generation.load(Ordering::Acquire) {
-        return;
+        return false;
     }
     match state {
         JsDialogState::Shown => {
@@ -123,6 +123,7 @@ fn note_dialog(
             dialogs.remove(&tab);
         }
     }
+    true
 }
 
 /// Whether `tool` leaves a page alone while a dialog holds its tab.
@@ -3448,8 +3449,9 @@ impl BrowserService {
                     .keys()
                     .copied()
                     .collect();
-                // **The dialogs are read before the tabs**, so no path takes
-                // the two locks in the other order.
+                // **The dialog read is a snapshot, dropped before the tabs
+                // lock is taken**: no path here holds the two together, so
+                // there is no order to invert.
                 let dialogs: HashMap<u16, BrowserTabDialog> = profile
                     .dialogs
                     .lock()
@@ -4989,7 +4991,28 @@ impl Profile {
                         // it, so this is what tells a call that it may not
                         // drive that tab yet (#2754).
                         if let Some(profile) = profile.upgrade() {
-                            note_dialog(&profile, generation, tab, &dialog, &message, state);
+                            if note_dialog(&profile, generation, tab, &dialog, &message, state) {
+                                // **The strip hears it now**, not at the next
+                                // call or the idle sweep: a raise and an answer
+                                // both happen with no call behind them, and a
+                                // row that kept drawing `idle` is what hides
+                                // why the page ignores input (#2765).
+                                profile.rows.send_modify(|list| {
+                                    if let Some(row) =
+                                        list.rows.iter_mut().find(|row| row.number == tab)
+                                    {
+                                        row.dialog = match state {
+                                            JsDialogState::Shown => Some(BrowserTabDialog {
+                                                kind: dialog.clone(),
+                                                message: message.clone(),
+                                            }),
+                                            JsDialogState::Answered | JsDialogState::Closed => {
+                                                None
+                                            }
+                                        };
+                                    }
+                                });
+                            }
                         }
                         tracing::debug!(
                             event_name = "browser_js_dialog",

@@ -265,6 +265,7 @@
         "up"
       ],
       "/rows[]": [
+        "dialog",
         "number",
         "owner",
         "state",
