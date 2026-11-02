@@ -12871,18 +12871,15 @@ provider = "anthropic"
         workspace
     }
 
-    /// Dispatch the boot-shaped spawn: a `SpawnProject` that asks for the
-    /// restart note, exactly as the boot wave sends it.
-    fn spawn_boot_lead(workspace: &Arc<Workspace>, force_new: bool) {
+    /// Dispatch a `SpawnProject` for the fixture's lead with the launch
+    /// settings a caller states. The boot wave passes the restart note;
+    /// every other wake passes `None`.
+    fn spawn_lead(workspace: &Arc<Workspace>, force_new: bool, resume_kick: Option<String>) {
         let spawned = workspace.dispatch(Command::SpawnProject {
             project_name: "forge".to_owned(),
-            launch_settings: SessionLaunchSettings {
-                force_new,
-                resume_kick: Some(LEAD_RESTART_NOTE.to_owned()),
-                ..Default::default()
-            },
+            launch_settings: SessionLaunchSettings { force_new, resume_kick, ..Default::default() },
         });
-        assert!(spawned.is_ok(), "the boot spawn is taken: {spawned:?}");
+        assert!(spawned.is_ok(), "the spawn is taken: {spawned:?}");
     }
 
     /// Whether `update` is a user turn carrying the restart note on `key`.
@@ -12958,8 +12955,9 @@ provider = "anthropic"
         );
 
         let mut updates = workspace.subscribe_mirror();
-        spawn_boot_lead(&workspace, false);
-        let (_, note) = lead_boot_frames(&mut updates, &key, Duration::from_secs(5)).await;
+        spawn_lead(&workspace, false, Some(LEAD_RESTART_NOTE.to_owned()));
+        let (connected, note) = lead_boot_frames(&mut updates, &key, Duration::from_secs(5)).await;
+        assert!(connected, "the lead connects before the note arrives");
         assert!(note, "a lead with a stored id to resume is kicked with the restart note");
         forge_agent::set_test_sdk_binary(None);
     }
@@ -12976,7 +12974,7 @@ provider = "anthropic"
         let key = SessionSlot::lead("Default", "forge");
 
         let mut updates = workspace.subscribe_mirror();
-        spawn_boot_lead(&workspace, false);
+        spawn_lead(&workspace, false, Some(LEAD_RESTART_NOTE.to_owned()));
         let (connected, note) = lead_boot_frames(&mut updates, &key, Duration::from_secs(2)).await;
         assert!(connected, "the lead connects, so the absence of a note is the property");
         assert!(!note, "a first boot delivers no restart note");
@@ -12999,10 +12997,36 @@ provider = "anthropic"
         );
 
         let mut updates = workspace.subscribe_mirror();
-        spawn_boot_lead(&workspace, true);
+        spawn_lead(&workspace, true, Some(LEAD_RESTART_NOTE.to_owned()));
         let (connected, note) = lead_boot_frames(&mut updates, &key, Duration::from_secs(2)).await;
         assert!(connected, "the lead connects, so the absence of a note is the property");
         assert!(!note, "`--new` delivers no restart note over the stored session it replaced");
+        forge_agent::set_test_sdk_binary(None);
+    }
+
+    /// **A spawn with a stored id but no requested note sends none.** The
+    /// note is a request the boot wave makes, not something a resume earns:
+    /// a wake that states ordinary launch settings (a peer prompt, a cron)
+    /// resumes the seat without kicking it with a restart note. Without
+    /// this, defaulting the note whenever an id exists passes every test.
+    #[tokio::test]
+    async fn a_stored_id_without_a_requested_note_sends_none() {
+        let dir = tempdir().expect("tempdir");
+        let project = tempdir().expect("project");
+        let workspace = boot_lead_workspace(dir.path(), project.path());
+        let key = SessionSlot::lead("Default", "forge");
+        workspace.record_session_id(
+            "Default",
+            "forge",
+            "lead",
+            "11111111-2222-3333-4444-555555555555",
+        );
+
+        let mut updates = workspace.subscribe_mirror();
+        spawn_lead(&workspace, false, None);
+        let (connected, note) = lead_boot_frames(&mut updates, &key, Duration::from_secs(2)).await;
+        assert!(connected, "the lead connects, so the absence of a note is the property");
+        assert!(!note, "a spawn that was not asked for the note sends none");
         forge_agent::set_test_sdk_binary(None);
     }
 

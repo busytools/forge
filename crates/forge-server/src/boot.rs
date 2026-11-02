@@ -891,6 +891,32 @@ port = {port}
         );
     }
 
+    /// **A project named on the command line starts whether or not it is
+    /// pinned**, and it takes the same note request, so a named unpinned
+    /// project with a stored id gets the note too.
+    #[tokio::test]
+    async fn the_boot_wave_starts_a_named_project_even_when_unpinned() {
+        let (workspace, _dir) = fixture(false, true);
+        workspace.enable_test_dispatch_intercept();
+        workspace.seed_test_ready_account("Stub");
+        workspace.seed_test_gateway_ready(true);
+        assert!(
+            wait_for_accounts(&workspace, Duration::from_secs(30)).await,
+            "the fixture's accounts settle before the wave",
+        );
+
+        start_boot_wave(Arc::clone(&workspace), Some("forge".to_owned()), false);
+
+        let spawned = spawned_projects(&workspace).await;
+        assert_eq!(spawned.len(), 1, "the named project alone: {spawned:?}");
+        assert_eq!(spawned[0].0, "forge", "the named project starts though it is unpinned");
+        assert_eq!(
+            spawned[0].1.resume_kick.as_deref(),
+            Some(forge_workspace::LEAD_RESTART_NOTE),
+            "and a named project takes the same note request",
+        );
+    }
+
     /// **`serve_socket` returns with the fold already subscribed.** The boot
     /// wave runs after this returns, so a session spawned there emits its
     /// first `Connected` into a fan-out nobody is holding yet unless the
