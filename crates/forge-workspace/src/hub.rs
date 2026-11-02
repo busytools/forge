@@ -328,8 +328,17 @@ mod tests {
         let part = dir.path().join("model.onnx.part");
         let dest = dir.path().join("model.onnx");
         std::fs::write(&part, b"weights").expect("the part is written");
-        let blob = HubBlob { path: "onnx/model.onnx".to_owned(), size: 7, sha256: None };
-        finish_file(&part, &dest, &blob, 7, "11".repeat(32).as_str()).expect("it lands");
+        // The digest the Hub would publish for these bytes, so the matching
+        // path is as pinned as the mismatch above.
+        let digest = {
+            use sha2::{Digest as _, Sha256};
+            let mut hasher = Sha256::new();
+            hasher.update(b"weights");
+            hex::encode(hasher.finalize())
+        };
+        let blob =
+            HubBlob { path: "onnx/model.onnx".to_owned(), size: 7, sha256: Some(digest.clone()) };
+        finish_file(&part, &dest, &blob, 7, digest.as_str()).expect("it lands");
         assert_eq!(std::fs::read(&dest).expect("reads"), b"weights");
         assert!(!Path::new(&part).exists());
     }
