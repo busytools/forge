@@ -39,7 +39,7 @@ read and the actions are the server's (`Subject::DictateModels`,
 | Header | the brand mark, `forge`, the page's name, and the way back to the home | `ClientSettings.mark` from the greeting; the route |
 | The page's state | a refused action in the core's own words, and whichever download or activation is in flight with its progress | `refusal` (an `error` frame); `install`, `activate` |
 | In use | one row per model forge runs: its role - **the selector for the updates below** - its file, the facts the spec declares (size, quant, parameters, digest, licence), the feed's own measurement when it has one, the live state as a chip, and a line saying where the model came from | `in_use` |
-| Updates | what a check reads, the check's own line - up to date, an update, checking, unreachable, or a state this client cannot read - with both dictation roles' news under it, then the selected role's recommendation with the one control that takes it, then the comparison table behind a door; the cleanup role's own view instead, where no feed measures a normalizer: its candidates with each one's own runs under it | `check`, `updates`, `rows`, `installed`, `results` |
+| Updates | what a check reads, the check's own line - up to date, an update, checking, unreachable, or a state this client cannot read - with both dictation roles' news under it, then the selected role's recommendation with the one control that takes it, then the comparison table behind a door; the cleanup role's own view instead, where no feed measures a normalizer: its candidates with each one's own runs under it; and the speaking role's own view, which says the model is placed by hand and no feed proposes one | `check`, `updates`, `rows`, `installed`, `results` |
 | Find a model | a box that filters the feed's rows as it is typed, with the feed's families and its fastest rows offered before a name is known: the variant, the quant a machine would run, the measured speed and error, the licence, what it transcribes, and the row's control. Each row links to the entry's own document | `rows` |
 | Benchmark | the fixtures first - the read-aloud set's own state with the record control and the count line - then the one press that scores the picks on this machine and leaves a verdict, then the speaking loop's own card, then two doors: every run scored here, and every model a bench can run, with the control that removes a downloaded model nothing runs | `bench`, `read_aloud`, `results`, `speaking_bench`, `speaking_results` |
 
@@ -155,8 +155,9 @@ that scores term accuracy as well as word error rate. The public tier is a
 fixed LibriSpeech test-clean slice embedded in the binary with its
 transcripts and digests; the first bench installs it beside the models, with
 an ATTRIBUTION file written beside the clips, so a machine that has never
-recorded anything still has something to score. A clip whose bytes are not the ones its manifest names is refused by
-the clip's own name rather than scored. **The page records that
+recorded anything still has something to score. The installer restores any clip whose bytes
+differ from the bundled slice before a bench scores it, and a manifest that names a missing clip
+is refused by name. **The page records that
 passage itself**: the section draws the passage and the record control, and a
 press opens this client's microphone through the composer's own capture. The
 recording is not a take - no session owns it and nothing is transcribed,

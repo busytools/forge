@@ -508,7 +508,17 @@
       </p>
     {/if}
 
-    {#if shownRole === 'normalization'}
+    {#if shownRole === 'speaking'}
+      <!-- The speaking role has no feed at all: its model is placed by hand,
+           so there is nothing to compare and nothing to propose. Said here
+           rather than left to the empty-role note, which would claim the feed
+           measured it and found nothing. -->
+      <p class="note">
+        the speaking model is placed by hand, so no feed proposes one &middot; its weights and
+        mmproj projector live in the directory named above, and the engine checks both against the
+        digests their entries declare before it loads them
+      </p>
+    {:else if shownRole === 'normalization'}
       <!-- The cleanup role's own view: no feed publishes speed or error for
            a normalizer, so the bench decides. The candidates are the Hub's
            rows, each carrying this machine's own runs. -->
