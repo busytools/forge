@@ -12856,59 +12856,147 @@ provider = "anthropic"
         forge_agent::set_test_sdk_binary(None);
     }
 
-    /// **A boot spawn that resumes the lead hands it the restart note as
-    /// its first turn.** This is the whole chain: the boot wave's launch
-    /// setting, the spawn's resume gate, and the Connected hook. A lead
-    /// the boot started fresh is covered by
-    /// `a_resume_kick_reaches_only_a_spawn_that_resumed`.
-    #[tokio::test]
-    async fn a_boot_spawn_kicks_a_resumed_lead_with_the_restart_note() {
-        let dir = tempdir().expect("tempdir");
-        let project = tempdir().expect("project");
-        let workspace = resume_workspace(dir.path(), project.path());
-        forge_agent::set_test_sdk_binary(Some(id_preserving_mock(dir.path())));
+    /// A workspace whose lead can actually spawn, over a mock CLI that
+    /// reports the id it was told to resume, with the kick dispatcher
+    /// running so a stamped note would reach the stream.
+    fn boot_lead_workspace(dir: &std::path::Path, project: &std::path::Path) -> Arc<Workspace> {
+        let workspace = resume_workspace(dir, project);
+        forge_agent::set_test_sdk_binary(Some(id_preserving_mock(dir)));
         workspace.start_kick_dispatcher();
-        let key = SessionSlot::lead("Default", "forge");
-        let known = "11111111-2222-3333-4444-555555555555";
-        workspace.record_session_id("Default", "forge", "lead", known);
+        workspace
+    }
 
-        let mut updates = workspace.subscribe_mirror();
+    /// Dispatch the boot-shaped spawn: a `SpawnProject` that asks for the
+    /// restart note, exactly as the boot wave sends it.
+    fn spawn_boot_lead(workspace: &Arc<Workspace>, force_new: bool) {
         let spawned = workspace.dispatch(Command::SpawnProject {
             project_name: "forge".to_owned(),
             launch_settings: SessionLaunchSettings {
+                force_new,
                 resume_kick: Some(LEAD_RESTART_NOTE.to_owned()),
                 ..Default::default()
             },
         });
         assert!(spawned.is_ok(), "the boot spawn is taken: {spawned:?}");
+    }
 
-        let note = tokio::time::timeout(Duration::from_secs(30), async {
-            let mut connected = false;
+    /// Whether `update` is a user turn carrying the restart note on `key`.
+    fn is_restart_note(update: &SessionUpdate, key: &SessionSlot) -> bool {
+        if let SessionUpdate::ChatAppended { key: seen, msg: Message::User { message, .. }, .. } =
+            update
+            && seen == key
+        {
+            matches!(
+                message.content.first(),
+                Some(forge_primitives::ContentBlock::Text { text, .. }) if text == LEAD_RESTART_NOTE
+            )
+        } else {
+            false
+        }
+    }
+
+    /// Watch the stream until the lead connects, noting any restart turn
+    /// that arrives before or just after it. The extra `note_window`
+    /// after `Connected` is what makes a negative meaningful: the kick
+    /// dispatcher fires a first enqueue with no added latency, so a note
+    /// a refused resume should not send has to be absent by then.
+    async fn lead_boot_frames(
+        updates: &mut tokio::sync::mpsc::UnboundedReceiver<SeatUpdate>,
+        key: &SessionSlot,
+        note_window: Duration,
+    ) -> (bool, bool) {
+        let before = tokio::time::timeout(Duration::from_secs(30), async {
+            let mut note_seen = false;
             while let Some(seat) = updates.recv().await {
-                match &*seat.update {
-                    SessionUpdate::Connected { key: seen, .. } if *seen == key => {
-                        connected = true;
-                    }
-                    SessionUpdate::ChatAppended {
-                        key: seen,
-                        msg: Message::User { message, .. },
-                        ..
-                    } if connected && *seen == key => {
-                        if let Some(forge_primitives::ContentBlock::Text { text, .. }) =
-                            message.content.first()
-                            && text == LEAD_RESTART_NOTE
-                        {
-                            return true;
-                        }
-                    }
-                    _ => {}
+                note_seen |= is_restart_note(&seat.update, key);
+                if let SessionUpdate::Connected { key: seen, .. } = &*seat.update
+                    && seen == key
+                {
+                    return (true, note_seen);
+                }
+            }
+            (false, note_seen)
+        })
+        .await
+        .expect("the spawn reaches Connected");
+        if !before.0 {
+            return before;
+        }
+        let after = tokio::time::timeout(note_window, async {
+            while let Some(seat) = updates.recv().await {
+                if is_restart_note(&seat.update, key) {
+                    return true;
                 }
             }
             false
         })
         .await
-        .expect("the resumed lead connects");
+        .unwrap_or(false);
+        (true, before.1 || after)
+    }
+
+    /// **A boot spawn that resumes the lead hands it the restart note as
+    /// its first turn.** This is the whole chain: the launch setting the
+    /// boot wave sends, the spawn's resume gate, and the Connected hook.
+    #[tokio::test]
+    async fn a_boot_spawn_kicks_a_resumed_lead_with_the_restart_note() {
+        let dir = tempdir().expect("tempdir");
+        let project = tempdir().expect("project");
+        let workspace = boot_lead_workspace(dir.path(), project.path());
+        let key = SessionSlot::lead("Default", "forge");
+        workspace.record_session_id(
+            "Default",
+            "forge",
+            "lead",
+            "11111111-2222-3333-4444-555555555555",
+        );
+
+        let mut updates = workspace.subscribe_mirror();
+        spawn_boot_lead(&workspace, false);
+        let (_, note) = lead_boot_frames(&mut updates, &key, Duration::from_secs(5)).await;
         assert!(note, "a boot-resumed lead's first turn is the restart note");
+        forge_agent::set_test_sdk_binary(None);
+    }
+
+    /// **A first boot on an empty store resumes nothing**, so the lead it
+    /// starts gets no restart note even though the boot wave asked for
+    /// one. Without this, inlining the resume gate leaves every other test
+    /// green and a first boot hands its lead a note over an empty history.
+    #[tokio::test]
+    async fn a_first_boot_lead_gets_no_restart_note() {
+        let dir = tempdir().expect("tempdir");
+        let project = tempdir().expect("project");
+        let workspace = boot_lead_workspace(dir.path(), project.path());
+        let key = SessionSlot::lead("Default", "forge");
+
+        let mut updates = workspace.subscribe_mirror();
+        spawn_boot_lead(&workspace, false);
+        let (connected, note) = lead_boot_frames(&mut updates, &key, Duration::from_secs(2)).await;
+        assert!(connected, "the lead connects, so the absence of a note is the property");
+        assert!(!note, "a first boot delivers no restart note");
+        forge_agent::set_test_sdk_binary(None);
+    }
+
+    /// **`--new` mints over the stored session**, so the lead starts fresh
+    /// even though an id exists, and gets no restart note.
+    #[tokio::test]
+    async fn a_force_new_boot_lead_gets_no_restart_note() {
+        let dir = tempdir().expect("tempdir");
+        let project = tempdir().expect("project");
+        let workspace = boot_lead_workspace(dir.path(), project.path());
+        let key = SessionSlot::lead("Default", "forge");
+        workspace.record_session_id(
+            "Default",
+            "forge",
+            "lead",
+            "11111111-2222-3333-4444-555555555555",
+        );
+
+        let mut updates = workspace.subscribe_mirror();
+        spawn_boot_lead(&workspace, true);
+        let (connected, note) = lead_boot_frames(&mut updates, &key, Duration::from_secs(2)).await;
+        assert!(connected, "the lead connects, so the absence of a note is the property");
+        assert!(!note, "`--new` delivers no restart note over the stored session it replaced");
         forge_agent::set_test_sdk_binary(None);
     }
 
