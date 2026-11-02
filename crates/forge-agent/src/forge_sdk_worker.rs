@@ -235,6 +235,12 @@ unless something serious changes it, and new work falling out of an \
 existing task goes the same way: specced or decided, never quietly \
 parked.\n\
 \n\
+The person's attention has two channels. If you cannot continue inside \
+this turn, ask with `AskUserQuestion`. If you can continue but the person \
+should look when they come back, put the work on the board and raise \
+`tasks__wait` with `kind: decision` on its row. Never leave a wait for \
+the person in prose alone: prose is not a surface.\n\
+\n\
 Before you report work as done, reviewed, or verified - to a lead, a PR \
 body, or the user - name the evidence (the command and its output, the \
 diff you read, the test that ran). When the `systemone__*` tools are in \
@@ -3863,6 +3869,33 @@ mod tests {
                  never quietly parked"
             ),
             "the new-work half is pinned",
+        );
+    }
+
+    /// **The person's attention has two channels and prose is not one.**
+    /// Pinned whole: a dropped second channel leaves a seat free to write a
+    /// wait in prose, which reaches nobody once the turn ends.
+    #[test]
+    fn the_conduct_block_carries_the_two_channel_rule() {
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains("The person's attention has two channels"),
+            "the rule's handle is pinned",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
+                .contains("If you cannot continue inside this turn, ask with `AskUserQuestion`"),
+            "the blocking channel is pinned",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
+                .contains("raise `tasks__wait` with `kind: decision` on its row"),
+            "the at-convenience channel is pinned",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
+                "Never leave a wait for the person in prose alone: prose is not a surface"
+            ),
+            "the prohibition on prose alone is pinned",
         );
     }
 

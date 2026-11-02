@@ -15,7 +15,7 @@ back to lands on the home.
 
 The page draws from the `board` subject: a project's rows, schedules and
 connector sets ride in that subject's entry, and it hears the updates that
-move them. The seat chips and the fleet's `waiting on you` count come from
+move them. The seat chips and the fleet's decision-wait mark come from
 the home snapshot beside it; the row and running counts are the board's own.
 So a seat that claims a row, a row that is cut, or a move made in another view
 arrives as an update, and the page re-reads without the reader doing

@@ -282,6 +282,15 @@
   .pr .org { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim);
     flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
   .pr .age { margin-left: auto; font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); }
+  /* The decision-wait mark on a project row and a seat row: a glyph and a
+     count, never colour alone, with the asks themselves behind it. */
+  .attn { display: inline-flex; align-items: center; gap: 5px; flex: none;
+    white-space: nowrap; background: none; border: 0; border-radius: 6px;
+    padding: 2px 5px; color: var(--warn); font-family: var(--mono);
+    font-size: var(--fs-data); cursor: pointer; }
+  .attn:hover { background: rgba(201,161,59,.12); }
+  .attn-glyph { width: 9px; height: 9px; flex: 0 0 9px;
+    background: var(--warn); clip-path: polygon(50% 3%, 97% 95%, 3% 95%); }
   .pr .x, .wk .x { margin-left: auto; flex: none; color: var(--muted);
     font-family: var(--mono); font-size: var(--fs-data); line-height: 1.5;
     background: none; border: 0; border-radius: 5px; padding: 0 5px; cursor: pointer;
@@ -1724,10 +1733,17 @@
       <div class="pj">
         <div class="pr"><span class="dot-slot"><span class="dot live"></span></span><span class="nm">forge</span>
           <span class="org">Busytools</span>
+          <button class="attn" type="button" aria-label="2 decision waits on you"
+            title="2 decision waits on you: sign the parser off"><span class="attn-glyph"
+            aria-hidden="true"></span><span class="attn-n">2</span></button>
           <button class="x" type="button" title="close">&#10005;</button></div>
         <!-- The seat the page is showing, marked on its own row. -->
         <div class="wk on"><span class="dot live" style="width:8px;height:8px;flex:0 0 8px"></span>
-          <span class="nm">live-updates</span><button class="x" type="button" title="close">&#10005;</button></div>
+          <span class="nm">live-updates</span>
+          <button class="attn" type="button" aria-label="1 decision wait on you"
+            title="1 decision wait on you: sign the parser off"><span class="attn-glyph"
+            aria-hidden="true"></span><span class="attn-n">1</span></button>
+          <button class="x" type="button" title="close">&#10005;</button></div>
         <!-- The seats this project has asleep, behind one row that counts
              them. Open it to see the rows it hides. -->
         <details class="sfold">

@@ -550,6 +550,9 @@
        long ones while the tree's track sat half empty beside them. */
     .fleet-name { font-weight: 500; min-width: 0; overflow: hidden;
       text-overflow: ellipsis; white-space: nowrap; }
+    /* The name and its wait mark share one track: a cell of their own would
+       have shifted every cell after it onto an implicit row. */
+    .fleet-name-cell { display: inline-flex; align-items: center; gap: 8px; min-width: 0; }
     /* The row is the way into the lead's chat: this link's box stretches over
        the whole row, and the controls with targets of their own (a seat chip,
        the board) ride above it. */
@@ -569,9 +572,11 @@
       color: var(--dim); font-size: 12.5px; font-family: var(--mono);
       position: relative; z-index: 1; text-decoration: none; }
     .fleet-seat:hover { color: var(--text); }
+    /* A seat and its own wait mark travel together: the mark belongs to that
+       seat, not to the row's list of seats. */
+    .fleet-seat-pair { display: inline-flex; align-items: center; gap: 2px; }
     .fleet-counts { color: var(--muted); font-size: 12.5px; font-family: var(--mono);
       white-space: nowrap; }
-    .fleet-you { color: #ffb058; }
     .fleet-misses { display: flex; gap: 8px; flex-wrap: wrap; }
     .fleet-miss { font-family: var(--mono); font-size: 12.5px;
       border: 1px solid var(--line); border-radius: 6px; padding: 2px 8px; color: var(--muted); }
@@ -583,11 +588,25 @@
       position: relative; z-index: 1; }
     .fleet-open:hover { border-color: var(--text); }
     .fleet-open:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
-    /* A finger's floors, the sheet's own: the open link and a seat chip take
-       44px, and the row takes the taller padding. */
+    /* The decision-wait mark: a glyph and a count, and the asks themselves
+       behind it. The board is the store; this is the read that makes a wait
+       on the person visible from the rail and the home without opening it.
+       Never colour alone - the triangle is the shape and the count is the
+       number. */
+    .attn { display: inline-flex; align-items: center; gap: 5px;
+      flex: none; white-space: nowrap;
+      background: none; border: 0; border-radius: 6px; padding: 2px 5px;
+      color: var(--warn); font-family: var(--mono); font-size: 12.5px;
+      cursor: pointer; }
+    .attn:hover { background: rgba(201,161,59,.12); }
+    .attn-glyph { width: 9px; height: 9px; flex: 0 0 9px;
+      background: var(--warn); clip-path: polygon(50% 3%, 97% 95%, 3% 95%); }
+    /* A finger's floors, the sheet's own: the open link, a seat chip and the
+       wait mark take 44px, and the row takes the taller padding. */
     @media (pointer: coarse) {
       .fleet-open { min-height: 44px; display: inline-flex; align-items: center; }
       .fleet-seat { min-height: 44px; }
+      .attn { min-height: 44px; }
       .fleet-row { padding-top: 16px; padding-bottom: 16px; }
     }
     /* The marks the fleet borrows from the sheet's vocabulary. */
@@ -613,16 +632,25 @@
   <ul class="fleet">
     <li class="fleet-row" title="when the project last moved">
       <span class="dot warn"></span>
-      <a class="fleet-name fleet-go" href="./web-session.html">forge</a>
+      <span class="fleet-name-cell">
+        <a class="fleet-name fleet-go" href="./web-session.html">forge</a>
+        <button class="attn" type="button" aria-label="2 decision waits on you"
+          title="2 decision waits on you: sign the parser off"><span class="attn-glyph"
+          aria-hidden="true"></span><span class="attn-n">2</span></button>
+      </span>
       <span class="fleet-where">main &middot; <span class="files">1 file</span></span>
       <span class="fleet-when">3m</span>
       <span class="fleet-seats">
-        <a class="fleet-seat" href="./web-session.html"><span class="dot live"></span>forge-l</a>
+        <span class="fleet-seat-pair">
+          <a class="fleet-seat" href="./web-session.html"><span class="dot live"></span>forge-l</a>
+          <button class="attn" type="button" aria-label="1 decision wait on you"
+            title="1 decision wait on you: sign the parser off"><span class="attn-glyph"
+            aria-hidden="true"></span><span class="attn-n">1</span></button>
+        </span>
         <a class="fleet-seat" href="./web-session.html"><span class="dot live"></span>em-dash-sweep</a>
         <a class="fleet-seat" href="./web-session.html"><span class="dot live"></span>steward</a>
       </span>
-      <span class="fleet-counts">3 of 4 slots &middot; queue 1 &middot;
-        <span class="fleet-you">on you 2</span></span>
+      <span class="fleet-counts">3 of 4 slots &middot; queue 1</span>
       <span class="fleet-misses"><span class="fleet-miss stalled">queue is stalling</span></span>
       <a class="fleet-open" href="./web-board.html">open board &rarr;</a>
     </li>
