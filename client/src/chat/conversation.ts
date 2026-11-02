@@ -256,6 +256,16 @@ export interface Conversation {
   /** The handle the page carried for the turns above it, or `null` at the top. */
   cursor: string | null;
   /**
+   * Whether the held turns begin where the conversation does.
+   *
+   * **What a block about the session's start can be anchored to.** A newest
+   * page with a `null` cursor covers from the first turn, an older page with
+   * one reaches it, and a trim that drops the oldest rows leaves it behind
+   * again. Only `true` says prepending puts a row at the head of the
+   * conversation rather than in the middle of it (#2816).
+   */
+  head: boolean;
+  /**
    * When the walk may ask again, after a page that came back empty.
    *
    * **An empty page keeps the cursor, so nothing else about the record moves.**
@@ -340,6 +350,7 @@ export const NOTHING: Conversation = {
   turns: [],
   loaded: false,
   cursor: null,
+  head: false,
   bytes: 0,
   reaskAt: null,
   askedFor: null,
@@ -1356,6 +1367,15 @@ export class Chat {
    * taken by [`Self::replaced`].
    */
   private carried: { turns: Turn[]; to: string } | null = null;
+  /**
+   * The handoff record this seat's tape carries, until its join is drawn.
+   *
+   * **The block it describes has no row in the successor's transcript**, so
+   * the record is the only thing that can draw it - and only at the session's
+   * start. Kept from every snapshot that names it, drawn by
+   * [`Self::seedAtHead`] once the held window reaches that start.
+   */
+  private handoff: HandoffRecord | null = null;
   /** The frame a publish is waiting for, or `null`. */
   private queued: number | null = null;
   /** The paint's own deadline, armed while `queued` is: see [`PAINT_WATCHDOG_MS`]. */
@@ -1783,11 +1803,16 @@ export class Chat {
       cron_names?: unknown;
     };
     cronNames.seed(conversation.cron_names);
-    const record = handoffOf(conversation.handoff);
-    if (record !== null) this.seedHandoffJoin(record, 'ahead');
+    this.handoff = handoffOf(conversation.handoff);
     const rows = pageTurns(conversation.turns);
-    if (rows.length === 0) return;
     const cursor = typeof conversation.cursor === 'string' ? conversation.cursor : null;
+    if (rows.length === 0) {
+      // No page to answer for the window: its cursor is all that says whether
+      // the window opens at the conversation's start.
+      this.markHead(Object.hasOwn(conversation, 'cursor') && conversation.cursor === null);
+      this.seedAtHead();
+      return;
+    }
     this.takePage(rows, cursor, 'newest');
   }
 
@@ -2117,6 +2142,18 @@ export class Chat {
         turns,
         bytes: this.heldBytes(turns),
         cursor,
+        // **A trim drops the oldest rows, so the window stops being the
+        // conversation's head** - unless everything it dropped was the
+        // record's own join, which has no transcript row and is not the start.
+        head:
+          held.head &&
+          rows
+            .slice(0, at)
+            .every(
+              (row) =>
+                row.record === true ||
+                (this.handoff !== null && row.key === handoffKey(this.handoff)),
+            ),
       };
     });
   }
@@ -2303,9 +2340,10 @@ export class Chat {
           cronNames.seed(conversation.cron_names);
           // **A client attaching after the swap draws the row the record
           // carries**, because the successor's transcript never holds it and
-          // the live frame it arrived on is long gone.
-          const record = handoffOf(conversation.handoff);
-          if (record !== null) this.seedHandoffJoin(record, 'ahead');
+          // the live frame it arrived on is long gone. The record is kept
+          // whether or not this landing can place it: a window that starts
+          // mid-conversation holds it until the head is loaded.
+          this.handoff = handoffOf(conversation.handoff);
           if (fresh) {
             const rows = pageTurns(conversation.turns);
             if (rows.length > 0) {
@@ -2324,8 +2362,16 @@ export class Chat {
                 this.takePage(rows, cursor, 'newest');
               }
             } else {
+              // No page to place: the handle alone says whether the window
+              // begins at the conversation's start.
+              this.markHead(Object.hasOwn(conversation, 'cursor') && conversation.cursor === null);
+              this.seedAtHead();
               this.ask(null);
             }
+          } else {
+            // The page this snapshot carries is not taken on a later read, so
+            // the held window's own head decides.
+            this.seedAtHead();
           }
           this.armed(message.data);
         }
@@ -3065,6 +3111,11 @@ export class Chat {
           : direction === 'older' || !held.loaded || !reachesHeld
             ? cursor
             : held.cursor,
+        // **A landing's own cursor says where its first turn sits.** A null
+        // one means the page opens on the conversation's first turn, so what
+        // is drawn begins there; a handle means history is still above. A
+        // failed read says nothing and keeps the answer it met.
+        head: emptied ? held.head : cursor === null,
         prepends: held.prepends + (direction === 'older' ? 1 : 0),
       });
     });
@@ -3106,6 +3157,34 @@ export class Chat {
     // the reader came back. The shown-and-following case is the column's,
     // which is what knows whether its whole conversation is on screen.
     if (!this.shown) this.trim();
+    // A landing that reaches the conversation's start is the first place a
+    // record's join can be anchored: draw it once that head is held.
+    this.seedAtHead();
+  }
+
+  /**
+   * Draw the record's join when, and only when, the held window is the head
+   * of the conversation.
+   *
+   * **The row names where the successor's transcript begins**, and a window
+   * that starts mid-conversation is not that place - prepended there it drew
+   * above whatever page was loaded (#2816). The record is kept beside the
+   * turns instead, and the first landing that says the head is held draws it.
+   */
+  private seedAtHead(): void {
+    if (this.handoff === null || !this.held.head) return;
+    this.seedHandoffJoin(this.handoff, 'ahead');
+  }
+
+  /**
+   * Record whether the held turns begin at the conversation's own start.
+   *
+   * The first load has no page to answer for an empty window, so its cursor
+   * is what says it; a landing says it in `takePage`, and a trim takes it
+   * away again.
+   */
+  private markHead(atHead: boolean): void {
+    this.fold((held) => (held.head === atHead ? held : { ...held, head: atHead }));
   }
 
   /**
@@ -3125,6 +3204,9 @@ export class Chat {
    * describes.
    */
   private holdHandoff(handoff: HandoffRecord): void {
+    // The record outlives its first drawing: a trim can take the row away,
+    // and only a landing that reaches the successor's start may draw it again.
+    this.handoff = handoff;
     this.seedHandoffJoin(handoff, 'after');
     // **The successor's id rides with the turns.** A swap that never lands
     // (a failed spawn, a dropped socket) leaves this set, and the next
@@ -3255,7 +3337,12 @@ export class Chat {
     // between them says two sessions met, so what the reader was reading
     // stays above it - and the successor is fresh, so there is no page above
     // the carried turns to fetch.
-    this.held = carried === null ? NOTHING : { ...NOTHING, turns: carried, loaded: true };
+    this.held =
+      carried === null ? NOTHING : { ...NOTHING, turns: carried, loaded: true, head: false };
+    // A plain swap leaves the join behind: the record named the successor this
+    // swap did not land, and drawing it again would put a row in a
+    // conversation it never joined. A handoff's own successor keeps it.
+    if (carried === null) this.handoff = null;
     this.flush();
     // **The swap forgot an ask too, and it has to say so.** The reset above
     // zeroes the count the column drains against, so a column that was holding

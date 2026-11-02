@@ -4588,6 +4588,72 @@ describe('the conversation the chat draws', () => {
   });
 
   /**
+   * **A send queued mid-turn is drawn below the answer it interrupted
+   * (#2816).**
+   *
+   * The live frames already put it there: the turn is still running when the
+   * queue starts the prompt, so its row joins the turn at the end. The page is
+   * the second telling, and the transport now places the display row after the
+   * frame that ended the turn - the place the CLI delivers the prompt at - so
+   * the page's turn head for it comes after the answer rather than above it.
+   */
+  it('draws a mid-turn send below the answer the page ended the turn on', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    try {
+      const send = 'ca897222-8a4b-470c-aa6c-5816ba28aedc';
+      server.send(page([turn('t0', 'earlier')], null));
+      // The turn opens, the send is dispatched mid-turn, the answer is
+      // written; then the queue starts the prompt and the turn ends.
+      for (const frame of [
+        typed('open the turn'),
+        forgedUnder('Looks good, let us go.', 'ca897222-8a4b-470c-aa6c-5816ba28aedc'),
+        said('Yes, now I can see them.'),
+      ]) {
+        server.update({ chat_appended: { key: LEAD, msg: frame } });
+      }
+      server.update({ prompt_queued: { key: LEAD, uuid: send, source: 'you', text: 'hold' } });
+      server.update({ prompt_lifecycle: { key: LEAD, uuid: send, state: 'started' } });
+      server.update({ chat_appended: { key: LEAD, msg: ended() } });
+
+      const live = words(chat);
+      expect(
+        live.indexOf('Yes, now I can see them.'),
+        'the live store is right: the answer precedes the send',
+      ).toBeLessThan(live.indexOf('Looks good'));
+
+      // The page as the transport holds it after the fix: the send's display
+      // row sits behind the frame that ended the turn, so its turn head opens
+      // after the answer.
+      server.send(
+        page(
+          [
+            {
+              key: null,
+              messages: [typed('open the turn'), said('Yes, now I can see them.'), ended()],
+            },
+            {
+              key: null,
+              messages: [forgedUnder('Looks good, let us go.', send), said('the next turn')],
+            },
+          ],
+          'above',
+        ),
+      );
+
+      const drawn = words(chat);
+      expect(
+        drawn.indexOf('Yes, now I can see them.'),
+        'the answer stays above the send',
+      ).toBeLessThan(drawn.indexOf('Looks good'));
+      expect(drawn.split('Looks good').length - 1, 'and the send draws once').toBe(1);
+    } finally {
+      stop();
+    }
+  });
+
+  /**
    * **A live frame that landed after the page was read sits at the row's end,
    * and the page's frames never go below it.**
    *
@@ -5453,6 +5519,73 @@ describe('the conversation the chat draws', () => {
       'the row is the head of the conversation, not appended below it',
     ).toBe('handoff:old:new');
     stop();
+  });
+
+  /**
+   * **A trimmed window does not get the handoff block at its head (#2816).**
+   *
+   * The row marks where the successor's transcript begins, and a window a trim
+   * has cut is not that place: prepended there, the block drew above whatever
+   * page happened to be loaded - Ved's hard refresh put it above the newest
+   * exchange. It waits for a landing that reaches the start.
+   */
+  it('keeps the handoff row off a trimmed window that no longer reaches the start', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    try {
+      // An empty window whose handle says it opens at the conversation's
+      // start: the head, before any page answers it.
+      server.send(record([], null));
+      expect(get(chat.value).head, 'an empty answer at the top is the start').toBe(true);
+
+      // Four turns of three mebibytes each, more than the window holds, built
+      // live; the trim that keeps the newest two leaves the start behind.
+      for (const key of ['t0', 't1', 't2', 't3']) {
+        server.update({
+          chat_appended: {
+            key: LEAD,
+            msg: {
+              type: 'user',
+              uuid: `u-${key}`,
+              message: {
+                role: 'user',
+                content: [{ type: 'text', text: `${key} ${'x'.repeat(3 << 20)}` }],
+              },
+            },
+          },
+        });
+        server.update({
+          chat_appended: {
+            key: LEAD,
+            msg: { type: 'result', uuid: `r-${key}`, subtype: 'success', is_error: false },
+          },
+        });
+      }
+      chat.trim();
+      expect(
+        get(chat.value).head,
+        'the trim dropped transcript turns, so the window no longer starts there',
+      ).toBe(false);
+
+      // A snapshot carries the record; the held window has not moved.
+      server.send(record([], 'above', handoffRecord('old', 'new')));
+      expect(
+        get(chat.value).turns.map((held) => held.key),
+        'the block does not lead a window it is not the start of',
+      ).not.toContain('handoff:old:new');
+
+      // A landing that reaches the conversation's first turn draws it there.
+      server.send(page([turn('t0', 'the first turn')], null));
+
+      const keys = get(chat.value).turns.map((held) => held.key);
+      expect(keys[0], 'the block leads the conversation once its head is loaded').toBe(
+        'handoff:old:new',
+      );
+      expect(keys, 'and the first turn is drawn below it').toContain('t0');
+    } finally {
+      stop();
+    }
   });
 
   it('carries the conversation only onto the successor the row names', () => {
