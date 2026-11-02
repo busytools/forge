@@ -229,16 +229,34 @@ describe('the stream gate', () => {
     expect(asked, 'and no range is asked for').toEqual([]);
   });
 
+  it('two answers in flight are judged one ask each', () => {
+    // Two asks can be out at once (a read bound retries while the first
+    // answer travels). Each answer is judged by the ask it answers, not by
+    // the newest one.
+    const { gate, asked } = aGate();
+    gate.inbound(snap('occ', 1));
+    gate.inbound(update(1));
+    gate.inbound(update(2));
+    gate.askSent(LEAD);
+    gate.askSent(LEAD);
+    gate.inbound(update(3));
+    gate.inbound(snap('occ', 2));
+    gate.inbound(snap('occ', 2));
+    expect(gate.inbound(update(4)), 'the next frame is a successor').toHaveLength(1);
+    expect(asked, 'and no range is asked for').toEqual([]);
+  });
+
   it('an answer to a quiet ask still restarts the count', () => {
-    const { gate } = aGate();
+    const { gate, asked } = aGate();
     gate.inbound(snap('occ', 1));
     gate.inbound(update(1));
     gate.inbound(update(2));
     gate.askSent(LEAD);
     // Nothing arrived after the ask, so the answer is the authority.
     gate.inbound(snap('occ', 1));
-    expect(gate.inbound(update(1)), 'a frame at 1 is a successor again').toHaveLength(1);
+    expect(gate.inbound(update(1)), 'a frame at 1 is not held').toHaveLength(1);
     expect(gate.inbound(update(3)), 'and 3 opens a hole').toHaveLength(0);
+    expect(asked, 'over the restarted count').toEqual([{ from: 2, to: 2 }]);
   });
 
   it('a repair that lands while settled advances the count', () => {
@@ -246,7 +264,10 @@ describe('the stream gate', () => {
     gate.inbound(snap('occ', 1));
     gate.inbound(update(1));
     gate.inbound(update(2));
-    gate.inbound(repaired(3));
+    expect(gate.inbound(repaired(3)), 'the repair still reaches the readers').toHaveLength(1);
+    // A duplicate repair for numbers already delivered must not rewind the
+    // count either, or the next live frame waits on a phantom gap.
+    expect(gate.inbound(repaired(2)), 'the duplicate passes through').toHaveLength(1);
     expect(gate.inbound(update(4)), 'the next frame is a successor').toHaveLength(1);
     expect(asked, 'no phantom ask').toEqual([]);
   });

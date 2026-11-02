@@ -477,6 +477,48 @@ describe('frames from the bridge', () => {
     ).resolves.toBeNull();
   });
 
+  it('a stale answer does not rewind the count on this transport', async () => {
+    // **The desktop gate orders with the websocket's rule**, so the mark a
+    // subscribe went out at has to reach this gate too: without it every
+    // settled answer rewinds onto numbers every reader holds.
+    const connection = await opened();
+    connection.subscribe(subject);
+    const answer = (seq: number): void => {
+      fire('client://inbound', {
+        kind: 'snapshot',
+        subject,
+        data: { header: { session_id: 'occ', seq } },
+      });
+    };
+    const frame = (seq: number): void => {
+      fire('client://inbound', {
+        kind: 'update',
+        seq,
+        span: 1,
+        update: {
+          chat_appended: {
+            key: slot,
+            msg: { type: 'user', uuid: `u${seq}`, message: { role: 'user', content: 'x' } },
+          },
+        },
+      });
+    };
+    answer(1);
+    frame(1);
+    frame(2);
+    // A second subscribe asks again, and live frames land while the answer is
+    // out - the outrun case.
+    connection.subscribe(subject);
+    frame(3);
+    answer(2);
+    invoke.mockClear();
+    frame(4);
+    expect(
+      invoke.mock.calls.filter(([command]) => command === 'client_seat_range'),
+      'a stale answer asked for a range every reader holds',
+    ).toEqual([]);
+  });
+
   it('a snapshot seeds its store, and a refusal lands in it and reaches the page', async () => {
     const connection = await opened();
     const store = connection.subscribe(subject);

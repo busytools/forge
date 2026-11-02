@@ -90,14 +90,15 @@ interface StreamState {
   /** The ranges an ask has already gone out for. */
   asked: Range[];
   /**
-   * The number the stream stood at when the connection last asked for a fresh
-   * answer, or `null` when no ask is outstanding.
+   * The counts the stream stood at when the connection asked for fresh
+   * answers, oldest first; empty when none is outstanding.
    *
    * **What tells a stale answer from a restart.** An answer can be encoded
-   * before frames this gate already delivered; comparing the count against
-   * this mark says whether anything arrived after the ask.
+   * before frames this gate already delivered; the mark its ask went out at
+   * says whether anything arrived after it. Answers come back in ask order,
+   * so the oldest mark judges the next one.
    */
-  askedAt: number | null;
+  askedAt: number[];
   /** Update frames seen but not yet deliverable, in arrival order. */
   waiting: Frame[];
   /** Repaired frames received but not yet delivered, in arrival order. */
@@ -136,7 +137,7 @@ function stateOf(streams: Map<string, StreamState>, key: string): StreamState {
       seenThrough: 0,
       missing: [],
       asked: [],
-      askedAt: null,
+      askedAt: [],
       waiting: [],
       repairs: [],
       origin: null,
@@ -231,6 +232,10 @@ export class StreamGate {
           state.expecting = 1;
           state.seenThrough = 0;
         }
+        // **Every answer consumes one ask**, whether or not it is adopted:
+        // answers return in ask order, so the oldest mark is the one this
+        // one was sent in answer to.
+        const mark = state.askedAt.shift();
         if (typeof header?.seq === 'number' && this.settled(state)) {
           // **The answer is the authority on where the stream stands**, the
           // same rule the store reads it by: a restart under the same
@@ -244,11 +249,13 @@ export class StreamGate {
           // passed; adopting it rewinds the count onto numbers every reader
           // holds, and the next live frame asks for them again. Only an
           // answer to an ask nothing has arrived behind may lower the count.
-          if (state.askedAt === null || state.seenThrough === state.askedAt) {
+          // The trade runs the other way for a restart already emitting when
+          // the ask went out: its low answer is refused, and its frames read
+          // as already drawn.
+          if (mark === undefined || state.seenThrough === mark) {
             state.expecting = header.seq;
             state.seenThrough = header.seq - 1;
           }
-          state.askedAt = null;
         }
         return [message];
       }
@@ -396,7 +403,7 @@ export class StreamGate {
     state.epoch = null;
     state.expecting = 1;
     state.seenThrough = 0;
-    state.askedAt = null;
+    state.askedAt.length = 0;
   }
 
   /**
@@ -410,7 +417,7 @@ export class StreamGate {
   askSent(slot: SessionSlot): void {
     const state = this.streams.get(subjectKey({ session: slot }));
     if (state === undefined) return;
-    state.askedAt = state.seenThrough;
+    state.askedAt.push(state.seenThrough);
   }
 
   /** Whether nothing is in flight for this seat. */
@@ -546,7 +553,7 @@ export class StreamGate {
     state.deadline = null;
     state.missing.length = 0;
     state.asked.length = 0;
-    state.askedAt = null;
+    state.askedAt.length = 0;
     state.waiting.length = 0;
     state.repairs.length = 0;
     state.origin = null;

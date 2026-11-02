@@ -502,6 +502,7 @@ class RustConnection implements Connection {
       return this.stores.refused(what, 'this connection is closed');
     }
     const store = this.stores.open(what);
+    if (typeof what !== 'string') this.gate.askSent(what.session);
     if (options?.review !== undefined) this.scopes.set(subjectKey(what), options.review);
     void invoke('client_subscribe', {
       what,
@@ -558,6 +559,7 @@ class RustConnection implements Connection {
    * declared.
    */
   relist(what: Subject, options?: { answering?: boolean; review?: boolean }): void {
+    if (typeof what !== 'string') this.gate.askSent(what.session);
     if (options?.review !== undefined) this.scopes.set(subjectKey(what), options.review);
     void invoke('client_relist', {
       what,
@@ -615,6 +617,7 @@ class RustConnection implements Connection {
     // Nothing to ask when the socket is down: the reconnect re-subscribes
     // everything held, and that answer is fresher than this ask would be.
     if (this.state !== 'open') return false;
+    if (typeof what !== 'string') this.gate.askSent(what.session);
     // **A re-ask that states no scope keeps the shell's held one**, and its
     // deadline follows that held scope: a review-scoped read has none at all,
     // so this arms nothing for it rather than presuming a lost read at five
