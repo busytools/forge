@@ -814,7 +814,10 @@ export function railGroups(
     const all = [lead, ...workers];
     const rankOfRow = (row: Row): number =>
       closing(row.slot) ? 2 : rankOf(row.state, row.pending, row.attention);
-    const rank = all.reduce((best, row) => Math.min(best, rankOfRow(row)), 2);
+    // The project's own waits seed the rank: a wait whose seat has no row (a
+    // sleeping worker) has no row to lift it, and must not sit in Working.
+    const base = waits.length > 0 ? 0 : 2;
+    const rank = all.reduce((best, row) => Math.min(best, rankOfRow(row)), base);
     const group = groups[rank];
     if (group === undefined) continue;
     const sleeping = workers.filter((row) => rankOfRow(row) === 2);

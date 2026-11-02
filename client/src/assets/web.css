@@ -924,7 +924,6 @@ button.b-epic-pill { cursor: pointer; }
    seat, not to the row's list of seats. */
 .fleet-seat-pair { display: inline-flex; align-items: center; gap: 2px; }
 .fleet-counts { color: var(--muted); font-size: var(--fs-label); font-family: var(--mono); white-space: nowrap; }
-.fleet-you { color: var(--hot); }
 .fleet-misses { display: flex; gap: 8px; flex-wrap: wrap; }
 .fleet-miss {
   font-family: var(--mono); font-size: var(--fs-label);

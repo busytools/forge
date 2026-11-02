@@ -182,10 +182,8 @@ export interface FleetViewRow {
   leadHref: string;
   /** The strongest seat state, drawn with the same `Mark` a seat row uses. */
   state: RowState;
-  /** The project's decision waits, which its mark lists. */
+  /** The project's decision waits, which its mark lists and its rank reads. */
   waits: AttentionRow[];
-  /** How many decision waits the project holds: its mark's count. */
-  attention: number;
   place: { branch: string | null; files: string | null };
   gate: string | null;
   /** Each seat's state and its ask, which is what its rank is read from. */
@@ -294,7 +292,6 @@ export function fleetRows(wire: HomeWire): FleetViewRow[] {
       leadHref: lead?.href ?? hrefForSlot({ org, project: row.project, label: 'lead' }),
       state: strongest,
       waits: row.attention,
-      attention: row.attention.length,
       place: project === undefined ? { branch: null, files: null } : placeOf(project.work),
       gate: project === undefined ? null : gateLine(project.work.gate),
       seats,
@@ -346,7 +343,9 @@ export const groupClassOf = (rank: number): string => (rank === 0 ? 'state needs
  *
  * A row ranks by its strongest seat - an ask outranks a run, a run outranks a
  * sleep - and a project with no live seat ranks asleep, which is what the
- * home's flat list could not say.
+ * home's flat list could not say. **The project's own waits rank it first**:
+ * a wait whose seat has no row (a sleeping project's worker) has no seat to
+ * carry the rank, and would otherwise leave a blocked project in Working.
  */
 export function fleetGroups(rows: FleetViewRow[]): FleetGroup[] {
   const groups: FleetGroup[] = GROUP_HEADINGS.map((heading, rank) => ({
@@ -359,7 +358,7 @@ export function fleetGroups(rows: FleetViewRow[]): FleetGroup[] {
   for (const row of rows) {
     const rank = row.seats.reduce(
       (best, seat) => Math.min(best, rankOf(seat.state, seat.pending, seat.attention)),
-      2,
+      row.waits.length > 0 ? 0 : 2,
     );
     const group = groups[rank];
     if (group === undefined) continue;

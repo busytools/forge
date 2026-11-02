@@ -851,7 +851,17 @@ export function homeFrom(data: HomeWire): HomeWire {
     fleet: (Array.isArray(data.fleet) ? data.fleet : []).map((row) => ({
       ...row,
       rows: typeof row.rows === 'number' ? row.rows : 0,
-      attention: (Array.isArray(row.attention) ? row.attention : []).map(attentionFrom),
+      // **One unreadable wait is dropped, not the home.** A bad item would
+      // otherwise fail the whole snapshot and leave every page on a read it
+      // never recovers from; the rest of the fleet is still true.
+      attention: (Array.isArray(row.attention) ? row.attention : []).flatMap((item) => {
+        try {
+          return [attentionFrom(item)];
+        } catch (why) {
+          console.warn('a decision wait this page cannot read was dropped', why);
+          return [];
+        }
+      }),
       misses: (Array.isArray(row.misses) ? row.misses : []).map(missFrom),
     })),
     accounts: accountsFrom(data.accounts),

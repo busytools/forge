@@ -18,7 +18,7 @@ import type {
   WireTime,
   WorkState,
 } from '../wire/home';
-import { homeFrom, missFrom } from '../wire/home';
+import { attentionFrom, homeFrom, missFrom } from '../wire/home';
 
 describe('an agent row from a server that names no failure', () => {
   /**
@@ -64,6 +64,60 @@ describe('an agent row from a server that names no failure', () => {
       homeFrom(raw as unknown as HomeWire).agents[0]?.failed_turn,
       'an absent failure reads as null',
     ).toBeNull();
+  });
+});
+
+describe('a decision wait from the wire', () => {
+  const wait = {
+    task: 't1',
+    owner: 'lead',
+    subject: 'the parser',
+    words: 'sign this off',
+    at: { secs_since_epoch: 5, nanos_since_epoch: 0 },
+  };
+
+  it('narrows a real item and refuses a malformed one', () => {
+    expect(attentionFrom(wait)).toEqual(wait);
+    expect(() => attentionFrom({ task: 't1' }), 'a missing field is refused').toThrow(
+      'a decision wait this page cannot read',
+    );
+  });
+
+  /// **One unreadable wait does not blank the home.** The bad item is
+  /// dropped; the fleet, and every other read, still draws.
+  it('keeps the home when one item is unreadable', () => {
+    const raw = {
+      projects: [],
+      agents: [],
+      fleet: [
+        {
+          project: 'proj',
+          live_workers: 0,
+          slots: 2,
+          queue: 0,
+          waiting_on_user: 1,
+          attention: [wait, { task: 't2' }],
+          rows: 0,
+          misses: [],
+        },
+      ],
+      unseen: [],
+      accounts: {
+        loading: [],
+        all_loaded: true,
+        gateway: { ready: true, port: 0, bind_error: null },
+        usage: [],
+      },
+      connectors: null,
+      dictate: { enabled: false, snapshot: { models: [], failure: null }, models_dir: null },
+      cli_version: null,
+      forge_version: '1.0.0',
+      forge_version_short: '1.0.0',
+      service_status: null,
+      fatal_error: null,
+    };
+    const parsed = homeFrom(raw as unknown as HomeWire);
+    expect(parsed.fleet[0]?.attention, 'the readable item survives').toEqual([wait]);
   });
 });
 import { components, extensionsWire } from '../extensions/testing';
@@ -387,7 +441,7 @@ describe('the fleet the snapshot describes', () => {
       at: { secs_since_epoch: 5, nanos_since_epoch: 0 },
     };
     const fleet = fleetRows({ ...FLEET, fleet: [fleetRow('forge', 1, 0, [wait])] });
-    expect(fleet[0]?.attention, 'the project carries the count').toBe(1);
+    expect(fleet[0]?.waits.length, 'the project carries the count').toBe(1);
     expect(fleet[0]?.seats[0]?.attention, 'and the seat it names carries one').toBe(1);
     expect(
       fleet[0]?.seats[0] && rankOf(fleet[0].seats[0].state, null, 1),
@@ -408,7 +462,7 @@ describe('the fleet the snapshot describes', () => {
       { task: 't2', owner: 'lead', subject: 'the schema', words: 'pick one', at: at(9) },
     ];
     const fleet = fleetRows({ ...FLEET, fleet: [fleetRow('forge', 1, 0, waits)] });
-    expect(fleet[0]?.attention, 'the project counts both').toBe(2);
+    expect(fleet[0]?.waits.length, 'the project counts both').toBe(2);
     expect(fleet[0]?.seats[0]?.attention, 'and the seat it names holds both').toBe(2);
     expect(fleet[0]?.seats[0]?.waits, 'with the items behind its count').toEqual(waits);
 
@@ -430,11 +484,15 @@ describe('the fleet the snapshot describes', () => {
     };
     const wire: HomeWire = { ...FLEET, fleet: [fleetRow('forge', 0, 0, [wait])] };
     const fleet = fleetRows(wire);
-    expect(fleet[0]?.attention, 'the project counts a wait whose seat has no row').toBe(1);
+    expect(fleet[0]?.waits.length, 'the project counts a wait whose seat has no row').toBe(1);
     expect(
       fleet[0]?.seats.map((seat) => seat.label),
       'and the fixture draws no row for that seat',
     ).not.toContain('gone');
+    expect(
+      fleetGroups(fleet)[0]?.heading,
+      'the project itself ranks with the attention states, so the rail cannot fold it',
+    ).toBe('needs you');
     expect(rowsOf(wire).waits, 'the rail is still handed the wait').toEqual([wait]);
   });
 
@@ -450,9 +508,9 @@ describe('the fleet the snapshot describes', () => {
       at: { secs_since_epoch: 5, nanos_since_epoch: 0 },
     };
     const held = { ...FLEET, fleet: [fleetRow('forge', 1, 0, [wait])] };
-    expect(fleetRows(held)[0]?.attention, 'the wait is marked').toBe(1);
+    expect(fleetRows(held)[0]?.waits.length, 'the wait is marked').toBe(1);
     const answered = { ...FLEET, fleet: [fleetRow('forge', 1, 0, [])] };
-    expect(fleetRows(answered)[0]?.attention, 'the answered read draws no mark').toBe(0);
+    expect(fleetRows(answered)[0]?.waits.length, 'the answered read draws no mark').toBe(0);
     expect(rowsOf(answered).waits, 'and hands the rail nothing').toEqual([]);
   });
 
