@@ -419,12 +419,13 @@ reviewer kept on as a long-lived worker.";
 /// than start the task over.
 const DYNAMIC_WORKER_RESTART_NOTE: &str = "This session was restarted by forge. Your prior conversation and progress are in the history above. Continue where you left off; do not restart the task. If the history's timestamps disagree with the clock and the live schedules, believe the clock and the schedules, and still do the concrete asks.";
 
-/// The first turn a boot spawn delivers to a lead whose session it
-/// resumed. A lead has no kick of its own, so this note is what turns a
-/// resumed conversation into work continued rather than a seat idle at a
-/// prompt. The handoff and the board are the source of what was in
-/// flight: a `--resume` that the CLI refuses falls back to a fresh
-/// session, so the history is named conditionally rather than relied on.
+/// The first turn a boot spawn delivers to a lead it hands a stored
+/// session id to. A lead has no kick of its own, so this note is what
+/// turns a resumed conversation into work continued rather than a seat
+/// idle at a prompt. The handoff and the board are the source of what
+/// was in flight: a `--resume` that the CLI refuses falls back to a
+/// fresh session, so the history is named conditionally rather than
+/// relied on.
 pub const LEAD_RESTART_NOTE: &str = "forge restarted. Read the project handoff (`handoff.md` in the project's memory directory) and the task board before acting; they say what was in flight. Continue that work and do not restart what is finished. If a prior conversation is in the history above, treat it as the record of this seat's last run. If the history's timestamps disagree with the clock and the live schedules, believe the clock and the schedules.";
 
 /// The restart note a boot spawn hands its seat: only a spawn carrying a
@@ -436,8 +437,9 @@ fn resume_kick_for(resumed: bool, requested: Option<String>) -> Option<String> {
 }
 
 /// One enqueue onto the workspace-level worker-kick channel
-/// (#259). Built by `maybe_kick_worker_on_connected` (and any
-/// future kick site); drained by the workspace's
+/// (#259). Built by `maybe_kick_worker_on_connected` and
+/// `maybe_kick_lead_on_connected` (and any future kick site); drained by
+/// the workspace's
 /// `start_kick_dispatcher` task, which fires one `Command::Prompt`
 /// per `KICK_DISPATCH_INTERVAL` tick. Same payload shape as the
 /// existing `Command::Prompt` carries (no attachments are ever
@@ -2652,9 +2654,9 @@ impl Workspace {
             self.announce_accounts_changed();
         }
         // A project the edit added starts as a boot spawn would, but
-        // without the restarted lead's note: only the launch hands that
-        // one out. One already declared keeps whatever it is running, and
-        // a removed one is left alone.
+        // without the launch's restart note (and without `--new`): only
+        // the launch hands those out. One already declared keeps whatever
+        // it is running, and a removed one is left alone.
         let added: Vec<(String, String)> = self
             .config_arc()
             .projects
@@ -12445,7 +12447,6 @@ path = "{}"
         );
     }
 
-    /// `SessionTarget::Default` is the alphabetically-first resume_lead
     /// Buffer tracing output so the applied record can be read back.
     #[derive(Clone, Default)]
     struct LogCapture(Arc<Mutex<Vec<u8>>>);
@@ -12903,7 +12904,7 @@ provider = "anthropic"
     /// that arrives before or just after it. The extra `note_window`
     /// after `Connected` is what makes a negative meaningful: the kick
     /// dispatcher fires a first enqueue with no added latency, so a note
-    /// a refused resume should not send has to be absent by then.
+    /// a first boot or `--new` should not send has to be absent by then.
     async fn lead_boot_frames(
         updates: &mut tokio::sync::mpsc::UnboundedReceiver<SeatUpdate>,
         key: &SessionSlot,
@@ -15011,8 +15012,9 @@ provider = "anthropic"
         );
     }
 
-    /// A project the edit adds with `resume_lead` starts as it would at boot;
-    /// a project already declared is not restarted by the reload.
+    /// A project the edit adds with `resume_lead` starts without the
+    /// launch's restart note (and without `--new`); a project already
+    /// declared is not restarted by the reload.
     #[tokio::test]
     async fn a_reload_starts_only_a_newly_added_resume_lead_project() {
         let dir = make_workspace_dir();
@@ -20183,14 +20185,18 @@ mod worker_respawn_tests {
         );
     }
 
-    /// A boot spawn's restart note is delivered only when the spawn resumed
-    /// a stored session: a fresh spawn, or `--new`, sends nothing even
-    /// though the boot wave asked for the note.
+    /// A boot spawn's restart note is delivered only when the spawn
+    /// carries a stored id to resume: a first boot, or `--new`, sends
+    /// nothing even though the boot wave asked for the note.
     #[test]
-    fn a_resume_kick_reaches_only_a_spawn_that_resumed() {
+    fn a_resume_kick_reaches_only_a_spawn_with_a_stored_id() {
         let note = || Some("continue where you left off".to_owned());
-        assert_eq!(resume_kick_for(true, note()), note(), "a resumed spawn takes the note");
-        assert!(resume_kick_for(false, note()).is_none(), "a fresh spawn delivers none");
+        assert_eq!(
+            resume_kick_for(true, note()),
+            note(),
+            "a spawn with a stored id takes the note",
+        );
+        assert!(resume_kick_for(false, note()).is_none(), "a first boot delivers none");
         assert!(
             resume_kick_for(true, None).is_none(),
             "and a caller that asked for no note gets none",

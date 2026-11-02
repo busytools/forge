@@ -754,9 +754,9 @@ mod tests {
         fixture(true, false)
     }
 
-    /// The bare boot, optionally with the first project pinned to resume
-    /// its lead and a second project left unpinned beside it, so a wave
-    /// test can tell the two apart.
+    /// The bare boot, optionally with `notes`, the second-declared
+    /// project, pinned to resume its lead and the first-declared `forge`
+    /// left unpinned beside it, so a wave test can tell the two apart.
     fn fixture(serve: bool, resume_lead: bool) -> (Arc<Workspace>, tempfile::TempDir) {
         let dir = tempfile::tempdir().expect("tempdir");
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a free port");
@@ -838,8 +838,10 @@ port = {port}
     /// restart note.** On a bare launch it is sent only for the projects
     /// pinned to resume, so an unpinned project is not in the wave at
     /// all; a project named on the command line starts whether or not it
-    /// is pinned. The intercept replaces the spawn, so what is read here
-    /// is the command the wave would send.
+    /// is pinned, and takes the same note request, so a named unpinned
+    /// project with a stored id gets the note too. The intercept replaces
+    /// the spawn, so what is read here is the command the wave would
+    /// send.
     #[tokio::test]
     async fn the_boot_wave_pins_each_resume_lead_project_with_the_restart_note() {
         let (workspace, _dir) = fixture(false, true);

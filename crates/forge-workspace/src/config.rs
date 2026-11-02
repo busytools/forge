@@ -5,9 +5,10 @@
 //! pin shared by all its projects, replacing the per-project pin
 //! that lived here before. Projects within an org keep a flat list
 //! via `[[orgs.projects]]`. Multiple projects can carry
-//! `resume_lead = true`; all such projects spawn at launch, resuming the
-//! session forge stored for them unless `--new` is passed, and the first
-//! one (alphabetical) is the default project.
+//! `resume_lead = true`; a launch with no project named spawns all such
+//! projects, resuming the session forge stored for them unless `--new`
+//! is passed, and the first one (alphabetical) is the fallback target
+//! when no project is named and no picker chooses one.
 //!
 //! **Selection policy.** The gateway's declared-model walk: over the
 //! org's `accounts` primaries and `fallback_accounts`, the first
@@ -420,10 +421,11 @@ struct SlackBinding {
 struct ProjectEntry {
     name: String,
     path: String,
-    /// When `true`, the project's lead session spawns at forge launch,
-    /// resuming the session forge stored for it. Multiple projects can
-    /// carry this; they all spawn in the background, and none of them
-    /// is focused until a view picks one. Defaults to `false`.
+    /// When `true`, a launch with no project named spawns the project's
+    /// lead session at forge launch, resuming the session forge stored
+    /// for it unless `--new` is passed. Multiple projects can carry
+    /// this; they all spawn in the background, and none of them is
+    /// focused until a view picks one. Defaults to `false`.
     #[serde(default)]
     resume_lead: bool,
     /// The project's model: fills the CLI's model slots at spawn
@@ -697,11 +699,11 @@ pub(crate) struct LoadedConfig {
     /// Each org's own `[orgs.slack]` binding, keyed by org name. A project
     /// may override it; the resolved per-project binding is on the project.
     pub org_slack: HashMap<String, String>,
-    /// Index into `projects` for the default startup target -
+    /// Index into `projects` for the fallback target: the
     /// alphabetically-first project that carries `resume_lead = true`,
-    /// falling back to the alphabetically-first project overall
-    /// when no project opts in. Used by the `forge` (no argv) fixture
-    /// / smoke paths; a production picker overrides it.
+    /// falling back to the alphabetically-first project overall when no
+    /// project opts in. Read only when no project is named and no picker
+    /// selects one; a named project and the picker both override it.
     pub default_index: usize,
     pub accounts: Vec<LoadedAccount>,
     /// `[models."<name>"]` tables, keyed by the spelling a project's
@@ -866,8 +868,9 @@ pub(crate) struct LoadedProject {
     /// Cached fallback list from the project's org, alongside
     /// `accounts`. Absent key -> empty.
     pub fallback_accounts: Vec<String>,
-    /// `true` when the project's lead should spawn at forge launch,
-    /// resuming the session forge stored for it unless `--new` is passed.
+    /// `true` when a launch with no project named should spawn the
+    /// project's lead at forge launch, resuming the session forge stored
+    /// for it unless `--new` is passed.
     pub resume_lead: bool,
     /// The project's model: fills the CLI's model slots at spawn
     /// (`ANTHROPIC_DEFAULT_*_MODEL`, `ANTHROPIC_SMALL_FAST_MODEL`,

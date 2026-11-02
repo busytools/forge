@@ -2679,9 +2679,10 @@ fn maybe_kick_worker_on_connected(workspace: &Arc<crate::Workspace>, slot: &crat
     workspace.enqueue_kick(crate::workspace::KickRequest { slot: slot.clone(), prompt_body: kick });
 }
 
-/// A lead's first turn after a boot spawn resumed it: the restart note
-/// the spawn stamped on the domain. The hook takes the note, so a
-/// reconnect repeats nothing, and a fresh spawn never stamped one.
+/// A lead's first turn after a boot spawn handed it a stored session id
+/// to resume: the restart note the spawn stamped on the domain. The hook
+/// takes the note, so a reconnect repeats nothing, and a first boot or
+/// `--new` never stamped one.
 fn maybe_kick_lead_on_connected(
     workspace: &Arc<crate::Workspace>,
     slot: &crate::SessionSlot,
@@ -2695,11 +2696,13 @@ fn maybe_kick_lead_on_connected(
 }
 
 /// Test-only entry point for the Connected hooks.
-/// Drives both `maybe_respawn_workers_on_connected` (lead path) and
+/// Drives `maybe_respawn_workers_on_connected` (lead path) and
 /// `maybe_kick_worker_on_connected` (worker path) directly without
 /// constructing a `SessionTask` or pumping through the actor - the
 /// `connected_hook_tests` module uses this to assert the trigger logic.
-/// Only one hook fires per call: the slot's label selects.
+/// The slot's label selects: a lead drives the respawn, a worker its
+/// kick. The lead restart-note hook is exercised by its own test, which
+/// needs the session's domain.
 #[cfg(test)]
 fn on_connected_for_test(
     workspace: &Arc<crate::Workspace>,
