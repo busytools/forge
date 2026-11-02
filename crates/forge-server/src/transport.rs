@@ -201,10 +201,16 @@ pub mod wire;
 /// answers an error no page can attribute, and a v20 client would not read
 /// the refusal. `baselines/socket/20/` is the record a v20 server emitted.
 ///
+/// **v22 opens a hand-off by page.** `browser_view_page` is a new variant, and
+/// a v21 server reads it as a message it does not know: a hand-off whose tab
+/// number outlived its host would fail to open at all rather than open the
+/// wrong tab, so the numbers move. `baselines/socket/21/` is the record a v21
+/// server emitted.
+///
 /// **Additive fields do not bump.** `diff.base_error` is one, carried on the
 /// v16-era record: a client older than the field draws the vaguer line it
 /// always drew, and nothing it sends changes.
-pub const PROTOCOL_VERSION: u32 = 21;
+pub const PROTOCOL_VERSION: u32 = 22;
 
 /// The socket's keepalive: how often a connection is asked to prove it is
 /// still there, and how long it may stay silent before it is reaped.

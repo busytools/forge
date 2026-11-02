@@ -1,11 +1,20 @@
 //! The overlay's gestures, as the wire carries them.
 //!
-//! **A gesture, not CDP.** The server is what turns a press into
-//! `Input.dispatchMouseEvent`; this half names what the person did and the
+//! **A gesture, not the protocol.** The server turns a press and a wheel into
+//! CEF's own mouse calls; this half names what the person did and the
 //! modifier keys they held. The mapping is pure, so the shapes are tested
 //! without a window.
 
 use forge_primitives::browser::InputModifiers;
+
+/// The wire's wheel deltas for an AppKit scroll event.
+///
+/// **AppKit's sign is the opposite of the wire's.** The wire carries the
+/// page's sign, which the server turns back for CEF, while AppKit reports a
+/// scroll up as a positive delta.
+pub fn wheel_deltas(scrolling_delta_x: f64, scrolling_delta_y: f64) -> (f64, f64) {
+    (-scrolling_delta_x, -scrolling_delta_y)
+}
 
 /// The modifier keys one AppKit event held.
 pub fn modifiers(flags: objc2_app_kit::NSEventModifierFlags) -> InputModifiers {
@@ -73,5 +82,16 @@ mod tests {
         assert_eq!(editing_key('a'), Some(("a", "KeyA", 65)));
         assert_eq!(editing_key('V'), Some(("v", "KeyV", 86)));
         assert_eq!(editing_key('b'), None);
+    }
+
+    /// **A native wheel crosses in the page's sign, both ways.** AppKit's
+    /// positive delta is a scroll up, and the wire's positive one a scroll
+    /// down; a lost flip here scrolled the desktop's overlay the wrong way.
+    #[test]
+    fn a_native_wheel_crosses_in_the_pages_sign_both_ways() {
+        assert_eq!(wheel_deltas(0.0, 40.0), (0.0, -40.0), "a positive native y crosses negative");
+        assert_eq!(wheel_deltas(0.0, -40.0), (0.0, 40.0), "a negative native y crosses positive");
+        assert_eq!(wheel_deltas(30.0, 0.0), (-30.0, 0.0), "a positive native x crosses negative");
+        assert_eq!(wheel_deltas(-30.0, 0.0), (30.0, 0.0), "a negative native x crosses positive");
     }
 }

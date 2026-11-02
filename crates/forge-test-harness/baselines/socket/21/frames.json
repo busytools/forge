@@ -90,8 +90,6 @@
     "TurnCancelled": "turn_cancelled",
     "TurnComplete": "turn_complete",
     "TurnError": "turn_error",
-    "VoiceAudio": "voice_audio",
-    "VoiceModeState": "voice_mode_state",
     "WorkChanged": "work_changed",
     "WorkerStatusChanged": "worker_status_changed"
   },
@@ -160,10 +158,7 @@
     "TaskReopen": "task_reopen",
     "TaskReserve": "task_reserve",
     "TaskVerdict": "task_verdict",
-    "UpsertReviewThread": "upsert_review_thread",
-    "VoiceBenchStart": "voice_bench_start",
-    "VoiceBenchStop": "voice_bench_stop",
-    "VoiceMode": "voice_mode"
+    "UpsertReviewThread": "upsert_review_thread"
   },
   "client_message": {
     "BrowserControl": "browser_control",
@@ -270,6 +265,7 @@
         "up"
       ],
       "/rows[]": [
+        "dialog",
         "number",
         "owner",
         "state",
@@ -382,9 +378,6 @@
         "read_aloud",
         "results",
         "rows",
-        "speaking_bench",
-        "speaking_models_dir",
-        "speaking_results",
         "updates"
       ],
       "/update/dictate_models_changed/models/activate": [
@@ -530,27 +523,6 @@
       "/update/dictate_models_changed/models/rows[]/download": [
         "quant",
         "size_bytes"
-      ],
-      "/update/dictate_models_changed/models/speaking_bench": [
-        "reason",
-        "state"
-      ],
-      "/update/dictate_models_changed/models/speaking_results[]": [
-        "at",
-        "corpus",
-        "file",
-        "metrics"
-      ],
-      "/update/dictate_models_changed/models/speaking_results[]/corpus": [
-        "audio_seconds",
-        "clips",
-        "sha256"
-      ],
-      "/update/dictate_models_changed/models/speaking_results[]/metrics": [
-        "clips",
-        "first_audio_ms",
-        "realtime_factor",
-        "round_trip_wer"
       ],
       "/update/dictate_models_changed/models/updates[]": [
         "candidates",
@@ -1031,8 +1003,7 @@
         "forge_version_short",
         "projects",
         "service_status",
-        "unseen",
-        "voice"
+        "unseen"
       ],
       "/data/accounts": [
         "all_loaded",
@@ -1145,10 +1116,6 @@
         "branch",
         "changed",
         "gate"
-      ],
-      "/data/voice": [
-        "enabled",
-        "models_dir"
       ]
     }
   },

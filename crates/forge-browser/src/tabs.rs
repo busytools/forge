@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use forge_primitives::SessionSlot;
-use forge_primitives::browser::{BrowserTabRow, BrowserTabState};
+use forge_primitives::browser::{BrowserTabDialog, BrowserTabRow, BrowserTabState};
 use serde::Deserialize;
 
 /// One tab as the driver lists it.
@@ -238,6 +238,33 @@ impl TabRegistry {
         self.tabs.get(&tab).map(|tab| tab.target.as_str())
     }
 
+    /// The tab a page target names, or `None` when that page is gone.
+    ///
+    /// **The identity an open resolves**: a tab number survives a host
+    /// replacement in name only, and the successor's first tab takes number 1
+    /// again.
+    pub fn number_of(&self, target: &str) -> Option<u16> {
+        // **An empty target is not a page**, and a tab whose page a listing
+        // could not name holds one; resolving it would open the wrong tab
+        // for a caller that named nothing.
+        if target.is_empty() {
+            return None;
+        }
+        self.tabs.iter().find(|(_, tab)| tab.target == target).map(|(number, _)| *number)
+    }
+
+    /// The tabs as one line, for a refusal that names what is open now.
+    pub fn listing(&self) -> String {
+        if self.tabs.is_empty() {
+            return "no tabs are open".to_owned();
+        }
+        self.tabs
+            .iter()
+            .map(|(number, tab)| format!("{number}: {}", tab.url))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
     /// A tab's title and url, for the listing the tools answer with.
     pub fn title_url(&self, tab: u16) -> Option<(&str, &str)> {
         self.tabs.get(&tab).map(|tab| (tab.title.as_str(), tab.url.as_str()))
@@ -325,7 +352,12 @@ impl TabRegistry {
     /// person is being asked about it, which is the fact worth seeing. **A
     /// tab a person is driving is in use**, like one a call is driving: the
     /// spec's in-use is either.
-    pub fn rows(&self, held: &HashSet<u16>, controlled: &HashSet<u16>) -> Vec<BrowserTabRow> {
+    pub fn rows(
+        &self,
+        held: &HashSet<u16>,
+        controlled: &HashSet<u16>,
+        dialogs: &HashMap<u16, BrowserTabDialog>,
+    ) -> Vec<BrowserTabRow> {
         self.tabs
             .iter()
             .map(|(number, tab)| BrowserTabRow {
@@ -340,6 +372,7 @@ impl TabRegistry {
                 } else {
                     BrowserTabState::Idle
                 },
+                dialog: dialogs.get(number).cloned(),
             })
             .collect()
     }
@@ -357,8 +390,8 @@ impl TabRegistry {
 mod tests {
     use super::{DriverTab, TabRegistry, orphan_targets, parse_export, strip_export};
     use forge_primitives::SessionSlot;
-    use forge_primitives::browser::BrowserTabState;
-    use std::collections::HashSet;
+    use forge_primitives::browser::{BrowserTabDialog, BrowserTabState};
+    use std::collections::{HashMap, HashSet};
     use std::time::{Duration, Instant};
 
     #[test]
@@ -446,6 +479,26 @@ mod tests {
         );
     }
 
+    /// **A page target outlives a tab number.** The replace case is the one
+    /// this exists for: a successor host's first tab is number 1 again.
+    #[test]
+    fn a_page_target_resolves_to_its_tab_and_a_gone_one_names_the_listing() {
+        let lead = SessionSlot::lead("O", "p");
+        let mut registry = TabRegistry::default();
+        registry.adopt(1, lead.clone(), "t1", "one", "http://a/").expect("the tab");
+        // **The page, not just the only tab**: a second page proves the
+        // lookup resolves the target rather than answering the first row.
+        registry.adopt(2, lead.clone(), "t2", "two", "http://b/").expect("the second tab");
+        // **A row whose page a listing could not name carries an empty
+        // target**, and it must not answer a caller that named nothing.
+        registry.adopt(3, lead, "", "three", "http://c/").expect("a row with no page named");
+        assert_eq!(registry.number_of("t1"), Some(1));
+        assert_eq!(registry.number_of("t2"), Some(2));
+        assert_eq!(registry.number_of("t9"), None);
+        assert_eq!(registry.number_of(""), None, "a page nobody named is not a page");
+        assert_eq!(registry.listing(), "1: http://a/, 2: http://b/, 3: http://c/");
+    }
+
     #[test]
     fn rows_say_who_owns_each_tab_and_what_state_it_is_in() {
         let lead = SessionSlot::lead("O", "p");
@@ -455,23 +508,29 @@ mod tests {
         let busy =
             registry.adopt(2, worker.clone(), "t2", "two", "http://b/").expect("the busy tab");
         registry.mark_busy(busy, true);
-        let rows = registry.rows(&HashSet::from([held]), &HashSet::new());
+        let dialogs = HashMap::from([(
+            held,
+            BrowserTabDialog { kind: "confirm".to_owned(), message: "Leave?".to_owned() },
+        )]);
+        let rows = registry.rows(&HashSet::from([held]), &HashSet::new(), &dialogs);
         assert_eq!(rows[0].state, BrowserTabState::Held);
         assert_eq!(rows[1].state, BrowserTabState::InUse);
         assert_eq!(rows[0].owner, lead);
         assert_eq!(rows[1].owner, worker);
+        assert_eq!(rows[0].dialog.as_ref().map(|dialog| dialog.kind.as_str()), Some("confirm"));
+        assert_eq!(rows[1].dialog, None, "a tab with no dialog carries none");
 
         // **A person's control is a use too.** A tab nobody's call is driving
         // reads in use while a viewer holds its role.
         let driven =
             registry.adopt(3, worker.clone(), "t3", "three", "http://c/").expect("the driven tab");
-        let rows = registry.rows(&HashSet::from([held]), &HashSet::from([driven]));
+        let rows = registry.rows(&HashSet::from([held]), &HashSet::from([driven]), &dialogs);
         assert_eq!(rows[2].state, BrowserTabState::InUse, "the controlled tab is in use");
 
         // A neighbour's close moves no number and leaves the held tab held.
         registry.close(busy);
         registry.close(driven);
-        let rows = registry.rows(&HashSet::from([held]), &HashSet::new());
+        let rows = registry.rows(&HashSet::from([held]), &HashSet::new(), &dialogs);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].number, held, "the held tab keeps the number the person was shown");
         assert_eq!(rows[0].state, BrowserTabState::Held);

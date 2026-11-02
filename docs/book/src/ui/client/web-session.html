@@ -547,7 +547,7 @@
     min-height: 96px; display: flex; flex-direction: column;
     background: rgba(9,12,20,.35); }
   .hold { display: flex; align-items: center; gap: 9px; color: var(--accent);
-    font-family: var(--mono); font-size: var(--fs-base); margin: 10px 0 2px; }
+    font-family: var(--mono); font-size: var(--fs-base); margin: 10px 0 8px; }
   @keyframes shimmer { from { background-position: 150% 0; } to { background-position: -50% 0; } }
   .shimmer { background: linear-gradient(90deg, var(--muted) 0%, var(--muted) 35%, var(--hot) 50%,
     var(--muted) 65%, var(--muted) 100%);
@@ -1284,7 +1284,9 @@
   .tc .ticks i { width: 18px; height: 6px; border-radius: 999px; background: var(--s3); }
   .tc .ticks i.on { background: var(--blue); }
   .line.takeline { align-items: center; }
-  .mnotice { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); }
+  .mnotice { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim);
+    padding: 8px 14px 0; }
+  .mnotice + .line { margin-top: 8px; }
 
   /* The list is a popover over the conversation, not a lane of the bar: it
      hangs above the card and the bar's height does not move with it. */

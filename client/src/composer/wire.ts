@@ -169,6 +169,11 @@ export interface BrowserHandOff {
    * when the frame named none this page can read, which opens the seat's own.
    */
   tab: number | null;
+  /**
+   * The page's CDP target id. **Open resolves this, not the number**: a tab
+   * number names a different tab after a host replacement.
+   */
+  target: string | null;
 }
 
 /** A document hand-off: a session offering the person a document to open. */
@@ -370,6 +375,7 @@ function browserHandOffFrom(value: unknown): Ask {
       id: text(held['id']) ?? '',
       reason: text(held['reason']) ?? '',
       tab: number(held['tab']) ?? null,
+      target: text(held['target']),
     },
   };
 }

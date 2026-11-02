@@ -87,7 +87,7 @@ for anything:
 ```json
 {
   "kind": "greeting",
-  "version": 21,
+  "version": 22,
   "forge_version": "1.1.25 · abc1234",
   "forge_version_short": "1.1.25+abc1234",
   "settings": {
@@ -393,10 +393,15 @@ again when it lets the seat go. That last one is the client's own held state
 rather than a frame - nothing on this wire says "forget the scope" - so a
 reconnect after it re-asks an ordinary record.
 
-**`browser_view {seat, tab, reply_to}`** - attach this connection to one of
-a seat's browser tabs as a viewer. `seat` names the seat whose browser to
-view; `tab` is a tab's number from the `browser_tabs` list, and omitting it
-takes the asking seat's current tab, else the profile's first. **The profile
+**`browser_view {seat, tab, reply_to}`** and **`browser_view_page {seat,
+target, reply_to}`** - attach this connection to one of a seat's browser
+tabs as a viewer. `seat` names the seat whose browser to view; `tab` is a
+tab's number from the `browser_tabs` list, and omitting it takes the asking
+seat's current tab, else the profile's first. **`browser_view_page` names
+the page instead** - the CDP target id a hand-off carries - and is what a
+hand-off's Open and its Retry send, because a tab number names a different
+tab after a host replacement. Both answer identically; a page that is gone
+is refused with the target and the tabs open now. **The profile
 is not on the wire**: a seat's profile is `forge.toml`'s, resolved from the
 project's `browser_profile`, else its org's, else `default`. The answer is a
 `browser_view` naming the profile's wire id, the profile key and the tab, a
@@ -418,9 +423,13 @@ refused attach drops whatever the connection was viewing and is recorded too
 connection that goes is detached with it. **A hand-off's tab is the tool
 call's own**:
 `browser_hand_off` names it by the page id its listing printed, an id no tab
-carries is refused before any ask is parked, the ask crosses as the seat's
-parked ask carrying the tab that id resolved to, and the surface's Open is
-this message naming that tab.
+carries is refused before any ask is parked, and the ask crosses as the
+seat's parked ask carrying both the tab that id resolved to and the page id
+itself. **The surface's Open is `browser_view_page`** - the page id rather
+than the tab number, because a parked ask outlives the host that minted the
+number and a successor host's first tab takes number 1 again. A page that is
+gone is refused with the tabs open now; a number-addressed `browser_view` is
+still what the strip's own rows send.
 
 **`browser_detach`** - stop viewing the attached tab. Lowering the takeover
 sends this: an attached viewer counts as a use, so a lowered surface gives
@@ -440,9 +449,10 @@ asks nothing, so a re-attach or a re-measure does not move it. The host
 adopts the size on its next pump and the next frame is a key frame at it.
 
 **`browser_input {seq, event}`** - one input event from the controlling
-viewer. **The wire carries the person's gesture, not CDP**: a press, a
-wheel, a key or inserted text, with the modifier keys held; the server is
-what turns it into `Input.dispatchMouseEvent` and its siblings. `seq` is the
+viewer. **The wire carries the person's gesture, not the browser's
+protocol**: a press, a wheel, a key or inserted text, with the modifier keys
+held; the server turns a press and a wheel into CEF's own mouse calls and a
+key or inserted text into CDP's `Input.*`. `seq` is the
 viewer's own ordering - the server drops an event at or below the last one
 the role carried, so a superseded gesture never lands late. **Input from a
 viewer without the controller role is refused with an `error` naming

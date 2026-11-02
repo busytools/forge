@@ -143,6 +143,7 @@ describe("the takeover bar's tab picker", () => {
           url: 'http://127.0.0.1:8799/',
           owner: { org: 'Busytools', project: 'forge', label: 'lead' },
           state: 'idle',
+          dialog: null,
         },
         {
           number: 3,
@@ -150,6 +151,7 @@ describe("the takeover bar's tab picker", () => {
           url: 'https://example.com/',
           owner: { org: 'Busytools', project: 'forge', label: 'w1' },
           state: 'in_use',
+          dialog: null,
         },
       ],
     };
@@ -209,6 +211,7 @@ describe("the takeover bar's tab picker", () => {
           url: 'http://b/',
           owner: { org: 'Busytools', project: 'forge', label: 'lead' },
           state: 'idle',
+          dialog: null,
         },
         {
           number: 3,
@@ -216,6 +219,7 @@ describe("the takeover bar's tab picker", () => {
           url: 'http://c/',
           owner: { org: 'Busytools', project: 'forge', label: 'lead' },
           state: 'idle',
+          dialog: null,
         },
       ],
     };

@@ -360,6 +360,7 @@ describe('axe over the rendered pages', () => {
           url: 'https://example.com/',
           owner: SLOT,
           state: 'held',
+          dialog: null,
         },
         {
           number: 3,
@@ -367,6 +368,7 @@ describe('axe over the rendered pages', () => {
           url: 'https://example.org/',
           owner: SLOT,
           state: 'idle',
+          dialog: null,
         },
       ],
     };

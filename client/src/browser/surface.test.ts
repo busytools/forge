@@ -196,7 +196,7 @@ describe('the browser surface', () => {
     expect(surface.phase).toBe('live');
     expect(surface.profile).toBe('hunt');
     expect(surface.tab).toBe(2);
-    expect(show).toHaveBeenCalledWith('hunt', null, 2);
+    expect(show).toHaveBeenCalledWith('hunt', null, 2, null);
   });
 
   /// **A picker's switch is a re-attach on the same seat**, and the tab the
@@ -393,7 +393,7 @@ describe('the browser surface', () => {
     show.mockResolvedValue({ profile: 'hunt', tab: 1 });
     expect(await openSurface('hunt')).toBeNull();
     expect(surface.phase, 'the page draws nothing on the phone').toBe('closed');
-    expect(show).toHaveBeenCalledWith('hunt', null, null);
+    expect(show).toHaveBeenCalledWith('hunt', null, null, null);
   });
 
   it('outside the shell the failure belongs to the row, not a takeover', async () => {

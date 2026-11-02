@@ -1743,6 +1743,138 @@ where
     .await
 }
 
+/// One viewer's attach: the same body for a tab number and for a hand-off's
+/// page, because everything after the resolution is identical.
+///
+/// **The attach moves the viewer, it does not first drop it.** Un-attaching
+/// here and re-attaching below read as a move even when the request is the
+/// tab this connection is already on, and it took the controller role with
+/// it: the person's second Open left their surface driving a tab whose every
+/// gesture was refused. The move - old tab lets go, same tab keeps its role -
+/// is `BrowserHost::attach`'s own decision, where the resolved profile and
+/// tab are known.
+async fn attach_view<S>(
+    socket: &mut ClientSocket<S>,
+    state: &Arc<TransportState>,
+    viewing: &mut Option<Viewing>,
+    me: u64,
+    seat: forge_primitives::SessionSlot,
+    reply_to: Option<u64>,
+    tab: Option<u16>,
+    page: Option<String>,
+) -> anyhow::Result<()>
+where
+    S: futures_util::Sink<Message, Error = axum::Error> + Unpin + Send,
+{
+    let Some(host) = state.browser_host.as_ref() else {
+        let why = "this server has no browser to view".to_owned();
+        return refuse_attach(socket, reply_to, &why, seat).await;
+    };
+    // **A hand-off opens by page**, so a parked ask survives the host being
+    // replaced under it; everything else is the tab it names.
+    let attached = match page.as_deref() {
+        Some(target) => host.attach_page(me, &seat, target).await,
+        None => host.attach(me, &seat, tab).await,
+    };
+    match attached {
+        Ok(attachment) => {
+            let key = attachment.key.clone();
+            let id = attachment.id;
+            let tab = attachment.tab;
+            // **The attach's own frames carry the state they hold**: the
+            // receivers are read as seen, so the loop announces only what
+            // moves after them rather than repeating the state the client
+            // already drew.
+            let mut fresh = Viewing::new(attachment);
+            let now = *fresh.view.borrow_and_update();
+            let read_nav = host.nav_state(&key, tab).await;
+            // The watch also carries a page-driven move that landed while
+            // the attach was in flight.
+            let watched_nav = *fresh.nav.borrow_and_update();
+            let nav = read_nav.or(watched_nav);
+            // **The kept frame goes to the viewer that attaches.** The newest
+            // frame is a value, not an event: a surface opening on a still
+            // page would otherwise wait for the next paint. The watch carries
+            // the whole profile's newest paint, so another tab's frame is not
+            // this surface's.
+            let kept = fresh.frames.borrow().clone().filter(|frame| frame.tab == tab);
+            if let Some(frame) = kept.as_ref() {
+                fresh.last_frame = Some(frame.seq);
+            }
+            *viewing = Some(fresh);
+            send(
+                socket,
+                ServerMessage::BrowserView {
+                    id,
+                    profile: key.clone(),
+                    tab,
+                    controller: now.controller,
+                    viewers: now.viewers,
+                    viewer: me,
+                },
+            )
+            .await?;
+            if let Some(frame) = kept {
+                let mut transport = super::frame::SocketFrames { socket: &mut *socket };
+                transport.deliver(&frame).await?;
+            }
+            if let Some(nav) = nav {
+                send(
+                    socket,
+                    ServerMessage::BrowserNavState {
+                        id,
+                        tab,
+                        can_back: nav.can_back,
+                        can_forward: nav.can_forward,
+                    },
+                )
+                .await?;
+            }
+            match reply_to {
+                Some(ask) => {
+                    // **The profile and tab the attach actually took**, so
+                    // the page's Done lowers the browser that came up: a
+                    // hand-off that named no tab was resolved to the asking
+                    // seat's current one.
+                    send(
+                        socket,
+                        ServerMessage::Reply {
+                            reply_to: ask,
+                            body: json!({ "ok": true, "profile": key, "tab": tab }),
+                        },
+                    )
+                    .await
+                }
+                None => Ok(()),
+            }
+        }
+        Err(why) => {
+            // **A refused attach is answered and recorded.** It is the
+            // failure that also drops whatever this connection was viewing,
+            // so "my surface fell to failed when I picked another tab" is
+            // answered by one line: the tab or page asked for, the surface
+            // it left, and why.
+            tracing::debug!(
+                event_name = "browser_attach_refused",
+                viewer = me,
+                requested_tab = tab,
+                requested_page = page.as_deref(),
+                was_profile = viewing.as_ref().map(|viewed| viewed.key.as_str()),
+                was_tab = viewing.as_ref().map(|viewed| viewed.tab),
+                dropped = viewing.is_some(),
+                reason = %why,
+                "an attach was refused",
+            );
+            // **A refused attach takes the viewer off what it was on.** The
+            // surface that asked has failed, so the tab it was viewing keeps
+            // neither a phantom viewer nor the role that viewer held.
+            host.detach(me).await;
+            *viewing = None;
+            refuse_attach(socket, reply_to, &why, seat).await
+        }
+    }
+}
+
 /// [`handle_client`] with the message already read, so a subscribe that
 /// queued behind a read off the loop takes the same path the socket's own did.
 async fn handle_message<S>(
@@ -2404,115 +2536,10 @@ where
             send(socket, ServerMessage::FileContent { session, path, sha, content }).await
         }
         ClientMessage::BrowserView { seat, tab, reply_to } => {
-            // **The attach moves the viewer, it does not first drop it.**
-            // Un-attaching here and re-attaching below read as a move even
-            // when the request is the tab this connection is already on, and
-            // it took the controller role with it: the person's second Open
-            // left their surface driving a tab whose every gesture was
-            // refused. The move - old tab lets go, same tab keeps its role -
-            // is `BrowserHost::attach`'s own decision, where the resolved
-            // profile and tab are known.
-            let Some(host) = state.browser_host.as_ref() else {
-                let why = "this server has no browser to view".to_owned();
-                return refuse_attach(socket, reply_to, &why, seat).await;
-            };
-            match host.attach(me, &seat, tab).await {
-                Ok(attachment) => {
-                    let key = attachment.key.clone();
-                    let id = attachment.id;
-                    let tab = attachment.tab;
-                    // **The attach's own frames carry the state they hold**:
-                    // the receivers are read as seen, so the loop announces
-                    // only what moves after them rather than repeating the
-                    // state the client already drew.
-                    let mut fresh = Viewing::new(attachment);
-                    let now = *fresh.view.borrow_and_update();
-                    let read_nav = host.nav_state(&key, tab).await;
-                    // The watch also carries a page-driven move that landed
-                    // while the attach was in flight.
-                    let watched_nav = *fresh.nav.borrow_and_update();
-                    let nav = read_nav.or(watched_nav);
-                    // **The kept frame goes to the viewer that attaches.**
-                    // The newest frame is a value, not an event: a surface
-                    // opening on a still page would otherwise wait for the
-                    // next paint. The watch carries the whole profile's newest
-                    // paint, so another tab's frame is not this surface's.
-                    let kept = fresh.frames.borrow().clone().filter(|frame| frame.tab == tab);
-                    if let Some(frame) = kept.as_ref() {
-                        fresh.last_frame = Some(frame.seq);
-                    }
-                    *viewing = Some(fresh);
-                    send(
-                        socket,
-                        ServerMessage::BrowserView {
-                            id,
-                            profile: key.clone(),
-                            tab,
-                            controller: now.controller,
-                            viewers: now.viewers,
-                            viewer: me,
-                        },
-                    )
-                    .await?;
-                    if let Some(frame) = kept {
-                        let mut transport = super::frame::SocketFrames { socket: &mut *socket };
-                        transport.deliver(&frame).await?;
-                    }
-                    if let Some(nav) = nav {
-                        send(
-                            socket,
-                            ServerMessage::BrowserNavState {
-                                id,
-                                tab,
-                                can_back: nav.can_back,
-                                can_forward: nav.can_forward,
-                            },
-                        )
-                        .await?;
-                    }
-                    match reply_to {
-                        Some(ask) => {
-                            // **The profile and tab the attach actually
-                            // took**, so the page's Done lowers the browser
-                            // that came up: a hand-off that named no tab was
-                            // resolved to the asking seat's current one.
-                            send(
-                                socket,
-                                ServerMessage::Reply {
-                                    reply_to: ask,
-                                    body: json!({ "ok": true, "profile": key, "tab": tab }),
-                                },
-                            )
-                            .await
-                        }
-                        None => Ok(()),
-                    }
-                }
-                Err(why) => {
-                    // **A refused attach is answered and recorded.** It is
-                    // the failure that also drops whatever this connection
-                    // was viewing, so "my surface fell to failed when I
-                    // picked another tab" is answered by one line: the tab
-                    // asked for, the surface it left, and why.
-                    tracing::debug!(
-                        event_name = "browser_attach_refused",
-                        viewer = me,
-                        requested_tab = tab,
-                        was_profile = viewing.as_ref().map(|viewed| viewed.key.as_str()),
-                        was_tab = viewing.as_ref().map(|viewed| viewed.tab),
-                        dropped = viewing.is_some(),
-                        reason = %why,
-                        "an attach was refused",
-                    );
-                    // **A refused attach takes the viewer off what it was
-                    // on.** The surface that asked has failed, so the tab it
-                    // was viewing keeps neither a phantom viewer nor the
-                    // role that viewer held.
-                    host.detach(me).await;
-                    *viewing = None;
-                    refuse_attach(socket, reply_to, &why, seat).await
-                }
-            }
+            attach_view(socket, state, viewing, me, seat, reply_to, tab, None).await
+        }
+        ClientMessage::BrowserViewPage { seat, target, reply_to } => {
+            attach_view(socket, state, viewing, me, seat, reply_to, None, Some(target)).await
         }
         ClientMessage::BrowserDetach => {
             // **Lowering is a detach.** It takes this viewer's count off the

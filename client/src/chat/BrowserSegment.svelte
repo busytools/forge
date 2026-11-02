@@ -445,11 +445,21 @@
             {:else if mark(row) === 'held'}
               <span class="dot warn" title="a hand-off is waiting here"></span>
             {:else}
-              <span class="dot idle" title="this tab is idle"></span>
+              <span
+                class="dot idle"
+                title={row.dialog !== null
+                  ? 'a page dialog is holding this tab'
+                  : 'this tab is idle'}
+              ></span>
             {/if}
             <span class="nm">tab {row.number}</span>
             <span class="tx" title={row.url}>{row.title}</span>
             <span class="tx">{row.owner} · {row.stateText}</span>
+            {#if row.dialog !== null}
+              <span class="tx bz-dialog" title={row.dialog.message}>
+                {row.dialog.kind} waiting
+              </span>
+            {/if}
             {#if capable}
               <button
                 type="button"

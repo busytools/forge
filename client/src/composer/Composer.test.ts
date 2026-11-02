@@ -3442,6 +3442,32 @@ function baseRule(selector: string): string {
 }
 
 /**
+ * A rule's left padding, from its `padding` shorthand or its own property.
+ *
+ * Reading only `padding-left` misses a shorthand, so a guard looking for the
+ * property finds no declaration and takes the row for flush. Declarations are
+ * read in source order, because a later `padding` wins the left side the way
+ * the cascade does.
+ */
+function leftInset(declared: string): number {
+  let left = 0;
+  for (const match of declared.matchAll(/(?:^|[;{])\s*(padding-left|padding):\s*([^;]+)/g)) {
+    const property = match[1];
+    const value = (match[2] ?? '').trim();
+    if (property === 'padding-left') {
+      left = Number.parseFloat(value);
+      continue;
+    }
+    // 1 value: every side; 2: vertical horizontal; 3: top horizontal bottom;
+    // 4: top right bottom left.
+    const parts = value.split(/\s+/).map((part) => Number.parseFloat(part));
+    left =
+      parts.length === 1 ? (parts[0] ?? 0) : parts.length === 4 ? (parts[3] ?? 0) : (parts[1] ?? 0);
+  }
+  return left;
+}
+
+/**
  * The ring the box draws, resolved the way a browser resolves it.
  *
  * The ring's colour is a precedence question rather than a text one: a rule
@@ -3721,28 +3747,43 @@ describe('the frame', () => {
   });
 
   /**
-   * One box, one left margin. The field, the notice and the blocking states
-   * all start where the field starts; the take's card is the one thing that
-   * does not, because it rides the box's right corner rather than the column.
+   * One box, one left margin. The field's words, a notice and the blocking
+   * states all start at the same inset from the card's edge.
    *
-   * Measured in a browser before this: the notice's and the (then) dictation
-   * row's TEXT sat 25.00px right of the field's, at 1600 and at 430 - a gutter
-   * inherited from the view this client replaced rather than chosen, and 13px
-   * more than the issue that found it believed. A sheet assertion cannot see
-   * that offset; what it can do is keep the inset from coming back, which is
-   * the change someone would plausibly make.
-   *
-   * **What it reads: the base rules only.** A `padding-left` added inside a
-   * media block passes this, because the guard resolves the first rule each
-   * selector has. The shipped sheet is right either way; the limit is stated
-   * so a reader does not take this for wider than it is.
+   * The field's text is inset by its ROW's padding, so a notice with no
+   * padding of its own starts 14px left of every word typed below it -
+   * measured in the app at 1600, the reading line at 333 against the
+   * placeholder's 347. The notice therefore carries the drawing's own
+   * `8px 14px 0`, and this compares the two insets as one number. jsdom
+   * performs no layout, so the declarations are what is read.
    */
-  it('starts every row at the left edge of the field', () => {
-    for (const row of ['.comp .notice', '.blocked', '.blocked .b2']) {
-      expect(baseRule(row), `${row} carries a left inset the field does not`).not.toMatch(
-        /padding-left:\s*[1-9]/,
-      );
+  it("starts the notice and the blocked lines at the field's own left inset", () => {
+    const field = leftInset(sheetRule('.surf .slot > .line'));
+    expect(
+      field,
+      "the field row's left inset is not the 14px the notice and blocked lines are measured against",
+    ).toBe(14);
+    expect(sheetRule('.comp .notice'), "the notice lost the drawing's own inset").toContain(
+      'padding: 8px 14px 0',
+    );
+    expect(leftInset(sheetRule('.comp .notice')), 'the notice starts left of the field').toBe(
+      field,
+    );
+    // The inset is the row's whole: a field that pads inside it moves the
+    // words the notice is measured against.
+    expect(leftInset(sheetRule('.line .txt')), 'the field insets itself inside its row').toBe(0);
+    for (const tone of ['.comp .notice.q', '.comp .notice.bad', '.comp .notice.warn']) {
+      expect(leftInset(sheetRule(tone)), `${tone} moves the notice off the field's inset`).toBe(0);
     }
+    expect(leftInset(sheetRule('.blocked')), 'a blocked line starts left of the field').toBe(field);
+    expect(leftInset(sheetRule('.blocked .b2')), 'the blocking sub-line insets itself twice').toBe(
+      0,
+    );
+  });
+
+  it("reads a rule's left inset in source order, as the cascade does", () => {
+    expect(leftInset('padding-left: 3px; padding: 8px 14px 0;'), 'a later shorthand lost').toBe(14);
+    expect(leftInset('padding: 8px 14px 0; padding-left: 3px;'), 'a later property lost').toBe(3);
   });
 
   /**
@@ -3838,8 +3879,8 @@ describe('the frame', () => {
     expect(sheet, 'a bare notice rule strips chrome a delivery needs').not.toMatch(
       /(^|,)\s*[a-z]*\.notice[^,{}]*\{[^}]*padding:\s*0/m,
     );
-    expect(sheetRule('.comp .notice'), 'the row does not state its own chrome').toMatch(
-      /padding:\s*0/,
+    expect(sheetRule('.comp .notice'), 'the row does not state its own chrome').toContain(
+      'padding: 8px 14px 0',
     );
   });
 
@@ -6437,13 +6478,14 @@ describe('the dock', () => {
    *  stayed up, and Done left the takeover covering the chat. */
   it('lowers the seat-own browser of a hand-off with no readable tab', async () => {
     vi.mocked(showBrowser).mockResolvedValueOnce({ profile: 'forge-lead', tab: 1 });
-    open({ record: record({ pending_asks: [browserHandOffAsk({ tab: null })] }) });
+    open({ record: record({ pending_asks: [browserHandOffAsk({ tab: null, target: null })] }) });
 
     action('Open browser').click();
     await vi.waitFor(() =>
       expect(showBrowser, 'the raise names no tab and carries the seat').toHaveBeenCalledWith(
         null,
         SLOT,
+        null,
         null,
       ),
     );
@@ -6751,8 +6793,8 @@ describe('the dock', () => {
     expect(showBrowser).toHaveBeenCalledTimes(2);
     expect(
       showBrowser,
-      'the retry asks for the profile current tab, not the parked ask dead tab',
-    ).toHaveBeenLastCalledWith(null, SLOT, null);
+      'the retry asks for the page the hand-off named, not a tab number',
+    ).toHaveBeenLastCalledWith(null, SLOT, null, 'page-2');
     expect(surface.phase, 'the second ask landed').toBe('live');
   });
 
@@ -7297,7 +7339,12 @@ describe('the dock', () => {
 
     action('Open browser').click();
     await vi.waitFor(() =>
-      expect(showBrowser, 'the raise the approval is for').toHaveBeenCalledWith(null, SLOT, 2),
+      expect(showBrowser, 'the raise the approval is for').toHaveBeenCalledWith(
+        null,
+        SLOT,
+        2,
+        'page-2',
+      ),
     );
   });
 

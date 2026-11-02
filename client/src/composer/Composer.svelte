@@ -1466,6 +1466,14 @@
    * sentence.
    */
   function takeoverRetry(): void {
+    // **A page-addressed ask retries by its page.** The number can name a
+    // different tab after a host replacement, and that replacement is one of
+    // the failures this door recovers from.
+    const askedPage = takeoverAsk?.request.target ?? null;
+    if (askedPage !== null) {
+      void openSurface(surface.profile, slot, null, askedPage);
+      return;
+    }
     const asked = takeoverAsk?.request.tab ?? null;
     // **A retry does not reopen a dead tab**, the ask's own included: a
     // parked hand-off can outlive the tab it named. Only a tab the current

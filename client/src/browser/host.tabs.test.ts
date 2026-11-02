@@ -17,6 +17,7 @@ describe("the strip's tab rows", () => {
           url: 'https://x/',
           owner: { org: 'Busytools', project: 'forge', label: 'lead' },
           state: 'held',
+          dialog: null,
         },
         {
           number: 2,
@@ -24,11 +25,51 @@ describe("the strip's tab rows", () => {
           url: 'about:blank',
           owner: { org: 'Busytools', project: 'forge', label: 'w1' },
           state: 'in_use',
+          dialog: null,
         },
       ],
     });
     expect(rows[0]?.stateText).toBe('held');
     expect(rows[1]?.title).toBe('about:blank');
+  });
+
+  it('carries the page dialog holding a tab, and refuses an unreadable one', () => {
+    const rows = tabRows({
+      profile: 'p',
+      id: 1,
+      up: true,
+      connected: true,
+      closing_at_ms: null,
+      rows: [
+        {
+          number: 1,
+          title: 'portal',
+          url: 'https://x/',
+          owner: { org: 'O', project: 'p', label: 'l' },
+          state: 'idle',
+          dialog: { kind: 'confirm', message: 'Leave this page?' },
+        },
+      ],
+    });
+    expect(rows[0]?.dialog).toEqual({ kind: 'confirm', message: 'Leave this page?' });
+    expect(() =>
+      tabListOf({
+        profile: 'p',
+        id: 1,
+        up: true,
+        connected: true,
+        rows: [
+          {
+            number: 1,
+            title: '',
+            url: '',
+            owner: { org: 'O', project: 'p', label: 'l' },
+            state: 'idle',
+            dialog: { kind: 2, message: '' },
+          },
+        ],
+      }),
+    ).toThrow(/dialog/);
   });
 
   it('refuses a row with no owner', () => {
@@ -96,6 +137,7 @@ describe("the strip's tab rows", () => {
           url: '',
           owner: { org: 'O', project: 'p', label: 'l' },
           state: 'constructor',
+          dialog: null,
         },
       ],
     });

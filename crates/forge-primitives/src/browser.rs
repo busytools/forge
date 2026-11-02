@@ -100,6 +100,10 @@ pub struct HandOff {
     pub reason: String,
     /// The tab the person should see, from the asking session's own tabs.
     pub tab: u16,
+    /// The page's CDP target id. **A number names a different tab after a
+    /// host replacement**; this is the tab's identity, and the attach
+    /// resolves it.
+    pub target: String,
 }
 
 /// The modifier keys a person held for one input event.
@@ -123,9 +127,10 @@ pub enum MouseAction {
 /// One input event a controlling viewer sends, in CSS pixels for the page's
 /// viewport.
 ///
-/// **The wire carries the person's gesture, not the browser's protocol.** The
-/// server is what turns a press into `Input.dispatchMouseEvent`; a client
-/// speaks about a click, and the CDP method names stay on the server.
+/// **The wire carries the person's gesture, not the browser's protocol.** A
+/// press and a wheel reach CEF's own mouse calls and a key or text reach
+/// CDP's `Input.*`; a client speaks about a click, and the protocol's method
+/// names stay on the server.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum BrowserInputEvent {
@@ -138,13 +143,9 @@ pub enum BrowserInputEvent {
         clicks: i32,
         modifiers: InputModifiers,
     },
-    Wheel {
-        x: f64,
-        y: f64,
-        delta_x: f64,
-        delta_y: f64,
-        modifiers: InputModifiers,
-    },
+    /// A wheel's deltas in the page's own sign: positive scrolls down and
+    /// right. The server turns the sign back for CEF.
+    Wheel { x: f64, y: f64, delta_x: f64, delta_y: f64, modifiers: InputModifiers },
     /// A key with no text of its own: an arrow, Enter, Escape, a modifier.
     Key {
         down: bool,
@@ -155,9 +156,7 @@ pub enum BrowserInputEvent {
         modifiers: InputModifiers,
     },
     /// The person's own text, inserted as text rather than replayed keycodes.
-    Text {
-        text: String,
-    },
+    Text { text: String },
 }
 
 /// One encoded browser frame as the socket relays it.
@@ -188,6 +187,16 @@ pub struct BrowserTabRow {
     /// The session whose calls drive it.
     pub owner: crate::SessionSlot,
     pub state: BrowserTabState,
+    /// The page dialog holding this tab, when one is open.
+    pub dialog: Option<BrowserTabDialog>,
+}
+
+/// A page dialog holding a tab, as the strip names it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BrowserTabDialog {
+    /// `alert`, `confirm`, `prompt` or `beforeunload`.
+    pub kind: String,
+    pub message: String,
 }
 
 /// What a tab is doing, as the strip's mark says it.
@@ -430,12 +439,16 @@ mod tests {
     /// look at.
     #[test]
     fn a_hand_off_names_the_tab_the_person_should_see() {
-        let handoff =
-            HandOff { id: uuid::Uuid::from_u128(7), reason: "CAPTCHA".to_owned(), tab: 3 };
+        let handoff = HandOff {
+            id: uuid::Uuid::from_u128(7),
+            reason: "CAPTCHA".to_owned(),
+            tab: 3,
+            target: "page-7".to_owned(),
+        };
         let encoded = serde_json::to_value(&handoff).expect("a hand-off encodes");
         assert_eq!(
             encoded,
-            serde_json::json!({ "id": "00000000-0000-0000-0000-000000000007", "reason": "CAPTCHA", "tab": 3 }),
+            serde_json::json!({ "id": "00000000-0000-0000-0000-000000000007", "reason": "CAPTCHA", "tab": 3, "target": "page-7" }),
         );
         assert_eq!(serde_json::from_value::<HandOff>(encoded).expect("decodes"), handoff);
     }
@@ -450,10 +463,15 @@ mod tests {
             url: "https://x/".to_owned(),
             owner: SessionSlot::worker("O", "p", "w"),
             state: BrowserTabState::Held,
+            dialog: Some(BrowserTabDialog {
+                kind: "confirm".to_owned(),
+                message: "Leave this page?".to_owned(),
+            }),
         };
         let encoded = serde_json::to_value(&row).expect("a row encodes");
         assert_eq!(encoded["number"], 2);
         assert_eq!(encoded["state"], "held");
+        assert_eq!(encoded["dialog"]["kind"], "confirm");
         assert_eq!(serde_json::from_value::<BrowserTabRow>(encoded).expect("decodes"), row);
     }
 

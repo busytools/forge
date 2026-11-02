@@ -546,6 +546,14 @@ export interface BrowserWire {
    */
   browserView(seat: SessionSlot, tab: number | null): Promise<BrowserAttach>;
   /**
+   * Open the page a parked hand-off named, by its CDP target.
+   *
+   * **A number names a different tab after a host replacement**, so a
+   * hand-off that outlived one is opened by page and refused by name when the
+   * page is gone.
+   */
+  browserViewPage(seat: SessionSlot, target: string): Promise<BrowserAttach>;
+  /**
    * Read a seat's profile tabs.
    *
    * **The ask is the subscription**: the answer is the rows as they stand,
@@ -888,6 +896,7 @@ export function connect(
   /** One subscribe on the wire, remembered as outstanding until it is answered. */
   function askFor(what: Subject, answering: boolean, review = false): void {
     sendNow({ kind: 'subscribe', what, answering, review });
+    if (typeof what !== 'string') gate?.askSent(what.session);
     const key = subjectKey(what);
     awaiting.push(key);
     subscribed.set(key, (subscribed.get(key) ?? 0) + 1);
@@ -1552,6 +1561,12 @@ export function connect(
       if (!isOpen()) return Promise.reject(new Error('the socket is not open'));
       const { replyTo, answer } = asked(ATTACH_BOUND_MS, 'browser attach');
       sendNow({ kind: 'browser_view', seat, tab, reply_to: replyTo });
+      return answer.then(attachOf);
+    },
+    browserViewPage(seat, target) {
+      if (!isOpen()) return Promise.reject(new Error('the socket is not open'));
+      const { replyTo, answer } = asked(ATTACH_BOUND_MS, 'browser attach');
+      sendNow({ kind: 'browser_view_page', seat, target, reply_to: replyTo });
       return answer.then(attachOf);
     },
     browserTabs(seat) {

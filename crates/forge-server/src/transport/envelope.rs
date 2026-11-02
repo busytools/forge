@@ -292,6 +292,20 @@ pub enum ClientMessage {
         /// are what the page's Done lowers.
         reply_to: Option<u64>,
     },
+    /// Open the page a parked hand-off named: the same attach, addressed by
+    /// the page's CDP target instead of a tab number.
+    ///
+    /// **A number is not an identity across a host restart.** The successor
+    /// host's first tab takes number 1 again, so an ask parked through the
+    /// replacement must name its page; a page that is gone is refused with
+    /// the tabs that are open now.
+    BrowserViewPage {
+        seat: SessionSlot,
+        target: String,
+        /// The same answer `BrowserView` gives: the profile and tab attached,
+        /// or the server's refusal.
+        reply_to: Option<u64>,
+    },
     /// The files a person chose for a page's dialog, or none for a dismiss.
     ///
     /// **The bytes cross base64** because the wire is JSON; the server
@@ -912,6 +926,22 @@ mod tests {
         assert_eq!(tab, Some(3), "and the tab it named");
         assert_eq!(reply_to, Some(41), "and the answer the asker waits on");
 
+        let paged = ClientMessage::BrowserViewPage {
+            seat: SessionSlot::lead("TestOrg", "proj"),
+            target: "page-3".to_owned(),
+            reply_to: Some(42),
+        };
+        let json = serde_json::to_string(&paged).expect("encode");
+        assert!(json.contains("\"kind\":\"browser_view_page\""), "{json}");
+        let ClientMessage::BrowserViewPage { seat, target, reply_to } =
+            serde_json::from_str(&json).expect("decode")
+        else {
+            panic!("{json} decoded into another message")
+        };
+        assert_eq!(seat, SessionSlot::lead("TestOrg", "proj"), "the seat crosses");
+        assert_eq!(target, "page-3", "and the page the hand-off named");
+        assert_eq!(reply_to, Some(42), "and the answer the asker waits on");
+
         let view = ServerMessage::BrowserView {
             id: 3,
             profile: "shared".to_owned(),
@@ -990,10 +1020,18 @@ mod tests {
                 url: "https://x/".to_owned(),
                 owner: SessionSlot::worker("TestOrg", "proj", "w"),
                 state: forge_primitives::browser::BrowserTabState::InUse,
+                dialog: Some(forge_primitives::browser::BrowserTabDialog {
+                    kind: "confirm".to_owned(),
+                    message: "Leave this page?".to_owned(),
+                }),
             }],
         };
         let json = serde_json::to_string(&list).expect("encode");
         assert!(json.contains("\"kind\":\"browser_tabs\""), "{json}");
+        assert!(
+            json.contains("\"dialog\":{\"kind\":\"confirm\""),
+            "the dialog crosses with its kind: {json}"
+        );
         let ServerMessage::BrowserTabs { id, up, connected, closing_at_ms, rows, .. } =
             serde_json::from_str(&json).expect("decode")
         else {

@@ -75,6 +75,8 @@ export interface TabRow {
   /** The server's own word, kept whole for a state this page has not seen. */
   state: string;
   stateText: string;
+  /** The page dialog holding this tab, when one is open. */
+  dialog: { kind: string; message: string } | null;
 }
 
 /** How one tab state reads in a row. **A plain object with an own-property
@@ -109,6 +111,7 @@ export function tabRows(list: BrowserTabList): TabRow[] {
       owner,
       state,
       stateText: (Object.hasOwn(STATE_TEXT, state) ? STATE_TEXT[state] : undefined) ?? state,
+      dialog: row.dialog,
     };
   });
 }
@@ -179,12 +182,25 @@ function tabRowOf(value: unknown): BrowserTabList['rows'][number] {
   ) {
     throw new Error(`tab ${number} names no owner`);
   }
+  const held = row['dialog'];
+  let dialog: { kind: string; message: string } | null = null;
+  if (held !== null && held !== undefined) {
+    if (typeof held !== 'object') {
+      throw new Error(`tab ${number} carries no readable dialog`);
+    }
+    const mark = held as Record<string, unknown>;
+    if (typeof mark['kind'] !== 'string' || typeof mark['message'] !== 'string') {
+      throw new Error(`tab ${number} carries no readable dialog`);
+    }
+    dialog = { kind: mark['kind'], message: mark['message'] };
+  }
   return {
     number,
     title,
     url,
     owner: { org: slot['org'], project: slot['project'], label: slot['label'] },
     state,
+    dialog,
   };
 }
 

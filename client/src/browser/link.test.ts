@@ -33,6 +33,9 @@ function fakeConnection() {
     browserView: vi.fn<(seat: unknown, tab: number | null) => Promise<unknown>>(() =>
       Promise.resolve({ profile: 'hunt', tab: 2 }),
     ),
+    browserViewPage: vi.fn<(seat: unknown, target: string) => Promise<unknown>>(() =>
+      Promise.resolve({ profile: 'hunt', tab: 2 }),
+    ),
     browserTabs: vi.fn<() => Promise<unknown>>(() =>
       Promise.resolve({
         profile: 'hunt',
@@ -104,6 +107,15 @@ describe('the wire link', () => {
     const fake = install();
     expect(await showBrowser(null, SEAT, 4)).toEqual({ profile: 'hunt', tab: 2 });
     expect(fake.wire.browserView).toHaveBeenCalledWith(SEAT, 4);
+  });
+
+  /// **A hand-off opens by its page**: the wire is asked for the page id, and
+  /// the parked tab number is not sent, because a successor host reuses it.
+  it('opens a hand-off by its page rather than its tab number', async () => {
+    const fake = install();
+    expect(await showBrowser(null, SEAT, 1, 'page-1')).toEqual({ profile: 'hunt', tab: 2 });
+    expect(fake.wire.browserViewPage).toHaveBeenCalledWith(SEAT, 'page-1');
+    expect(fake.wire.browserView, 'the tab number was not sent').not.toHaveBeenCalled();
   });
 
   /// **A refused attach is the server's own sentence**, not a made-up one.

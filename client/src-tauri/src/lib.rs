@@ -403,6 +403,17 @@ mod commands {
         bridge.browser_view(seat, tab).await
     }
 
+    /// Open the page a parked hand-off named, answering the profile and tab
+    /// it attached.
+    #[tauri::command]
+    pub async fn client_browser_view_page(
+        bridge: tauri::State<'_, Arc<Bridge>>,
+        seat: Value,
+        target: String,
+    ) -> Result<Value, String> {
+        bridge.browser_view_page(seat, target).await
+    }
+
     /// The tabs of this seat's profile, for the strip and the bar. Subscribing
     /// the connection means every later change is pushed as a `browser_tabs`
     /// event.
@@ -586,6 +597,7 @@ pub fn run() -> u8 {
             browser::browser_takeover,
             browser::browser_kept_frame,
             commands::client_browser_view,
+            commands::client_browser_view_page,
             commands::client_browser_tabs,
             commands::client_browser_control,
             commands::client_browser_nav,
@@ -649,6 +661,7 @@ pub fn run() -> u8 {
             browser::browser_takeover,
             browser::browser_kept_frame,
             commands::client_browser_view,
+            commands::client_browser_view_page,
             commands::client_browser_tabs,
             commands::client_browser_control,
             commands::client_browser_nav,

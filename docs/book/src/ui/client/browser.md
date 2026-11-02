@@ -3,7 +3,10 @@
 The server's Chromium, as a full-window takeover under a slim client bar.
 A browser hand-off's **Open** and the strip's browser row both open it; the
 sessions drive the same tabs while it is closed, and opening one shows the
-tab as they left it. The drawing it is held against is
+tab as they left it. **A hand-off opens by its page's id, not its tab
+number**: a parked ask can outlive the host that minted the number, and the
+successor's first tab takes number 1 again, so a page id is what makes Open
+raise the page the session prepared. The drawing it is held against is
 [web-browser.html](./web-browser.html), beside this page.
 
 **The browser is the server's.** The server ships its own CEF host - a signed
@@ -45,10 +48,10 @@ in-process node any more.
 | The feedback line | a text field and the dock's own **mic** and **send**: the person's words go to the agent as a prompt and the hand-off ends as *feedback* - they spoke, so nothing is recorded as a decline. A take begun at the bar's mic, or by the push-to-talk key wherever the caret is while the line's own toggle is offered, lands in this line, and a take already running ends on that same key. **The line holds those words in every phase the takeover stands** - opening, failed, or showing another tab - and showing them is not answering, so only the send waits for the page. **Lowering the takeover hands them to the chat's draft**, and the hand-off's card says so; **a send does not** - the words left for the agent, so the line clears and the draft gets nothing. **A take replaces the field with the dock's own card**, and the card takes the line: it grows to everything the mic leaves, so its graph is the row's meter rather than a pill in an empty row. **A slow open says so in a line above the row**: one brief enough to be the press itself draws no line, and a longer one says the microphone is opening. **A send the connection never took says so in that same line**, in the refusal tone - `Not sent - the connection is down.` - and the words stay in the field: the bar does not clear what did not leave, and the hand-off stays parked for the retry. The card draws from this page's own take, which exists only once the capture has opened, and the composer's own band is behind the picture | the page's own state, and the take it is opening; the prompt rides the socket |
 | The surface | the viewed tab's page, filling the window under the bar: no window, no browser tab strip and no browser chrome | the server's relayed frames for that tab - drawn by the desktop's native overlay, or by the phone's and the web page's canvas |
 | The strip's row | `browser` with its tab count, a dot when the host is connected (an idle dot when only the host is up, a cross when nothing runs), and a hover naming the profile, the connection and `closing in Nm`; its panel lists the tabs with **show** / **hide**. **The row is drawn only while the profile has a tab**: a browser nothing has invoked is no row at all | the `browser_tabs` ask and its pushed frame |
-| A tab row | the host's number, the title (else its URL), the owner as `org/project/label`, and its state - **in use**, **idle** or **held** - with the mark that says which | the tab list's rows |
+| A tab row | the host's number, the title (else its URL), the owner as `org/project/label`, and its state - **in use**, **idle** or **held** - with the mark that says which; a tab holding a page dialog adds `<kind> waiting` beside it, with the dialog's message on hover | the tab list's rows |
 | The engine line | the panel's own line when no close is scheduled: `the server's own Chromium`, on every client, or `nothing to run a page` | the tab list |
 | The states | `opening the browser…`, the server's sentence when it failed, the host's own death sentence - `the browser host exited (signal 9; pid 1234); the next call brings it back` - when a host dies under the surface (the cause is a signal or an exit code), and the page's own error page when a load fails | the page's surface state, and the server's failure frame |
-| A refusal | the server's own words: `tab N is not open`, the profile has no tab to show yet, the host is not answering, or a page area that could not be placed. **A take the bar's mic pressed and could not open says why above the feedback row**: the composer's own notice row is behind the picture while the takeover is up | the attach's answer, the surface's failure frame, and the take's own line |
+| A refusal | the server's own words: `tab N is not open`, the profile has no tab to show yet, the host is not answering, a page area that could not be placed, or - for a hand-off - `the page the hand-off named (X) is gone from profile ...` with the tabs open now, which its **try again** reaches too. **A take the bar's mic pressed and could not open says why above the feedback row**: the composer's own notice row is behind the picture while the takeover is up | the attach's answer, the surface's failure frame, and the take's own line |
 
 ## The rules
 
@@ -191,13 +194,14 @@ pointer-interactive, and mints a new one when the role or name changed. A
 target-scoped snapshot answers with that subtree alone, so refs outside it do
 not resolve until a full-page snapshot.
 
-**Input is trusted input.** The person's mouse, wheel and keys are mapped by
-the SERVER to CDP `Input.*` events at the page's own scale: a click is a
-full pointer sequence, a wheel is a pixel delta, printable text is inserted
-as text, the specials (Enter, Tab, the arrows, Escape) are key events, and
-Cmd+V reads the pasteboard as text. The phone's canvas sends the same
-gestures from its own pointer events. A gesture's point is scaled from the
-surface's layout into the page's viewport, which need not be the same size.
+**Input is trusted input.** The person's mouse and wheel are mapped by the
+SERVER to CEF's own mouse calls at the page's own scale, and keys and text
+to CDP `Input.*` events: a click is a full pointer sequence, a wheel is a
+pixel delta, printable text is inserted as text, the specials (Enter, Tab,
+the arrows, Escape) are key events, and Cmd+V reads the pasteboard as text.
+The phone's canvas sends the same gestures from its own pointer events. A
+gesture's point is scaled from the surface's layout into the page's
+viewport, which need not be the same size.
 Widgets that gate on trusted input commit, which is the whole reason the
 events are replayed rather than synthesised in the page. **The desktop
 overlay claims the menu's chords while it has the keyboard.** AppKit offers
@@ -325,7 +329,8 @@ to a paused renderer. `browser_handle_dialog` answers or dismisses it,
 `browser_tabs close` and `browser_close` dispose of it by closing the tab, and
 the listing is unaffected. **A tab with a pending dialog is unusable until it
 is answered**, which is the price of never answering a person's modal behind
-their back. The tab carries no visible mark of the dialog yet (#2765).
+their back. The tab's row carries the dialog's kind beside its state, so the
+person can see why the page ignores input.
 
 ## The widths
 

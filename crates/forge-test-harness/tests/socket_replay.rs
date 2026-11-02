@@ -349,6 +349,7 @@ census!(ClientMessage,
         SeatRange struct,
         CommitDiff struct,
         BrowserView struct,
+        BrowserViewPage struct,
         BrowserFileAnswer struct,
         BrowserDetach unit,
         BrowserInput struct,
@@ -1208,6 +1209,7 @@ fn frames_record() -> Value {
                 url: "https://x/".to_owned(),
                 owner: seat.clone(),
                 state: forge_primitives::browser::BrowserTabState::InUse,
+                dialog: None,
             }],
         }),
     );
@@ -1330,6 +1332,7 @@ fn frames_record() -> Value {
                 id: uuid::Uuid::from_u128(7),
                 reason: "solve the CAPTCHA".to_owned(),
                 tab: 3,
+                target: "page-7".to_owned(),
             },
         })),
     );

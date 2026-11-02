@@ -646,11 +646,12 @@
   function open(): void {
     if (ask.kind !== 'browser_hand_off') return;
     const id = ask.request.id;
-    // **The hand-off's own tab**: the takeover draws THAT tab's page - the
+    // **The hand-off's own page**: the takeover draws THAT tab's page - the
     // CAPTCHA lands in the page the session prepared. **The asking seat rides
-    // the raise**, and the server resolves the seat's own profile. The bar
-    // answers this ask because the surface is this seat's, on that tab.
-    void openSurface(null, slot, ask.request.tab).then((why) => {
+    // the raise**, and the server resolves the seat's own profile. A page id
+    // is what opens it, so a host replacement under the parked ask cannot
+    // raise whatever took the tab's number.
+    void openSurface(null, slot, ask.request.tab, ask.request.target).then((why) => {
       if (why !== null) {
         raiseFailedFor = id;
         raiseWhy = why;

@@ -156,6 +156,7 @@
   .bz-it .dot.warn { background: var(--warn); }
   .bz-it .nm { color: var(--text); }
   .bz-it .tx { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+  .bz-it .tx.bz-dialog { color: var(--warn); flex: none; }
   .bz-it .owner { color: var(--dim); font-size: var(--fs-label); margin-left: auto; white-space: nowrap; }
   .bz-it .show { border: 1px solid color-mix(in srgb, var(--ctl) 90%, var(--text));
     border-radius: 7px; padding: 2px 8px;
@@ -494,6 +495,14 @@
         <span class="nm">tab 3</span>
         <span class="tx">sign in</span>
         <span class="owner">Busytools/job-hunt/w2 &middot; held</span>
+        <span class="show">show</span>
+      </div>
+      <div class="bz-it">
+        <span class="dot idle" title="a page dialog is holding this tab"></span>
+        <span class="nm">tab 4</span>
+        <span class="tx">checkout</span>
+        <span class="owner">Busytools/job-hunt/lead &middot; idle</span>
+        <span class="tx bz-dialog" title="Leave this page?">confirm waiting</span>
         <span class="show">show</span>
       </div>
     </div>
