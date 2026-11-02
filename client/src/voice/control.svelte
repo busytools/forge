@@ -17,12 +17,13 @@
   import Icon from '../components/Icon.svelte';
   import type { Connection } from '../socket';
   import type { SessionSlot } from '../wire/types';
-  import { Voice, connectionPort } from './voice.svelte';
+  import { Voice, connectionPort, type OpenCapture } from './voice.svelte';
 
   let {
     connection,
     slot,
     element = () => {},
+    open,
   }: {
     /** The narrowed connection the composer holds: its commands, its store
      * and its status, which is everything the switch needs. */
@@ -30,6 +31,8 @@
     slot: SessionSlot;
     /** The button, for a surface that keeps the caret on it. */
     element?: (el: HTMLElement | null) => void;
+    /** How a hold opens the microphone; a seam so a test needs no audio stack. */
+    open?: OpenCapture;
   } = $props();
 
   /** A release sooner than this, having said nothing, is a tap: it turns
@@ -39,7 +42,7 @@
   // Both props are fixed for this instance's life: the composer keys the
   // control by the seat, so a new seat is a new control.
   // svelte-ignore state_referenced_locally
-  const voice = new Voice(connectionPort(connection, slot));
+  const voice = new Voice(connectionPort(connection, slot), open);
   let pressedAt = 0;
   let holding = false;
   let button = $state<HTMLElement | null>(null);

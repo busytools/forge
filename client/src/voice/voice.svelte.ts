@@ -38,7 +38,8 @@ export class Voice {
   /** The hold in progress, so the control can draw its level and clock. */
   clip = $state.raw<HeldClip | null>(null);
 
-  private capture: VoiceCapture | null = null;
+  /** The hold's device. Reactive so the control's `data-state` follows it. */
+  private capture = $state.raw<VoiceCapture | null>(null);
   private readonly playback: Playback;
   /**
    * Whether the microphone is still opening. A press during the open is not

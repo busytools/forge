@@ -51,11 +51,6 @@ export function webSpeaker(): Speaker {
 
 export class Playback {
   private queue: { pcm: Int16Array; sampleRate: number }[] = [];
-  /**
-   * Bumped by every drop, so a clip sounding while the queue is dropped does
-   * not go on to start the next one.
-   */
-  private generation = 0;
   /** Whether a clip is sounding now. */
   playing = $state(false);
 
@@ -68,28 +63,33 @@ export class Playback {
     void this.pump();
   }
 
-  /** Discard everything queued, and whatever is sounding, with it. */
+  /**
+   * Discard everything queued. A clip already sounding cannot be stopped
+   * through the speaker seam, so it is left to end on its own; `playing`
+   * stays true while it does, or a push during it would start a second clip
+   * on top of the first.
+   */
   drop(): void {
-    this.generation += 1;
     this.queue = [];
-    this.playing = false;
   }
 
   /**
-   * Play queued clips until the queue is empty or the generation moves.
+   * Play queued clips until the queue is empty.
    *
    * The loop is the queue's one player: every push starts it and finds it
-   * already running, so two clips can never sound at once.
+   * already running, so two clips can never sound at once. A drop while a
+   * clip sounds clears the queue but leaves that clip to finish; a push
+   * during it joins the new queue and waits for the speaker rather than
+   * starting a second clip over the first.
    */
   private async pump(): Promise<void> {
     if (this.playing) return;
-    const generation = this.generation;
     this.playing = true;
-    while (this.queue.length > 0 && generation === this.generation) {
+    while (this.queue.length > 0) {
       const next = this.queue.shift();
       if (next === undefined) break;
       await this.speaker.play(next.pcm, next.sampleRate);
     }
-    if (generation === this.generation) this.playing = false;
+    this.playing = false;
   }
 }

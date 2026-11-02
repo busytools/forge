@@ -9,7 +9,9 @@ import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { SLOT, wire as fakeWire, type Wire } from '../composer/testing';
+import { HeldClip, type VoiceCapture } from './capture.svelte';
 import VoiceControl from './control.svelte';
+import type { OpenCapture } from './voice.svelte';
 
 let app: Record<string, unknown> | null = null;
 
@@ -24,14 +26,14 @@ interface Drawn {
   button: () => HTMLButtonElement;
 }
 
-function drawn(): Drawn {
+function drawn(open?: OpenCapture): Drawn {
   const shared = fakeWire();
   // The page's own subscription is what puts a store under the seat; the
   // control listens to that store rather than opening one of its own.
   shared.connection.subscribe({ session: SLOT });
   app = mount(VoiceControl, {
     target: document.body,
-    props: { connection: shared.connection, slot: SLOT },
+    props: { connection: shared.connection, slot: SLOT, open },
   });
   flushSync();
   return {
@@ -57,6 +59,20 @@ function state(at: Drawn, listeners: number): void {
   const store = at.shared.connection.subscribe({ session: SLOT });
   store.push({ voice_mode_state: { key: SLOT, listeners } });
   flushSync();
+}
+
+/** A capture a test resolves by hand. */
+class FakeCapture {
+  clip = new HeldClip();
+  cancelled = false;
+
+  async release(): Promise<HeldClip> {
+    return this.clip;
+  }
+
+  cancel(): void {
+    this.cancelled = true;
+  }
 }
 
 describe('the voice switch', () => {
@@ -85,5 +101,35 @@ describe('the voice switch', () => {
     state(at, 0);
     expect(at.button().getAttribute('aria-pressed')).toBe('false');
     expect(at.button().getAttribute('aria-label')).toBe('turn voice on');
+  });
+
+  it('draws the hold as talking once the microphone opens', async () => {
+    const pending: { resolve: ((capture: VoiceCapture) => void) | null } = { resolve: null };
+    const at = drawn(
+      () =>
+        new Promise((done) => {
+          pending.resolve = done;
+        }),
+    );
+    press(at);
+    const button = at.button();
+    button.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }));
+    await Promise.resolve();
+    flushSync();
+    expect(
+      button.getAttribute('data-state'),
+      'the opening hold still reads listening',
+    ).toBe('listening');
+
+    const capture = new FakeCapture();
+    pending.resolve?.(capture as unknown as VoiceCapture);
+    await Promise.resolve();
+    await Promise.resolve();
+    flushSync();
+    expect(button.getAttribute('data-state'), 'the open hold reads talking').toBe('talking');
+
+    button.dispatchEvent(new MouseEvent('pointerup', { bubbles: true }));
+    flushSync();
+    expect(button.getAttribute('data-state'), 'a tap with no frames turns voice off').toBe('off');
   });
 });

@@ -78,6 +78,33 @@ describe('the playback queue', () => {
     expect(playback.playing).toBe(false);
   });
 
+  it('waits for a sounding clip when a drop is followed by a push', async () => {
+    const speaker = new FakeSpeaker();
+    const playback = new Playback(speaker);
+    playback.push(Int16Array.from([1]), 24_000);
+    await settle();
+    expect(speaker.played.map((clip) => clip.pcm)).toEqual([[1]]);
+
+    // The socket drops while the first clip is still sounding, then the
+    // reconnected socket delivers a new one. The new clip must wait for the
+    // speaker rather than start on top of the clip already playing.
+    playback.drop();
+    playback.push(Int16Array.from([2]), 24_000);
+    await settle();
+    expect(
+      speaker.played.map((clip) => clip.pcm),
+      'the new clip waits for the sounding one',
+    ).toEqual([[1]]);
+
+    speaker.finish();
+    await settle();
+    expect(speaker.played.map((clip) => clip.pcm)).toEqual([[1], [2]]);
+
+    speaker.finish();
+    await settle();
+    expect(playback.playing).toBe(false);
+  });
+
   it('plays nothing for a clip that carries no samples', async () => {
     const speaker = new FakeSpeaker();
     const playback = new Playback(speaker);
