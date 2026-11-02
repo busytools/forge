@@ -110,7 +110,9 @@ impl PeerInboundKind {
             Self::Message { from, .. } => Some(from),
             Self::DeliveryFailure { target, .. } => Some(target),
             Self::WorkerSpawnFailed { label, .. } => Some(label),
-            Self::Gotify { .. } | Self::Cron { .. } | Self::Voice { .. } | Self::Slack { .. } => None,
+            Self::Gotify { .. } | Self::Cron { .. } | Self::Voice { .. } | Self::Slack { .. } => {
+                None
+            }
         }
     }
 }
