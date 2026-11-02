@@ -244,6 +244,11 @@ export class StreamGate {
         const header = (message.data as { header?: { session_id?: unknown; seq?: unknown } } | null)
           ?.header;
         const occupant = typeof header?.session_id === 'string' ? header.session_id : null;
+        // **The mark is judged against the generation this answer was asked
+        // under**, taken before the reset the answer itself may report: a
+        // snapshot announcing a new occupant is still the answer to the ask
+        // that produced it, while a mark from before an earlier seal is not.
+        const askedIn = state.generation;
         if (occupant !== null && occupant !== state.epoch) {
           // A new occupant counts from 1 again, hold and all.
           this.clear(state);
@@ -277,7 +282,7 @@ export class StreamGate {
           // for it to contradict.
           if (
             mark === undefined ||
-            (mark.generation === state.generation && mark.frames === state.framesSeen)
+            (mark.generation === askedIn && mark.frames === state.framesSeen)
           ) {
             state.expecting = header.seq;
             state.seenThrough = header.seq - 1;

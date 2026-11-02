@@ -248,6 +248,28 @@ describe('the stream gate', () => {
     expect(asked, 'and no range is asked for').toEqual([]);
   });
 
+  it('a fresh subscribe adopts a busy seat answer', () => {
+    // Production order: the ask goes out before the seat's state exists, and
+    // the answer names a number far above 1. Refusing it would ask for the
+    // whole history - the cost the gate exists to close.
+    const { gate, asked } = aGate();
+    gate.askSent(LEAD);
+    gate.inbound(snap('occ', 4000));
+    expect(gate.inbound(update(4000)), 'the first live frame is a successor').toHaveLength(1);
+    expect(asked, 'and nothing is asked for').toEqual([]);
+  });
+
+  it('a revisit after a release adopts the seat answer', () => {
+    const { gate, asked } = aGate();
+    gate.inbound(snap('occ', 1));
+    gate.inbound(update(1));
+    gate.releaseSeat(LEAD);
+    gate.askSent(LEAD);
+    gate.inbound(snap('occ', 900));
+    expect(gate.inbound(update(900)), 'the seat continues from its answer').toHaveLength(1);
+    expect(asked, 'and nothing is asked for').toEqual([]);
+  });
+
   it('an answer that outlived a seal is not the new run first number', () => {
     // The ask went out, the run restarted, and the answer - encoded under the
     // old numbering - lands after the new run has already delivered. Taking
