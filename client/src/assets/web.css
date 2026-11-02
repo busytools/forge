@@ -2942,9 +2942,8 @@ details.leaf.nrow details.raw pre { margin: 4px 0 2px; padding: 6px 9px; border:
    send's accent), rather than the sheet's generic text lift. */
 .mic:hover { color: var(--accent); }
 /* The voice switch beside the mic, in the same 24px box. Its state is the
-   icon's own shape - a struck mic when off, a speaker while a reply plays -
-   with a mark over the box while a hold records, so no state is colour's
-   alone. */
+   icon's own shape - a struck speaker when off, a plain one when on - with a
+   mark beside it while a reply is sounding, so no state is colour's alone. */
 .voice { position: relative; flex: none; width: 24px; height: 24px;
   display: grid; place-items: center; color: var(--dim); background: none;
   border: 0; padding: 0; cursor: pointer; }
@@ -2957,8 +2956,8 @@ details.leaf.nrow details.raw pre { margin: 4px 0 2px; padding: 6px 9px; border:
    icon, so a second listener is visible rather than only announced. */
 .voice .room { position: absolute; left: -3px; bottom: -3px; font-family: var(--mono);
   font-size: 9px; line-height: 1; color: var(--accent); }
-/* A voice line - a refused open, or a hold cut at its bound - beside the
-   control that caused it. */
+/* A voice line - a send on a socket that is down - beside the control that
+   caused it. */
 .vline { flex: none; font-family: var(--mono); font-size: var(--fs-label);
   color: var(--dim); white-space: nowrap; }
 /* A finger's target for the mic, the voice switch, the send and the stop: each
