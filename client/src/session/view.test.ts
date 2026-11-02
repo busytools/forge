@@ -1182,6 +1182,41 @@ describe("the palette's rows", () => {
     expect(leads[0]?.id, 'the wrong org wore it').toBe('TestOrg/proj/lead');
   });
 
+  /// **A decision wait ranks a seat with the asks**, as the rail ranks it: a
+  /// seat in needs-you on the rail must not sit under working in Cmd+K.
+  it('puts a seat holding a decision wait in needs you', () => {
+    const wire = withHome({
+      agents: [agent('runner', { lifecycle: 'Running' }), agent('waiting')],
+      fleet: [
+        {
+          project: 'proj',
+          live_workers: 2,
+          slots: 2,
+          queue: 0,
+          waiting_on_user: 1,
+          attention: [
+            {
+              task: 't1',
+              owner: 'waiting',
+              subject: 'the parser',
+              words: 'sign this off',
+              at: { secs_since_epoch: 5, nanos_since_epoch: 0 },
+            },
+          ],
+          rows: 1,
+          misses: [],
+        },
+      ],
+    });
+    const sections = paletteRows(wire, LEAD);
+    expect(
+      sections[0]?.rows.map((row) => row.label),
+      'the wait lifted its seat',
+    ).toEqual(['waiting']);
+    expect(sections[0]?.rows[0]?.detail, 'and the line says needs you').toContain('needs you');
+    expect(sections[1]?.rows.map((row) => row.label)).toEqual(['runner']);
+  });
+
   /**
    * **The fleet grouped its own way**: the seats that want a person, the ones
    * working, the ones asleep - then forge's commands, then the doings. The
