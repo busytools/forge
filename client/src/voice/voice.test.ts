@@ -155,6 +155,10 @@ describe("one seat's voice", () => {
 
     expect(at.voice.on).toBe(false);
     expect(at.voice.line).toContain('socket is down');
+
+    at.port.down = false;
+    at.voice.resume();
+    expect(at.voice.on, 'a click that never reached the server is not remembered').toBe(false);
   });
 
   it("pauses the seat's voice when the reader moves, and resumes on return", () => {

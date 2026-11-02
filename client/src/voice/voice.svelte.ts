@@ -58,7 +58,10 @@ export class Voice {
     this.#wanted = true;
     this.on = true;
     this.line = null;
-    if (!this.send({ on: true, explicit: false })) this.on = false;
+    if (!this.send({ on: true, explicit: false })) {
+      this.on = false;
+      this.#wanted = false;
+    }
   }
 
   turnOff(): void {
