@@ -105,7 +105,12 @@ export interface DrawnGeometry {
  * Two blind spots are the handler's own windows, and are stated rather than
  * hidden: hand input within its reader window before a machine move reads as
  * the reader's, and a size delta is measured against the last event that read
- * the layout, which a pin echo skips.
+ * the layout, which a pin echo skips - so the first echo after a seat entry
+ * carries zeros.
+ *
+ * **One line per event is this log's one exception to its slow-only rule.**
+ * A scroll record is written for every move while a hand or the layout moves
+ * the column, which is bounded by the gesture itself and stops when it does.
  */
 export interface ScrollMove {
   from: number;

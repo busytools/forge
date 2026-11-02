@@ -539,7 +539,7 @@
   /** The sizes at the last scroll event, which tell a reader moving from a layout moving. */
   let lastSeen = { content: 0, room: 0 };
   /** The offset the last pin wrote, so the event it comes back as is not read as the reader's. */
-  let pinEcho: number | null = null;
+  let pinEcho: { at: number; foot: boolean } | null = null;
   /** How many layout passes the observer has already put a parked reader back for. */
   let restored = 0;
   /**
@@ -1560,7 +1560,12 @@
     // browser fires - a clamp the follow then misreads as the reader.
     const was = viewport.scrollTop;
     viewport.scrollTop = target;
-    if (viewport.scrollTop !== was) pinEcho = viewport.scrollTop;
+    // **Where it landed, and whether that is the foot.** The hold branch
+    // writes short of the maximum on purpose, so the record cannot assume a
+    // pin lands at the foot; the read-back already says which it was.
+    if (viewport.scrollTop !== was) {
+      pinEcho = { at: viewport.scrollTop, foot: viewport.scrollTop >= max };
+    }
     // Where the column last left the reader, which is the foot the browser
     // clamped the pin to.
     placed = viewport.scrollTop;
@@ -1935,7 +1940,7 @@
       // takes the token away - a real scroll to the same offset later is
       // read like any other.
       pinEcho = null;
-      if (offset === written) {
+      if (offset === written.at) {
         // **The pin is the machine move a reader most often feels**, so it is
         // written before the echo's own early return. The last event's heights
         // are reused rather than the layout read again - the per-frame cost
@@ -1948,7 +1953,7 @@
           room: lastSeen.room,
           shrank: false,
           rose: false,
-          foot: true,
+          foot: written.foot,
           reader: false,
           aimed: false,
           restore_owed: owed !== null,
