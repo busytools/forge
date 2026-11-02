@@ -63,6 +63,10 @@
     });
     return () => {
       if (capTimer !== null) clearTimeout(capTimer);
+      // **A hold interrupted by an unmount stops with it.** The pointerup
+      // never reaches a removed element, so without this the microphone keeps
+      // recording and the next press sends the audio held through the ask.
+      voice.cancelTalk();
       stop?.();
       offStatus();
       // The voice itself is the registry's, not this instance's: a body swap

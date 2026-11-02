@@ -92,6 +92,19 @@ export class Voice {
     this.send('voice_mode', { on: false });
   }
 
+  /**
+   * The connection this voice spoke through is gone for good: stop its audio
+   * and forget the server ever counted it. **Nothing is sent** - that server
+   * dropped this client from its listener sets when the socket closed, and a
+   * send on a closed socket would throw.
+   */
+  forget(): void {
+    this.cancelTalk();
+    this.playback.drop();
+    this.#wanted = false;
+    this.on = false;
+  }
+
   /** The socket came back: resubscribe if this client still wants voice. */
   resume(): void {
     if (this.#wanted && !this.on) this.turnOn();

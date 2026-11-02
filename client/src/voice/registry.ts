@@ -31,6 +31,19 @@ export function dropVoice(key: string): void {
   voice.detach();
 }
 
+/**
+ * The connection was replaced: every cached voice closes over the old one.
+ *
+ * **A `Voice` holds its port**, so the old server's store and dispatch. Kept
+ * across a connect-elsewhere it draws `listening` over a socket that is gone.
+ * Nothing is sent: that server dropped this client from its listener sets when
+ * the socket closed.
+ */
+export function forgetVoices(): void {
+  for (const voice of voices.values()) voice.forget();
+  voices.clear();
+}
+
 /** Test-only: drop every cached voice without sending anything. */
 export function resetVoices(): void {
   voices.clear();

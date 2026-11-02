@@ -13,7 +13,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { SLOT, wire as fakeWire, type Wire } from '../composer/testing';
 import { HeldClip, type VoiceCapture } from './capture.svelte';
 import VoiceControl from './control.svelte';
-import { resetVoices } from './registry';
+import { forgetVoices, resetVoices } from './registry';
 import type { OpenCapture } from './voice.svelte';
 
 let app: Record<string, unknown> | null = null;
@@ -159,5 +159,43 @@ describe('the voice switch', () => {
     button.dispatchEvent(new MouseEvent('pointerup', { bubbles: true }));
     flushSync();
     expect(button.getAttribute('data-state'), 'a tap with no frames turns voice off').toBe('off');
+  });
+
+  it('stops a hold the unmount interrupts', async () => {
+    const pending: { resolve: ((capture: VoiceCapture) => void) | null } = { resolve: null };
+    const at = drawn(
+      () =>
+        new Promise((done) => {
+          pending.resolve = done;
+        }),
+    );
+    press(at);
+    at.button().dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }));
+    const capture = new FakeCapture();
+    pending.resolve?.(capture as unknown as VoiceCapture);
+    await Promise.resolve();
+    await Promise.resolve();
+    flushSync();
+    expect(at.button().getAttribute('data-state'), 'the hold is running').toBe('talking');
+
+    // **A prompt swaps the body and the pointerup never lands.** The unmount
+    // is the only thing left that can release the device.
+    if (app !== null) await unmount(app);
+    app = null;
+    expect(capture.cancelled, 'the microphone the hold opened is released').toBe(true);
+  });
+
+  it('forgets the voices bound to a connection that was replaced', async () => {
+    const first = drawn();
+    press(first);
+    if (app !== null) void unmount(app);
+    app = null;
+    forgetVoices();
+    // **A connect-elsewhere replaces the connection under the same seat.** A
+    // cached voice would speak through the socket that just closed.
+    const second = drawn();
+    press(second);
+    expect(second.shared.sent.at(-1)?.command).toEqual({ voice_mode: { key: SLOT, on: true } });
+    expect(first.shared.sent, 'the old wire heard nothing more').toHaveLength(1);
   });
 });
