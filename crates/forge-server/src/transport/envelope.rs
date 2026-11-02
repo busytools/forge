@@ -990,10 +990,18 @@ mod tests {
                 url: "https://x/".to_owned(),
                 owner: SessionSlot::worker("TestOrg", "proj", "w"),
                 state: forge_primitives::browser::BrowserTabState::InUse,
+                dialog: Some(forge_primitives::browser::BrowserTabDialog {
+                    kind: "confirm".to_owned(),
+                    message: "Leave this page?".to_owned(),
+                }),
             }],
         };
         let json = serde_json::to_string(&list).expect("encode");
         assert!(json.contains("\"kind\":\"browser_tabs\""), "{json}");
+        assert!(
+            json.contains("\"dialog\":{\"kind\":\"confirm\""),
+            "the dialog crosses with its kind: {json}"
+        );
         let ServerMessage::BrowserTabs { id, up, connected, closing_at_ms, rows, .. } =
             serde_json::from_str(&json).expect("decode")
         else {

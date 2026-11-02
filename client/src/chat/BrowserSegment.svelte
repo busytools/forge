@@ -450,6 +450,11 @@
             <span class="nm">tab {row.number}</span>
             <span class="tx" title={row.url}>{row.title}</span>
             <span class="tx">{row.owner} · {row.stateText}</span>
+            {#if row.dialog !== null}
+              <span class="tx bz-dialog" title={row.dialog.message}>
+                {row.dialog.kind} waiting
+              </span>
+            {/if}
             {#if capable}
               <button
                 type="button"

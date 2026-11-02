@@ -10779,6 +10779,7 @@ async fn a_strip_read_answers_the_tabs_and_then_follows_them() {
             url: "https://x/".to_owned(),
             owner: lead_seat(),
             state: forge_primitives::browser::BrowserTabState::Idle,
+            dialog: None,
         }],
     });
     let ServerMessage::BrowserTabs { profile, rows, .. } = next_server(&mut socket).await else {

@@ -188,6 +188,16 @@ pub struct BrowserTabRow {
     /// The session whose calls drive it.
     pub owner: crate::SessionSlot,
     pub state: BrowserTabState,
+    /// The page dialog holding this tab, when one is open.
+    pub dialog: Option<BrowserTabDialog>,
+}
+
+/// A page dialog holding a tab, as the strip names it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BrowserTabDialog {
+    /// `alert`, `confirm`, `prompt` or `beforeunload`.
+    pub kind: String,
+    pub message: String,
 }
 
 /// What a tab is doing, as the strip's mark says it.
@@ -450,10 +460,15 @@ mod tests {
             url: "https://x/".to_owned(),
             owner: SessionSlot::worker("O", "p", "w"),
             state: BrowserTabState::Held,
+            dialog: Some(BrowserTabDialog {
+                kind: "confirm".to_owned(),
+                message: "Leave this page?".to_owned(),
+            }),
         };
         let encoded = serde_json::to_value(&row).expect("a row encodes");
         assert_eq!(encoded["number"], 2);
         assert_eq!(encoded["state"], "held");
+        assert_eq!(encoded["dialog"]["kind"], "confirm");
         assert_eq!(serde_json::from_value::<BrowserTabRow>(encoded).expect("decodes"), row);
     }
 

@@ -20,8 +20,9 @@ use std::time::{Duration, Instant};
 use forge_primitives::SessionSlot;
 use forge_primitives::browser::{
     BrowserAudio, BrowserDownload, BrowserFileAsk, BrowserFrame, BrowserInputEvent,
-    BrowserNavState, BrowserPart, BrowserTabList, BrowserUpload, BrowserViewState,
-    DOWNLOAD_BACKLOG, MAX_UPLOAD_BYTES, MAX_UPLOAD_FILES, MouseAction, ProfileKey,
+    BrowserNavState, BrowserPart, BrowserTabDialog, BrowserTabList, BrowserUpload,
+    BrowserViewState, DOWNLOAD_BACKLOG, MAX_UPLOAD_BYTES, MAX_UPLOAD_FILES, MouseAction,
+    ProfileKey,
 };
 use serde_json::{Value, json};
 use tokio::sync::{Mutex as AsyncMutex, broadcast, mpsc, watch};
@@ -3447,11 +3448,28 @@ impl BrowserService {
                     .keys()
                     .copied()
                     .collect();
+                // **The dialogs are read before the tabs**, so no path takes
+                // the two locks in the other order.
+                let dialogs: HashMap<u16, BrowserTabDialog> = profile
+                    .dialogs
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .iter()
+                    .map(|(tab, open)| {
+                        (
+                            *tab,
+                            BrowserTabDialog {
+                                kind: open.dialog.clone(),
+                                message: open.message.clone(),
+                            },
+                        )
+                    })
+                    .collect();
                 let rows = profile
                     .tabs
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner)
-                    .rows(&held, &controlled);
+                    .rows(&held, &controlled, &dialogs);
                 let closing_at_ms = idle.filter(|_| up).map(|idle| {
                     let remaining = (touch.at + idle).saturating_duration_since(Instant::now());
                     let now = std::time::SystemTime::now()

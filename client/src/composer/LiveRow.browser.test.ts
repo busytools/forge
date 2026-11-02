@@ -25,6 +25,7 @@ const LIST = vi.hoisted(() => ({
       url: 'https://example.org/',
       owner: { org: 'Busytools', project: 'forge', label: 'lead' },
       state: 'in_use',
+      dialog: null,
     },
   ],
 }));

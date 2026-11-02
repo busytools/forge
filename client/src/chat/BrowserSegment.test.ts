@@ -47,6 +47,7 @@ function row(over: Record<string, unknown> = {}): BrowserTabList['rows'][number]
     url: 'https://x/',
     owner: { org: 'TestOrg', project: 'proj', label: 'lead' },
     state: 'idle',
+    dialog: null,
     ...over,
   };
 }
