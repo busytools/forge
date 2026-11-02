@@ -38,7 +38,7 @@ pub enum SayError {
     /// The text is past `[tts] max_utterance_seconds`.
     #[error("{0}")]
     TooLong(String),
-    /// The engine has no load to offer, or the queue is gone.
+    /// The queue is gone, or the render stopped before its first audio.
     #[error("the voice engine is not ready")]
     NotReady,
     /// `[tts] enabled` is false, so nothing may synthesise.
@@ -56,7 +56,8 @@ pub trait NoteDispatch: Send + Sync {
     fn note(&self, seat: &SessionSlot, text: &str);
 }
 
-/// What the one client that turns voice on is told.
+/// The note the first client's turn-on puts into the seat, as forge's own
+/// prompt drawn with a forge chip.
 pub const LISTENING_NOTE: &str = "The user is listening to this seat. Anything they should hear goes through mcp__forge__voice__say; the text written in the chat is not spoken.";
 
 /// What the session is told when the last client leaves.
@@ -331,6 +332,12 @@ impl crate::Workspace {
                 Arc::new(self.build_voice_service(loader))
             })
             .clone()
+    }
+
+    /// The clients with voice on for `seat`. Zero before the service has
+    /// been built, which is the truth: nobody could have toggled it yet.
+    pub fn voice_listeners(&self, seat: &SessionSlot) -> usize {
+        self.voice.get().map_or(0, |service| service.listeners(seat))
     }
 
     /// The seat's occupant changed under a listening client: tell the new
@@ -827,6 +834,7 @@ mod tests {
     #[tokio::test]
     async fn an_empty_transcript_draws_a_notice_and_dispatches_nothing() {
         let (workspace, mut updates) = crate::Workspace::testing_stub();
+        workspace.enable_test_dispatch_intercept();
         let seat = seat();
         workspace.handle_transcript(
             &seat,
@@ -841,6 +849,10 @@ mod tests {
             }
             other => panic!("expected a notice, got: {other:?}"),
         }
+        assert!(
+            workspace.drain_test_dispatch_buffer().is_empty(),
+            "an empty transcript dispatches nothing into the seat",
+        );
     }
 
     #[tokio::test]

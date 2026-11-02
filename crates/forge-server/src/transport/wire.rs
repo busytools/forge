@@ -499,6 +499,8 @@ pub struct SessionStateWire {
     /// load, a refresh, a seat switch - has nothing else to draw the waiting
     /// prompts from, and two attached clients have to agree about them.
     pub queue: Vec<forge_workspace::protocol::QueuedPrompt>,
+    /// Clients with voice on for this seat, this one included.
+    pub voice_listeners: u32,
 }
 
 /// What one seat's composer is doing.
@@ -2673,6 +2675,7 @@ async fn session(
             slot: state_at.slot,
             scan_cwd: state_at.scan_cwd,
             queue: state_at.queue,
+            voice_listeners: state_at.voice_listeners,
         },
         composer: {
             let live = crate::live::Live::lock(&state.live).snapshot();

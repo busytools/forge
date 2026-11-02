@@ -40,6 +40,9 @@ pub struct SessionState {
     /// so a client attaching mid-queue would otherwise draw nothing until the
     /// next prompt moved. Held by the core, so two clients agree.
     pub queue: Vec<forge_workspace::protocol::QueuedPrompt>,
+    /// Clients with voice on for this seat, this one included. A late
+    /// attach reads the room here rather than waiting for the next toggle.
+    pub voice_listeners: u32,
 }
 
 impl ViewSurface {
@@ -66,6 +69,7 @@ impl SessionState {
             slot: slot.clone(),
             scan_cwd: workspace.git_scan_cwd_for_session(slot, cwd_raw),
             queue,
+            voice_listeners: u32::try_from(workspace.voice_listeners(slot)).unwrap_or(u32::MAX),
         }
     }
 }
