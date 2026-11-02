@@ -368,6 +368,18 @@ mod tests {
         assert_eq!(seats.take(11), Some(TapTarget { seat: lead(), board: true }));
     }
 
+    /// **An entry posted by a build that did not know the board flag still
+    /// names its seat**: the flag defaults to false, so an older
+    /// notification opens its chat rather than a cold start with no route.
+    #[test]
+    fn an_entry_without_the_board_flag_still_names_its_seat() {
+        let (_dir, seats) = store();
+        std::fs::create_dir_all(&seats.dir).expect("this test's own dir");
+        std::fs::write(seats.file(7), br#"{"org":"Busytools","project":"forge","label":"lead"}"#)
+            .expect("this test's own file");
+        assert_eq!(seats.peek(7), Some(seated(lead())));
+    }
+
     /// A launch no notification opened names nothing.
     #[test]
     fn an_unraised_notification_names_nothing() {
