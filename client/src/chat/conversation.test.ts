@@ -4654,6 +4654,81 @@ describe('the conversation the chat draws', () => {
   });
 
   /**
+   * **A page that lands over the running turn draws it once (#2816).**
+   *
+   * The screenshot evidence for this bug was a whole assistant turn drawn
+   * twice, its summary figures twice, around a mid-turn send. The split is
+   * the display row's turn head: a page read while the turn ran cut the turn
+   * at the frame the send forged, so the page's copy and the live frames both
+   * survived. The transport now holds that frame out of the copy until the
+   * turn ends, so a mid-turn page carries the running turn alone and the
+   * end-of-turn page carries it once with the send's row after it.
+   */
+  it('draws the turn once when pages land during it and after it', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    try {
+      const send = '23815404-2c47-4573-bd65-160480e37da6';
+      const answer = 'Main CI, re-queried.';
+      const sendWords = 'Once the remaining two are in.';
+      server.send(page([turn('t0', 'earlier')], null));
+      server.update({ chat_appended: { key: LEAD, msg: typed('open the turn') } });
+      server.update({ chat_appended: { key: LEAD, msg: forgedUnder(sendWords, send) } });
+      server.update({ prompt_queued: { key: LEAD, uuid: send, source: 'you', text: 'hold' } });
+
+      // A page lands while the turn is running. The display row is not in the
+      // copy, so the page is the running turn alone.
+      server.send(page([{ key: null, messages: [typed('open the turn')] }], 'above'));
+
+      server.update({ chat_appended: { key: LEAD, msg: said(answer) } });
+      server.update({ prompt_lifecycle: { key: LEAD, uuid: send, state: 'started' } });
+      server.update({ chat_appended: { key: LEAD, msg: ended() } });
+
+      // The turn ends: the answer's turn, then the send's own turn.
+      server.send(
+        page(
+          [
+            {
+              key: null,
+              messages: [typed('open the turn'), said(answer), ended()],
+            },
+            { key: null, messages: [forgedUnder(sendWords, send)] },
+          ],
+          'above',
+        ),
+      );
+
+      const frames = get(chat.value).turns.flatMap((row) =>
+        row.messages.map((message) => {
+          const frame = message as { uuid?: string; type?: string };
+          return frame.uuid ?? frame.type ?? '?';
+        }),
+      );
+      expect(
+        frames.filter((id) => id === `a-${answer}`),
+        'the answer frame draws once',
+      ).toHaveLength(1);
+      expect(
+        frames.filter((id) => id === send),
+        'the send row draws once',
+      ).toHaveLength(1);
+      expect(
+        frames.filter((id) => id === 'r-1'),
+        'the result draws once',
+      ).toHaveLength(1);
+      expect(
+        get(chat.value)
+          .turns.flatMap((row) => fold(row.messages, null, false, false))
+          .filter((unit) => unit.kind === 'report'),
+        'the turn summary draws once',
+      ).toHaveLength(1);
+    } finally {
+      stop();
+    }
+  });
+
+  /**
    * **A live frame that landed after the page was read sits at the row's end,
    * and the page's frames never go below it.**
    *
