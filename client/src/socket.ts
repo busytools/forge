@@ -888,6 +888,7 @@ export function connect(
   /** One subscribe on the wire, remembered as outstanding until it is answered. */
   function askFor(what: Subject, answering: boolean, review = false): void {
     sendNow({ kind: 'subscribe', what, answering, review });
+    if (typeof what !== 'string') gate?.askSent(what.session);
     const key = subjectKey(what);
     awaiting.push(key);
     subscribed.set(key, (subscribed.get(key) ?? 0) + 1);

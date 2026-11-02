@@ -89,6 +89,15 @@ interface StreamState {
   missing: Range[];
   /** The ranges an ask has already gone out for. */
   asked: Range[];
+  /**
+   * The number the stream stood at when the connection last asked for a fresh
+   * answer, or `null` when no ask is outstanding.
+   *
+   * **What tells a stale answer from a restart.** An answer can be encoded
+   * before frames this gate already delivered; comparing the count against
+   * this mark says whether anything arrived after the ask.
+   */
+  askedAt: number | null;
   /** Update frames seen but not yet deliverable, in arrival order. */
   waiting: Frame[];
   /** Repaired frames received but not yet delivered, in arrival order. */
@@ -127,6 +136,7 @@ function stateOf(streams: Map<string, StreamState>, key: string): StreamState {
       seenThrough: 0,
       missing: [],
       asked: [],
+      askedAt: null,
       waiting: [],
       repairs: [],
       origin: null,
@@ -228,8 +238,17 @@ export class StreamGate {
           // lower what this expects - a monotonic maximum would leave the
           // restarted run's frames reading as already drawn. A hold in
           // flight is where the answer is NOT: its ranges decide.
-          state.expecting = header.seq;
-          state.seenThrough = header.seq - 1;
+          //
+          // **A stale answer is not the authority.** One encoded before
+          // frames this gate already delivered names a number the stream has
+          // passed; adopting it rewinds the count onto numbers every reader
+          // holds, and the next live frame asks for them again. Only an
+          // answer to an ask nothing has arrived behind may lower the count.
+          if (state.askedAt === null || state.seenThrough === state.askedAt) {
+            state.expecting = header.seq;
+            state.seenThrough = header.seq - 1;
+          }
+          state.askedAt = null;
         }
         return [message];
       }
@@ -296,7 +315,22 @@ export class StreamGate {
         if (slot === undefined) return [message];
         const key = subjectKey({ session: slot });
         const state = this.streams.get(key);
-        if (state === undefined || !state.anchored || this.settled(state)) return [message];
+        if (state === undefined || !state.anchored) return [message];
+        if (this.settled(state)) {
+          // **A repair that lands while nothing waits still moves the count.**
+          // The frames pass through, but their numbers are seen: a later live
+          // frame above them is a successor, not a hole over numbers every
+          // reader already holds.
+          for (const frame of message.frames) {
+            const carried = frame as { seq: number; span?: unknown };
+            const span = typeof carried.span === 'number' && carried.span > 0 ? carried.span : 1;
+            if (carried.seq <= state.expecting && state.expecting < carried.seq + span) {
+              state.expecting = carried.seq + span;
+              state.seenThrough = Math.max(state.seenThrough, carried.seq + span - 1);
+            }
+          }
+          return [message];
+        }
         state.origin = { slot, epoch: message.epoch ?? null };
         for (const frame of message.frames) {
           const carried = frame as { seq: number; span?: unknown };
@@ -362,6 +396,21 @@ export class StreamGate {
     state.epoch = null;
     state.expecting = 1;
     state.seenThrough = 0;
+    state.askedAt = null;
+  }
+
+  /**
+   * Record that the connection has asked this seat for a fresh answer.
+   *
+   * **The mark a stale answer is judged against.** The answer can be encoded
+   * before frames this gate has already delivered; the number the stream
+   * stood at when the ask went out is what says whether anything arrived
+   * after it.
+   */
+  askSent(slot: SessionSlot): void {
+    const state = this.streams.get(subjectKey({ session: slot }));
+    if (state === undefined) return;
+    state.askedAt = state.seenThrough;
   }
 
   /** Whether nothing is in flight for this seat. */
@@ -497,6 +546,7 @@ export class StreamGate {
     state.deadline = null;
     state.missing.length = 0;
     state.asked.length = 0;
+    state.askedAt = null;
     state.waiting.length = 0;
     state.repairs.length = 0;
     state.origin = null;

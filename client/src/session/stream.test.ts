@@ -212,6 +212,45 @@ describe('the stream gate', () => {
     expect(gate.inbound(update(3))).toHaveLength(0);
   });
 
+  it('a stale answer does not rewind the count', () => {
+    // An answer encoded before frames this gate already delivered says where
+    // the stream stood at encode time, not now. Adopting it rewinds the count
+    // onto numbers every reader holds, and the next live frame opens a hole
+    // over them.
+    const { gate, asked } = aGate();
+    gate.inbound(snap('occ', 1));
+    gate.inbound(update(1));
+    gate.inbound(update(2));
+    gate.askSent(LEAD);
+    // The answer's travel is the outrun: live frames land while it is out.
+    gate.inbound(update(3));
+    gate.inbound(snap('occ', 2));
+    expect(gate.inbound(update(4)), 'the next frame is a successor').toHaveLength(1);
+    expect(asked, 'and no range is asked for').toEqual([]);
+  });
+
+  it('an answer to a quiet ask still restarts the count', () => {
+    const { gate } = aGate();
+    gate.inbound(snap('occ', 1));
+    gate.inbound(update(1));
+    gate.inbound(update(2));
+    gate.askSent(LEAD);
+    // Nothing arrived after the ask, so the answer is the authority.
+    gate.inbound(snap('occ', 1));
+    expect(gate.inbound(update(1)), 'a frame at 1 is a successor again').toHaveLength(1);
+    expect(gate.inbound(update(3)), 'and 3 opens a hole').toHaveLength(0);
+  });
+
+  it('a repair that lands while settled advances the count', () => {
+    const { gate, asked } = aGate();
+    gate.inbound(snap('occ', 1));
+    gate.inbound(update(1));
+    gate.inbound(update(2));
+    gate.inbound(repaired(3));
+    expect(gate.inbound(update(4)), 'the next frame is a successor').toHaveLength(1);
+    expect(asked, 'no phantom ask').toEqual([]);
+  });
+
   it('a seal passes at once and starts the count over', () => {
     const { gate, emitted } = aGate();
     gate.inbound(snap('occ', 1));
