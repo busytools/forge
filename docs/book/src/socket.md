@@ -786,8 +786,8 @@ and when the connection that held it goes away: a closed client or a dropped
 socket empties the seat's listener set too, so the same note fires. A client
 that moves to another seat sends `explicit: false` and keeps its intent, so
 the seat pauses without toggling the agent and a return reconnects. The note
-is forge's own prompt, so the transcript draws it with a forge chip rather
-than as the reader's turn.
+rides a `[Voice]` envelope, so the transcript draws it as a delivery row
+rather than as the reader's turn.
 
 **`voice_audio {key, seq, sample_rate, pcm}`** - one rendered clip of the
 seat's speech, mono 16-bit samples at `sample_rate`. Clips arrive in `seq`

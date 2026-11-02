@@ -67,8 +67,9 @@ read as one system.
 - **A peer message** draws a card saying which way it went: `sent to` and
   `from` name the counterparty and its org, `failed` carries the
   delivery's own reason, and `whoami` and `list` open onto their facts.
-- **A delivery** - a cron fire, a Slack message, a Gotify push - is a row
-  of its own kind, a cron fire titled by the schedule that fired it. A
+- **A delivery** - a cron fire, a Slack message, a Gotify push, a voice
+  note - is a row of its own kind, a cron fire titled by the schedule that
+  fired it and a voice note by the note's own first line. A
   Slack row whose block is late adds its age to the title, so a week-old
   message reads as history before the row is opened.
 - **A notice is a tool row, in the run's own inset.** An info, warning or

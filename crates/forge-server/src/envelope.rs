@@ -1,10 +1,10 @@
 //! Envelope parsing for the bracket-wrapped prose `forge_workspace`
 //! injects into user-turn text, plus the Slack mrkdwn converter.
 //!
-//! Six header shapes: the three peer kinds the workspace produces
-//! (`Message`, `DeliveryFailure`, `WorkerSpawnFailed`) and the
-//! `Gotify`, `Cron` and `Slack` external sources. Nothing here renders
-//! or holds state.
+//! Seven header shapes: the three peer kinds the workspace produces
+//! (`Message`, `DeliveryFailure`, `WorkerSpawnFailed`), the `Gotify`, `Cron`
+//! and `Slack` external sources, and forge's own `Voice` note. Nothing here
+//! renders or holds state.
 //!
 //! **Three of the parser's arms are replay-only.** The `Question` and
 //! `Reply` headers and the `Ask ... failed to deliver` header are what a
@@ -57,6 +57,12 @@ pub enum PeerInboundKind {
     /// traffic. Never groups with peer envelopes (see
     /// [`PeerInboundKind::peer_sender_identity`]).
     Cron { prompt: String },
+    /// `[Voice]\n\n<note>` - forge telling the seat's session the reader is
+    /// listening or has stopped, delivered as a user turn. The note is for
+    /// the agent, so it draws as an information row rather than as the
+    /// reader's own turn. Never groups with peer envelopes (see
+    /// [`PeerInboundKind::peer_sender_identity`]).
+    Voice { note: String },
     /// `[Slack - workspace 'X', <channel>] id ... ts ...` then one
     /// `<author>: <text> [ts ...]` line per delivered message - a
     /// conversation's news, delivered as a user turn. Rendered with the
@@ -90,6 +96,7 @@ impl PeerInboundKind {
             Self::WorkerSpawnFailed { .. }
             | Self::Gotify { .. }
             | Self::Cron { .. }
+            | Self::Voice { .. }
             | Self::Slack { .. } => "",
         }
     }
@@ -103,7 +110,7 @@ impl PeerInboundKind {
             Self::Message { from, .. } => Some(from),
             Self::DeliveryFailure { target, .. } => Some(target),
             Self::WorkerSpawnFailed { label, .. } => Some(label),
-            Self::Gotify { .. } | Self::Cron { .. } | Self::Slack { .. } => None,
+            Self::Gotify { .. } | Self::Cron { .. } | Self::Voice { .. } | Self::Slack { .. } => None,
         }
     }
 }
@@ -259,6 +266,12 @@ pub fn detect_inbound(text: &str) -> Option<PeerInboundKind> {
         // Display-only wrapper the CronPromptAppended reducer forges around
         // the fired prompt; `body` is the raw prompt after `]\n\n`.
         return Some(PeerInboundKind::Cron { prompt: body });
+    }
+
+    if header == "Voice" {
+        // The wrapper `WorkspaceNotes` puts around a voice note; `body` is the
+        // note after `]\n\n`.
+        return Some(PeerInboundKind::Voice { note: body });
     }
 
     None
@@ -522,6 +535,7 @@ mod tests {
             // No id in the header at all.
             ("[Gotify - app 'ci', priority 5]\ntitle\nbody", None),
             ("[Cron]\n\nprompt", None),
+            ("[Voice]\n\nnote", None),
             // Not an envelope.
             ("plain user text", None),
             ("[unterminated id=t-1", None),
@@ -616,6 +630,24 @@ mod tests {
             }
             other => panic!("expected Cron, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn detect_voice_inbound_parses_note_body() {
+        let text = "[Voice]\n\nThe user is listening to this seat.\n\nAnything they should hear goes through mcp__forge__voice__say.";
+        match detect_inbound(text).expect("voice") {
+            PeerInboundKind::Voice { note } => assert_eq!(
+                note,
+                "The user is listening to this seat.\n\nAnything they should hear goes through mcp__forge__voice__say.",
+            ),
+            other => panic!("expected Voice, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn voice_has_no_peer_sender_identity() {
+        let kind = PeerInboundKind::Voice { note: "x".into() };
+        assert_eq!(kind.peer_sender_identity(), None);
     }
 
     #[test]

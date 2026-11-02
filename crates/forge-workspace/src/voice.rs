@@ -56,12 +56,17 @@ pub trait NoteDispatch: Send + Sync {
     fn note(&self, seat: &SessionSlot, text: &str);
 }
 
-/// The note the first client's turn-on puts into the seat, as forge's own
-/// prompt drawn with a forge chip.
-pub const LISTENING_NOTE: &str = "The user is listening to this seat. Anything they should hear goes through mcp__forge__voice__say; the text written in the chat is not spoken.";
+/// The note the first client's turn-on puts into the seat.
+pub const LISTENING_NOTE: &str = "The user is listening to this seat.\n\nAnything they should hear goes through mcp__forge__voice__say; the text written in the chat is not spoken.";
 
 /// What the session is told when the last client leaves.
 pub const NOT_LISTENING_NOTE: &str = "The user has stopped listening to this seat.";
+
+/// The envelope a note rides, so a view draws it as information rather than
+/// as the reader's own turn.
+fn note_envelope(text: &str) -> String {
+    format!("[Voice]\n\n{text}")
+}
 
 type Loader = Arc<dyn Fn() -> Result<Arc<dyn Engine>, String> + Send + Sync>;
 
@@ -474,7 +479,7 @@ impl NoteDispatch for WorkspaceNotes {
         let uuid = forge_sdk::request_id::next_prompt_id();
         if let Err(error) = workspace.dispatch_workspace_prompt_under(
             seat,
-            text.to_owned(),
+            note_envelope(text),
             crate::PromptSource::Forge,
             uuid,
         ) {
@@ -549,7 +554,7 @@ mod tests {
 
     use super::{
         AudioSink, LISTENING_NOTE, NOT_LISTENING_NOTE, NoteDispatch, SayError, VoiceService,
-        VoiceSettings,
+        VoiceSettings, note_envelope,
     };
 
     fn seat() -> SessionSlot {
@@ -813,6 +818,20 @@ mod tests {
         fixture.service.set_listening(&seat(), 2, false, true);
         assert_eq!(said(&fixture), vec![LISTENING_NOTE.to_owned(), NOT_LISTENING_NOTE.to_owned()],);
         assert_eq!(fixture.service.listeners(&seat()), 0);
+    }
+
+    #[test]
+    fn a_note_rides_the_envelope_a_view_draws_as_information() {
+        assert_eq!(
+            note_envelope(LISTENING_NOTE),
+            format!("[Voice]\n\n{LISTENING_NOTE}"),
+            "the note is information for the reader and a message for the agent",
+        );
+        assert_eq!(
+            note_envelope(NOT_LISTENING_NOTE),
+            format!("[Voice]\n\n{NOT_LISTENING_NOTE}"),
+            "the withdrawal rides the same envelope",
+        );
     }
 
     #[tokio::test]
