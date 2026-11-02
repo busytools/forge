@@ -789,9 +789,8 @@ the seat pauses without toggling the agent and a return reconnects. The note
 rides a `[Voice]` envelope, so the transcript draws it as a delivery row
 rather than as the reader's turn.
 
-**`voice_audio {key, seq, sample_rate, pcm}`** - one run of the seat's
-rendered speech, mono 16-bit samples at `sample_rate`, sent while the
-sentence is generated rather than one clip at its end. Clips arrive in `seq`
+**`voice_audio {key, seq, sample_rate, pcm}`** - one rendered clip of the
+seat's speech, mono 16-bit samples at `sample_rate`. Clips arrive in `seq`
 order, numbered per seat in render order, and every connection subscribed
 to that seat receives them; a client plays them only while its own voice is
 on. **`voice_mode_state {key, listeners}`** carries how many clients have

@@ -1,7 +1,6 @@
 /**
- * The seat's speech, played in the order the engine rendered it: each clip
- * scheduled behind the one before, so a stream of short clips sounds as one
- * voice rather than a stutter.
+ * The seat's speech, played in the order the engine rendered it: one clip
+ * at a time, each following the one before.
  *
  * A reconnected socket drops the queue, because frames missed while it was
  * down are frames nobody will resend.
@@ -9,30 +8,29 @@
 
 /** Where decoded clips go. An interface so a test needs no audio stack. */
 export interface Speaker {
-  /** Schedule one clip behind what is already sounding, resolving when it ends. */
+  /** Play one clip, resolving when it has finished sounding. */
   play(pcm: Int16Array, sampleRate: number): Promise<void>;
-  /** Stop every scheduled clip now. */
+  /** Stop the clip sounding now, if one is. */
   stop(): void;
   /** Release the device the speaker was using. */
   close(): void;
 }
 
 /**
- * The browser's own speaker: one `AudioContext`, one buffer per clip, laid
- * on its timeline back to back. Created on the first clip, because a context
- * built before any interaction starts suspended on most platforms.
+ * The browser's own speaker: one `AudioContext`, one buffer per clip, played
+ * in turn. Created on the first clip, because a context built before any
+ * interaction starts suspended on most platforms.
  */
 export function webSpeaker(): Speaker {
   let context: AudioContext | null = null;
-  const sounding: AudioBufferSourceNode[] = [];
-  /** When the queued clips stop sounding, on the context's own clock. */
-  let nextStart = 0;
+  let sounding: AudioBufferSourceNode | null = null;
   return {
     async play(pcm: Int16Array, sampleRate: number): Promise<void> {
       const audio = context ?? new AudioContext({ sampleRate });
       context = audio;
       // A context built outside a gesture starts suspended: without this the
-      // source schedules silently and `onended` never fires.
+      // source schedules silently and `onended` never fires, stalling the
+      // queue behind it.
       void audio.resume();
       const buffer = audio.createBuffer(1, Math.max(pcm.length, 1), sampleRate);
       const channel = buffer.getChannelData(0);
@@ -40,30 +38,20 @@ export function webSpeaker(): Speaker {
       const source = audio.createBufferSource();
       source.buffer = buffer;
       source.connect(audio.destination);
-      // **Behind what is queued, never at the clock**: a start in the past
-      // sounds late, which is a gap, so the cushion holds the first clip off
-      // the clock and every later one takes the previous clip's end.
-      const at = Math.max(audio.currentTime + 0.02, nextStart);
-      nextStart = at + buffer.duration;
-      sounding.push(source);
+      sounding = source;
       await new Promise<void>((resolve) => {
         source.onended = () => {
-          const held = sounding.indexOf(source);
-          if (held >= 0) sounding.splice(held, 1);
+          if (sounding === source) sounding = null;
           resolve();
         };
-        source.start(at);
+        source.start();
       });
     },
     stop(): void {
-      for (const source of sounding) source.stop();
-      sounding.length = 0;
-      nextStart = 0;
+      sounding?.stop();
+      sounding = null;
     },
     close(): void {
-      for (const source of sounding) source.stop();
-      sounding.length = 0;
-      nextStart = 0;
       void context?.close();
       context = null;
     },
@@ -72,58 +60,47 @@ export function webSpeaker(): Speaker {
 
 export class Playback {
   private queue: { pcm: Int16Array; sampleRate: number }[] = [];
-  /** Whether a clip is sounding now, or queued on the speaker's timeline. */
+  /** Whether a clip is sounding now. */
   playing = $state(false);
-  /** Clips scheduled and not yet ended. */
-  private sounding = 0;
-  /** Bumped by a drop, so a stopped clip's ending does not count. */
-  private generation = 0;
 
   constructor(private readonly speaker: Speaker = webSpeaker()) {}
 
-  /** Add one clip and schedule it behind the ones already queued. */
+  /** Add one clip and start playing when nothing is. */
   push(pcm: Int16Array, sampleRate: number): void {
     if (pcm.length === 0) return;
     this.queue.push({ pcm, sampleRate });
-    this.drain();
+    void this.pump();
   }
 
-  /// Discard everything queued and stop every clip now; `playing` goes false
-  /// with the clips, and their endings are ignored.
+  /// Discard everything queued and stop the clip sounding now; `playing`
+  /// stays true until that clip's own promise resolves.
   drop(): void {
     this.queue = [];
-    this.generation += 1;
-    this.sounding = 0;
-    this.playing = false;
     this.speaker.stop();
   }
 
   /** Release the audio device. */
   close(): void {
-    this.drop();
+    this.queue = [];
+    this.speaker.stop();
     this.speaker.close();
   }
 
-  /**
-   * Schedule every queued clip without waiting for the ones before it.
-   *
-   * **A streamed clip arrives while the last is still sounding**, so waiting
-   * for its end before scheduling would put a gap at every chunk boundary.
-   * The speaker lays each one after the previous on its own clock, which is
-   * what makes a run of short clips one continuous voice.
-   */
-  private drain(): void {
-    const generation = this.generation;
-    while (this.queue.length > 0) {
-      const next = this.queue.shift();
-      if (next === undefined) break;
-      this.sounding += 1;
-      this.playing = true;
-      void this.speaker.play(next.pcm, next.sampleRate).finally(() => {
-        if (generation !== this.generation) return;
-        this.sounding = Math.max(0, this.sounding - 1);
-        if (this.sounding === 0) this.playing = false;
-      });
+  /// Play queued clips until the queue is empty. Every push starts this
+  /// loop and finds it already running, so two clips never sound at once.
+  private async pump(): Promise<void> {
+    if (this.playing) return;
+    this.playing = true;
+    try {
+      while (this.queue.length > 0) {
+        const next = this.queue.shift();
+        if (next === undefined) break;
+        await this.speaker.play(next.pcm, next.sampleRate);
+      }
+    } catch {
+      // A clip the device refused is dropped; the next push starts a pump.
+    } finally {
+      this.playing = false;
     }
   }
 }
