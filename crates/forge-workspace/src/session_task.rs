@@ -665,6 +665,10 @@ impl SessionTask {
                     // next boot to guess wrong.
                     if let Some(workspace) = self.workspace.upgrade() {
                         workspace.note_running_session_id(&self.key, &session_id);
+                        // A `/resume` on a seat with no live task arrives
+                        // here rather than through `SessionReplaced`, so the
+                        // successor is told it is heard on this path too.
+                        workspace.voice_occupant_changed(&self.key);
                     }
                     self.emit(SessionUpdate::Connected {
                         key: key.clone(),
