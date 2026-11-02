@@ -20062,7 +20062,7 @@ mod worker_respawn_tests {
             LEAD_RESTART_NOTE.contains("handoff.md"),
             "the note sends the lead to the project handoff",
         );
-        assert!(LEAD_RESTART_NOTE.contains("task board"), "and to the task board before it acts",);
+        assert!(LEAD_RESTART_NOTE.contains("task board"), "and to the task board before it acts");
         assert!(
             LEAD_RESTART_NOTE.contains("believe the clock and the schedules"),
             "the note names which side wins when the history disagrees",
@@ -20076,7 +20076,7 @@ mod worker_respawn_tests {
     fn a_resume_kick_reaches_only_a_spawn_that_resumed() {
         let note = || Some("continue where you left off".to_owned());
         assert_eq!(resume_kick_for(true, note()), note(), "a resumed spawn takes the note");
-        assert!(resume_kick_for(false, note()).is_none(), "a fresh spawn delivers none",);
+        assert!(resume_kick_for(false, note()).is_none(), "a fresh spawn delivers none");
         assert!(
             resume_kick_for(true, None).is_none(),
             "and a caller that asked for no note gets none",
