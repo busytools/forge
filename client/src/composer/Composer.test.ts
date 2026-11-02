@@ -3440,23 +3440,27 @@ function baseRule(selector: string): string {
 /**
  * A rule's left padding, from its `padding` shorthand or its own property.
  *
- * Reading only `padding-left` is how a shorthand inset went unseen: a notice
- * written `padding: 8px 14px 0` carried the field's inset while the guard that
- * asked for one found nothing to match.
+ * Reading only `padding-left` misses a shorthand, so a guard looking for the
+ * property finds no declaration and takes the row for flush. Declarations are
+ * read in source order, because a later `padding` wins the left side the way
+ * the cascade does.
  */
 function leftInset(declared: string): number {
-  const own = /(?:^|[;{])\s*padding-left:\s*(-?[\d.]+)px/.exec(declared);
-  if (own !== null) return Number(own[1]);
-  const shorthand = /(?:^|[;{])\s*padding:\s*([^;]+)/.exec(declared)?.[1];
-  if (shorthand === undefined) return 0;
-  // 1 value: every side; 2: vertical horizontal; 3: top horizontal bottom;
-  // 4: top right bottom left.
-  const parts = shorthand
-    .trim()
-    .split(/\s+/)
-    .map((part) => Number.parseFloat(part));
-  const left = parts.length === 1 ? parts[0] : parts.length === 4 ? parts[3] : parts[1];
-  return left ?? 0;
+  let left = 0;
+  for (const match of declared.matchAll(/(?:^|[;{])\s*(padding-left|padding):\s*([^;]+)/g)) {
+    const property = match[1];
+    const value = (match[2] ?? '').trim();
+    if (property === 'padding-left') {
+      left = Number.parseFloat(value);
+      continue;
+    }
+    // 1 value: every side; 2: vertical horizontal; 3: top horizontal bottom;
+    // 4: top right bottom left.
+    const parts = value.split(/\s+/).map((part) => Number.parseFloat(part));
+    left =
+      parts.length === 1 ? (parts[0] ?? 0) : parts.length === 4 ? (parts[3] ?? 0) : (parts[1] ?? 0);
+  }
+  return left;
 }
 
 /**
@@ -3740,9 +3744,7 @@ describe('the frame', () => {
 
   /**
    * One box, one left margin. The field's words, a notice and the blocking
-   * states all start at the same inset from the card's edge; the take's card
-   * is the one thing that does not, because it rides the box's right corner
-   * rather than the column.
+   * states all start at the same inset from the card's edge.
    *
    * The field's text is inset by its ROW's padding, so a notice with no
    * padding of its own starts 14px left of every word typed below it -
@@ -3753,17 +3755,31 @@ describe('the frame', () => {
    */
   it("starts the notice and the blocked lines at the field's own left inset", () => {
     const field = leftInset(sheetRule('.surf .slot > .line'));
-    expect(field, 'the field row lost the left inset the rows above the draft match').toBe(14);
+    expect(
+      field,
+      "the field row's left inset is not the 14px the notice and blocked lines are measured against",
+    ).toBe(14);
     expect(sheetRule('.comp .notice'), "the notice lost the drawing's own inset").toContain(
       'padding: 8px 14px 0',
     );
     expect(leftInset(sheetRule('.comp .notice')), 'the notice starts left of the field').toBe(
       field,
     );
+    // The inset is the row's whole: a field that pads inside it moves the
+    // words the notice is measured against.
+    expect(leftInset(sheetRule('.line .txt')), 'the field insets itself inside its row').toBe(0);
+    for (const tone of ['.comp .notice.q', '.comp .notice.bad', '.comp .notice.warn']) {
+      expect(leftInset(sheetRule(tone)), `${tone} moves the notice off the field's inset`).toBe(0);
+    }
     expect(leftInset(sheetRule('.blocked')), 'a blocked line starts left of the field').toBe(field);
     expect(leftInset(sheetRule('.blocked .b2')), 'the blocking sub-line insets itself twice').toBe(
       0,
     );
+  });
+
+  it("reads a rule's left inset in source order, as the cascade does", () => {
+    expect(leftInset('padding-left: 3px; padding: 8px 14px 0;'), 'a later shorthand lost').toBe(14);
+    expect(leftInset('padding: 8px 14px 0; padding-left: 3px;'), 'a later property lost').toBe(3);
   });
 
   /**
