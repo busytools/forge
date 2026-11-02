@@ -25,8 +25,9 @@ const TOP_P: f32 = 0.95;
 const MIN_P: f32 = 0.05;
 const TEMPERATURE: f32 = 0.8;
 
-/// `LLAMA_DEFAULT_SEED`: the value llama.cpp reads as "pick a random seed".
-const RANDOM_SEED: u32 = u32::MAX;
+/// One seed for every render, so the speaker stays one voice across
+/// sentences; `LLAMA_DEFAULT_SEED` (u32::MAX) draws a new one per call.
+const VOICE_SEED: u32 = 20_260_102;
 
 /// The tool's own ceiling on generated frames, about forty seconds of audio.
 const MAX_FRAMES: u32 = 512;
@@ -122,7 +123,7 @@ impl Core {
         input.lang = language.as_ref().map_or(ptr::null(), |value| value.as_ptr());
         input.top_k = TOP_K;
         input.top_p = TOP_P;
-        input.seed = RANDOM_SEED;
+        input.seed = VOICE_SEED;
         input.out_type = sys::MTMD_HELPER_GEN_AUDIO_OUTTYPE_PCM;
         if unsafe { sys::mtmd_helper_gen_audio_set_input(audio.raw, &raw const input) } != 0 {
             return Err(Error::Render("the text could not be turned into a prompt".to_owned()));
@@ -251,7 +252,7 @@ impl Sampler {
             sys::llama_sampler_chain_add(chain, sys::llama_sampler_init_top_p(TOP_P, 1));
             sys::llama_sampler_chain_add(chain, sys::llama_sampler_init_min_p(MIN_P, 1));
             sys::llama_sampler_chain_add(chain, sys::llama_sampler_init_temp(TEMPERATURE));
-            sys::llama_sampler_chain_add(chain, sys::llama_sampler_init_dist(RANDOM_SEED));
+            sys::llama_sampler_chain_add(chain, sys::llama_sampler_init_dist(VOICE_SEED));
             Self { raw: chain }
         }
     }
