@@ -6,9 +6,9 @@ forge-authored source, docs and config. Ellipsis U+2026 is ALLOWED
 are excluded - they mirror upstream wire payloads byte-for-byte and may
 legitimately carry Unicode prose from the CLI's own logs.
 Nothing else is: forge-authored prose that happens to sit beside captured
-data is still scanned, `VENDOR.md` included. Files git ignores (.gitignore / .git/info/exclude, e.g.
-local audit scratch) are skipped too: the gate polices committable forge
-files, not whatever scratch happens to sit in the working tree.
+data is still scanned. Files git ignores (.gitignore / .git/info/exclude,
+e.g. local audit scratch) are skipped too: the gate polices committable
+forge files, not whatever scratch happens to sit in the working tree.
 
 When a banned codepoint is functionally required (render glyph,
 ASCII-art element, legitimate punctuation in test fixtures), use an
