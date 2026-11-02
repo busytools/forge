@@ -78,14 +78,6 @@ export class Playback {
     this.speaker.stop();
   }
 
-  /**
-   * Throw everything away, including the clip sounding now. A reset means
-   * the seat or the socket is gone, so nothing more will be pushed for it.
-   */
-  discard(): void {
-    this.drop();
-  }
-
   /** Release the audio device. */
   close(): void {
     this.queue = [];

@@ -378,7 +378,7 @@ export function search(rows: CatalogueRow[], query: string): CatalogueRow[] {
 export function activeSource(from: ActiveFrom): string {
   switch (from.from) {
     case 'config':
-      return `pinned by [${from.key === 'speaking_model' ? 'tts' : 'dictate'}] ${from.key}`;
+      return `pinned by [dictate] ${from.key}`;
     case 'installed':
       return 'installed here';
     case 'pin':

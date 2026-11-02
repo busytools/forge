@@ -366,6 +366,10 @@ const BENCH_ROLES: Exclude<BenchRole, 'other'>[] = ['transcribing', 'cleanup'];
 export function modelsFrom(data: DictateModelsWire): DictateModelsWire {
   return {
     ...data,
+    // An older server sends neither directory: `null` is the page's own
+    // "not configured", where `undefined` would render as the word.
+    models_dir: data.models_dir ?? null,
+    speaking_models_dir: data.speaking_models_dir ?? null,
     rows: (data.rows ?? []).map((row) => rowFrom(row)),
     in_use: data.in_use.map((model) => ({
       ...model,

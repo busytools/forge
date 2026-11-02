@@ -184,6 +184,12 @@ export class Voice {
         // left, or this connection's own mode was never registered - so the
         // switch follows rather than showing an off seat as on, and the
         // queued speech goes with it.
+        //
+        // A `listeners: 0` from before this client's own turn-on can arrive
+        // after the optimistic switch, and the server's later `listeners: 1`
+        // does not turn it back on. The frames are ordered per seat, so this
+        // only bites when two clients toggle near-simultaneously; the
+        // server's set is correct, and the next toggle reconciles the switch.
         if (this.listeners === 0 && this.on) {
           this.on = false;
           this.playback.drop();
