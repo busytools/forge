@@ -195,9 +195,10 @@ not resolve until a full-page snapshot.
 SERVER to CEF's own mouse calls at the page's own scale, and keys and text
 to CDP `Input.*` events: a click is a full pointer sequence, a wheel is a
 pixel delta, printable text is inserted as text, the specials (Enter, Tab,
-the arrows, Escape) are key events, and Cmd+V reads the pasteboard as text. The phone's canvas sends the same
-gestures from its own pointer events. A gesture's point is scaled from the
-surface's layout into the page's viewport, which need not be the same size.
+the arrows, Escape) are key events, and Cmd+V reads the pasteboard as text.
+The phone's canvas sends the same gestures from its own pointer events. A
+gesture's point is scaled from the surface's layout into the page's
+viewport, which need not be the same size.
 Widgets that gate on trusted input commit, which is the whole reason the
 events are replayed rather than synthesised in the page. **The desktop
 overlay claims the menu's chords while it has the keyboard.** AppKit offers

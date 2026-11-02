@@ -304,7 +304,7 @@ mod tests {
         assert_eq!(
             (delta_x, delta_y),
             (3, -40),
-            "the wire's positive-down becomes CEF's positive-up"
+            "the wire's positive-down is negated for CEF, whose positive is up"
         );
     }
 

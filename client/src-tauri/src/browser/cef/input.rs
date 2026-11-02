@@ -1,7 +1,7 @@
 //! The overlay's gestures, as the wire carries them.
 //!
-//! **A gesture, not CDP.** The server is what turns a press into
-//! `Input.dispatchMouseEvent`; this half names what the person did and the
+//! **A gesture, not the protocol.** The server turns a press and a wheel into
+//! CEF's own mouse calls; this half names what the person did and the
 //! modifier keys they held. The mapping is pure, so the shapes are tested
 //! without a window.
 
