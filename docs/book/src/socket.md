@@ -771,11 +771,13 @@ answers with a `voice_mode_state` carrying the count, to every subscriber
 of that seat. The first client in and the last client out also put a short
 note into the session, so the agent is told once that the person is
 listening and that anything they should hear goes through
-`mcp__forge__voice__say`.
+`mcp__forge__voice__say`. The note is forge's own prompt, so the transcript
+draws it with a forge chip rather than as the reader's turn.
 
 **`voice_utterance {key, pcm}`** - one complete hold-to-talk clip, mono
 16-bit samples at 16 kHz. Holding and releasing makes a whole clip, so
-nothing streams: the array is the utterance. The server transcribes it with
+nothing streams: the array is the utterance, carried as a JSON number array
+rather than as a binary frame. The server transcribes it with
 the seat's live dictation role and dispatches the words into the seat as
 the reader's own prompt; a clip that cannot be transcribed, or that carries
 no speech, draws a notice row and dispatches nothing.

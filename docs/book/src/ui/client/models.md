@@ -153,9 +153,9 @@ side is another model's output. The read-aloud tier is the one passage
 somebody read aloud on purpose: its words are known, so it is the corpus
 that scores term accuracy as well as word error rate. The public tier is a
 fixed LibriSpeech test-clean slice embedded in the binary with its
-transcripts, digests and attribution; the first bench installs it beside the
-models, so a machine that has never recorded anything still has something to
-score. A clip whose bytes are not the ones its manifest names is refused by
+transcripts and digests; the first bench installs it beside the models, with
+an ATTRIBUTION file written beside the clips, so a machine that has never
+recorded anything still has something to score. A clip whose bytes are not the ones its manifest names is refused by
 the clip's own name rather than scored. **The page records that
 passage itself**: the section draws the passage and the record control, and a
 press opens this client's microphone through the composer's own capture. The
