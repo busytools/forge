@@ -2,16 +2,18 @@
 import { get } from 'svelte/store';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { homeWire } from './dev/fixture.data';
 import {
   askState,
   askWords,
   notifiesFromThePage,
   rising,
   waitsRising,
+  waitRows,
   waitWords,
   type AskState,
 } from './notify';
-import type { AgentRow } from './wire/home';
+import type { AgentRow, HomeWire } from './wire/home';
 import type { SessionSlot } from './wire/types';
 
 const LEAD: SessionSlot = { org: 'Busytools', project: 'forge', label: 'lead' };
@@ -200,6 +202,43 @@ describe('which asks are news', () => {
 
 describe('which decision waits are news', () => {
   const at = (secs: number) => ({ secs_since_epoch: secs, nanos_since_epoch: 0 });
+
+  /// **A fleet row's waits are named with the seat that raised them**, and
+  /// the seat carries its project's org - the fleet row names only the
+  /// project, and a route built from an empty org opens nothing.
+  it('reads the waits off the home wire with their seat and org', () => {
+    const wire: HomeWire = {
+      ...homeWire,
+      fleet: [
+        {
+          project: 'proj',
+          live_workers: 1,
+          slots: 2,
+          queue: 0,
+          waiting_on_user: 1,
+          attention: [
+            {
+              task: 't1',
+              owner: 'w1',
+              subject: 'the parser',
+              words: 'sign this off',
+              at: at(5),
+            },
+          ],
+          rows: 1,
+          misses: [],
+        },
+      ],
+    };
+    expect(waitRows(wire)).toEqual([
+      {
+        slot: { org: 'TestOrg', project: 'proj', label: 'w1' },
+        task: 't1',
+        words: 'sign this off',
+        at: at(5),
+      },
+    ]);
+  });
 
   /// **A wait is announced once, and a launch announces none.** Its identity
   /// is the task and the moment it was raised, scoped to the server run, so
