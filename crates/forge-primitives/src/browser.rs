@@ -141,13 +141,7 @@ pub enum BrowserInputEvent {
     },
     /// A wheel's deltas in the page's own sign: positive scrolls down and
     /// right. The server turns the sign back for CEF.
-    Wheel {
-        x: f64,
-        y: f64,
-        delta_x: f64,
-        delta_y: f64,
-        modifiers: InputModifiers,
-    },
+    Wheel { x: f64, y: f64, delta_x: f64, delta_y: f64, modifiers: InputModifiers },
     /// A key with no text of its own: an arrow, Enter, Escape, a modifier.
     Key {
         down: bool,
@@ -158,9 +152,7 @@ pub enum BrowserInputEvent {
         modifiers: InputModifiers,
     },
     /// The person's own text, inserted as text rather than replayed keycodes.
-    Text {
-        text: String,
-    },
+    Text { text: String },
 }
 
 /// One encoded browser frame as the socket relays it.
