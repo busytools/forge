@@ -307,18 +307,11 @@ impl Workspace {
                     .iter()
                     .filter(|t| t.status == TaskStatus::Waiting && crate::tasks::parked_on_user(t))
                     .count();
-                // The wait's own start, off the history the board read also
-                // derives from: `updated_at` moves on any edit of a waiting
-                // row, and a notification keyed on it would fire again for
-                // an edit that answered nothing.
-                let history = {
-                    let guard = self.db.lock();
-                    match guard.as_ref() {
-                        Some(db) => crate::store::task_history::list_for_project(db, &name)
-                            .unwrap_or_default(),
-                        None => Vec::new(),
-                    }
-                };
+                // The wait's own start, stamped as the wait is raised:
+                // `updated_at` moves on any edit of a waiting row, and a
+                // notification keyed on it would fire again for an edit that
+                // answered nothing. A row stored before the field existed
+                // falls back to its creation, not to that edit.
                 let attention = tasks
                     .iter()
                     .filter(|t| t.status == TaskStatus::Waiting && crate::tasks::parked_on_user(t))
@@ -330,7 +323,11 @@ impl Workspace {
                             .map_or_else(|| "lead".to_owned(), |seat| seat.label().to_owned()),
                         subject: t.subject.clone(),
                         words: attention_words(t),
-                        at: crate::chase::waiting_since(&history, &t.id).unwrap_or(t.updated_at),
+                        at: t
+                            .waiting_on
+                            .as_ref()
+                            .and_then(|wait| wait.since)
+                            .unwrap_or(t.created_at),
                     })
                     .collect();
                 let mut misses = Vec::new();
@@ -654,6 +651,7 @@ mod tests {
             on: None,
             verification: false,
             parked: false,
+            since: None,
         });
         ws.seed_test_task(held);
         ws.seed_test_task(task("t-plain", TaskStatus::Pending));
@@ -699,6 +697,7 @@ mod tests {
             on: None,
             verification: false,
             parked: false,
+            since: None,
         });
         waiting.updated_at = epoch(0);
         ws.seed_test_task(waiting);
@@ -720,6 +719,7 @@ mod tests {
             on: None,
             verification: false,
             parked,
+            since: None,
         };
         let mut parked = task("t-parked", TaskStatus::Waiting);
         parked.waiting_on = Some(wait(true));
@@ -828,6 +828,7 @@ mod tests {
                 on: None,
                 verification: true,
                 parked: false,
+                since: None,
             });
             row
         };
@@ -853,7 +854,7 @@ mod tests {
         let ws = fixture(dir.path());
         let mut decision = task("t-decision", TaskStatus::Waiting);
         decision.subject = "ship the parser".to_owned();
-        decision.updated_at = epoch(1_700_000_000);
+        decision.updated_at = epoch(1_700_000_500);
         decision.owner = Some(SessionSlot::worker("TestOrg", PROJECT, "w-1"));
         decision.waiting_on = Some(Waiting {
             kind: Some(WaitingKind::Decision),
@@ -861,6 +862,7 @@ mod tests {
             on: None,
             verification: false,
             parked: false,
+            since: Some(epoch(1_700_000_000)),
         });
         ws.seed_test_task(decision);
         let mut resource = task("t-resource", TaskStatus::Waiting);
@@ -870,6 +872,7 @@ mod tests {
             on: None,
             verification: false,
             parked: false,
+            since: None,
         });
         ws.seed_test_task(resource);
 
@@ -882,11 +885,7 @@ mod tests {
         assert_eq!(item.owner, "w-1", "the seat that raised it");
         assert_eq!(item.subject, "ship the parser", "the row's subject");
         assert_eq!(item.words, "sign this off", "the ask's own words");
-        assert_eq!(
-            item.at,
-            epoch(1_700_000_000),
-            "when it began; a row with no history falls back to its own update"
-        );
+        assert_eq!(item.at, epoch(1_700_000_000), "the moment the wait began");
     }
 
     /// **The wait is dated from its own start, not the row's last edit.** A
@@ -905,21 +904,9 @@ mod tests {
             on: None,
             verification: false,
             parked: false,
+            since: Some(epoch(1_700_000_000)),
         });
         ws.seed_test_task(decision);
-        {
-            let db = ws.db.lock();
-            crate::store::task_history::append(
-                db.as_ref().expect("db"),
-                &[transition(
-                    "t-decision",
-                    TaskStatus::InProgress,
-                    TaskStatus::Waiting,
-                    1_700_000_000,
-                )],
-            )
-            .expect("history");
-        }
 
         let row =
             ws.fleet_rows().into_iter().find(|r| r.project == PROJECT).expect("the project's row");
@@ -928,6 +915,31 @@ mod tests {
             epoch(1_700_000_000),
             "the wait's own start, not the edit that moved the row",
         );
+    }
+
+    /// **A wait stored before the field existed reads as its creation.** The
+    /// fallback is `created_at`, never `updated_at`: a row edited after it
+    /// began must not re-notify.
+    #[test]
+    fn a_wait_with_no_stamp_falls_back_to_its_creation() {
+        let dir = tempdir().expect("tempdir");
+        let ws = fixture(dir.path());
+        let mut decision = task("t-decision", TaskStatus::Waiting);
+        decision.created_at = epoch(1_700_000_000);
+        decision.updated_at = epoch(1_700_000_500);
+        decision.waiting_on = Some(Waiting {
+            kind: Some(WaitingKind::Decision),
+            detail: Some("sign this off".to_owned()),
+            on: None,
+            verification: false,
+            parked: false,
+            since: None,
+        });
+        ws.seed_test_task(decision);
+
+        let row =
+            ws.fleet_rows().into_iter().find(|r| r.project == PROJECT).expect("the project's row");
+        assert_eq!(row.attention[0].at, epoch(1_700_000_000), "the row's creation, not its edit");
     }
 
     /// **A wait with no words still says something.** A verification park and
@@ -947,6 +959,7 @@ mod tests {
             on: None,
             verification: false,
             parked: false,
+            since: None,
         });
         ws.seed_test_task(blank);
 
@@ -958,6 +971,7 @@ mod tests {
             on: None,
             verification: true,
             parked: false,
+            since: None,
         });
         ws.seed_test_task(look);
 
@@ -968,6 +982,7 @@ mod tests {
             on: None,
             verification: false,
             parked: false,
+            since: None,
         });
         ws.seed_test_task(bare);
 

@@ -66,6 +66,8 @@ export interface WaitingWire {
   verification: boolean;
   /** The lead parked the wait by design: the chase leaves it alone. */
   parked?: boolean;
+  /** When the wait began; absent on a row stored before the field existed. */
+  since?: WireTime | null;
 }
 
 /** What a link points at. Generic to any VCS. */

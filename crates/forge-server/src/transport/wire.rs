@@ -4071,6 +4071,9 @@ mod tests {
                     on: None,
                     verification: false,
                     parked: false,
+                    since: Some(
+                        std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(5),
+                    ),
                 }),
                 estimate: None,
                 rank: None,
@@ -4081,7 +4084,8 @@ mod tests {
                 attempt: 0,
                 archived_at: None,
                 created_at: std::time::SystemTime::UNIX_EPOCH,
-                updated_at: std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(5),
+                // An edit after the wait began must not move the item's date.
+                updated_at: std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(9),
             });
         })
         .await;

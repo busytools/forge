@@ -85,6 +85,10 @@ pub struct Waiting {
     /// deferral - so the chase leaves it alone rather than nudging it.
     #[serde(default)]
     pub parked: bool,
+    /// When the wait began, stamped as it is raised. `None` on a row stored
+    /// before the field existed, which reads back as its creation.
+    #[serde(default)]
+    pub since: Option<SystemTime>,
 }
 
 /// A duration estimate: the words a reader sees ("2h", "1d") and the
@@ -318,6 +322,7 @@ mod tests {
             on: Some(TaskId::from("t-9")),
             verification: false,
             parked: false,
+            since: None,
         };
         let json = serde_json::to_vec(&waiting).expect("serialize");
         let back: Waiting = serde_json::from_slice(&json).expect("deserialize");
@@ -329,7 +334,7 @@ mod tests {
     #[test]
     fn waiting_without_a_kind_is_representable() {
         let waiting =
-            Waiting { kind: None, detail: None, on: None, verification: false, parked: false };
+            Waiting { kind: None, detail: None, on: None, verification: false, parked: false, since: None };
         let json = serde_json::to_vec(&waiting).expect("serialize");
         let back: Waiting = serde_json::from_slice(&json).expect("deserialize");
         assert_eq!(back.kind, None);

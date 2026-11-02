@@ -116,6 +116,7 @@ impl TaskRecord {
                     on: None,
                     verification: false,
                     parked: false,
+                    since: None,
                 })
             } else {
                 self.waiting_on
@@ -374,6 +375,7 @@ mod tests {
                 on: None,
                 verification: false,
                 parked: false,
+                since: None,
             }),
             "no kind, no words - the miss the board shows",
         );

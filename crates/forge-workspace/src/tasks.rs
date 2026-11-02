@@ -543,8 +543,19 @@ impl Workspace {
                     on: None,
                     verification: true,
                     parked: false,
+                    since: None,
                 });
                 next.status = TaskStatus::Waiting;
+            }
+            // **A wait that begins now is stamped now**, wherever the move
+            // created it: the attention item's age and a notification's
+            // identity both read the wait's own start, never the row's last
+            // edit.
+            if prior != TaskStatus::Waiting
+                && next.status == TaskStatus::Waiting
+                && let Some(wait) = next.waiting_on.as_mut()
+            {
+                wait.since.get_or_insert(at);
             }
 
             let closing = next.parent.is_none() && next.status == TaskStatus::Completed;
@@ -724,6 +735,7 @@ impl Workspace {
                 on: None,
                 verification: true,
                 parked: false,
+                since: None,
             });
             task.status = TaskStatus::Waiting;
             append_words(task, "Reopened by the user: the look is owed again.");
@@ -975,8 +987,14 @@ impl Workspace {
                 None => None,
             };
             let prior = tasks[index].status;
-            tasks[index].waiting_on =
-                Some(Waiting { kind: Some(kind), detail, on, verification: false, parked: false });
+            tasks[index].waiting_on = Some(Waiting {
+                kind: Some(kind),
+                detail,
+                on,
+                verification: false,
+                parked: false,
+                since: Some(at),
+            });
             tasks[index].status = TaskStatus::Waiting;
             tasks[index].updated_at = at;
             self.persist_task(&tasks[index]);
@@ -1757,6 +1775,7 @@ mod tests {
                 on: None,
                 verification: false,
                 parked: false,
+                since: None,
             }),
             ..sample_task("t-1", "proj")
         });
@@ -1842,6 +1861,7 @@ mod tests {
             on: None,
             verification: false,
             parked: false,
+            since: None,
         });
         ws.push_task(waiting);
 
@@ -2528,17 +2548,19 @@ mod tests {
         let stored = ws.tasks_for_project("proj");
         let row = stored.iter().find(|task| task.id == TaskId::from("t-1")).expect("the row");
         assert_eq!(row.status, TaskStatus::Waiting, "the row keeps the status it held");
+        let held = row.waiting_on.as_ref().expect("the wait it held");
         assert_eq!(
-            row.waiting_on,
-            Some(Waiting {
-                kind: Some(WaitingKind::Dependency),
-                detail: Some("the board read has to land first".to_owned()),
-                on: Some(TaskId::from("blocker")),
-                verification: false,
-                parked: false,
-            }),
+            (held.kind, held.detail.as_deref(), held.on.as_ref(), held.verification, held.parked),
+            (
+                Some(WaitingKind::Dependency),
+                Some("the board read has to land first"),
+                Some(&TaskId::from("blocker")),
+                false,
+                false
+            ),
             "and the wait it held, not a look park the caller never asked for",
         );
+        assert!(held.since.is_some(), "the stored wait keeps its own start");
     }
 
     /// The recovery the refusal advertises (#2414): moving the row off
@@ -2607,6 +2629,7 @@ mod tests {
                 on: None,
                 verification: false,
                 parked: false,
+                since: None,
             }),
             ..sample_task("t-1", "proj")
         });
@@ -2632,6 +2655,7 @@ mod tests {
             on,
             verification: false,
             parked: false,
+            since: None,
         };
         assert_eq!(wait_words(None), "a wait", "no stored wait");
         assert_eq!(wait_words(Some(&wait(None, None))), "a wait", "a legacy unstated wait");
@@ -2893,6 +2917,7 @@ mod tests {
                 on: None,
                 verification: true,
                 parked: false,
+                since: None,
             }),
             ..sample_task_with_parent("t-1", Some("epic"), "proj")
         });
@@ -3149,6 +3174,7 @@ mod tests {
                 on: Some(TaskId::from("blocker")),
                 verification: false,
                 parked: false,
+                since: None,
             }),
             ..sample_task_with_parent("t-1", Some("epic"), "proj")
         });
@@ -3313,17 +3339,13 @@ mod tests {
             .expect("no refusal")
             .expect("the row is there");
         assert_eq!(moved.status, TaskStatus::Waiting, "the gate lands it in waiting");
+        let wait = moved.waiting_on.expect("the wait is the verify gate");
         assert_eq!(
-            moved.waiting_on,
-            Some(Waiting {
-                kind: Some(WaitingKind::Decision),
-                detail: None,
-                on: None,
-                verification: true,
-                parked: false,
-            }),
+            (wait.kind, wait.detail, wait.on, wait.verification, wait.parked),
+            (Some(WaitingKind::Decision), None, None, true, false),
             "the wait is the verify gate, which the board draws as approve / send back",
         );
+        assert!(wait.since.is_some(), "the wait is stamped as it begins");
     }
 
     #[test]
