@@ -38,7 +38,7 @@ export type Family =
  * ends a seat rather than acting on a worker, so its family is `handoff`.
  */
 export type ForgeFamily =
-  'agents' | 'cron' | 'documents' | 'gotify' | 'handoff' | 'review' | 'slack' | 'tasks';
+  'agents' | 'cron' | 'documents' | 'gotify' | 'handoff' | 'review' | 'slack' | 'tasks' | 'voice';
 
 /**
  * The families a `forge` call's name segment yields; `systemone` keeps its own
@@ -52,6 +52,7 @@ const FORGE_FAMILIES = new Set<string>([
   'review',
   'slack',
   'tasks',
+  'voice',
 ]);
 
 /**
@@ -211,6 +212,7 @@ const FORGE_GLYPH: Record<ForgeFamily, string> = {
   review: 'review',
   slack: 'slack',
   tasks: 'tasks',
+  voice: 'sound',
 };
 
 /**

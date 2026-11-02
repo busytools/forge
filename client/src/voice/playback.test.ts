@@ -12,11 +12,17 @@ import { Playback, type Speaker } from './playback.svelte';
 class FakeSpeaker implements Speaker {
   played: { pcm: number[]; rate: number }[] = [];
   private readonly endings: (() => void)[] = [];
+  stopped = 0;
   closed = false;
 
   async play(pcm: Int16Array, rate: number): Promise<void> {
     this.played.push({ pcm: Array.from(pcm), rate });
     await new Promise<void>((resolve) => this.endings.push(resolve));
+  }
+
+  stop(): void {
+    this.stopped += 1;
+    this.finish();
   }
 
   close(): void {
@@ -78,7 +84,7 @@ describe('the playback queue', () => {
     expect(playback.playing).toBe(false);
   });
 
-  it('waits for a sounding clip when a drop is followed by a push', async () => {
+  it('stops the sounding clip when a drop is followed by a push', async () => {
     const speaker = new FakeSpeaker();
     const playback = new Playback(speaker);
     playback.push(Int16Array.from([1]), 24_000);
@@ -86,18 +92,12 @@ describe('the playback queue', () => {
     expect(speaker.played.map((clip) => clip.pcm)).toEqual([[1]]);
 
     // The socket drops while the first clip is still sounding, then the
-    // reconnected socket delivers a new one. The new clip must wait for the
-    // speaker rather than start on top of the clip already playing.
+    // reconnected socket delivers a new one. The old clip is stopped, so the
+    // new one never sounds on top of it.
     playback.drop();
     playback.push(Int16Array.from([2]), 24_000);
     await settle();
-    expect(
-      speaker.played.map((clip) => clip.pcm),
-      'the new clip waits for the sounding one',
-    ).toEqual([[1]]);
-
-    speaker.finish();
-    await settle();
+    expect(speaker.stopped, 'the sounding clip is stopped').toBe(1);
     expect(speaker.played.map((clip) => clip.pcm)).toEqual([[1], [2]]);
 
     speaker.finish();

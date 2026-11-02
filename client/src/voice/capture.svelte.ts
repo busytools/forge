@@ -2,15 +2,9 @@
  * The microphone side of a hold-to-talk clip: the frames a source produces,
  * gathered as the one complete clip the wire carries.
  *
- * The frames are the dictation encoder's own - `openCapture` hands back the
- * same 20 ms, one header byte then little-endian i16, that a take streams -
- * so this decodes them rather than encoding anything a second time. What it
- * does NOT do is hold a ring or a level: a hold is one clip released whole,
- * not a stream, so a frame that fails to arrive is a gap rather than
- * something to catch up on.
+ * The frames are the dictation encoder's own, so this decodes them rather
+ * than encoding a second time.
  */
-
-import { isTauri } from '@tauri-apps/api/core';
 
 import { SAMPLE_RATE } from '../composer/capture.svelte';
 import { openCapture } from '../composer/dictate.svelte';
@@ -43,6 +37,8 @@ export class HeldClip {
   private held: number[] = [];
   /** Frames the source handed over, which the control's ticker reads. */
   frames = $state(0);
+  /** The last frame's peak, 0..1, which the control's meter draws. */
+  level = $state(0);
   /** Whether the hold ran past [`MAX_HOLD_SECONDS`] and was cut there. */
   capped = $state(false);
 
@@ -53,13 +49,17 @@ export class HeldClip {
   push(bytes: Uint8Array): void {
     if (this.capped) return;
     this.frames += 1;
+    let peak = 0;
     for (const sample of frameSamples(bytes)) {
+      peak = Math.max(peak, Math.abs(sample));
       if (this.held.length >= MAX_HOLD_SECONDS * SAMPLE_RATE) {
         this.capped = true;
+        this.level = peak / 32768;
         return;
       }
       this.held.push(sample);
     }
+    this.level = peak / 32768;
   }
 
   /** The whole clip, mono i16 at [`SAMPLE_RATE`]. */
@@ -108,9 +108,4 @@ export class VoiceCapture {
     this.source.onFrame = null;
     this.source.stop();
   }
-}
-
-/** Whether this platform captures through the shell rather than the page. */
-export function shellCapture(): boolean {
-  return isTauri();
 }

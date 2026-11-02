@@ -68,7 +68,9 @@
    * seat's: the engine is process-wide, and the page's own wire carries it.
    */
   const dictate = $derived(home.wire === null ? false : dictationOffered(home.wire.dictate));
-  const voice = $derived(home.wire !== null && home.wire.voice.enabled);
+  // Speech in needs dictation: a hold sends an utterance the core transcribes
+  // with the same engine, so a switch without it would only draw a refusal.
+  const voice = $derived(home.wire !== null && home.wire.voice.enabled && dictate);
 
   /**
    * The board's own read (#2517): the session rail and the board page draw

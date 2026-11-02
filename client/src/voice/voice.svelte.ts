@@ -1,11 +1,9 @@
 /**
- * One seat's voice, as this client holds it: whether this client has it on,
- * the hold that becomes an utterance, and the speech coming back.
+ * One seat's voice, as this client holds it: the switch, the hold that
+ * becomes an utterance, and the speech coming back.
  *
- * **The mode belongs to the client, not the seat's record.** Two clients can
- * watch one seat and only one of them be listening, so nothing here is
- * derived from the conversation: the switch is this connection's own, and
- * the count of listeners is the seat's answer to it.
+ * The mode belongs to the client, not the seat's record: two clients can
+ * watch one seat and only one of them be listening.
  */
 
 import type { Connection } from '../socket';
@@ -52,6 +50,11 @@ export class Voice {
    * on arrival rather than left capturing into a clip nobody will release.
    */
   #openToken = 0;
+  /**
+   * Whether this client wants voice on, which survives a dropped socket:
+   * the mode resubscribes when the connection comes back.
+   */
+  #wanted = false;
 
   constructor(
     private readonly port: VoicePort,
@@ -69,17 +72,41 @@ export class Voice {
 
   turnOn(): void {
     if (this.on) return;
+    this.#wanted = true;
     this.on = true;
     this.line = null;
-    this.port.send('voice_mode', { on: true });
+    if (!this.send('voice_mode', { on: true })) this.on = false;
   }
 
   turnOff(): void {
     this.cancelTalk();
     this.playback.drop();
+    this.#wanted = false;
     if (!this.on) return;
     this.on = false;
-    this.port.send('voice_mode', { on: false });
+    this.send('voice_mode', { on: false });
+  }
+
+  /** The socket came back: resubscribe if this client still wants voice. */
+  resume(): void {
+    if (this.#wanted && !this.on) this.turnOn();
+  }
+
+  /** Send one command, turning the switch off when the socket is down. */
+  private send(command: 'voice_mode', body: { on: boolean }): boolean;
+  private send(command: 'voice_utterance', body: { pcm: number[] }): boolean;
+  private send(
+    command: 'voice_mode' | 'voice_utterance',
+    body: { on: boolean } | { pcm: number[] },
+  ): boolean {
+    try {
+      if (command === 'voice_mode') this.port.send('voice_mode', body as { on: boolean });
+      else this.port.send('voice_utterance', body as { pcm: number[] });
+      return true;
+    } catch {
+      this.line = 'the voice switch was not sent - the socket is down';
+      return false;
+    }
   }
 
   /** Begin a hold. A press on a switched-off control turns it on instead. */
@@ -129,7 +156,7 @@ export class Voice {
     const clip = await capture.release();
     if (clip.capped) this.line = `that hold ran past ${MAX_HOLD_SECONDS}s and was cut there`;
     const pcm = clip.take();
-    if (pcm.length > 0) this.port.send('voice_utterance', { pcm: Array.from(pcm) });
+    if (pcm.length > 0) this.send('voice_utterance', { pcm: Array.from(pcm) });
   }
 
   /** Throw the hold away: nothing is sent. */
@@ -146,6 +173,10 @@ export class Voice {
   /** Take the seat's new frames: its listener count, and its clips. */
   pump(): void {
     for (const update of this.port.frames()) {
+      // A new occupant: the old one's speech is not this seat's any more.
+      if ((update as { session_replaced?: unknown }).session_replaced !== undefined) {
+        this.playback.drop();
+      }
       const state = (update as { voice_mode_state?: { listeners?: unknown } }).voice_mode_state;
       if (state !== undefined) {
         this.listeners = typeof state.listeners === 'number' ? state.listeners : 0;
@@ -182,7 +213,8 @@ export class Voice {
    * so the count the agent was told about has to fall.
    */
   detach(): void {
-    if (this.on) this.port.send('voice_mode', { on: false });
+    this.#wanted = false;
+    if (this.on) this.send('voice_mode', { on: false });
     this.reset();
   }
 
@@ -194,7 +226,7 @@ export class Voice {
    */
   reset(): void {
     this.cancelTalk();
-    this.playback.discard();
+    this.playback.close();
     this.on = false;
     this.listeners = 0;
     this.line = null;

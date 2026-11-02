@@ -86,6 +86,7 @@ describe('the row a call is summarised under', () => {
       ['mcp__forge__agents__spawn', 'agents', 'subagents'],
       ['mcp__forge__agents__handoff', 'handoff', 'handoff'],
       ['mcp__forge__documents__hand_off', 'documents', 'file'],
+      ['mcp__forge__voice__say', 'voice', 'sound'],
     ] as const) {
       expect(rowOf(name), `${name} is a forge family call`).toEqual({ kind: 'forge', family });
       expect(iconOf(rowOf(name)), `${name} draws its family glyph`).toBe(glyph);

@@ -1,21 +1,17 @@
 /**
- * The seat's speech, played in the order the engine rendered it.
+ * The seat's speech, played in the order the engine rendered it: one clip
+ * at a time, each following the one before.
  *
- * The engine renders one sentence at a time and each arrives as its own
- * clip, so a queue is what keeps a sentence from stepping on the one before
- * it: playback starts on the first clip and each later one follows the
- * moment it ends. Nothing mixes and nothing skips.
- *
- * **A reconnected socket drops the queue.** Frames missed while the socket
- * was down are frames nobody will resend, so a queue carried across a
- * reconnect would play a conversation with holes in it, behind everything
- * the reader is hearing now.
+ * A reconnected socket drops the queue, because frames missed while it was
+ * down are frames nobody will resend.
  */
 
 /** Where decoded clips go. An interface so a test needs no audio stack. */
 export interface Speaker {
   /** Play one clip, resolving when it has finished sounding. */
   play(pcm: Int16Array, sampleRate: number): Promise<void>;
+  /** Stop the clip sounding now, if one is. */
+  stop(): void;
   /** Release the device the speaker was using. */
   close(): void;
 }
@@ -27,6 +23,7 @@ export interface Speaker {
  */
 export function webSpeaker(): Speaker {
   let context: AudioContext | null = null;
+  let sounding: AudioBufferSourceNode | null = null;
   return {
     async play(pcm: Int16Array, sampleRate: number): Promise<void> {
       const audio = context ?? new AudioContext({ sampleRate });
@@ -37,10 +34,18 @@ export function webSpeaker(): Speaker {
       const source = audio.createBufferSource();
       source.buffer = buffer;
       source.connect(audio.destination);
+      sounding = source;
       await new Promise<void>((resolve) => {
-        source.onended = () => resolve();
+        source.onended = () => {
+          if (sounding === source) sounding = null;
+          resolve();
+        };
         source.start();
       });
+    },
+    stop(): void {
+      sounding?.stop();
+      sounding = null;
     },
     close(): void {
       void context?.close();
@@ -64,26 +69,28 @@ export class Playback {
   }
 
   /**
-   * Discard everything queued. A clip already sounding cannot be stopped
-   * through the speaker seam, so it is left to end on its own; `playing`
-   * stays true while it does, or a push during it would start a second clip
-   * on top of the first.
+   * Discard everything queued and stop the clip sounding now. `playing`
+   * stays true until the stopped clip's own promise resolves, so a push
+   * during it waits rather than starting a second clip on top of the first.
    */
   drop(): void {
     this.queue = [];
+    this.speaker.stop();
   }
 
   /**
-   * Throw everything away and stop counting the clip that is sounding.
-   *
-   * `drop` leaves a sounding clip counted so a push during it waits rather
-   * than starting a second one. A reset means the seat or the socket is
-   * gone, so nothing more will be pushed for it: the clip is left to end on
-   * its own, and the state no longer claims the seat is speaking.
+   * Throw everything away, including the clip sounding now. A reset means
+   * the seat or the socket is gone, so nothing more will be pushed for it.
    */
   discard(): void {
+    this.drop();
+  }
+
+  /** Release the audio device. */
+  close(): void {
     this.queue = [];
-    this.playing = false;
+    this.speaker.stop();
+    this.speaker.close();
   }
 
   /**
@@ -98,11 +105,16 @@ export class Playback {
   private async pump(): Promise<void> {
     if (this.playing) return;
     this.playing = true;
-    while (this.queue.length > 0) {
-      const next = this.queue.shift();
-      if (next === undefined) break;
-      await this.speaker.play(next.pcm, next.sampleRate);
+    try {
+      while (this.queue.length > 0) {
+        const next = this.queue.shift();
+        if (next === undefined) break;
+        await this.speaker.play(next.pcm, next.sampleRate);
+      }
+    } catch {
+      // A clip the device refused is dropped; the next push starts a pump.
+    } finally {
+      this.playing = false;
     }
-    this.playing = false;
   }
 }

@@ -518,6 +518,7 @@ const FAMILY_NOUN: Record<ForgeFamily, string> = {
   review: 'reviews',
   agents: 'workers',
   handoff: 'handoff',
+  voice: 'speech',
 };
 
 /** The last segment of a path, which is the name a row calls a file by. */

@@ -3,20 +3,17 @@
    * The voice control beside the mic: the switch for this client on this
    * seat, and the hold that becomes an utterance.
    *
-   * A press on a switched-off control turns voice on. While it is on a press
-   * starts the hold and the release sends what was said - a tap that said
-   * nothing is the way back off, so the same control is the door both ways.
-   * Every state carries a shape rather than a colour alone: a struck-through
-   * mic when voice is off, a plain one listening, the same with a mark while
-   * it records, and a speaker while a reply plays.
+   * A press on a switched-off control turns voice on; while it is on, a
+   * press starts the hold and the release sends what was said, and a tap
+   * that said nothing is the way back off.
    *
-   * **Mounted per seat.** The page keys this control by the seat it draws, so
-   * a seat change tears the old instance down - its own voice_mode off goes
-   * with it - rather than leaving a switch on for a seat nobody shows.
+   * Mounted per seat: the page keys it by the seat, so a seat change tears
+   * the old instance down and its own voice_mode off goes with it.
    */
   import Icon from '../components/Icon.svelte';
   import type { Connection } from '../socket';
   import type { SessionSlot } from '../wire/types';
+  import { MAX_HOLD_SECONDS } from './capture.svelte';
   import { Voice, connectionPort, type OpenCapture } from './voice.svelte';
 
   let {
@@ -45,6 +42,7 @@
   const voice = new Voice(connectionPort(connection, slot), open);
   let pressedAt = 0;
   let holding = false;
+  let capTimer: ReturnType<typeof setTimeout> | null = null;
   let button = $state<HTMLElement | null>(null);
 
   // The seat's store is where every frame the server sends lands, so each
@@ -55,9 +53,11 @@
     const store = connection.store({ session: slot });
     const stop = store?.value.subscribe(() => voice.pump());
     const offStatus = connection.onStatus((status) => {
-      if (status !== 'open') voice.reset();
+      if (status === 'open') voice.resume();
+      else voice.reset();
     });
     return () => {
+      if (capTimer !== null) clearTimeout(capTimer);
       stop?.();
       offStatus();
       voice.detach();
@@ -76,10 +76,18 @@
       return;
     }
     holding = true;
+    // A hold past the bound ends itself rather than running until release.
+    capTimer = setTimeout(() => {
+      if (holding) release();
+    }, MAX_HOLD_SECONDS * 1000);
     void voice.startTalk();
   }
 
   function release(): void {
+    if (capTimer !== null) {
+      clearTimeout(capTimer);
+      capTimer = null;
+    }
     if (!holding) return;
     holding = false;
     const frames = voice.clip?.frames ?? 0;
@@ -134,6 +142,10 @@
   <Icon name={voice.state === 'speaking' ? 'sound' : voice.on ? 'mic' : 'mic-off'} />
   {#if voice.state === 'talking'}
     <span class="dot" aria-hidden="true"></span>
+    <span class="meter" aria-hidden="true"
+      ><span class="fill" style:width={`${Math.round((voice.clip?.level ?? 0) * 100)}%`}
+      ></span></span
+    >
   {/if}
 </button>
 {#if voice.line !== null}

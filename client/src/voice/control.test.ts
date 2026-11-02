@@ -5,6 +5,8 @@
  * than leaving a listener behind.
  */
 
+import { readFileSync } from 'node:fs';
+
 import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -33,7 +35,7 @@ function drawn(open?: OpenCapture): Drawn {
   shared.connection.subscribe({ session: SLOT });
   app = mount(VoiceControl, {
     target: document.body,
-    props: { connection: shared.connection, slot: SLOT, open },
+    props: { connection: shared.connection, slot: SLOT, ...(open === undefined ? {} : { open }) },
   });
   flushSync();
   return {
@@ -66,14 +68,30 @@ class FakeCapture {
   clip = new HeldClip();
   cancelled = false;
 
-  async release(): Promise<HeldClip> {
-    return this.clip;
+  release(): Promise<HeldClip> {
+    return Promise.resolve(this.clip);
   }
 
   cancel(): void {
     this.cancelled = true;
   }
 }
+
+// jsdom gives `import.meta.url` an http scheme, so the sheet is read from
+// the client root the test runner starts in.
+const SHEET = readFileSync('src/assets/web.css', 'utf8');
+
+describe('the voice switch on the sheet', () => {
+  it('takes a finger target and draws its hold meter', () => {
+    // jsdom performs no layout, so the 44px floor and the meter are pinned
+    // where they are declared rather than measured.
+    const coarse = [...SHEET.matchAll(/@media \(pointer: coarse\) \{\n([\s\S]*?)\n\}/g)]
+      .map((match) => match[1])
+      .join('\n');
+    expect(coarse, 'the voice switch left the coarse-pointer floor').toContain('.voice');
+    expect(SHEET, 'the hold meter lost its rule').toContain('.voice .meter');
+  });
+});
 
 describe('the voice switch', () => {
   it('turns voice on with a press and says it is listening', () => {
@@ -116,10 +134,9 @@ describe('the voice switch', () => {
     button.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }));
     await Promise.resolve();
     flushSync();
-    expect(
-      button.getAttribute('data-state'),
-      'the opening hold still reads listening',
-    ).toBe('listening');
+    expect(button.getAttribute('data-state'), 'the opening hold still reads listening').toBe(
+      'listening',
+    );
 
     const capture = new FakeCapture();
     pending.resolve?.(capture as unknown as VoiceCapture);

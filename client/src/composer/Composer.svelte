@@ -17,6 +17,7 @@
   import TakeCard from './TakeCard.svelte';
   import DictateControl from './DictateControl.svelte';
   import VoiceControl from '../voice/control.svelte';
+  import { VoiceCapture } from '../voice/capture.svelte';
   import DictationPanel from './DictationPanel.svelte';
   import Dock from './Dock.svelte';
   import Field from './Field.svelte';
@@ -1570,7 +1571,11 @@
            listener behind. -->
       {#if voice}
         {#key boxKey(slot)}
-          <VoiceControl {connection} {slot} />
+          <VoiceControl
+            {connection}
+            {slot}
+            open={() => VoiceCapture.open(deviceFor(boxKey(slot)))}
+          />
         {/key}
       {/if}
       {#if running}
