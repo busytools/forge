@@ -837,11 +837,8 @@ port = {port}
     /// **The boot wave is the only production site that asks for the
     /// restart note.** On a bare launch it is sent only for the projects
     /// pinned to resume, so an unpinned project is not in the wave at
-    /// all; a project named on the command line starts whether or not it
-    /// is pinned, and takes the same note request, so a named unpinned
-    /// project with a stored id gets the note too. The intercept replaces
-    /// the spawn, so what is read here is the command the wave would
-    /// send.
+    /// all. The intercept replaces the spawn, so what is read here is the
+    /// command the wave would send.
     #[tokio::test]
     async fn the_boot_wave_pins_each_resume_lead_project_with_the_restart_note() {
         let (workspace, _dir) = fixture(false, true);
