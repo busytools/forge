@@ -226,6 +226,20 @@ describe('which decision waits are news', () => {
     ]);
   });
 
+  /// **Two raises in one push are one notification**, naming the first ask
+  /// and the count - not one ping per row.
+  it('collapses two raises in one push into one notice', () => {
+    const state = askState();
+    waitsRising(state, 'boot-1', []);
+    expect(
+      waitsRising(state, 'boot-1', [
+        { slot: LEAD, task: 't1', words: 'sign this off', at: at(5) },
+        { slot: LEAD, task: 't2', words: 'look at this', at: at(9) },
+      ]),
+      'one notice, and the first ask is the one it names',
+    ).toEqual([{ slot: LEAD, task: 't1', words: 'sign this off', more: 1 }]);
+  });
+
   /// **A wait has no focus exemption**, so the rule takes no shown seat at
   /// all: the app being frontmost does not mean its project is being looked
   /// at.
