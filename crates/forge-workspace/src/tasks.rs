@@ -547,15 +547,16 @@ impl Workspace {
                 });
                 next.status = TaskStatus::Waiting;
             }
-            // **A wait that begins now is stamped now**, wherever the move
-            // created it: the attention item's age and a notification's
+            // **A wait created or REPLACED now is stamped now**, wherever the
+            // move made it: the attention item's age and a notification's
             // identity both read the wait's own start, never the row's last
-            // edit.
-            if prior != TaskStatus::Waiting
-                && next.status == TaskStatus::Waiting
+            // edit. A look re-parked on a row that was already waiting is a
+            // new wait, so the comparison is against the wait, not the status.
+            if next.waiting_on.as_ref().is_some_and(|wait| wait.since.is_none())
+                && next.waiting_on != tasks[index].waiting_on
                 && let Some(wait) = next.waiting_on.as_mut()
             {
-                wait.since.get_or_insert(at);
+                wait.since = Some(at);
             }
 
             let closing = next.parent.is_none() && next.status == TaskStatus::Completed;
@@ -2639,9 +2640,12 @@ mod tests {
             .expect("no refusal")
             .expect("the row is there");
         assert_eq!(landed.status, TaskStatus::Waiting, "the drag lands as a look park");
+        let wait = landed.waiting_on.as_ref().expect("the re-parked look");
+        assert!(wait.verification, "with the look the user's own completion is owed: {landed:?}");
         assert!(
-            landed.waiting_on.as_ref().is_some_and(|wait| wait.verification),
-            "with the look the user's own completion is owed: {landed:?}",
+            wait.since.is_some(),
+            "a re-parked look on a row already waiting is stamped, so its age and a \
+             notification's identity are the new wait's: {landed:?}",
         );
     }
 
