@@ -1,12 +1,9 @@
-//! The speaking bench: synthesize a corpus's transcripts, hear them back
-//! through the settled recognizer, and score the round trip.
+//! The speaking bench: synthesize a corpus's transcripts, transcribe them
+//! back through a caller-supplied recognizer, and score the round trip with
+//! its first-audio time and realtime factor.
 //!
-//! The recognizer is passed in rather than reached for: this crate is a leaf
-//! and owns no model of the other direction, so the caller supplies whatever
-//! pair actually transcribes on this machine. What the bench measures is the
-//! loop a person hears - words in, speech out, the same words recognized
-//! again - plus how soon the first audio starts and how far the loop runs
-//! ahead of real time.
+//! The recognizer is a parameter because this crate is a leaf and owns no
+//! model of the other direction.
 
 use std::time::{Duration, Instant};
 

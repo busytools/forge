@@ -1,14 +1,8 @@
 <script lang="ts">
   /**
    * The agent's voice for this seat: one switch for this client, on or off.
-   *
-   * Off by default. The first client to turn it on tells the seat's agent the
-   * user is listening; the last to turn it off explicitly tells it the user
-   * has stopped. The dictation mic is how the user speaks to the agent, so
-   * this control carries no microphone of its own.
-   *
-   * Mounted per seat: the page keys it by the seat, so a seat change tears the
-   * old instance down and its own voice_mode off goes with it.
+   * Off by default; the dictation mic is how the user speaks, so this control
+   * carries no microphone of its own.
    */
   import Icon from '../components/Icon.svelte';
   import type { Connection } from '../socket';

@@ -389,12 +389,8 @@ export function activeSource(from: ActiveFrom): string {
 }
 
 /**
- * Where an in-use row's model came from, in the row's own words.
- *
- * **The speaking model is placed by hand.** It is a two-file family from a
- * different publisher than the speech feed the catalogue installs from, so
- * the row says where its files belong rather than leaving a waiting chip with
- * no door under it.
+ * Where an in-use row's model came from, in the row's own words. The speaking
+ * model is placed by hand, so its row names the `[tts]` models_dir instead.
  */
 export function sourceLine(model: InUseModel): string {
   if (model.role === 'speaking') {

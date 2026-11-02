@@ -152,10 +152,9 @@ export class Voice {
   }
 
   /**
-   * Forget everything this client held: the switch, the listeners and the
-   * queue. A reconnect and a seat change both mean the same thing here -
-   * the audio was for a seat nobody is showing any more, and the core has
-   * already dropped this connection from the listener set.
+   * The connection is gone: drop the switch's on state, the listeners and the
+   * queue, keeping the intent so a reconnect resumes. The core has already
+   * dropped this connection from the listener set.
    */
   reset(): void {
     this.playback.close();

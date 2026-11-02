@@ -1,13 +1,6 @@
 /**
  * The `Voice` a seat's control holds, kept for the page's life rather than the
- * control's.
- *
- * **An ask swaps the composer's body and unmounts the switch with it**, which
- * is not the reader leaving the seat: a control-owned `Voice` would send
- * `voice_mode off` on every permission, question or hand-off and post a
- * "stopped listening" row the reader never asked for. The composer pauses the
- * seat's entry when the reader moves, and that is the only place the switch is
- * turned off for a seat.
+ * control's: an ask unmounts the switch without the reader leaving the seat.
  */
 
 import { Voice, type VoicePort } from './voice.svelte';
