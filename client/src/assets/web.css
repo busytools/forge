@@ -3860,7 +3860,8 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
    drawing, and the sheet's sweeps read a rule by its class name wherever it
    sits. */
 .models-page .facts { min-width: 0; flex: 1; }
-.models-page .nm { font-family: var(--mono); font-size: var(--fs-data); color: var(--text);
+.models-page .nm, .settings-speaking .nm { font-family: var(--mono);
+  font-size: var(--fs-data); color: var(--text);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .models-page .meta { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
   margin-top: 3px; }
@@ -3888,29 +3889,52 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
 .models-page button.chip:disabled:hover { border-color: var(--line); color: var(--muted); }
 
 /* the check line and an update line: one shape, toned by what it says */
-.models-page .status { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+.models-page .status,
+.settings-speaking .status { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
   border: 1px solid var(--line); border-radius: var(--r); background: rgba(13,17,26,.6);
   padding: 12px 15px; margin-bottom: 10px; }
-.models-page .status .t { font-family: var(--mono); font-size: var(--fs-data); color: var(--text); }
-.models-page .status .when { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
-.models-page .status .spacer { margin-left: auto; }
-.models-page .status.warn { border-color: rgba(201,161,59,.35); }
-.models-page .status.warn .t { color: var(--warn); }
-.models-page .status.failed { border-color: rgba(224,104,62,.4); }
-.models-page .status.failed .t { color: var(--bad); }
-.models-page .status .detail { flex: 1 1 100%; font-family: var(--mono); font-size: var(--fs-label);
+.models-page .status .t, .settings-speaking .status .t {
+  font-family: var(--mono); font-size: var(--fs-data); color: var(--text); }
+.models-page .status .when, .settings-speaking .status .when {
+  font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
+.models-page .status .spacer, .settings-speaking .status .spacer { margin-left: auto; }
+.models-page .status.warn, .settings-speaking .status.warn { border-color: rgba(201,161,59,.35); }
+.models-page .status.warn .t, .settings-speaking .status.warn .t { color: var(--warn); }
+.models-page .status.failed, .settings-speaking .status.failed { border-color: rgba(224,104,62,.4); }
+.models-page .status.failed .t, .settings-speaking .status.failed .t { color: var(--bad); }
+.models-page .status .detail, .settings-speaking .status .detail {
+  flex: 1 1 100%; font-family: var(--mono); font-size: var(--fs-label);
   color: var(--dim); padding-left: 19px; }
-.models-page .status .detail b { color: var(--muted); font-weight: 500; }
+.models-page .status .detail b, .settings-speaking .status .detail b {
+  color: var(--muted); font-weight: 500; }
 /* The download's bar: the figure the words beside it carry, drawn the way the
    platform draws it rather than as a div sized by a style attribute. */
-.models-page .status progress { flex: none; width: 140px; height: 7px;
+.models-page .status progress, .settings-speaking .status progress {
+  flex: none; width: 140px; height: 7px;
   accent-color: var(--accent); }
 /* A line this side's own failure - a refused microphone, a keep that never
    reached the socket - or the core's, drawn in the error tone. */
-.models-page .status .detail.bad, .models-page .empty .d.bad { color: var(--bad); }
+.models-page .status .detail.bad, .models-page .empty .d.bad,
+.settings-speaking .status .detail.bad { color: var(--bad); }
 /* The passage is prose somebody reads aloud, so its lines read left to
    right at a measure a voice can hold, not the full width of the card. */
 .models-page .status .detail.passage { max-width: 84ch; }
+
+/* The settings page's speaking section draws the models page's own row and
+   list vocabulary: one status line for the role, one list for its voices. */
+.settings-speaking { margin-top: 24px; }
+.settings-speaking > h3.t { font-size: 15px; font-weight: 500; margin: 0 0 8px;
+  color: var(--text); }
+.settings-speaking > h4.t { font-size: var(--fs-label); font-weight: 500;
+  letter-spacing: .1em; text-transform: uppercase; color: var(--muted);
+  margin: 16px 0 2px; }
+.settings-speaking .col { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
+.settings-speaking .list li { padding: 9px 12px; }
+@media (pointer: coarse) {
+  /* A finger-driven page gets the target the standard asks for, on both of
+     the section's controls. */
+  .settings-speaking button.chip { min-height: 44px; padding: 0 12px; }
+}
 
 /* The add control sits between the recordings list and the results below it,
    so it carries the space on both sides: a bare chip there touches both. */
@@ -3966,24 +3990,28 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
 .models-page .link { border: 0; background: none; padding: 0; font: inherit; cursor: pointer;
   color: var(--muted); text-decoration: underline; }
 .models-page .link:hover { color: var(--text); }
-.models-page .note { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
+.models-page .note, .settings-speaking .note {
+  font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
   margin-top: 10px; }
+.settings-speaking .note.bad { color: var(--bad); }
 
 /* a candidate row: the home's row shape, shrunk to a list item, and a LINK -
    it opens the entry's own document, so it carries the chrome a way in has:
    a hover ground and a marker drawn at rest rather than on the pointer. */
-.models-page .list { margin-top: 12px; border: 1px solid var(--line); border-radius: var(--r);
+.models-page .list, .settings-speaking .list {
+  margin-top: 12px; border: 1px solid var(--line); border-radius: var(--r);
   overflow: hidden; background: rgba(13,17,26,.4); }
 /* The hairline is the LI's, which is the home's own pattern: the row inside
    it is an anchor, and an anchor is always its li's only child - a
    `:last-child` on the row would match every one of them and the separator
    would be dead in the whole list. */
-.models-page .list li { display: flex; align-items: center; gap: 10px; padding-right: 12px;
+.models-page .list li, .settings-speaking .list li {
+  display: flex; align-items: center; gap: 10px; padding-right: 12px;
   border-bottom: 1px solid var(--line); }
-.models-page .list li:last-child { border-bottom: 0; }
+.models-page .list li:last-child, .settings-speaking .list li:last-child { border-bottom: 0; }
 /* A row's control sits beside its link, never inside it: an anchor holding a
    button is markup no browser will run. */
-.models-page .list li > .chip { flex: none; }
+.models-page .list li > .chip, .settings-speaking .list li > .chip { flex: none; }
 /* The bench list's own row: a name and its role, with the controls beside
    it - the same li shape the candidate list uses. */
 .models-page .bench-row { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0;

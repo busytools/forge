@@ -368,10 +368,10 @@ describe('the models page as it draws', () => {
     // flipping it to a selector that matches nothing) would ship a stray
     // hairline under the last row with every test green.
     expect(sheet, 'nothing draws the hairline on the li').toMatch(
-      /\.models-page \.list li \{[^}]*border-bottom/,
+      /\.models-page \.list li[^{]*\{[^}]*border-bottom/,
     );
     expect(sheet, "nothing drops the last row's hairline").toMatch(
-      /\.models-page \.list li:last-child \{[^}]*border-bottom: 0/,
+      /\.models-page \.list li:last-child[^{]*\{[^}]*border-bottom: 0/,
     );
   });
 
