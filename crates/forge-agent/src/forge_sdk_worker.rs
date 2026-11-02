@@ -3866,7 +3866,7 @@ mod tests {
             FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
                 "the decision model, peer opinions and the team's own review already spent"
             ),
-            "shape (b)'s internal channels are pinned",
+            "shape (c)'s internal channels are pinned",
         );
         assert!(
             FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
