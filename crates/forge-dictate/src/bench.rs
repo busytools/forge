@@ -103,13 +103,17 @@ pub fn install_public_corpus(models_dir: &Path) -> Result<(), Error> {
     assets::install(&models_dir.join("public-corpus"))
 }
 
-/// One clip the public manifest names: a wav, its digest, and the words it
-/// was read from.
+/// One clip the public manifest names: a wav, its digest, the words it was
+/// read from, and the speaker who read it.
 #[derive(serde::Deserialize)]
 struct ManifestClip {
     file: String,
     sha256: String,
     transcript: String,
+    /// The LibriSpeech speaker id, which is what a voice is chosen by. The
+    /// bench reads transcripts and leaves this alone.
+    #[serde(default)]
+    speaker: Option<String>,
 }
 
 /// The manifest the installed public slice carries beside its clips.
@@ -121,20 +125,119 @@ struct Manifest {
     clips: Vec<ManifestClip>,
 }
 
+/// The installed slice's manifest: `None` when nothing is installed, which
+/// is an empty corpus rather than a failure.
+fn read_manifest(dir: &Path) -> Result<Option<Manifest>, Error> {
+    let manifest_path = dir.join("manifest.json");
+    let bytes = match std::fs::read(&manifest_path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(source) => return Err(Error::Io { path: manifest_path, source }),
+    };
+    let manifest: Manifest = serde_json::from_slice(&bytes)
+        .map_err(|error| Error::Bench { message: format!("public corpus manifest: {error}") })?;
+    Ok(Some(manifest))
+}
+
+/// One voice the public slice carries: the speaker, the clip a reference is
+/// read from, and that clip's length.
+pub struct VoiceRow {
+    pub speaker: String,
+    pub file: String,
+    pub seconds: u64,
+}
+
+/// Every speaker the installed public slice can speak in, one row each, in
+/// the manifest's own order. The clip named is the speaker's longest: a
+/// reference carries more of a voice the more of it there is.
+pub fn public_voice_list(dir: &Path) -> Result<Vec<VoiceRow>, Error> {
+    let Some(manifest) = read_manifest(dir)? else {
+        return Ok(Vec::new());
+    };
+    let mut rows: Vec<VoiceRow> = Vec::new();
+    for entry in &manifest.clips {
+        let Some(speaker) = entry.speaker.as_deref() else {
+            return Err(Error::Bench {
+                message: format!("{}: the manifest names no speaker", entry.file),
+            });
+        };
+        let seconds = clip_seconds(&dir.join(&entry.file))?;
+        match rows.iter_mut().find(|row| row.speaker == speaker) {
+            Some(row) if seconds > row.seconds => {
+                row.file = entry.file.clone();
+                row.seconds = seconds;
+            }
+            Some(_) => {}
+            None => rows.push(VoiceRow {
+                speaker: speaker.to_owned(),
+                file: entry.file.clone(),
+                seconds,
+            }),
+        }
+    }
+    Ok(rows)
+}
+
+/// One speaker's reference clip, decoded at the corpus's own rate.
+///
+/// The bytes are checked against the manifest's digest first, so a clip
+/// somebody replaced is refused by name rather than spoken in.
+pub fn public_voice_audio(dir: &Path, speaker: &str) -> Result<(Vec<f32>, u32), Error> {
+    let Some(manifest) = read_manifest(dir)? else {
+        return Err(Error::Bench {
+            message: format!("no public corpus is installed at {}", dir.display()),
+        });
+    };
+    let mut longest: Option<(&ManifestClip, u64)> = None;
+    for entry in &manifest.clips {
+        if entry.speaker.as_deref() != Some(speaker) {
+            continue;
+        }
+        let seconds = clip_seconds(&dir.join(&entry.file))?;
+        if longest.is_none_or(|(_, held)| seconds > held) {
+            longest = Some((entry, seconds));
+        }
+    }
+    let Some((entry, _)) = longest else {
+        return Err(Error::Bench {
+            message: format!("the public corpus carries no speaker {speaker}"),
+        });
+    };
+    let path = dir.join(&entry.file);
+    let bytes = std::fs::read(&path)
+        .map_err(|source| Error::Io { path: path.clone(), source })?;
+    let mut hasher = Sha256::new();
+    hasher.update(&bytes);
+    let actual = hex::encode(hasher.finalize());
+    if !actual.eq_ignore_ascii_case(&entry.sha256) {
+        return Err(Error::Bench {
+            message: format!(
+                "{}: the manifest names sha256 {}, and the file is {actual}",
+                entry.file, entry.sha256,
+            ),
+        });
+    }
+    let audio = decode_wav(&path)?;
+    Ok((audio, SAMPLE_RATE))
+}
+
+/// A clip's length in whole seconds, read off its header.
+fn clip_seconds(path: &Path) -> Result<u64, Error> {
+    let reader = hound::WavReader::open(path)
+        .map_err(|error| Error::Bench { message: format!("{}: {error}", path.display()) })?;
+    let rate = u64::from(reader.spec().sample_rate).max(1);
+    Ok((u64::from(reader.len()) / rate).max(1))
+}
+
 /// The installed public slice: every clip the manifest names, each verified
 /// against its own digest before anything scores it.
 ///
 /// A missing manifest is an empty tier; a mismatched digest is a refusal
 /// that names the clip.
 pub fn public_corpus(dir: &Path) -> Result<Vec<Clip>, Error> {
-    let manifest_path = dir.join("manifest.json");
-    let bytes = match std::fs::read(&manifest_path) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(source) => return Err(Error::Io { path: manifest_path, source }),
+    let Some(manifest) = read_manifest(dir)? else {
+        return Ok(Vec::new());
     };
-    let manifest: Manifest = serde_json::from_slice(&bytes)
-        .map_err(|error| Error::Bench { message: format!("public corpus manifest: {error}") })?;
 
     let mut clips = Vec::with_capacity(manifest.clips.len());
     for entry in manifest.clips {
@@ -1056,5 +1159,57 @@ mod tests {
             panic!("a tampered clip must be refused");
         };
         assert!(error.to_string().contains("clip-0003.wav"), "got: {error}");
+    }
+
+    /// **The slice's voices are its speakers, not its clips.** The 32
+    /// utterances are nine readers, and a picker that listed clips would
+    /// offer the same voice four times under four names.
+    #[test]
+    fn the_public_slice_names_one_voice_per_speaker() {
+        let dir = tempfile::tempdir().unwrap();
+        install_public_corpus(dir.path()).unwrap();
+
+        let voices = public_voice_list(&dir.path().join("public-corpus")).expect("the list reads");
+
+        let speakers: Vec<&str> = voices.iter().map(|voice| voice.speaker.as_str()).collect();
+        assert_eq!(
+            speakers,
+            ["6930", "3575", "1995", "1284", "4446", "5105", "1580", "237", "121"],
+            "one row per speaker, in the manifest's own order"
+        );
+        assert!(
+            voices.iter().all(|voice| voice.seconds >= 1),
+            "every voice names a clip with a length"
+        );
+    }
+
+    /// A voice's reference is the speaker's longest clip, decoded at the
+    /// corpus's own rate - and a clip somebody replaced under the manifest
+    /// is refused by name rather than spoken in.
+    #[test]
+    fn a_voice_reads_its_longest_clip_and_refuses_a_tampered_one() {
+        let dir = tempfile::tempdir().unwrap();
+        install_public_corpus(dir.path()).unwrap();
+        let public = dir.path().join("public-corpus");
+        let voices = public_voice_list(&public).expect("the list reads");
+        let longest = voices
+            .iter()
+            .filter(|voice| voice.speaker == "6930")
+            .max_by_key(|voice| voice.seconds)
+            .expect("the speaker is in the slice");
+
+        let (pcm, rate) = public_voice_audio(&public, "6930").expect("the reference decodes");
+        assert_eq!(rate, SAMPLE_RATE);
+        assert_eq!(
+            pcm.len() / usize::try_from(SAMPLE_RATE).unwrap(),
+            usize::try_from(longest.seconds).unwrap(),
+            "the reference is the longest clip the speaker has"
+        );
+
+        std::fs::write(public.join(&longest.file), b"not audio").unwrap();
+        let Err(error) = public_voice_audio(&public, "6930") else {
+            panic!("a tampered reference must be refused");
+        };
+        assert!(error.to_string().contains(&longest.file), "got: {error}");
     }
 }

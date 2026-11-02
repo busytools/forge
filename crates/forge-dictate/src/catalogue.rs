@@ -180,6 +180,9 @@ pub enum EntryKind {
     Asr,
     /// A normalizer: what cleans a transcript up. The Hub's feed.
     Normalizer,
+    /// A speaking model: what renders speech. Forge builds this entry
+    /// itself; neither feed carries one.
+    Speaking,
 }
 
 /// One downloadable quantisation of the variant.
@@ -820,6 +823,20 @@ mod tests_catalogue {
         assert_eq!(entry.m4_metal_xrt_wall(), None, "no rows, no number");
         assert_eq!(entry.fleurs_en_wer(), None);
         assert!(!entry.streaming(), "absent capabilities are not a claim of support");
+    }
+
+    /// The speaking role's entries carry their own kind, so a consumer
+    /// that fills the wrong slot does not compile.
+    #[test]
+    fn a_speaking_entry_parses_with_its_own_kind() {
+        let entry = parse_entry(
+            r#"{"schema": "transcribe-catalog-v1", "variant": "builtin", "kind": "speaking"}"#,
+        )
+        .expect("a speaking entry parses");
+        assert_eq!(entry.kind, EntryKind::Speaking);
+
+        let value = serde_json::to_value(&entry.kind).expect("the kind serialises");
+        assert_eq!(value, serde_json::json!("speaking"));
     }
 
     /// **The doc's marked table is the only place a download URL comes
