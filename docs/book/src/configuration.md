@@ -536,8 +536,8 @@ cut.
 
 An unrecognised key here fails the load, as one in `[dictate]` does: a
 mistyped `models_dir` would otherwise leave the engine looking in a
-directory that has no model, and the failure would arrive only at the first
-`say`.
+directory that has no model, and the failure would surface at the boot
+prewarm rather than when the key is saved.
 
 The speaking model is Qwen3-TTS 12Hz 1.7B Base, Q8_0, with the `mmproj`
 projector that carries its audio codec: two files, about 2.29 GB together,
