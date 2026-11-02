@@ -1376,7 +1376,7 @@ describe('one turn folded into the units a view draws', () => {
     // delivery row every other forge-sourced envelope takes.
     const note = heard([
       text(
-        '[Voice]\n\nThe user is listening to this seat.\n\nAnything they should hear goes through mcp__forge__voice__say; the text written in the chat is not spoken.',
+        "[Voice]\n\nThe user is listening to this seat.\n\nSpeak what they should hear as you would say it in a live conversation: send each message's substance through mcp__forge__voice__say as well as writing it in the chat, keeping the spoken form simpler and shorter so it lands by ear. A reply that is only written is one they will not hear. When the stop note arrives, you may stop speaking.",
       ),
     ]);
     const rows = inboundsOf(fold([note])[0]);
@@ -1389,7 +1389,7 @@ describe('one turn folded into the units a view draws', () => {
       'The user is listening to this seat.',
     );
     expect(rows[0]?.body, 'the whole note stays the body').toBe(
-      'The user is listening to this seat.\n\nAnything they should hear goes through mcp__forge__voice__say; the text written in the chat is not spoken.',
+      "The user is listening to this seat.\n\nSpeak what they should hear as you would say it in a live conversation: send each message's substance through mcp__forge__voice__say as well as writing it in the chat, keeping the spoken form simpler and shorter so it lands by ear. A reply that is only written is one they will not hear. When the stop note arrives, you may stop speaking.",
     );
     expect(rows[0]?.elevated, 'a note is not elevated').toBe(false);
   });

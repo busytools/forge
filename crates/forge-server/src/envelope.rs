@@ -636,12 +636,12 @@ mod tests {
 
     #[test]
     fn detect_voice_inbound_parses_note_body() {
-        let text = "[Voice]\n\nThe user is listening to this seat.\n\nAnything they should hear goes through mcp__forge__voice__say.";
-        match detect_inbound(text).expect("voice") {
-            PeerInboundKind::Voice { note } => assert_eq!(
-                note,
-                "The user is listening to this seat.\n\nAnything they should hear goes through mcp__forge__voice__say.",
-            ),
+        let listening = forge_workspace::voice::LISTENING_NOTE;
+        let text = format!("[Voice]\n\n{listening}");
+        match detect_inbound(&text).expect("voice") {
+            PeerInboundKind::Voice { note } => {
+                assert_eq!(note, listening, "the envelope carries the shipped note unchanged");
+            }
             other => panic!("expected Voice, got {other:?}"),
         }
     }

@@ -82,12 +82,15 @@ describe('the inbound delivery row', () => {
     const note = draw({
       kind: 'voice',
       title: 'The user is listening to this seat.',
-      body: 'The user is listening to this seat.\n\nAnything they should hear goes through mcp__forge__voice__say.',
+      body: "The user is listening to this seat.\n\nSpeak what they should hear as you would say it in a live conversation: send each message's substance through mcp__forge__voice__say as well as writing it in the chat, keeping the spoken form simpler and shorter so it lands by ear. A reply that is only written is one they will not hear. When the stop note arrives, you may stop speaking.",
     });
     expect(note, 'the voice glyph').toContain('#i-sound');
     expect(note, 'not a kind-named glyph the sprite lacks').not.toContain('#i-voice');
     expect(summaryWords(note), 'the note first line as the title').toContain(
       'The user is listening to this seat.',
+    );
+    expect(note, 'the body draws the note the title does not carry').toContain(
+      'Speak what they should hear as you would say it',
     );
   });
 

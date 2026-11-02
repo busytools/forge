@@ -82,24 +82,29 @@ While more than one client is listening, the switch draws the room's count
 beside the icon and its title names it; the count is the seat's own answer,
 seeded from the seat read on a late attach.
 
+**Listening is a mode on the seat's agent, not a second copy of the chat.**
+While a client is listening, the agent speaks the substance of each update
+as it would say it in a live conversation, phrasing it for the ear and
+keeping it shorter than the page, while the written chat stays the record
+that carries the detail. The first client in puts a note into the session
+that tells the agent the person is listening and in what register.
+
 **Dictation and voice are different directions.** The mic is how the user
 speaks to the agent: it fills the box with text and stops there. The voice
 switch is how the agent's replies are heard: it turns the seat's speech on
 or off for this client and does nothing else.
 
 **Voice is per client and per seat.** Every connection on the seat receives
-its clips, and this client plays them only while its switch is on. The first
-client in puts a short note into the session, so the agent is told once that
-the person is listening. The last client out tells the agent the person
-stopped when the reader turned the switch off themselves, and when the
-connection that held that client goes away: a closed client or a dropped
-socket empties the seat's listener set too. A seat change pauses the switch
-and a return to a seat the reader had on reconnects it, so moving between
-seats does not toggle the agent. A closed client or a dropped socket turns
-the switch off. The clips play in the order the engine rendered them, each
-sentence following the one before, and a reconnect discards the queue rather
-than playing a conversation with holes in it, then resubscribes the switch if
-this client still wants voice.
+its clips, and this client plays them only while its switch is on. The last
+client out tells the agent the person stopped when the reader turned the
+switch off themselves, and when the connection that held that client goes
+away: a closed client or a dropped socket empties the seat's listener set
+too. A seat change pauses the switch and a return to a seat the reader had
+on reconnects it, so moving between seats does not toggle the agent. A
+closed client or a dropped socket turns the switch off. The clips play in
+the order the engine rendered them, each sentence following the one before,
+and a reconnect discards the queue rather than playing a conversation with
+holes in it, then resubscribes the switch if this client still wants voice.
 
 ## Dictation
 
