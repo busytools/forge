@@ -40,6 +40,17 @@ export class Voice {
 
   private capture: VoiceCapture | null = null;
   private readonly playback: Playback;
+  /**
+   * Whether the microphone is still opening. A press during the open is not
+   * a second open, and a release or cancel during it must not be a no-op.
+   */
+  #opening = false;
+  /**
+   * Counts opens. A device that arrives after its hold ended - the release,
+   * cancel or unmount landed while the permission prompt was up - is closed
+   * on arrival rather than left capturing into a clip nobody will release.
+   */
+  #openToken = 0;
 
   constructor(
     private readonly port: VoicePort,
@@ -76,19 +87,40 @@ export class Voice {
       this.turnOn();
       return;
     }
-    if (this.capture !== null) return;
+    if (this.capture !== null || this.#opening) return;
+    const token = ++this.#openToken;
+    this.#opening = true;
     try {
       const capture = await this.open();
+      // The hold ended while the device opened: the release, cancel or seat
+      // change already bumped the token, so close it rather than holding a
+      // microphone nobody is holding. Nothing was captured before the open
+      // resolved, so there is no clip to lose.
+      if (token !== this.#openToken || !this.on) {
+        capture.cancel();
+        return;
+      }
       this.capture = capture;
       this.clip = capture.clip;
       this.line = null;
     } catch (why) {
-      this.line = micFailure(why);
+      // A failure for an open whose hold is already gone is not the
+      // reader's to see: they cancelled, and the next hold is a new one.
+      if (token === this.#openToken) this.line = micFailure(why);
+    } finally {
+      this.#opening = false;
     }
   }
 
   /** End the hold: the whole clip crosses as one utterance. */
   async endTalk(): Promise<void> {
+    // A release while the device opens means the hold is already over. The
+    // open's device closes on arrival instead of starting a clip the next
+    // press would send.
+    if (this.#opening) {
+      this.#openToken += 1;
+      return;
+    }
     const capture = this.capture;
     if (capture === null) return;
     this.capture = null;
@@ -101,6 +133,9 @@ export class Voice {
 
   /** Throw the hold away: nothing is sent. */
   cancelTalk(): void {
+    // A cancel while the device opens closes it on arrival: the open's
+    // device must not outlive the hold it was opened for.
+    this.#openToken += 1;
     const capture = this.capture;
     this.capture = null;
     this.clip = null;
