@@ -96,11 +96,16 @@ export interface DrawnGeometry {
 }
 
 /**
- * A scroll the reader did not make, as the column's own handler read it.
+ * One scroll event on the conversation, as the column's own handler read it.
  *
- * **Every field is a signal the handler already computes**, so the record
- * costs one string per move the machine causes and nothing on the reader's
- * own scrolls.
+ * **Every field is a signal the handler already computes.** The reader's own
+ * moves are written too, flagged: a machine move is `reader: false && aimed:
+ * false`, which is what lets a log be filtered rather than guessed at.
+ *
+ * Two blind spots are the handler's own windows, and are stated rather than
+ * hidden: hand input within its reader window before a machine move reads as
+ * the reader's, and a size delta is measured against the last event that read
+ * the layout, which a pin echo skips.
  */
 export interface ScrollMove {
   from: number;
@@ -110,7 +115,14 @@ export interface ScrollMove {
   shrank: boolean;
   rose: boolean;
   foot: boolean;
-  restore: boolean;
+  /** The reader's own hand was heard just before this move. */
+  reader: boolean;
+  /** The reader's input was heading toward the foot. */
+  aimed: boolean;
+  /** A restore was owed here, not that one ran. */
+  restore_owed: boolean;
+  /** The pin's own echo: a write the column made, not anything the reader did. */
+  pin: boolean;
 }
 
 /** One line of the perf log, as the shell writes it. */
@@ -1148,7 +1160,9 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
         ts_ms: Date.now(),
         ...move,
         surface: 'session',
-        session: openSeat,
+        // **The live seat, not the open's.** `openSeat` is cleared the moment
+        // the open settles, which is before a reader has scrolled at all.
+        session: session ?? openSeat,
       });
     },
     noteSeatClick(seat: string): void {

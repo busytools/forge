@@ -1936,6 +1936,24 @@
       // read like any other.
       pinEcho = null;
       if (offset === written) {
+        // **The pin is the machine move a reader most often feels**, so it is
+        // written before the echo's own early return. The last event's heights
+        // are reused rather than the layout read again - the per-frame cost
+        // #1710 measured is exactly this path's - and a pin lands at the foot
+        // by construction.
+        noteScrollMove({
+          from: was,
+          to: offset,
+          height: lastSeen.content,
+          room: lastSeen.room,
+          shrank: false,
+          rose: false,
+          foot: true,
+          reader: false,
+          aimed: false,
+          restore_owed: owed !== null,
+          pin: true,
+        });
         // **The echo still carries the reach ask.** No reader moved, so none of
         // the reader-state machinery below is the echo's to run - but a landing
         // that puts the foot inside the near-top reach is an event the ask rode
@@ -1985,22 +2003,23 @@
     const foot = atFoot();
     const byReader = readerMoved();
     const aimed = aimedAtFoot();
-    if (!byReader) {
-      // **A move nobody made has no other record.** The draw says where the
-      // list stands and never that the reader was carried, so a scroll that
-      // arrives with no hand behind it is written here, with the signals that
-      // tell a clamp from a restore from a corrected row.
-      noteScrollMove({
-        from: was,
-        to: offset,
-        height,
-        room,
-        shrank,
-        rose,
-        foot,
-        restore: owed !== null,
-      });
-    }
+    // **Every move is written, flagged.** A machine move has no other record -
+    // the draw says where the list stands and never that the reader was
+    // carried - and the flags are what separate it from the reader's own: a
+    // filter for `reader: false && aimed: false` is the one worth reading.
+    noteScrollMove({
+      from: was,
+      to: offset,
+      height,
+      room,
+      shrank,
+      rose,
+      foot,
+      reader: byReader,
+      aimed,
+      restore_owed: owed !== null,
+      pin: false,
+    });
     if (foot) {
       // **A return that lands at the foot re-arms, whatever the size did.**
       // The clamp skip exists for a foot that closed on the reader, and their

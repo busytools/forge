@@ -46,10 +46,12 @@ const drawnMark = vi.hoisted(() =>
 );
 const openedMark = vi.hoisted(() => vi.fn());
 const paintedMark = vi.hoisted(() => vi.fn());
+const scrollMark = vi.hoisted(() => vi.fn());
 vi.mock('../perf', () => ({
   noteDrawn: drawnMark,
   noteConversationOpened: openedMark,
   notePainted: paintedMark,
+  noteScrollMove: scrollMark,
 }));
 
 const LEAD: SessionSlot = { org: 'Busytools', project: 'forge', label: 'lead' };

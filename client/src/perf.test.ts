@@ -943,9 +943,11 @@ describe('the open a conversation begins', () => {
    * the list stands, never that the reader was carried; without this line a
    * clamp or a restore leaves no record at all.
    */
-  it('writes a scroll the reader did not make, with what moved it', () => {
+  it('writes a scroll event with the flags that tell a machine move from the reader', () => {
     const h = harness();
-    h.probe.noteConversationOpened('Busytools/forge/lead');
+    // **The steady state is the live seat**, not the open's: a reader scrolls
+    // long after the open settled and cleared its seat.
+    h.probe.setSurface('session', 'Busytools/forge/lead');
     h.probe.noteScrollMove({
       from: 900,
       to: 1200,
@@ -954,7 +956,10 @@ describe('the open a conversation begins', () => {
       shrank: false,
       rose: false,
       foot: false,
-      restore: true,
+      reader: false,
+      aimed: false,
+      restore_owed: true,
+      pin: false,
     });
     const scrolls = h.records.flat().filter((record) => record.kind === 'scroll');
     expect(scrolls).toHaveLength(1);
@@ -964,7 +969,10 @@ describe('the open a conversation begins', () => {
       height: 4000,
       room: 1000,
       foot: false,
-      restore: true,
+      reader: false,
+      aimed: false,
+      restore_owed: true,
+      pin: false,
       surface: 'session',
       session: 'Busytools/forge/lead',
     });
