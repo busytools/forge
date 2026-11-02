@@ -862,6 +862,14 @@ pub struct Workspace {
     /// asked for the prewarm", which is the one call a test can watch
     /// without a 3 GB fetch (mirrors `usage_poller_started`).
     dictate_preflight_started: std::sync::atomic::AtomicBool,
+    /// Records that the boot wave asked for the prewarm, set before the
+    /// `[tts] enabled` gate: the flag reads "the wave asked", which is the
+    /// one call a test can watch without the weights. It is not a dispatch
+    /// guard; the guard only stops a second load of the same engine.
+    pub(crate) voice_prewarm_started: std::sync::atomic::AtomicBool,
+    /// Set once the prewarm is dispatched, after the enabled gate, so a
+    /// second call cannot spawn a second load of the same engine.
+    pub(crate) voice_prewarm_dispatched: std::sync::atomic::AtomicBool,
     /// The gateway's listener + session bindings. Children are stamped
     /// with a base URL that names this listener, and every spawn
     /// registers here.
@@ -2480,6 +2488,8 @@ impl Workspace {
             usage_poller_started: std::sync::atomic::AtomicBool::new(false),
             rotation_announcer_started: std::sync::atomic::AtomicBool::new(false),
             dictate_preflight_started: std::sync::atomic::AtomicBool::new(false),
+            voice_prewarm_started: std::sync::atomic::AtomicBool::new(false),
+            voice_prewarm_dispatched: std::sync::atomic::AtomicBool::new(false),
             cron_scheduler_started: std::sync::atomic::AtomicBool::new(false),
             chase_sweep_started: std::sync::atomic::AtomicBool::new(false),
             kick_dispatcher_tx,

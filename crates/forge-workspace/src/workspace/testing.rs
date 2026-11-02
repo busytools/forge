@@ -239,6 +239,14 @@ impl Workspace {
         self.dictate_preflight_started.load(std::sync::atomic::Ordering::Acquire)
     }
 
+    /// Whether the voice prewarm's start has run. Test-only: the start
+    /// loads multi-gigabyte weights this fixture has none of, so a
+    /// cross-crate boot test reads the guard rather than watching it load.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn test_voice_prewarm_started(&self) -> bool {
+        self.voice_prewarm_started.load(std::sync::atomic::Ordering::Acquire)
+    }
+
     /// Hold a claude version snapshot, so a cross-crate test can render the
     /// version line without a real `claude --version` and npm probe.
     /// Test-only.
@@ -468,6 +476,8 @@ impl Workspace {
             usage_poller_started: std::sync::atomic::AtomicBool::new(false),
             rotation_announcer_started: std::sync::atomic::AtomicBool::new(false),
             dictate_preflight_started: std::sync::atomic::AtomicBool::new(false),
+            voice_prewarm_started: std::sync::atomic::AtomicBool::new(false),
+            voice_prewarm_dispatched: std::sync::atomic::AtomicBool::new(false),
             cron_scheduler_started: std::sync::atomic::AtomicBool::new(false),
             chase_sweep_started: std::sync::atomic::AtomicBool::new(false),
             kick_dispatcher_tx,

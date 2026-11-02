@@ -484,6 +484,10 @@ fn start_subsystems(workspace: &Arc<Workspace>) {
     // download is opt-in.
     workspace.start_dictate_preflight();
 
+    // Load the speaking engine beside it, so the first `say` pays no model
+    // load. No-op unless `[tts] enabled` is set.
+    workspace.start_voice_prewarm();
+
     // Spawn the worker-kick drainer task (#259). Routes every
     // `maybe_kick_worker_on_connected` enqueue through a single
     // `KICK_DISPATCH_INTERVAL`-spaced dispatcher so multi-worker boots
@@ -1135,6 +1139,31 @@ port = 49201
         assert!(
             workspace.test_dictate_preflight_started(),
             "the boot wave asks for the prewarm; dropping the call leaves every take \
+             paying the load",
+        );
+    }
+
+    /// The wave asks for the speaking engine's prewarm, which is what keeps
+    /// the first `say` from paying the model load: started at boot rather
+    /// than on the first listener, on a task of its own so the
+    /// multi-gigabyte load is not on the boot path. The fixture has `[tts]`
+    /// off, so this reads the wave-asked guard only; that the dispatch then
+    /// loads the engine is pinned by
+    /// `the_boot_prewarm_loads_the_engine_when_tts_is_on` in
+    /// forge-workspace, which drives a stub load.
+    #[tokio::test]
+    async fn the_boot_wave_starts_the_voice_prewarm() {
+        let (workspace, _dir) = boot_fixture();
+        assert!(
+            !workspace.test_voice_prewarm_started(),
+            "the fixture starts with the prewarm unstarted, or this test proves nothing",
+        );
+
+        start_subsystems(&workspace);
+
+        assert!(
+            workspace.test_voice_prewarm_started(),
+            "the boot wave asks for the prewarm; dropping the call leaves the first say \
              paying the load",
         );
     }

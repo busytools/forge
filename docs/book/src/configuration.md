@@ -536,8 +536,8 @@ cut.
 
 An unrecognised key here fails the load, as one in `[dictate]` does: a
 mistyped `models_dir` would otherwise leave the engine looking in a
-directory that has no model, and the failure would arrive only at the first
-`say`.
+directory that has no model, and the failure would surface at the boot
+prewarm rather than when the key is saved.
 
 The speaking model is Qwen3-TTS 12Hz 1.7B Base, Q8_0, with the `mmproj`
 projector that carries its audio codec: two files, about 2.29 GB together,
@@ -552,11 +552,12 @@ behind it. A sentence's audio arrives when it finishes rendering; nothing
 streams inside one sentence.
 
 **forge does not fetch these two files.** They are placed under
-`models_dir` by hand, and the engine is warmed when the first client turns
-voice on; a failed warm is retried by the first `say`, and a missing file is
-reported by its own path. The engine checks both
-files against the SHA-256 their entries declare before it loads them, so a
-truncated or substituted file is refused by name rather than loaded.
+`models_dir` by hand. The engine is loaded once at boot when `[tts]` is on
+and stays resident for the process's life; a failed load is retried by the
+first `say`, and a missing file is reported by its own path. The engine
+checks both files against the SHA-256 their entries declare before it loads
+them, so a truncated or substituted file is refused by name rather than
+loaded.
 
 ## `[gotify]`
 
