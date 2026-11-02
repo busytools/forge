@@ -837,7 +837,7 @@ async fn client_mic_state(app: tauri::AppHandle) -> Result<Option<crate::mic::Mi
 /// The seat a notification tap launched the client on, asked once by the page
 /// that comes up. Every other launch, on every platform, answers `None`.
 #[tauri::command]
-async fn client_tap_seat(app: tauri::AppHandle) -> Option<forge_primitives::SessionSlot> {
+async fn client_tap_seat(app: tauri::AppHandle) -> Option<crate::launch::TapTarget> {
     crate::launch::take(&app).await
 }
 

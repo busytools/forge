@@ -122,7 +122,7 @@
     // page existed**, so it is asked for rather than waited on as an event.
     // A launch that cannot read it is still a launch: the ask answers `None`
     // for that, and for every launch no tap opened.
-    const seat = await launchSeat();
+    const target = await launchSeat();
     // What a connection taken while this is in flight is measured against.
     const held = connection;
     // The parameter first, then the memory: both are this launch's target.
@@ -143,10 +143,11 @@
     }
     failure = launched.failure;
     if (launched.connected) take(launched.connected);
-    if (seat !== null) {
-      // **The seat a tap named outranks the home the launch would land on**:
-      // the person asked for it, and the launch's own route is only a guess.
-      goTo({ name: 'session', slot: seat });
+    if (target !== null) {
+      // **The target a tap named outranks the home the launch would land
+      // on**: the person asked for it, and the launch's own route is only a
+      // guess. A wait opens its board, an ask its seat.
+      goTo(target);
     } else if (launched.route !== null) {
       // `null` is a route the app was addressed at. A launch opens the socket
       // its page reads but leaves the page itself alone.

@@ -336,8 +336,52 @@ describe('a cold start from a notification', () => {
     vi.resetModules();
     const invoke = shellAnswers(OTHER);
     const fresh = await import('./notify');
-    expect(await fresh.launchSeat()).toEqual(OTHER);
+    expect(await fresh.launchSeat()).toEqual({ name: 'session', slot: OTHER });
     expect(invoke).toHaveBeenCalledWith('client_tap_seat');
+  });
+
+  /// **A wait's cold start opens its board**, not the seat's chat: the shell
+  /// remembers the target beside the seat, and the page routes on it.
+  it('opens the board when the tap named a wait', async () => {
+    vi.resetModules();
+    shellAnswers({ ...OTHER, board: true });
+    const fresh = await import('./notify');
+    expect(await fresh.launchSeat()).toEqual({
+      name: 'board',
+      org: OTHER.org,
+      project: OTHER.project,
+    });
+  });
+
+  /// **A click's route follows the target**: a wait's notification opens its
+  /// project's board, an ask's opens the seat.
+  it('routes a clicked notification by its target', async () => {
+    vi.resetModules();
+    Object.defineProperty(window, '__TAURI_INTERNALS__', { value: {}, configurable: true });
+    const handlers: ((event: { payload: unknown }) => void)[] = [];
+    vi.doMock('@tauri-apps/api/event', () => ({
+      listen: (_name: string, fn: (event: { payload: unknown }) => void) => {
+        handlers.push(fn);
+        return Promise.resolve(() => undefined);
+      },
+    }));
+    const fresh = await import('./notify');
+    const routes = await import('./routes');
+    await fresh.watchNotificationClicks();
+    const handler = handlers[0];
+    if (handler === undefined) throw new Error('the click listener was not registered');
+    handler({ payload: { ...OTHER, board: true } });
+    expect(get(routes.currentRoute), 'a wait opens its board').toEqual({
+      name: 'board',
+      org: OTHER.org,
+      project: OTHER.project,
+    });
+    handler({ payload: { ...OTHER, board: false } });
+    expect(get(routes.currentRoute), 'an ask opens its seat').toEqual({
+      name: 'session',
+      slot: OTHER,
+    });
+    vi.doUnmock('@tauri-apps/api/event');
   });
 
   /// A launch no notification opened names nothing, and the page routes as

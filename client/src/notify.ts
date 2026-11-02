@@ -312,7 +312,8 @@ function arm(): void {
 }
 
 /**
- * A shell's notification click, which names the seat it was posted for.
+ * A shell's notification click, which names the seat it was posted for and
+ * where that notice opens.
  *
  * The window is already brought forward by the shell; the route is the page's
  * own, so it moves here.
@@ -321,25 +322,26 @@ export async function watchNotificationClicks(): Promise<() => void> {
   if (!canHost()) return () => {};
   const { listen } = await import('@tauri-apps/api/event');
   return await listen<unknown>('client://notification', (event) => {
-    const slot = slotFrom(event.payload);
-    if (slot !== null) goTo({ name: 'session', slot });
+    const route = routeFrom(event.payload);
+    if (route !== null) goTo(route);
   });
 }
 
 /**
- * The seat a notification tap launched the client on.
+ * Where a notification tap launched the client on: a wait opens its project's
+ * board, every ask its seat's chat.
  *
  * **The platform reads the launch intent before this page exists**, so a tap
  * that cold-starts the app is not an event a page can listen for: the shell
- * remembers the seat under the id the intent carries, and this is the page
+ * remembers the target under the id the intent carries, and this is the page
  * asking for it once it can route. `null` is every launch no tap opened, and
  * every page with no shell.
  */
-export async function launchSeat(): Promise<SessionSlot | null> {
+export async function launchSeat(): Promise<Route | null> {
   if (!canHost()) return null;
   try {
     const { invoke } = await import('@tauri-apps/api/core');
-    return slotFrom(await invoke<unknown>('client_tap_seat'));
+    return routeFrom(await invoke<unknown>('client_tap_seat'));
   } catch (why) {
     // **A seat the shell cannot answer is still a launch**: the page routes as
     // if no tap opened it, rather than holding the launch on the command.
@@ -360,4 +362,18 @@ function slotFrom(value: unknown): SessionSlot | null {
     return null;
   }
   return { org: held['org'], project: held['project'], label: held['label'] };
+}
+
+/**
+ * Where a notification's target opens: the seat's chat, or the project's
+ * board for a decision wait - the row is answerable there, and the seat that
+ * raised it may be gone.
+ */
+function routeFrom(value: unknown): Route | null {
+  const slot = slotFrom(value);
+  if (slot === null) return null;
+  if ((value as Record<string, unknown>)['board'] === true) {
+    return { name: 'board', org: slot.org, project: slot.project };
+  }
+  return { name: 'session', slot };
 }

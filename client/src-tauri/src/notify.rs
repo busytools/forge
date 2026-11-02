@@ -27,6 +27,8 @@ use crate::asks::{AskKind, WaitNotice};
 const CHANNEL: &str = "asks";
 /// Where the notification carries the seat its click opens.
 const SEAT_EXTRA: &str = "seat";
+/// Whether the click opens the board rather than the seat's chat.
+const BOARD_EXTRA: &str = "board";
 /// The action a click on the notification itself reports.
 const TAP: &str = "tap";
 
@@ -53,6 +55,12 @@ impl Notice {
             }
         }
     }
+
+    /// Whether a click opens the board: a decision wait lives there, where
+    /// it can be answered, and its seat's page may not exist any more.
+    fn board(&self) -> bool {
+        matches!(self, Self::Wait { .. })
+    }
 }
 
 /// One piece of work for the notification thread.
@@ -73,6 +81,15 @@ static JOBS: OnceLock<mpsc::Sender<Job>> = OnceLock::new();
 /// The seat an action was performed on, `None` for one this app did not post.
 fn seat_of(action: &ActionPerformed) -> Option<Value> {
     action.notification()?.extra().get(SEAT_EXTRA).cloned()
+}
+
+/// Whether the action's notification opens the board rather than the chat.
+fn board_of(action: &ActionPerformed) -> bool {
+    action
+        .notification()
+        .and_then(|notification| notification.extra().get(BOARD_EXTRA))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
 }
 
 /// The title one seat's ask carries: `forge · project[ · label]`.
@@ -181,12 +198,13 @@ impl Platform for Shell {
             .title(title(seat))
             .body(notice.body())
             .channel_id(CHANNEL)
-            .extra(SEAT_EXTRA, held);
+            .extra(SEAT_EXTRA, held)
+            .extra(BOARD_EXTRA, serde_json::json!(notice.board()));
         // **A tap that launches the app names its seat by the id the launch
         // intent carries**, and the plugin's own id is one the shell never
         // sees, so the notification is raised under an id it is remembered by.
         #[cfg(target_os = "android")]
-        let builder = builder.id(crate::launch::remember(&self.app, seat));
+        let builder = builder.id(crate::launch::remember(&self.app, seat, notice.board()));
         builder.show().map_err(|why| why.to_string())
     }
 }
@@ -321,15 +339,16 @@ fn register(app: &AppHandle) {
         if action.action_id() != TAP {
             return;
         }
-        let Some(seat) = seat_of(action) else {
+        let Some(mut seat) = seat_of(action) else {
             return;
         };
         if let Some(window) = handle.get_webview_window("main") {
             let _ = window.show();
             let _ = window.set_focus();
         }
-        // The page owns the route, so the seat crosses as the event's own
-        // payload rather than being opened here.
+        // The page owns the route, so the seat and where it opens cross as the
+        // event's own payload rather than being opened here.
+        seat[BOARD_EXTRA] = serde_json::json!(board_of(action));
         let _ = handle.emit("client://notification", seat);
     });
     if let Err(why) = registered {
@@ -346,13 +365,17 @@ fn register(app: &AppHandle) {
 /// doors, and the page's ask must still find it.
 #[cfg(target_os = "android")]
 fn open_tap(app: &AppHandle, id: i32) {
-    let Some(seat) = crate::launch::seat(app, id) else {
+    let Some(target) = crate::launch::seat(app, id) else {
         return;
     };
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
         let _ = window.set_focus();
     }
+    let Ok(mut seat) = serde_json::to_value(&target.seat) else {
+        return;
+    };
+    seat[BOARD_EXTRA] = serde_json::json!(target.board);
     let _ = app.emit("client://notification", seat);
 }
 
@@ -602,6 +625,37 @@ mod tests {
             })),
             "the seat rides the notification's own extra",
         );
+    }
+
+    /// **A wait's notification says where its click opens**: the board flag
+    /// rides the same extra, so the page can route a wait to its board and an
+    /// ask to its seat.
+    #[test]
+    fn a_click_reads_whether_it_opens_the_board() {
+        let wait: ActionPerformed = serde_json::from_value(serde_json::json!({
+            "actionId": "tap",
+            "notification": {
+                "id": 4,
+                "extra": {
+                    "seat": { "org": "Busytools", "project": "forge", "label": "lead" },
+                    "board": true,
+                }
+            }
+        }))
+        .expect("an action the plugin can send");
+        assert!(board_of(&wait), "a wait's click opens the board");
+        let ask: ActionPerformed = serde_json::from_value(serde_json::json!({
+            "actionId": "tap",
+            "notification": {
+                "id": 5,
+                "extra": {
+                    "seat": { "org": "Busytools", "project": "forge", "label": "lead" },
+                    "board": false,
+                }
+            }
+        }))
+        .expect("an action the plugin can send");
+        assert!(!board_of(&ask), "an ask's click opens the seat");
     }
 
     /// An action on a notification this app did not post opens nothing.
