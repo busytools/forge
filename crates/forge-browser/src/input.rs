@@ -171,12 +171,11 @@ pub fn route(event: &BrowserInputEvent, tab: u16) -> Route {
             }))
         }
         BrowserInputEvent::Wheel { x, y, delta_x, delta_y, modifiers } => {
-            // **The wire carries the page target's wheel sign; CEF's mouse
-            // call takes the native one.** The client negates AppKit's
-            // scrolling delta for CDP (where positive scrolls up), and CEF
-            // forwards its delta unnegated, so it is turned back here or
-            // every wheel - and every finger scroll on the phone - runs the
-            // wrong way.
+            // **The wire carries the page's wheel sign; CEF's mouse call
+            // takes the native one.** Every producer puts the page's sign on
+            // the wire - a browser tab's own WheelEvent, the desktop's
+            // negated AppKit delta, a finger's inverted drag - so it is
+            // turned back here or every wheel runs the wrong way.
             Route::Host(host_line(&HostInput::Wheel {
                 tab,
                 x: rounded(*x),
@@ -280,9 +279,9 @@ mod tests {
     }
 
     /// **A wheel is the host's too, with its sign turned back.** The wire
-    /// carries the page target's convention (positive scrolls up) and CEF's
-    /// mouse call takes the native one, so a wheel that skipped the flip
-    /// scrolled the wrong way on every platform.
+    /// carries the page's convention (positive scrolls down) and CEF's mouse
+    /// call takes the native one, so a wheel that skipped the flip scrolled
+    /// the wrong way on every platform.
     #[test]
     fn a_wheel_carries_both_deltas_to_the_host_with_cefs_sign() {
         let route = route(
@@ -305,7 +304,7 @@ mod tests {
         assert_eq!(
             (delta_x, delta_y),
             (3, -40),
-            "the wire's positive-up becomes CEF's positive-down"
+            "the wire's positive-down becomes CEF's positive-up"
         );
     }
 
