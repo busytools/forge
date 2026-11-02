@@ -96,7 +96,6 @@ fn resident_bytes() -> u64 {
     system.process(pid).map_or(0, sysinfo::Process::memory)
 }
 
-
 /// Synthesize every transcript, transcribe the audio back, and score it.
 ///
 /// `on_clip` is told each clip's 1-based position as it lands; a `Break`

@@ -134,7 +134,10 @@ impl SpeakingInstall {
         let variant = SpeakingVariant::named(&self.variant).unwrap_or_else(SpeakingVariant::pinned);
         ModelSpec {
             file: self.model.clone(),
-            url: format!("https://huggingface.co/{HUB_REPO}/resolve/{}/{}", self.revision, variant.path),
+            url: format!(
+                "https://huggingface.co/{HUB_REPO}/resolve/{}/{}",
+                self.revision, variant.path
+            ),
             size: self.model_size,
             sha256: Some(self.model_sha256.clone()),
             facts: variant.spec().facts,
@@ -168,6 +171,11 @@ pub struct TtsSettings {
     /// default; an id that is not installed is refused by name.
     #[serde(default)]
     pub voice: Option<String>,
+    /// Ghost of the retired `[tts] language` hint: read only so a stale
+    /// config keeps loading. Kokoro is English-only, so there is nothing to
+    /// set.
+    #[serde(default)]
+    pub language: Option<toml::Value>,
     /// Upper bound on one utterance's text, as a character estimate at a
     /// rough speaking pace, not one sentence.
     #[serde(default = "default_max_utterance_seconds")]
@@ -185,6 +193,7 @@ impl Default for TtsSettings {
             models_dir: None,
             speaking_model: None,
             voice: None,
+            language: None,
             max_utterance_seconds: default_max_utterance_seconds(),
         }
     }
@@ -218,11 +227,7 @@ impl TtsSettings {
     /// The model a role runs before anything is installed: the configured
     /// variant, else the pin.
     pub fn pin(&self) -> ModelSpec {
-        self.configured_variant()
-            .ok()
-            .flatten()
-            .unwrap_or_else(SpeakingVariant::pinned)
-            .spec()
+        self.configured_variant().ok().flatten().unwrap_or_else(SpeakingVariant::pinned).spec()
     }
 }
 
@@ -325,11 +330,12 @@ impl crate::Workspace {
         let dir = self.config_arc().tts.models_dir()?;
         let model = dir.join(&install.model);
         let voices = dir.join("voices");
-        let digests = std::iter::once((model.clone(), install.model_sha256.clone()))
-            .chain(install.voices.iter().map(|voice| {
-                (voices.join(format!("{}.bin", voice.name)), voice.sha256.clone())
-            }))
-            .collect();
+        let digests =
+            std::iter::once((model.clone(), install.model_sha256.clone()))
+                .chain(install.voices.iter().map(|voice| {
+                    (voices.join(format!("{}.bin", voice.name)), voice.sha256.clone())
+                }))
+                .collect();
         Some(forge_tts::ModelFiles::new(model, voices).with_digests(digests))
     }
 

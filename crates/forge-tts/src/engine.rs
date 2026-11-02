@@ -80,16 +80,17 @@ impl KokoroTts {
                 while let Some(job) = queue.blocking_recv() {
                     // A send failure is the host stopping playback, so this
                     // render's result has nowhere to go.
-                    let _ =
-                        job.reply.blocking_send(chunk_for(&mut renderer, &worker_installed, &job.request));
+                    let _ = job.reply.blocking_send(chunk_for(
+                        &mut renderer,
+                        &worker_installed,
+                        &job.request,
+                    ));
                 }
             })
             .map_err(|error| Error::Load(error.to_string()))?;
 
         match loaded.recv() {
-            Ok(Ok(())) => {
-                Ok(Self { jobs: Some(jobs), worker: Mutex::new(Some(worker)) })
-            }
+            Ok(Ok(())) => Ok(Self { jobs: Some(jobs), worker: Mutex::new(Some(worker)) }),
             Ok(Err(error)) => Err(error),
             Err(_) => Err(Error::Load("the render thread stopped while loading".to_owned())),
         }
@@ -124,9 +125,7 @@ impl Engine for KokoroTts {
 /// A channel carrying one failure, for a render thread that is gone.
 fn refused() -> tokio_mpsc::Receiver<Result<Chunk, Error>> {
     let (reply, chunks) = tokio_mpsc::channel(1);
-    let _ = reply.try_send(Err(Error::Render(
-        "the render thread is no longer running".to_owned(),
-    )));
+    let _ = reply.try_send(Err(Error::Render("the render thread is no longer running".to_owned())));
     chunks
 }
 
@@ -292,15 +291,10 @@ mod tests {
         let dir = std::path::PathBuf::from(
             std::env::var("FORGE_TTS_MODEL_DIR").expect("FORGE_TTS_MODEL_DIR"),
         );
-        let files = crate::ModelFiles::new(
-            dir.join("model_quantized.onnx"),
-            dir.join("voices"),
-        );
+        let files = crate::ModelFiles::new(dir.join("model_quantized.onnx"), dir.join("voices"));
         let engine = crate::KokoroTts::load(&files).expect("loads");
-        let mut chunks = engine.speak(SpeakRequest {
-            text: "Ready when you are.".to_owned(),
-            voice: None,
-        });
+        let mut chunks =
+            engine.speak(SpeakRequest { text: "Ready when you are.".to_owned(), voice: None });
         let first = chunks.recv().await.expect("a chunk").expect("a render");
         assert_eq!(first.sample_rate, SAMPLE_RATE);
         assert!(!first.pcm.is_empty());

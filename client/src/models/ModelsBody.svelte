@@ -427,7 +427,7 @@
       </div>
     {:else}
       {#each wire.in_use as model (`${model.role}/${model.file}`)}
-        {@const chip = modelChip(model.state, model.role)}
+        {@const chip = modelChip(model.state)}
         {@const factsOf = inUseRowFacts(model)}
         {@const source = sourceLine(model)}
         <div class="model" class:shown={shownRole === model.role}>
@@ -473,11 +473,11 @@
           - the speech feed's files publish none, so those are checked by length and by the load
         </p>
       {/if}
-      {#if wire.speaking_models_dir !== null}
+      {#if wire.speaking.models_dir !== null}
         <p class="note">
-          the speaking model is placed by hand: its weights and mmproj projector live in
-          <code>{wire.speaking_models_dir}</code>, and the engine checks both against the digests
-          their entries declare before it loads them
+          speaking files live in <code>{wire.speaking.models_dir}</code> &middot; the model installs from
+          the Hub, and the engine checks every file against the digest its entry declares before it loads
+          it
         </p>
       {/if}
     {/if}
@@ -509,15 +509,56 @@
     {/if}
 
     {#if shownRole === 'speaking'}
-      <!-- The speaking role has no feed at all: its model is placed by hand,
-           so there is nothing to compare and nothing to propose. Said here
-           rather than left to the empty-role note, which would claim the feed
-           measured it and found nothing. -->
-      <p class="note">
-        the speaking model is placed by hand, so no feed proposes one &middot; its weights and
-        mmproj projector live in the directory named above, and the engine checks both against the
-        digests their entries declare before it loads them
-      </p>
+      <!-- The speaking role's own view: the Hub's ONNX variants, each
+           installed or run, and the voices the model in use carries. There is
+           no feed comparison here because no one measures this role on the
+           feed; the benchmark below is what decides it. -->
+      {#if wire.speaking.from === 'unknown'}
+        <p class="note">this forge sent a speaking model state this client cannot read</p>
+      {:else}
+        <p class="note">
+          the speaking role installs {wire.speaking.speaking_model} from the Hugging Face Hub: one ONNX
+          export and the style files for its named voices &middot; the engine checks every digest before
+          it loads them
+        </p>
+        {#each wire.speaking.variants as variant (variant.variant)}
+          <div class="status">
+            <span class="dot {variant.active ? 'ok' : ''}"></span>
+            <span class="t">{variant.variant}</span>
+            <span class="when">{variant.quant} &middot; {sizeLabel(variant.size)}</span>
+            <span class="spacer"></span>
+            {#if variant.active}
+              <span class="chip"><span class="dot ok"></span>active</span>
+            {:else if variant.installed}
+              <button
+                class="chip"
+                type="button"
+                disabled={busy}
+                onclick={() => onactivate(variant.file, 'speaking')}>use for speaking</button
+              >
+            {:else}
+              <button
+                class="chip"
+                type="button"
+                disabled={busy}
+                onclick={() => oninstall(variant.variant)}>install {variant.quant}</button
+              >
+            {/if}
+          </div>
+        {/each}
+        {#if wire.speaking.from === 'installed'}
+          <button
+            class="chip"
+            type="button"
+            disabled={busy}
+            onclick={() => ondeactivate('speaking')}>use the default</button
+          >
+        {/if}
+        <p class="note">
+          {wire.speaking.voices.length} voices come with the model &middot; the default is
+          <code>af_heart</code>, and the settings page sets the voice every reply renders in
+        </p>
+      {/if}
     {:else if shownRole === 'normalization'}
       <!-- The cleanup role's own view: no feed publishes speed or error for
            a normalizer, so the bench decides. The candidates are the Hub's

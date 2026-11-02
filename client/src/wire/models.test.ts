@@ -48,6 +48,23 @@ function payload(over: Partial<Record<string, unknown>> = {}): DictateModelsWire
     bench: { state: 'idle' },
     results: [],
     read_aloud: { recorded: false, recording: false, error: null, passage: '' },
+    speaking: {
+      enabled: true,
+      models_dir: '/tmp/tts-models',
+      speaking_model: 'hexgrad/Kokoro-82M',
+      active: {
+        variant: 'kokoro-82m-int8',
+        file: 'model_quantized.onnx',
+        quant: 'int8',
+        size: 92_361_116,
+        installed: true,
+        active: true,
+      },
+      from: 'pin',
+      variants: [],
+      voices: ['af_heart'],
+      voice: null,
+    },
     ...over,
   } as unknown as DictateModelsWire;
 }
@@ -65,13 +82,23 @@ describe("the models page's snapshot, narrowed once where it enters", () => {
     expect(wire.check).toEqual({ state: 'unknown' });
   });
 
-  /** An older server sends neither directory: the page's own `null` is
-   * what it draws, not the word `undefined`. */
-  it('defaults a missing models directory to null', () => {
-    const wire = modelsFrom(payload({ models_dir: undefined, speaking_models_dir: undefined }));
+  /** An older server sends no speaking read: the page draws the role as
+   * unread rather than as an installed model that is not there. */
+  it('defaults a missing speaking read to unknown, with no directory', () => {
+    const wire = modelsFrom(payload({ models_dir: undefined, speaking: undefined }));
 
     expect(wire.models_dir).toBeNull();
-    expect(wire.speaking_models_dir).toBeNull();
+    expect(wire.speaking.from).toBe('unknown');
+    expect(wire.speaking.active).toBeNull();
+    expect(wire.speaking.voices).toEqual([]);
+  });
+
+  /** The speaking source is narrowed like every other union. */
+  it('narrows an unknown speaking source to unknown', () => {
+    const base = payload({}).speaking;
+    const wire = modelsFrom(payload({ speaking: { ...base, from: 'again' } }));
+
+    expect(wire.speaking.from).toBe('unknown');
   });
 
   /** The speaking bench's state is narrowed at the same boundary: a page

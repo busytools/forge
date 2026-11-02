@@ -587,8 +587,7 @@ async fn render(
         if live.load(Ordering::SeqCst) == 0 {
             return seq;
         }
-        let mut chunks =
-            engine.speak(SpeakRequest { text: sentence, voice: voice.clone() });
+        let mut chunks = engine.speak(SpeakRequest { text: sentence, voice: voice.clone() });
         while let Some(result) = chunks.recv().await {
             if live.load(Ordering::SeqCst) == 0 {
                 return seq;

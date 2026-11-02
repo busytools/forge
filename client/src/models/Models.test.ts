@@ -137,27 +137,30 @@ describe('the models page as it draws', () => {
    * core's speaking role, not from the speech feed.
    */
   it('draws the speaking role beside the dictation roles', () => {
-    const host = open({
-      ...modelsWire,
-      in_use: [
-        ...modelsWire.in_use,
-        {
-          role: 'speaking',
-          file: 'Qwen3-TTS-12Hz-1.7B-Base-Q8_0.gguf',
-          size: 1_847_874_400,
-          sha256: null,
-          state: 'ready',
-          facts: { quant: 'Q8_0', params: null, license: 'Apache-2.0', runtime: 'llama.cpp' },
-          catalogue: null,
-          from: { from: 'pin' },
-          at: null,
-        },
-      ],
-    });
-    const html = host.innerHTML;
+    const html = open().innerHTML;
     expect(html).toContain('speaking');
-    expect(html).toContain('Qwen3-TTS-12Hz-1.7B-Base-Q8_0.gguf');
+    expect(html).toContain('model_quantized.onnx');
     expect(html).toContain('Apache-2.0');
+    expect(html, 'its source names the runtime pick').toContain('installed here');
+  });
+
+  /**
+   * The speaking role's own view: the Hub's ONNX variants, each installed or
+   * run, and the voices the model in use carries - the picker itself lives
+   * on the settings page.
+   */
+  it("draws the speaking role's variants and their controls", () => {
+    const host = open();
+    host.querySelector<HTMLButtonElement>('[aria-label="show the speaking updates"]')?.click();
+    flushSync();
+
+    const html = host.innerHTML;
+    expect(html).toContain('hexgrad/Kokoro-82M');
+    expect(html).toContain('kokoro-82m-fp32');
+    expect(html).toContain('install fp32');
+    expect(html).toContain('kokoro-82m-int8');
+    expect(html, 'the active variant draws as a state').toContain('active');
+    expect(html, 'the voices the model carries are counted').toContain('2 voices');
   });
 
   /**
@@ -368,10 +371,10 @@ describe('the models page as it draws', () => {
     // flipping it to a selector that matches nothing) would ship a stray
     // hairline under the last row with every test green.
     expect(sheet, 'nothing draws the hairline on the li').toMatch(
-      /\.models-page \.list li \{[^}]*border-bottom/,
+      /\.models-page \.list li[^{]*\{[^}]*border-bottom/,
     );
     expect(sheet, "nothing drops the last row's hairline").toMatch(
-      /\.models-page \.list li:last-child \{[^}]*border-bottom: 0/,
+      /\.models-page \.list li:last-child[^{]*\{[^}]*border-bottom: 0/,
     );
   });
 
@@ -744,12 +747,13 @@ describe('the models page as it draws', () => {
       speaking_bench: { state: 'running', clip: 2, clips: 12 },
       speaking_results: [
         {
-          file: 'Qwen3-TTS-12Hz-1.7B-Base-Q8_0.gguf',
+          file: 'model_quantized.onnx',
           metrics: {
             clips: 12,
             round_trip_wer: 0.041,
-            first_audio_ms: 3_400,
-            realtime_factor: 0.31,
+            first_audio_ms: 318,
+            realtime_factor: 8.84,
+            peak_rss_bytes: 437_256_192,
           },
           at: '2026-11-01T19:00:00Z',
           corpus: { clips: 12, audio_seconds: 320, sha256: 'a414db2a' },
@@ -764,7 +768,7 @@ describe('the models page as it draws', () => {
     expect(host.textContent).toContain('scoring the speaking loop');
     expect(host.textContent).toContain('clip 2 of 12');
     expect(host.textContent).toContain('round-trip WER 4.1%');
-    expect(host.textContent).toContain('first audio 3.4s');
+    expect(host.textContent).toContain('first audio 0.3s');
 
     const stop = [...host.querySelectorAll('button')].find((c) => c.textContent?.trim() === 'stop');
     expect(stop, 'a running speaking bench offers no stop').not.toBeUndefined();

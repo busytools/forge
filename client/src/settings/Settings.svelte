@@ -1,8 +1,11 @@
 <script lang="ts">
   import type { HomeRead } from '../home/live';
-  import { goTo, holdRoute, type Route } from '../routes';
+  import { watchModels } from '../models/live';
+  import type { Command } from '../protocol';
+  import { goTo, holdRoute, lastSeat, type Route } from '../routes';
   import type { Connection } from '../socket';
   import type { SettingsDocument, SettingsEditRequest, SettingsKey } from '../wire/settings';
+  import type { ActivateState, InstallState, SpeakingWire } from '../wire/models';
   import ConfirmDialog from '../components/ConfirmDialog.svelte';
   import SettingsBody from './SettingsBody.svelte';
   import { settingsFrame } from './frame';
@@ -11,6 +14,7 @@
     dirtyCount,
     editRequests,
     emptyDraft,
+    findKey,
     removeEntry,
     restartKeys,
     setEntryValue,
@@ -77,6 +81,71 @@
   let timer: ReturnType<typeof setTimeout> | null = null;
 
   const dirty = $derived(dirtyCount(draft));
+
+  /** The models read, watched only while this page is open. */
+  let models = $state<{
+    speaking: SpeakingWire | null;
+    install: InstallState;
+    activate: ActivateState;
+    busy: boolean;
+  }>({ speaking: null, install: { state: 'idle' }, activate: { state: 'idle' }, busy: false });
+  /** The core's own words for a refused speaking action. */
+  let speakingRefusal = $state<string | null>(null);
+  const seat = $derived($lastSeat);
+  const speaking = $derived(models.speaking);
+  /** The saved voice, off the settings document: a save's reload push moves
+   * this without a second read of the models snapshot. */
+  const savedVoice = $derived.by(() => {
+    if (frame.status !== 'ready') return models.speaking?.voice ?? null;
+    const key = findKey(frame.document, 'tts.voice');
+    return key?.value.kind === 'string' ? key.value.text : null;
+  });
+  /** The staged choice while there is one, else the saved value. */
+  const speakingVoice = $derived(
+    typeof draft.values['tts.voice'] === 'string' ? draft.values['tts.voice'] : savedVoice,
+  );
+
+  // The speaking card is the only reader of the models subject here, so the
+  // subscription lives only while its area is open - a page left on accounts
+  // asks forge for nothing it draws.
+  $effect(() => {
+    if (selected !== 'voice') return;
+    const open = connection;
+    return watchModels(open).subscribe((read) => {
+      const wire = read.wire;
+      models = {
+        speaking: wire?.speaking ?? null,
+        install: wire?.install ?? { state: 'idle' },
+        activate: wire?.activate ?? { state: 'idle' },
+        busy:
+          wire !== null &&
+          (wire.install.state === 'downloading' || wire.activate.state === 'activating'),
+      };
+    });
+  });
+
+  $effect(() => {
+    const stop = connection.onMessage((message) => {
+      if (message.kind === 'error' && message.what === 'dispatch') {
+        speakingRefusal = message.why;
+      }
+    });
+    return stop;
+  });
+
+  function speakingAct(command: Command): void {
+    speakingRefusal = null;
+    void connection.dispatch(command);
+  }
+
+  /** Stage the voice choice as this page's own edit, written by its Save. */
+  function chooseVoice(id: string): void {
+    if (frame.status !== 'ready') return;
+    const key = findKey(frame.document, 'tts.voice');
+    if (key === null) return;
+    if (!editing) toggleEditing();
+    setValue(draft, key, id);
+  }
 
   /** The bar's one claim, in strict precedence: refusal, conflict, saving,
    *  saved, idle. There is one slot, so two can never be drawn at once. */
@@ -492,6 +561,22 @@
       onUndoRemove={(path: string) => undoRemove(draft, path)}
       errorPath={refusal?.keyPath ?? null}
       onBack={goHome}
+      {speaking}
+      speakingInstall={models.install}
+      speakingActivate={models.activate}
+      speakingBusy={models.busy}
+      {speakingVoice}
+      {speakingRefusal}
+      previewSeat={seat}
+      onSpeakingInstall={(variant: string) => speakingAct({ dictate_install: { variant } })}
+      onSpeakingActivate={(file: string) =>
+        speakingAct({ dictate_activate: { role: 'speaking', file } })}
+      onSpeakingDeactivate={() => speakingAct({ dictate_deactivate: { role: 'speaking' } })}
+      onSpeakingVoice={chooseVoice}
+      onSpeakingPreview={(voice: string) => {
+        const at = seat;
+        if (at !== null) speakingAct({ voice_preview: { key: at, voice } });
+      }}
     />
 
     {#if editing && (dirty > 0 || saving || refusal !== null || saved || conflict !== null || restart.length > 0)}

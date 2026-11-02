@@ -20,7 +20,7 @@
   import { watchReturn } from '../connect/resync';
   import Review from '../review/Review.svelte';
   import Settings from '../settings/Settings.svelte';
-  import { shownSeat, titleFor, type Route } from '../routes';
+  import { lastSeat, shownSeat, titleFor, type Route } from '../routes';
   import Session from '../session/Session.svelte';
   import type { Connection } from '../socket';
   import type { ClientSettings } from '../wire/types';
@@ -71,6 +71,13 @@
   // The switch is speech out only, so the gate is `[tts]` and nothing of
   // dictation's.
   const voice = $derived(home.wire !== null && home.wire.voice.enabled);
+
+  // A global page's seat-addressed action - the speaking preview - plays on
+  // the seat the reader was last on.
+  $effect(() => {
+    const seat = shownSeat(route);
+    if (seat !== null) lastSeat.set(seat);
+  });
 
   /**
    * The board's own read (#2517): the session rail and the board page draw
@@ -328,8 +335,8 @@
 {:else if route.name === 'settings'}
   {#if connection !== null}
     <!-- The page reads the settings frame the connection is handed after
-         its greeting; there is no read verb, so it needs no subscription of
-         its own. The header's claude version is the home read's. -->
+         its greeting, and subscribes the models snapshot itself for its
+         speaking section. The header's claude version is the home read's. -->
     <Settings {connection} {home} mark={settings.mark} />
   {:else}
     <Connect {settings} initialAddress={address} launchFailure={failure} {notice} {onconnect} />

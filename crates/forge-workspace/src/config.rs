@@ -1194,6 +1194,14 @@ pub(crate) fn load_from_text(path: PathBuf, raw: &str) -> Result<LoadedConfig, W
         );
     }
 
+    if parsed.tts.language.is_some() {
+        tracing::warn!(
+            target: "forge_workspace::config",
+            event_name = "tts_language_key_ignored",
+            "[tts] language is no longer read; the speaking model is English-only",
+        );
+    }
+
     if parsed.projects.is_some() {
         tracing::warn!(
             target: "forge_workspace::config",
@@ -4252,10 +4260,7 @@ base_url = "http://localhost:18765"
         let unknown = tempdir().expect("tempdir");
         write_config(
             unknown.path(),
-            &format!(
-                "{}\n[tts]\nspeaking_model = \"hexgrad/Kokoro-90M\"\n",
-                minimal_config()
-            ),
+            &format!("{}\n[tts]\nspeaking_model = \"hexgrad/Kokoro-90M\"\n", minimal_config()),
         );
         let error = load_from_dir(unknown.path()).expect_err("an unknown model fails the load");
         let text = error.to_string();
@@ -5186,6 +5191,7 @@ provider = "anthropic"
                 "\n[dictate]\ndevice = \"shure-id\"\n",
                 "dictate_device_key_ignored",
             ),
+            ("[tts] language", "\n[tts]\nlanguage = \"en\"\n", "tts_language_key_ignored"),
             (
                 "a gateway key in an env layer",
                 "\n[env]\nANTHROPIC_BASE_URL = \"https://proxy.example\"\n",

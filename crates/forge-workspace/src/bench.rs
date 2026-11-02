@@ -709,7 +709,7 @@ impl Workspace {
 
         let Some(files) = self.speaking_files() else {
             return self.settle_speaking_bench(Err(
-                "the speaking model is not installed; install it from the models page".to_owned()
+                "the speaking model is not installed; install it from the models page".to_owned(),
             ));
         };
         let engine = match forge_tts::KokoroTts::load(&files) {

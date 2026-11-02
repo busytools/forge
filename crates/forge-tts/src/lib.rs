@@ -57,21 +57,12 @@ mod tests {
     /// llama.cpp dependency and the FFI module it lived in is gone.
     #[test]
     fn the_qwen_engine_is_gone() {
-        let manifest = std::fs::read_to_string(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/Cargo.toml"
-        ))
-        .expect("the crate's own manifest reads");
+        let manifest = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"))
+            .expect("the crate's own manifest reads");
+        assert!(!manifest.contains("llama"), "forge-tts still depends on llama.cpp:\n{manifest}");
         assert!(
-            !manifest.contains("llama"),
-            "forge-tts still depends on llama.cpp:\n{manifest}"
-        );
-        assert!(
-            !std::path::Path::new(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/src/engine/ffi.rs"
-            ))
-            .exists(),
+            !std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src/engine/ffi.rs"))
+                .exists(),
             "the Qwen FFI module is still in the crate"
         );
     }

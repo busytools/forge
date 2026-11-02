@@ -1767,7 +1767,11 @@ models = ["m"]
                         .filter(|field| field.as_str() != "device")
                         .map(|field| format!("dictate.{field}")),
                 ),
-                "tts" => accepted.extend(tts.iter().map(|field| format!("tts.{field}"))),
+                "tts" => accepted.extend(
+                    tts.iter()
+                        .filter(|field| field.as_str() != "language")
+                        .map(|field| format!("tts.{field}")),
+                ),
                 "huggingface" => {
                     accepted.extend(huggingface.iter().map(|field| format!("huggingface.{field}")));
                 }

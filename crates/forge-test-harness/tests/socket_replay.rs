@@ -335,7 +335,7 @@ census!(Command,
         SetReviewThreadStatus struct,
         CloseSession struct, UpsertReviewThread struct, DeleteReviewThread struct,
         SubmitReview struct,
-        VoiceMode struct,
+        VoiceMode struct, VoicePreview struct,
     ],
     command_census, COMMAND_VARIANTS);
 
@@ -1374,7 +1374,31 @@ fn frames_record() -> Value {
             models: DictateModelsSnapshot {
                 enabled: true,
                 models_dir: Some(PathBuf::from("/tmp/models")),
-                speaking_models_dir: Some(PathBuf::from("/tmp/tts-models")),
+                speaking: forge_workspace::TtsView {
+                    enabled: true,
+                    snapshot: forge_workspace::TtsSnapshot::default(),
+                    models_dir: Some(PathBuf::from("/tmp/tts-models")),
+                    speaking_model: forge_workspace::tts::SPEAKING_MODEL.to_owned(),
+                    active: forge_workspace::tts::SpeakingVariantView {
+                        variant: forge_workspace::tts::PINNED_VARIANT.to_owned(),
+                        file: "model_quantized.onnx".to_owned(),
+                        quant: "int8".to_owned(),
+                        size: 92_361_116,
+                        installed: true,
+                        active: true,
+                    },
+                    from: forge_workspace::tts::SpeakingFrom::Installed,
+                    variants: vec![forge_workspace::tts::SpeakingVariantView {
+                        variant: forge_workspace::tts::PINNED_VARIANT.to_owned(),
+                        file: "model_quantized.onnx".to_owned(),
+                        quant: "int8".to_owned(),
+                        size: 92_361_116,
+                        installed: true,
+                        active: true,
+                    }],
+                    voices: vec!["af_heart".to_owned(), "bf_emma".to_owned()],
+                    voice: Some("bf_emma".to_owned()),
+                },
                 in_use: vec![InUseModel {
                     role: forge_workspace::DictateRole::Transcribing,
                     file: "cohere-transcribe-03-2026-Q4_K_M.gguf".to_owned(),

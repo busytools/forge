@@ -188,12 +188,16 @@ export type SpeakingBenchState =
   | { state: 'failed'; reason: string }
   | { state: 'unknown' };
 
-/** What one speaking run measured: the round trip and the render's pace. */
+/** What one speaking run measured: the round trip, the render's pace and the
+ * resident set it needed. */
 export interface SpeakingBenchMetrics {
   clips: number;
   round_trip_wer: number;
   first_audio_ms: number;
   realtime_factor: number;
+  /** The process's peak resident set above what it held before the run. A
+   * run saved before this was measured carries zero. */
+  peak_rss_bytes: number;
 }
 
 /** One finished speaking bench, kept under the model and corpus it ran. */
@@ -296,11 +300,39 @@ export type CatalogueCheck =
   | { state: 'unreachable'; error: string }
   | { state: 'unknown' };
 
+/** One speaking model variant the page can install and run. */
+export interface SpeakingVariantWire {
+  variant: string;
+  file: string;
+  quant: string;
+  size: number;
+  installed: boolean;
+  active: boolean;
+}
+
+/** Where the active speaking model came from; `unknown` is this client's own. */
+export type SpeakingFrom = 'config' | 'installed' | 'pin' | 'unknown';
+
+/** The speaking role's own read: its model, the variants, and its voices. */
+export interface SpeakingWire {
+  enabled: boolean;
+  models_dir: string | null;
+  /** The model's own name, which `[tts] speaking_model` accepts. */
+  speaking_model: string;
+  active: SpeakingVariantWire | null;
+  from: SpeakingFrom;
+  variants: SpeakingVariantWire[];
+  /** The installed voice ids. */
+  voices: string[];
+  /** The configured voice; `null` means the engine's default. */
+  voice: string | null;
+}
+
 /** Everything the models page draws, in one read. */
 export interface DictateModelsWire {
   enabled: boolean;
   models_dir: string | null;
-  speaking_models_dir: string | null;
+  speaking: SpeakingWire;
   in_use: InUseModel[];
   check: CatalogueCheck;
   updates: ModelUpdate[];
@@ -323,6 +355,9 @@ const CHECK_STATES = ['never', 'checking', 'fresh', 'unreachable'] as const;
 
 /** The sources the core names for an active model; the fourth is this client's own. */
 const FROM_SOURCES = ['config', 'installed', 'pin'] as const;
+
+/** The same sources for the speaking role's own read. */
+const SPEAKING_FROM = ['config', 'installed', 'pin'] as const;
 
 /** The install states the server writes; the fourth is this client's own. */
 const INSTALL_STATES = ['idle', 'downloading', 'failed'] as const;
@@ -369,7 +404,7 @@ export function modelsFrom(data: DictateModelsWire): DictateModelsWire {
     // An older server sends neither directory: `null` is the page's own
     // "not configured", where `undefined` would render as the word.
     models_dir: data.models_dir ?? null,
-    speaking_models_dir: data.speaking_models_dir ?? null,
+    speaking: speakingFrom(data.speaking),
     rows: (data.rows ?? []).map((row) => rowFrom(row)),
     in_use: data.in_use.map((model) => ({
       ...model,
@@ -483,6 +518,51 @@ function benchFrom(bench: BenchState | undefined): BenchState {
 function checkFrom(check: CatalogueCheck): CatalogueCheck {
   const state: string = check.state;
   return (CHECK_STATES as readonly string[]).includes(state) ? check : { state: 'unknown' };
+}
+
+/**
+ * The speaking role's read, with every union narrowed here.
+ *
+ * A missing value is a server that predates the field: the page draws the
+ * role as unread rather than as an installed model that is not there.
+ */
+function speakingFrom(speaking: SpeakingWire | undefined): SpeakingWire {
+  if (speaking === undefined) {
+    return {
+      enabled: false,
+      models_dir: null,
+      speaking_model: '',
+      active: null,
+      from: 'unknown',
+      variants: [],
+      voices: [],
+      voice: null,
+    };
+  }
+  return {
+    enabled: speaking.enabled === true,
+    models_dir: speaking.models_dir ?? null,
+    speaking_model: speaking.speaking_model ?? '',
+    active:
+      speaking.active === null || speaking.active === undefined
+        ? null
+        : speakingVariantFrom(speaking.active),
+    from: (SPEAKING_FROM as readonly string[]).includes(speaking.from) ? speaking.from : 'unknown',
+    variants: (speaking.variants ?? []).map((variant) => speakingVariantFrom(variant)),
+    voices: speaking.voices ?? [],
+    voice: speaking.voice ?? null,
+  };
+}
+
+function speakingVariantFrom(variant: SpeakingVariantWire): SpeakingVariantWire {
+  return {
+    variant: variant.variant,
+    file: variant.file,
+    quant: variant.quant,
+    size: typeof variant.size === 'number' ? variant.size : 0,
+    installed: variant.installed === true,
+    active: variant.active === true,
+  };
 }
 
 function fromFrom(from: ActiveFrom | undefined): ActiveFrom {

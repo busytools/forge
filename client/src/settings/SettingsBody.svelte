@@ -9,6 +9,9 @@
   import SettingRow from './SettingRow.svelte';
   import { ENTRY_FIELDS, addableGroups, currentEntryValue, currentValue } from './editor';
   import type { Draft } from './editor';
+  import SpeakingCard from './SpeakingCard.svelte';
+  import type { ActivateState, InstallState, SpeakingWire } from '../wire/models';
+  import type { SessionSlot } from '../wire/types';
   import { builtInFor, classesOf, groupsOf, selectedArea } from './view';
 
   /**
@@ -36,6 +39,18 @@
     focusAdd = null,
     errorPath = null,
     onBack = () => {},
+    speaking = null,
+    speakingInstall = { state: 'idle' },
+    speakingActivate = { state: 'idle' },
+    speakingBusy = false,
+    speakingVoice = null,
+    speakingRefusal = null,
+    previewSeat = null,
+    onSpeakingInstall = () => {},
+    onSpeakingActivate = () => {},
+    onSpeakingDeactivate = () => {},
+    onSpeakingVoice = () => {},
+    onSpeakingPreview = () => {},
   }: {
     document: SettingsDocument;
     mark: string | null;
@@ -65,6 +80,21 @@
     errorPath?: string | null;
     /** The back link, intercepted while the draft is dirty. */
     onBack?: (event: MouseEvent) => void;
+    /** The speaking role's read, for the voice area's own card. */
+    speaking?: SpeakingWire | null;
+    speakingInstall?: InstallState;
+    speakingActivate?: ActivateState;
+    speakingBusy?: boolean;
+    speakingVoice?: string | null;
+    /** The core's words for a refused speaking action. */
+    speakingRefusal?: string | null;
+    /** The seat a voice preview plays on; `null` before one was opened. */
+    previewSeat?: SessionSlot | null;
+    onSpeakingInstall?: (variant: string) => void;
+    onSpeakingActivate?: (file: string) => void;
+    onSpeakingDeactivate?: () => void;
+    onSpeakingVoice?: (voice: string) => void;
+    onSpeakingPreview?: (voice: string) => void;
   } = $props();
 
   const shown = $derived(selectedArea(document, selected));
@@ -226,6 +256,22 @@
       {:else if area.keys.length === 0 && added.length === 0}
         <p class="settings-empty">This area has no keys.</p>
       {:else}
+        {#if area.id === 'voice'}
+          <SpeakingCard
+            {speaking}
+            install={speakingInstall}
+            activate={speakingActivate}
+            busy={speakingBusy}
+            voice={speakingVoice}
+            seat={previewSeat}
+            refusal={speakingRefusal}
+            oninstall={onSpeakingInstall}
+            onactivate={onSpeakingActivate}
+            ondeactivate={onSpeakingDeactivate}
+            onchoose={onSpeakingVoice}
+            onpreview={onSpeakingPreview}
+          />
+        {/if}
         {#each groups as group, index (group.label)}
           {@const removed =
             editing && group.entryPath !== null ? draft.removes[group.entryPath] : undefined}

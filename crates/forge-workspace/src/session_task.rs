@@ -2834,7 +2834,8 @@ pub(crate) fn execute_command_via_handle(
         | Command::PluginCheckUpdates
         | Command::MarketplaceAdd { .. }
         | Command::MarketplaceRepair { .. }
-        | Command::VoiceMode { .. }) => {
+        | Command::VoiceMode { .. }
+        | Command::VoicePreview { .. }) => {
             tracing::warn!(
                 target: "forge_workspace::session_task",
                 slot = %key.display(),

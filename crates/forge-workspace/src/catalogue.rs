@@ -33,9 +33,9 @@ pub struct DictateModelsSnapshot {
     pub enabled: bool,
     /// Where the dictation models land.
     pub models_dir: Option<PathBuf>,
-    /// Where the speaking model's two files land, which is `[tts]`'s own
-    /// directory rather than dictation's.
-    pub speaking_models_dir: Option<PathBuf>,
+    /// The speaking role's own read: its model, the variants that can run,
+    /// and the voices the installed model carries.
+    pub speaking: crate::tts::TtsView,
     /// The models forge is configured to run, pins and live state.
     pub in_use: Vec<InUseModel>,
     /// The catalogue's own freshness.
@@ -486,9 +486,9 @@ impl crate::Workspace {
                     key: "speaking_model".to_owned(),
                     variant: variant.variant.to_owned(),
                 },
-                crate::tts::SpeakingFrom::Installed => crate::install::ActiveFrom::Installed {
-                    variant: variant.variant.to_owned(),
-                },
+                crate::tts::SpeakingFrom::Installed => {
+                    crate::install::ActiveFrom::Installed { variant: variant.variant.to_owned() }
+                }
                 crate::tts::SpeakingFrom::Pin => crate::install::ActiveFrom::Pin,
             };
             for row in &view.snapshot.models {
@@ -509,7 +509,7 @@ impl crate::Workspace {
         DictateModelsSnapshot {
             enabled: settings.enabled,
             models_dir: settings.models_dir(),
-            speaking_models_dir: config.tts.models_dir(),
+            speaking: self.voices(),
             in_use,
             check: state.check.clone(),
             updates: if settings.enabled { updates_for(entries, &specs) } else { Vec::new() },

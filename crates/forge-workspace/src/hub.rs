@@ -118,8 +118,8 @@ impl Hub {
                 .map_err(|error| format!("{}: {error}", parent.display()))?;
         }
         let part = part_path(dest);
-        let mut file = std::fs::File::create(&part)
-            .map_err(|error| format!("{}: {error}", part.display()))?;
+        let mut file =
+            std::fs::File::create(&part).map_err(|error| format!("{}: {error}", part.display()))?;
         let mut hasher = Sha256::new();
         let mut written = 0_u64;
         loop {
@@ -146,7 +146,8 @@ impl Hub {
 
 /// Where a download is written while it is being checked.
 fn part_path(dest: &Path) -> std::path::PathBuf {
-    let name = dest.file_name().map_or_else(String::new, |name| name.to_string_lossy().into_owned());
+    let name =
+        dest.file_name().map_or_else(String::new, |name| name.to_string_lossy().into_owned());
     dest.with_file_name(format!("{name}.part"))
 }
 
@@ -169,10 +170,7 @@ pub fn finish_file(
         && !digest.eq_ignore_ascii_case(expected)
     {
         let _ = std::fs::remove_file(part);
-        return Err(format!(
-            "{} declares sha256 {expected}, and the file is {digest}",
-            blob.path
-        ));
+        return Err(format!("{} declares sha256 {expected}, and the file is {digest}", blob.path));
     }
     std::fs::rename(part, dest).map_err(|error| format!("{}: {error}", dest.display()))
 }
@@ -302,11 +300,8 @@ mod tests {
         let part = dir.path().join("model.onnx.part");
         let dest = dir.path().join("model.onnx");
         std::fs::write(&part, b"weights").expect("the part is written");
-        let blob = HubBlob {
-            path: "onnx/model.onnx".to_owned(),
-            size: 7,
-            sha256: Some("00".repeat(32)),
-        };
+        let blob =
+            HubBlob { path: "onnx/model.onnx".to_owned(), size: 7, sha256: Some("00".repeat(32)) };
         let error =
             finish_file(&part, &dest, &blob, 7, "11".repeat(32).as_str()).expect_err("refused");
         assert!(error.contains("sha256"), "got: {error}");

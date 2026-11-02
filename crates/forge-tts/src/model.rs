@@ -128,8 +128,7 @@ mod tests {
         std::fs::create_dir(dir.path().join("voices")).expect("the voice dir is made");
         let path = dir.path().join("model.onnx");
         std::fs::write(&path, b"weights").expect("the file is written");
-        let files =
-            model(dir.path()).with_digests(vec![(path.clone(), "00".repeat(32))]);
+        let files = model(dir.path()).with_digests(vec![(path.clone(), "00".repeat(32))]);
         let error = files.verify().expect_err("a wrong digest is refused");
         assert!(error.to_string().contains("model.onnx"), "got: {error}");
     }

@@ -6436,6 +6436,44 @@ impl Workspace {
                         self.update_sender().send(SessionUpdate::VoiceModeState { key, listeners });
                     return Ok(());
                 }
+                // The refusals a page acts on are answered here, and the
+                // render itself rides the seat's queue rather than holding
+                // this dispatch for a model load.
+                Command::VoicePreview { key, voice } => {
+                    let service = self.voice_service();
+                    if !service.enabled() {
+                        return Err(crate::DispatchError::VoiceOff {
+                            reason: "[tts] enabled is false".to_owned(),
+                        });
+                    }
+                    if service.listeners(&key) == 0 {
+                        return Err(crate::DispatchError::VoiceOff {
+                            reason: "that seat's speaker switch is off".to_owned(),
+                        });
+                    }
+                    let Some(files) = self.speaking_files() else {
+                        return Err(crate::DispatchError::VoiceOff {
+                            reason: "the speaking model is not installed".to_owned(),
+                        });
+                    };
+                    let installed = files.installed_voices().map_err(|error| {
+                        crate::DispatchError::VoiceOff { reason: error.to_string() }
+                    })?;
+                    forge_tts::select_voice(Some(&voice), &installed).map_err(|error| {
+                        crate::DispatchError::VoiceOff { reason: error.to_string() }
+                    })?;
+                    tokio::spawn(async move {
+                        if let Err(error) = service.preview(&key, voice).await {
+                            tracing::warn!(
+                                event_name = "voice_preview_failed",
+                                slot = %key.display(),
+                                %error,
+                                "the voice preview did not render"
+                            );
+                        }
+                    });
+                    return Ok(());
+                }
                 _ => {}
             }
             let key = key.clone();

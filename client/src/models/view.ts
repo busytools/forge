@@ -94,13 +94,8 @@ export function roleWord(role: ModelRole): string {
  * already uses for the same state, and the shape that carries it without
  * colour.
  */
-export function modelChip(
-  state: DictateModelState,
-  role?: ModelRole,
-): { mark: string; text: string } {
-  // The speaking model is placed by hand: its files being present is not a
-  // load, so the chip says `placed` rather than claiming the engine has it.
-  const text = role === 'speaking' && state === 'ready' ? 'placed' : modelState(state);
+export function modelChip(state: DictateModelState): { mark: string; text: string } {
+  const text = modelState(state);
   if (typeof state === 'object' && 'downloading' in state) {
     const { downloaded, total } = state.downloading;
     const percent = total > 0 ? ` ${Math.floor((downloaded / total) * 100)}%` : '';
@@ -378,7 +373,8 @@ export function search(rows: CatalogueRow[], query: string): CatalogueRow[] {
 export function activeSource(from: ActiveFrom): string {
   switch (from.from) {
     case 'config':
-      return `pinned by [dictate] ${from.key}`;
+      // The speaking role's key lives in the other table.
+      return `pinned by ${from.key === 'speaking_model' ? '[tts]' : '[dictate]'} ${from.key}`;
     case 'installed':
       return 'installed here';
     case 'pin':
@@ -388,14 +384,8 @@ export function activeSource(from: ActiveFrom): string {
   }
 }
 
-/**
- * Where an in-use row's model came from, in the row's own words. The speaking
- * model is placed by hand, so its row names the `[tts]` models_dir instead.
- */
+/** Where an in-use row's model came from, in the row's own words. */
 export function sourceLine(model: InUseModel): string {
-  if (model.role === 'speaking') {
-    return 'placed by hand: the weights and their mmproj projector under the [tts] models_dir';
-  }
   return activeSource(model.from);
 }
 
@@ -480,8 +470,7 @@ export function installLine(install: InstallState): OpLine | null {
       if (install.total === 0) {
         return {
           mark: 'live',
-          title:
-            install.file === '' ? 'reading the catalogue entry' : `downloading ${install.file}`,
+          title: install.file === '' ? "reading the model's entry" : `downloading ${install.file}`,
           detail: null,
           percent: null,
         };
@@ -522,7 +511,11 @@ export function activateLine(activate: ActivateState): OpLine | null {
       return {
         mark: 'live',
         title: `loading ${activate.file}`,
-        detail: `${roleWord(activate.role)} \u{b7} dictation keeps running the current model until this one is up`,
+        detail: `${roleWord(activate.role)} \u{b7} ${
+          activate.role === 'speaking'
+            ? 'the speaking model keeps serving until this one is up'
+            : 'dictation keeps running the current model until this one is up'
+        }`,
         percent: null,
       };
     case 'failed':
@@ -1171,12 +1164,18 @@ export function speakingBenchLine(bench: SpeakingBenchState): OpLine | null {
  */
 export function speakingResultFacts(result: SpeakingBenchResult): FactPart[] {
   const metrics = result.metrics;
-  return [
+  const parts: FactPart[] = [
     { text: `round-trip WER ${(metrics.round_trip_wer * 100).toFixed(1)}%`, hl: true },
     { text: `first audio ${(metrics.first_audio_ms / 1000).toFixed(1)}s`, hl: true },
     { text: `${metrics.realtime_factor.toFixed(2)}\u{d7} realtime` },
-    { text: `${metrics.clips} ${metrics.clips === 1 ? 'clip' : 'clips'}` },
   ];
+  // A run saved before the resident set was measured carries zero, and a
+  // zero would claim the model took no memory.
+  if (metrics.peak_rss_bytes > 0) {
+    parts.push({ text: `${sizeLabel(metrics.peak_rss_bytes)} peak` });
+  }
+  parts.push({ text: `${metrics.clips} ${metrics.clips === 1 ? 'clip' : 'clips'}` });
+  return parts;
 }
 
 /** When one speaking result ran, on the words bench's terms. */

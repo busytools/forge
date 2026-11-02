@@ -540,8 +540,7 @@ impl Workspace {
                 format!("{} publishes no digest", files.model.path),
             );
         };
-        let total = files.model.size
-            + files.voices.iter().map(|voice| voice.size).sum::<u64>();
+        let total = files.model.size + files.voices.iter().map(|voice| voice.size).sum::<u64>();
         self.set_install_file(speaking.file, total);
         self.push_models();
 
@@ -564,7 +563,8 @@ impl Workspace {
                 );
             };
             let dest = dir.join("voices").join(format!("{name}.bin"));
-            if let Err(reason) = download_blob(&self, &hub, &revision, blob, &dest, done, total).await
+            if let Err(reason) =
+                download_blob(&self, &hub, &revision, blob, &dest, done, total).await
             {
                 return self.fail_install(speaking.file.to_owned(), reason);
             }
@@ -630,9 +630,8 @@ async fn download_blob(
 ) -> Result<(), String> {
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    let file = dest
-        .file_name()
-        .map_or_else(String::new, |name| name.to_string_lossy().into_owned());
+    let file =
+        dest.file_name().map_or_else(String::new, |name| name.to_string_lossy().into_owned());
     let last = AtomicU64::new(u64::MAX);
     hub.download(crate::tts::HUB_REPO, revision, blob, dest, |written| {
         let got = base + written;
@@ -988,8 +987,7 @@ impl Workspace {
     /// Load one installed model and swap the role onto it.
     async fn run_activate(self: Arc<Self>, role: DictateRole, file: String) {
         if role == DictateRole::Speaking {
-            let Some(install) =
-                self.speaking_installs().into_iter().find(|row| row.model == file)
+            let Some(install) = self.speaking_installs().into_iter().find(|row| row.model == file)
             else {
                 return self.fail_activate(
                     role,
@@ -1452,10 +1450,8 @@ mod tests_install {
         let files = ws.speaking_files().expect("the installed variant resolves");
         assert_eq!(files.digests.len(), 3, "the model and both voices carry a digest");
         assert!(
-            files
-                .digests
-                .iter()
-                .any(|(path, digest)| path.ends_with("voices/af_heart.bin") && digest == &"bb".repeat(32)),
+            files.digests.iter().any(|(path, digest)| path.ends_with("voices/af_heart.bin")
+                && digest == &"bb".repeat(32)),
             "a voice's own digest rides with its file",
         );
     }
