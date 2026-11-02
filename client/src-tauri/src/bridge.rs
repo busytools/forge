@@ -385,9 +385,7 @@ impl Bridge {
         if let Some(app) = &self.app {
             crate::browser::lost(app);
         }
-        self.emit(ClientEvent::Inbound(
-            json!({ "kind": "browser_surface_failed", "reason": why }),
-        ));
+        self.emit(ClientEvent::Inbound(json!({ "kind": "browser_surface_failed", "reason": why })));
     }
 
     /// The takeover lowered: stop viewing the profile, so the server's idle
