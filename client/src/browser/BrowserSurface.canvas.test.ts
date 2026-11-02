@@ -828,8 +828,37 @@ describe('the canvas viewer', () => {
 
     const wheel = events.find((event) => event.kind === 'wheel');
     if (wheel?.kind !== 'wheel') throw new Error('the wheel sent nothing');
-    expect(wheel.delta_x, "the wheel's own amount, not the picture's").toBe(30);
-    expect(wheel.delta_y, "the wheel's own amount, not the picture's").toBe(40);
+    expect(wheel.delta_x, "the wheel's own amount and sign, not the picture's").toBe(-30);
+    expect(wheel.delta_y, "the wheel's own amount and sign, not the picture's").toBe(-40);
+  });
+
+  /// **A wheel crosses in the page's own sign, both ways.** The wire carries
+  /// the page's sign and the server turns it back for CEF; negating it here
+  /// as well put a web wheel the wrong way. A wheel down stays positive and
+  /// a wheel up stays negative.
+  it("sends a wheel in the page's own sign, both ways", () => {
+    surface.viewer = 7;
+    surface.controller = 7;
+    const { connection, events } = stubConnection();
+    const target = open(connection);
+    const canvas = target.querySelector('canvas');
+    if (canvas === null) throw new Error('no canvas');
+
+    canvas.dispatchEvent(
+      new WheelEvent('wheel', { deltaX: 30, deltaY: 40, bubbles: true, cancelable: true }),
+    );
+    canvas.dispatchEvent(
+      new WheelEvent('wheel', { deltaX: -30, deltaY: -40, bubbles: true, cancelable: true }),
+    );
+
+    const wheels = events.filter((event) => event.kind === 'wheel');
+    const sent = (index: number) => {
+      const wheel = wheels[index];
+      if (wheel?.kind !== 'wheel') throw new Error(`wheel ${index} is missing`);
+      return [wheel.delta_x, wheel.delta_y];
+    };
+    expect(sent(0), 'a wheel down and right stays positive').toEqual([30, 40]);
+    expect(sent(1), 'a wheel up and left stays negative').toEqual([-30, -40]);
   });
 
   /// **The phone's keys and text reach the page.** The canvas has no fields,
