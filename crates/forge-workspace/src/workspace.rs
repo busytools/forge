@@ -427,9 +427,10 @@ const DYNAMIC_WORKER_RESTART_NOTE: &str = "This session was restarted by forge. 
 /// session, so the history is named conditionally rather than relied on.
 pub const LEAD_RESTART_NOTE: &str = "forge restarted. Read the project handoff (`handoff.md` in the project's memory directory) and the task board before acting; they say what was in flight. Continue that work and do not restart what is finished. If a prior conversation is in the history above, treat it as the record of this seat's last run. If the history's timestamps disagree with the clock and the live schedules, believe the clock and the schedules.";
 
-/// The restart note a boot spawn hands its seat: only a spawn that
-/// resumed a stored session delivers one, so a fresh spawn or `--new`
-/// clears whatever a previous spawn left.
+/// The restart note a boot spawn hands its seat: only a spawn carrying a
+/// stored id to resume delivers one, so a first boot or `--new` clears
+/// whatever a previous spawn left. A resume the CLI refuses still takes
+/// the note, whose wording does not depend on history.
 fn resume_kick_for(resumed: bool, requested: Option<String>) -> Option<String> {
     if resumed { requested } else { None }
 }
@@ -12938,9 +12939,10 @@ provider = "anthropic"
         (true, before.1 || after)
     }
 
-    /// **A boot spawn that resumes the lead hands it the restart note as
-    /// its first turn.** This is the whole chain: the launch setting the
-    /// boot wave sends, the spawn's resume gate, and the Connected hook.
+    /// **A boot spawn that carries a stored id hands the lead the restart
+    /// note as its first turn.** This is the whole chain: the launch
+    /// setting the boot wave sends, the spawn's stored-id gate, and the
+    /// Connected hook.
     #[tokio::test]
     async fn a_boot_spawn_kicks_a_resumed_lead_with_the_restart_note() {
         let dir = tempdir().expect("tempdir");
@@ -12957,14 +12959,14 @@ provider = "anthropic"
         let mut updates = workspace.subscribe_mirror();
         spawn_boot_lead(&workspace, false);
         let (_, note) = lead_boot_frames(&mut updates, &key, Duration::from_secs(5)).await;
-        assert!(note, "a boot-resumed lead's first turn is the restart note");
+        assert!(note, "a lead with a stored id to resume is kicked with the restart note");
         forge_agent::set_test_sdk_binary(None);
     }
 
-    /// **A first boot on an empty store resumes nothing**, so the lead it
-    /// starts gets no restart note even though the boot wave asked for
-    /// one. Without this, inlining the resume gate leaves every other test
-    /// green and a first boot hands its lead a note over an empty history.
+    /// **A first boot carries no stored id**, so the lead it starts gets
+    /// no restart note even though the boot wave asked for one. The
+    /// `--new` test pins the same gate from the other side, where an id
+    /// exists and the launch refuses it.
     #[tokio::test]
     async fn a_first_boot_lead_gets_no_restart_note() {
         let dir = tempdir().expect("tempdir");
@@ -20157,8 +20159,16 @@ mod worker_respawn_tests {
             "the note sends the lead to the board before it acts",
         );
         assert!(
+            LEAD_RESTART_NOTE.contains("they say what was in flight"),
+            "the note names the handoff and the board as the source, not the history",
+        );
+        assert!(
             LEAD_RESTART_NOTE.contains("Continue that work and do not restart what is finished"),
             "the note tells the lead to carry on and not redo finished work",
+        );
+        assert!(
+            LEAD_RESTART_NOTE.contains("treat it as the record of this seat's last run"),
+            "a history that IS present is named as this seat's own record",
         );
         assert!(
             LEAD_RESTART_NOTE.contains("If a prior conversation is in the history above"),
