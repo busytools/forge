@@ -3830,6 +3830,7 @@ mod tests {
     use crate::update_fanout::{SeatUpdate, SubscriberRole};
     use forge_agent::Agent;
     use forge_agent::client::SpawnFailureKind;
+    use forge_primitives::{ContentBlock, Message};
 
     fn empty_domain() -> DomainSession {
         let (handle, _rx) = Agent::testing_stub();
@@ -10411,10 +10412,18 @@ provider = "anthropic"
             }
         }
 
-        let (workspace, _update_rx) = crate::Workspace::testing_stub();
+        let (workspace, mut update_rx) = crate::Workspace::testing_stub();
         workspace.install_voice_engine_for_test(Arc::new(Silent));
         let session_key = SessionSlot::from_str_for_test("voice-respawn-uuid");
         workspace.voice_service().set_listening(&session_key, 1, true, false);
+        // The seat has no command sender yet, so this note cannot be delivered:
+        // it must forge no row, or the page would draw a note the agent never got.
+        while let Ok(frame) = update_rx.try_recv() {
+            assert!(
+                !matches!(&*frame.update, SessionUpdate::ChatAppended { .. }),
+                "a note that was not delivered draws no row",
+            );
+        }
         let (command_tx, mut command_rx) = tokio::sync::mpsc::unbounded_channel();
         workspace.command_senders.lock().insert(session_key.clone(), command_tx);
 
@@ -10459,14 +10468,45 @@ provider = "anthropic"
         });
 
         let mut note = None;
+        let mut note_uuid = None;
         while let Ok(command) = command_rx.try_recv() {
-            if let crate::protocol::Command::PromptUnder { text, .. } = command {
+            if let crate::protocol::Command::PromptUnder { text, uuid, .. } = command {
                 note = Some(text);
+                note_uuid = Some(uuid);
             }
         }
         assert!(
             note.as_deref().is_some_and(|text| text.contains("The user is listening")),
             "the successor is told it is heard, got: {note:?}",
+        );
+
+        let mut row = None;
+        while let Ok(frame) = update_rx.try_recv() {
+            if let SessionUpdate::ChatAppended { key, msg, source, .. } = &*frame.update
+                && key == &session_key
+            {
+                row = Some(((*msg).clone(), *source));
+            }
+        }
+        let (row, source) = row.expect("the delivered note forges the row a page draws");
+        assert_eq!(source, Some(PromptSource::Forge), "the row is forge's own delivery");
+        let Message::User { message, uuid, timestamp, .. } = &row else {
+            panic!("a voice note draws as an information row, not the reader's turn: {row:?}");
+        };
+        assert_eq!(uuid, &note_uuid, "the row and the prompt share one id");
+        assert!(timestamp.is_some(), "the row carries forge's clock");
+        let text = message
+            .content
+            .iter()
+            .find_map(|block| match block {
+                ContentBlock::Text { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .expect("the row carries the note's words");
+        assert_eq!(Some(text), note.as_deref(), "the row carries exactly the prose the agent got");
+        assert!(
+            text.starts_with("[Voice]\n\n"),
+            "the envelope is what makes the view draw it as information, got: {text:?}",
         );
     }
 
