@@ -10394,6 +10394,83 @@ provider = "anthropic"
         );
     }
 
+    /// A replacement under a listening seat tells the successor it is heard:
+    /// `/new` and `/resume` leave the listener set alone, so the note has to
+    /// fire on the occupant change rather than on a listener transition.
+    #[tokio::test]
+    async fn a_replaced_seat_tells_the_successor_it_is_heard() {
+        struct Silent;
+        impl forge_tts::Engine for Silent {
+            fn speak(
+                &self,
+                _request: forge_tts::SpeakRequest,
+            ) -> tokio::sync::mpsc::Receiver<Result<forge_tts::Chunk, forge_tts::Error>>
+            {
+                let (sender, receiver) = tokio::sync::mpsc::channel(1);
+                drop(sender);
+                receiver
+            }
+        }
+
+        let (workspace, _update_rx) = crate::Workspace::testing_stub();
+        workspace.install_voice_engine_for_test(Arc::new(Silent));
+        let session_key = SessionSlot::from_str_for_test("voice-respawn-uuid");
+        workspace.voice_service().set_listening(&session_key, 1, true);
+        let (command_tx, mut command_rx) = tokio::sync::mpsc::unbounded_channel();
+        workspace.command_senders.lock().insert(session_key.clone(), command_tx);
+
+        let domain =
+            Arc::new(parking_lot::Mutex::new(DomainSession::new(session_key.clone(), None)));
+        let (handle, _agent_cmd_rx) = Agent::testing_stub();
+        let (_cmd_tx, command_rx_task) =
+            tokio::sync::mpsc::unbounded_channel::<crate::protocol::Command>();
+        let update_tx = workspace.update_sender();
+        let mut task = SessionTask {
+            key: session_key.clone(),
+            handle: Arc::new(handle),
+            command_rx: command_rx_task,
+            domain,
+            update_tx,
+            connected_once: true,
+            workspace: Arc::downgrade(&workspace),
+            compaction_count: 0,
+            successor: None,
+            teardown_done: None,
+        };
+
+        task.translate_event(AgentEvent::Connected {
+            session_id: session_key.display(),
+            cwd: "/tmp/respawn".to_owned(),
+            current_model: forge_primitives::CurrentModel {
+                resolved_id: "claude".to_owned(),
+                display_name_short: "claude".to_owned(),
+                display_name_long: "claude".to_owned(),
+                requested_id: None,
+                catalog_id: None,
+                supports_effort: false,
+                supported_effort_levels: Vec::new(),
+                supports_auto_mode: None,
+                supports_adaptive_thinking: None,
+                is_authoritative: true,
+            },
+            available_models: Vec::new(),
+            mode: None,
+            history_updates: Some(Vec::new()),
+            compaction_count: 0,
+        });
+
+        let mut note = None;
+        while let Ok(command) = command_rx.try_recv() {
+            if let crate::protocol::Command::PromptUnder { text, .. } = command {
+                note = Some(text);
+            }
+        }
+        assert!(
+            note.as_deref().is_some_and(|text| text.contains("The user is listening")),
+            "the successor is told it is heard, got: {note:?}",
+        );
+    }
+
     /// The replaced identity's `/dictate` override axes die with it:
     /// a view mints a blank bucket for the new session, so an axis
     /// left on the domain would style a session that no longer exists.
