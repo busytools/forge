@@ -984,19 +984,17 @@
            transcribes, scored over the same public corpus. Its own card
            because its figures - round-trip words, first audio, the render's
            pace - are not the words bench's. -->
-      <div class="status" role="status">
-        <span
-          class="dot {speakLine === null
-            ? wire.speaking_bench.state === 'failed'
-              ? 'failed'
-              : 'off'
-            : 'live'}"
-        ></span>
+      <div class="status {speakLine?.mark === 'live' ? '' : (speakLine?.mark ?? 'off')}" role="status">
+        <span class="dot {speakLine?.mark ?? 'off'}"></span>
         <span class="t">
           {speakLine === null ? 'score the speaking loop' : speakLine.title}
         </span>
         {#if speakLine !== null && speakLine.detail !== null}
           <span class="when">{speakLine.detail}</span>
+        {/if}
+        {#if speakLine !== null && speakLine.percent !== null}
+          <progress class="bar" max="100" value={speakLine.percent} aria-label="speaking bench progress"
+          ></progress>
         {/if}
         <span class="spacer"></span>
         {#if wire.speaking_bench.state === 'running'}
