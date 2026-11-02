@@ -6,8 +6,8 @@
 //! that lived here before. Projects within an org keep a flat list
 //! via `[[orgs.projects]]`. Multiple projects can carry
 //! `resume_lead = true`; all such projects spawn at launch, resuming the
-//! session forge stored for them, and the first one (alphabetical)
-//! becomes the focused tab.
+//! session forge stored for them unless `--new` is passed, and the first
+//! one (alphabetical) is the default project.
 //!
 //! **Selection policy.** The gateway's declared-model walk: over the
 //! org's `accounts` primaries and `fallback_accounts`, the first
@@ -867,7 +867,7 @@ pub(crate) struct LoadedProject {
     /// `accounts`. Absent key -> empty.
     pub fallback_accounts: Vec<String>,
     /// `true` when the project's lead should spawn at forge launch,
-    /// resuming the session forge stored for it.
+    /// resuming the session forge stored for it unless `--new` is passed.
     pub resume_lead: bool,
     /// The project's model: fills the CLI's model slots at spawn
     /// (`ANTHROPIC_DEFAULT_*_MODEL`, `ANTHROPIC_SMALL_FAST_MODEL`,
