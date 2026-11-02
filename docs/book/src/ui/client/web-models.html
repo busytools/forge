@@ -3,14 +3,14 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>forge &middot; dictation models</title>
+<title>forge &middot; models</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cg fill='none' stroke='%23f47600' stroke-width='2.4'%3E%3Crect x='3.2' y='3.2' width='17.6' height='17.6' rx='4'/%3E%3Cpath d='M13.6 3.2V20.8'/%3E%3C/g%3E%3Cpath fill='%23f47600' d='M4.4 6.4a2 2 0 0 1 2-2h4v15.2h-4a2 2 0 0 1-2-2Z'/%3E%3C/svg%3E">
 <style>
   /* ============================================================
-     forge - the dictation models page, as the client draws it.
+     forge - the models page, as the client draws it.
      The palette and the type scale are the shipped ones, token for
      token; the page's own rules are `client/src/assets/web.css`'s
      `.models-page` block, and the frame around them is this drawing's.
@@ -289,8 +289,8 @@
   <p class="sub">The page at <span class="mono">/models</span>, as the client draws it: what is
   pinned, what the transcribe.cpp catalogue proposes, the feed's rows the search reads, and the
   controls that bring a candidate onto the machine and make it the one a role runs. The three
-  roles are the transcribing and cleanup models and the speaking model speech out is drawn
-  from. One read of <span class="mono">Subject::DictateModels</span> fills all of it; a check
+  roles are the transcribing and cleanup models and the speaking model the speech-out half is
+  drawn from. One read of <span class="mono">Subject::DictateModels</span> fills all of it; a check
   landing, the models finishing their load, and a download or activation landing are the updates
   that move it. The benchmark section's own runs - the takes, the read-aloud set, the bundled
   public slice, the one press that scores the picks and the speaking loop's own card - are on
@@ -306,14 +306,14 @@
           <span class="word">forge</span>
         </div>
         <div class="title">
-          <h1 class="t">Dictation models</h1>
-          <span class="s">transcribing &middot; cleanup &middot; updates &middot; benchmarks</span>
+          <h1 class="t">Models</h1>
+          <span class="s">transcribing &middot; cleanup &middot; speaking &middot; updates &middot; benchmarks</span>
         </div>
         <a class="back" href="#">&larr; home</a>
       </header>
 
       <section class="block">
-        <h2 class="hd4">In use <span class="why">what dictation runs on this machine today</span></h2>
+        <h2 class="hd4">In use <span class="why">what forge runs on this machine today</span></h2>
 
         <!-- **The whole row is the selector**: the overlay button takes the
              press anywhere on the card, and the row's own control sits above
@@ -355,10 +355,11 @@
             <div class="meta">llama.cpp &middot; not in the feed</div>
             <div class="meta src">placed by hand: the weights and their mmproj projector under the [tts] models_dir</div>
           </div>
-          <div class="side"><span class="chip"><span class="dot ok"></span>loaded</span></div>
+          <div class="side"><span class="chip"><span class="dot ok"></span>placed</span></div>
         </div>
 
-        <p class="note">files live in <code>~/Library/Caches/forge-dictate</code> &middot; a download is checked against what its entry declares: the byte length always, and the sha256 a cleanup feed's blobs publish - the speech feed's files publish none, so those are checked by length and by the load</p>
+        <p class="note">dictation files live in <code>~/Library/Caches/forge-dictate</code> &middot; a download is checked against what its entry declares: the byte length always, and the sha256 a cleanup feed's blobs publish - the speech feed's files publish none, so those are checked by length and by the load</p>
+        <p class="note">the speaking model is placed by hand: its weights and mmproj projector live in <code>~/Library/Caches/forge-tts</code>, and the engine checks both against the digests their entries declare before it loads them</p>
       </section>
 
       <section class="block">
@@ -693,6 +694,23 @@
       <p class="note">scored on your takes, where a run reads as agreement with the words the model in use recorded beside each one, not as correctness &middot; record the read-aloud passage above and press again to score against known words</p>
       <button class="chip add" type="button" style="margin-top:6px">benchmark again</button>
       <p class="note bad">a take landed while the sweep ran, so its runs no longer share one corpus - press again to score on what is here now</p>
+      <div class="status" role="status">
+        <span class="dot live"></span>
+        <span class="t">scoring the speaking loop</span>
+        <span class="when">clip 3 of 12 &middot; spoken, heard back and scored</span>
+        <progress class="bar" max="100" value="25" aria-label="speaking bench progress"></progress>
+        <span class="spacer"></span>
+        <button class="chip" type="button">stop</button>
+        <span class="detail">the speaking model says each public transcript &middot; the transcribing pair hears it back and the words are scored again &middot; it scores the bundled public corpus</span>
+      </div>
+      <div class="status failed" role="status">
+        <span class="dot failed"></span>
+        <span class="t">the speaking bench did not finish</span>
+        <span class="when">the model would not load</span>
+        <span class="spacer"></span>
+        <button class="chip" type="button">score the loop</button>
+        <span class="detail">the speaking model says each public transcript &middot; the transcribing pair hears it back and the words are scored again &middot; it scores the bundled public corpus</span>
+      </div>
       <div class="status failed" role="status" style="margin-top:12px">
         <span class="dot failed"></span>
         <span class="t">the bench did not finish</span>

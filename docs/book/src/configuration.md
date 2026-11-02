@@ -526,40 +526,36 @@ area `[dictate]` opens: a take becomes text, and a reply becomes speech.
 
 | Key                     | Type    | Default            | Notes                                                                                                                                                                                                                          |
 | ----------------------- | ------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `enabled`               | boolean | `false`            | Off unless asked for. Turning it on costs a 2.29 GB model download the first time: the speaking model and the codec projector beside it.                                                                                        |
+| `enabled`               | boolean | `false`            | Off unless asked for. Turning it on needs the two model files placed under `models_dir` by hand, about 2.29 GB together.                                                                                                        |
 | `models_dir`            | string  | platform cache dir | Where the model files live. `~` is expanded.                                                                                                                                                                                     |
-| `speaking_model`        | string  | none               | The model the speaking role runs, by the catalogue's variant name. Set, it pins the role and refuses an activation for it, naming the key; absent leaves the role to the compiled model.                                        |
-| `language`              | string  | autodetect         | Spoken language hint for the rendered voice.                                                                                                                                                                                     |
+| `language`              | string  | english            | Spoken language hint for the rendered voice. Unset leaves the pipeline's own default, English.                                                                                                                                   |
 | `max_utterance_seconds` | integer | `120`              | Upper bound on one `voice__say`'s text, not on one sentence.                                                                                                                                                                     |
 
 The model's default voice is used. There is no speaker selection in this
 cut.
 
 An unrecognised key here fails the load, as one in `[dictate]` does: a
-mistyped `models_dir` would otherwise fetch two gigabytes to the wrong
-volume with nothing said about it.
+mistyped `models_dir` would otherwise leave the engine looking in a
+directory that has no model, and the failure would arrive only at the first
+`say`.
 
 The speaking model is Qwen3-TTS 12Hz 1.7B Base, Q8_0, with the `mmproj`
 projector that carries its audio codec: two files, about 2.29 GB together,
-both published by ggml-org with a per-file SHA-256, so both are verified on
-arrival. The weights and tokenizer are Apache-2.0 and llama.cpp is MIT. No
-0.6B GGUF is published, which is why the pinned build is the 1.7B Base.
+both published by ggml-org with a per-file SHA-256. The weights and
+tokenizer are Apache-2.0 and llama.cpp is MIT. No 0.6B GGUF is published,
+which is why the pinned build is the 1.7B Base.
 
-Rendering is in process: forge links the vendored llama.cpp through
+Rendering is in process: forge links the published llama.cpp through
 `llama-cpp-sys-2` the way dictation links its recognizer, and splits a
 `say` into sentences so the first audio starts while later sentences render
 behind it. A sentence's audio arrives when it finishes rendering; nothing
 streams inside one sentence.
 
-**The role's model resolves like the dictation roles**: the
-`speaking_model` key when set, else the compiled model. A key pins the
-role, and the models page refuses an activation for it, naming the key:
-
-    [tts] speaking_model pins this model in forge.toml; remove the key to change it here
-
 **forge does not fetch these two files.** They are placed under
 `models_dir` by hand, and the engine loads them when the first `say`
-arrives; a missing file is reported by its own path.
+arrives; a missing file is reported by its own path. The engine checks both
+files against the SHA-256 their entries declare before it loads them, so a
+truncated or substituted file is refused by name rather than loaded.
 
 ## `[gotify]`
 

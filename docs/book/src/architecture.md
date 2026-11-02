@@ -12,7 +12,7 @@ forge-gateway     ->  primitives
 forge-connectors  ->  primitives
 forge-sdk         ->  primitives
 forge-agent       ->  primitives + sdk + gateway
-forge-workspace   ->  primitives + agent + sdk + dictate + gateway + connectors
+forge-workspace   ->  primitives + agent + sdk + dictate + tts + system-one + gateway + connectors
 forge-browser     ->  primitives + sdk
 forge-server      ->  primitives + workspace + sdk + browser
 forge-test-harness->  primitives + sdk
@@ -23,7 +23,7 @@ forge-test-harness->  primitives + sdk
 | `forge-primitives`   | Every type that crosses a crate boundary: message envelopes, content blocks, hook and permission payloads, IDs, render-side view structs. No logic, no I/O, no async.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | `forge-capture`      | Microphone capture: the input device, the input plan, the downmix and resampler, and the mono model-rate audio a host reads from it. A leaf: it depends on no forge-* crate and knows nothing about a host, a take or a wire, so a client's own shell captures through it and `forge-dictate` takes its sample rate.                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | `forge-dictate`      | The dictation primitive: audio in, text out. Owns its model files, speech recognition and transcript normalization, and takes audio as mono frames a host pushes in. Its one forge-* dependency is the capture leaf, for the sample rate, and it knows nothing about the program embedding it.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| `forge-tts`          | The speech primitive: text in, audio chunks out. Owns the Qwen3-TTS engine (llama.cpp in process, through the vendored `llama-cpp-sys-2`), the model files a speaking model is made of, sentence splitting and the utterance bound. A leaf: it depends on no forge-* crate and knows nothing about a seat, a tool or a wire. |
+| `forge-tts`          | The speech primitive: text in, audio chunks out. Owns the Qwen3-TTS engine (llama.cpp in process, through `llama-cpp-sys-2`), the model files a speaking model is made of, sentence splitting and the utterance bound. A leaf: it depends on no forge-* crate and knows nothing about a seat, a tool or a wire. |
 | `forge-system-one`   | The System One decision-model client: the `[systemone]` config shape, the wire question/answer types and their validation, the HTTP call with its timeout and error mapping. A leaf: depends on no forge-* crate, and its types stay there for consumers to import.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | `forge-gateway`      | The account pool: one backend per provider token (credential resolution, the usage probe's HTTP and payload mapping, billing shape), plus account selection by declared models, account health, probe scheduling and backoff. Depends on forge-primitives only; the `claude --version` user agent and TLS-trust plumbing arrive through the host port forge-agent implements.                                                                                                                                                                                                                                                                                                                                                                                                          |
 | `forge-connectors`   | One module per inbound connector: the stream client, REST lookups, subscription matching and subsystem pump for one external integration (Gotify and Slack today). Depends on forge-primitives only; Gotify's workspace state and message dispatch arrive through the host port forge-workspace implements.                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
@@ -106,7 +106,7 @@ Work top-down; the first match wins.
 through named verbs by subject - `roster`, `session`, `agents`,
 `accounts`, `plugins`, `extensions`, `reviews`, `workers`, `connectors`,
 `dictate`,
-`dictate_models`, `cli_version`, `conversation`, `slash_commands`,
+`dictate_models`, `voices`, `cli_version`, `conversation`, `slash_commands`,
 `forge_commands`, `subagents`, `subagent_cards`,
 `file_index`, `resumable_sessions`, `walk_file_index`, `respect_gitignore`,
 `header`, `mcp_servers`,
@@ -261,9 +261,9 @@ name. Do not read an isolation guarantee into it.
 forge exposes one MCP server, named `forge`, to every spawned session.
 It is not a subprocess: it is hosted inside forge and reached over the
 CLI's own MCP transport. Its tools are grouped by submodule and render
-to the model as `mcp__forge__<group>__<tool>`, with nine groups today:
+to the model as `mcp__forge__<group>__<tool>`, with ten groups today:
 `agents`, `browser`, `documents`, `review`, `cron`, `tasks`, `gotify`,
-`slack` and `systemone`.
+`slack`, `systemone` and `voice`.
 
 `browser` is the exception to the render pattern, crossing unprefixed:
 its tools are upstream `@playwright/mcp`'s own -
@@ -273,9 +273,10 @@ resolving here unchanged. Every other group renders in full, the
 document hand-off included: `documents__hand_off` crosses as
 `mcp__forge__documents__hand_off`.
 
-`browser`, `documents`, `review`, `cron`, `tasks`, `gotify` and `slack`
-are registered for every session; `systemone` joins them when
-`[systemone]` is configured and enabled. A worker's families can be
+`browser`, `documents`, `review`, `cron`, `tasks`, `gotify`, `slack` and
+`voice` are registered for every session; `systemone` joins them when
+`[systemone]` is configured and enabled, and `voice` is withheld when
+`[tts]` is off. A worker's families can be
 narrowed at spawn - `agents__spawn`'s `mcp_families` list, revised by
 `agents__update` and stored on the worker's durable record - and each
 withheld family is named in that worker's own prompt. The `agents` group

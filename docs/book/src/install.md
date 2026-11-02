@@ -134,8 +134,9 @@ CI runs each build and test job in `ci.yml` only for the paths it serves,
 so a docs-only pull request does not wait for the Rust or client jobs. The
 client's CEF job serves every crate in `forge-server`'s dependency graph -
 `forge-browser`, `forge-server`, `forge-workspace`, `forge-agent`,
-`forge-gateway`, `forge-connectors`, `forge-dictate`, `forge-capture`,
-`forge-system-one`, `forge-sdk` and `forge-primitives` - and the inputs
+`forge-gateway`, `forge-connectors`, `forge-dictate`, `forge-tts`,
+`forge-capture`, `forge-system-one`, `forge-sdk` and `forge-primitives` -
+and the inputs
 that resolve or build them: `Cargo.lock`, the root `Cargo.toml`,
 `rust-toolchain.toml`, `clippy.toml`, `scripts/` and the nextest config.
 One job, `ci-required`,

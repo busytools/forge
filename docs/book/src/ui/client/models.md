@@ -10,11 +10,11 @@ after it. The drawing it is held against is
 [web-models.html](./web-models.html), beside this page.
 
 **Three roles, one page.** The transcribing and cleanup roles are the
-dictation engine's; the speaking role is speech out, pinned to the
-Qwen3-TTS model and its codec projector. Every role's row is drawn the same
-way - the spec's facts, the feed's measurement when it has one, the state
-chip, where the choice came from - and `[tts] speaking_model` pins the
-speaking role exactly as the `[dictate]` keys pin theirs.
+dictation engine's; the speaking role is speech out, the compiled Qwen3-TTS
+model and its codec projector. Every role's row is drawn the same way - the
+spec's facts, the feed's measurement when it has one, the state chip, where
+the choice came from. The speaking model is placed by hand: there is no key
+that selects another, and no activation for the role.
 The name is the page's, not a crate's: `forge-dictate` and `forge-tts` stay
 what they are.
 
@@ -39,14 +39,14 @@ read and the actions are the server's (`Subject::DictateModels`,
 | Header | the brand mark, `forge`, the page's name, and the way back to the home | `ClientSettings.mark` from the greeting; the route |
 | The page's state | a refused action in the core's own words, and whichever download or activation is in flight with its progress | `refusal` (an `error` frame); `install`, `activate` |
 | In use | one row per model forge runs: its role - **the selector for the updates below** - its file, the facts the spec declares (size, quant, parameters, digest, licence), the feed's own measurement when it has one, the live state as a chip, and a line saying where the model came from | `in_use` |
-| Updates | what a check reads, the check's own line - up to date, an update, checking, unreachable, or a state this client cannot read - with both roles' news under it, then the selected role's recommendation with the one control that takes it, then the comparison table behind a door; the cleanup role's own view instead, where no feed measures a normalizer: its candidates with each one's own runs under it | `check`, `updates`, `rows`, `installed`, `results` |
+| Updates | what a check reads, the check's own line - up to date, an update, checking, unreachable, or a state this client cannot read - with both dictation roles' news under it, then the selected role's recommendation with the one control that takes it, then the comparison table behind a door; the cleanup role's own view instead, where no feed measures a normalizer: its candidates with each one's own runs under it | `check`, `updates`, `rows`, `installed`, `results` |
 | Find a model | a box that filters the feed's rows as it is typed, with the feed's families and its fastest rows offered before a name is known: the variant, the quant a machine would run, the measured speed and error, the licence, what it transcribes, and the row's control. Each row links to the entry's own document | `rows` |
 | Benchmark | the fixtures first - the read-aloud set's own state with the record control and the count line - then the one press that scores the picks on this machine and leaves a verdict, then the speaking loop's own card, then two doors: every run scored here, and every model a bench can run, with the control that removes a downloaded model nothing runs | `bench`, `read_aloud`, `results`, `speaking_bench`, `speaking_results` |
 
 **A model in use is drawn from its spec.** The first fact line comes off the
-`ModelSpec` - the size, quant, parameters, digest and licence the loader
-checks before a load - and never off the feed, so a model the feed does not
-carry still draws whole. The second line is the feed's: its runtime
+`ModelSpec` - the size, quant, parameters, digest and licence it declares -
+and never off the feed, so a model the feed does not carry still draws
+whole. The second line is the feed's: its runtime
 measurement and its languages. A model with no join says `not in the feed`
 rather than borrowing a measurement. The third line says where the model
 came from: `compiled default`, `installed here`, or `pinned by [dictate]
@@ -63,7 +63,7 @@ a proposal reads `update available`, because they are one state of one
 thing. The line states when the check ran - as a local time, from the
 server's RFC 3339 stamp - and the release the feed stood at when it
 answered. An `unreachable` check carries the server's own error text, and
-the rows the last fetch left stand. **Under it the line names both roles,
+the rows the last fetch left stand. **Under it the line names both dictation roles,
 without a press**: the feed's own proposal for transcribing, and the
 bench's pick for cleanup - the thing that actually decides that role - so a
 reader learns there is news before pressing Check now.
@@ -89,7 +89,7 @@ runs it. The bench that scores a candidate on this machine's own recordings
 is the section below, not a second control in the line.
 
 **A line that says there is an update shows the update.** The check line
-carries both roles' news, and under it the selected role's recommendation
+carries both dictation roles' news, and under it the selected role's recommendation
 is its own row: the model, its numbers against the one running, its licence
 and size, the rule it was picked on in words - it beats the model in use on
 both of the feed's own measurements - and what taking it does: downloads it
@@ -175,7 +175,7 @@ corpus, and a delete.
 
 **The other direction has its own card.** The speaking model says each
 public transcript, the transcribing pair hears the audio back, and the words
-are scored again: round-trip word error, first audio and the render's pace.
+are scored again: round-trip word error, first audio and the loop's pace.
 It sits beside the words bench and never mixes into its results, because the
 two measure different things - one scores a model on audio that exists, the
 other scores the loop from words to audio and back. One press scores it, a
@@ -183,14 +183,13 @@ stop discards a partial corpus, and the newest saved run draws under the
 card. It scores the same bundled public slice the words bench's public tier
 does, so the two directions read on one yardstick.
 
-**The benchmark reads as three things, not seven.** The fixtures come
-first, in a count line and the set's own card - what a run scores on, which
-is the reader's to change. Then the one press. Then the verdict, the
-speaking loop's own card, and under them two doors: every run scored here,
-and every model a bench can run. Both
-lists are long and neither is what the section is for, so they fold behind
-a heading that carries their count. The catalogue above does not fold: it
-is a lookup a reader opens the page for, not evidence for anything.
+**The benchmark reads in one order.** The fixtures come first, in a count
+line and the set's own card - what a run scores on, which is the reader's to
+change. Then the one press. Then the verdict, the speaking loop's own card,
+and under them two doors: every run scored here, and every model a bench can
+run. Both lists are long and neither is what the section is for, so they
+fold behind a heading that carries their count. The catalogue above does not
+fold: it is a lookup a reader opens the page for, not evidence for anything.
 
 **The sweep is one press, and it leaves a verdict.** The card prices the
 press before it spends - which runs,
@@ -264,13 +263,14 @@ entry matches" and chips pointing at nothing.
 - **The ordinary case**: both models loaded, a fresh check, nothing to
   propose.
 - **An update available**: one line per in-service model worth adopting,
-  which can be one or both, each with the control that takes it.
-- **Dictation off**: `[dictate] enabled` is unset, so no model is in use,
-  none is proposed, and the feed has not been read at all - the server
-  loads the catalogue only for an enabled section, so the read answers no
-  rows and no check. It is its own state, naming the key that would switch
-  it on, and the search draws a note saying the same rather than a box that
-  would answer every query with `no entry matches`.
+  which can be one or both dictation roles, each with the control that takes it.
+- **Dictation off**: `[dictate] enabled` is unset, so no dictation model is
+  in use, none is proposed, and the feed has not been read at all - the
+  server loads the catalogue only for an enabled section, so the read
+  answers no rows and no check. The speaking row still draws when `[tts]`
+  is on. It is its own state, naming the key that would switch it on, and
+  the search draws a note saying the same rather than a box that would
+  answer every query with `no entry matches`.
 - **Reading**: connected, and the subject's snapshot has not landed. The
   page says it is reading rather than drawing an empty catalogue.
 - **Refused**: the server turned the subscription down, in its own words.
@@ -330,7 +330,8 @@ entry matches" and chips pointing at nothing.
   download while one runs, an activation on a role `forge.toml` pins, or an
   uninstall on a file a role is running.
 - **A pinned role**: its row's source line names the `[dictate]` key, no
-  row offers an activation for it, and the download controls stay.
+  row offers an activation for it, and the download controls stay. The
+  speaking role has no pin: its row says the files are placed by hand.
 - **A role running an installed model**: its row carries `use the default`
   beside the state chip - the swap back to the compiled pin, which is what
   undoes a runtime pick.
@@ -344,7 +345,7 @@ entry matches" and chips pointing at nothing.
 - The header, the brand lockup and the `.wrap` column, from the home.
 - The band card's ground - the gradient over `--line` - as the row's
   surface, and the `.svc` card's own shape for the check and update lines.
-- The empty box (`dictation is off`, and the benchmark section) from the
+- The empty box (`no model is in use`, and the benchmark section) from the
   home's own empty treatment.
 - The chip, at this page's scale, from the dictation panel's - as a state
   when it is a span and as an action when it is a button.

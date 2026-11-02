@@ -72,15 +72,17 @@ CLI's row of the same name - one name, one row.
 
 ## Voice
 
-A second control sits beside the mic when `[tts] enabled` is set: the
-switch for this client on the seat it shows. A press on a switched-off
-control turns voice on and the seat's listener count comes back; while it
-is on, a press starts a hold and the release sends the whole clip as one
-utterance, and a tap that said nothing is the way back off. The control
-draws its state as a shape, not a colour: a struck-through mic when off, a
-plain one listening, the same with a mark over the box while it records,
-and a speaker while a reply plays, with a line beside it for a refused
-microphone or a hold cut at its bound.
+A second control sits beside the mic when `[tts] enabled` and `[dictate]
+enabled` are both set: the switch for this client on the seat it shows. A
+press on a switched-off control turns voice on and the seat's listener
+count comes back; while it is on, a press starts a hold and the release
+sends the whole clip as one utterance, and a tap that said nothing is the
+way back off. The control draws its state as a shape, not a colour: a
+struck-through mic when off, a plain one listening, the same with a mark
+over the box and a level bar under it while it records, and a speaker while
+a reply plays, with a line beside it for a refused microphone or a hold cut
+at its bound. A hold past the bound ends itself rather than running until
+release.
 
 **Dictation and voice are different actions, so they keep different
 controls.** The mic fills the box with text and stops there; the voice
@@ -94,7 +96,8 @@ listening. A seat change, a closed client or a dropped socket turns the
 switch back off - a client showing another seat is no longer listening to
 this one. The clips play in the order the engine rendered them, each
 sentence following the one before, and a reconnect discards the queue
-rather than playing a conversation with holes in it.
+rather than playing a conversation with holes in it, then resubscribes the
+switch if this client still wants voice.
 
 ## Dictation
 

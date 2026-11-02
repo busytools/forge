@@ -14,7 +14,7 @@ forge-gateway    ───→ primitives
 forge-connectors ───→ primitives
 forge-sdk        ───→ primitives
 forge-agent      ───→ primitives + sdk + gateway
-forge-workspace  ───→ primitives + agent + sdk + dictate + gateway + connectors
+forge-workspace  ───→ primitives + agent + sdk + dictate + tts + system-one + gateway + connectors
 forge-browser    ───→ primitives + sdk
 forge-server     ───→ primitives + workspace + sdk + browser
 forge-test-harness ─→ primitives + sdk + workspace + server
@@ -219,7 +219,7 @@ Work top-down; first match wins.
 through named verbs by subject - `roster`, `session`, `agents`,
 `accounts`, `plugins`, `extensions`, `reviews`, `workers`, `connectors`,
 `dictate`,
-`dictate_models`, `cli_version`, `conversation`, `slash_commands`,
+`dictate_models`, `voices`, `cli_version`, `conversation`, `slash_commands`,
 `forge_commands`, `subagents`, `subagent_cards`,
 `file_index`, `resumable_sessions`, `walk_file_index`, `respect_gitignore`,
 `header`, `mcp_servers`,

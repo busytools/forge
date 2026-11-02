@@ -33,7 +33,7 @@ forge-gateway     ->  primitives
 forge-connectors  ->  primitives
 forge-sdk         ->  primitives
 forge-agent       ->  primitives + sdk + gateway
-forge-workspace   ->  primitives + agent + sdk + dictate + gateway + connectors
+forge-workspace   ->  primitives + agent + sdk + dictate + tts + system-one + gateway + connectors
 forge-browser     ->  primitives + sdk
 forge-server      ->  primitives + workspace + sdk + browser
 forge-test-harness->  primitives + sdk
