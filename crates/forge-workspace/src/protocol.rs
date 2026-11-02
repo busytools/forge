@@ -2155,7 +2155,8 @@ pub enum SessionUpdate {
     },
     /// One rendered clip of the seat's speech, mono 16-bit samples at
     /// `sample_rate`. Chunks arrive in `seq` order and every client with
-    /// voice on for the seat plays them.
+    /// voice on for the seat plays them; a client with voice off receives
+    /// them and stays silent.
     VoiceAudio {
         key: SessionSlot,
         seq: u32,
@@ -3056,6 +3057,86 @@ mod session_update_variants {
             names.push(renamed.take().unwrap_or_else(|| snake_case(&variant)));
         }
         Census { names, closed }
+    }
+
+    /// The book's variant counts are read from the enums, not trusted: a
+    /// variant added without the page moving leaves a published number wrong.
+    #[test]
+    fn the_book_counts_match_the_enums() {
+        let source = include_str!("protocol.rs");
+        let book = include_str!("../../../docs/book/src/socket.md");
+        let flat = book.split_whitespace().collect::<Vec<_>>().join(" ");
+
+        let (command_total, command_struct, command_unit) =
+            variant_counts(source, "pub enum Command {");
+        assert!(
+            flat.contains(&format!(
+                "`Command` has {command_total} variants, {command_struct} of them struct variants; the {} unit variants",
+                spell(command_unit),
+            )),
+            "the book's Command count is not the enum's: {command_total} total, {command_struct} struct, {command_unit} unit",
+        );
+
+        let (update_total, update_struct, update_unit) =
+            variant_counts(source, "pub enum SessionUpdate {");
+        assert!(
+            flat.contains(&format!(
+                "{update_struct} of `SessionUpdate`'s {update_total} variants are struct variants"
+            )),
+            "the book's SessionUpdate count is not the enum's: {update_total} total, {update_struct} struct, {update_unit} unit",
+        );
+    }
+
+    /// A small count as the book spells it.
+    fn spell(n: usize) -> String {
+        match n {
+            0 => "zero",
+            1 => "one",
+            2 => "two",
+            3 => "three",
+            4 => "four",
+            5 => "five",
+            6 => "six",
+            7 => "seven",
+            8 => "eight",
+            9 => "nine",
+            10 => "ten",
+            _ => return n.to_string(),
+        }
+        .to_owned()
+    }
+
+    /// Count an enum's variants, and how many carry a struct body.
+    fn variant_counts(source: &str, header: &str) -> (usize, usize, usize) {
+        let mut total = 0;
+        let mut structs = 0;
+        let mut units = 0;
+        let mut inside = false;
+        for line in source.lines() {
+            if !inside {
+                inside = line.starts_with(header);
+                continue;
+            }
+            if line == "}" {
+                break;
+            }
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with("//") || trimmed.starts_with("#[") {
+                continue;
+            }
+            let variant: String =
+                trimmed.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').collect();
+            if !variant.starts_with(|c: char| c.is_ascii_uppercase()) {
+                continue;
+            }
+            total += 1;
+            if trimmed.contains('{') {
+                structs += 1;
+            } else {
+                units += 1;
+            }
+        }
+        (total, structs, units)
     }
 
     /// serde's own rule for this enum's `rename_all`, for a variant with no
