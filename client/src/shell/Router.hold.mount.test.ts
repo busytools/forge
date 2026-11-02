@@ -73,6 +73,7 @@ function emptyStore(what: Subject): Store {
     dropped: () => 0,
     set: () => {},
     push: () => {},
+    takeAudio: () => [],
     refuse: () => {},
   };
 }
@@ -189,6 +190,34 @@ describe('the microphone hold at the router', () => {
   it('holds nothing on a page that takes no typing', () => {
     draw({ name: 'home' });
     expect(shell.holds, 'the home draws no mic, so there is nothing to keep warm').toEqual([]);
+  });
+
+  it('draws the voice switch on [tts] alone, with dictation not offered', () => {
+    // The switch is speech out only, so a dictation engine that is not ready
+    // must not hide it: the mic is how the user speaks, and this control only
+    // hears.
+    const wire = offered();
+    const noDictation = {
+      ...wire,
+      voice: { enabled: true, models_dir: null },
+      dictate: {
+        ...wire.dictate,
+        snapshot: {
+          ...wire.dictate.snapshot,
+          models: wire.dictate.snapshot.models.map((model) => ({
+            ...model,
+            state: 'pending' as const,
+          })),
+        },
+      },
+    } as typeof homeWire;
+
+    draw({ name: 'session', slot: LEAD }, noDictation);
+
+    expect(
+      document.querySelector('.voice'),
+      'the switch draws on [tts] alone, not on dictation being ready',
+    ).not.toBeNull();
   });
 
   it('follows the seat the page is on', () => {

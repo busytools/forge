@@ -108,6 +108,9 @@ pub struct HomeWire {
     pub accounts: forge_workspace::AccountPoolView,
     pub connectors: ConnectorsWire,
     pub dictate: DictateWire,
+    /// The speaking role's switch and model directory: the machine-wide
+    /// facts a voice control reads before it names a seat.
+    pub voice: VoiceWire,
     /// The claude CLI versions the core holds, as the core's own snapshot
     /// serialises. Its crate is one this one may not name.
     pub cli_version: Option<Value>,
@@ -366,6 +369,14 @@ pub struct DictateWire {
     pub models_dir: Option<std::path::PathBuf>,
 }
 
+/// The voice switch and where its model lands, as the home carries them.
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct VoiceWire {
+    pub enabled: bool,
+    pub models_dir: Option<std::path::PathBuf>,
+}
+
 /// One session, as a client sees it: every read a session-scoped view makes.
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -488,6 +499,8 @@ pub struct SessionStateWire {
     /// load, a refresh, a seat switch - has nothing else to draw the waiting
     /// prompts from, and two attached clients have to agree about them.
     pub queue: Vec<forge_workspace::protocol::QueuedPrompt>,
+    /// Clients with voice on for this seat, this one included.
+    pub voice_listeners: u32,
 }
 
 /// What one seat's composer is doing.
@@ -2081,6 +2094,10 @@ async fn home(state: &TransportState, surface: &ViewSurface) -> HomeWire {
             snapshot: serde_json::to_value(dictate.snapshot).unwrap_or(Value::Null),
             models_dir: dictate.models_dir,
         },
+        voice: {
+            let voice = surface.voices();
+            VoiceWire { enabled: voice.enabled, models_dir: voice.models_dir }
+        },
         cli_version: surface.cli_version().and_then(|version| serde_json::to_value(version).ok()),
         forge_version: crate::FORGE_VERSION.to_owned(),
         forge_version_short: crate::FORGE_VERSION_SHORT.to_owned(),
@@ -2658,6 +2675,7 @@ async fn session(
             slot: state_at.slot,
             scan_cwd: state_at.scan_cwd,
             queue: state_at.queue,
+            voice_listeners: state_at.voice_listeners,
         },
         composer: {
             let live = crate::live::Live::lock(&state.live).snapshot();

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/forge-sdk", "crates/forge-primitives", "crates/forge-capture", "crates/forge-dictate", "crates/forge-system-one", "crates/forge-gateway", "crates/forge-connectors", "crates/forge-browser", "crates/forge-agent", "crates/forge-workspace", "crates/forge-server", "crates/forge-test-harness"]
+members = ["crates/forge-sdk", "crates/forge-primitives", "crates/forge-capture", "crates/forge-dictate", "crates/forge-tts", "crates/forge-system-one", "crates/forge-gateway", "crates/forge-connectors", "crates/forge-browser", "crates/forge-agent", "crates/forge-workspace", "crates/forge-server", "crates/forge-test-harness"]
 
 [workspace.package]
 version = "1.1.38"
@@ -63,7 +63,10 @@ which = "8.0.2"
 rlimit = "0.11"
 # Default features carry openmp, which has no system library to link
 # against on a stock macOS toolchain.
-llama-cpp-2 = { version = "0.1.154", default-features = false }
+llama-cpp-2 = { version = "0.1.160", default-features = false }
+# The raw C API the mtmd audio path calls. Pinned here so forge-tts takes
+# the same build as the safe binding, and a crate cannot drift one of them.
+llama-cpp-sys-2 = { version = "0.1.160", default-features = false }
 # Decodes the detokenizer's bytes; the decoder must persist across tokens
 # or a multi-byte character split between two pieces is replaced.
 encoding_rs = "0.8.35"
@@ -99,6 +102,7 @@ forge-connectors = { path = "crates/forge-connectors", version = "=1.1.38" }
 forge-sdk = { path = "crates/forge-sdk", version = "=1.1.38" }
 forge-agent = { path = "crates/forge-agent", version = "=1.1.38" }
 forge-dictate = { path = "crates/forge-dictate", version = "=1.1.38" }
+forge-tts = { path = "crates/forge-tts", version = "=1.1.38" }
 forge-system-one = { path = "crates/forge-system-one", version = "=1.1.38" }
 forge-workspace = { path = "crates/forge-workspace", version = "=1.1.38" }
 forge-browser = { path = "crates/forge-browser", version = "=1.1.38" }

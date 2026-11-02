@@ -720,7 +720,7 @@ impl Tool for Spawn {
                 "mcp_families": {
                     "type": "array",
                     "items": { "type": "string", "enum": families },
-                    "description": "The MCP families this worker gets, exactly those listed. Omit or pass an empty list for every family on a fresh spawn; a resume adopts the stored selection. `agents__*` is always on and cannot be listed. Each withheld family is named in the worker's own prompt. What each gives the worker: `review` - read and answer reviews filed on its branch or under a document it handed off; give it to any worker that implements or whose deliverable is a reviewable document. `cron` - schedule and manage durable work of its own; give it to any worker that needs a recurring or deferred task. `tasks` - claim, file and update rows on the project board; give it to any worker whose work is on the board. `gotify` - subscribe to and read Gotify notifications; give it to any worker that acts on them. `slack` - read Slack, subscribe, and post through held approval; give it to any worker that works in Slack. `systemone` - put a yes/no, a choice or a score to the decision model; give it to any worker that weighs decisions itself.",
+                    "description": "The MCP families this worker gets, exactly those listed. Omit or pass an empty list for every family on a fresh spawn; a resume adopts the stored selection. `agents__*` is always on and cannot be listed. Each withheld family is named in the worker's own prompt. What each gives the worker: `review` - read and answer reviews filed on its branch or under a document it handed off; give it to any worker that implements or whose deliverable is a reviewable document. `cron` - schedule and manage durable work of its own; give it to any worker that needs a recurring or deferred task. `tasks` - claim, file and update rows on the project board; give it to any worker whose work is on the board. `gotify` - subscribe to and read Gotify notifications; give it to any worker that acts on them. `slack` - read Slack, subscribe, and post through held approval; give it to any worker that works in Slack. `systemone` - put a yes/no, a choice or a score to the decision model; give it to any worker that weighs decisions itself. `voice` - speak one utterance aloud to the person listening to this seat; give it to any worker whose replies someone should hear.",
                 },
                 "cwd": {
                     "type": "string",
@@ -1433,6 +1433,10 @@ mod tests {
                 crate::mcp::McpFamily::Systemone => (
                     "put a yes/no, a choice or a score to the decision model",
                     "give it to any worker that weighs decisions itself",
+                ),
+                crate::mcp::McpFamily::Voice => (
+                    "speak one utterance aloud to the person listening to this seat",
+                    "give it to any worker whose replies someone should hear",
                 ),
             };
             assert!(

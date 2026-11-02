@@ -24,6 +24,82 @@ pub(crate) fn raw_peak(block: &[f32]) -> f32 {
 /// block size the device delivers is staged up to it.
 const RESAMPLE_CHUNK: usize = 480;
 
+/// The windowed-sinc filter both resampling paths use: `f_cutoff` is
+/// relative to the lower of the two Nyquists, so speech below it passes and
+/// everything that would alias is in the stopband.
+fn sinc_parameters() -> rubato::SincInterpolationParameters {
+    // The documented starting point.
+    rubato::SincInterpolationParameters {
+        sinc_len: 256,
+        f_cutoff: 0.95,
+        oversampling_factor: 256,
+        interpolation: rubato::SincInterpolationType::Cubic,
+        window: rubato::WindowFunction::BlackmanHarris2,
+    }
+}
+
+/// A buffer of mono audio at `from`, converted to `to` with the input
+/// path's own filter. The same rate hands the buffer straight back.
+pub fn resample_mono(pcm: &[f32], from: u32, to: u32) -> Result<Vec<f32>, Error> {
+    const CHUNK: usize = 1024;
+    if from == to {
+        return Ok(pcm.to_vec());
+    }
+    if from == 0 || to == 0 {
+        return Err(Error::Capture {
+            message: "a sample rate of zero cannot be converted".to_owned(),
+        });
+    }
+    if pcm.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut resampler = rubato::SincFixedIn::<f32>::new(
+        f64::from(to) / f64::from(from),
+        1.0,
+        sinc_parameters(),
+        CHUNK,
+        1,
+    )
+    .map_err(|error| Error::Capture { message: error.to_string() })?;
+    let from_frames = usize::try_from(from).unwrap_or(usize::MAX);
+    let to_frames = usize::try_from(to).unwrap_or(usize::MAX);
+    let mut converted = Vec::with_capacity(
+        pcm.len().saturating_mul(to_frames).saturating_div(from_frames).saturating_add(CHUNK),
+    );
+    let mut buffer = resampler.output_buffer_allocate(true);
+
+    let mut position = 0;
+    while position < pcm.len() {
+        let remaining = pcm.len() - position;
+        let produced = if remaining >= CHUNK {
+            let input = &pcm[position..position + CHUNK];
+            resampler
+                .process_into_buffer(&[input], &mut buffer, None)
+                .map_err(|error| Error::Capture { message: error.to_string() })?
+                .1
+        } else {
+            let input = &pcm[position..];
+            resampler
+                .process_partial_into_buffer(Some(std::slice::from_ref(&input)), &mut buffer, None)
+                .map_err(|error| Error::Capture { message: error.to_string() })?
+                .1
+        };
+        converted.extend_from_slice(&buffer[0][..produced]);
+        position += CHUNK.min(remaining);
+    }
+    // The filter's own delay: pad once more so the tail comes out rather
+    // than being cut off by the delay line, then cut the padding response
+    // off at the buffer's own duration.
+    let flushed = resampler
+        .process_partial_into_buffer::<&[f32], Vec<f32>>(None, &mut buffer, None)
+        .map_err(|error| Error::Capture { message: error.to_string() })?
+        .1;
+    converted.extend_from_slice(&buffer[0][..flushed]);
+    converted.truncate(pcm.len().saturating_mul(to_frames) / from_frames);
+    Ok(converted)
+}
+
 /// Turns what the device delivers into the mono [`SAMPLE_RATE`] signal
 /// everything downstream reads. Pass-through when the device natively
 /// offers the model rate; otherwise downmix to mono, then resample
@@ -80,20 +156,10 @@ struct Resampling {
 
 impl Resampling {
     fn new(device_rate: u32) -> Result<Self, Error> {
-        // The documented starting point; `f_cutoff` is relative to the
-        // lower of the two Nyquists, so speech below it passes and
-        // everything that would alias is in the stopband.
-        let parameters = rubato::SincInterpolationParameters {
-            sinc_len: 256,
-            f_cutoff: 0.95,
-            oversampling_factor: 256,
-            interpolation: rubato::SincInterpolationType::Cubic,
-            window: rubato::WindowFunction::BlackmanHarris2,
-        };
         let resampler = rubato::SincFixedIn::<f32>::new(
             f64::from(SAMPLE_RATE) / f64::from(device_rate),
             1.0,
-            parameters,
+            sinc_parameters(),
             RESAMPLE_CHUNK,
             1,
         )
@@ -269,6 +335,35 @@ mod tests {
             (200..=320).contains(&produced),
             "both chunks of a 960-frame callback must be resampled (116 then 160 frames), got {produced}"
         );
+    }
+
+    /// A buffer converted in one call keeps its tone at the new rate's own
+    /// duration, and a tone above the new Nyquist is filtered rather than
+    /// folded into the speech band.
+    #[test]
+    fn a_one_shot_resample_keeps_a_tone_and_filters_what_would_alias() {
+        let pcm = sine(440.0, 0.3, 24_000, 2);
+        let out = resample_mono(&pcm, 24_000, 16_000).expect("the resampler must build");
+        assert_eq!(out.len(), 32_000, "two seconds at 24 kHz is two seconds at 16 kHz");
+        let kept = magnitude_at(&interior_second(&out), 440.0);
+        assert!((kept - 0.3).abs() < 0.02, "the tone must come through at its level, got {kept}");
+
+        let pcm = sine(10_000.0, 0.25, 24_000, 2);
+        let out = resample_mono(&pcm, 24_000, 16_000).expect("the resampler must build");
+        let aliased = magnitude_at(&interior_second(&out), 6_000.0);
+        assert!(
+            aliased < 0.005,
+            "a 10 kHz tone must be filtered away, not aliased into the speech band at 6 kHz, got {aliased}"
+        );
+    }
+
+    /// The same rate is the same samples: a caller may hand a buffer in
+    /// whatever rate it has without special-casing the model's own.
+    #[test]
+    fn a_one_shot_resample_at_the_same_rate_returns_the_buffer() {
+        let pcm = vec![0.1, -0.2, 0.3];
+        assert_eq!(resample_mono(&pcm, 16_000, 16_000).unwrap(), pcm);
+        assert!(resample_mono(&[], 24_000, 16_000).unwrap().is_empty());
     }
 
     #[test]

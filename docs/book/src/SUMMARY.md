@@ -23,7 +23,7 @@ each with the drawing it is held against beside it.
 - [Board](./ui/client/board.md)
 - [Review](./ui/client/review.md)
 - [The files](./ui/client/files.md)
-- [Dictation models](./ui/client/dictate-models.md)
+- [Models](./ui/client/models.md)
 - [Extensions](./ui/client/extensions.md)
 - [Settings](./ui/client/settings.md)
 - [A document](./ui/client/document.md)

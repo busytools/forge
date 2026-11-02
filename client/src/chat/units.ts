@@ -1184,7 +1184,7 @@ function messageStatus(result: Block | undefined): CallStatus {
 }
 
 /** The external kinds an inbound line draws as a row of its own. */
-export type InboundKind = 'cron' | 'slack' | 'gotify';
+export type InboundKind = 'cron' | 'slack' | 'gotify' | 'voice';
 
 /** One inbound delivery, as its row draws it. */
 export interface InboundLeaf {
@@ -1196,7 +1196,7 @@ export interface InboundLeaf {
    * kinds' titles are names.
    */
   kind: InboundKind;
-  /** The row's title: the schedule, the channel, or the app. */
+  /** The row's title: the schedule, the channel, the app, or the note's first line. */
   title: string;
   /** The whole of what arrived, which the row opens onto. */
   body: string;
@@ -1218,8 +1218,9 @@ type Envelope =
  *
  * **A port of `forge_server::envelope::detect_inbound`, and it matches the
  * PRODUCER's strings rather than anything a renderer printed.** The producers
- * are `peers/types.rs`'s `to_prose`, `spawn.rs`'s Slack bundle and
- * `delivery.rs`'s cron wrapper; a matcher written from a view's
+ * are `peers/types.rs`'s `to_prose`, `spawn.rs`'s Slack bundle,
+ * `delivery.rs`'s cron wrapper and `voice.rs`'s note dispatch; a matcher
+ * written from a view's
  * rendered output fires on nothing, and the failure is silent - the envelope
  * draws as the reader's own turn, which is a thing that looks like content
  * rather than like a bug.
@@ -1363,6 +1364,10 @@ export function inbound(text: string, self: Self | null): Envelope | null {
 
   if (header === 'Cron') {
     return { kind: 'inbound', inbound: 'cron', title: firstLine(body), body, elevated: false };
+  }
+
+  if (header === 'Voice') {
+    return { kind: 'inbound', inbound: 'voice', title: firstLine(body), body, elevated: false };
   }
 
   return null;
@@ -3156,9 +3161,9 @@ export function fold(
                 },
               });
             } else if (envelope.kind === 'inbound') {
-              // A delivery by cron, Slack or Gotify joins the work as a row
-              // of its own kind, the way a family's calls do - one shape for
-              // every row, so a new external kind is a row and a glyph.
+              // A delivery by cron, Slack, Gotify or voice joins the work as
+              // a row of its own kind, the way a family's calls do - one shape
+              // for every row, so a new external kind is a row and a glyph.
               //
               // A cron fire is titled by the SCHEDULE: the prose carries the
               // prompt alone, and the pairing arrives either on the delivery

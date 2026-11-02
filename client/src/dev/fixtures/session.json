@@ -11,7 +11,8 @@
       "label": "lead"
     },
     "scan_cwd": "<fixture>/proj",
-    "queue": []
+    "queue": [],
+    "voice_listeners": 0
   },
   "composer": {
     "machine": null,

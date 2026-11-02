@@ -1645,6 +1645,7 @@
   <symbol id="i-dots" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M5 12h.01M12 12h.01M19 12h.01"/></symbol>
   <symbol id="i-decide" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v6"/><path d="M12 9 7.5 12.5V17"/><path d="M12 9l4.5 3.5V17"/><circle cx="7.5" cy="19" r="1.6"/><circle cx="16.5" cy="19" r="1.6"/></symbol>
   <symbol id="i-review" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v6"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="18" r="3"/><path d="M18 15V9a3 3 0 0 0-3-3h-3"/></symbol>
+  <symbol id="i-sound" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M19 5a10 10 0 0 1 0 14"/></symbol>
   <symbol id="i-files" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 7h-3a2 2 0 0 1-2-2V2"/><path d="M9 18a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h7l4 4v10a2 2 0 0 1-2 2Z"/><path d="M3 7.6v12.8A1.6 1.6 0 0 0 4.6 22h9.8"/></symbol>
   <symbol id="i-gauge" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/></symbol>
   <symbol id="i-mic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="10" height="12" x="7" y="3" rx="5"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v3"/></symbol>
@@ -2482,6 +2483,16 @@ docs: The sprite a row draws, by the class it belongs to.</div>
               <div class="fam-quote"><div class="prose"><p>The cut is in and memory records it. Worktree server-browser at 84369aae, both gates green. The export format is still open: row 1d14d131, PR #2502, and memory/handoff.md holds where it stands. Next: pick the export format up from the writer in forge-server, then run just check.</p></div></div>
             </div>
           </details>
+
+          <!-- The voice family's card: one utterance, and what became of it.
+               The spoken words are the title, and the result's own chip says
+               whether anyone heard it. -->
+          <details class="leaf">
+            <summary><svg class="ic gl ok"><use href="#i-sound"/></svg><span class="tn">speaking &#183; The cut is on the new head and the stack is up.</span><span class="fam-chip ok">spoken: queued</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <div class="body">
+              <div class="fam-quote"><div class="prose"><p>The cut is on the new head and the stack is up.</p></div></div>
+            </div>
+          </details>
           <details class="leaf" open>
             <summary><svg class="ic gl ok"><use href="#i-decide"/></svg><span class="tn">Is this one-line import fix mechanical and reversible?</span><span class="fam-chip ok">yes</span><span class="fam-fig">0.93</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
             <div class="body">
@@ -3094,6 +3105,16 @@ uncommitted: 1 paths
             <summary><svg class="ic gl"><use href="#i-gotify"/></svg><span class="tn">homelab &#183; priority 6</span>
               <span class="ev warn">backup failed: restic repo locked</span>
               <svg class="ic arw"><use href="#i-chev"/></svg></summary>
+          </details>
+          <details class="leaf inboundrow">
+            <!-- The voice note: forge tells the agent the reader is listening.
+                 It is a message for the agent and information for the reader,
+                 so it draws as a delivery row, titled by its own first line. -->
+            <summary><svg class="ic gl"><use href="#i-sound"/></svg><span class="tn">The user is listening to this seat.</span>
+              <svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <div class="body"><div class="prose">
+              <p>The user is listening to this seat.</p>
+              <p>Anything they should hear goes through <code>mcp__forge__voice__say</code>; the text written in the chat is not spoken.</p></div></div>
           </details>
         </div>
       </div>

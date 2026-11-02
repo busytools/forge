@@ -359,6 +359,20 @@
   }
 
   /**
+   * Score the speaking loop: the core speaks each public transcript, hears
+   * it back through the transcribing pair, and reports the round trip. Its
+   * own action rather than a bench target - one model against the pair that
+   * transcribes, where the words bench swaps one slot in a pair.
+   */
+  function speakBench(): void {
+    act('voice_bench_start');
+  }
+
+  function speakBenchStop(): void {
+    act('voice_bench_stop');
+  }
+
+  /**
    * The read-aloud recording, while it runs: the controller owns the
    * microphone and the frames, the core owns the artifact, and the page
    * learns the outcome from the read rather than from this side.
@@ -451,6 +465,8 @@
     ondeactivate={deactivate}
     onbench={bench}
     onbenchstop={benchStop}
+    onspeakbench={speakBench}
+    onspeakbenchstop={speakBenchStop}
     onrecord={record}
     onrecordstop={recordStop}
     onrecorddelete={recordDelete}

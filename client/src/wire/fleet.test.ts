@@ -242,6 +242,10 @@ const NOT_NEWS: readonly string[] = [
   'dictate_ended',
   'dictate_models_changed',
   'fatal_error',
+  // The seat's voice frames: its own page draws the control and plays the
+  // audio, and no home row names either.
+  'voice_audio',
+  'voice_mode_state',
 ];
 
 const LEAD: SessionSlot = { org: 'TestOrg', project: 'proj', label: 'lead' };
@@ -526,11 +530,11 @@ describe('the variant census', () => {
     ).toBe(true);
     expect(
       names.length,
-      'this count and the enum disagree, and `SessionUpdate` held 70 variants when it was last ' +
+      'this count and the enum disagree, and `SessionUpdate` held 72 variants when it was last ' +
         'set. Raise or lower it in the same edit that adds or removes one - the census below names ' +
         'the bucket an added variant belongs in - and if you moved no variant, the parse read a ' +
         'different set of names than the enum holds',
-    ).toBe(70);
+    ).toBe(72);
     expect(news.size, 'the `fleet_news` arms were not read out of live.rs at all').toBeGreaterThan(
       5,
     );

@@ -68,6 +68,9 @@
    * seat's: the engine is process-wide, and the page's own wire carries it.
    */
   const dictate = $derived(home.wire === null ? false : dictationOffered(home.wire.dictate));
+  // The switch is speech out only, so the gate is `[tts]` and nothing of
+  // dictation's.
+  const voice = $derived(home.wire !== null && home.wire.voice.enabled);
 
   /**
    * The board's own read (#2517): the session rail and the board page draw
@@ -248,7 +251,7 @@
         <Chat {...props} />
       {/snippet}
       {#snippet composer(props)}
-        <Composer {...props} dictation={dictate} />
+        <Composer {...props} dictation={dictate} {voice} />
       {/snippet}
     </Session>
   {:else if home.refused}

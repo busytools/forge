@@ -14,7 +14,6 @@
   } from '../wire/models';
   import {
     activateLine,
-    activeSource,
     benchLine,
     benchRoleWord,
     benchTargets,
@@ -39,6 +38,10 @@
     resultVerdict,
     resultWhen,
     roleWord,
+    sourceLine,
+    speakingBenchLine,
+    speakingResultFacts,
+    speakingWhen,
     rowAction,
     search,
     sizeLabel,
@@ -74,6 +77,8 @@
     ondeactivate,
     onbench,
     onbenchstop,
+    onspeakbench,
+    onspeakbenchstop,
     onrecord,
     onrecordstop,
     onrecorddelete,
@@ -101,6 +106,10 @@
     ondeactivate: (role: ModelRole) => void;
     onbench: (target: BenchTarget, tier: BenchTier) => void;
     onbenchstop: () => void;
+    /** Score the speaking loop: the speaking model against the pair that
+     * transcribes, over the public corpus. */
+    onspeakbench: () => void;
+    onspeakbenchstop: () => void;
     /** Begin recording the read-aloud passage. */
     onrecord: () => void;
     /** End it: `keep` saves the recording as the set. */
@@ -165,6 +174,7 @@
   const building = $derived(activateLine(wire.activate));
   const benchState = $derived(wire.bench);
   const bench = $derived(benchLine(wire.bench));
+  const speakLine = $derived(speakingBenchLine(wire.speaking_bench));
   const targets = $derived(benchTargets(wire.in_use, wire.installed, wire.updates, wire.rows));
 
   /**
@@ -374,8 +384,10 @@
       <span class="word">forge</span>
     </div>
     <div class="title">
-      <h1 class="t">Dictation models</h1>
-      <span class="s">transcribing &middot; cleanup &middot; updates &middot; benchmarks</span>
+      <h1 class="t">Models</h1>
+      <span class="s"
+        >transcribing &middot; cleanup &middot; speaking &middot; updates &middot; benchmarks</span
+      >
     </div>
     <a class="back" href="/">&larr; home</a>
   </header>
@@ -401,23 +413,23 @@
   {/if}
 
   <section class="block">
-    <h2 class="hd4">In use <span class="why">what dictation runs on this machine today</span></h2>
+    <h2 class="hd4">In use <span class="why">what forge runs on this machine today</span></h2>
 
     {#if wire.in_use.length === 0}
-      <!-- Dictation off is its own state: an empty list here would read as a
+      <!-- Nothing in use is its own state: an empty list here would read as a
            page that broke rather than as a section nobody switched on. -->
       <div class="empty">
-        <p class="t">dictation is off</p>
+        <p class="t">no model is in use</p>
         <p class="d">
-          <code>[dictate] enabled</code> is not set in <code>forge.toml</code>, so no models are
-          loaded and a take has nothing to run through. Add it and restart forge.
+          <code>[dictate] enabled</code> is not set in <code>forge.toml</code>, so no dictation
+          models are loaded and a take has nothing to run through. Add it and restart forge.
         </p>
       </div>
     {:else}
       {#each wire.in_use as model (`${model.role}/${model.file}`)}
-        {@const chip = modelChip(model.state)}
+        {@const chip = modelChip(model.state, model.role)}
         {@const factsOf = inUseRowFacts(model)}
-        {@const source = activeSource(model.from)}
+        {@const source = sourceLine(model)}
         <div class="model" class:shown={shownRole === model.role}>
           <!-- **The whole row is the selector.** A card that only answers on
                one word reads as furniture; this one takes the press anywhere
@@ -456,9 +468,16 @@
       {/each}
       {#if wire.models_dir !== null}
         <p class="note">
-          files live in <code>{wire.models_dir}</code> &middot; a download is checked against what its
-          entry declares: the byte length always, and the sha256 a cleanup feed's blobs publish - the
-          speech feed's files publish none, so those are checked by length and by the load
+          dictation files live in <code>{wire.models_dir}</code> &middot; a download is checked against
+          what its entry declares: the byte length always, and the sha256 a cleanup feed's blobs publish
+          - the speech feed's files publish none, so those are checked by length and by the load
+        </p>
+      {/if}
+      {#if wire.speaking_models_dir !== null}
+        <p class="note">
+          the speaking model is placed by hand: its weights and mmproj projector live in
+          <code>{wire.speaking_models_dir}</code>, and the engine checks both against the digests
+          their entries declare before it loads them
         </p>
       {/if}
     {/if}
@@ -489,7 +508,17 @@
       </p>
     {/if}
 
-    {#if shownRole === 'normalization'}
+    {#if shownRole === 'speaking'}
+      <!-- The speaking role has no feed at all: its model is placed by hand,
+           so there is nothing to compare and nothing to propose. Said here
+           rather than left to the empty-role note, which would claim the feed
+           measured it and found nothing. -->
+      <p class="note">
+        the speaking model is placed by hand, so no feed proposes one &middot; its weights and
+        mmproj projector live in the directory named above, and the engine checks both against the
+        digests their entries declare before it loads them
+      </p>
+    {:else if shownRole === 'normalization'}
       <!-- The cleanup role's own view: no feed publishes speed or error for
            a normalizer, so the bench decides. The candidates are the Hub's
            rows, each carrying this machine's own runs. -->
@@ -970,6 +999,52 @@
         )}
       {/if}
 
+      <!-- The speaking direction: one model against the pair that
+           transcribes, scored over the same public corpus. Its own card
+           because its figures - round-trip words, first audio, the render's
+           pace - are not the words bench's. -->
+      <div
+        class="status {speakLine?.mark === 'live' ? '' : (speakLine?.mark ?? 'off')}"
+        role="status"
+      >
+        <span class="dot {speakLine?.mark ?? 'off'}"></span>
+        <span class="t">
+          {speakLine === null ? 'score the speaking loop' : speakLine.title}
+        </span>
+        {#if speakLine !== null && speakLine.detail !== null}
+          <span class="when">{speakLine.detail}</span>
+        {/if}
+        {#if speakLine !== null && speakLine.percent !== null}
+          <progress
+            class="bar"
+            max="100"
+            value={speakLine.percent}
+            aria-label="speaking bench progress"
+          ></progress>
+        {/if}
+        <span class="spacer"></span>
+        {#if wire.speaking_bench.state === 'running'}
+          <button class="chip" type="button" onclick={onspeakbenchstop}>stop</button>
+        {:else}
+          <button class="chip" type="button" disabled={busy} onclick={onspeakbench}
+            >score the loop</button
+          >
+        {/if}
+        <span class="detail">
+          the speaking model says each public transcript &middot; the transcribing pair hears it
+          back and the words are scored again &middot; it scores the bundled public corpus
+        </span>
+        {#if wire.speaking_results[0] !== undefined}
+          {@const last = wire.speaking_results[0]}
+          <span class="detail">
+            last run, {last.file}
+            {#if speakingWhen(last) !== null}&middot; {speakingWhen(last)}{/if}: {@render facts(
+              speakingResultFacts(last),
+            )}
+          </span>
+        {/if}
+      </div>
+
       <!-- The doors: what a run measured, and what can be run by hand. Both
            lists are long, and neither is what the section is for, so they
            fold - the door carries the count so a shut one never reads as an
@@ -1030,6 +1105,13 @@
                       onclick={() => onbench(row.target, 'read_aloud')}>score the read-aloud</button
                     >
                   {/if}
+                  <button
+                    class="chip"
+                    type="button"
+                    disabled={busy}
+                    title="score the bundled slice of public read speech, so a machine with no recordings still has a corpus"
+                    onclick={() => onbench(row.target, 'public')}>score the public corpus</button
+                  >
                   {#if !row.current && wire.installed.some((model) => model.file === row.target.file)}
                     <button
                       class="chip"

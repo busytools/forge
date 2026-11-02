@@ -16,6 +16,8 @@
   import Autocomplete from './Autocomplete.svelte';
   import TakeCard from './TakeCard.svelte';
   import DictateControl from './DictateControl.svelte';
+  import VoiceControl from '../voice/control.svelte';
+  import { pauseVoice } from '../voice/registry';
   import DictationPanel from './DictationPanel.svelte';
   import Dock from './Dock.svelte';
   import Field from './Field.svelte';
@@ -58,7 +60,7 @@
   /** How long a landed take's border holds its green beat, which the book states. */
   const BEAT_MS = 450;
 
-  let { record, slot, connection, seat, dictation, reading }: ComposerProps = $props();
+  let { record, slot, connection, seat, dictation, reading, voice }: ComposerProps = $props();
 
   /**
    * Every box this composer has opened, held for as long as it lives: leaving a
@@ -93,10 +95,20 @@
   // takes it from there, and this is the one read that is not a re-render.
   // svelte-ignore state_referenced_locally
   let box = $state.raw<Box>(boxes.of(boxKey(slot)));
+  // The seat being left, so its voice switch can be turned off and forgotten.
+  // A body swap is not a seat change, so this is the only place the switch is
+  // dropped for a reader who moved.
+  // svelte-ignore state_referenced_locally
+  let previousSeat = $state.raw(boxKey(slot));
   $effect.pre(() => {
     const key = boxKey(slot);
     const next = boxes.of(key);
     if (untrack(() => box) !== next) box = next;
+    const left = untrack(() => previousSeat);
+    if (left !== key) {
+      pauseVoice(left);
+      previousSeat = key;
+    }
   });
 
   /**
@@ -1571,6 +1583,14 @@
             micEl = el;
           }}
         />
+      {/if}
+      <!-- Keyed by the seat: the voice switch belongs to the seat the box
+           shows, and moving seats turns the old one off rather than leaving a
+           listener behind. -->
+      {#if voice}
+        {#key boxKey(slot)}
+          <VoiceControl {connection} {slot} />
+        {/key}
       {/if}
       {#if running}
         <button class="stop" type="button" title="stop" aria-label="stop" onclick={stop}>

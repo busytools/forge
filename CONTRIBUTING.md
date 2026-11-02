@@ -202,12 +202,13 @@ hard rule 27).
 
 ## Where code goes
 
-The workspace is twelve crates with a strictly acyclic dependency graph,
+The workspace is thirteen crates with a strictly acyclic dependency graph,
 and putting something in the wrong one is the most common structural
 review comment. The
 [architecture page](https://busytools.github.io/forge/architecture.html)
-has the placement guide; the short version is that audio and speech go
-in `forge-dictate`, microphone capture - the device, its plan, the
+has the placement guide; the short version is that audio and speech
+recognition go in `forge-dictate`, text-to-speech goes in `forge-tts`,
+microphone capture - the device, its plan, the
 resampler and the frames - goes in `forge-capture`,
 decision-model I/O goes in `forge-system-one`,
 cross-crate types go in `forge-primitives`,

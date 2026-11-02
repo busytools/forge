@@ -70,6 +70,37 @@ the number of matches and a list is cut at a bound on ranking work, so a
 truncated list never reads as the whole list. Forge's table shadows the
 CLI's row of the same name - one name, one row.
 
+## Voice
+
+A second control sits beside the mic when `[tts] enabled` is set: the
+switch for the agent's voice on the seat this client shows. It is off by
+default. A click turns it on and the seat's listener count comes back; a
+second click turns it off. The control draws its state as a shape, not a
+colour: a struck-through speaker when off, a plain speaker when on, and a
+mark beside it while a reply is sounding.
+While more than one client is listening, the switch draws the room's count
+beside the icon and its title names it; the count is the seat's own answer,
+seeded from the seat read on a late attach.
+
+**Dictation and voice are different directions.** The mic is how the user
+speaks to the agent: it fills the box with text and stops there. The voice
+switch is how the agent's replies are heard: it turns the seat's speech on
+or off for this client and does nothing else.
+
+**Voice is per client and per seat.** Every connection on the seat receives
+its clips, and this client plays them only while its switch is on. The first
+client in puts a short note into the session, so the agent is told once that
+the person is listening. The last client out tells the agent the person
+stopped when the reader turned the switch off themselves, and when the
+connection that held that client goes away: a closed client or a dropped
+socket empties the seat's listener set too. A seat change pauses the switch
+and a return to a seat the reader had on reconnects it, so moving between
+seats does not toggle the agent. A closed client or a dropped socket turns
+the switch off. The clips play in the order the engine rendered them, each
+sentence following the one before, and a reconnect discards the queue rather
+than playing a conversation with holes in it, then resubscribes the switch if
+this client still wants voice.
+
 ## Dictation
 
 The mic sits at the body row's end; a take runs `ready` (the capture is
@@ -151,6 +182,8 @@ catch at either layer can reach it.
 | Not running | `not running` and the seat's own reason: a worker's seat has no spawn coming, and says so |
 | Reading | `Reading the conversation...` above the field while the seat's first page is still out, with the sweep; the field stays live |
 | A take that does not come up | the body stays, with the line above it: the microphone did not come up, or the device layer's own named failure |
+| Voice on | the voice switch beside the mic in the accent: a plain speaker, with a mark beside it while a reply is sounding |
+| Voice off | the same switch, a struck-through speaker and dim, meaning this client is not listening to this seat |
 | Failed | `Input disabled due to error` and what to do: quit and start forge again |
 
 **A blocked state replaces the body entirely and always says why.** The

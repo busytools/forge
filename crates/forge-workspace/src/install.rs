@@ -106,11 +106,21 @@ pub struct ActiveChoice {
     pub at: String,
 }
 
-/// The `[dictate]` key that pins one role.
-fn key_for_role(role: DictateRole) -> &'static str {
+/// The table a role's pinning key lives in.
+fn section_for(role: DictateRole) -> &'static str {
     match role {
-        DictateRole::Transcribing => "transcribe_model",
-        DictateRole::Normalization => "cleanup_model",
+        DictateRole::Speaking => "tts",
+        DictateRole::Transcribing | DictateRole::Normalization => "dictate",
+    }
+}
+
+/// The config key that pins one role. The speaking role has none: its model
+/// is placed by hand and the engine loads it.
+fn key_for_role(role: DictateRole) -> Option<&'static str> {
+    match role {
+        DictateRole::Transcribing => Some("transcribe_model"),
+        DictateRole::Normalization => Some("cleanup_model"),
+        DictateRole::Speaking => None,
     }
 }
 
@@ -154,7 +164,14 @@ pub(crate) fn resolve_role(
     // A config key wins over everything, and it never clears the record:
     // removing the key returns the role to the last runtime pick.
     if let Some(variant) = configured {
-        let key = key_for_role(role).to_owned();
+        let Some(key) = key_for_role(role).map(str::to_owned) else {
+            return RoleResolution::Chosen(ActiveModel {
+                role,
+                spec: pin,
+                from: ActiveFrom::Pin,
+                at: None,
+            });
+        };
         return match installed.iter().find(|model| model.variant == variant) {
             Some(record) => RoleResolution::Chosen(ActiveModel {
                 role,
@@ -580,6 +597,8 @@ impl Workspace {
             let configured = match role {
                 DictateRole::Transcribing => settings.transcribe_model.as_deref(),
                 DictateRole::Normalization => settings.cleanup_model.as_deref(),
+                // The speaking role resolves off `[tts]`, never this list.
+                DictateRole::Speaking => None,
             };
             let installed = self.installed_models();
             // Read the pick only when the key does not decide: reading it
@@ -716,7 +735,7 @@ impl Workspace {
             return Err(DispatchError::DictateOff);
         }
         if let Some(key) = self.pinning_key(role) {
-            return Err(DispatchError::PinnedRole { key });
+            return Err(DispatchError::PinnedRole { section: section_for(role), key });
         }
         if let Some(holder) = self.dictate_runtime.lock().live_holder() {
             return Err(DispatchError::TakeLive { holder });
@@ -751,7 +770,7 @@ impl Workspace {
             return Err(DispatchError::DictateOff);
         }
         if let Some(key) = self.pinning_key(role) {
-            return Err(DispatchError::PinnedRole { key });
+            return Err(DispatchError::PinnedRole { section: section_for(role), key });
         }
         if let Some(holder) = self.dictate_runtime.lock().live_holder() {
             return Err(DispatchError::TakeLive { holder });
@@ -778,21 +797,26 @@ impl Workspace {
         Ok(())
     }
 
-    /// The `[dictate]` key that pins one role, when one does.
+    /// The config key that pins one role, when one does. The speaking role
+    /// has none: its model is placed by hand and the engine loads it.
     fn pinning_key(&self, role: DictateRole) -> Option<String> {
         let config = self.config_arc();
-        let settings = &config.dictate;
         let pinned = match role {
-            DictateRole::Transcribing => settings.transcribe_model.as_ref(),
-            DictateRole::Normalization => settings.cleanup_model.as_ref(),
+            DictateRole::Transcribing => config.dictate.transcribe_model.as_ref(),
+            DictateRole::Normalization => config.dictate.cleanup_model.as_ref(),
+            DictateRole::Speaking => None,
         };
-        pinned.map(|_| key_for_role(role).to_owned())
+        pinned.and_then(|_| key_for_role(role).map(str::to_owned))
     }
 
     /// The compiled default one role runs, when it has one: the cleanup
     /// role has none while `normalizer` is off.
     fn pin_for(&self, role: DictateRole) -> Option<ModelSpec> {
-        self.config_arc()
+        let config = self.config_arc();
+        if role == DictateRole::Speaking {
+            return Some(config.tts.pin());
+        }
+        config
             .dictate
             .model_specs()
             .into_iter()
@@ -850,6 +874,11 @@ impl Workspace {
         spec: ModelSpec,
         from: ActiveFrom,
     ) -> Result<String, String> {
+        if role == DictateRole::Speaking {
+            // The speaking role's engine is the voice service's, and a swap
+            // rebuilds it there rather than through dictate's config.
+            return Err("the speaking engine is rebuilt by the voice service".to_owned());
+        }
         let current = self.active_models();
         if current.iter().any(|(r, model)| *r == role && model.spec.file == spec.file) {
             // The role already runs this file: nothing to build, and a
@@ -1922,7 +1951,7 @@ mod tests_install {
             .expect_err("forge.toml pins the role");
 
         assert!(
-            matches!(&err, DispatchError::PinnedRole { key } if key == "transcribe_model"),
+            matches!(&err, DispatchError::PinnedRole { key, .. } if key == "transcribe_model"),
             "the refusal names the [dictate] key, got: {err:?}"
         );
     }

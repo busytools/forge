@@ -15,6 +15,7 @@ mod device;
 mod error;
 mod stream;
 
+pub use convert::resample_mono;
 pub use device::{Device, devices};
 pub use error::Error;
 pub use stream::{Block, Capture, open};

@@ -81,6 +81,14 @@ export interface Store {
    * that arrived, until the seat's own answer lands.
    */
   push(update: SessionUpdate): void;
+  /**
+   * The `voice_audio` frames pushed since the last call, drained.
+   *
+   * A sentence is 0.3-1 MB as a parsed number array, and nothing but the
+   * voice reader reads it: kept out of the retained tail, a listening
+   * session holds only what has not played yet.
+   */
+  takeAudio(): SessionUpdate[];
   /** The server declined this subscription, with its own words for why. */
   refuse(why: string): void;
 }
@@ -104,6 +112,11 @@ function replaces(update: SessionUpdate): boolean {
 
 function createStore(subject: Subject, state: StoreState = { kind: 'loading' }): Store {
   const inner = writable<StoreValue>({ snapshot: null, updates: [], state, dropped: 0 });
+  // Audio is drained by the voice reader and never retained: a parsed
+  // sentence is far larger than a state frame, and a listening session would
+  // otherwise hold every one it has played.
+  let audio: SessionUpdate[] = [];
+  const MAX_AUDIO = 8;
   return {
     subject,
     value: { subscribe: inner.subscribe },
@@ -112,7 +125,15 @@ function createStore(subject: Subject, state: StoreState = { kind: 'loading' }):
     state: () => get(inner).state,
     dropped: () => get(inner).dropped,
     set: (snapshot) => inner.set({ snapshot, updates: [], state: { kind: 'ready' }, dropped: 0 }),
-    push: (update) =>
+    push: (update) => {
+      if (variantOf(update)[0] === 'voice_audio') {
+        audio.push(update);
+        if (audio.length > MAX_AUDIO) audio.splice(0, audio.length - MAX_AUDIO);
+        // The control pumps on a store change; the retained value is the
+        // same, so a page folding it draws nothing new.
+        inner.update((held) => ({ ...held }));
+        return;
+      }
       inner.update((held) => {
         if (isSeat(subject) && replaces(update)) {
           return { snapshot: null, updates: [], state: { kind: 'loading' }, dropped: 0 };
@@ -125,7 +146,13 @@ function createStore(subject: Subject, state: StoreState = { kind: 'loading' }):
           state: held.state,
           dropped: held.dropped + Math.max(0, over),
         };
-      }),
+      });
+    },
+    takeAudio: () => {
+      const taken = audio;
+      audio = [];
+      return taken;
+    },
     refuse: (why) =>
       inner.update((held) => ({ ...held, updates: [], state: { kind: 'refused', why } })),
   };

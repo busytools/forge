@@ -117,6 +117,7 @@ import { boxKey } from './box.svelte';
 import { modelsWire } from '../models/testing';
 import { subjectKey, type ServerMessage, type Subject } from '../protocol';
 import { DEFAULT_AXES, type DictateAxes } from '../session/wire';
+import { resetVoices } from '../voice/registry';
 import {
   browserHandOffAsk,
   documentHandOffAsk,
@@ -224,6 +225,9 @@ afterEach(() => {
   // behind would hand it to the next.
   echoes.clear(boxKey(SLOT));
   echoes.clear(boxKey(ELSEWHERE));
+  // The voice registry outlives a component, so a case's cached voice and
+  // its pending release would otherwise decide the next case's switch.
+  resetVoices();
   // The overlay's key doors are this file's own state too: a registration
   // left in the history would answer the next case's mount.
   vi.mocked(onModifier).mockClear();
@@ -10163,5 +10167,48 @@ describe('the approving action leads', () => {
     expect(deny?.textContent, 'the deny does not say the words ride it').toContain(
       'with these words',
     );
+  });
+});
+
+describe('the voice switch across a body swap', () => {
+  it('does not send off while an ask holds the body', () => {
+    const harness = open({ voice: true });
+    const button = document.querySelector('.voice');
+    if (!(button instanceof HTMLButtonElement)) throw new Error('the voice switch did not draw');
+    button.click();
+    flushSync();
+    expect(harness.sent.some((sent) => 'voice_mode' in sent.command)).toBe(true);
+
+    harness.page.record = record({ pending_asks: [permissionAsk()] });
+    flushSync();
+
+    expect(
+      harness.sent.filter(
+        (sent) =>
+          'voice_mode' in sent.command && (sent.command.voice_mode as { on: boolean }).on === false,
+      ),
+      'no off is sent for the body swap',
+    ).toEqual([]);
+  });
+
+  it('pauses the old seat when the seat changes, without telling the agent it stopped', () => {
+    const harness = open({ voice: true });
+    const button = document.querySelector('.voice');
+    if (!(button instanceof HTMLButtonElement)) throw new Error('the voice switch did not draw');
+    button.click();
+    flushSync();
+
+    harness.page.slot = { ...SLOT, project: 'other-project' };
+    flushSync();
+
+    const off = harness.sent.filter(
+      (sent) =>
+        'voice_mode' in sent.command && (sent.command.voice_mode as { on: boolean }).on === false,
+    );
+    expect(off, 'the old seat is told it is no longer heard').toHaveLength(1);
+    expect(
+      (off[0]?.command as { voice_mode: { explicit: boolean } }).voice_mode.explicit,
+      'a seat change pauses; only the reader own off tells the agent it stopped',
+    ).toBe(false);
   });
 });

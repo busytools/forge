@@ -436,6 +436,13 @@ pub enum Command {
     /// Stop the bench in flight. What ran so far is discarded: a partial
     /// corpus is not a result.
     DictateBenchStop,
+    /// Score the speaking loop on the public corpus: synthesize each
+    /// transcript, hear it back through the transcribing and cleanup pair,
+    /// and report the round-trip words, the first-audio latency and the
+    /// render's pace. App-level, same outcome channel as the words bench.
+    VoiceBenchStart,
+    /// Stop the speaking bench in flight: a partial corpus is not a result.
+    VoiceBenchStop,
     /// Begin recording the read-aloud set: the connection that sent this
     /// feeds the audio as binary frames, like a take a client captures, and
     /// no session owns it. App-level; the recording's own state rides the
@@ -846,6 +853,19 @@ pub enum Command {
         #[serde(skip)]
         respond: Option<oneshot::Sender<Option<forge_primitives::ReviewSet>>>,
     },
+    /// A client turned voice on or off for the seat. The listener set is per
+    /// connection, so the transport stamps which one.
+    VoiceMode {
+        key: SessionSlot,
+        on: bool,
+        /// Whether this off is the reader's own, which is what tells the
+        /// session it has stopped listening. A move to another seat pauses
+        /// without the note, so a seat switch does not toggle the agent.
+        #[serde(default)]
+        explicit: bool,
+        #[serde(skip)]
+        initiator: Option<u64>,
+    },
 }
 
 impl Command {
@@ -869,7 +889,8 @@ impl Command {
             | Self::RespondPermission { key, .. }
             | Self::RespondQuestion { key, .. }
             | Self::SetDictateOverride { key, .. }
-            | Self::ResetDictateOverrides { key } => Some(key),
+            | Self::ResetDictateOverrides { key }
+            | Self::VoiceMode { key, .. } => Some(key),
             Self::SpawnProject { .. }
             | Self::DictateStream { .. }
             | Self::DictateStop { .. }
@@ -886,6 +907,8 @@ impl Command {
             | Self::DictateDeactivate { .. }
             | Self::DictateBench { .. }
             | Self::DictateBenchStop
+            | Self::VoiceBenchStart
+            | Self::VoiceBenchStop
             | Self::DictateReadAloudStart { .. }
             | Self::DictateReadAloudStop { .. }
             | Self::DictateReadAloudDelete { .. }
@@ -1067,6 +1090,8 @@ impl std::fmt::Debug for Command {
                 f.debug_struct("DictateBench").field("target", target).field("tier", tier).finish()
             }
             Self::DictateBenchStop => f.write_str("DictateBenchStop"),
+            Self::VoiceBenchStart => f.write_str("VoiceBenchStart"),
+            Self::VoiceBenchStop => f.write_str("VoiceBenchStop"),
             Self::DictateReadAloudStart { .. } => f.write_str("DictateReadAloudStart"),
             Self::DictateReadAloudStop { keep, .. } => {
                 f.debug_struct("DictateReadAloudStop").field("keep", keep).finish()
@@ -1183,6 +1208,9 @@ impl std::fmt::Debug for Command {
                 .finish(),
             Self::MarketplaceRepair { name } => {
                 f.debug_struct("MarketplaceRepair").field("name", name).finish()
+            }
+            Self::VoiceMode { key, on, .. } => {
+                f.debug_struct("VoiceMode").field("key", key).field("on", on).finish()
             }
         }
     }
@@ -2113,6 +2141,22 @@ pub enum SessionUpdate {
         id: Uuid,
         ending: forge_primitives::document::DocumentHandOffEnding,
     },
+    /// One rendered clip of the seat's speech, mono 16-bit samples at
+    /// `sample_rate`. Chunks arrive in `seq` order and every client with
+    /// voice on for the seat plays them; a client with voice off receives
+    /// them and stays silent.
+    VoiceAudio {
+        key: SessionSlot,
+        seq: u32,
+        sample_rate: u32,
+        pcm: Vec<i16>,
+    },
+    /// The seat's voice state: how many clients are listening, which is what
+    /// the control draws and what a listener note is injected on.
+    VoiceModeState {
+        key: SessionSlot,
+        listeners: u32,
+    },
 }
 
 impl SessionUpdate {
@@ -2157,6 +2201,8 @@ impl SessionUpdate {
             | Self::BrowserHandOffResolved { key, .. }
             | Self::DocumentHandOffPending { key, .. }
             | Self::DocumentHandOffResolved { key, .. }
+            | Self::VoiceAudio { key, .. }
+            | Self::VoiceModeState { key, .. }
             | Self::ChatAppended { key, .. }
             | Self::HookObservation { key, .. }
             | Self::ContextUsageSnapshot { key, .. }
@@ -2496,6 +2542,18 @@ impl std::fmt::Debug for SessionUpdate {
                 .debug_struct("AccountsChanged")
                 .field("loading", &accounts.loading.len())
                 .finish_non_exhaustive(),
+            Self::VoiceAudio { key, seq, sample_rate, pcm } => f
+                .debug_struct("VoiceAudio")
+                .field("key", key)
+                .field("seq", seq)
+                .field("sample_rate", sample_rate)
+                .field("samples", &pcm.len())
+                .finish(),
+            Self::VoiceModeState { key, listeners } => f
+                .debug_struct("VoiceModeState")
+                .field("key", key)
+                .field("listeners", listeners)
+                .finish(),
         }
     }
 }
@@ -2545,6 +2603,10 @@ pub enum DispatchError {
     /// there are no pinned models for a check to be about.
     #[error("dictation is off, so there is no catalogue to check")]
     DictateOff,
+    /// A speaking action was asked for with `[tts]` switched off or no
+    /// model files resolving: there is nothing to speak with.
+    #[error("speech is off: {reason}")]
+    VoiceOff { reason: String },
     /// An install is already running: one at a time, like a check.
     #[error("a model install is already running")]
     Installing,
@@ -2556,10 +2618,10 @@ pub enum DispatchError {
     /// engine cannot be swapped under it.
     #[error("a dictation take is live on {holder}; wait for it to finish")]
     TakeLive { holder: String },
-    /// `forge.toml` pins this role, so the runtime cannot move it; `key`
-    /// is the `[dictate]` key that does.
-    #[error("[dictate] {key} pins this model in forge.toml; remove the key to change it here")]
-    PinnedRole { key: String },
+    /// `forge.toml` pins this role, so the runtime cannot move it; `section`
+    /// and `key` name the table and key that do.
+    #[error("[{section}] {key} pins this model in forge.toml; remove the key to change it here")]
+    PinnedRole { section: &'static str, key: String },
     /// A bench holds the machine: it is measuring an engine, so a swap or
     /// a second run waits for it to finish or stops it.
     #[error("a bench is running; stop it before changing models")]
@@ -2715,6 +2777,70 @@ mod session_update_variants {
             ending(SlackDraftEnding::Answered { approved: true }),
             serde_json::json!({ "answered": { "approved": true } }),
         );
+    }
+
+    /// The voice frames are additive and rename no field, so a round trip is
+    /// the whole contract. `sample_rate` is a plain number rather than a
+    /// closed set, so a model rendering at a rate this build has never seen
+    /// still reaches a client.
+    #[test]
+    fn the_voice_frames_round_trip() {
+        use crate::SessionSlot;
+
+        let key = SessionSlot::from_str_for_test("voice");
+        let mode = super::Command::VoiceMode {
+            key: key.clone(),
+            on: true,
+            explicit: false,
+            initiator: None,
+        };
+        let json = serde_json::to_string(&mode).expect("a command serialises");
+        let super::Command::VoiceMode { key: decoded, on, .. } =
+            serde_json::from_str(&json).expect("a command decodes")
+        else {
+            panic!("a voice mode came back as another command");
+        };
+        assert_eq!(decoded, key);
+        assert!(on);
+
+        let audio = super::SessionUpdate::VoiceAudio {
+            key: key.clone(),
+            seq: 7,
+            sample_rate: 24_000,
+            pcm: vec![5, 6],
+        };
+        let json = serde_json::to_string(&audio).expect("an update serialises");
+        let super::SessionUpdate::VoiceAudio { key: decoded, seq, sample_rate, pcm } =
+            serde_json::from_str(&json).expect("an update decodes")
+        else {
+            panic!("a voice audio frame came back as another update");
+        };
+        assert_eq!(decoded, key);
+        assert_eq!((seq, sample_rate, pcm), (7, 24_000, vec![5, 6]));
+
+        let state = super::SessionUpdate::VoiceModeState { key: key.clone(), listeners: 2 };
+        let json = serde_json::to_string(&state).expect("an update serialises");
+        let super::SessionUpdate::VoiceModeState { key: decoded, listeners } =
+            serde_json::from_str(&json).expect("an update decodes")
+        else {
+            panic!("a voice mode frame came back as another update");
+        };
+        assert_eq!((decoded, listeners), (key.clone(), 2));
+
+        let unknown = serde_json::json!({
+            "voice_audio": {
+                "key": serde_json::to_value(&key).expect("a slot renders"),
+                "seq": 0,
+                "sample_rate": 12_345,
+                "pcm": [],
+            }
+        });
+        let super::SessionUpdate::VoiceAudio { sample_rate, .. } =
+            serde_json::from_value(unknown).expect("an unknown rate decodes")
+        else {
+            panic!("a voice audio frame came back as another update");
+        };
+        assert_eq!(sample_rate, 12_345);
     }
 
     /// What one parse of the enum found.
@@ -2910,6 +3036,86 @@ mod session_update_variants {
             names.push(renamed.take().unwrap_or_else(|| snake_case(&variant)));
         }
         Census { names, closed }
+    }
+
+    /// The book's variant counts are read from the enums, not trusted: a
+    /// variant added without the page moving leaves a published number wrong.
+    #[test]
+    fn the_book_counts_match_the_enums() {
+        let source = include_str!("protocol.rs");
+        let book = include_str!("../../../docs/book/src/socket.md");
+        let flat = book.split_whitespace().collect::<Vec<_>>().join(" ");
+
+        let (command_total, command_struct, command_unit) =
+            variant_counts(source, "pub enum Command {");
+        assert!(
+            flat.contains(&format!(
+                "`Command` has {command_total} variants, {command_struct} of them struct variants; the {} unit variants",
+                spell(command_unit),
+            )),
+            "the book's Command count is not the enum's: {command_total} total, {command_struct} struct, {command_unit} unit",
+        );
+
+        let (update_total, update_struct, update_unit) =
+            variant_counts(source, "pub enum SessionUpdate {");
+        assert!(
+            flat.contains(&format!(
+                "{update_struct} of `SessionUpdate`'s {update_total} variants are struct variants"
+            )),
+            "the book's SessionUpdate count is not the enum's: {update_total} total, {update_struct} struct, {update_unit} unit",
+        );
+    }
+
+    /// A small count as the book spells it.
+    fn spell(n: usize) -> String {
+        match n {
+            0 => "zero",
+            1 => "one",
+            2 => "two",
+            3 => "three",
+            4 => "four",
+            5 => "five",
+            6 => "six",
+            7 => "seven",
+            8 => "eight",
+            9 => "nine",
+            10 => "ten",
+            _ => return n.to_string(),
+        }
+        .to_owned()
+    }
+
+    /// Count an enum's variants, and how many carry a struct body.
+    fn variant_counts(source: &str, header: &str) -> (usize, usize, usize) {
+        let mut total = 0;
+        let mut structs = 0;
+        let mut units = 0;
+        let mut inside = false;
+        for line in source.lines() {
+            if !inside {
+                inside = line.starts_with(header);
+                continue;
+            }
+            if line == "}" {
+                break;
+            }
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with("//") || trimmed.starts_with("#[") {
+                continue;
+            }
+            let variant: String =
+                trimmed.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').collect();
+            if !variant.starts_with(|c: char| c.is_ascii_uppercase()) {
+                continue;
+            }
+            total += 1;
+            if trimmed.contains('{') {
+                structs += 1;
+            } else {
+                units += 1;
+            }
+        }
+        (total, structs, units)
     }
 
     /// serde's own rule for this enum's `rename_all`, for a variant with no

@@ -501,6 +501,12 @@ export interface DictateWire {
   models_dir: string | null;
 }
 
+/** The speaking role's switch and where its model lands. */
+export interface VoiceWire {
+  enabled: boolean;
+  models_dir: string | null;
+}
+
 export interface HomeWire {
   projects: ProjectWire[];
   agents: AgentRow[];
@@ -515,6 +521,7 @@ export interface HomeWire {
   accounts: AccountsWire;
   connectors: unknown;
   dictate: DictateWire;
+  voice: VoiceWire;
   cli_version: { installed: string | null; latest: string | null } | null;
   /** The forge build serving the socket, drawn as the header's `server` pair. */
   forge_version: string;
@@ -813,6 +820,12 @@ export function homeFrom(data: HomeWire): HomeWire {
       misses: (Array.isArray(row.misses) ? row.misses : []).map(missFrom),
     })),
     accounts: accountsFrom(data.accounts),
+    // A server that predates the section sends none, which reads as off:
+    // nothing this client can do turns on a role the core does not offer.
+    voice: {
+      enabled: data.voice?.enabled === true,
+      models_dir: data.voice?.models_dir ?? null,
+    },
     dictate: {
       ...data.dictate,
       snapshot: {

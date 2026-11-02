@@ -498,6 +498,10 @@ export const IGNORED: readonly string[] = [
   // all three sections are read off the board's project row, and this record
   // has no field for any of them.
   'tasks_changed',
+  // The seat's voice frames: the playback queue and the control read the
+  // stream directly, and this record has no field for either.
+  'voice_audio',
+  'voice_mode_state',
   'cron_schedules_changed',
   'connector_subscriptions_changed',
   'worker_status_changed',

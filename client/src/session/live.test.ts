@@ -1847,6 +1847,7 @@ function drivable(refusedAtFirst = false, rangeAskFails = false): Driveable {
         snapshot.set(key, next);
       },
       push: () => {},
+      takeAudio: () => [],
       refuse: () => {},
     };
   };
