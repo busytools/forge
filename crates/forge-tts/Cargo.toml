@@ -9,10 +9,8 @@ rust-version.workspace = true
 description = "Speech synthesis: text in, audio chunks out. Local text-to-speech with verified model files. Depends on no other forge crate."
 publish = false
 
-# Deliberately not `[lints] workspace = true`: the workspace forbids unsafe,
-# and this crate is where forge calls llama.cpp's audio-generation C ABI,
-# which the safe binding does not wrap. Everything else matches the
-# workspace table.
+# Not `[lints] workspace = true`: the workspace forbids unsafe, and this crate
+# calls llama.cpp's audio-generation C ABI, which the safe binding does not wrap.
 [lints.rust]
 unsafe_code = "deny"
 dead_code = "deny"

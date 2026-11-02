@@ -63,11 +63,8 @@ impl Core {
 
         let mut params = unsafe { sys::mtmd_context_params_default() };
         params.print_timings = false;
-        // The published llama.cpp builds the TTS attention mask as F32, and
-        // Metal's flash-attention kernel reads it as F16. Disabling flash
-        // attention routes the mask through `ggml_soft_max_ext`, which takes
-        // F32, so the stock v0.6.0 kernel renders correctly without the v0.8.0
-        // F16 cast.
+        // The TTS attention mask is F32 and Metal's flash-attention kernel
+        // reads F16.
         params.flash_attn_type = sys::LLAMA_FLASH_ATTN_TYPE_DISABLED;
         let projector_path = utf8(projector)?;
         let name = CString::new(projector_path)
@@ -87,9 +84,7 @@ impl Core {
         // backbone state each generated frame is built from.
         context.n_ctx = 0;
         context.embeddings = true;
-        // Same reason as the projector's params above: the TTS graph hands
-        // the attention mask over as F32, and the Metal flash-attention
-        // kernel reads halves.
+        // Same reason as the projector's params above.
         context.flash_attn_type = sys::LLAMA_FLASH_ATTN_TYPE_DISABLED;
         core.context = unsafe { sys::llama_init_from_model(core.model, context) };
         if core.context.is_null() {
