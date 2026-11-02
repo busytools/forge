@@ -858,22 +858,21 @@ impl Workspace {
         // A row written before the stamp was stored has none. Its cursor is
         // the last position the row judged, so it is the safe seed: anything
         // edited after that has a later stamp and still arrives.
-        let mark = match record.edit_watermark.clone() {
-            Some(mark) => mark,
-            None => {
-                let seed = record.cursor.clone();
-                record.edit_watermark = Some(seed.clone());
-                if let Err(error) =
-                    crate::store::slack::set_thread(db, workspace, conversation, parent_ts, &record)
-                {
-                    tracing::warn!(
-                        target: "forge_workspace::slack",
-                        %error,
-                        "writing a legacy Slack thread's edit stamp failed",
-                    );
-                }
-                seed
+        let mark = if let Some(mark) = record.edit_watermark.clone() {
+            mark
+        } else {
+            let seed = record.cursor.clone();
+            record.edit_watermark = Some(seed.clone());
+            if let Err(error) =
+                crate::store::slack::set_thread(db, workspace, conversation, parent_ts, &record)
+            {
+                tracing::warn!(
+                    target: "forge_workspace::slack",
+                    %error,
+                    "writing a legacy Slack thread's edit stamp failed",
+                );
             }
+            seed
         };
         self.slack_thread_edit_watermarks.lock().insert(key, mark.clone());
         Some(mark)
