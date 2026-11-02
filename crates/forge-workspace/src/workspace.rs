@@ -422,8 +422,10 @@ const DYNAMIC_WORKER_RESTART_NOTE: &str = "This session was restarted by forge. 
 /// The first turn a boot spawn delivers to a lead whose session it
 /// resumed. A lead has no kick of its own, so this note is what turns a
 /// resumed conversation into work continued rather than a seat idle at a
-/// prompt.
-pub const LEAD_RESTART_NOTE: &str = "forge restarted. Your prior conversation is in the history above; continue where you left off and do not restart finished work. Read the project handoff (`handoff.md` in the project's memory directory) and the task board before acting. If the history's timestamps disagree with the clock and the live schedules, believe the clock and the schedules.";
+/// prompt. The handoff and the board are the source of what was in
+/// flight: a `--resume` that the CLI refuses falls back to a fresh
+/// session, so the history is named conditionally rather than relied on.
+pub const LEAD_RESTART_NOTE: &str = "forge restarted. Read the project handoff (`handoff.md` in the project's memory directory) and the task board before acting; they say what was in flight. Continue that work and do not restart what is finished. If a prior conversation is in the history above, treat it as the record of this seat's last run. If the history's timestamps disagree with the clock and the live schedules, believe the clock and the schedules.";
 
 /// The restart note a boot spawn hands its seat: only a spawn that
 /// resumed a stored session delivers one, so a fresh spawn or `--new`
@@ -20134,26 +20136,33 @@ mod worker_respawn_tests {
 
     /// The lead restart note is the first turn a boot-resumed lead reads.
     /// Pinned so it sends the lead to the handoff and the board before it
-    /// acts, and to the clock over a stale history.
+    /// acts, keeps the history conditional (a refused resume falls back to
+    /// a fresh one), and goes to the clock over a stale history.
     #[test]
     fn the_lead_restart_note_names_the_handoff_the_board_and_the_clock() {
         assert!(LEAD_RESTART_NOTE.contains("forge restarted"), "the note says what happened");
         assert!(
-            LEAD_RESTART_NOTE.contains("continue where you left off"),
-            "the note tells the lead to carry on",
+            LEAD_RESTART_NOTE.contains("handoff.md` in the project's memory directory"),
+            "the note names where the handoff lives, not only its filename",
         );
         assert!(
-            LEAD_RESTART_NOTE.contains("do not restart finished work"),
-            "and not to redo what is already done",
+            LEAD_RESTART_NOTE.contains("task board before acting"),
+            "the note sends the lead to the board before it acts",
         );
         assert!(
-            LEAD_RESTART_NOTE.contains("handoff.md"),
-            "the note sends the lead to the project handoff",
+            LEAD_RESTART_NOTE.contains("Continue that work and do not restart what is finished"),
+            "the note tells the lead to carry on and not redo finished work",
         );
-        assert!(LEAD_RESTART_NOTE.contains("task board"), "and to the task board before it acts");
         assert!(
-            LEAD_RESTART_NOTE.contains("believe the clock and the schedules"),
-            "the note names which side wins when the history disagrees",
+            LEAD_RESTART_NOTE.contains("If a prior conversation is in the history above"),
+            "the history is conditional, so the note stays true over a fresh fallback",
+        );
+        assert!(
+            LEAD_RESTART_NOTE.contains(
+                "If the history's timestamps disagree with the clock and the live schedules, \
+                 believe the clock and the schedules"
+            ),
+            "the note names the whole condition and which side wins",
         );
     }
 
