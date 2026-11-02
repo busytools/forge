@@ -343,7 +343,7 @@ impl Conversation {
 
     /// Take one frame into the copy, holding a prompt's display row when the
     /// CLI will deliver that prompt at the end of the running turn.
-    pub fn admit(&mut self, message: Message) {
+    fn admit(&mut self, message: Message) {
         if message.awaits_delivery() && self.live {
             self.pending.push(message);
             return;
@@ -357,7 +357,7 @@ impl Conversation {
     /// delivery will follow: a row kept for it would open a turn nothing
     /// wrote. (A `started`/`completed` prompt keeps its row - it is the
     /// reader's own words, and the CLI carries them.)
-    pub fn settle_pending(&mut self, uuid: &str) {
+    fn settle_pending(&mut self, uuid: &str) {
         self.pending.retain(|message| frame_id(message) != Some(uuid));
     }
 
