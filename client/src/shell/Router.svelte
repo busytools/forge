@@ -328,8 +328,8 @@
 {:else if route.name === 'settings'}
   {#if connection !== null}
     <!-- The page reads the settings frame the connection is handed after
-         its greeting; there is no read verb, so it needs no subscription of
-         its own. The header's claude version is the home read's. -->
+         its greeting, and subscribes the models snapshot itself for its
+         speaking section. The header's claude version is the home read's. -->
     <Settings {connection} {home} mark={settings.mark} />
   {:else}
     <Connect {settings} initialAddress={address} launchFailure={failure} {notice} {onconnect} />
