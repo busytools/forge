@@ -151,15 +151,22 @@ export class Voice {
         this.listeners = typeof state.listeners === 'number' ? state.listeners : 0;
         // The core says nobody is listening any more - the last other client
         // left, or this connection's own mode was never registered - so the
-        // switch follows rather than showing an off seat as on.
-        if (this.listeners === 0 && this.on) this.on = false;
+        // switch follows rather than showing an off seat as on, and the
+        // queued speech goes with it.
+        if (this.listeners === 0 && this.on) {
+          this.on = false;
+          this.playback.drop();
+        }
       }
       const audio = (
         update as {
           voice_audio?: { seq?: unknown; sample_rate?: unknown; pcm?: unknown };
         }
       ).voice_audio;
-      if (audio !== undefined) {
+      // Speech belongs to a client whose voice is on. A client that is only
+      // watching the seat still receives its frames, and playing them would
+      // speak into a room that asked for silence.
+      if (audio !== undefined && this.on) {
         const pcm = Array.isArray(audio.pcm) ? Int16Array.from(audio.pcm as number[]) : null;
         if (pcm !== null) {
           const rate = typeof audio.sample_rate === 'number' ? audio.sample_rate : 24_000;
@@ -187,7 +194,7 @@ export class Voice {
    */
   reset(): void {
     this.cancelTalk();
-    this.playback.drop();
+    this.playback.discard();
     this.on = false;
     this.listeners = 0;
     this.line = null;
@@ -216,7 +223,12 @@ export function connectionPort(
   connection: Pick<Connection, 'store' | 'dispatch'>,
   slot: SessionSlot,
 ): VoicePort {
-  let seen = 0;
+  // `null` until the first read: a port built on a seat that already holds
+  // frames - a revisit, or a remount over the same seat store - must start
+  // at the end of what is there rather than replay speech the reader already
+  // heard. The seed lands on the first `frames()` call, before anything new
+  // can arrive, because the store's own subscribe fires synchronously.
+  let seen: number | null = null;
   let dropped = 0;
   return {
     send(command, body) {
@@ -227,6 +239,11 @@ export function connectionPort(
       if (store === undefined) return [];
       const held = store.updates();
       const lost = store.dropped();
+      if (seen === null) {
+        seen = held.length;
+        dropped = lost;
+        return [];
+      }
       if (lost > dropped) {
         // The store's ceiling took the oldest frames; the cursor moves back
         // with them, or the frames it lost would be read as the new ones.

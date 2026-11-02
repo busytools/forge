@@ -6,10 +6,11 @@
 
 import { describe, expect, it } from 'vitest';
 
+import { SLOT } from '../composer/testing';
 import type { SessionUpdate } from '../protocol';
 import { HeldClip, type VoiceCapture } from './capture.svelte';
 import type { Speaker } from './playback.svelte';
-import { Voice, micFailure, type VoicePort } from './voice.svelte';
+import { Voice, connectionPort, micFailure, type VoicePort } from './voice.svelte';
 
 /** A port that records every command and hands back the frames a test queued. */
 class FakePort implements VoicePort {
@@ -71,6 +72,25 @@ class FakeSpeaker implements Speaker {
 /** Let the player's own promise chain run. */
 async function settle(): Promise<void> {
   for (let at = 0; at < 10; at += 1) await Promise.resolve();
+}
+
+/** A connection whose seat store a test fills by hand. */
+class FakeConnection {
+  held: SessionUpdate[] = [];
+  lost = 0;
+  sent: { command: Record<string, unknown> }[] = [];
+
+  store(_what: unknown): {
+    updates: () => SessionUpdate[];
+    dropped: () => number;
+  } {
+    return { updates: () => this.held, dropped: () => this.lost };
+  }
+
+  dispatch(command: Record<string, unknown>): Promise<null> {
+    this.sent.push({ command });
+    return Promise.resolve(null);
+  }
 }
 
 /** One wire frame: the codec byte, then the samples little-endian. */
@@ -252,6 +272,7 @@ describe('the open that outlives its hold', () => {
 describe('the seat frames', () => {
   it('pumps the seat audio into playback', async () => {
     const { voice, port, speaker } = makeVoice();
+    voice.turnOn();
     port.push({
       voice_audio: { seq: 1, sample_rate: 24_000, pcm: [1, 2, 3] },
     } as unknown as SessionUpdate);
@@ -259,6 +280,17 @@ describe('the seat frames', () => {
     await settle();
     expect(speaker.played.map((clip) => clip.pcm)).toEqual([[1, 2, 3]]);
     expect(speaker.played[0]?.rate).toBe(24_000);
+  });
+
+  it('plays nothing while this client has voice off', async () => {
+    const { voice, port, speaker } = makeVoice();
+    port.push({
+      voice_audio: { seq: 1, sample_rate: 24_000, pcm: [4, 5, 6] },
+    } as unknown as SessionUpdate);
+    voice.pump();
+    await settle();
+    expect(speaker.played).toEqual([]);
+    expect(voice.state).toBe('off');
   });
 
   it('follows the listener count the core reports', () => {
@@ -291,5 +323,28 @@ describe('the seat frames', () => {
     expect(voice.line).toBeNull();
     expect(voice.state).toBe('off');
     expect(port.sent.some((sent) => sent.command === 'voice_mode')).toBe(true);
+  });
+});
+
+describe('the connection port', () => {
+  it('seeds past the audio a seat already retained', () => {
+    const connection = new FakeConnection();
+    connection.held.push({
+      voice_audio: { seq: 0, sample_rate: 24_000, pcm: [9] },
+    } as unknown as SessionUpdate);
+    const port = connectionPort(connection as never, SLOT);
+    expect(port.frames(), 'retained audio is not replayed on a new port').toEqual([]);
+    const fresh = {
+      voice_audio: { seq: 1, sample_rate: 24_000, pcm: [1] },
+    } as unknown as SessionUpdate;
+    connection.held.push(fresh);
+    expect(port.frames()).toEqual([fresh]);
+  });
+
+  it('sends commands under the seat key', () => {
+    const connection = new FakeConnection();
+    const port = connectionPort(connection as never, SLOT);
+    port.send('voice_mode', { on: true });
+    expect(connection.sent).toEqual([{ command: { voice_mode: { key: SLOT, on: true } } }]);
   });
 });

@@ -74,6 +74,19 @@ export class Playback {
   }
 
   /**
+   * Throw everything away and stop counting the clip that is sounding.
+   *
+   * `drop` leaves a sounding clip counted so a push during it waits rather
+   * than starting a second one. A reset means the seat or the socket is
+   * gone, so nothing more will be pushed for it: the clip is left to end on
+   * its own, and the state no longer claims the seat is speaking.
+   */
+  discard(): void {
+    this.queue = [];
+    this.playing = false;
+  }
+
+  /**
    * Play queued clips until the queue is empty.
    *
    * The loop is the queue's one player: every push starts it and finds it
