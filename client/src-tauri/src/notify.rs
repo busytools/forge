@@ -203,6 +203,8 @@ impl Platform for Shell {
         // **A tap that launches the app names its seat by the id the launch
         // intent carries**, and the plugin's own id is one the shell never
         // sees, so the notification is raised under an id it is remembered by.
+        // The join below is Android-only, so no desktop test reaches it; it
+        // passes `board()`'s answer through, and `board()` is pinned directly.
         #[cfg(target_os = "android")]
         let builder = builder.id(crate::launch::remember(&self.app, seat, notice.board()));
         builder.show().map_err(|why| why.to_string())
@@ -601,6 +603,15 @@ mod tests {
         assert_eq!(one.body(), "sign this off");
         let batch = Notice::Wait { words: "sign this off".to_owned(), more: 2 };
         assert_eq!(batch.body(), "sign this off (and 2 more)");
+    }
+
+    /// **The flag a click routes on is the notice's own**: a decision wait
+    /// opens the board where it can be answered, and an ask opens its seat's
+    /// chat. Either flip misroutes every notification of the other kind.
+    #[test]
+    fn a_wait_opens_the_board_and_an_ask_opens_its_seat() {
+        assert!(Notice::Wait { words: "pick one".to_owned(), more: 0 }.board());
+        assert!(!Notice::Ask(AskKind::Question).board());
     }
 
     /// **A click reaches the seat the notification was posted for.** The
