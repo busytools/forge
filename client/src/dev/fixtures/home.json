@@ -55,6 +55,7 @@
       "slots": 2,
       "queue": 0,
       "waiting_on_user": 0,
+      "attention": [],
       "rows": 0,
       "misses": [
         {
