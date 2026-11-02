@@ -49,6 +49,7 @@ import type { Connection } from '../socket';
 import type { BoardWire, ProjectBoardWire } from '../wire/board';
 import type {
   AgentRow,
+  AttentionRow,
   CronEntry,
   HomeWire,
   Lifecycle,
@@ -121,6 +122,8 @@ export interface RailProject {
   age: string;
   asleep: boolean;
   row: Row;
+  /** The project's decision waits, which its own row's mark lists. */
+  waits: AttentionRow[];
   /** The workers it draws, which are the ones awake. */
   workers: Row[];
   /**
@@ -804,10 +807,10 @@ export function railGroups(
   }));
 
   for (const entry of home.projects) {
-    const { lead, workers } = projectRows(home, entry, board);
+    const { lead, workers, waits } = projectRows(home, entry, board);
     const all = [lead, ...workers];
     const rankOfRow = (row: Row): number =>
-      closing(row.slot) ? 2 : rankOf(row.state, row.pending);
+      closing(row.slot) ? 2 : rankOf(row.state, row.pending, row.attention);
     const rank = all.reduce((best, row) => Math.min(best, rankOfRow(row)), 2);
     const group = groups[rank];
     if (group === undefined) continue;
@@ -824,6 +827,7 @@ export function railGroups(
       age: whenOf(lead, now),
       asleep: rank === 2,
       row: lead,
+      waits,
       workers: workers.filter((row) => rankOfRow(row) !== 2),
       sleeping,
       // A closing seat writes on no line: the lead's whole line goes with it,

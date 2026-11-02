@@ -104,6 +104,8 @@ export interface Row {
   gate: string | null;
   task: TaskCell | null;
   pending: 'question' | 'permission' | 'hand_off' | null;
+  /** The decision waits this seat holds: a mark, a rank, and the list behind it. */
+  waits: AttentionRow[];
   /** How many decision waits this seat holds: a mark, and a rank. */
   attention: number;
   reason: string | null;
@@ -180,6 +182,8 @@ export interface FleetViewRow {
   leadHref: string;
   /** The strongest seat state, drawn with the same `Mark` a seat row uses. */
   state: RowState;
+  /** The project's decision waits, which its mark lists. */
+  waits: AttentionRow[];
   /** How many decision waits the project holds: its mark's count. */
   attention: number;
   place: { branch: string | null; files: string | null };
@@ -189,6 +193,7 @@ export interface FleetViewRow {
     label: string;
     state: RowState;
     pending: 'question' | 'permission' | 'hand_off' | null;
+    waits: AttentionRow[];
     attention: number;
     href: string;
   }[];
@@ -203,7 +208,6 @@ export interface FleetViewRow {
   live: number;
   slots: number | null;
   queue: number;
-  onYou: number;
   misses: MissRow[];
 }
 
@@ -242,13 +246,17 @@ export function fleetRows(wire: HomeWire): FleetViewRow[] {
         agent.slot.project === row.project &&
         (project === undefined || agent.slot.org === project.project.org),
     );
-    const seats = agents.map((agent) => ({
-      label: agent.label,
-      state: stateOf(agent, wire.unseen),
-      pending: agent.pending,
-      attention: row.attention.filter((wait) => wait.owner === agent.label).length,
-      href: hrefForSlot(agent.slot),
-    }));
+    const seats = agents.map((agent) => {
+      const mine = row.attention.filter((wait) => wait.owner === agent.label);
+      return {
+        label: agent.label,
+        state: stateOf(agent, wire.unseen),
+        pending: agent.pending,
+        waits: mine,
+        attention: mine.length,
+        href: hrefForSlot(agent.slot),
+      };
+    });
     // The newest write the project has: a live seat's, or a session the
     // catalog still remembers once no seat is left. **The catalog half is not
     // a nicety** - a seat exists only while a project holds a live session,
@@ -285,6 +293,7 @@ export function fleetRows(wire: HomeWire): FleetViewRow[] {
       href: hrefFor({ name: 'board', org, project: row.project }),
       leadHref: lead?.href ?? hrefForSlot({ org, project: row.project, label: 'lead' }),
       state: strongest,
+      waits: row.attention,
       attention: row.attention.length,
       place: project === undefined ? { branch: null, files: null } : placeOf(project.work),
       gate: project === undefined ? null : gateLine(project.work.gate),
@@ -293,7 +302,6 @@ export function fleetRows(wire: HomeWire): FleetViewRow[] {
       live: row.live_workers,
       slots: row.slots,
       queue: row.queue,
-      onYou: row.waiting_on_user,
       // A project that cannot start says so on its own row: the refusal
       // the row drew before the fleet, kept as a miss rather than dropped.
       misses: [
@@ -953,6 +961,7 @@ function rowOf(
     rows.map((entry) => entry.task),
     agent.label,
   );
+  const mine = waits.filter((wait) => wait.owner === agent.label);
   return {
     slot: agent.slot,
     state: stateOf(agent, unseen),
@@ -969,7 +978,8 @@ function rowOf(
             artifact: firstArtifact(held),
           },
     pending: agent.pending,
-    attention: waits.filter((wait) => wait.owner === agent.label).length,
+    waits: mine,
+    attention: mine.length,
     reason: agent.reason,
     lastActivity: agent.last_activity,
     failedTurn: agent.failed_turn,
@@ -998,6 +1008,7 @@ function dormantState(lastRan: WireTime | null): RowState {
  * never run, which is the whole point of the project's own `work`.
  */
 function dormantRow(wire: ProjectWire, lastRan: WireTime | null, waits: AttentionRow[]): Row {
+  const mine = waits.filter((wait) => wait.owner === 'lead');
   return {
     slot: { org: wire.project.org, project: wire.project.name, label: 'lead' },
     state: dormantState(lastRan),
@@ -1007,7 +1018,8 @@ function dormantRow(wire: ProjectWire, lastRan: WireTime | null, waits: Attentio
     gate: gateLine(wire.work.gate),
     task: null,
     pending: null,
-    attention: waits.filter((wait) => wait.owner === 'lead').length,
+    waits: mine,
+    attention: mine.length,
     reason: null,
     lastActivity: lastRan,
     failedTurn: null,

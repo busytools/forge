@@ -1,4 +1,5 @@
 <script lang="ts">
+  import AttentionMark from './AttentionMark.svelte';
   import Brand from '../components/Brand.svelte';
   import Card from '../components/Card.svelte';
   import GroupFold from '../components/GroupFold.svelte';
@@ -219,7 +220,10 @@
         <!-- The row's own way in: this link stretches over the whole row,
              so anywhere that is not another control opens the lead's
              chat. -->
-        <a class="fleet-name fleet-go" href={row.leadHref}>{row.name}</a>
+        <span class="fleet-name-cell">
+          <a class="fleet-name fleet-go" href={row.leadHref}>{row.name}</a>
+          <AttentionMark waits={row.waits} org={row.org} project={row.name} {now} />
+        </span>
         <span class="fleet-where">
           {#if row.gate}{row.gate}{:else}
             {#if row.place.branch}{row.place.branch}{/if}
@@ -230,17 +234,17 @@
         <span class="fleet-when">{ageOf(row, now)}</span>
         <span class="fleet-seats">
           {#each row.seats as seat (seat.label)}
-            <a class="fleet-seat" href={seat.href}
-              ><span class="row {markOf(seat.state).class}"><Mark state={seat.state} /></span
-              >{seat.label}</a
-            >
+            <span class="fleet-seat-pair">
+              <a class="fleet-seat" href={seat.href}
+                ><span class="row {markOf(seat.state).class}"><Mark state={seat.state} /></span
+                >{seat.label}</a
+              >
+              <AttentionMark waits={seat.waits} org={row.org} project={row.name} {now} />
+            </span>
           {/each}
         </span>
         <span class="fleet-counts">
           {row.live} of {row.slots ?? '?'} slots {'\u{b7}'} queue {row.queue}
-          {#if row.onYou > 0}
-            {'\u{b7}'} <span class="fleet-you">on you {row.onYou}</span>
-          {/if}
         </span>
         <span class="fleet-misses">
           {#each row.misses as miss (miss.label)}

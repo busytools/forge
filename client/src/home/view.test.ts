@@ -311,6 +311,7 @@ const LEAD_ROW: Row = {
   place: { branch: null, files: null },
   tree: null,
   gate: null,
+  waits: [],
   attention: 0,
   task: null,
   pending: null,
@@ -398,6 +399,63 @@ describe('the fleet the snapshot describes', () => {
     expect(rows.lead.attention, 'and its lead row counts it').toBe(1);
   });
 
+  /// **Two open waits on one seat are two.** A batch collapses into one
+  /// notification, and the mark and its popover still carry both.
+  it('counts two decision waits on one seat as two', () => {
+    const at = (secs: number): WireTime => ({ secs_since_epoch: secs, nanos_since_epoch: 0 });
+    const waits: AttentionRow[] = [
+      { task: 't1', owner: 'lead', subject: 'the parser', words: 'sign this off', at: at(5) },
+      { task: 't2', owner: 'lead', subject: 'the schema', words: 'pick one', at: at(9) },
+    ];
+    const fleet = fleetRows({ ...FLEET, fleet: [fleetRow('forge', 1, 0, waits)] });
+    expect(fleet[0]?.attention, 'the project counts both').toBe(2);
+    expect(fleet[0]?.seats[0]?.attention, 'and the seat it names holds both').toBe(2);
+    expect(fleet[0]?.seats[0]?.waits, 'with the items behind its count').toEqual(waits);
+
+    const rows = rowsOf({ ...FLEET, fleet: [fleetRow('forge', 1, 0, waits)] });
+    expect(rows.lead.attention, 'the rail row counts both').toBe(2);
+    expect(rows.lead.waits, 'and lists them').toEqual(waits);
+  });
+
+  /// **A wait outlives the seat that raised it** (review focus 5): a
+  /// sleeping project draws no worker row, so the project mark is the only
+  /// place its decision wait can be seen.
+  it('keeps a seatless wait counted on its project', () => {
+    const wait: AttentionRow = {
+      task: 't1',
+      owner: 'gone',
+      subject: 'the parser',
+      words: 'sign this off',
+      at: { secs_since_epoch: 5, nanos_since_epoch: 0 },
+    };
+    const wire: HomeWire = { ...FLEET, fleet: [fleetRow('forge', 0, 0, [wait])] };
+    const fleet = fleetRows(wire);
+    expect(fleet[0]?.attention, 'the project counts a wait whose seat has no row').toBe(1);
+    expect(
+      fleet[0]?.seats.map((seat) => seat.label),
+      'and the fixture draws no row for that seat',
+    ).not.toContain('gone');
+    expect(rowsOf(wire).waits, 'the rail is still handed the wait').toEqual([wait]);
+  });
+
+  /// **A wait ends when its row leaves waiting** (review focus 2), and looks
+  /// spend nothing: the mark is derived from the reads the board already
+  /// pushes, so the read without the wait draws no mark.
+  it('drops a mark when its wait leaves the board, with nobody having opened the seat', () => {
+    const wait: AttentionRow = {
+      task: 't1',
+      owner: 'lead',
+      subject: 'the parser',
+      words: 'sign this off',
+      at: { secs_since_epoch: 5, nanos_since_epoch: 0 },
+    };
+    const held = { ...FLEET, fleet: [fleetRow('forge', 1, 0, [wait])] };
+    expect(fleetRows(held)[0]?.attention, 'the wait is marked').toBe(1);
+    const answered = { ...FLEET, fleet: [fleetRow('forge', 1, 0, [])] };
+    expect(fleetRows(answered)[0]?.attention, 'the answered read draws no mark').toBe(0);
+    expect(rowsOf(answered).waits, 'and hands the rail nothing').toEqual([]);
+  });
+
   /**
    * **The fleet row's age is the project's own**: the newest write among the
    * seats it holds, or nothing at all when none of them has written. It is
@@ -468,6 +526,7 @@ describe('the fleet the snapshot describes', () => {
               label: 'lead',
               state: { kind: 'lifecycle', lifecycle: 'Idle' },
               pending: null,
+              waits: [],
               attention: 0,
               href: '/session/TestOrg/proj/lead',
             },
@@ -613,7 +672,6 @@ describe('the fleet the snapshot describes', () => {
       'unknown',
     ]);
     expect(rows[0]?.misses[3]?.label).toContain('no model declared');
-    expect(rows[0]?.onYou).toBe(1);
     // And the raw wire's own shapes narrow to those names.
     expect(missFrom('stalled_queue')).toEqual({ kind: 'stalled', label: 'queue is stalling' });
     expect(missFrom({ unaccounted_worker: 'w1' })).toEqual({
