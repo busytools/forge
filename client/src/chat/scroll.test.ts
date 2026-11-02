@@ -595,10 +595,12 @@ describe('the compensation the list is handed', () => {
     ).toEqual([[3, true]]);
   });
 
-  // **A composition pin, not a fix pin.** It holds on the round-2 code too:
-  // it says #2639's handoff row goes through the same funnel and therefore
-  // gets the same boundary, not that this cut changed it.
-  it('joins a mid-handoff prepend as a change of its own', async () => {
+  // **A composition pin, not a fix pin.** It says the handoff prepend goes
+  // through the same funnel and therefore gets the same boundary. **The
+  // prepend waits for the window's head** (#2816): a record arriving over a
+  // partial window is held, and the landing that reaches the session's start
+  // is what puts the judgment turn and the row above the held rows.
+  it('joins a handoff prepend at the session start as a change of its own', async () => {
     const server = stub();
     draw(server);
     server.page([turn('t1'), turn('t2')], '2');
@@ -606,9 +608,8 @@ describe('the compensation the list is handed', () => {
     const handed = records.length;
 
     // A frame arms a draw; then the seat's record arrives carrying a handoff
-    // whose judgment turn is joined AHEAD of the held rows - a client catching
-    // up mid-handoff. A prepend above the reader is exactly the change that
-    // must be published on its own, and #2639 put it through the same funnel.
+    // whose judgment turn belongs at the session's start. The window is
+    // partial, so the record waits instead of leading it.
     server.update({
       chat_appended: {
         key: LEAD,
@@ -620,6 +621,20 @@ describe('the compensation the list is handed', () => {
       },
     });
     server.snapshot([turn('t1'), turn('t2')], false, handoffRecord('forge_nudge_handoff_mid'));
+    await frame();
+
+    expect(
+      records
+        .slice(handed)
+        .filter((held, at, all) => at === 0 || held.length !== all[at - 1]?.length)
+        .map((held) => [held.length, held.shift]),
+      'the frame alone: the block does not lead a partial window',
+    ).toEqual([[3, false]]);
+
+    // A landing that reaches the conversation's first turn draws the block
+    // where it belongs. A prepend above the reader is exactly the change that
+    // must be published on its own, and #2639 put it through the same funnel.
+    server.page([turn('t1'), turn('t2')], null);
     await frame();
 
     const changes = records
