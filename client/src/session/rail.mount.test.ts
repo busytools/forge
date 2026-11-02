@@ -8,6 +8,7 @@ import type { Connection } from '../socket';
 import type { AgentRow, AttentionRow, HomeWire } from '../wire/home';
 import type { SessionSlot } from '../wire/types';
 import Rail from './Rail.svelte';
+import { boxed } from './testing/props.svelte';
 
 /**
  * The rail's controls, pressed in a real DOM: what each press actually hands
@@ -190,33 +191,38 @@ describe('the rail on a project holding decision waits', () => {
 
     project?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     flushSync();
-    const words = document.body.textContent ?? '';
-    expect(words, 'the popover lists the first ask in its own words').toContain('sign this off');
-    expect(words, 'and the second').toContain('pick one');
-    expect(words, "and the worker's").toContain('look at these');
+    const items = [...document.querySelectorAll<HTMLAnchorElement>('.attn-wait')].map((item) =>
+      item.textContent?.replace(/\s+/g, ' ').trim(),
+    );
+    expect(items, 'the popover lists one item per wait, each with its seat, ask and age').toEqual([
+      'lead now the parser sign this off',
+      'lead now the schema pick one',
+      'w1 now the tests look at these',
+    ]);
     expect(
-      document.querySelector('a[href="/session/TestOrg/proj/lead"]'),
-      'an item opens the seat that raised it',
-    ).not.toBeNull();
+      [...document.querySelectorAll<HTMLAnchorElement>('.attn-wait')].map((item) =>
+        item.getAttribute('href'),
+      ),
+      "and each item opens the project's board, where the row waits",
+    ).toEqual(['/board/TestOrg/proj', '/board/TestOrg/proj', '/board/TestOrg/proj']);
   });
 
   /// **A wait ends when its row leaves waiting** (review focus 2): the mark
-  /// is a read of the pushed rows, so the read without the wait drops it -
-  /// nobody has to open the seat for it to go.
-  it('drops the mark when the board answers the wait', async () => {
-    app = mount(Rail, {
-      target: document.body,
-      props: { home: waiting(WAITS), current: ELSEWHERE, now: 0, connection: recording() },
+  /// is a read of the pushed rows, so the live row without the wait drops it -
+  /// with the rail still mounted, nobody having opened the seat.
+  it('drops the mark when the board answers the wait, with no remount', () => {
+    const props = boxed({
+      home: waiting(WAITS),
+      current: ELSEWHERE,
+      now: 0,
+      connection: recording(),
     });
+    app = mount(Rail, { target: document.body, props });
     flushSync();
     expect(mark(3), 'the wait is marked').not.toBeNull();
 
-    await unmount(app);
-    app = mount(Rail, {
-      target: document.body,
-      props: { home: waiting([]), current: ELSEWHERE, now: 0, connection: recording() },
-    });
+    props.home = waiting([]);
     flushSync();
-    expect(mark(3), 'the answered read draws no mark').toBeNull();
+    expect(mark(3), 'the answered row drops the mark on the open rail').toBeNull();
   });
 });

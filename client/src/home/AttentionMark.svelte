@@ -1,17 +1,17 @@
 <script lang="ts">
   import { portal } from '../chat/strip-panel';
-  import { hrefForSlot } from '../routes';
+  import { hrefFor } from '../routes';
   import type { AttentionRow } from '../wire/home';
   import { elapsedLabel } from './view';
 
   /**
    * The decision-wait mark: a glyph and a count, with the asks themselves
-   * behind it - each one opening the seat that raised it.
+   * behind it - each one opening the project's board, where its row waits.
    *
    * **The count is what a row already knows, and the list is why it is
    * there.** A wait lives on the board, which may not be open, so the rail
-   * and the home are the surfaces that make it visible; the popover is what
-   * says which ask it is without leaving the page.
+   * and the home are the surfaces that make it visible; the popover says
+   * which ask it is, and its item is the way to answer it.
    *
    * The panel is portaled (`use:portal`) and positioned in viewport terms,
    * because the rail's own scroller would clip a panel drawn inside it.
@@ -131,7 +131,7 @@
           <li>
             <a
               class="attn-wait"
-              href={hrefForSlot({ org, project, label: wait.owner })}
+              href={hrefFor({ name: 'board', org, project })}
               onclick={() => (open = false)}
             >
               <span class="attn-who">
