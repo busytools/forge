@@ -4736,7 +4736,7 @@ provider = "anthropic"
     }
 
     #[test]
-    fn default_project_prefers_a_pinned_project_over_alphabetical() {
+    fn default_project_picks_the_alphabetically_first_pinned_project() {
         let dir = tempdir().expect("tempdir");
         write_config(
             dir.path(),
@@ -4754,6 +4754,7 @@ path = "~/Projects/alpha"
 [[orgs.projects]]
 name = "middle"
 path = "~/Projects/middle"
+resume_lead = true
 [[accounts]]
 display_name = "Stargate"
 token = "t"
@@ -4762,10 +4763,11 @@ provider = "anthropic"
 "#,
         );
         let config = load_from_dir(dir.path()).expect("happy path");
-        // zebra is the only pinned project, so the pin outranks the
-        // alphabetically-first alpha. With alpha pinned too, a config that
-        // ignored the key entirely would still answer alpha.
-        assert_eq!(config.default_project().name, "zebra");
+        // zebra is pinned first and middle last, with alpha unpinned
+        // between them: middle answers only when the pin is read AND the
+        // tie-break is alphabetical, so an ignored key (alpha) and a
+        // declaration-order pick (zebra) both fail here.
+        assert_eq!(config.default_project().name, "middle");
     }
 
     #[test]
