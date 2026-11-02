@@ -343,9 +343,9 @@
           <div class="side"><span class="chip"><span class="dot ok"></span>loaded</span></div>
         </div>
 
-        <!-- The speaking model is a compiled pin whose two files are placed
-             by hand: the catalogue installs one file per variant from the
-             speech feed, and there is no speaking entry to fetch. -->
+        <!-- The speaking model is forge's own catalogue entry: the two files
+             with their digests, installed from that entry and run like any
+             other role's model. -->
         <div class="model">
           <button class="pick" type="button" aria-pressed="false" aria-label="show the speaking updates" title="show the speaking updates"></button>
           <span class="role">speaking</span>
@@ -353,13 +353,13 @@
             <div class="nm">Qwen3-TTS-12Hz-1.7B-Base-Q8_0.gguf</div>
             <div class="meta"><b>1.85 GB</b> &middot; Q8_0 &middot; sha ac7931ae &middot; Apache-2.0</div>
             <div class="meta">llama.cpp &middot; not in the feed</div>
-            <div class="meta src">placed by hand: the weights and their mmproj projector under the [tts] models_dir</div>
+            <div class="meta src">compiled default</div>
           </div>
-          <div class="side"><span class="chip"><span class="dot ok"></span>placed</span></div>
+          <div class="side"><span class="chip"><span class="dot ok"></span>loaded</span></div>
         </div>
 
         <p class="note">dictation files live in <code>~/Library/Caches/forge-dictate</code> &middot; a download is checked against what its entry declares: the byte length always, and the sha256 a cleanup feed's blobs publish - the speech feed's files publish none, so those are checked by length and by the load</p>
-        <p class="note">the speaking model is placed by hand: its weights and mmproj projector live in <code>~/Library/Caches/forge-tts</code>, and the engine checks both against the digests their entries declare before it loads them</p>
+        <p class="note">the speaking model's weights and mmproj projector land in <code>~/Library/Caches/forge-tts</code> &middot; its entry carries both files and their sha256, and the engine checks both before it loads them</p>
       </section>
 
       <section class="block">

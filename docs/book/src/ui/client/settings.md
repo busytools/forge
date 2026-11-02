@@ -47,6 +47,21 @@ timeout the bar reports.
 | Restart banner | After a save lands, exactly the restart-class keys it carried, with no restart button. |
 | A new entry | A dashed card headed by its name and `new <group>`, its fields empty and required-marked, discarded or saved with the batch. |
 | A pending removal | The card head reads `removed on save`, with Undo; its lines are not drawn. |
+| The speaking section | Under the voice area's keys: the model the role runs, drawn from the core's read with the one control it offers (`install`, `activate`, or `use the default`), then every voice the shipped public corpus carries - its speaker, its clip's length, `chosen` on the configured one, and a `preview` per row. A preview renders one fixed line through the seat whose voice switch is on and is disabled with a line saying so when none is; it changes nothing. | `dictate_models` |
+
+**The speaking section is the core's read, not a key.** The voice area's
+config rows are the same catalogue lines every area draws; the speaking
+model and the voices under them are state the page reads from
+`dictate_models`, because an install and an activation are commands with
+progress rather than values this document holds. The page subscribes that
+subject itself and dispatches `dictate_install`, `dictate_activate`,
+`dictate_deactivate` and `voice_preview` - the same commands the models page
+offers - and a refusal arrives on the connection's `error` frame, in the
+core's own words, under the section. **A preview is heard on the seat's own
+stream**: the settings route has no seat, so the page keeps the frames of
+the seat this client has voice on pumping into the voice it already holds,
+and a preview with no such seat is disabled rather than played somewhere
+else.
 
 ## The rules
 

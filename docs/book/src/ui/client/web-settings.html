@@ -252,6 +252,30 @@
   .settings-dialog .t { font-size: 17px; font-weight: 500; color: var(--text); }
   .settings-dialog .s { font-size: var(--fs-data); color: var(--muted); margin: 8px 0 16px; }
   .settings-dialog .acts { display: flex; justify-content: flex-end; gap: 8px; }
+
+  /* ---------- the voice area's speaking section ---------- */
+  .voice-pane .status { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    border: 1px solid var(--line); border-radius: 11px; padding: 10px 12px; margin: 2px 0 4px;
+    background: var(--s1); }
+  .voice-pane .status .t { font-family: var(--mono); font-size: var(--fs-data); color: var(--text); }
+  .voice-pane .status .when { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
+  .voice-pane .status .spacer { margin-left: auto; }
+  .voice-pane .status .detail { flex: 1 1 100%; font-family: var(--mono);
+    font-size: var(--fs-label); color: var(--dim); }
+  .voice-pane h4.t { font-size: 13px; font-weight: 500; margin: 16px 0 2px; color: var(--muted); }
+  .voice-pane ul.list { list-style: none; margin: 6px 0 0; padding: 0; }
+  .voice-pane ul.list li { display: flex; align-items: center; gap: 10px; padding: 8px 2px;
+    border-bottom: 1px solid var(--line); }
+  .voice-pane ul.list li:last-child { border-bottom: 0; }
+  .voice-pane .nm { font-family: var(--mono); font-size: var(--fs-data); color: var(--text); }
+  .voice-pane .col { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
+  .voice-pane .note { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
+    margin-top: 10px; }
+  .voice-pane .note code { color: var(--muted); }
+  .voice-pane button.chip { cursor: pointer; background: none; }
+  .voice-pane .dot { width: 11px; height: 11px; flex: 0 0 11px; display: inline-block; }
+  .voice-pane .dot.ok { width: 9px; height: 9px; flex: 0 0 9px; border-radius: 50%;
+    background: var(--ok); box-shadow: 0 0 7px rgba(130,199,107,.55); }
 </style>
 </head>
 <body>
@@ -273,7 +297,7 @@
         <span class="build"><span class="k">socket</span> <b>v18</b></span> &middot;
         <span class="build"><span class="k">claude</span> <b>v2.1.280</b></span>
       </span>
-      <span class="totals"><span class="n">249</span> keys &middot;
+      <span class="totals"><span class="n">251</span> keys &middot;
         <span class="n">12</span> areas &middot;
         <code>~/.claude/forge/forge.toml</code></span>
     </span>
@@ -288,7 +312,7 @@
       <button class="settings-rail-item"><span class="settings-rail-name">connectors</span><span class="settings-rail-class"><span class="chip settings-class icon" data-class="live"><span class="settings-class-mark"></span></span> <span class="chip settings-class icon" data-class="next_session"><span class="settings-class-mark"></span></span> <span class="chip settings-class icon" data-class="restart"><span class="settings-class-mark"></span></span> <span class="chip settings-class icon" data-class="not_read_yet"><span class="settings-class-mark"></span></span></span><span class="settings-rail-count">16</span></button>
       <button class="settings-rail-item"><span class="settings-rail-name">server</span><span class="settings-rail-class"><span class="chip settings-class icon" data-class="live"><span class="settings-class-mark"></span></span> <span class="chip settings-class icon" data-class="next_session"><span class="settings-class-mark"></span></span> <span class="chip settings-class icon" data-class="restart"><span class="settings-class-mark"></span></span></span><span class="settings-rail-count">9</span></button>
       <button class="settings-rail-item"><span class="settings-rail-name">client</span><span class="settings-rail-class"><span class="chip settings-class icon" data-class="live"><span class="settings-class-mark"></span></span></span><span class="settings-rail-count">3</span></button>
-      <button class="settings-rail-item"><span class="settings-rail-name">voice</span><span class="settings-rail-class"><span class="chip settings-class icon" data-class="live"><span class="settings-class-mark"></span></span> <span class="chip settings-class icon" data-class="next_session"><span class="settings-class-mark"></span></span> <span class="chip settings-class icon" data-class="restart"><span class="settings-class-mark"></span></span></span><span class="settings-rail-count">16</span></button>
+      <button class="settings-rail-item"><span class="settings-rail-name">voice</span><span class="settings-rail-class"><span class="chip settings-class icon" data-class="live"><span class="settings-class-mark"></span></span> <span class="chip settings-class icon" data-class="next_session"><span class="settings-class-mark"></span></span> <span class="chip settings-class icon" data-class="restart"><span class="settings-class-mark"></span></span></span><span class="settings-rail-count">18</span></button>
       <button class="settings-rail-item"><span class="settings-rail-name">models</span><span class="settings-rail-class"><span class="chip settings-class icon" data-class="next_session"><span class="settings-class-mark"></span></span></span><span class="settings-rail-count">1</span></button>
       <button class="settings-rail-item"><span class="settings-rail-name">handoff</span><span class="settings-rail-class"><span class="chip settings-class icon" data-class="live"><span class="settings-class-mark"></span></span></span><span class="settings-rail-count">3</span></button>
       <button class="settings-rail-item"><span class="settings-rail-name">documents</span><span class="settings-rail-class"><span class="chip settings-class icon" data-class="live"><span class="settings-class-mark"></span></span></span><span class="settings-rail-count">1</span></button>
@@ -333,6 +357,99 @@
     </section>
   </div>
 
+  <div class="tcap">the <b>voice</b> area: the two directions' keys, and the speaking section the core's read adds under them - the role's model with its one control, and the public corpus's voices, each with a preview through the seat whose switch is on</div>
+
+  <header class="top pagetop">
+    <span class="brand">
+      <span class="mark"><svg viewBox="0 0 24 24" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="2.4"><rect x="3.2" y="3.2" width="17.6" height="17.6" rx="4"/><path d="M13.6 3.2V20.8"/></g><path fill="currentColor" d="M4.4 6.4a2 2 0 0 1 2-2h4v15.2h-4a2 2 0 0 1-2-2Z"/></svg></span>
+      <span class="word">forge</span>
+    </span>
+    <span class="title">
+      <span class="t">settings</span>
+      <span class="s">the effective config, as loaded</span>
+    </span>
+    <span class="settings-meta">
+      <span class="versions">
+        <span class="build"><span class="k">server</span> <b>v1.1.39</b></span> &middot;
+        <span class="build"><span class="k">socket</span> <b>v23</b></span> &middot;
+        <span class="build"><span class="k">claude</span> <b>v2.1.280</b></span>
+      </span>
+      <span class="totals"><span class="n">251</span> keys &middot;
+        <span class="n">12</span> areas &middot;
+        <code>~/.claude/forge/forge.toml</code></span>
+    </span>
+    <a class="back" href="#">&larr; home</a>
+    <button class="settings-mode">edit</button>
+  </header>
+
+  <div class="settings-split voice-pane">
+    <nav class="settings-rail" aria-label="config areas">
+      <button class="settings-rail-item"><span class="settings-rail-name">accounts</span><span class="settings-rail-class"><span class="chip settings-class icon" data-class="live"><span class="settings-class-mark"></span></span> <span class="chip settings-class icon" data-class="next_session"><span class="settings-class-mark"></span></span></span><span class="settings-rail-count">31</span></button>
+      <button class="settings-rail-item"><span class="settings-rail-name">projects</span><span class="settings-rail-class"><span class="chip settings-class icon" data-class="live"><span class="settings-class-mark"></span></span> <span class="chip settings-class icon" data-class="next_session"><span class="settings-class-mark"></span></span></span><span class="settings-rail-count">162</span></button>
+      <button class="settings-rail-item"><span class="settings-rail-name">connectors</span><span class="settings-rail-class"><span class="chip settings-class icon" data-class="live"><span class="settings-class-mark"></span></span> <span class="chip settings-class icon" data-class="next_session"><span class="settings-class-mark"></span></span> <span class="chip settings-class icon" data-class="restart"><span class="settings-class-mark"></span></span> <span class="chip settings-class icon" data-class="not_read_yet"><span class="settings-class-mark"></span></span></span><span class="settings-rail-count">16</span></button>
+      <button class="settings-rail-item"><span class="settings-rail-name">server</span><span class="settings-rail-class"><span class="chip settings-class icon" data-class="live"><span class="settings-class-mark"></span></span> <span class="chip settings-class icon" data-class="next_session"><span class="settings-class-mark"></span></span> <span class="chip settings-class icon" data-class="restart"><span class="settings-class-mark"></span></span></span><span class="settings-rail-count">9</span></button>
+      <button class="settings-rail-item"><span class="settings-rail-name">client</span><span class="settings-rail-class"><span class="chip settings-class icon" data-class="live"><span class="settings-class-mark"></span></span></span><span class="settings-rail-count">3</span></button>
+      <button class="settings-rail-item on" aria-pressed="true"><span class="settings-rail-name">voice</span><span class="settings-rail-class"><span class="chip settings-class icon" data-class="live"><span class="settings-class-mark"></span></span> <span class="chip settings-class icon" data-class="next_session"><span class="settings-class-mark"></span></span> <span class="chip settings-class icon" data-class="restart"><span class="settings-class-mark"></span></span></span><span class="settings-rail-count">18</span></button>
+      <button class="settings-rail-item"><span class="settings-rail-name">models</span><span class="settings-rail-class"><span class="chip settings-class icon" data-class="next_session"><span class="settings-class-mark"></span></span></span><span class="settings-rail-count">1</span></button>
+      <button class="settings-rail-item"><span class="settings-rail-name">handoff</span><span class="settings-rail-class"><span class="chip settings-class icon" data-class="live"><span class="settings-class-mark"></span></span></span><span class="settings-rail-count">3</span></button>
+      <button class="settings-rail-item"><span class="settings-rail-name">documents</span><span class="settings-rail-class"><span class="chip settings-class icon" data-class="live"><span class="settings-class-mark"></span></span></span><span class="settings-rail-count">1</span></button>
+      <button class="settings-rail-item"><span class="settings-rail-name">usage</span><span class="settings-rail-class"><span class="chip settings-class icon" data-class="live"><span class="settings-class-mark"></span></span></span><span class="settings-rail-count">1</span></button>
+      <button class="settings-rail-item"><span class="settings-rail-name">gateway</span><span class="settings-rail-class"><span class="chip settings-class icon" data-class="live"><span class="settings-class-mark"></span></span> <span class="chip settings-class icon" data-class="restart"><span class="settings-class-mark"></span></span></span><span class="settings-rail-count">4</span></button>
+      <button class="settings-rail-item"><span class="settings-rail-name">env</span><span class="settings-rail-class"><span class="chip settings-class icon" data-class="next_session"><span class="settings-class-mark"></span></span></span><span class="settings-rail-count">6</span></button>
+    </nav>
+
+    <section class="settings-pane">
+      <header class="settings-pane-head">
+        <h2 class="t">voice</h2>
+        <span class="settings-pane-note">dictation in, and speech out</span>
+        <span class="settings-pane-summary">18 keys / 2 groups</span>
+      </header>
+
+      <div class="settings-pane-body">
+        <div class="settings-card" role="group" aria-labelledby="card-voice-tts">
+          <header class="settings-card-head">
+            <h3 id="card-voice-tts">tts</h3>
+            <span class="settings-card-count">6 keys</span>
+            <span class="settings-card-grow"></span>
+          </header>
+          <div class="settings-setting"><span class="settings-setting-label"><code title="tts.enabled">enabled</code><span class="chip settings-class" data-class="restart"><span class="settings-class-mark"></span><span class="settings-class-word">restart</span></span></span><span class="settings-setting-value">true</span></div>
+          <div class="settings-setting"><span class="settings-setting-label"><code title="tts.models_dir">models_dir</code><span class="chip settings-class" data-class="restart"><span class="settings-class-mark"></span><span class="settings-class-word">restart</span></span></span><span class="settings-setting-value">~/Library/Caches/forge-tts</span></div>
+          <div class="settings-setting"><span class="settings-setting-label"><code title="tts.speaking_model">speaking_model</code><span class="chip settings-class" data-class="restart"><span class="settings-class-mark"></span><span class="settings-class-word">restart</span></span></span><span class="settings-setting-value settings-dim">not set</span></div>
+          <div class="settings-setting"><span class="settings-setting-label"><code title="tts.voice">voice</code><span class="chip settings-class" data-class="restart"><span class="settings-class-mark"></span><span class="settings-class-word">restart</span></span></span><span class="settings-setting-value">6930</span></div>
+          <div class="settings-setting"><span class="settings-setting-label"><code title="tts.language">language</code><span class="chip settings-class" data-class="restart"><span class="settings-class-mark"></span><span class="settings-class-word">restart</span></span></span><span class="settings-setting-value settings-dim">not set</span></div>
+          <div class="settings-setting"><span class="settings-setting-label"><code title="tts.max_utterance_seconds">max_utterance_seconds</code><span class="chip settings-class" data-class="restart"><span class="settings-class-mark"></span><span class="settings-class-word">restart</span></span></span><span class="settings-setting-value">120</span></div>
+        </div>
+
+        <!-- The speaking section is the core's read, not a key: the role's
+             model with the one control it offers, and the voices the shipped
+             public corpus carries, each auditioned through a listening
+             seat's own stream. -->
+        <div class="settings-card" role="group" aria-labelledby="card-voice-speaking">
+          <header class="settings-card-head">
+            <h3 id="card-voice-speaking">speaking model</h3>
+            <span class="settings-card-count">one model pair</span>
+            <span class="settings-card-grow"></span>
+          </header>
+          <div class="status">
+            <span class="dot ok"></span>
+            <span class="t">Qwen3-TTS-12Hz-1.7B-Base-Q8_0.gguf</span>
+            <span class="when">loaded</span>
+            <span class="spacer"></span>
+            <button class="chip">activate</button>
+            <span class="detail">compiled default</span>
+          </div>
+          <h4 class="t">voice</h4>
+          <ul class="list" aria-label="Voices">
+            <li><span class="nm">6930</span><span class="col">4s</span><span class="chip">chosen</span><button class="chip">preview</button></li>
+            <li><span class="nm">3575</span><span class="col">5s</span><button class="chip">preview</button></li>
+            <li><span class="nm">1995</span><span class="col">3s</span><button class="chip">preview</button></li>
+          </ul>
+          <p class="note">previews play through Busytools/forge/lead &middot; a preview renders one fixed line in that voice, so a voice can be heard before it is chosen &middot; the choice is <code>[tts] voice</code>, beside the model's keys above</p>
+        </div>
+      </div>
+    </section>
+  </div>
+
   <div class="phone">
     <header class="top pagetop">
       <a class="back" href="#">&larr; home</a>
@@ -342,7 +459,7 @@
       </span>
       <span class="settings-meta">
         <span class="versions"><span class="build"><span class="k">server</span> <b>v1.1.34</b></span> &middot; <span class="build"><span class="k">socket</span> <b>v22</b></span></span>
-        <span class="totals"><span class="n">249</span> keys &middot; <span class="n">12</span> areas</span>
+        <span class="totals"><span class="n">251</span> keys &middot; <span class="n">12</span> areas</span>
       </span>
       <span class="title"><span class="t">settings</span><span class="s">the effective config, as loaded</span></span>
       <button class="settings-mode">edit</button>

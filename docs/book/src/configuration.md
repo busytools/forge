@@ -526,13 +526,12 @@ area `[dictate]` opens: a take becomes text, and a reply becomes speech.
 
 | Key                     | Type    | Default            | Notes                                                                                                                                                                                                                          |
 | ----------------------- | ------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `enabled`               | boolean | `false`            | Off unless asked for. Turning it on needs the two model files placed under `models_dir` by hand, about 2.29 GB together.                                                                                                        |
-| `models_dir`            | string  | platform cache dir | Where the model files live. `~` is expanded.                                                                                                                                                                                     |
+| `enabled`               | boolean | `false`            | Off unless asked for. Turning it on offers the speaking model's install; the engine loads it on the first client that turns voice on.                                                                                           |
+| `models_dir`            | string  | platform cache dir | Where the model files and the public corpus live. `~` is expanded.                                                                                                                                                              |
+| `speaking_model`        | string  | built-in variant   | The speaking model the role runs, by the catalogue's own variant name. `qwen3-tts-12hz-1.7b-base` is the only variant; any other name fails the read with `[tts] speaking_model names <name>, which is neither an installed model nor a catalogue entry`. The key pins the role, so the runtime cannot activate over it. |
+| `voice`                 | string  | model's default    | The voice the role speaks in: a speaker of the shipped public corpus, such as `6930`. A name the installed corpus does not carry is refused with `[tts] voice names <name>, which neither the installed public corpus nor its manifest carries`, rather than silently falling back to the default. |
 | `language`              | string  | english            | Spoken language hint for the rendered voice. Unset leaves the pipeline's own default, English.                                                                                                                                   |
 | `max_utterance_seconds` | integer | `120`              | Upper bound on one `voice__say`'s text, not on one sentence.                                                                                                                                                                     |
-
-The model's default voice is used. There is no speaker selection in this
-cut.
 
 An unrecognised key here fails the load, as one in `[dictate]` does: a
 mistyped `models_dir` would otherwise leave the engine looking in a
@@ -543,7 +542,17 @@ The speaking model is Qwen3-TTS 12Hz 1.7B Base, Q8_0, with the `mmproj`
 projector that carries its audio codec: two files, about 2.29 GB together,
 both published by ggml-org with a per-file SHA-256. The weights and
 tokenizer are Apache-2.0 and llama.cpp is MIT. ggml-org publishes no 0.6B
-GGUF, which is why the pinned build is the 1.7B Base.
+GGUF, which is why the built-in variant is the 1.7B Base.
+
+**The model installs from the catalogue, not by hand.** Forge builds the
+speaking entry itself - the speech feed carries no speaking kind - and the
+models page and the settings page install it from that entry. Both files
+are fetched and checked against their declared SHA-256 before either is
+recorded as installed, so a truncated or substituted file is refused by
+name and the role is not marked installed. A machine that already has the
+two files under `models_dir` keeps them: the fetch verifies what is there
+rather than downloading it again. The engine is warmed when the first
+client turns voice on; a failed warm is retried by the first `say`.
 
 Rendering is in process: forge links the published llama.cpp through
 `llama-cpp-sys-2` the way dictation links its recognizer, and splits a
@@ -551,12 +560,12 @@ Rendering is in process: forge links the published llama.cpp through
 behind it. A sentence's audio arrives when it finishes rendering; nothing
 streams inside one sentence.
 
-**forge does not fetch these two files.** They are placed under
-`models_dir` by hand, and the engine is warmed when the first client turns
-voice on; a failed warm is retried by the first `say`, and a missing file is
-reported by its own path. The engine checks both
-files against the SHA-256 their entries declare before it loads them, so a
-truncated or substituted file is refused by name rather than loaded.
+**The voices are the shipped public corpus's speakers.** The same 32-clip
+LibriSpeech test-clean slice the bench carries installs beside the speaking
+models, and its nine readers are the voices `voice` chooses from; the
+settings page lists them with a preview that renders one fixed line through
+a listening seat's own stream. A chosen voice is one speaker reference
+handed to the render, so every voice costs no second model load.
 
 ## `[gotify]`
 
