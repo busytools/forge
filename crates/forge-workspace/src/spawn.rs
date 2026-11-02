@@ -1241,10 +1241,11 @@ fn spawn_prompt_charter(
     charter: &str,
     families: Option<&[String]>,
     systemone_available: bool,
+    voice_available: bool,
 ) -> String {
     charter_with_withheld_families(
         charter,
-        &crate::mcp::effective_mcp_families(families, systemone_available),
+        &crate::mcp::effective_mcp_families(families, systemone_available, voice_available),
     )
 }
 
@@ -1698,6 +1699,7 @@ pub(crate) fn handle_spawn_worker(
             &charter,
             families.as_deref(),
             workspace.systemone.read().is_some(),
+            workspace.config_arc().tts.enabled,
         )),
         extra_args: build_worker_extra_args(is_git, label, interactive),
         ..Default::default()
@@ -5547,9 +5549,9 @@ provider = "anthropic"
     #[test]
     fn the_spawn_prompt_charter_follows_the_config_gate() {
         let line = "This session has no `systemone__*` decision tools. When a decision is material and not obvious, route it to your lead instead of guessing.";
-        let without = spawn_prompt_charter("charter", None, false);
+        let without = spawn_prompt_charter("charter", None, false, true);
         assert!(without.contains(line), "[systemone] off composes the line: {without}");
-        let with = spawn_prompt_charter("charter", None, true);
+        let with = spawn_prompt_charter("charter", None, true, true);
         assert!(!with.contains(line), "the section on composes none: {with}");
     }
 

@@ -179,15 +179,19 @@ pub(crate) fn resolve_mcp_families(stored: Option<&[String]>) -> BTreeSet<McpFam
 /// The effective set: the stored selection resolved, then narrowed by
 /// what this forge's config can actually inject - the same gates the
 /// build applies, so the prompt's withheld lines cannot drift from the
-/// tools the session really gets. `[systemone]` off is the one config
-/// gate that removes a family outright today.
+/// tools the session really gets. `[systemone]` and `[tts]` off are the
+/// config gates that remove a family outright.
 pub(crate) fn effective_mcp_families(
     stored: Option<&[String]>,
     systemone_available: bool,
+    voice_available: bool,
 ) -> BTreeSet<McpFamily> {
     let mut families = resolve_mcp_families(stored);
     if !systemone_available {
         families.remove(&McpFamily::Systemone);
+    }
+    if !voice_available {
+        families.remove(&McpFamily::Voice);
     }
     families
 }
@@ -970,21 +974,38 @@ mod tests {
     fn the_config_gate_reaches_the_effective_set() {
         let selected = vec!["systemone".to_owned(), "tasks".to_owned()];
         assert_eq!(
-            effective_mcp_families(Some(&selected), true),
+            effective_mcp_families(Some(&selected), true, true),
             [McpFamily::Tasks, McpFamily::Systemone].into_iter().collect(),
         );
         assert_eq!(
-            effective_mcp_families(Some(&selected), false),
+            effective_mcp_families(Some(&selected), false, true),
             [McpFamily::Tasks].into_iter().collect(),
             "a disabled [systemone] cannot be part of the effective set",
         );
 
-        let all_without_config = effective_mcp_families(None, false);
+        let all_without_config = effective_mcp_families(None, false, true);
         assert!(!all_without_config.contains(&McpFamily::Systemone));
         assert_eq!(
             all_without_config.len(),
             McpFamily::ALL.len() - 1,
-            "systemone is the only family the config gate removes",
+            "systemone is the only family this gate removes",
+        );
+    }
+
+    /// `[tts]` off removes the voice family from the effective set too, so
+    /// the prompt's withheld line and the tools agree.
+    #[test]
+    fn a_disabled_tts_removes_voice_from_the_effective_set() {
+        let all_without_voice = effective_mcp_families(None, true, false);
+        assert!(!all_without_voice.contains(&McpFamily::Voice));
+        assert_eq!(
+            all_without_voice.len(),
+            McpFamily::ALL.len() - 1,
+            "voice is the only family this gate removes",
+        );
+        assert!(
+            withheld_family_lines(&all_without_voice).iter().any(|line| line.contains("voice__")),
+            "the prompt says the family is absent",
         );
     }
 
@@ -996,11 +1017,13 @@ mod tests {
         let selected = vec!["systemone".to_owned()];
         let line = "This session has no `systemone__*` decision tools. When a decision is material and not obvious, route it to your lead instead of guessing.";
         assert!(
-            !withheld_family_lines(&effective_mcp_families(Some(&selected), true)).contains(&line),
+            !withheld_family_lines(&effective_mcp_families(Some(&selected), true, true))
+                .contains(&line),
             "with the section on, the family is present and gets no line",
         );
         assert!(
-            withheld_family_lines(&effective_mcp_families(Some(&selected), false)).contains(&line),
+            withheld_family_lines(&effective_mcp_families(Some(&selected), false, true))
+                .contains(&line),
             "[systemone] off is withheld for the worker's prompt as well as its tools",
         );
     }
