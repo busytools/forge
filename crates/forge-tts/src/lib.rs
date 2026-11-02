@@ -21,7 +21,6 @@ pub use split::{sentences, within_bound};
 pub struct SpeakRequest {
     pub text: String,
     pub language: Option<String>,
-    pub speaker: Option<String>,
 }
 
 /// A rendered run of audio, in arrival order.
@@ -44,18 +43,7 @@ pub trait Engine: Send + Sync {
 
 #[cfg(test)]
 mod tests {
-    use super::{Error, SpeakRequest};
-
-    #[test]
-    fn a_speak_request_carries_text_and_optional_voice_settings() {
-        let request = SpeakRequest {
-            text: "hello".to_owned(),
-            language: None,
-            speaker: Some("default".to_owned()),
-        };
-        assert_eq!(request.text, "hello");
-        assert_eq!(request.speaker.as_deref(), Some("default"));
-    }
+    use super::Error;
 
     #[test]
     fn an_error_names_its_stage() {
