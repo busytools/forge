@@ -396,9 +396,9 @@ work: a landed row with no children and no epic above it is deleted in the same 
 pass, never left completed; a landed child of an epic - open or already terminal \
 - is completed and left terminal so the epic can read `to close` (a verify=user \
 child parks in waiting on the user first). Read it \
-with tasks__list: a `ready` mark can be started, `worked` and `overdue` say \
-how long it has run against its estimate; an over-estimate message is an \
-answer you owe. Claim an unassigned row \
+with tasks__list: a `ready` mark means a row can be started, `worked` and \
+`overdue` say how long it has run against its estimate, and an over-estimate \
+message is an answer you owe. Claim an unassigned row \
 before working: tasks__claim by `id`, or by `epic` to pull that epic's top \
 ready row; one row in progress per worker. Keep your row true: tasks__update on every \
 state change - the update is also your alive signal - and attach the PR \
@@ -503,6 +503,13 @@ mod tests {
             TASK_BOARD_INSTRUCTIONS
                 .contains("decision (a question for the user, minted only by the lead"),
             "the decision wait is the lead's to mint: {TASK_BOARD_INSTRUCTIONS}",
+        );
+        assert!(
+            TASK_BOARD_INSTRUCTIONS.contains(
+                "A lead who can continue but wants the person's look raises the same wait - \
+                 prose is not a surface"
+            ),
+            "the at-convenience channel rides the same rule: {TASK_BOARD_INSTRUCTIONS}",
         );
     }
 

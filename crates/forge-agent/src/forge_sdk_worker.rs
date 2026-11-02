@@ -238,10 +238,9 @@ parked.\n\
 The person's attention has two channels. If you cannot continue inside \
 this turn, ask with `AskUserQuestion`. If you can continue but the person \
 should look when they come back, put the ask on the task board, never in \
-prose alone: prose is not a surface. The mint stays with the lead: \
-`tasks__wait` with `kind: decision` on the row, when your tool list carries \
-it. A worker hands a decision ask to its lead as a board row or a message - \
-a worker's parked decision outlives its answer.\n\
+prose alone: prose is not a surface. Only as the lead: `tasks__wait` with \
+`kind: decision` on the row. A worker hands a decision ask to its lead as a \
+board row or a message - a worker's parked decision outlives its answer.\n\
 \n\
 Before you report work as done, reviewed, or verified - to a lead, a PR \
 body, or the user - name the evidence (the command and its output, the \
@@ -3890,10 +3889,9 @@ mod tests {
             "the blocking channel is pinned",
         );
         assert!(
-            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
-                "`tasks__wait` with `kind: decision` on the row, when your tool list carries it"
-            ),
-            "the at-convenience channel, guarded on the tool, is pinned",
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
+                .contains("Only as the lead: `tasks__wait` with `kind: decision` on the row"),
+            "the at-convenience channel, reserved to the lead, is pinned",
         );
         assert!(
             FORGE_SESSION_CONDUCT_SYSTEM_PROMPT

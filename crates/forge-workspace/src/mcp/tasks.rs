@@ -752,11 +752,11 @@ impl Tool for Wait {
         "Put one of YOUR rows into waiting and state what it waits on. `kind` is decision \
          (which routes to the user), dependency (another task: put its id in `on`), or resource \
          (an account, a CI run, a machine). A decision wait is the at-convenience channel to \
-         the user: if you can continue but the person should look when they come back, put \
-         the ask here on a board row rather than saying it in prose, because prose is not a \
-         surface and a wait left in prose is invisible once your turn ends. Do not use it to \
-         park work the decision model, your peers or the review can settle. A dependency wait \
-         is on the task it names, not on the user. A blocker parked on the user's look has not ended, so the chain keeps \
+         the user: a lead who can continue but wants the person's look puts the ask here on a \
+         board row rather than saying it in prose, because prose is not a surface and a wait \
+         left in prose is invisible once your turn ends. Do not use it to park work the \
+         decision model, your peers or the review can settle. A dependency wait is on the \
+         task it names, not on the user. A blocker parked on the user's look has not ended, so the chain keeps \
          waiting until the user approves it. The waiting row is not itself waiting on the \
          user: a row's `verify: user` gates its own completion, not its dependency \
          wait, so the row stays movable and deletable. Route a decision to the user only when the user \
@@ -1525,7 +1525,7 @@ mod tests {
         let wait = Wait { facade, slot: lead_slot() };
         for clause in [
             "A decision wait is the at-convenience channel to the user",
-            "put the ask here on a board row rather than saying it in prose",
+            "puts the ask here on a board row rather than saying it in prose",
             "prose is not a surface",
         ] {
             assert!(
