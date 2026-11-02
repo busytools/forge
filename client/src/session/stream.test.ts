@@ -286,6 +286,20 @@ describe('the stream gate', () => {
     expect(asked, 'and its range is asked for').toEqual([{ from: 3, to: 8 }]);
   });
 
+  it('an answer from before a seal is refused with no frames after it', () => {
+    // The refusal must not lean on frames landing since the ask: here the
+    // answer lands before any frame of the restarted run, so only the
+    // generation mark can tell it from the new run's own first answer.
+    const { gate, asked } = aGate();
+    gate.inbound(snap('occ', 1));
+    gate.inbound(update(1));
+    gate.askSent(LEAD);
+    gate.inbound(seal('occ', 2));
+    gate.inbound(snap('occ', 50));
+    expect(gate.inbound(update(9)), 'the restarted run owes its numbers from one').toHaveLength(0);
+    expect(asked, 'and the gap is asked for').toEqual([{ from: 1, to: 8 }]);
+  });
+
   it('an ask sent before the first frame still judges its answer', () => {
     // Two readers can ask before the seat's first frame lands; both marks
     // have to survive, or the second answer is taken for a fresh anchor.
