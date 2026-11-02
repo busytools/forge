@@ -33,6 +33,11 @@ const VOICE_SEED: u32 = 20_260_102;
 /// The tool's own ceiling on generated frames, about forty seconds of audio.
 const MAX_FRAMES: u32 = 512;
 
+/// Frames per streamed chunk. The codec's decode has a fixed cost per call,
+/// so one frame per call decodes slower than the audio plays; a batch keeps
+/// the stream ahead of the speaker.
+const STREAM_BATCH: u32 = 16;
+
 /// One loaded pipeline: the backbone, its codec projector, and the context
 /// both decode through. Owned by the render thread, one utterance at a time.
 pub(super) struct Core {
@@ -156,6 +161,7 @@ impl Core {
 
         let mut sent = 0_usize;
         let mut rate = self.sample_rate;
+        let mut since_emit = 0_u32;
         for _ in 0..MAX_FRAMES {
             let mut next: *const f32 = ptr::null();
             let mut stop = false;
@@ -175,16 +181,20 @@ impl Core {
                 break;
             }
             state = next;
+            since_emit += 1;
             // **The codec decodes what it has.** `get_output` flushes the
             // buffered codes and hands back the whole clip so far, so the tail
-            // past `sent` is the audio this frame added.
-            if !self.emit(&audio, &mut sent, &mut rate, reply)? {
-                return Ok(());
+            // past `sent` is the audio this run added.
+            if since_emit >= STREAM_BATCH {
+                if !self.emit(&audio, &mut sent, &mut rate, reply)? {
+                    return Ok(());
+                }
+                since_emit = 0;
             }
             code = sampler.sample(self.context);
             sampler.accept(code);
         }
-        // A last read flushes what the final frame left buffered.
+        // A last read flushes what the final batch left buffered.
         let _ = self.emit(&audio, &mut sent, &mut rate, reply)?;
 
         Ok(())
