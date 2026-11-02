@@ -6,6 +6,7 @@ import { boardWire, homeWire } from '../dev/fixture.data';
 import { boardFrom, type BoardWire } from '../wire/board';
 import type {
   AgentRow,
+  AttentionRow,
   BoardRow,
   DictateModel,
   FleetRow,
@@ -82,6 +83,7 @@ import {
   markOf,
   modelState,
   projectRows,
+  rankOf,
   refusal,
   settingsCard,
   whenOf,
@@ -150,13 +152,19 @@ const FLEET: HomeWire = {
 };
 
 /** One fleet row's counts, whose project the fixture's orgs resolve. */
-function fleetRow(project: string, live: number, rows = 0): FleetRow {
+function fleetRow(
+  project: string,
+  live: number,
+  rows = 0,
+  attention: AttentionRow[] = [],
+): FleetRow {
   return {
     project,
     live_workers: live,
     slots: 2,
     queue: 0,
-    waiting_on_user: 0,
+    waiting_on_user: attention.length,
+    attention,
     rows,
     misses: [],
   };
@@ -303,6 +311,7 @@ const LEAD_ROW: Row = {
   place: { branch: null, files: null },
   tree: null,
   gate: null,
+  attention: 0,
   task: null,
   pending: null,
   reason: null,
@@ -363,6 +372,30 @@ describe('the fleet the snapshot describes', () => {
       'Busytools/notes',
       'Personal/dotfiles',
     ]);
+  });
+
+  /// **A decision wait is the person's, and both the project and the seat it
+  /// names carry it** (#2756): the mark counts, and the row it belongs to
+  /// ranks with the attention states rather than under a merely busy seat.
+  it('counts the decision waits a project holds, on its row and its seat', () => {
+    const wait: AttentionRow = {
+      task: 't1',
+      owner: 'lead',
+      subject: 'the parser',
+      words: 'sign this off',
+      at: { secs_since_epoch: 5, nanos_since_epoch: 0 },
+    };
+    const fleet = fleetRows({ ...FLEET, fleet: [fleetRow('forge', 1, 0, [wait])] });
+    expect(fleet[0]?.attention, 'the project carries the count').toBe(1);
+    expect(fleet[0]?.seats[0]?.attention, 'and the seat it names carries one').toBe(1);
+    expect(
+      fleet[0]?.seats[0] && rankOf(fleet[0].seats[0].state, null, 1),
+      'a wait ranks with the attention states',
+    ).toBe(0);
+
+    const rows = rowsOf({ ...FLEET, fleet: [fleetRow('forge', 1, 0, [wait])] });
+    expect(rows.waits, 'the rail is handed the wait itself').toEqual([wait]);
+    expect(rows.lead.attention, 'and its lead row counts it').toBe(1);
   });
 
   /**
@@ -435,6 +468,7 @@ describe('the fleet the snapshot describes', () => {
               label: 'lead',
               state: { kind: 'lifecycle', lifecycle: 'Idle' },
               pending: null,
+              attention: 0,
               href: '/session/TestOrg/proj/lead',
             },
           ],
@@ -557,6 +591,7 @@ describe('the fleet the snapshot describes', () => {
           slots: 2,
           queue: 3,
           waiting_on_user: 1,
+          attention: [],
           rows: 4,
           misses: [
             { kind: 'stalled', label: 'queue is stalling' },

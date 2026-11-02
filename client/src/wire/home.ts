@@ -259,9 +259,40 @@ export interface FleetRow {
   queue: number;
   /** Rows waiting on the user's decision. */
   waiting_on_user: number;
+  /** The waits themselves, so a mark can say what is being asked. */
+  attention: AttentionRow[];
   /** Every row the project holds, which the home's header totals. */
   rows: number;
   misses: MissRow[];
+}
+
+/** One wait that is on the person, as the rail names it. */
+export interface AttentionRow {
+  /** The task's id: the wait's identity. */
+  task: string;
+  /** The seat that raised it, by its label (`lead` for the project's own). */
+  owner: string;
+  subject: string;
+  /** The ask's own words, verbatim. */
+  words: string;
+  at: WireTime;
+}
+
+/** One wait narrowed where it enters; an unreadable item refuses the read. */
+export function attentionFrom(value: unknown): AttentionRow {
+  const held = (typeof value === 'object' && value !== null ? value : {}) as Record<string, unknown>;
+  const { task, owner, subject, words, at } = held;
+  if (
+    typeof task !== 'string' ||
+    typeof owner !== 'string' ||
+    typeof subject !== 'string' ||
+    typeof words !== 'string' ||
+    typeof at !== 'object' ||
+    at === null
+  ) {
+    throw new Error('a decision wait this page cannot read');
+  }
+  return { task, owner, subject, words, at: at as WireTime };
 }
 
 /** One of a project's schedules. */
@@ -810,6 +841,7 @@ export function homeFrom(data: HomeWire): HomeWire {
     fleet: (Array.isArray(data.fleet) ? data.fleet : []).map((row) => ({
       ...row,
       rows: typeof row.rows === 'number' ? row.rows : 0,
+      attention: (Array.isArray(row.attention) ? row.attention : []).map(attentionFrom),
       misses: (Array.isArray(row.misses) ? row.misses : []).map(missFrom),
     })),
     accounts: accountsFrom(data.accounts),
