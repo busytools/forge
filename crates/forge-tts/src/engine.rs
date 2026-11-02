@@ -30,8 +30,8 @@ struct Job {
 
 impl QwenTts {
     /// Load the backbone and its codec projector once, on a thread of their
-    /// own, so the first utterance is not the first load. Both files are
-    /// checked against the digests their entries declare before the load.
+    /// own; the first `say` is the first load. Both files are checked
+    /// against the digests their entries declare before the load.
     pub fn load(files: &ModelFiles) -> Result<Self, Error> {
         let Some(projector) = files.projector.as_ref() else {
             return Err(Error::ModelMissing("a TTS model needs its projector".to_owned()));

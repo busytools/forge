@@ -885,8 +885,8 @@ mod tests {
         assert_eq!(runs[0].matched, None, "a passage is scored by term accuracy, not by agreement");
     }
 
-    /// One public corpus as the download leaves it: the manifest, and the wav
-    /// files it names with their digests.
+    /// One public corpus as the installer leaves it: the manifest, and the
+    /// wav files it names with their digests.
     fn write_public(dir: &Path, clips: &[(&str, &str)]) {
         std::fs::create_dir_all(dir).unwrap();
         let mut entries = Vec::new();
@@ -911,7 +911,7 @@ mod tests {
         std::fs::write(dir.join("manifest.json"), manifest.to_string()).unwrap();
     }
 
-    /// A digest is the whole guard on a downloaded clip: a file whose bytes
+    /// A digest is the whole guard on an installed clip: a file whose bytes
     /// are not the ones the manifest names is refused by the clip's own name,
     /// not scored.
     #[test]
@@ -934,7 +934,7 @@ mod tests {
     }
 
     /// A manifest that names a clip the directory does not hold is a refusal,
-    /// not a clip silently skipped: a partial download would otherwise score
+    /// not a clip silently skipped: a partial install would otherwise score
     /// as if it were whole.
     #[test]
     fn a_manifest_that_names_a_missing_clip_is_refused_by_name() {
@@ -980,8 +980,8 @@ mod tests {
         assert!(wer("the quick brown fix", truth) > 0.0, "a changed word is an edit");
     }
 
-    /// A machine that has downloaded nothing has an empty tier rather than a
-    /// failure: the run says so with its own zero.
+    /// A machine where the slice was never installed has an empty tier
+    /// rather than a failure: the run says so with its own zero.
     #[test]
     fn an_absent_public_corpus_is_empty() {
         let dir = tempfile::tempdir().unwrap();

@@ -203,6 +203,7 @@ mod tests {
                 let silent = request.text == "silent";
                 tokio::spawn(async move {
                     if !silent {
+                        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
                         let _ = sender
                             .send(Ok(Chunk { seq: 0, sample_rate: 24_000, pcm: vec![1; 2_400] }))
                             .await;
@@ -225,6 +226,11 @@ mod tests {
         .expect("the run lands");
         assert_eq!(result.clips, 1, "only the clip that rendered is scored");
         assert_eq!(result.round_trip_wer, 0.0);
+        assert!(
+            result.first_audio_ms >= 150,
+            "the mean divides by the clip that rendered, not the corpus: got {}",
+            result.first_audio_ms,
+        );
     }
 
     #[tokio::test]

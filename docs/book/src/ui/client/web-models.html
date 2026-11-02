@@ -547,11 +547,11 @@
   </div>
 
   <div class="tile">
-    <div class="tcap">dictation off: <b>[dictate] enabled</b> unset, so nothing is pinned, nothing proposed, and the catalogue has not been read at all</div>
+    <div class="tcap">dictation off: <b>[dictate] enabled</b> unset, so no dictation model is in use, nothing is proposed, and the catalogue has not been read at all &middot; the speaking row still draws when <b>[tts]</b> is on</div>
     <div class="models-page">
       <div class="empty">
-        <p class="t">dictation is off</p>
-        <p class="d"><code>[dictate] enabled</code> is not set in <code>forge.toml</code>, so no models are loaded and a take has nothing to run through. Add it and restart forge.</p>
+        <p class="t">no model is in use</p>
+        <p class="d"><code>[dictate] enabled</code> is not set in <code>forge.toml</code>, so no dictation models are loaded and a take has nothing to run through. Add it and restart forge.</p>
       </div>
       <div class="status" style="margin-top:12px">
         <span class="dot off"></span>
@@ -560,7 +560,7 @@
       </div>
       <p class="note">the feed is read only with <code>[dictate] enabled</code> set &middot; switch it on and restart forge, and the catalogue loads here</p>
     </div>
-    <div class="tnote">The catalogue is loaded only for an enabled section, so the off forge's read answers no rows: a search box here would answer every query with "no entry matches", which reads as a feed that found nothing rather than one that was never fetched.</div>
+    <div class="tnote">The catalogue is loaded only for an enabled section, so the off forge's read answers no rows: a search box here would answer every query with "no entry matches", which reads as a feed that found nothing rather than one that was never fetched. The speaking role is <code>[tts]</code>'s own row, so it stays in use when that section is on even though dictation is off.</div>
   </div>
 
   <div class="tile">

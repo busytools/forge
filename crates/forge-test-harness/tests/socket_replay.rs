@@ -1464,8 +1464,7 @@ fn frames_record() -> Value {
                     },
                 }],
                 speaking_bench: SpeakingBenchState::Failed {
-                    reason: "nothing to bench: the public corpus has not been downloaded yet"
-                        .to_owned(),
+                    reason: "nothing to bench: the bundled public corpus holds no clips".to_owned(),
                 },
                 speaking_results: vec![SpeakingBenchResult {
                     file: "Qwen3-TTS-12Hz-1.7B-Base-Q8_0.gguf".to_owned(),

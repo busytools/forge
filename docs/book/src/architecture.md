@@ -273,10 +273,10 @@ resolving here unchanged. Every other group renders in full, the
 document hand-off included: `documents__hand_off` crosses as
 `mcp__forge__documents__hand_off`.
 
-`browser`, `documents`, `review`, `cron`, `tasks`, `gotify`, `slack` and
-`voice` are registered for every session; `systemone` joins them when
-`[systemone]` is configured and enabled, and `voice` is withheld when
-`[tts]` is off. A worker's families can be
+`browser`, `documents`, `review`, `cron`, `tasks`, `gotify` and `slack`
+are registered for every session; `systemone` joins them when
+`[systemone]` is configured and enabled, and `voice` joins them when
+`[tts]` is on. A worker's families can be
 narrowed at spawn - `agents__spawn`'s `mcp_families` list, revised by
 `agents__update` and stored on the worker's durable record - and each
 withheld family is named in that worker's own prompt. The `agents` group

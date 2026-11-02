@@ -34,8 +34,8 @@ forge-test-harness ─→ primitives + sdk + workspace + server
   so it must not grow one, and a doc comment mentioning a keypress, a
   composer or a session is a bug.
 - **`forge-tts`** - the speech primitive: text in, audio chunks out. Owns
-  the Qwen3-TTS engine (llama.cpp in process, through the vendored
-  `llama-cpp-sys-2`), the model files a speaking model is made of, sentence
+  the Qwen3-TTS engine (llama.cpp in process, through `llama-cpp-sys-2`),
+  the model files a speaking model is made of, sentence
   splitting and the utterance bound. A leaf: no forge-* dependency, and no
   knowledge of a seat, a tool or a wire, so a host pushes text in and
   reads chunks off a channel.
@@ -273,9 +273,10 @@ one, bias toward the deeper crate.
 - **Cross-crate type duplication.** Same-shaped `Foo` in two crates
   means one is wrong; lift to primitives or import the re-export. The
   exceptions are the leaf crates that may not depend on any forge-*
-  crate, `forge-capture`, `forge-system-one` and `forge-dictate` (which
-  leans on the first and on nothing else of the workspace): their types
-  stay in them and consumers import them from there.
+  crate, `forge-capture`, `forge-tts`, `forge-system-one` and
+  `forge-dictate` (which leans on the first and on nothing else of the
+  workspace): their types stay in them and consumers import them from
+  there.
 - **Provider dispatch outside `forge-gateway`.** A match on
   `Provider` in workspace or a view is the thing this crate exists to
   delete; route through `forge_gateway::backend(token)` instead.

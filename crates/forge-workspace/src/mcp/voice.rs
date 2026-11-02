@@ -41,8 +41,8 @@ impl Tool for Say {
 
     fn description(&self) -> &'static str {
         "Speak one utterance to the person listening to this seat. Use it for anything they should \
-         hear; the text you write in the chat is not spoken. Returns `spoken: queued` once the \
-         render starts, or `no listener` when no client has voice on for this seat."
+         hear; the text you write in the chat is not spoken. Returns `spoken: queued` when the \
+         first audio renders, or `no listener` when no client has voice on for this seat."
     }
 
     fn input_schema(&self) -> serde_json::Value {

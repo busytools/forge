@@ -1099,7 +1099,7 @@
                     class="chip"
                     type="button"
                     disabled={busy}
-                    title="score a downloaded slice of public read speech, so a machine with no recordings still has a corpus"
+                    title="score the bundled slice of public read speech, so a machine with no recordings still has a corpus"
                     onclick={() => onbench(row.target, 'public')}>score the public corpus</button
                   >
                   {#if !row.current && wire.installed.some((model) => model.file === row.target.file)}

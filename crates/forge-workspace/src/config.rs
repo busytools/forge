@@ -55,7 +55,7 @@ struct ForgeToml {
     #[serde(default)]
     dictate: crate::dictate::DictateSettings,
     /// Optional `[tts]` section - speech out. Absent section -> disabled,
-    /// which keeps its model download opt-in.
+    /// which keeps its hand-placed model files opt-in.
     #[serde(default)]
     tts: crate::tts::TtsSettings,
     /// Optional `[gotify]` section - the inbound-notification server

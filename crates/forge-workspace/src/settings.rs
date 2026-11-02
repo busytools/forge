@@ -1121,7 +1121,7 @@ const TTS_KEYS: &[ConfigKey] = &[
         rows: |config| {
             vec![text(
                 "tts.language",
-                config.tts.language.clone().unwrap_or_else(|| "autodetect".to_owned()),
+                config.tts.language.clone().unwrap_or_else(|| "english".to_owned()),
             )]
         },
     },

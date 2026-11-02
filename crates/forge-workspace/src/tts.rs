@@ -1,4 +1,4 @@
-//! The `[tts]` section: what the speaking role runs, and the read the voice
+//! The `[tts]` section: what the speaking role runs, and the read the models
 //! page draws.
 
 use std::path::PathBuf;
@@ -20,9 +20,9 @@ impl SpeakingModel {
     /// that carries its audio codec. Both blobs declare a SHA-256, and the
     /// engine checks both before it loads them.
     ///
-    /// The 0.6B checkpoint has no published GGUF; this is the build the
-    /// llama.cpp tool documents. No parameter count is claimed because the
-    /// Hub listing publishes none.
+    /// ggml-org publishes no 0.6B GGUF; this is the build the llama.cpp
+    /// tool documents. No parameter count is claimed because the Hub
+    /// listing publishes none.
     pub fn qwen3_tts() -> Self {
         let facts = ModelFacts {
             quant: Some("Q8_0".to_owned()),
@@ -69,7 +69,8 @@ pub struct TtsSettings {
     /// Spoken language. Absent leaves the pipeline's own default, English.
     #[serde(default)]
     pub language: Option<String>,
-    /// Upper bound on one utterance's text, not one sentence.
+    /// Upper bound on one utterance's text, as a character estimate at a
+    /// rough speaking pace, not one sentence.
     #[serde(default = "default_max_utterance_seconds")]
     pub max_utterance_seconds: u64,
 }

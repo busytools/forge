@@ -713,7 +713,7 @@ describe('the models page as it draws', () => {
     expect(runs.map((run) => run.tier)).toEqual(['consensus']);
   });
 
-  /** A machine with no material still has the downloaded public slice to
+  /** A machine with no material still has the bundled public slice to
    * score, so the tier is offered whatever the read-aloud set holds. */
   it('offers the public corpus as a bench tier', () => {
     const runs: { target: BenchTarget; tier: BenchTier }[] = [];

@@ -542,8 +542,8 @@ directory that has no model, and the failure would arrive only at the first
 The speaking model is Qwen3-TTS 12Hz 1.7B Base, Q8_0, with the `mmproj`
 projector that carries its audio codec: two files, about 2.29 GB together,
 both published by ggml-org with a per-file SHA-256. The weights and
-tokenizer are Apache-2.0 and llama.cpp is MIT. No 0.6B GGUF is published,
-which is why the pinned build is the 1.7B Base.
+tokenizer are Apache-2.0 and llama.cpp is MIT. ggml-org publishes no 0.6B
+GGUF, which is why the pinned build is the 1.7B Base.
 
 Rendering is in process: forge links the published llama.cpp through
 `llama-cpp-sys-2` the way dictation links its recognizer, and splits a
