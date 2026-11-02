@@ -407,7 +407,7 @@ fn write_session_fixture(
         }
         let _ = write!(
             blocks,
-            "\n[[orgs.projects]]\nname = \"{name}\"\npath = \"{}\"\nauto_start = true\n\
+            "\n[[orgs.projects]]\nname = \"{name}\"\npath = \"{}\"\nresume_lead = true\n\
              model = \"claude-sonnet-5\"\nenv = {{ {env} }}\n",
             path.display(),
         );

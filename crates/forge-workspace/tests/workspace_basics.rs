@@ -26,7 +26,7 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-auto_start = true
+resume_lead = true
 
 [[accounts]]
 display_name = "Stargate"

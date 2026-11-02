@@ -2643,7 +2643,7 @@ impl Workspace {
             .projects
             .iter()
             .filter(|project| {
-                project.auto_start
+                project.resume_lead
                     && !previous
                         .projects
                         .iter()
@@ -2690,7 +2690,7 @@ impl Workspace {
                     event_name = "config_reload_autostart_failed",
                     project = %project_name,
                     error = %error,
-                    "an auto_start project the reload added did not start",
+                    "a resume_lead project the reload added did not start",
                 );
             }
         }
@@ -3072,11 +3072,11 @@ impl Workspace {
     }
 
     /// Return the names of all projects that should spawn at forge
-    /// launch (`auto_start = true`). Order is declaration order from
+    /// launch (`resume_lead = true`). Order is declaration order from
     /// forge.toml - the launchpad picker uses its own row sort, so
     /// no further ordering is imposed here.
-    pub fn auto_start_project_names(&self) -> Vec<String> {
-        self.config_arc().auto_start_projects().map(|p| p.name.clone()).collect()
+    pub fn resume_lead_project_names(&self) -> Vec<String> {
+        self.config_arc().resume_lead_projects().map(|p| p.name.clone()).collect()
     }
 
     /// Every project listed in `forge.toml`, each carrying its catalog
@@ -11072,7 +11072,7 @@ mod account_stamp_tests {
             org: "Personal".to_owned(),
             accounts: vec!["Stargate".to_owned()],
             fallback_accounts: Vec::new(),
-            auto_start: false,
+            resume_lead: false,
             model: None,
             env: HashMap::new(),
             env_file: None,
@@ -12423,7 +12423,7 @@ path = "{}"
         );
     }
 
-    /// `SessionTarget::Default` is the alphabetically-first auto_start
+    /// `SessionTarget::Default` is the alphabetically-first resume_lead
     /// Buffer tracing output so the applied record can be read back.
     #[derive(Clone, Default)]
     struct LogCapture(Arc<Mutex<Vec<u8>>>);
@@ -14266,7 +14266,7 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-auto_start = true
+resume_lead = true
 model = "claude-sonnet-5"
 
 [[accounts]]
@@ -14294,7 +14294,7 @@ accounts = ["Personal", "OpenRouter-TM"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-auto_start = true
+resume_lead = true
 model = "deepseek-v4.1-flash"
 
 [[accounts]]
@@ -14337,7 +14337,7 @@ accounts = ["Personal"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-auto_start = true
+resume_lead = true
 model = "claude-opus-5"
 env = { RELOADED = "yes" }
 
@@ -14818,7 +14818,7 @@ accounts = ["Personal"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-auto_start = true
+resume_lead = true
 model = "claude-opus-5"
 
 [[accounts]]
@@ -14844,10 +14844,10 @@ provider = "anthropic"
         );
     }
 
-    /// A project the edit adds with `auto_start` starts as it would at boot;
+    /// A project the edit adds with `resume_lead` starts as it would at boot;
     /// a project already declared is not restarted by the reload.
     #[tokio::test]
-    async fn a_reload_starts_only_a_newly_added_auto_start_project() {
+    async fn a_reload_starts_only_a_newly_added_resume_lead_project() {
         let dir = make_workspace_dir();
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         workspace.enable_test_dispatch_intercept();
@@ -14862,13 +14862,13 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-auto_start = true
+resume_lead = true
 model = "claude-sonnet-5"
 
 [[orgs.projects]]
 name = "fresh"
 path = "~/Projects/fresh"
-auto_start = true
+resume_lead = true
 model = "claude-sonnet-5"
 
 [[accounts]]
@@ -15043,7 +15043,7 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-auto_start = true
+resume_lead = true
 model = "claude-sonnet-5"
 
 [[orgs.projects]]
@@ -15211,7 +15211,7 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-auto_start = true
+resume_lead = true
 model = "claude-sonnet-5"
 
 [[orgs.projects]]
@@ -15260,7 +15260,7 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-auto_start = true
+resume_lead = true
 
 [[accounts]]
 display_name = "Stargate"
@@ -15297,7 +15297,7 @@ accounts = ["Stargate", "Gateway"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-auto_start = true
+resume_lead = true
 model = "claude-sonnet-5"
 
 [[accounts]]
@@ -15874,7 +15874,7 @@ accounts = ["Stargate", "Gateway"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-auto_start = true
+resume_lead = true
 model = "claude-sonnet-5"
 
 [orgs.projects.env]
@@ -15984,7 +15984,7 @@ accounts = ["Stargate", "Gateway"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-auto_start = true
+resume_lead = true
 model = "claude-sonnet-5"
 
 [[accounts]]
@@ -18149,7 +18149,7 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-auto_start = true
+resume_lead = true
 
 [[accounts]]
 display_name = "Stargate"
@@ -23603,7 +23603,7 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-auto_start = true
+resume_lead = true
 model = "claude-sonnet-5"
 
 [[accounts]]
@@ -23646,7 +23646,7 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-auto_start = true
+resume_lead = true
 model = "claude-sonnet-5"
 
 [[accounts]]
@@ -23760,7 +23760,7 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-auto_start = true
+resume_lead = true
 model = "claude-sonnet-5"
 
 [[accounts]]
@@ -23821,7 +23821,7 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-auto_start = true
+resume_lead = true
 model = "claude-sonnet-5"
 
 [[accounts]]
@@ -23871,7 +23871,7 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-auto_start = true
+resume_lead = true
 model = "claude-sonnet-5"
 
 [[accounts]]
@@ -23996,7 +23996,7 @@ accounts = ["Alpha", "Beta"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-auto_start = true
+resume_lead = true
 
 [[accounts]]
 display_name = "Alpha"
@@ -24260,7 +24260,7 @@ fallback_accounts = ["OpenRouter-TM"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-auto_start = true
+resume_lead = true
 model = "deepseek-v4.1-flash"
 
 [[accounts]]
@@ -24294,7 +24294,7 @@ accounts = ["Personal", "OpenRouter-TM"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-auto_start = true
+resume_lead = true
 model = "deepseek-v4.1-flash"
 
 [[accounts]]
@@ -24961,7 +24961,7 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "proj"
 path = "{}"
-auto_start = true
+resume_lead = true
 model = "claude-sonnet-5"
 
 [[accounts]]
@@ -25166,7 +25166,7 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "proj"
 path = "{}"
-auto_start = true
+resume_lead = true
 model = "claude-sonnet-5"
 
 [[accounts]]
@@ -25227,7 +25227,7 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "proj"
 path = "{}"
-auto_start = true
+resume_lead = true
 model = "claude-sonnet-5"
 
 [[accounts]]

@@ -5,8 +5,9 @@
 //! pin shared by all its projects, replacing the per-project pin
 //! that lived here before. Projects within an org keep a flat list
 //! via `[[orgs.projects]]`. Multiple projects can carry
-//! `auto_start = true`; all auto-start projects spawn at launch and
-//! the first one (alphabetical) becomes the focused tab.
+//! `resume_lead = true`; all such projects spawn at launch, resuming the
+//! session forge stored for them, and the first one (alphabetical)
+//! becomes the focused tab.
 //!
 //! **Selection policy.** The gateway's declared-model walk: over the
 //! org's `accounts` primaries and `fallback_accounts`, the first
@@ -419,12 +420,12 @@ struct SlackBinding {
 struct ProjectEntry {
     name: String,
     path: String,
-    /// When `true`, the project's lead session spawns automatically
-    /// at forge launch. Multiple projects can carry this; they all
-    /// spawn in the background, and none of them
+    /// When `true`, the project's lead session spawns at forge launch,
+    /// resuming the session forge stored for it. Multiple projects can
+    /// carry this; they all spawn in the background, and none of them
     /// is focused until a view picks one. Defaults to `false`.
     #[serde(default)]
-    auto_start: bool,
+    resume_lead: bool,
     /// The project's model: fills the CLI's model slots at spawn
     /// (`ANTHROPIC_DEFAULT_*_MODEL`, `ANTHROPIC_SMALL_FAST_MODEL`,
     /// `CLAUDE_CODE_SUBAGENT_MODEL`). Required to be declared by at
@@ -479,7 +480,7 @@ impl std::fmt::Debug for ProjectEntry {
         f.debug_struct("ProjectEntry")
             .field("name", &self.name)
             .field("path", &self.path)
-            .field("auto_start", &self.auto_start)
+            .field("resume_lead", &self.resume_lead)
             .field("model", &self.model)
             .field("permission_mode", &self.permission_mode)
             .field("max_workers", &self.max_workers)
@@ -697,7 +698,7 @@ pub(crate) struct LoadedConfig {
     /// may override it; the resolved per-project binding is on the project.
     pub org_slack: HashMap<String, String>,
     /// Index into `projects` for the default startup target -
-    /// alphabetically-first project that carries `auto_start = true`,
+    /// alphabetically-first project that carries `resume_lead = true`,
     /// falling back to the alphabetically-first project overall
     /// when no project opts in. Used by the `forge` (no argv) fixture
     /// / smoke paths; a production picker overrides it.
@@ -865,9 +866,9 @@ pub(crate) struct LoadedProject {
     /// Cached fallback list from the project's org, alongside
     /// `accounts`. Absent key -> empty.
     pub fallback_accounts: Vec<String>,
-    /// `true` when the project should spawn automatically at forge
-    /// launch.
-    pub auto_start: bool,
+    /// `true` when the project's lead should spawn at forge launch,
+    /// resuming the session forge stored for it.
+    pub resume_lead: bool,
     /// The project's model: fills the CLI's model slots at spawn
     /// (`ANTHROPIC_DEFAULT_*_MODEL`, `ANTHROPIC_SMALL_FAST_MODEL`,
     /// `CLAUDE_CODE_SUBAGENT_MODEL`) and is the model the walk matches
@@ -918,7 +919,7 @@ impl std::fmt::Debug for LoadedProject {
             .field("org", &self.org)
             .field("accounts", &self.accounts)
             .field("fallback_accounts", &self.fallback_accounts)
-            .field("auto_start", &self.auto_start)
+            .field("resume_lead", &self.resume_lead)
             .field("model", &self.model)
             .field("env", &env)
             .field("env_file", &self.env_file)
@@ -960,9 +961,9 @@ impl LoadedConfig {
     }
 
     /// Iterate every project that should spawn at forge launch
-    /// (`auto_start = true`).
-    pub(crate) fn auto_start_projects(&self) -> impl Iterator<Item = &LoadedProject> {
-        self.projects.iter().filter(|p| p.auto_start)
+    /// (`resume_lead = true`).
+    pub(crate) fn resume_lead_projects(&self) -> impl Iterator<Item = &LoadedProject> {
+        self.projects.iter().filter(|p| p.resume_lead)
     }
 
     /// Empty `LoadedConfig` for the `testing` feature's
@@ -1478,7 +1479,7 @@ pub(crate) fn load_from_text(path: PathBuf, raw: &str) -> Result<LoadedConfig, W
                 org: org_entry.name.clone(),
                 accounts: org_entry.accounts.clone(),
                 fallback_accounts: org_entry.fallback_accounts.clone(),
-                auto_start: project_entry.auto_start,
+                resume_lead: project_entry.resume_lead,
                 model: project_entry.model.clone(),
                 env,
                 env_file: project_entry.env_file.clone(),
@@ -1523,12 +1524,12 @@ pub(crate) fn load_from_text(path: PathBuf, raw: &str) -> Result<LoadedConfig, W
     // the launchpad picker isn't available - fixture tests, smoke
     // tests, etc.; the production path lands on the launchpad
     // picker first):
-    // 1. Alphabetically-first `auto_start = true` project.
+    // 1. Alphabetically-first `resume_lead = true` project.
     // 2. Else alphabetically-first project overall.
     let default_index = {
         let mut alpha: Vec<usize> = (0..projects.len()).collect();
         alpha.sort_by(|a, b| projects[*a].name.cmp(&projects[*b].name));
-        alpha.iter().copied().find(|&i| projects[i].auto_start).unwrap_or_else(|| alpha[0])
+        alpha.iter().copied().find(|&i| projects[i].resume_lead).unwrap_or_else(|| alpha[0])
     };
 
     let gateway_port = match &parsed.gateway {
@@ -1762,7 +1763,7 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-auto_start = true
+resume_lead = true
 
 [[accounts]]
 display_name = "Stargate"
@@ -1847,7 +1848,7 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-auto_start = true
+resume_lead = true
 
 [[accounts]]
 display_name = "Stargate"
@@ -1894,7 +1895,7 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-auto_start = true
+resume_lead = true
 
 [[accounts]]
 display_name = "Stargate"
@@ -1937,7 +1938,7 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-auto_start = true
+resume_lead = true
 
 [[accounts]]
 display_name = "Stargate"
@@ -1968,7 +1969,7 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-auto_start = true
+resume_lead = true
 
 [[accounts]]
 display_name = "Stargate"
@@ -2428,7 +2429,7 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-auto_start = true
+resume_lead = true
 
 [[accounts]]
 display_name = "Stargate"
@@ -2837,7 +2838,7 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-auto_start = true
+resume_lead = true
 gatewy = true
 [[accounts]]
 display_name = "Stargate"
@@ -3287,7 +3288,7 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-auto_start = true
+resume_lead = true
 [orgs.projects.env]
 CLAUDE_CODE_OAUTH_TOKEN = "project-supersecret"
 
@@ -4341,7 +4342,7 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-auto_start = true
+resume_lead = true
 max_workers = 4
 
 [[accounts]]
@@ -4412,7 +4413,7 @@ provider = "anthropic"
         assert_eq!(config.default_project().name, "forge");
         assert_eq!(config.default_project().org, "Personal");
         assert_eq!(config.default_project().accounts, vec!["Stargate"]);
-        assert!(config.default_project().auto_start);
+        assert!(config.default_project().resume_lead);
     }
 
     #[test]
@@ -4735,7 +4736,7 @@ provider = "anthropic"
     }
 
     #[test]
-    fn default_project_is_alpha_first_auto_start() {
+    fn default_project_is_alpha_first_resume_lead() {
         let dir = tempdir().expect("tempdir");
         write_config(
             dir.path(),
@@ -4746,11 +4747,11 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "zebra"
 path = "~/Projects/zebra"
-auto_start = true
+resume_lead = true
 [[orgs.projects]]
 name = "alpha"
 path = "~/Projects/alpha"
-auto_start = true
+resume_lead = true
 [[orgs.projects]]
 name = "middle"
 path = "~/Projects/middle"
@@ -4762,7 +4763,7 @@ provider = "anthropic"
 "#,
         );
         let config = load_from_dir(dir.path()).expect("happy path");
-        // Auto-start projects: alpha + zebra. Alphabetical-first: alpha.
+        // Pinned projects: alpha + zebra. Alphabetical-first: alpha.
         assert_eq!(config.default_project().name, "alpha");
     }
 
@@ -4793,7 +4794,7 @@ provider = "anthropic"
     }
 
     #[test]
-    fn auto_start_projects_iterator_returns_only_opted_in() {
+    fn resume_lead_projects_iterator_returns_only_opted_in() {
         let dir = tempdir().expect("tempdir");
         write_config(
             dir.path(),
@@ -4804,14 +4805,14 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "alpha"
 path = "~/Projects/alpha"
-auto_start = true
+resume_lead = true
 [[orgs.projects]]
 name = "beta"
 path = "~/Projects/beta"
 [[orgs.projects]]
 name = "gamma"
 path = "~/Projects/gamma"
-auto_start = true
+resume_lead = true
 [[accounts]]
 display_name = "Stargate"
 token = "t"
@@ -4820,7 +4821,7 @@ provider = "anthropic"
 "#,
         );
         let config = load_from_dir(dir.path()).expect("happy path");
-        let names: Vec<&str> = config.auto_start_projects().map(|p| p.name.as_str()).collect();
+        let names: Vec<&str> = config.resume_lead_projects().map(|p| p.name.as_str()).collect();
         assert_eq!(names, vec!["alpha", "gamma"]);
     }
 
@@ -5026,8 +5027,8 @@ at_percent = 95
         write_config(
             dir.path(),
             &minimal_config().replace(
-                "auto_start = true",
-                "auto_start = true\n[orgs.projects.handoff]\nafter_compactions = 0",
+                "resume_lead = true",
+                "resume_lead = true\n[orgs.projects.handoff]\nafter_compactions = 0",
             ),
         );
         let err = load_from_dir(dir.path()).expect_err("the backstop is refused");

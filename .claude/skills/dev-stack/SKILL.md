@@ -93,7 +93,7 @@ history is the record.
        one where the config carries one** (an `openrouter` provider block) -
        a scratch must never spend the Anthropic pool; name which account in
        the worker's report.
-     - `[[orgs]]` + `[[orgs.projects]]` - the repo's path, `auto_start = true`,
+     - `[[orgs]]` + `[[orgs.projects]]` - the repo's path, `resume_lead = true`,
        a `model`, `permission_mode = "auto"`.
      - `[server] enabled = true, bind = "127.0.0.1", port = 8791` and
        `[gateway] port = 8788` - a distinct port pair per stack (8791+idx /

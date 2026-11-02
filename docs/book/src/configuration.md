@@ -101,7 +101,7 @@ and start that session again.
 | ------------ | ------ | -------- | ------- | ------------------------------------------------------------------------------------------------ |
 | `name`       | string | yes      |         | Must be unique across _all_ orgs, not just within one.                                           |
 | `path`       | string | yes      |         | A leading `~/` is expanded to the home directory. The un-expanded string is kept for display.    |
-| `auto_start` | bool   | no       | `false` | When true, the project's lead session spawns at forge launch. Any number of projects may set it. |
+| `resume_lead` | bool  | no       | `false` | When true, the project's lead session spawns at forge launch and resumes the session forge stored for it. Any number of projects may set it. |
 
 Project names are the argument `forge <PROJECT>` takes, and the key
 per-project settings hang off.
@@ -273,7 +273,7 @@ top level. Unknown keys inside a `[handoff]` table are rejected.
 ## Per-project keys (inside `[[orgs.projects]]`)
 
 The per-project settings live directly on each `[[orgs.projects]]`
-entry, beside `name`, `path` and `auto_start`. The entry rejects
+entry, beside `name`, `path` and `resume_lead`. The entry rejects
 unknown fields, so a mistyped key fails the load loudly instead of
 quietly applying nothing.
 
@@ -880,7 +880,7 @@ accounts = ["Personal", "Scratch"]
   [[orgs.projects]]
   name = "forge"
   path = "~/Projects/forge"
-  auto_start = true
+  resume_lead = true
 
   [[orgs.projects]]
   name = "notes"
@@ -1002,7 +1002,7 @@ accepts has no class.
 | --- | --- |
 | `[[orgs]]` - `name`, `accounts`, `fallback_accounts`, `browser_profile`; `[orgs.slack] workspace`, `[orgs.projects.slack] workspace` | Live. The roster, pins and the next tool call read the new values. A Slack binding to a label already in `[[slack]]` applies to the next tool call. |
 | `[[orgs.projects]]` - `name`, `path` | Live. The roster re-reads them; a removed project leaves it, and sessions already running keep running. |
-| `[[orgs.projects]]` - `auto_start`, `model`, `permission_mode`, `max_workers`, `env`, `env_file`, `vault_roots`, `browser_profile` | Next session. The next spawn reads them; a running session keeps what it spawned with. Toggling `auto_start` on a project that already exists applies the next time it starts, and an added project with `auto_start = true` starts. |
+| `[[orgs.projects]]` - `resume_lead`, `model`, `permission_mode`, `max_workers`, `env`, `env_file`, `vault_roots`, `browser_profile` | Next session. The next spawn reads them; a running session keeps what it spawned with. Toggling `resume_lead` on a project that already exists applies the next time it starts, and an added project with `resume_lead = true` starts. |
 | `[[accounts]]` - `display_name`, `provider`, `base_url`, `token`, `models`, `model_slugs`, `model_aliases` | Live. The pool gains or changes accounts, and retires a removed one: sessions bound to it keep working, new selections never see it, and usage probes follow the new set. A re-minted token reaches a bound session on its next request. |
 | `[[accounts]]` - `env` | Next session. Folded into each account's env at load, so the next spawn carries it; a running child keeps its own environment. |
 | `[env]` | Next session. Folded into each account's env at load, so the next spawn carries it. |
@@ -1063,11 +1063,11 @@ clickable. Fix that account's auth, or remove its `[[accounts]]` block; the
 edit applies to new work, and an auth repair reaches a running session on its
 next request. The screen names both.
 
-Every project carrying `auto_start = true` still spawns its lead session
-in the background, but none of them is focused: you pick one from the
-picker to enter chat.
+Every project carrying `resume_lead = true` still spawns its lead session
+in the background, resuming the session forge stored for it, but none of
+them is focused: you pick one from the picker to enter chat.
 
-`auto_start` therefore controls what is warm when you arrive, not what
+`resume_lead` therefore controls what is warm when you arrive, not what
 you land on.
 
 The socket comes up on `[server] bind:port` during the same boot, unless

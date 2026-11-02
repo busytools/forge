@@ -1477,12 +1477,12 @@ model = "a"
             set_edit(&document, "orgs.Acme.Corp.projects.api.v2.name", serde_json::json!("api.v3"));
         let edit = set_edit(
             &document,
-            "orgs.Acme.Corp.projects.api.v2.auto_start",
+            "orgs.Acme.Corp.projects.api.v2.resume_lead",
             serde_json::json!(true),
         );
         let out = apply(FIXTURE, &[rename, edit], &document).expect("both apply");
         assert!(out.contains("name = \"api.v3\""), "the rename landed: {out}");
-        assert!(out.contains("auto_start = true"), "the edit landed: {out}");
+        assert!(out.contains("resume_lead = true"), "the edit landed: {out}");
     }
 
     /// **An add cannot replace an existing entry.** A model table already in

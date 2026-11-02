@@ -624,7 +624,7 @@ async fn wait_for_accounts(workspace: &Arc<Workspace>, timeout: std::time::Durat
 
 /// The boot spawn, for a process with no view: hold until the accounts
 /// settle, then dispatch the wave a view's connect path dispatches -
-/// the named project's lead, or every `auto_start` project, in forge.toml
+/// the named project's lead, or every `resume_lead` project, in forge.toml
 /// order.
 ///
 /// Settling is terminal rather than `Ready` - a bailed account releases
@@ -657,7 +657,7 @@ pub fn start_boot_wave(workspace: Arc<Workspace>, project: Option<String>, force
             forge_workspace::SessionLaunchSettings { force_new, ..Default::default() };
         let targets: Vec<String> = match project {
             Some(name) => vec![name],
-            None => crate::surface::ViewSurface::new(Arc::clone(&workspace)).roster().auto_start(),
+            None => crate::surface::ViewSurface::new(Arc::clone(&workspace)).roster().resume_lead(),
         };
         for project_name in targets {
             let cmd = forge_workspace::Command::SpawnProject {

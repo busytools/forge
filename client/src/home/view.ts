@@ -245,7 +245,7 @@ export function fleetRows(wire: HomeWire): FleetViewRow[] {
     // a nicety** - a seat exists only while a project holds a live session,
     // so a closed project is seatless, and reading the seats alone would word
     // `never` over a project that wrote ten minutes ago. Every project is in
-    // that state after a forge restart, because only `auto_start` ones come
+    // that state after a forge restart, because only `resume_lead` ones come
     // back on their own.
     const lastActivity = [
       ...agents.map((agent) => agent.last_activity),
