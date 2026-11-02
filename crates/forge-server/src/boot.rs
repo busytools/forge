@@ -484,6 +484,11 @@ fn start_subsystems(workspace: &Arc<Workspace>) {
     // download is opt-in.
     workspace.start_dictate_preflight();
 
+    // Install the shipped public corpus beside the speaking models, so the
+    // voice picker has its clips. No-op unless `[tts] enabled` is set, and
+    // one small idempotent write beside the models.
+    workspace.start_voice_corpus();
+
     // Spawn the worker-kick drainer task (#259). Routes every
     // `maybe_kick_worker_on_connected` enqueue through a single
     // `KICK_DISPATCH_INTERVAL`-spaced dispatcher so multi-worker boots

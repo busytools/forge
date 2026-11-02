@@ -1131,6 +1131,28 @@ const TTS_KEYS: &[ConfigKey] = &[
         class: EffectClass::Restart,
         rows: |config| vec![number("tts.max_utterance_seconds", config.tts.max_utterance_seconds)],
     },
+    ConfigKey {
+        path: "tts.speaking_model",
+        area: "voice",
+        class: EffectClass::Restart,
+        rows: |config| {
+            vec![text(
+                "tts.speaking_model",
+                config.tts.speaking_model.clone().unwrap_or_else(|| "not set".to_owned()),
+            )]
+        },
+    },
+    ConfigKey {
+        path: "tts.voice",
+        area: "voice",
+        class: EffectClass::Restart,
+        rows: |config| {
+            vec![text(
+                "tts.voice",
+                config.tts.voice.clone().unwrap_or_else(|| "not set".to_owned()),
+            )]
+        },
+    },
 ];
 
 const MODEL_KEYS: &[ConfigKey] = &[ConfigKey {
@@ -1521,6 +1543,8 @@ context = "email"
 [tts]
 enabled = true
 models_dir = "/tmp/tts-models"
+speaking_model = "qwen3-tts-12hz-1.7b-base"
+voice = "6930"
 language = "en"
 max_utterance_seconds = 60
 
@@ -2084,7 +2108,7 @@ models = ["m"]
         let document = document(&config, "v", Path::new("/tmp/forge.toml"));
         let voice =
             document.areas.iter().find(|area| area.id == "voice").expect("the voice area is drawn");
-        assert_eq!(voice.keys.len(), 16, "every [dictate] and [tts] key draws there");
+        assert_eq!(voice.keys.len(), 18, "every [dictate] and [tts] key draws there");
         assert!(
             voice
                 .keys
@@ -2093,8 +2117,12 @@ models = ["m"]
             "no other table's key rides in the voice area",
         );
         assert!(
-            !voice.keys.iter().any(|key| key.path == "tts.speaker"),
-            "the speaking model uses its default voice, so there is no speaker key",
+            voice.keys.iter().any(|key| key.path == "tts.speaking_model"),
+            "the speaking model's catalogue key draws beside the rest",
+        );
+        assert!(
+            voice.keys.iter().any(|key| key.path == "tts.voice"),
+            "the chosen voice draws beside the rest",
         );
         let groups: BTreeSet<Vec<String>> =
             voice.keys.iter().map(|key| key.group.clone()).collect();

@@ -452,6 +452,8 @@ impl Workspace {
             test_catalogue_dir: Mutex::new(None),
             #[cfg(any(test, feature = "testing"))]
             test_read_aloud_dir: Mutex::new(None),
+            #[cfg(any(test, feature = "testing"))]
+            test_voice_engine: Mutex::new(None),
             update_tx,
             command_senders: Mutex::new(HashMap::new()),
             session_teardowns: Mutex::new(HashMap::new()),

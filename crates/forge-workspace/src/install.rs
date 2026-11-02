@@ -114,13 +114,12 @@ fn section_for(role: DictateRole) -> &'static str {
     }
 }
 
-/// The config key that pins one role. The speaking role has none: its model
-/// is placed by hand and the engine loads it.
+/// The config key that pins one role.
 fn key_for_role(role: DictateRole) -> Option<&'static str> {
     match role {
         DictateRole::Transcribing => Some("transcribe_model"),
         DictateRole::Normalization => Some("cleanup_model"),
-        DictateRole::Speaking => None,
+        DictateRole::Speaking => Some("speaking_model"),
     }
 }
 
@@ -260,6 +259,15 @@ impl Workspace {
         {
             return Err(DispatchError::ModelInUse { role: *role });
         }
+        // The speaking role's files are not in the dictation set: the voice
+        // service loads them whenever speech is on.
+        let speaking = crate::tts::SpeakingModel::builtin(&record.variant);
+        if speaking.is_some() && self.config_arc().tts.enabled {
+            let held = crate::tts::SpeakingModel::qwen3_tts();
+            if held.base.file == file || held.projector.file == file {
+                return Err(DispatchError::ModelInUse { role: DictateRole::Speaking });
+            }
+        }
         // The engine holds the file for a RUNNING bench too, and a download
         // in flight is writing it: removing either under the work is a file
         // the bench or the install would then load from nowhere.
@@ -277,7 +285,14 @@ impl Workspace {
                 reason: "the file is being downloaded right now".to_owned(),
             });
         }
-        if let Some(dir) = self.config_arc().dictate.models_dir() {
+        // Each role's files live beside their own models: the speaking
+        // pair under `[tts]`, everything else under `[dictate]`.
+        let dir = if speaking.is_some() {
+            self.config_arc().tts.models_dir()
+        } else {
+            self.config_arc().dictate.models_dir()
+        };
+        if let Some(dir) = dir {
             let path = dir.join(file);
             if let Err(error) = std::fs::remove_file(&path)
                 && error.kind() != std::io::ErrorKind::NotFound
@@ -296,7 +311,9 @@ impl Workspace {
                     "the model was removed from disk but its record was not; the page still lists it"
                 );
             }
-            for role in [DictateRole::Transcribing, DictateRole::Normalization] {
+            for role in
+                [DictateRole::Transcribing, DictateRole::Normalization, DictateRole::Speaking]
+            {
                 let picked = crate::store::dictate_models::active(db, role)
                     .ok()
                     .flatten()
@@ -320,8 +337,20 @@ impl Workspace {
     /// The outcome rides [`SessionUpdate::DictateModelsChanged`], the same
     /// way a catalogue check's does.
     pub(crate) fn start_install(self: &Arc<Self>, variant: String) -> Result<(), DispatchError> {
-        if !self.config_arc().dictate.enabled {
-            return Err(DispatchError::DictateOff);
+        let speaking = crate::tts::SpeakingModel::builtin(&variant);
+        match speaking {
+            Some(_) => {
+                if !self.config_arc().tts.enabled {
+                    return Err(DispatchError::VoiceOff {
+                        reason: "[tts] enabled is false".to_owned(),
+                    });
+                }
+            }
+            None => {
+                if !self.config_arc().dictate.enabled {
+                    return Err(DispatchError::DictateOff);
+                }
+            }
         }
         if self.bench_running() {
             return Err(DispatchError::BenchRunning);
@@ -336,7 +365,10 @@ impl Workspace {
         let this = Arc::clone(self);
         tokio::spawn(async move {
             let runner = Arc::clone(&this);
-            runner.run_install(variant).await;
+            match speaking {
+                Some(model) => runner.run_speaking_install(variant, model).await,
+                None => runner.run_install(variant).await,
+            }
             this.push_models();
         });
         Ok(())
@@ -493,6 +525,104 @@ impl Workspace {
             Err(join) => self.fail_install(download.filename, join.to_string()),
         }
     }
+
+    /// Fetch and verify every file the speaking variant is made of, then
+    /// record them together: a half-installed pair is not installed.
+    ///
+    /// The two files are the pair the dictation fetch already prepares
+    /// concurrently, so both digests are checked by the same path and a
+    /// wrong one stops the install by name before anything is recorded.
+    async fn run_speaking_install(self: Arc<Self>, variant: String, model: crate::tts::SpeakingModel) {
+        let Some(dir) = self.config_arc().tts.models_dir() else {
+            return self
+                .fail_install(model.base.file, "no [tts] models directory is configured".to_owned());
+        };
+        self.install_speaking_files(variant, model, dir).await;
+    }
+
+    /// [`Self::run_speaking_install`] against a directory the caller names,
+    /// so a test drives the multi-file path with local files.
+    async fn install_speaking_files(
+        self: &Arc<Self>,
+        variant: String,
+        model: crate::tts::SpeakingModel,
+        dir: std::path::PathBuf,
+    ) {
+        let base = model.base;
+        let projector = model.projector;
+        let mut cfg = forge_dictate::Config::default();
+        cfg.models_dir = Some(dir.clone());
+        cfg.digest_cache_dir =
+            forge_sdk::app_support_dir().ok().map(|d| d.join("dictate-digests"));
+        cfg.asr_model = base.clone();
+        cfg.normalizer = Some(projector.clone());
+
+        self.set_install_file(&base.file, base.size);
+        // The file is named: the page's line can say what is being fetched
+        // before the first byte moves.
+        self.push_models();
+        let this = Arc::clone(&self);
+        let prepared = tokio::task::spawn_blocking(move || {
+            let last = Cell::new(u64::MAX);
+            forge_dictate::prepare(&cfg, |progress| {
+                match progress {
+                    Progress::Downloading { file, downloaded, total } => {
+                        let percent =
+                            downloaded.saturating_mul(100).checked_div(total).unwrap_or(0);
+                        if percent != last.get() {
+                            last.set(percent);
+                            this.note_download(&file, downloaded, total);
+                            this.push_models();
+                        }
+                    }
+                    Progress::Verifying { file } => {
+                        this.note_download(&file, 0, 0);
+                        this.push_models();
+                    }
+                    Progress::Ready { .. } => {}
+                }
+                std::ops::ControlFlow::Continue(())
+            })
+        })
+        .await;
+
+        match prepared {
+            Ok(Ok(())) => {
+                // Both files verified: record both, and take the bytes back
+                // if either record cannot be written - a file the page can
+                // neither list nor remove is litter.
+                let recorded = [
+                    self.record_installed(&InstalledModel {
+                        variant: variant.clone(),
+                        file: base.file.clone(),
+                        url: base.url.clone(),
+                        size: base.size,
+                        facts: base.facts.clone(),
+                        at: rfc3339_now(),
+                    }),
+                    self.record_installed(&InstalledModel {
+                        variant,
+                        file: projector.file.clone(),
+                        url: projector.url.clone(),
+                        size: projector.size,
+                        facts: projector.facts.clone(),
+                        at: rfc3339_now(),
+                    }),
+                ]
+                .into_iter()
+                .all(|recorded| recorded);
+                if !recorded {
+                    let _ = std::fs::remove_file(dir.join(&base.file));
+                    let _ = std::fs::remove_file(dir.join(&projector.file));
+                    self.fail_install(base.file, "the download could not be recorded".to_owned());
+                    return;
+                }
+                *self.dictate_install.lock() = InstallState::Idle;
+            }
+            Ok(Err(error)) => self.fail_install(base.file, error.to_string()),
+            Err(join) => self.fail_install(base.file, join.to_string()),
+        }
+    }
 }
 
 /// Build and load one engine off the runtime thread, answering it or the
@@ -559,7 +689,7 @@ async fn spec_for_entry(
             // saying so rather than a guess about the feed.
             runtime: Some(match entry.kind {
                 EntryKind::Asr => "transcribe.cpp".to_owned(),
-                EntryKind::Normalizer => "llama.cpp".to_owned(),
+                EntryKind::Normalizer | EntryKind::Speaking => "llama.cpp".to_owned(),
             }),
         },
     ))
@@ -628,7 +758,7 @@ impl Workspace {
     /// A failed read reads as no pick - the role falls to the pin - and it
     /// says so, because a corrupt row silently reverting the pick would look
     /// like a pick that never happened.
-    fn active_choice(&self, role: DictateRole) -> Option<ActiveChoice> {
+    pub(crate) fn active_choice(&self, role: DictateRole) -> Option<ActiveChoice> {
         let db = self.db.lock();
         let db = db.as_ref()?;
         match crate::store::dictate_models::active(db, role) {
@@ -731,13 +861,22 @@ impl Workspace {
         role: DictateRole,
         file: String,
     ) -> Result<(), DispatchError> {
-        if !self.config_arc().dictate.enabled {
+        let speaking = role == DictateRole::Speaking;
+        if speaking {
+            if !self.config_arc().tts.enabled {
+                return Err(DispatchError::VoiceOff { reason: "[tts] enabled is false".to_owned() });
+            }
+        } else if !self.config_arc().dictate.enabled {
             return Err(DispatchError::DictateOff);
         }
         if let Some(key) = self.pinning_key(role) {
             return Err(DispatchError::PinnedRole { section: section_for(role), key });
         }
-        if let Some(holder) = self.dictate_runtime.lock().live_holder() {
+        // A speaking swap builds the voice service's engine, which no
+        // dictation take holds: the guard belongs to the engine a take runs.
+        if !speaking
+            && let Some(holder) = self.dictate_runtime.lock().live_holder()
+        {
             return Err(DispatchError::TakeLive { holder });
         }
         if self.bench_running() {
@@ -753,7 +892,11 @@ impl Workspace {
         let this = Arc::clone(self);
         tokio::spawn(async move {
             let runner = Arc::clone(&this);
-            runner.run_activate(role, file).await;
+            if speaking {
+                runner.run_voice_activate(role, file).await;
+            } else {
+                runner.run_activate(role, file).await;
+            }
             this.push_models();
         });
         Ok(())
@@ -766,13 +909,20 @@ impl Workspace {
         self: &Arc<Self>,
         role: DictateRole,
     ) -> Result<(), DispatchError> {
-        if !self.config_arc().dictate.enabled {
+        let speaking = role == DictateRole::Speaking;
+        if speaking {
+            if !self.config_arc().tts.enabled {
+                return Err(DispatchError::VoiceOff { reason: "[tts] enabled is false".to_owned() });
+            }
+        } else if !self.config_arc().dictate.enabled {
             return Err(DispatchError::DictateOff);
         }
         if let Some(key) = self.pinning_key(role) {
             return Err(DispatchError::PinnedRole { section: section_for(role), key });
         }
-        if let Some(holder) = self.dictate_runtime.lock().live_holder() {
+        if !speaking
+            && let Some(holder) = self.dictate_runtime.lock().live_holder()
+        {
             return Err(DispatchError::TakeLive { holder });
         }
         if self.bench_running() {
@@ -791,20 +941,23 @@ impl Workspace {
         let this = Arc::clone(self);
         tokio::spawn(async move {
             let runner = Arc::clone(&this);
-            runner.run_deactivate(role, pin).await;
+            if speaking {
+                runner.run_voice_deactivate(role, pin).await;
+            } else {
+                runner.run_deactivate(role, pin).await;
+            }
             this.push_models();
         });
         Ok(())
     }
 
-    /// The config key that pins one role, when one does. The speaking role
-    /// has none: its model is placed by hand and the engine loads it.
+    /// The config key that pins one role, when one does.
     fn pinning_key(&self, role: DictateRole) -> Option<String> {
         let config = self.config_arc();
         let pinned = match role {
             DictateRole::Transcribing => config.dictate.transcribe_model.as_ref(),
             DictateRole::Normalization => config.dictate.cleanup_model.as_ref(),
-            DictateRole::Speaking => None,
+            DictateRole::Speaking => config.tts.speaking_model.as_ref(),
         };
         pinned.and_then(|_| key_for_role(role).map(str::to_owned))
     }
@@ -814,7 +967,7 @@ impl Workspace {
     fn pin_for(&self, role: DictateRole) -> Option<ModelSpec> {
         let config = self.config_arc();
         if role == DictateRole::Speaking {
-            return Some(config.tts.pin());
+            return Some(crate::tts::SpeakingModel::qwen3_tts().base);
         }
         config
             .dictate
@@ -848,6 +1001,72 @@ impl Workspace {
             }
             Err(reason) => self.fail_activate(role, file, reason),
         }
+    }
+
+    /// Load one installed speaking model and swap the voice service onto
+    /// it. The old engine keeps serving anything already rendering.
+    async fn run_voice_activate(self: Arc<Self>, role: DictateRole, file: String) {
+        let Some(installed) = self
+            .installed_models()
+            .into_iter()
+            .find(|model| model.file == file && model.variant == crate::tts::SPEAKING_VARIANT)
+        else {
+            return self.fail_activate(
+                role,
+                file,
+                "no installed speaking model has that file".to_owned(),
+            );
+        };
+        let variant = installed.variant.clone();
+        match self.swap_voice_to(&variant).await {
+            Ok(at) => {
+                self.record_pick(role, &variant, &at);
+                *self.dictate_activate.lock() = ActivateState::Idle;
+            }
+            Err(reason) => self.fail_activate(role, file, reason),
+        }
+    }
+
+    /// Swap the speaking role back to its compiled model and drop the pick.
+    async fn run_voice_deactivate(self: Arc<Self>, role: DictateRole, pin: ModelSpec) {
+        let file = pin.file.clone();
+        match self.swap_voice_to(crate::tts::SPEAKING_VARIANT).await {
+            Ok(_) => {
+                self.clear_pick(role);
+                *self.dictate_activate.lock() = ActivateState::Idle;
+            }
+            Err(reason) => self.fail_activate(role, file, reason),
+        }
+    }
+
+    /// Build and load one speaking variant's engine, then swap it into the
+    /// voice service: the same build-then-swap order dictation keeps, so a
+    /// model that will not load leaves the previous engine serving.
+    async fn swap_voice_to(self: &Arc<Self>, variant: &str) -> Result<String, String> {
+        let Some(model) = crate::tts::SpeakingModel::builtin(variant) else {
+            return Err(format!("the speaking catalogue carries no variant {variant}"));
+        };
+        let Some(dir) = self.config_arc().tts.models_dir() else {
+            return Err("no [tts] models directory is configured".to_owned());
+        };
+        // A test swaps a stub in place of the real weights; the swap and
+        // the pick's bookkeeping are what it is exercising.
+        #[cfg(any(test, feature = "testing"))]
+        let stub = self.test_voice_engine.lock().clone();
+        #[cfg(any(test, feature = "testing"))]
+        if let Some(engine) = stub {
+            self.voice_service().replace_engine(engine).await;
+            return Ok(rfc3339_now());
+        }
+        let files = model.files(&dir);
+        let engine = tokio::task::spawn_blocking(move || forge_tts::QwenTts::load(&files))
+            .await
+            .map_err(|join| join.to_string())?
+            .map_err(|error| error.to_string())?;
+        self.voice_service()
+            .replace_engine(Arc::new(engine) as Arc<dyn forge_tts::Engine>)
+            .await;
+        Ok(rfc3339_now())
     }
 
     /// Swap the role back to its compiled default and drop the pick.
@@ -2002,6 +2221,286 @@ mod tests_install {
             choice.map(|choice| choice.variant),
             Some("picked".to_owned()),
             "the pick is dropped only once the swap lands"
+        );
+    }
+
+    // ---- the speaking role ----
+
+    /// A workspace with `[tts]` on, a models directory of its own, and a
+    /// store, so an install or an activation has somewhere to land.
+    struct VoiceFixture {
+        ws: Arc<Workspace>,
+        updates: tokio::sync::mpsc::UnboundedReceiver<crate::SeatUpdate>,
+        models: tempfile::TempDir,
+        _store: tempfile::TempDir,
+    }
+
+    fn voice_fixture() -> VoiceFixture {
+        voice_fixture_built(|_| {})
+    }
+
+    /// [`voice_fixture`] with anything else a test needs set on the config
+    /// before the workspace is built.
+    fn voice_fixture_built(
+        configure: impl FnOnce(&mut crate::config::LoadedConfig),
+    ) -> VoiceFixture {
+        let config_dir = tempfile::tempdir().expect("a config dir");
+        let models = tempfile::tempdir().expect("a models dir");
+        let store = tempfile::tempdir().expect("a store dir");
+        let mut config = crate::config::LoadedConfig::empty_for_test();
+        config.tts.enabled = true;
+        config.tts.models_dir = Some(models.path().to_string_lossy().into_owned());
+        configure(&mut config);
+        let (ws, updates) = Workspace::testing_stub_with_config(
+            config_dir.path().to_path_buf(),
+            config,
+        )
+        .expect("the stub builds");
+        ws.install_db_for_test(
+            crate::store::Db::open(&store.path().join("db.redb")).expect("the store opens"),
+        );
+        VoiceFixture { ws, updates, models, _store: store }
+    }
+
+    fn digest(bytes: &[u8]) -> String {
+        use sha2::Digest as _;
+        let mut hasher = sha2::Sha256::new();
+        hasher.update(bytes);
+        hex::encode(hasher.finalize())
+    }
+
+    /// A two-file speaking model served from a loopback, with the digests
+    /// the bytes really carry.
+    fn speaking_model_at(base: &str, name: &str, bytes: [&[u8]; 2]) -> crate::tts::SpeakingModel {
+        let spec = |part: &str, bytes: &[u8]| ModelSpec {
+            file: format!("{name}-{part}.gguf"),
+            url: format!("{base}/weights/{name}-{part}.gguf"),
+            size: u64::try_from(bytes.len()).expect("a small file"),
+            sha256: Some(digest(bytes)),
+            facts: ModelFacts::default(),
+        };
+        crate::tts::SpeakingModel { base: spec("weights", bytes[0]), projector: spec("projector", bytes[1]) }
+    }
+
+    /// **Both files are verified before either is recorded.** A pair whose
+    /// projector disagrees with its digest lands failed with nothing
+    /// recorded: a half-installed speaking model is not installed.
+    #[tokio::test]
+    async fn a_speaking_install_verifies_both_files_before_recording_them() {
+        let VoiceFixture { ws, models, .. } = voice_fixture();
+        let bytes: [&[u8]; 2] = [b"weights", b"projector"];
+        let base = serve(vec![
+            ("/weights/voice-weights.gguf", 200, bytes[0].to_vec()),
+            ("/weights/voice-projector.gguf", 200, bytes[1].to_vec()),
+        ]);
+        let model = speaking_model_at(&base, "voice", bytes);
+
+        ws.install_speaking_files(
+            crate::tts::SPEAKING_VARIANT.to_owned(),
+            model,
+            models.path().to_path_buf(),
+        )
+        .await;
+
+        assert!(matches!(ws.dictate_install(), InstallState::Idle), "got {:?}", ws.dictate_install());
+        let installed = ws.installed_models();
+        assert_eq!(installed.len(), 2, "one record per file, written together");
+        assert!(
+            installed.iter().all(|record| record.variant == crate::tts::SPEAKING_VARIANT),
+            "both records carry the variant `[tts] speaking_model` names"
+        );
+        assert!(models.path().join("voice-weights.gguf").is_file());
+        assert!(models.path().join("voice-projector.gguf").is_file());
+    }
+
+    /// A digest the bytes do not match fails the install by name and
+    /// records nothing.
+    #[tokio::test]
+    async fn a_speaking_install_refuses_a_file_whose_digest_disagrees() {
+        let VoiceFixture { ws, models, .. } = voice_fixture();
+        let bytes: [&[u8]; 2] = [b"weights", b"projector"];
+        let base = serve(vec![
+            ("/weights/voice-weights.gguf", 200, bytes[0].to_vec()),
+            ("/weights/voice-projector.gguf", 200, bytes[1].to_vec()),
+        ]);
+        let mut model = speaking_model_at(&base, "voice", bytes);
+        model.projector.sha256 = Some("00".repeat(32));
+
+        ws.install_speaking_files(
+            crate::tts::SPEAKING_VARIANT.to_owned(),
+            model,
+            models.path().to_path_buf(),
+        )
+        .await;
+
+        let InstallState::Failed { reason, .. } = ws.dictate_install() else {
+            panic!("a wrong digest must fail the install, got {:?}", ws.dictate_install());
+        };
+        assert!(reason.contains("projector"), "the failure names the file, got: {reason}");
+        assert!(ws.installed_models().is_empty(), "nothing is recorded for a failed pair");
+    }
+
+    /// The engine a test swaps in, so an activation never loads weights.
+    struct StubVoiceEngine;
+
+    impl forge_tts::Engine for StubVoiceEngine {
+        fn speak(
+            &self,
+            _request: forge_tts::SpeakRequest,
+        ) -> tokio::sync::mpsc::Receiver<Result<forge_tts::Chunk, forge_tts::Error>> {
+            let (_sender, receiver) = tokio::sync::mpsc::channel(1);
+            receiver
+        }
+    }
+
+    /// Put the built-in speaking pair in the installed set, as an install
+    /// of it would.
+    fn record_speaking_model(ws: &Workspace) {
+        let model = crate::tts::SpeakingModel::qwen3_tts();
+        for spec in [model.base, model.projector] {
+            ws.record_installed(&InstalledModel {
+                variant: crate::tts::SPEAKING_VARIANT.to_owned(),
+                file: spec.file,
+                url: spec.url,
+                size: spec.size,
+                facts: spec.facts,
+                at: "2026-11-02T00:00:00Z".to_owned(),
+            });
+        }
+    }
+
+    /// The speaking pick round-trips: activation records it and the read
+    /// says the role came from the installed set; deactivation drops it and
+    /// the read answers the compiled pin again.
+    #[tokio::test]
+    async fn activating_and_deactivating_the_speaking_role_round_trips() {
+        let mut fixture = voice_fixture();
+        record_speaking_model(&fixture.ws);
+        fixture
+            .ws
+            .test_voice_engine
+            .lock()
+            .replace(Arc::new(StubVoiceEngine) as Arc<dyn forge_tts::Engine>);
+        let base = crate::tts::SpeakingModel::qwen3_tts().base.file;
+
+        fixture
+            .ws
+            .dispatch(Command::DictateActivate {
+                role: DictateRole::Speaking,
+                file: base.clone(),
+            })
+            .expect("the activation dispatches");
+        let landed = await_models(&mut fixture.updates).await;
+        assert!(matches!(landed.activate, ActivateState::Idle), "got {:?}", landed.activate);
+        let speaking = fixture.ws.voices().speaking.expect("the role resolves");
+        assert_eq!(
+            speaking.from,
+            ActiveFrom::Installed { variant: crate::tts::SPEAKING_VARIANT.to_owned() },
+            "the role now answers the pick"
+        );
+
+        fixture
+            .ws
+            .dispatch(Command::DictateDeactivate { role: DictateRole::Speaking })
+            .expect("the deactivation dispatches");
+        let landed = await_models(&mut fixture.updates).await;
+        assert!(matches!(landed.activate, ActivateState::Idle), "got {:?}", landed.activate);
+        let speaking = fixture.ws.voices().speaking.expect("the role resolves");
+        assert_eq!(speaking.from, ActiveFrom::Pin, "the pick went with the deactivation");
+        assert_eq!(
+            fixture.ws.active_choice(DictateRole::Speaking),
+            None,
+            "and the store answers no pick for the next boot"
+        );
+    }
+
+    /// Records every render's own voice, so an audition's clip is the thing
+    /// asserted rather than the audio it produced.
+    struct RecordingVoiceEngine {
+        voices: Arc<std::sync::Mutex<Vec<Option<Arc<forge_tts::VoiceReference>>>>>,
+    }
+
+    impl forge_tts::Engine for RecordingVoiceEngine {
+        fn speak(
+            &self,
+            request: forge_tts::SpeakRequest,
+        ) -> tokio::sync::mpsc::Receiver<Result<forge_tts::Chunk, forge_tts::Error>> {
+            self.voices.lock().expect("unpoisoned").push(request.voice);
+            let (sender, receiver) = tokio::sync::mpsc::channel(2);
+            let _ = sender.try_send(Ok(forge_tts::Chunk {
+                seq: 0,
+                sample_rate: 24_000,
+                pcm: vec![1, 2, 3],
+            }));
+            receiver
+        }
+    }
+
+    /// **A preview is the chosen clip through the seat's own stream.** It
+    /// names one voice from the installed public corpus, renders the fixed
+    /// line in it, and needs a listener rather than a playback path of its
+    /// own.
+    #[tokio::test]
+    async fn a_preview_renders_the_chosen_clip_through_the_seat() {
+        let VoiceFixture { ws, models, .. } = voice_fixture();
+        forge_dictate::bench::install_public_corpus(models.path()).expect("the corpus installs");
+        let voices = Arc::new(std::sync::Mutex::new(Vec::new()));
+        ws.install_voice_engine_for_test(Arc::new(RecordingVoiceEngine {
+            voices: Arc::clone(&voices),
+        }));
+        let seat = crate::SessionSlot::new("Org", "project", "lead");
+
+        let err = ws
+            .dispatch(Command::VoicePreview { key: seat.clone(), voice: "6930".to_owned() })
+            .expect_err("no listener, nowhere to play");
+        assert!(
+            matches!(&err, DispatchError::VoiceOff { reason } if reason.contains("switch")),
+            "the refusal says to turn the seat's voice on, got: {err:?}"
+        );
+
+        ws.voice_service().set_listening(&seat, 1, true, false);
+        ws.dispatch(Command::VoicePreview { key: seat.clone(), voice: "6930".to_owned() })
+            .expect("the preview dispatches");
+        for _ in 0..200 {
+            if !voices.lock().expect("unpoisoned").is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        let heard = voices.lock().expect("unpoisoned").clone();
+        assert_eq!(heard.len(), 1, "the fixed line rendered once");
+        let voice = heard[0].clone().expect("the preview rendered in the chosen clip");
+        assert_eq!(voice.sample_rate, forge_dictate::SAMPLE_RATE, "the clip's own rate");
+        assert!(!voice.pcm.is_empty(), "and its audio");
+
+        let err = ws
+            .dispatch(Command::VoicePreview { key: seat, voice: "nobody".to_owned() })
+            .expect_err("no clip carries that voice");
+        assert!(
+            matches!(&err, DispatchError::VoiceUnknown { voice } if voice == "nobody"),
+            "the refusal names the voice, got: {err:?}"
+        );
+    }
+
+    /// A `[tts] speaking_model` key holds the role: the runtime cannot move
+    /// it, and the refusal names the key.
+    #[tokio::test]
+    async fn an_activation_on_a_pinned_speaking_role_is_refused_by_name() {
+        let fixture = voice_fixture_built(|config| {
+            config.tts.speaking_model = Some(crate::tts::SPEAKING_VARIANT.to_owned());
+        });
+        record_speaking_model(&fixture.ws);
+        let base = crate::tts::SpeakingModel::qwen3_tts().base.file;
+
+        let err = fixture
+            .ws
+            .dispatch(Command::DictateActivate { role: DictateRole::Speaking, file: base })
+            .expect_err("forge.toml pins the role");
+
+        assert!(
+            matches!(&err, DispatchError::PinnedRole { section, key }
+                if *section == "tts" && key == "speaking_model"),
+            "the refusal names the [tts] key, got: {err:?}"
         );
     }
 }

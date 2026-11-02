@@ -623,10 +623,12 @@ impl Workspace {
                 reason: "[dictate] enabled is false, so the recognizer half cannot run".to_owned(),
             });
         }
-        let Some(files) = config.tts.files() else {
-            return Err(DispatchError::VoiceOff {
-                reason: "no models directory resolves".to_owned(),
-            });
+        let files = match self
+            .resolved_speaking()
+            .and_then(|resolved| self.speaking_files(&resolved))
+        {
+            Ok(files) => files,
+            Err(reason) => return Err(DispatchError::VoiceOff { reason }),
         };
         self.claim_bench()?;
         if let Some(holder) = self.dictate_runtime.lock().live_holder() {

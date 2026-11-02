@@ -246,7 +246,10 @@ pub(crate) fn row_for(entry: &CatalogueEntry) -> CatalogueRow {
             forge_dictate::catalogue::EntryKind::Normalizer => {
                 entry.published_repo.as_ref().map(|repo| format!("https://huggingface.co/{repo}"))
             }
-            forge_dictate::catalogue::EntryKind::Asr => None,
+            // A speaking entry is forge's own: its files carry their URLs,
+            // and there is no page behind the row.
+            forge_dictate::catalogue::EntryKind::Asr
+            | forge_dictate::catalogue::EntryKind::Speaking => None,
         },
         download_count: entry.download_count,
     }
@@ -472,21 +475,26 @@ impl crate::Workspace {
             state.catalogue.as_ref().map_or(&[], |catalogue| catalogue.entries.as_slice());
         let mut in_use =
             if settings.enabled { in_use(entries, &active, &preflight) } else { Vec::new() };
-        if self.voice_enabled() {
-            let pin = config.tts.pin();
-            for row in &self.voices().snapshot.models {
-                in_use.push(InUseModel {
-                    role: row.role,
-                    file: row.file.clone(),
-                    size: pin.size,
-                    sha256: pin.sha256.clone(),
-                    state: row.state.clone(),
-                    facts: pin.facts.clone(),
-                    catalogue: None,
-                    from: crate::install::ActiveFrom::Pin,
-                    at: None,
-                });
-            }
+        if self.voice_enabled()
+            && let Ok(resolved) = self.resolved_speaking()
+        {
+            let state = if self.speaking_files_present(&resolved) {
+                DictateModelState::Ready
+            } else {
+                DictateModelState::Pending
+            };
+            let spec = resolved.model.base;
+            in_use.push(InUseModel {
+                role: DictateRole::Speaking,
+                file: spec.file,
+                size: spec.size,
+                sha256: spec.sha256,
+                state,
+                facts: spec.facts,
+                catalogue: None,
+                from: resolved.from,
+                at: resolved.at,
+            });
         }
 
         DictateModelsSnapshot {
@@ -1276,6 +1284,45 @@ pub(crate) mod tests_catalogue_view {
             "no bench is running on a fresh read"
         );
         assert!(view.results.is_empty(), "and nothing has been measured yet");
+    }
+
+    /// **The speaking role draws like the dictation roles**: its spec's
+    /// facts, its own live state, and where the choice came from - not a
+    /// hand-placed note beside a waiting chip.
+    #[test]
+    fn the_speaking_role_draws_in_the_models_read() {
+        let config_dir = tempfile::tempdir().expect("a config dir");
+        let models = tempfile::tempdir().expect("a models dir");
+        let mut config = crate::config::LoadedConfig::empty_for_test();
+        config.tts.enabled = true;
+        config.tts.models_dir = Some(models.path().to_string_lossy().into_owned());
+        let (ws, _updates) =
+            Workspace::testing_stub_with_config(config_dir.path().to_path_buf(), config)
+                .expect("the stub builds");
+        let model = crate::tts::SpeakingModel::qwen3_tts();
+        std::fs::write(models.path().join(&model.base.file), b"weights").expect("write");
+        std::fs::write(models.path().join(&model.projector.file), b"projector").expect("write");
+
+        let read = ws.dictate_models();
+
+        let row = read
+            .in_use
+            .iter()
+            .find(|model| model.role == crate::dictate::DictateRole::Speaking)
+            .expect("the speaking role is in use when [tts] is on");
+        assert_eq!(row.file, model.base.file);
+        assert_eq!(row.size, model.base.size, "the spec's own byte length");
+        assert_eq!(row.sha256, model.base.sha256, "the spec's own digest");
+        assert_eq!(
+            row.state,
+            crate::dictate::DictateModelState::Ready,
+            "both files on disk is the role's ready state"
+        );
+        assert_eq!(row.from, crate::install::ActiveFrom::Pin, "nothing moved the role");
+        assert!(row.catalogue.is_none(), "no feed carries a speaking entry; the pin does");
+
+        let speaking = ws.voices().speaking.expect("the role resolves");
+        assert_eq!(speaking.variant, crate::tts::SPEAKING_VARIANT);
     }
 
     /// With `[dictate]` off the page reads no models in use and no

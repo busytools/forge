@@ -13,16 +13,27 @@ use tokio::sync::{mpsc, oneshot};
 const IDLE_RELEASE: Duration = Duration::from_secs(5 * 60);
 
 /// What one utterance renders with, from the `[tts]` section.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct VoiceSettings {
     pub enabled: bool,
     pub max_utterance_seconds: u64,
     pub language: Option<String>,
+    /// The speaker reference every utterance is rendered in. `None` is the
+    /// model's own default voice.
+    pub voice: Option<Arc<forge_tts::VoiceReference>>,
+    /// Why a configured `[tts] voice` cannot be used, when it cannot.
+    pub voice_error: Option<String>,
 }
 
 impl Default for VoiceSettings {
     fn default() -> Self {
-        Self { enabled: true, max_utterance_seconds: 120, language: None }
+        Self {
+            enabled: true,
+            max_utterance_seconds: 120,
+            language: None,
+            voice: None,
+            voice_error: None,
+        }
     }
 }
 
@@ -62,6 +73,11 @@ pub const LISTENING_NOTE: &str = "The user is listening to this seat.\n\nAnythin
 /// What the session is told when the last client leaves.
 pub const NOT_LISTENING_NOTE: &str = "The user has stopped listening to this seat.";
 
+/// The one line a voice preview reads: fixed, so two voices are compared on
+/// the same words.
+pub const PREVIEW_LINE: &str =
+    "This is the voice, reading a short line so it can be heard before it is chosen.";
+
 /// The envelope a note rides, so a view draws it as information rather than
 /// as the reader's own turn.
 fn note_envelope(text: &str) -> String {
@@ -98,6 +114,7 @@ struct Seat {
 
 struct Job {
     text: String,
+    voice: Option<Arc<forge_tts::VoiceReference>>,
     engine: Arc<dyn Engine>,
     first: oneshot::Sender<Result<(), SayError>>,
 }
@@ -123,6 +140,30 @@ impl VoiceService {
     /// rendered, so a named engine failure reaches the caller rather than
     /// disappearing into a playback queue.
     pub async fn say(&self, seat: &SessionSlot, text: String) -> Result<(), SayError> {
+        if let Some(error) = &self.settings.voice_error {
+            return Err(SayError::Engine(error.clone()));
+        }
+        self.enqueue(seat, text, self.settings.voice.clone()).await
+    }
+
+    /// Queue one utterance in a named voice, without changing the
+    /// configured one: the settings page's audition of a speaker before it
+    /// is chosen.
+    pub async fn preview(
+        &self,
+        seat: &SessionSlot,
+        text: String,
+        voice: Arc<forge_tts::VoiceReference>,
+    ) -> Result<(), SayError> {
+        self.enqueue(seat, text, Some(voice)).await
+    }
+
+    async fn enqueue(
+        &self,
+        seat: &SessionSlot,
+        text: String,
+        voice: Option<Arc<forge_tts::VoiceReference>>,
+    ) -> Result<(), SayError> {
         if !self.settings.enabled {
             return Err(SayError::Disabled);
         }
@@ -138,7 +179,7 @@ impl VoiceService {
 
         let engine = self.engine().await?;
         let (first, outcome) = oneshot::channel();
-        queue.send(Job { text, engine, first }).map_err(|_| SayError::NotReady)?;
+        queue.send(Job { text, voice, engine, first }).map_err(|_| SayError::NotReady)?;
         outcome.await.map_err(|_| SayError::NotReady)?
     }
 
@@ -341,6 +382,13 @@ impl VoiceService {
         Ok(engine)
     }
 
+    /// Swap the loaded engine for a newly built one. A render that is
+    /// already holding the old engine keeps it until it finishes, because
+    /// each holds its own `Arc`.
+    pub(crate) async fn replace_engine(&self, engine: Arc<dyn Engine>) {
+        *self.engine.lock().await = Some(engine);
+    }
+
     /// The seat's render loop. It stops the moment the last listener leaves,
     /// so a queued utterance is not rendered into a seat nobody hears.
     fn spawn_queue(
@@ -375,11 +423,15 @@ impl crate::Workspace {
     pub(crate) fn voice_service(self: &Arc<Self>) -> Arc<VoiceService> {
         self.voice
             .get_or_init(|| {
-                let config = self.config_arc();
-                let files = config.tts.files();
+                // The loader resolves the role at each load, so an
+                // activation's pick is what the next engine is built from.
+                let workspace = Arc::downgrade(self);
                 let loader: Loader = Arc::new(move || {
-                    let files =
-                        files.clone().ok_or_else(|| "no models directory resolves".to_owned())?;
+                    let workspace = workspace
+                        .upgrade()
+                        .ok_or_else(|| "the workspace is gone".to_owned())?;
+                    let resolved = workspace.resolved_speaking()?;
+                    let files = workspace.speaking_files(&resolved)?;
                     let engine =
                         forge_tts::QwenTts::load(&files).map_err(|error| error.to_string())?;
                     Ok(Arc::new(engine) as Arc<dyn Engine>)
@@ -448,10 +500,27 @@ impl crate::Workspace {
 
     fn build_voice_service(self: &Arc<Self>, loader: Loader) -> VoiceService {
         let config = self.config_arc();
+        // The chosen voice is read once, when the service is built: its
+        // clip is the same one every utterance renders with.
+        let (voice, voice_error) = match config.tts.voice.as_deref() {
+            Some(id) if config.tts.enabled => match crate::tts::unknown_voice(
+                id,
+                &self.installed_voices(),
+            ) {
+                Some(error) => (None, Some(error)),
+                None => match self.voice_audio(id) {
+                    Ok(audio) => (Some(Arc::new(audio)), None),
+                    Err(error) => (None, Some(error)),
+                },
+            },
+            _ => (None, None),
+        };
         let settings = VoiceSettings {
             enabled: config.tts.enabled,
             max_utterance_seconds: config.tts.max_utterance_seconds,
             language: config.tts.language.clone(),
+            voice,
+            voice_error,
         };
         VoiceService::new(
             loader,
@@ -535,14 +604,17 @@ async fn render(
     live: &AtomicUsize,
     mut seq: u32,
 ) -> u32 {
-    let Job { text, engine, first } = job;
+    let Job { text, voice, engine, first } = job;
     let mut first = Some(first);
     for sentence in forge_tts::sentences(&text) {
         if live.load(Ordering::SeqCst) == 0 {
             return seq;
         }
-        let mut chunks =
-            engine.speak(SpeakRequest { text: sentence, language: settings.language.clone() });
+        let mut chunks = engine.speak(SpeakRequest {
+            text: sentence,
+            language: settings.language.clone(),
+            voice: voice.clone(),
+        });
         while let Some(result) = chunks.recv().await {
             if live.load(Ordering::SeqCst) == 0 {
                 return seq;

@@ -866,6 +866,14 @@ pub enum Command {
         #[serde(skip)]
         initiator: Option<u64>,
     },
+    /// Audition one voice through the seat's own voice stream, without
+    /// changing the configured one. Refused when no client is listening to
+    /// the seat: a preview is heard, not saved.
+    VoicePreview {
+        key: SessionSlot,
+        /// The speaker id the public corpus carries.
+        voice: String,
+    },
 }
 
 impl Command {
@@ -890,7 +898,8 @@ impl Command {
             | Self::RespondQuestion { key, .. }
             | Self::SetDictateOverride { key, .. }
             | Self::ResetDictateOverrides { key }
-            | Self::VoiceMode { key, .. } => Some(key),
+            | Self::VoiceMode { key, .. }
+            | Self::VoicePreview { key, .. } => Some(key),
             Self::SpawnProject { .. }
             | Self::DictateStream { .. }
             | Self::DictateStop { .. }
@@ -1211,6 +1220,9 @@ impl std::fmt::Debug for Command {
             }
             Self::VoiceMode { key, on, .. } => {
                 f.debug_struct("VoiceMode").field("key", key).field("on", on).finish()
+            }
+            Self::VoicePreview { key, voice } => {
+                f.debug_struct("VoicePreview").field("key", key).field("voice", voice).finish()
             }
         }
     }
@@ -2607,6 +2619,9 @@ pub enum DispatchError {
     /// model files resolving: there is nothing to speak with.
     #[error("speech is off: {reason}")]
     VoiceOff { reason: String },
+    /// A voice was named that the installed public corpus does not carry.
+    #[error("[tts] voice names {voice}, which the installed public corpus does not carry")]
+    VoiceUnknown { voice: String },
     /// An install is already running: one at a time, like a check.
     #[error("a model install is already running")]
     Installing,

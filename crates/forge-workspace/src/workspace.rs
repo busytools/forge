@@ -752,6 +752,10 @@ pub struct Workspace {
     /// the real app-support dir. Not present in production builds.
     #[cfg(any(test, feature = "testing"))]
     pub(crate) test_read_aloud_dir: Mutex<Option<std::path::PathBuf>>,
+    /// A test's own speaking engine, so an activation swaps without
+    /// loading the real weights. Not present in production builds.
+    #[cfg(any(test, feature = "testing"))]
+    pub(crate) test_voice_engine: Mutex<Option<Arc<dyn forge_tts::Engine>>>,
     /// Fan-out [`SessionUpdate`] sender: every producer inside the workspace
     /// holds a clone, and it hands each update to every subscriber.
     /// `pub(crate)` so the impl block in [`crate::crons`] can reach it.
@@ -2447,6 +2451,8 @@ impl Workspace {
             test_catalogue_dir: Mutex::new(None),
             #[cfg(any(test, feature = "testing"))]
             test_read_aloud_dir: Mutex::new(None),
+            #[cfg(any(test, feature = "testing"))]
+            test_voice_engine: Mutex::new(None),
             update_tx,
             command_senders: Mutex::new(HashMap::new()),
             session_teardowns: Mutex::new(HashMap::new()),
@@ -6434,6 +6440,43 @@ impl Workspace {
                     let listeners = u32::try_from(voice.listeners(&key)).unwrap_or(u32::MAX);
                     let _ =
                         self.update_sender().send(SessionUpdate::VoiceModeState { key, listeners });
+                    return Ok(());
+                }
+                // A preview is the seat's own stream with one line in
+                // another voice, so it needs a client listening there
+                // rather than a playback path of its own.
+                Command::VoicePreview { key, voice } => {
+                    if !self.config_arc().tts.enabled {
+                        return Err(DispatchError::VoiceOff {
+                            reason: "[tts] enabled is false".to_owned(),
+                        });
+                    }
+                    let audio = self
+                        .voice_audio(&voice)
+                        .map_err(|_| DispatchError::VoiceUnknown { voice: voice.clone() })?;
+                    let service = self.voice_service();
+                    if service.listeners(&key) == 0 {
+                        return Err(DispatchError::VoiceOff {
+                            reason: "no client has voice on for this seat; turn its switch on to hear a preview".to_owned(),
+                        });
+                    }
+                    // The render is the seat's own queue: the dispatch
+                    // answers that the audition started, and a render
+                    // failure is logged rather than replacing the audio.
+                    let seat = key.clone();
+                    tokio::spawn(async move {
+                        if let Err(error) = service
+                            .preview(&seat, crate::voice::PREVIEW_LINE.to_owned(), std::sync::Arc::new(audio))
+                            .await
+                        {
+                            tracing::warn!(
+                                event_name = "voice_preview_failed",
+                                slot = %seat.display(),
+                                %error,
+                                "the voice preview did not render"
+                            );
+                        }
+                    });
                     return Ok(());
                 }
                 _ => {}

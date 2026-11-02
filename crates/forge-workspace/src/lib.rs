@@ -113,7 +113,7 @@ pub use protocol::{
     SessionUpdate, TurnErrorClass,
 };
 pub use target::{ProjectKey, SessionSlot, SessionTarget};
-pub use tts::{TtsSettings, TtsSnapshot, TtsView};
+pub use tts::{SpeakingView, TtsSettings, TtsView, VoiceChoice};
 
 /// Initialise llama.cpp's backend registry once, from the boot path, before
 /// any render or dictation preflight can start.
