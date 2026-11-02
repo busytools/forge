@@ -448,9 +448,10 @@ asks nothing, so a re-attach or a re-measure does not move it. The host
 adopts the size on its next pump and the next frame is a key frame at it.
 
 **`browser_input {seq, event}`** - one input event from the controlling
-viewer. **The wire carries the person's gesture, not CDP**: a press, a
-wheel, a key or inserted text, with the modifier keys held; the server is
-what turns it into `Input.dispatchMouseEvent` and its siblings. `seq` is the
+viewer. **The wire carries the person's gesture, not the browser's
+protocol**: a press, a wheel, a key or inserted text, with the modifier keys
+held; the server turns a press and a wheel into CEF's own mouse calls and a
+key or inserted text into CDP's `Input.*`. `seq` is the
 viewer's own ordering - the server drops an event at or below the last one
 the role carried, so a superseded gesture never lands late. **Input from a
 viewer without the controller role is refused with an `error` naming

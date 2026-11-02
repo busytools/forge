@@ -492,12 +492,15 @@
     // **The deltas are a scroll amount in the page's CSS pixels, not a
     // displacement on the picture**, so only the point is fitted: a wheel
     // tick scrolls the page as far whatever size the picture is drawn at.
+    // **The wheel's own sign is the wire's**: a browser tab's WheelEvent
+    // already carries the page's sign, unlike AppKit's native delta, which
+    // the desktop's own path inverts.
     const gesture: BrowserInputEvent = {
       kind: 'wheel',
       x,
       y,
-      delta_x: -event.deltaX,
-      delta_y: -event.deltaY,
+      delta_x: event.deltaX,
+      delta_y: event.deltaY,
       modifiers: modifiers(event),
     };
     input(gesture);
