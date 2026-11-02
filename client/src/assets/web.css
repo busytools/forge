@@ -896,6 +896,9 @@ button.b-epic-pill { cursor: pointer; }
    long ones while the tree's track sat half empty beside them. */
 .fleet-name { font-weight: 500; min-width: 0; overflow: hidden;
   text-overflow: ellipsis; white-space: nowrap; }
+/* The name and its wait mark share one track: a cell of their own would have
+   shifted every cell after it onto an implicit row. */
+.fleet-name-cell { display: inline-flex; align-items: center; gap: 8px; min-width: 0; }
 /* The row is the way into the lead's chat: this link's box stretches over
    the whole row, and the controls with targets of their own (a seat chip,
    the board) ride above it. */
@@ -917,8 +920,10 @@ button.b-epic-pill { cursor: pointer; }
   position: relative; z-index: 1; text-decoration: none;
 }
 .fleet-seat:hover { color: var(--text); }
+/* A seat and its own wait mark travel together: the mark belongs to that
+   seat, not to the row's list of seats. */
+.fleet-seat-pair { display: inline-flex; align-items: center; gap: 2px; }
 .fleet-counts { color: var(--muted); font-size: var(--fs-label); font-family: var(--mono); white-space: nowrap; }
-.fleet-you { color: var(--hot); }
 .fleet-misses { display: flex; gap: 8px; flex-wrap: wrap; }
 .fleet-miss {
   font-family: var(--mono); font-size: var(--fs-label);
@@ -948,6 +953,49 @@ button.b-epic-pill { cursor: pointer; }
      rather than stretching into a full-width button. */
   .fleet-open { justify-self: start; }
 }
+
+/* ---------- the decision-wait mark ---------- */
+/* A glyph and a count, and the asks themselves behind it: the board is the
+   store, and this is the read that makes a wait on the person visible from
+   the rail and the home without opening the board. Never colour alone - the
+   triangle is the mark's shape and the count is its number. */
+.attn {
+  display: inline-flex; align-items: center; gap: 5px;
+  flex: none; white-space: nowrap;
+  position: relative; z-index: 1;
+  background: none; border: 0; border-radius: 6px; padding: 2px 5px;
+  color: var(--warn); font-family: var(--mono); font-size: var(--fs-data);
+  cursor: pointer;
+}
+.attn:hover { background: rgba(201,161,59,.12); }
+.attn:focus-visible { outline: 2px solid var(--blue); outline-offset: 1px; }
+.attn-glyph { width: 9px; height: 9px; flex: 0 0 9px;
+  background: var(--warn); clip-path: polygon(50% 3%, 97% 95%, 3% 95%); }
+@media (pointer: coarse) {
+  .attn { min-height: 44px; }
+}
+/* Portaled to the body and measured in viewport terms: the rail's own
+   scroller would clip a panel drawn inside it. */
+.attn-pop {
+  position: fixed; z-index: 60; overflow-y: auto;
+  border: 1px solid var(--line); border-radius: var(--r);
+  background: var(--s2); box-shadow: 0 12px 32px rgba(0,0,0,.5);
+  padding: 5px;
+}
+.attn-list { list-style: none; margin: 0; padding: 0; }
+.attn-wait {
+  display: flex; flex-direction: column; gap: 2px;
+  padding: 7px 9px; border-radius: 6px;
+  color: var(--text); text-decoration: none;
+}
+.attn-wait:hover { background: var(--s3); }
+.attn-wait:focus-visible { outline: 2px solid var(--blue); outline-offset: -2px; }
+.attn-who { display: flex; align-items: baseline; gap: 8px; }
+.attn-seat { font-family: var(--mono); font-size: var(--fs-data); color: var(--warn); }
+.attn-age { margin-left: auto; font-family: var(--mono); font-size: var(--fs-data);
+  color: var(--dim); }
+.attn-subject { font-weight: 500; font-size: var(--fs-base); }
+.attn-words { color: var(--muted); font-size: var(--fs-label); }
 
 /* the mark inside a row: the shared shapes, with the row's own reset so a
    state that is not a ring cannot inherit the ring's border or spin. */

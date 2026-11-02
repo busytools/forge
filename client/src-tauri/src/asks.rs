@@ -98,6 +98,19 @@ fn asked_of(row: &Value) -> Result<Option<Asked>, String> {
     Ok(Some(Asked { slot, kind, seq }))
 }
 
+/// One decision wait that is news, as the shell raises it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WaitNotice {
+    /// The seat that raised it.
+    pub slot: SessionSlot,
+    /// The task's id, which with `at` is the wait's identity.
+    pub task: String,
+    /// The ask's own words, verbatim.
+    pub words: String,
+    /// The other raises the same read carries for this seat.
+    pub more: usize,
+}
+
 /// What has been announced, and whether a roster read has seeded it.
 #[derive(Default)]
 pub struct Asks {
@@ -107,6 +120,10 @@ pub struct Asks {
     /// again, and a mark from a dead run must never match a live one.
     seen: HashMap<SessionSlot, (String, AskKind, u64)>,
     seeded: bool,
+    /// The decision waits already announced: a seat and a task, by the
+    /// moment the wait began.
+    wait_seen: HashMap<(SessionSlot, String), String>,
+    waits_seeded: bool,
 }
 
 impl Asks {
@@ -165,16 +182,162 @@ impl Asks {
         self.seen.retain(|slot, _| live.contains(slot));
         notices
     }
+
+    /// The decision waits one home read raises.
+    ///
+    /// **A first read is the launch's own history**, exactly as the asks
+    /// are, so a relaunch with waits open announces none. The identity is the
+    /// task and the moment the wait began - task data, not a counter, so the
+    /// server run is not part of it: a restart leaves the same open waits the
+    /// same, and a wait answered and raised again is a new one.
+    ///
+    /// **A raise notifies whatever is on screen**: the app being frontmost
+    /// does not mean the project holding the wait is being looked at. A read
+    /// is grouped by seat, and a seat's raises collapse into one notice
+    /// naming the first and counting the others raised with it.
+    pub fn waits_rising(&mut self, data: &Value) -> Vec<WaitNotice> {
+        let Some(rows) = data.get("fleet").and_then(Value::as_array) else {
+            return Vec::new();
+        };
+        let mut waits: Vec<(SessionSlot, WaitRow)> = Vec::new();
+        for row in rows {
+            let Some(project) = row.get("project").and_then(Value::as_str) else {
+                continue;
+            };
+            let Some(org) = org_of(data, project) else {
+                tauri_plugin_log::log::debug!(
+                    "a fleet row names a project with no org, so its waits cannot be opened: {project}",
+                );
+                continue;
+            };
+            let Some(items) = row.get("attention").and_then(Value::as_array) else {
+                continue;
+            };
+            for item in items {
+                match wait_of(item, &org, project) {
+                    Ok(wait) => waits.push(wait),
+                    Err(why) => tauri_plugin_log::log::debug!(
+                        "a decision wait could not be read for the notify rule: {why}",
+                    ),
+                }
+            }
+        }
+        let first = !self.waits_seeded;
+        self.waits_seeded = true;
+        let mut live = HashSet::with_capacity(waits.len());
+        let mut seats: Vec<(SessionSlot, Vec<WaitRow>)> = Vec::new();
+        for (slot, wait) in waits {
+            live.insert((slot.clone(), wait.task.clone()));
+            match seats.iter_mut().find(|(held, _)| held == &slot) {
+                Some((_, group)) => group.push(wait),
+                None => seats.push((slot, vec![wait])),
+            }
+        }
+        let mut notices = Vec::new();
+        for (slot, group) in seats {
+            let mut fresh: Vec<&WaitRow> = Vec::new();
+            for wait in &group {
+                // **The wait's own moment is its identity**: task data, so a
+                // server restart leaves the same open waits the same, and an
+                // edit that moves the row's `updated_at` is not a new ask.
+                let mark = wait.at.clone();
+                if self.wait_seen.get(&(slot.clone(), wait.task.clone())) == Some(&mark) {
+                    continue;
+                }
+                self.wait_seen.insert((slot.clone(), wait.task.clone()), mark);
+                if !first {
+                    fresh.push(wait);
+                }
+            }
+            if let Some(head) = fresh.first() {
+                notices.push(WaitNotice {
+                    slot: slot.clone(),
+                    task: head.task.clone(),
+                    words: head.words.clone(),
+                    more: fresh.len() - 1,
+                });
+            }
+        }
+        // An answered wait leaves no mark, so the same task raised again is
+        // news.
+        self.wait_seen.retain(|key, _| live.contains(key));
+        notices
+    }
+}
+
+/// One wait as the rule groups it: the task, the ask's words and its moment.
+struct WaitRow {
+    task: String,
+    words: String,
+    at: String,
+}
+
+/// One wait's seat and row, or the reason it cannot be read.
+fn wait_of(item: &Value, org: &str, project: &str) -> Result<(SessionSlot, WaitRow), String> {
+    let task = item.get("task").and_then(Value::as_str);
+    let owner = item.get("owner").and_then(Value::as_str);
+    let words = item.get("words").and_then(Value::as_str);
+    let (Some(task), Some(owner), Some(words)) = (task, owner, words) else {
+        return Err("the wait does not name its task, seat and words".to_owned());
+    };
+    let slot = match owner {
+        "lead" => SessionSlot::lead(org, project),
+        label => SessionSlot::worker(org, project, label),
+    };
+    // A server too old to send the moment still announces the wait; the task
+    // alone is then its identity.
+    let at = item
+        .get("at")
+        .and_then(|held| {
+            let secs = held.get("secs_since_epoch").and_then(Value::as_u64)?;
+            let nanos = held.get("nanos_since_epoch").and_then(Value::as_u64)?;
+            Some(format!("{secs}.{nanos}"))
+        })
+        .unwrap_or_default();
+    Ok((slot, WaitRow { task: task.to_owned(), words: words.to_owned(), at }))
+}
+
+/// The org a fleet row's project belongs to, from the same read's projects.
+fn org_of(data: &Value, project: &str) -> Option<String> {
+    for row in data.get("projects")?.as_array()? {
+        let held = row.get("project")?;
+        if held.get("name").and_then(Value::as_str) == Some(project) {
+            return held.get("org").and_then(Value::as_str).map(str::to_owned);
+        }
+    }
+    None
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{AskKind, Asks};
+    use super::{AskKind, Asks, WaitNotice};
     use forge_primitives::SessionSlot;
     use serde_json::json;
 
     fn seat(label: &str) -> serde_json::Value {
         json!({ "org": "Busytools", "project": "forge", "label": label })
+    }
+
+    /// A home read whose one project holds `waits`: task, owner, words, and
+    /// the second the wait began.
+    fn waiting(waits: &[(&str, &str, &str, u64)]) -> serde_json::Value {
+        let items: Vec<serde_json::Value> = waits
+            .iter()
+            .map(|(task, owner, words, at)| {
+                json!({
+                    "task": task,
+                    "owner": owner,
+                    "subject": "a row",
+                    "words": words,
+                    "at": { "secs_since_epoch": at, "nanos_since_epoch": 0 },
+                })
+            })
+            .collect();
+        json!({
+            "boot_id": "run-1",
+            "projects": [{ "project": { "org": "Busytools", "name": "forge" } }],
+            "fleet": [{ "project": "forge", "attention": items }],
+        })
     }
 
     fn roster(rows: &[(&str, Option<&str>, u64)]) -> serde_json::Value {
@@ -340,6 +503,112 @@ mod tests {
             asks.rising(&roster(&[("w1", Some("question"), 2)]), None, true),
             vec![(worker(), AskKind::Question)],
             "the ask after it is news",
+        );
+    }
+
+    /// **A read's raises on one seat collapse to one notice**, naming the
+    /// first ask and counting the others raised with it.
+    #[test]
+    fn a_reads_wait_raises_collapse_to_one_notice() {
+        let mut asks = Asks::default();
+        asks.waits_rising(&waiting(&[]));
+        let two = waiting(&[("t1", "lead", "sign this off", 5), ("t2", "lead", "look at this", 9)]);
+        assert_eq!(
+            asks.waits_rising(&two),
+            vec![WaitNotice {
+                slot: lead(),
+                task: "t1".to_owned(),
+                words: "sign this off".to_owned(),
+                more: 1,
+            }],
+        );
+        assert!(asks.waits_rising(&two).is_empty(), "the same read is not news");
+    }
+
+    /// **Only the raises in this read count.** A known wait beside a new one
+    /// is one notice for the new one, `more` 0: the old count named every
+    /// open wait behind it, including the one already announced.
+    #[test]
+    fn a_known_wait_beside_a_new_one_counts_only_the_raise() {
+        let mut asks = Asks::default();
+        asks.waits_rising(&waiting(&[("t1", "lead", "sign this off", 5)]));
+        assert_eq!(
+            asks.waits_rising(&waiting(&[
+                ("t1", "lead", "sign this off", 5),
+                ("t2", "lead", "look at this", 9),
+            ])),
+            vec![WaitNotice {
+                slot: lead(),
+                task: "t2".to_owned(),
+                words: "look at this".to_owned(),
+                more: 0,
+            }],
+        );
+    }
+
+    /// **The task is half the mark**: two waits entering waiting at the same
+    /// moment on one seat are two raises, and the second is news.
+    #[test]
+    fn a_second_task_at_the_same_moment_is_news() {
+        let mut asks = Asks::default();
+        asks.waits_rising(&waiting(&[("t1", "lead", "sign this off", 5)]));
+        assert_eq!(
+            asks.waits_rising(&waiting(&[
+                ("t1", "lead", "sign this off", 5),
+                ("t2", "lead", "look at this", 5),
+            ])),
+            vec![WaitNotice {
+                slot: lead(),
+                task: "t2".to_owned(),
+                words: "look at this".to_owned(),
+                more: 0,
+            }],
+            "the task, not only the moment, makes a wait distinct",
+        );
+    }
+
+    /// **The wait's moment is its identity and the server run is not**: a
+    /// restart changes no task data, so the open waits it finds are the ones
+    /// already announced; the same task raised again at a later moment is
+    /// news.
+    #[test]
+    fn a_waits_moment_is_its_identity_and_the_run_is_not() {
+        let mut asks = Asks::default();
+        asks.waits_rising(&waiting(&[]));
+        assert_eq!(
+            asks.waits_rising(&waiting(&[("t1", "lead", "sign this off", 5)])).len(),
+            1,
+            "the first raise is news",
+        );
+        assert!(
+            asks.waits_rising(&waiting(&[("t1", "lead", "sign this off", 5)])).is_empty(),
+            "the same wait is not news",
+        );
+        let mut restarted = waiting(&[("t1", "lead", "sign this off", 5)]);
+        restarted["boot_id"] = json!("run-2");
+        assert!(
+            asks.waits_rising(&restarted).is_empty(),
+            "a restart re-announces nothing it already announced",
+        );
+        assert_eq!(
+            asks.waits_rising(&waiting(&[("t1", "lead", "sign this off", 9)])).len(),
+            1,
+            "the same task raised again at a new moment is news",
+        );
+    }
+
+    /// **An answered wait leaves no mark**, so the same task raised again is
+    /// news.
+    #[test]
+    fn an_answered_wait_raised_again_is_news() {
+        let mut asks = Asks::default();
+        asks.waits_rising(&waiting(&[]));
+        assert_eq!(asks.waits_rising(&waiting(&[("t1", "lead", "sign this off", 5)])).len(), 1,);
+        assert!(asks.waits_rising(&waiting(&[])).is_empty(), "answered");
+        assert_eq!(
+            asks.waits_rising(&waiting(&[("t1", "lead", "sign this off", 5)])).len(),
+            1,
+            "raised again after the answer",
         );
     }
 }

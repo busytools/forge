@@ -36,8 +36,8 @@ impl Roster {
     }
 
     /// The names of the projects pinned to spawn at launch.
-    pub fn auto_start(&self) -> Vec<String> {
-        self.workspace.auto_start_project_names()
+    pub fn resume_lead(&self) -> Vec<String> {
+        self.workspace.resume_lead_project_names()
     }
 
     /// The account chip `project` renders beside its row, or `None`

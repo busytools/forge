@@ -23,6 +23,7 @@ import type { ExtensionsRead } from '../wire/extensions';
 import type { ServiceReport } from '../wire/fleet';
 import type {
   AgentRow,
+  AttentionRow,
   BoardRow,
   Gate,
   HomeWire,
@@ -103,6 +104,10 @@ export interface Row {
   gate: string | null;
   task: TaskCell | null;
   pending: 'question' | 'permission' | 'hand_off' | null;
+  /** The decision waits this seat holds: a mark, a rank, and the list behind it. */
+  waits: AttentionRow[];
+  /** How many decision waits this seat holds: a mark, and a rank. */
+  attention: number;
   reason: string | null;
   lastActivity: WireTime | null;
   /**
@@ -120,6 +125,8 @@ export interface ProjectRows {
   workers: Row[];
   /** Whether anything has ever started here, which is what a refusal needs. */
   started: boolean;
+  /** The project's decision waits, which its mark counts and its popover lists. */
+  waits: AttentionRow[];
 }
 
 interface Header {
@@ -175,6 +182,8 @@ export interface FleetViewRow {
   leadHref: string;
   /** The strongest seat state, drawn with the same `Mark` a seat row uses. */
   state: RowState;
+  /** The project's decision waits, which its mark lists and its rank reads. */
+  waits: AttentionRow[];
   place: { branch: string | null; files: string | null };
   gate: string | null;
   /** Each seat's state and its ask, which is what its rank is read from. */
@@ -182,6 +191,8 @@ export interface FleetViewRow {
     label: string;
     state: RowState;
     pending: 'question' | 'permission' | 'hand_off' | null;
+    waits: AttentionRow[];
+    attention: number;
     href: string;
   }[];
   /**
@@ -195,7 +206,6 @@ export interface FleetViewRow {
   live: number;
   slots: number | null;
   queue: number;
-  onYou: number;
   misses: MissRow[];
 }
 
@@ -234,19 +244,24 @@ export function fleetRows(wire: HomeWire): FleetViewRow[] {
         agent.slot.project === row.project &&
         (project === undefined || agent.slot.org === project.project.org),
     );
-    const seats = agents.map((agent) => ({
-      label: agent.label,
-      state: stateOf(agent, wire.unseen),
-      pending: agent.pending,
-      href: hrefForSlot(agent.slot),
-    }));
+    const seats = agents.map((agent) => {
+      const mine = row.attention.filter((wait) => wait.owner === agent.label);
+      return {
+        label: agent.label,
+        state: stateOf(agent, wire.unseen),
+        pending: agent.pending,
+        waits: mine,
+        attention: mine.length,
+        href: hrefForSlot(agent.slot),
+      };
+    });
     // The newest write the project has: a live seat's, or a session the
     // catalog still remembers once no seat is left. **The catalog half is not
     // a nicety** - a seat exists only while a project holds a live session,
     // so a closed project is seatless, and reading the seats alone would word
-    // `never` over a project that wrote ten minutes ago. Every project is in
-    // that state after a forge restart, because only `auto_start` ones come
-    // back on their own.
+    // `never` over a project that wrote ten minutes ago. Every project
+    // without a resumed seat is in that state after a forge restart, because
+    // only `resume_lead` ones come back on their own.
     const lastActivity = [
       ...agents.map((agent) => agent.last_activity),
       ...(project?.project.sessions.map((session) => session.last_activity) ?? []),
@@ -276,6 +291,7 @@ export function fleetRows(wire: HomeWire): FleetViewRow[] {
       href: hrefFor({ name: 'board', org, project: row.project }),
       leadHref: lead?.href ?? hrefForSlot({ org, project: row.project, label: 'lead' }),
       state: strongest,
+      waits: row.attention,
       place: project === undefined ? { branch: null, files: null } : placeOf(project.work),
       gate: project === undefined ? null : gateLine(project.work.gate),
       seats,
@@ -283,7 +299,6 @@ export function fleetRows(wire: HomeWire): FleetViewRow[] {
       live: row.live_workers,
       slots: row.slots,
       queue: row.queue,
-      onYou: row.waiting_on_user,
       // A project that cannot start says so on its own row: the refusal
       // the row drew before the fleet, kept as a miss rather than dropped.
       misses: [
@@ -328,7 +343,9 @@ export const groupClassOf = (rank: number): string => (rank === 0 ? 'state needs
  *
  * A row ranks by its strongest seat - an ask outranks a run, a run outranks a
  * sleep - and a project with no live seat ranks asleep, which is what the
- * home's flat list could not say.
+ * home's flat list could not say. **The project's own waits rank it first**:
+ * a wait whose seat has no row (a sleeping project's worker) has no seat to
+ * carry the rank, and would otherwise leave a blocked project in Working.
  */
 export function fleetGroups(rows: FleetViewRow[]): FleetGroup[] {
   const groups: FleetGroup[] = GROUP_HEADINGS.map((heading, rank) => ({
@@ -340,8 +357,8 @@ export function fleetGroups(rows: FleetViewRow[]): FleetGroup[] {
   }));
   for (const row of rows) {
     const rank = row.seats.reduce(
-      (best, seat) => Math.min(best, rankOf(seat.state, seat.pending)),
-      2,
+      (best, seat) => Math.min(best, rankOf(seat.state, seat.pending, seat.attention)),
+      row.waits.length > 0 ? 0 : 2,
     );
     const group = groups[rank];
     if (group === undefined) continue;
@@ -365,7 +382,7 @@ export function fleetGroups(rows: FleetViewRow[]): FleetGroup[] {
 }
 
 /** The org a project row belongs to, from the projects list. */
-function orgOf(wire: HomeWire, project: string): string {
+export function orgOf(wire: HomeWire, project: string): string {
   return wire.projects.find((entry) => entry.project.name === project)?.project.org ?? '';
 }
 
@@ -481,10 +498,14 @@ export function markOf(state: RowState): { class: string; dot: string } {
 export function rankOf(
   state: RowState,
   pending: 'question' | 'permission' | 'hand_off' | null,
+  attention = 0,
 ): number {
   // An ask outranks the lifecycle: a session holds a prompt while the core
   // still calls it idle, and what it is waiting on is a person.
   if (pending !== null) return 0;
+  // **A decision wait is the person's too**, so it ranks with the attention
+  // states: a seat waiting on the user must not sit below one merely busy.
+  if (attention > 0) return 0;
   if (state.kind === 'unseen') return 1;
   // A failed turn is the seat's own version of a needed person, so it ranks
   // with the attention states rather than with the completions - and so does
@@ -928,11 +949,18 @@ function taskFor(tasks: Task[], label: string): Task | null {
  * `null` is a seat forge holds no directory for, which draws the blank rather
  * than borrowing a tree it is not in.
  */
-function rowOf(agent: AgentRow, name: string, rows: BoardRow[], unseen: SessionSlot[]): Row {
+function rowOf(
+  agent: AgentRow,
+  name: string,
+  rows: BoardRow[],
+  unseen: SessionSlot[],
+  waits: AttentionRow[],
+): Row {
   const held = taskFor(
     rows.map((entry) => entry.task),
     agent.label,
   );
+  const mine = waits.filter((wait) => wait.owner === agent.label);
   return {
     slot: agent.slot,
     state: stateOf(agent, unseen),
@@ -949,6 +977,8 @@ function rowOf(agent: AgentRow, name: string, rows: BoardRow[], unseen: SessionS
             artifact: firstArtifact(held),
           },
     pending: agent.pending,
+    waits: mine,
+    attention: mine.length,
     reason: agent.reason,
     lastActivity: agent.last_activity,
     failedTurn: agent.failed_turn,
@@ -976,7 +1006,8 @@ function dormantState(lastRan: WireTime | null): RowState {
  * seat to read a tree for, and the cell is filled for a project that has
  * never run, which is the whole point of the project's own `work`.
  */
-function dormantRow(wire: ProjectWire, lastRan: WireTime | null): Row {
+function dormantRow(wire: ProjectWire, lastRan: WireTime | null, waits: AttentionRow[]): Row {
+  const mine = waits.filter((wait) => wait.owner === 'lead');
   return {
     slot: { org: wire.project.org, project: wire.project.name, label: 'lead' },
     state: dormantState(lastRan),
@@ -986,6 +1017,8 @@ function dormantRow(wire: ProjectWire, lastRan: WireTime | null): Row {
     gate: gateLine(wire.work.gate),
     task: null,
     pending: null,
+    waits: mine,
+    attention: mine.length,
     reason: null,
     lastActivity: lastRan,
     failedTurn: null,
@@ -996,9 +1029,10 @@ function dormantRow(wire: ProjectWire, lastRan: WireTime | null): Row {
  * One project's rows: its lead, and its workers under it.
  *
  * Exported because the session page's rail draws the same rows. It groups
- * projects by the strongest state among their own rows and keeps them in
- * `forge.toml`'s order, which is the roster's order rather than the org
- * grouping the home sorts into - so the rail cannot read them off `homeView`.
+ * projects by their own decision waits and the strongest state among their
+ * rows, and keeps them in `forge.toml`'s order, which is the roster's order
+ * rather than the org grouping the home sorts into - so the rail cannot read
+ * them off `homeView`.
  *
  * `board` is the project's own rows, from the board's subject (#2517): the
  * home no longer carries them, and a rail that passes `null` (a landing that
@@ -1029,13 +1063,16 @@ export function projectRows(
 
   // A project's row is its lead, and both pages name it for the project: the
   // lead's label is its identity, not what the row is called here.
+  const waits = wire.fleet.find((fleet) => fleet.project === project.name)?.attention ?? [];
   const [head, ...rest] = seats;
   const lead =
-    head === undefined ? dormantRow(row, lastRan) : rowOf(head, project.name, rows, wire.unseen);
+    head === undefined
+      ? dormantRow(row, lastRan, waits)
+      : rowOf(head, project.name, rows, wire.unseen, waits);
   // Every started row draws its own seat's tree, which is the read the ROW
   // carries: the project's `work` is the lead's seat whatever row it lands on.
-  const workers = rest.map((agent) => rowOf(agent, agent.label, rows, wire.unseen));
-  return { lead, workers, started: head !== undefined };
+  const workers = rest.map((agent) => rowOf(agent, agent.label, rows, wire.unseen, waits));
+  return { lead, workers, started: head !== undefined, waits };
 }
 
 /** Read the snapshot into the shape the markup wants. */

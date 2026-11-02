@@ -988,6 +988,7 @@ mod prod_facade_tests {
             on: None,
             verification: false,
             parked: false,
+            since: None,
         });
         ws.seed_test_task(waiting);
         ws.seed_test_task(seeded_task("plain", "a row with no wait"));

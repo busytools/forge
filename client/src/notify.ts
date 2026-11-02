@@ -11,12 +11,18 @@
  * `pending_seq`, and the server run's `boot_id` - the ask's identity. A re-read
  * cannot change it and an answer cannot fake it, so an ask is announced once
  * and an answer that shrinks a batch announces nothing.
+ *
+ * A decision wait on the task board is the second kind: its identity is the
+ * task and the moment it was raised, and it notifies once per raise with no
+ * focus exemption, because the app being frontmost does not mean the project
+ * holding the wait is being looked at.
  */
 
 import { canHost } from './browser/host';
+import { orgOf } from './home/view';
 import { subjectKey } from './protocol';
-import { goTo } from './routes';
-import type { AgentRow, PendingKind } from './wire/home';
+import { goTo, type Route } from './routes';
+import type { AgentRow, HomeWire, PendingKind, WireTime } from './wire/home';
 import type { SessionSlot } from './wire/types';
 
 /** One ask the person should hear about. */
@@ -25,16 +31,40 @@ export interface AskNotice {
   kind: PendingKind;
 }
 
-/** What the page has announced: one ask identity per seat. */
+/** One decision wait as the notify rule reads it. */
+export interface WaitRow {
+  /** The seat that raised it. */
+  slot: SessionSlot;
+  /** The task's id, the wait's identity with `at`. */
+  task: string;
+  /** The ask's own words, verbatim. */
+  words: string;
+  /** When the wait began; a re-raise carries a later one. */
+  at?: WireTime;
+}
+
+/** One decision wait that is news. */
+export interface WaitNotice {
+  slot: SessionSlot;
+  task: string;
+  words: string;
+  /** The other raises the same read carries for this seat. */
+  more: number;
+}
+
+/** What the page has announced: an ask identity per seat, and a wait's. */
 export interface AskState {
   seen: Map<string, string>;
-  /** Whether a roster read has seeded the marks. */
+  /** The waits already announced, keyed by seat and task. */
+  waitSeen: Map<string, string>;
+  /** Whether a roster read has seeded each rule; they share a read, not a flag. */
   seeded: boolean;
+  waitsSeeded: boolean;
 }
 
 /** Fresh state for one page's launch. */
 export function askState(): AskState {
-  return { seen: new Map(), seeded: false };
+  return { seen: new Map(), waitSeen: new Map(), seeded: false, waitsSeeded: false };
 }
 
 /**
@@ -82,6 +112,71 @@ export function rising(
   return notices;
 }
 
+/**
+ * The decision waits one home read raises.
+ *
+ * **A wait is news once, and a launch is the launch's own history**: the
+ * first read seeds and announces nothing, so a reload with three open waits
+ * fires none. Its identity is the task and the moment the wait began - task
+ * data, not a counter, so the server run is not part of it: a restart leaves
+ * the same open waits the same, and only one that begins or is raised again
+ * is news.
+ *
+ * **A raise notifies whatever is on screen.** There is no shown-seat
+ * exemption here, because the app being frontmost does not mean the project
+ * holding the wait is being looked at.
+ *
+ * A read's waits are grouped by seat, and a seat's raises collapse into a
+ * single notice naming the first and counting the others raised with it.
+ */
+export function waitsRising(state: AskState, rows: WaitRow[]): WaitNotice[] {
+  const first = !state.waitsSeeded;
+  state.waitsSeeded = true;
+  const live = new Set<string>();
+  const seats = new Map<string, { slot: SessionSlot; waits: WaitRow[] }>();
+  for (const row of rows) {
+    const seat = subjectKey({ session: row.slot });
+    live.add(`${seat}:${row.task}`);
+    const held = seats.get(seat);
+    if (held === undefined) seats.set(seat, { slot: row.slot, waits: [row] });
+    else held.waits.push(row);
+  }
+  const notices: WaitNotice[] = [];
+  for (const { slot, waits } of seats.values()) {
+    const fresh: WaitRow[] = [];
+    for (const wait of waits) {
+      const key = `${subjectKey({ session: slot })}:${wait.task}`;
+      const at = wait.at;
+      const mark = at === undefined ? '' : `${at.secs_since_epoch}.${at.nanos_since_epoch}`;
+      if (state.waitSeen.get(key) === mark) continue;
+      state.waitSeen.set(key, mark);
+      if (!first) fresh.push(wait);
+    }
+    const [head] = fresh;
+    if (head !== undefined) {
+      notices.push({ slot, task: head.task, words: head.words, more: fresh.length - 1 });
+    }
+  }
+  // An answered wait leaves no mark, so the same task raised again is news.
+  for (const key of [...state.waitSeen.keys()]) {
+    if (!live.has(key)) state.waitSeen.delete(key);
+  }
+  return notices;
+}
+
+/** Every decision wait the home read carries, with the seat that raised it. */
+export function waitRows(wire: HomeWire): WaitRow[] {
+  return wire.fleet.flatMap((row) => {
+    const org = orgOf(wire, row.project);
+    return row.attention.map((wait) => ({
+      slot: { org, project: row.project, label: wait.owner },
+      task: wait.task,
+      words: wait.words,
+      at: wait.at,
+    }));
+  });
+}
+
 /** One ask as the OS shows it. */
 export function askWords(notice: AskNotice): { title: string; body: string } {
   const { project, label } = notice.slot;
@@ -95,6 +190,14 @@ export function askWords(notice: AskNotice): { title: string; body: string } {
   return { title: `forge \u{b7} ${seat}`, body };
 }
 
+/** One decision wait as the OS shows it. */
+export function waitWords(notice: WaitNotice): { title: string; body: string } {
+  const { project, label } = notice.slot;
+  const seat = label === 'lead' ? project : `${project} \u{b7} ${label}`;
+  const others = notice.more === 0 ? '' : ` (and ${notice.more} more)`;
+  return { title: `forge \u{b7} ${seat}`, body: `${notice.words}${others}` };
+}
+
 /**
  * Whether this page is the one that raises notifications.
  *
@@ -105,13 +208,33 @@ export function notifiesFromThePage(): boolean {
   return !canHost();
 }
 
+/** One notification, as the page's own surface carries it. */
+interface Held {
+  words: { title: string; body: string };
+  /** What the platform replaces by: an ask and a wait on one seat are two. */
+  tag: string;
+  /** Where a click lands: the ask's seat, or the board a wait lives on. */
+  route: Route;
+}
+
 /** Raise one ask's notification on a page with no shell. */
 export function deliverAsk(notice: AskNotice): void {
-  notifyPage(notice, askWords(notice));
+  const tag = `ask:${subjectKey({ session: notice.slot })}`;
+  notifyPage({ words: askWords(notice), tag, route: { name: 'session', slot: notice.slot } });
+}
+
+/** Raise one decision wait's notification on a page with no shell. */
+export function deliverWait(notice: WaitNotice): void {
+  const tag = `wait:${subjectKey({ session: notice.slot })}`;
+  notifyPage({
+    words: waitWords(notice),
+    tag,
+    route: { name: 'board', org: notice.slot.org, project: notice.slot.project },
+  });
 }
 
 /** What waits for a gesture that can carry the permission prompt. */
-const waiting: { notice: AskNotice; words: { title: string; body: string } }[] = [];
+const waiting: Held[] = [];
 
 /** Whether a gesture listener is up. */
 let armed = false;
@@ -124,27 +247,27 @@ let armed = false;
  * reject and nothing would ever show; the first gesture after a would-notify
  * ask carries it instead. A denial is respected silently and never retried.
  */
-function notifyPage(notice: AskNotice, words: { title: string; body: string }): void {
+function notifyPage(held: Held): void {
   if (typeof Notification === 'undefined') return;
   if (Notification.permission === 'denied') return;
   if (Notification.permission === 'granted') {
-    show(notice, words);
+    show(held);
     return;
   }
-  waiting.push({ notice, words });
+  waiting.push(held);
   if (waiting.length > 8) waiting.shift();
   arm();
 }
 
-/** One notification, whose click opens the seat it was raised for. */
-function show(notice: AskNotice, words: { title: string; body: string }): void {
-  const note = new Notification(words.title, {
-    body: words.body,
-    tag: subjectKey({ session: notice.slot }),
+/** One notification, whose click opens where its ask can be answered. */
+function show(held: Held): void {
+  const note = new Notification(held.words.title, {
+    body: held.words.body,
+    tag: held.tag,
   });
   note.onclick = () => {
     window.focus();
-    goTo({ name: 'session', slot: notice.slot });
+    goTo(held.route);
     note.close();
   };
 }
@@ -176,7 +299,7 @@ function arm(): void {
           requeue();
           return;
         }
-        for (const { notice, words } of held) show(notice, words);
+        for (const entry of held) show(entry);
       },
       () => {
         // A refused request is no answer; the asks wait for the next gesture.
@@ -189,7 +312,8 @@ function arm(): void {
 }
 
 /**
- * A shell's notification click, which names the seat it was posted for.
+ * A shell's notification click, which names the seat it was posted for and
+ * where that notice opens.
  *
  * The window is already brought forward by the shell; the route is the page's
  * own, so it moves here.
@@ -198,25 +322,26 @@ export async function watchNotificationClicks(): Promise<() => void> {
   if (!canHost()) return () => {};
   const { listen } = await import('@tauri-apps/api/event');
   return await listen<unknown>('client://notification', (event) => {
-    const slot = slotFrom(event.payload);
-    if (slot !== null) goTo({ name: 'session', slot });
+    const route = routeFrom(event.payload);
+    if (route !== null) goTo(route);
   });
 }
 
 /**
- * The seat a notification tap launched the client on.
+ * Where a notification tap launched the client on: a wait opens its project's
+ * board, every ask its seat's chat.
  *
  * **The platform reads the launch intent before this page exists**, so a tap
  * that cold-starts the app is not an event a page can listen for: the shell
- * remembers the seat under the id the intent carries, and this is the page
+ * remembers the target under the id the intent carries, and this is the page
  * asking for it once it can route. `null` is every launch no tap opened, and
  * every page with no shell.
  */
-export async function launchSeat(): Promise<SessionSlot | null> {
+export async function launchSeat(): Promise<Route | null> {
   if (!canHost()) return null;
   try {
     const { invoke } = await import('@tauri-apps/api/core');
-    return slotFrom(await invoke<unknown>('client_tap_seat'));
+    return routeFrom(await invoke<unknown>('client_tap_seat'));
   } catch (why) {
     // **A seat the shell cannot answer is still a launch**: the page routes as
     // if no tap opened it, rather than holding the launch on the command.
@@ -237,4 +362,18 @@ function slotFrom(value: unknown): SessionSlot | null {
     return null;
   }
   return { org: held['org'], project: held['project'], label: held['label'] };
+}
+
+/**
+ * Where a notification's target opens: the seat's chat, or the project's
+ * board for a decision wait - the row is answerable there, and the seat that
+ * raised it may be gone.
+ */
+function routeFrom(value: unknown): Route | null {
+  const slot = slotFrom(value);
+  if (slot === null) return null;
+  if ((value as Record<string, unknown>)['board'] === true) {
+    return { name: 'board', org: slot.org, project: slot.project };
+  }
+  return { name: 'session', slot };
 }

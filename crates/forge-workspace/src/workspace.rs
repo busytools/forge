@@ -419,9 +419,27 @@ reviewer kept on as a long-lived worker.";
 /// than start the task over.
 const DYNAMIC_WORKER_RESTART_NOTE: &str = "This session was restarted by forge. Your prior conversation and progress are in the history above. Continue where you left off; do not restart the task. If the history's timestamps disagree with the clock and the live schedules, believe the clock and the schedules, and still do the concrete asks.";
 
+/// The first turn a boot spawn delivers to a lead it hands a stored
+/// session id to. A lead has no kick of its own, so this note is what
+/// turns a resumed conversation into work continued rather than a seat
+/// idle at a prompt. The handoff and the board are the source of what
+/// was in flight: a `--resume` that the CLI refuses falls back to a
+/// fresh session, so the history is named conditionally rather than
+/// relied on.
+pub const LEAD_RESTART_NOTE: &str = "forge restarted. Read the project handoff (`handoff.md` in the project's memory directory) and the task board before acting; they say what was in flight. Continue that work and do not restart what is finished. If a prior conversation is in the history above, treat it as the record of this seat's last run. If the history's timestamps disagree with the clock and the live schedules, believe the clock and the schedules.";
+
+/// The restart note a boot spawn hands its seat: only a spawn carrying a
+/// stored id to resume delivers one, so a first boot or `--new` clears
+/// whatever a previous spawn left. A resume the CLI refuses still takes
+/// the note, whose wording does not depend on history.
+fn resume_kick_for(resumed: bool, requested: Option<String>) -> Option<String> {
+    if resumed { requested } else { None }
+}
+
 /// One enqueue onto the workspace-level worker-kick channel
-/// (#259). Built by `maybe_kick_worker_on_connected` (and any
-/// future kick site); drained by the workspace's
+/// (#259). Built by `maybe_kick_worker_on_connected` and
+/// `maybe_kick_lead_on_connected` (and any future kick site); drained by
+/// the workspace's
 /// `start_kick_dispatcher` task, which fires one `Command::Prompt`
 /// per `KICK_DISPATCH_INTERVAL` tick. Same payload shape as the
 /// existing `Command::Prompt` carries (no attachments are ever
@@ -844,6 +862,14 @@ pub struct Workspace {
     /// asked for the prewarm", which is the one call a test can watch
     /// without a 3 GB fetch (mirrors `usage_poller_started`).
     dictate_preflight_started: std::sync::atomic::AtomicBool,
+    /// Records that the boot wave asked for the prewarm, set before the
+    /// `[tts] enabled` gate: the flag reads "the wave asked", which is the
+    /// one call a test can watch without the weights. It is not a dispatch
+    /// guard; the guard only stops a second load of the same engine.
+    pub(crate) voice_prewarm_started: std::sync::atomic::AtomicBool,
+    /// Set once the prewarm is dispatched, after the enabled gate, so a
+    /// second call cannot spawn a second load of the same engine.
+    pub(crate) voice_prewarm_dispatched: std::sync::atomic::AtomicBool,
     /// The gateway's listener + session bindings. Children are stamped
     /// with a base URL that names this listener, and every spawn
     /// registers here.
@@ -1028,8 +1054,9 @@ pub struct Workspace {
     /// Followed threads whose next walk is their first since the row was
     /// created, keyed the same way.
     pub(crate) slack_thread_first_walks: Mutex<std::collections::HashSet<(String, String, String)>>,
-    /// The newest edit stamp a whole read has judged, keyed the same way: an
-    /// edit is measured against this, never against the reply cursor.
+    /// Cache of each thread row's persisted edit stamp, keyed the same way: an
+    /// edit is measured against this, never against the reply cursor. A miss
+    /// reads the row, because the stamp has to outlive the process.
     pub(crate) slack_thread_edit_watermarks:
         Mutex<std::collections::HashMap<(String, String, String), String>>,
     /// Conversations whose own-post ledger could not be read this run,
@@ -2462,6 +2489,8 @@ impl Workspace {
             usage_poller_started: std::sync::atomic::AtomicBool::new(false),
             rotation_announcer_started: std::sync::atomic::AtomicBool::new(false),
             dictate_preflight_started: std::sync::atomic::AtomicBool::new(false),
+            voice_prewarm_started: std::sync::atomic::AtomicBool::new(false),
+            voice_prewarm_dispatched: std::sync::atomic::AtomicBool::new(false),
             cron_scheduler_started: std::sync::atomic::AtomicBool::new(false),
             chase_sweep_started: std::sync::atomic::AtomicBool::new(false),
             kick_dispatcher_tx,
@@ -2635,15 +2664,16 @@ impl Workspace {
         if reload.moved("accounts.") {
             self.announce_accounts_changed();
         }
-        // A project the edit added starts as it would at boot; one already
-        // declared keeps whatever it is running, and a removed one is left
-        // alone.
+        // A project the edit added starts as a boot spawn would, but
+        // without the launch's restart note (and without `--new`): only
+        // the launch hands those out. One already declared keeps whatever
+        // it is running, and a removed one is left alone.
         let added: Vec<(String, String)> = self
             .config_arc()
             .projects
             .iter()
             .filter(|project| {
-                project.auto_start
+                project.resume_lead
                     && !previous
                         .projects
                         .iter()
@@ -2687,10 +2717,10 @@ impl Workspace {
             }) {
                 tracing::warn!(
                     target: "forge_workspace::workspace",
-                    event_name = "config_reload_autostart_failed",
+                    event_name = "config_reload_resume_lead_failed",
                     project = %project_name,
                     error = %error,
-                    "an auto_start project the reload added did not start",
+                    "a resume_lead project the reload added did not start",
                 );
             }
         }
@@ -3072,11 +3102,11 @@ impl Workspace {
     }
 
     /// Return the names of all projects that should spawn at forge
-    /// launch (`auto_start = true`). Order is declaration order from
+    /// launch (`resume_lead = true`). Order is declaration order from
     /// forge.toml - the launchpad picker uses its own row sort, so
     /// no further ordering is imposed here.
-    pub fn auto_start_project_names(&self) -> Vec<String> {
-        self.config_arc().auto_start_projects().map(|p| p.name.clone()).collect()
+    pub fn resume_lead_project_names(&self) -> Vec<String> {
+        self.config_arc().resume_lead_projects().map(|p| p.name.clone()).collect()
     }
 
     /// Every project listed in `forge.toml`, each carrying its catalog
@@ -3493,6 +3523,11 @@ impl Workspace {
         // Connected-time respawn skips the store lookup and brings its
         // workers up fresh alongside the fresh lead.
         domain_arc.lock().spawned_force_new = settings.force_new;
+        // The boot wave's restart note belongs to this spawn only when it
+        // actually resumed; a fresh spawn (`--new` included) clears what a
+        // previous spawn left.
+        domain_arc.lock().pending_lead_resume_note =
+            resume_kick_for(resuming, settings.resume_kick.take());
         // The effort this spawn asked for, so a session whose hook has
         // not reported one yet still answers with the level it runs at.
         domain_arc.lock().configured_effort =
@@ -11110,7 +11145,7 @@ mod account_stamp_tests {
             org: "Personal".to_owned(),
             accounts: vec!["Stargate".to_owned()],
             fallback_accounts: Vec::new(),
-            auto_start: false,
+            resume_lead: false,
             model: None,
             env: HashMap::new(),
             env_file: None,
@@ -11889,6 +11924,7 @@ mod tests {
             on: None,
             verification: false,
             parked: false,
+            since: None,
         };
 
         // The wait, answered: the words ride the notice, and it goes to the
@@ -12461,7 +12497,6 @@ path = "{}"
         );
     }
 
-    /// `SessionTarget::Default` is the alphabetically-first auto_start
     /// Buffer tracing output so the applied record can be read back.
     #[derive(Clone, Default)]
     struct LogCapture(Arc<Mutex<Vec<u8>>>);
@@ -12873,6 +12908,175 @@ provider = "anthropic"
                 .and_then(|row| row.session_id)
         };
         assert_eq!(stored.as_deref(), Some(known), "and the row names it for the next boot");
+        forge_agent::set_test_sdk_binary(None);
+    }
+
+    /// A workspace whose lead can actually spawn, over a mock CLI that
+    /// reports the id it was told to resume, with the kick dispatcher
+    /// running so a stamped note would reach the stream.
+    fn boot_lead_workspace(dir: &std::path::Path, project: &std::path::Path) -> Arc<Workspace> {
+        let workspace = resume_workspace(dir, project);
+        forge_agent::set_test_sdk_binary(Some(id_preserving_mock(dir)));
+        workspace.start_kick_dispatcher();
+        workspace
+    }
+
+    /// Dispatch a `SpawnProject` for the fixture's lead with the launch
+    /// settings a caller states. The boot wave passes the restart note;
+    /// every other wake passes `None`.
+    fn spawn_lead(workspace: &Arc<Workspace>, force_new: bool, resume_kick: Option<String>) {
+        let spawned = workspace.dispatch(Command::SpawnProject {
+            project_name: "forge".to_owned(),
+            launch_settings: SessionLaunchSettings { force_new, resume_kick, ..Default::default() },
+        });
+        assert!(spawned.is_ok(), "the spawn is taken: {spawned:?}");
+    }
+
+    /// Whether `update` is a user turn carrying the restart note on `key`.
+    fn is_restart_note(update: &SessionUpdate, key: &SessionSlot) -> bool {
+        if let SessionUpdate::ChatAppended { key: seen, msg: Message::User { message, .. }, .. } =
+            update
+            && seen == key
+        {
+            matches!(
+                message.content.first(),
+                Some(forge_primitives::ContentBlock::Text { text, .. }) if text == LEAD_RESTART_NOTE
+            )
+        } else {
+            false
+        }
+    }
+
+    /// Watch the stream until the lead connects, noting any restart turn
+    /// that arrives before or just after it. The extra `note_window`
+    /// after `Connected` is what makes a negative meaningful: the kick
+    /// dispatcher fires a first enqueue with no added latency, so a note
+    /// a first boot or `--new` should not send has to be absent by then.
+    async fn lead_boot_frames(
+        updates: &mut tokio::sync::mpsc::UnboundedReceiver<SeatUpdate>,
+        key: &SessionSlot,
+        note_window: Duration,
+    ) -> (bool, bool) {
+        let before = tokio::time::timeout(Duration::from_secs(30), async {
+            let mut note_seen = false;
+            while let Some(seat) = updates.recv().await {
+                note_seen |= is_restart_note(&seat.update, key);
+                if let SessionUpdate::Connected { key: seen, .. } = &*seat.update
+                    && seen == key
+                {
+                    return (true, note_seen);
+                }
+            }
+            (false, note_seen)
+        })
+        .await
+        .expect("the spawn reaches Connected");
+        if !before.0 {
+            return before;
+        }
+        let after = tokio::time::timeout(note_window, async {
+            while let Some(seat) = updates.recv().await {
+                if is_restart_note(&seat.update, key) {
+                    return true;
+                }
+            }
+            false
+        })
+        .await
+        .unwrap_or(false);
+        (true, before.1 || after)
+    }
+
+    /// **A boot spawn that carries a stored id hands the lead the restart
+    /// note as its first turn.** This is the whole chain: the launch
+    /// setting the boot wave sends, the spawn's stored-id gate, and the
+    /// Connected hook.
+    #[tokio::test]
+    async fn a_boot_spawn_kicks_a_resumed_lead_with_the_restart_note() {
+        let dir = tempdir().expect("tempdir");
+        let project = tempdir().expect("project");
+        let workspace = boot_lead_workspace(dir.path(), project.path());
+        let key = SessionSlot::lead("Default", "forge");
+        workspace.record_session_id(
+            "Default",
+            "forge",
+            "lead",
+            "11111111-2222-3333-4444-555555555555",
+        );
+
+        let mut updates = workspace.subscribe_mirror();
+        spawn_lead(&workspace, false, Some(LEAD_RESTART_NOTE.to_owned()));
+        let (connected, note) = lead_boot_frames(&mut updates, &key, Duration::from_secs(5)).await;
+        assert!(connected, "the lead connects before the note arrives");
+        assert!(note, "a lead with a stored id to resume is kicked with the restart note");
+        forge_agent::set_test_sdk_binary(None);
+    }
+
+    /// **A first boot carries no stored id**, so the lead it starts gets
+    /// no restart note even though the boot wave asked for one. The
+    /// `--new` test pins the same gate from the other side, where an id
+    /// exists and the launch refuses it.
+    #[tokio::test]
+    async fn a_first_boot_lead_gets_no_restart_note() {
+        let dir = tempdir().expect("tempdir");
+        let project = tempdir().expect("project");
+        let workspace = boot_lead_workspace(dir.path(), project.path());
+        let key = SessionSlot::lead("Default", "forge");
+
+        let mut updates = workspace.subscribe_mirror();
+        spawn_lead(&workspace, false, Some(LEAD_RESTART_NOTE.to_owned()));
+        let (connected, note) = lead_boot_frames(&mut updates, &key, Duration::from_secs(2)).await;
+        assert!(connected, "the lead connects, so the absence of a note is the property");
+        assert!(!note, "a first boot delivers no restart note");
+        forge_agent::set_test_sdk_binary(None);
+    }
+
+    /// **`--new` mints over the stored session**, so the lead starts fresh
+    /// even though an id exists, and gets no restart note.
+    #[tokio::test]
+    async fn a_force_new_boot_lead_gets_no_restart_note() {
+        let dir = tempdir().expect("tempdir");
+        let project = tempdir().expect("project");
+        let workspace = boot_lead_workspace(dir.path(), project.path());
+        let key = SessionSlot::lead("Default", "forge");
+        workspace.record_session_id(
+            "Default",
+            "forge",
+            "lead",
+            "11111111-2222-3333-4444-555555555555",
+        );
+
+        let mut updates = workspace.subscribe_mirror();
+        spawn_lead(&workspace, true, Some(LEAD_RESTART_NOTE.to_owned()));
+        let (connected, note) = lead_boot_frames(&mut updates, &key, Duration::from_secs(2)).await;
+        assert!(connected, "the lead connects, so the absence of a note is the property");
+        assert!(!note, "`--new` delivers no restart note over the stored session it replaced");
+        forge_agent::set_test_sdk_binary(None);
+    }
+
+    /// **A spawn with a stored id but no requested note sends none.** The
+    /// note is a request the boot wave makes, not something a resume earns:
+    /// a wake that states ordinary launch settings (a peer prompt, a cron)
+    /// resumes the seat without kicking it with a restart note. Without
+    /// this, defaulting the note whenever an id exists passes every test.
+    #[tokio::test]
+    async fn a_stored_id_without_a_requested_note_sends_none() {
+        let dir = tempdir().expect("tempdir");
+        let project = tempdir().expect("project");
+        let workspace = boot_lead_workspace(dir.path(), project.path());
+        let key = SessionSlot::lead("Default", "forge");
+        workspace.record_session_id(
+            "Default",
+            "forge",
+            "lead",
+            "11111111-2222-3333-4444-555555555555",
+        );
+
+        let mut updates = workspace.subscribe_mirror();
+        spawn_lead(&workspace, false, None);
+        let (connected, note) = lead_boot_frames(&mut updates, &key, Duration::from_secs(2)).await;
+        assert!(connected, "the lead connects, so the absence of a note is the property");
+        assert!(!note, "a spawn that was not asked for the note sends none");
         forge_agent::set_test_sdk_binary(None);
     }
 
@@ -14304,7 +14508,7 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-auto_start = true
+resume_lead = true
 model = "claude-sonnet-5"
 
 [[accounts]]
@@ -14332,7 +14536,7 @@ accounts = ["Personal", "OpenRouter-TM"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-auto_start = true
+resume_lead = true
 model = "deepseek-v4.1-flash"
 
 [[accounts]]
@@ -14375,7 +14579,7 @@ accounts = ["Personal"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-auto_start = true
+resume_lead = true
 model = "claude-opus-5"
 env = { RELOADED = "yes" }
 
@@ -14856,7 +15060,7 @@ accounts = ["Personal"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-auto_start = true
+resume_lead = true
 model = "claude-opus-5"
 
 [[accounts]]
@@ -14882,10 +15086,11 @@ provider = "anthropic"
         );
     }
 
-    /// A project the edit adds with `auto_start` starts as it would at boot;
-    /// a project already declared is not restarted by the reload.
+    /// A project the edit adds with `resume_lead` starts without the
+    /// launch's restart note (and without `--new`); a project already
+    /// declared is not restarted by the reload.
     #[tokio::test]
-    async fn a_reload_starts_only_a_newly_added_auto_start_project() {
+    async fn a_reload_starts_only_a_newly_added_resume_lead_project() {
         let dir = make_workspace_dir();
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         workspace.enable_test_dispatch_intercept();
@@ -14900,13 +15105,13 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-auto_start = true
+resume_lead = true
 model = "claude-sonnet-5"
 
 [[orgs.projects]]
 name = "fresh"
 path = "~/Projects/fresh"
-auto_start = true
+resume_lead = true
 model = "claude-sonnet-5"
 
 [[accounts]]
@@ -14920,18 +15125,24 @@ provider = "anthropic"
 
         workspace.reload_config().expect("the new file is valid");
 
-        let spawned: Vec<String> = workspace
+        let spawned: Vec<(String, SessionLaunchSettings)> = workspace
             .drain_test_dispatch_buffer()
             .into_iter()
             .filter_map(|command| match command {
-                Command::SpawnProject { project_name, .. } => Some(project_name),
+                Command::SpawnProject { project_name, launch_settings } => {
+                    Some((project_name, launch_settings))
+                }
                 _ => None,
             })
             .collect();
         assert_eq!(
-            spawned,
-            vec!["fresh".to_owned()],
+            spawned.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>(),
+            vec!["fresh"],
             "only the project the edit added starts; the running one is left alone",
+        );
+        assert!(
+            spawned[0].1.resume_kick.is_none(),
+            "a config reload starts the project without the boot restart note",
         );
     }
 
@@ -15081,7 +15292,7 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-auto_start = true
+resume_lead = true
 model = "claude-sonnet-5"
 
 [[orgs.projects]]
@@ -15249,7 +15460,7 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-auto_start = true
+resume_lead = true
 model = "claude-sonnet-5"
 
 [[orgs.projects]]
@@ -15298,7 +15509,7 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-auto_start = true
+resume_lead = true
 
 [[accounts]]
 display_name = "Stargate"
@@ -15335,7 +15546,7 @@ accounts = ["Stargate", "Gateway"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-auto_start = true
+resume_lead = true
 model = "claude-sonnet-5"
 
 [[accounts]]
@@ -15912,7 +16123,7 @@ accounts = ["Stargate", "Gateway"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-auto_start = true
+resume_lead = true
 model = "claude-sonnet-5"
 
 [orgs.projects.env]
@@ -16022,7 +16233,7 @@ accounts = ["Stargate", "Gateway"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-auto_start = true
+resume_lead = true
 model = "claude-sonnet-5"
 
 [[accounts]]
@@ -16891,7 +17102,7 @@ provider = "anthropic"
 
     /// Any second wake of a live project reaches the fast path: a cron,
     /// a peer prompt, a gotify message, a slack delivery or the boot
-    /// auto-start wave landing after one of them. It announces the same
+    /// wave landing after one of them. It announces the same
     /// key the live session already holds, so a view has one bucket
     /// rather than a second one to retire.
     #[test]
@@ -18187,7 +18398,7 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-auto_start = true
+resume_lead = true
 
 [[accounts]]
 display_name = "Stargate"
@@ -20005,6 +20216,64 @@ mod worker_respawn_tests {
         assert!(
             DYNAMIC_WORKER_RESTART_NOTE.contains("still do the concrete asks"),
             "the note keeps the brief's asks, which are usually right",
+        );
+    }
+
+    /// The lead restart note is the first turn a boot-resumed lead reads.
+    /// Pinned so it sends the lead to the handoff and the board before it
+    /// acts, keeps the history conditional (a refused resume falls back to
+    /// a fresh one), and goes to the clock over a stale history.
+    #[test]
+    fn the_lead_restart_note_names_the_handoff_the_board_and_the_clock() {
+        assert!(LEAD_RESTART_NOTE.contains("forge restarted"), "the note says what happened");
+        assert!(
+            LEAD_RESTART_NOTE.contains("handoff.md` in the project's memory directory"),
+            "the note names where the handoff lives, not only its filename",
+        );
+        assert!(
+            LEAD_RESTART_NOTE.contains("task board before acting"),
+            "the note sends the lead to the board before it acts",
+        );
+        assert!(
+            LEAD_RESTART_NOTE.contains("they say what was in flight"),
+            "the note names the handoff and the board as the source, not the history",
+        );
+        assert!(
+            LEAD_RESTART_NOTE.contains("Continue that work and do not restart what is finished"),
+            "the note tells the lead to carry on and not redo finished work",
+        );
+        assert!(
+            LEAD_RESTART_NOTE.contains("treat it as the record of this seat's last run"),
+            "a history that IS present is named as this seat's own record",
+        );
+        assert!(
+            LEAD_RESTART_NOTE.contains("If a prior conversation is in the history above"),
+            "the history is conditional, so the note stays true over a fresh fallback",
+        );
+        assert!(
+            LEAD_RESTART_NOTE.contains(
+                "If the history's timestamps disagree with the clock and the live schedules, \
+                 believe the clock and the schedules"
+            ),
+            "the note names the whole condition and which side wins",
+        );
+    }
+
+    /// A boot spawn's restart note is delivered only when the spawn
+    /// carries a stored id to resume: a first boot, or `--new`, sends
+    /// nothing even though the boot wave asked for the note.
+    #[test]
+    fn a_resume_kick_reaches_only_a_spawn_with_a_stored_id() {
+        let note = || Some("continue where you left off".to_owned());
+        assert_eq!(
+            resume_kick_for(true, note()),
+            note(),
+            "a spawn with a stored id takes the note",
+        );
+        assert!(resume_kick_for(false, note()).is_none(), "a first boot delivers none");
+        assert!(
+            resume_kick_for(true, None).is_none(),
+            "and a caller that asked for no note gets none",
         );
     }
 
@@ -23641,7 +23910,7 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-auto_start = true
+resume_lead = true
 model = "claude-sonnet-5"
 
 [[accounts]]
@@ -23684,7 +23953,7 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-auto_start = true
+resume_lead = true
 model = "claude-sonnet-5"
 
 [[accounts]]
@@ -23798,7 +24067,7 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-auto_start = true
+resume_lead = true
 model = "claude-sonnet-5"
 
 [[accounts]]
@@ -23859,7 +24128,7 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-auto_start = true
+resume_lead = true
 model = "claude-sonnet-5"
 
 [[accounts]]
@@ -23909,7 +24178,7 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-auto_start = true
+resume_lead = true
 model = "claude-sonnet-5"
 
 [[accounts]]
@@ -24034,7 +24303,7 @@ accounts = ["Alpha", "Beta"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-auto_start = true
+resume_lead = true
 
 [[accounts]]
 display_name = "Alpha"
@@ -24298,7 +24567,7 @@ fallback_accounts = ["OpenRouter-TM"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-auto_start = true
+resume_lead = true
 model = "deepseek-v4.1-flash"
 
 [[accounts]]
@@ -24332,7 +24601,7 @@ accounts = ["Personal", "OpenRouter-TM"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-auto_start = true
+resume_lead = true
 model = "deepseek-v4.1-flash"
 
 [[accounts]]
@@ -24999,7 +25268,7 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "proj"
 path = "{}"
-auto_start = true
+resume_lead = true
 model = "claude-sonnet-5"
 
 [[accounts]]
@@ -25204,7 +25473,7 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "proj"
 path = "{}"
-auto_start = true
+resume_lead = true
 model = "claude-sonnet-5"
 
 [[accounts]]
@@ -25265,7 +25534,7 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "proj"
 path = "{}"
-auto_start = true
+resume_lead = true
 model = "claude-sonnet-5"
 
 [[accounts]]

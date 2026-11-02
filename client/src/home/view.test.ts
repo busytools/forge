@@ -6,6 +6,7 @@ import { boardWire, homeWire } from '../dev/fixture.data';
 import { boardFrom, type BoardWire } from '../wire/board';
 import type {
   AgentRow,
+  AttentionRow,
   BoardRow,
   DictateModel,
   FleetRow,
@@ -17,7 +18,7 @@ import type {
   WireTime,
   WorkState,
 } from '../wire/home';
-import { homeFrom, missFrom } from '../wire/home';
+import { attentionFrom, homeFrom, missFrom } from '../wire/home';
 
 describe('an agent row from a server that names no failure', () => {
   /**
@@ -65,6 +66,64 @@ describe('an agent row from a server that names no failure', () => {
     ).toBeNull();
   });
 });
+
+describe('a decision wait from the wire', () => {
+  const wait = {
+    task: 't1',
+    owner: 'lead',
+    subject: 'the parser',
+    words: 'sign this off',
+    at: { secs_since_epoch: 5, nanos_since_epoch: 0 },
+  };
+
+  it('narrows a real item and refuses a malformed one', () => {
+    expect(attentionFrom(wait)).toEqual(wait);
+    expect(() => attentionFrom({ task: 't1' }), 'a missing field is refused').toThrow(
+      'a decision wait this page cannot read',
+    );
+    expect(
+      () => attentionFrom({ ...wait, at: {} }),
+      'an object with no numbers is no time, and would draw NaNd',
+    ).toThrow('a decision wait this page cannot read');
+  });
+
+  /// **One unreadable wait does not blank the home.** The bad item is
+  /// dropped; the fleet, and every other read, still draws.
+  it('keeps the home when one item is unreadable', () => {
+    const raw = {
+      projects: [],
+      agents: [],
+      fleet: [
+        {
+          project: 'proj',
+          live_workers: 0,
+          slots: 2,
+          queue: 0,
+          waiting_on_user: 1,
+          attention: [wait, { task: 't2' }],
+          rows: 0,
+          misses: [],
+        },
+      ],
+      unseen: [],
+      accounts: {
+        loading: [],
+        all_loaded: true,
+        gateway: { ready: true, port: 0, bind_error: null },
+        usage: [],
+      },
+      connectors: null,
+      dictate: { enabled: false, snapshot: { models: [], failure: null }, models_dir: null },
+      cli_version: null,
+      forge_version: '1.0.0',
+      forge_version_short: '1.0.0',
+      service_status: null,
+      fatal_error: null,
+    };
+    const parsed = homeFrom(raw as unknown as HomeWire);
+    expect(parsed.fleet[0]?.attention, 'the readable item survives').toEqual([wait]);
+  });
+});
 import { components, extensionsWire } from '../extensions/testing';
 import {
   artifactLabel,
@@ -82,6 +141,7 @@ import {
   markOf,
   modelState,
   projectRows,
+  rankOf,
   refusal,
   settingsCard,
   whenOf,
@@ -150,13 +210,19 @@ const FLEET: HomeWire = {
 };
 
 /** One fleet row's counts, whose project the fixture's orgs resolve. */
-function fleetRow(project: string, live: number, rows = 0): FleetRow {
+function fleetRow(
+  project: string,
+  live: number,
+  rows = 0,
+  attention: AttentionRow[] = [],
+): FleetRow {
   return {
     project,
     live_workers: live,
     slots: 2,
     queue: 0,
-    waiting_on_user: 0,
+    waiting_on_user: attention.length,
+    attention,
     rows,
     misses: [],
   };
@@ -303,6 +369,8 @@ const LEAD_ROW: Row = {
   place: { branch: null, files: null },
   tree: null,
   gate: null,
+  waits: [],
+  attention: 0,
   task: null,
   pending: null,
   reason: null,
@@ -365,6 +433,91 @@ describe('the fleet the snapshot describes', () => {
     ]);
   });
 
+  /// **A decision wait is the person's, and both the project and the seat it
+  /// names carry it** (#2756): the mark counts, and the row it belongs to
+  /// ranks with the attention states rather than under a merely busy seat.
+  it('counts the decision waits a project holds, on its row and its seat', () => {
+    const wait: AttentionRow = {
+      task: 't1',
+      owner: 'lead',
+      subject: 'the parser',
+      words: 'sign this off',
+      at: { secs_since_epoch: 5, nanos_since_epoch: 0 },
+    };
+    const fleet = fleetRows({ ...FLEET, fleet: [fleetRow('forge', 1, 0, [wait])] });
+    expect(fleet[0]?.waits.length, 'the project carries the count').toBe(1);
+    expect(fleet[0]?.seats[0]?.attention, 'and the seat it names carries one').toBe(1);
+    expect(
+      fleet[0]?.seats[0] && rankOf(fleet[0].seats[0].state, null, 1),
+      'a wait ranks with the attention states',
+    ).toBe(0);
+
+    const rows = rowsOf({ ...FLEET, fleet: [fleetRow('forge', 1, 0, [wait])] });
+    expect(rows.waits, 'the rail is handed the wait itself').toEqual([wait]);
+    expect(rows.lead.attention, 'and its lead row counts it').toBe(1);
+  });
+
+  /// **Two open waits on one seat are two.** A batch collapses into one
+  /// notification, and the mark and its popover still carry both.
+  it('counts two decision waits on one seat as two', () => {
+    const at = (secs: number): WireTime => ({ secs_since_epoch: secs, nanos_since_epoch: 0 });
+    const waits: AttentionRow[] = [
+      { task: 't1', owner: 'lead', subject: 'the parser', words: 'sign this off', at: at(5) },
+      { task: 't2', owner: 'lead', subject: 'the schema', words: 'pick one', at: at(9) },
+    ];
+    const fleet = fleetRows({ ...FLEET, fleet: [fleetRow('forge', 1, 0, waits)] });
+    expect(fleet[0]?.waits.length, 'the project counts both').toBe(2);
+    expect(fleet[0]?.seats[0]?.attention, 'and the seat it names holds both').toBe(2);
+    expect(fleet[0]?.seats[0]?.waits, 'with the items behind its count').toEqual(waits);
+
+    const rows = rowsOf({ ...FLEET, fleet: [fleetRow('forge', 1, 0, waits)] });
+    expect(rows.lead.attention, 'the rail row counts both').toBe(2);
+    expect(rows.lead.waits, 'and lists them').toEqual(waits);
+  });
+
+  /// **A wait outlives the seat that raised it** (review focus 5): a
+  /// sleeping project draws no worker row, so the project mark is the only
+  /// place its decision wait can be seen.
+  it('keeps a seatless wait counted on its project', () => {
+    const wait: AttentionRow = {
+      task: 't1',
+      owner: 'gone',
+      subject: 'the parser',
+      words: 'sign this off',
+      at: { secs_since_epoch: 5, nanos_since_epoch: 0 },
+    };
+    const wire: HomeWire = { ...FLEET, fleet: [fleetRow('forge', 0, 0, [wait])] };
+    const fleet = fleetRows(wire);
+    expect(fleet[0]?.waits.length, 'the project counts a wait whose seat has no row').toBe(1);
+    expect(
+      fleet[0]?.seats.map((seat) => seat.label),
+      'and the fixture draws no row for that seat',
+    ).not.toContain('gone');
+    expect(
+      fleetGroups(fleet)[0]?.heading,
+      'the project itself ranks with the attention states, so the rail cannot fold it',
+    ).toBe('needs you');
+    expect(rowsOf(wire).waits, 'the rail is still handed the wait').toEqual([wait]);
+  });
+
+  /// **A wait ends when its row leaves waiting** (review focus 2), and looks
+  /// spend nothing: the mark is derived from the reads the board already
+  /// pushes, so the read without the wait draws no mark.
+  it('drops a mark when its wait leaves the board, with nobody having opened the seat', () => {
+    const wait: AttentionRow = {
+      task: 't1',
+      owner: 'lead',
+      subject: 'the parser',
+      words: 'sign this off',
+      at: { secs_since_epoch: 5, nanos_since_epoch: 0 },
+    };
+    const held = { ...FLEET, fleet: [fleetRow('forge', 1, 0, [wait])] };
+    expect(fleetRows(held)[0]?.waits.length, 'the wait is marked').toBe(1);
+    const answered = { ...FLEET, fleet: [fleetRow('forge', 1, 0, [])] };
+    expect(fleetRows(answered)[0]?.waits.length, 'the answered read draws no mark').toBe(0);
+    expect(rowsOf(answered).waits, 'and hands the rail nothing').toEqual([]);
+  });
+
   /**
    * **The fleet row's age is the project's own**: the newest write among the
    * seats it holds, or nothing at all when none of them has written. It is
@@ -385,7 +538,7 @@ describe('the fleet the snapshot describes', () => {
       // A project with no seat left holds its age in its own catalog: a seat
       // exists only while a session does, so the seats alone would word
       // `never` over a project that wrote ten minutes ago - which every
-      // non-`auto_start` project is, after a restart.
+      // non-`resume_lead` project is, after a restart.
       projects: [
         project('Busytools', 'forge'),
         withSessions(project('Busytools', 'notes'), at(2_500)),
@@ -435,6 +588,8 @@ describe('the fleet the snapshot describes', () => {
               label: 'lead',
               state: { kind: 'lifecycle', lifecycle: 'Idle' },
               pending: null,
+              waits: [],
+              attention: 0,
               href: '/session/TestOrg/proj/lead',
             },
           ],
@@ -445,7 +600,7 @@ describe('the fleet the snapshot describes', () => {
   });
 
   it('marks a seatless project asleep when the catalog remembers a session', () => {
-    // After a forge restart only auto_start projects get seats, so the fleet
+    // After a forge restart only resume_lead projects get seats, so the fleet
     // is mostly seatless with history. The rail's dormant row already reads
     // that history and draws Sleeping; the home used to seed the same project
     // never-started, so one surface said `never` while the other said asleep
@@ -557,6 +712,7 @@ describe('the fleet the snapshot describes', () => {
           slots: 2,
           queue: 3,
           waiting_on_user: 1,
+          attention: [],
           rows: 4,
           misses: [
             { kind: 'stalled', label: 'queue is stalling' },
@@ -578,7 +734,6 @@ describe('the fleet the snapshot describes', () => {
       'unknown',
     ]);
     expect(rows[0]?.misses[3]?.label).toContain('no model declared');
-    expect(rows[0]?.onYou).toBe(1);
     // And the raw wire's own shapes narrow to those names.
     expect(missFrom('stalled_queue')).toEqual({ kind: 'stalled', label: 'queue is stalling' });
     expect(missFrom({ unaccounted_worker: 'w1' })).toEqual({

@@ -318,8 +318,8 @@ pub struct SlackThreadOwner {
 }
 
 /// What the store keeps about one followed thread: how far its replies have
-/// been read, and the sessions whose subscriptions put the thread on their
-/// radar.
+/// been read, the newest edit already handed over, and the sessions whose
+/// subscriptions put the thread on their radar.
 ///
 /// The cursor is usually the string Slack sent, but not always: a thread
 /// forge starts tracking seeds it one microsecond below the reply that
@@ -330,6 +330,13 @@ pub struct SlackThreadOwner {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SlackThreadRecord {
     pub cursor: String,
+    /// The newest edit stamp this thread has already handed over. Durable
+    /// with the row: held in memory only, a restart re-offers every
+    /// correction in the thread on the next whole read. A row written before
+    /// this field existed reads as `None` and is approximated by its cursor,
+    /// which drops an unjudged edit below that cursor and can re-offer an
+    /// already-handed one above it.
+    pub edit_watermark: Option<String>,
     pub owners: Vec<SlackThreadOwner>,
     /// Whether the user is in this thread, once that has been read off its
     /// replies. Kept because a reply cannot un-happen: once true, every walk

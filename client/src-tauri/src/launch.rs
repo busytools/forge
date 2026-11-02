@@ -24,6 +24,17 @@ use std::time::{Duration, SystemTime};
 use forge_primitives::SessionSlot;
 use tauri::Manager as _;
 
+/// What a notification tap opens: the seat that raised it, and whether the
+/// ask lives on the board (a decision wait) rather than in the seat's chat.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct TapTarget {
+    #[serde(flatten)]
+    pub seat: SessionSlot,
+    /// Absent on a notification an older build posted, and on every ask.
+    #[serde(default)]
+    pub board: bool,
+}
+
 /// The activity launch this process last answered.
 ///
 /// **The launch's seat belongs to one activity launch**: a later page load in
@@ -71,13 +82,13 @@ impl Seats {
     /// Remember the seat a raised notification opens, and drop what no
     /// notification can name any more.
     #[cfg(any(target_os = "android", test))]
-    fn record(&self, id: i32, seat: &SessionSlot) {
-        let held = match serde_json::to_string(seat) {
+    fn record(&self, id: i32, target: &TapTarget) {
+        let held = match serde_json::to_string(target) {
             Ok(held) => held,
             Err(why) => {
                 tauri_plugin_log::log::warn!(
                     "the seat of {} was not remembered: {why}",
-                    seat.display(),
+                    target.seat.display(),
                 );
                 return;
             }
@@ -89,7 +100,7 @@ impl Seats {
             // line names the seat that will open home instead.
             tauri_plugin_log::log::warn!(
                 "the seat of {} was not remembered: {why}",
-                seat.display(),
+                target.seat.display(),
             );
             return;
         }
@@ -97,10 +108,10 @@ impl Seats {
     }
 
     /// The seat of one notification, left for whichever reader comes next.
-    fn peek(&self, id: i32) -> Option<SessionSlot> {
+    fn peek(&self, id: i32) -> Option<TapTarget> {
         let held = std::fs::read_to_string(self.file(id)).ok()?;
         match serde_json::from_str(&held) {
-            Ok(seat) => Some(seat),
+            Ok(target) => Some(target),
             Err(why) => {
                 tauri_plugin_log::log::warn!("a remembered seat could not be read: {why}");
                 None
@@ -110,12 +121,12 @@ impl Seats {
 
     /// The seat of one tapped notification, taken once: a page that asks
     /// again (a reload) is not pulled back to a seat it already opened.
-    fn take(&self, id: i32) -> Option<SessionSlot> {
-        let seat = self.peek(id);
+    fn take(&self, id: i32) -> Option<TapTarget> {
+        let target = self.peek(id);
         // **Taken whether or not it parses**: an unreadable entry can never
         // name a seat, and leaving it would keep it for the store's life.
         let _ = std::fs::remove_file(self.file(id));
-        seat
+        target
     }
 
     #[cfg(any(target_os = "android", test))]
@@ -138,7 +149,7 @@ impl Seats {
 ///
 /// Every launch that no notification opened answers `None`, which is every
 /// launch on the desktop as well.
-pub(crate) async fn take(app: &tauri::AppHandle) -> Option<SessionSlot> {
+pub(crate) async fn take(app: &tauri::AppHandle) -> Option<TapTarget> {
     let ask = tapped(app).await?;
     asked(&ask, Seats::open(app).as_ref())
 }
@@ -148,7 +159,7 @@ pub(crate) async fn take(app: &tauri::AppHandle) -> Option<SessionSlot> {
 /// **The launch is counted whether or not it names a tap**: a warm tap lands
 /// on a launch whose first ask named nothing, and that ask must still arm the
 /// latch, or the reload after the tap would take a seat the tap itself opened.
-fn asked(ask: &Ask, seats: Option<&Seats>) -> Option<SessionSlot> {
+fn asked(ask: &Ask, seats: Option<&Seats>) -> Option<TapTarget> {
     answered(first_for(ask.launch), seats, ask.id)
 }
 
@@ -157,7 +168,7 @@ fn asked(ask: &Ask, seats: Option<&Seats>) -> Option<SessionSlot> {
 /// **The guard runs before the store is read**: a reload answers nothing and
 /// must not take the seat either, or the activity launch that follows would
 /// find it gone.
-fn answered(first: bool, seats: Option<&Seats>, id: Option<i32>) -> Option<SessionSlot> {
+fn answered(first: bool, seats: Option<&Seats>, id: Option<i32>) -> Option<TapTarget> {
     if !first {
         return None;
     }
@@ -184,7 +195,7 @@ fn first_for(_launch: i32) -> bool {
 /// the activity's new intent while a cold start has the page ask for the same
 /// id, and neither may consume the other's entry.
 #[cfg(target_os = "android")]
-pub(crate) fn seat(app: &tauri::AppHandle, id: i32) -> Option<SessionSlot> {
+pub(crate) fn seat(app: &tauri::AppHandle, id: i32) -> Option<TapTarget> {
     Seats::open(app)?.peek(id)
 }
 
@@ -245,10 +256,11 @@ fn next_id() -> i32 {
 /// Remember a notification's seat before it is raised, and answer the id the
 /// notification must carry for a tap on it to name the seat.
 #[cfg(target_os = "android")]
-pub(crate) fn remember(app: &tauri::AppHandle, seat: &SessionSlot) -> i32 {
+pub(crate) fn remember(app: &tauri::AppHandle, seat: &SessionSlot, board: bool) -> i32 {
     let id = next_id();
+    let target = TapTarget { seat: seat.clone(), board };
     match Seats::open(app) {
-        Some(seats) => seats.record(id, seat),
+        Some(seats) => seats.record(id, &target),
         None => {
             tauri_plugin_log::log::warn!(
                 "the seat of {} was not remembered: the app's data dir is not there",
@@ -326,6 +338,11 @@ mod tests {
         SessionSlot::lead("Busytools", "forge")
     }
 
+    /// A chat ask's target: the seat, and not the board.
+    fn seated(seat: SessionSlot) -> TapTarget {
+        TapTarget { seat, board: false }
+    }
+
     fn store() -> (tempfile::TempDir, Seats) {
         let dir = tempfile::tempdir().expect("a temp dir");
         let seats = Seats::at(dir.path().to_path_buf());
@@ -337,9 +354,30 @@ mod tests {
     #[test]
     fn a_tapped_notification_names_its_seat_once() {
         let (_dir, seats) = store();
-        seats.record(7, &lead());
-        assert_eq!(seats.take(7), Some(lead()));
+        seats.record(7, &seated(lead()));
+        assert_eq!(seats.take(7), Some(seated(lead())));
         assert_eq!(seats.take(7), None, "the seat is taken once");
+    }
+
+    /// **A decision wait's tap remembers the board**, not only the seat: the
+    /// target is what the page routes on, and it survives the same way.
+    #[test]
+    fn a_wait_tap_remembers_the_board() {
+        let (_dir, seats) = store();
+        seats.record(11, &TapTarget { seat: lead(), board: true });
+        assert_eq!(seats.take(11), Some(TapTarget { seat: lead(), board: true }));
+    }
+
+    /// **An entry posted by a build that did not know the board flag still
+    /// names its seat**: the flag defaults to false, so an older
+    /// notification opens its chat rather than a cold start with no route.
+    #[test]
+    fn an_entry_without_the_board_flag_still_names_its_seat() {
+        let (_dir, seats) = store();
+        std::fs::create_dir_all(&seats.dir).expect("this test's own dir");
+        std::fs::write(seats.file(7), br#"{"org":"Busytools","project":"forge","label":"lead"}"#)
+            .expect("this test's own file");
+        assert_eq!(seats.peek(7), Some(seated(lead())));
     }
 
     /// A launch no notification opened names nothing.
@@ -354,7 +392,7 @@ mod tests {
     #[test]
     fn a_corrupt_entry_is_taken_and_names_nothing() {
         let (_dir, seats) = store();
-        seats.record(7, &lead());
+        seats.record(7, &seated(lead()));
         std::fs::write(seats.file(7), b"not a seat").expect("this test's own file");
         assert_eq!(seats.take(7), None);
         assert!(!seats.file(7).exists(), "the unreadable entry was left behind");
@@ -365,10 +403,10 @@ mod tests {
     #[test]
     fn a_read_leaves_the_seat_for_the_page() {
         let (_dir, seats) = store();
-        seats.record(7, &lead());
-        assert_eq!(seats.peek(7), Some(lead()), "the warm report reads the seat");
-        assert_eq!(seats.peek(7), Some(lead()), "and leaves it where it was");
-        assert_eq!(seats.take(7), Some(lead()), "so the page still gets it");
+        seats.record(7, &seated(lead()));
+        assert_eq!(seats.peek(7), Some(seated(lead())), "the warm report reads the seat");
+        assert_eq!(seats.peek(7), Some(seated(lead())), "and leaves it where it was");
+        assert_eq!(seats.take(7), Some(seated(lead())), "so the page still gets it");
         assert_eq!(seats.peek(7), None, "and only the take removes it");
     }
 
@@ -378,10 +416,10 @@ mod tests {
     fn each_notification_keeps_its_own_seat() {
         let (_dir, seats) = store();
         let worker = SessionSlot::worker("Busytools", "forge", "w1");
-        seats.record(7, &lead());
-        seats.record(8, &worker);
-        assert_eq!(seats.take(8), Some(worker));
-        assert_eq!(seats.take(7), Some(lead()));
+        seats.record(7, &seated(lead()));
+        seats.record(8, &seated(worker.clone()));
+        assert_eq!(seats.take(8), Some(seated(worker)));
+        assert_eq!(seats.take(7), Some(seated(lead())));
     }
 
     /// **The litter is bounded by the notification's own life**: a seat no
@@ -390,7 +428,7 @@ mod tests {
     #[test]
     fn a_raise_drops_seats_no_notification_can_name() {
         let (_dir, seats) = store();
-        seats.record(1, &lead());
+        seats.record(1, &seated(lead()));
         let stale = seats.file(1);
         let old = SystemTime::now() - KEEP - Duration::from_secs(1);
         std::fs::File::options()
@@ -400,10 +438,10 @@ mod tests {
             .set_modified(old)
             .expect("an entry this test owns");
 
-        seats.record(2, &lead());
+        seats.record(2, &seated(lead()));
 
         assert!(!stale.exists(), "an expired seat was kept");
-        assert_eq!(seats.take(2), Some(lead()), "the raise dropped its own entry");
+        assert_eq!(seats.take(2), Some(seated(lead())), "the raise dropped its own entry");
     }
 
     /// **One activity launch answers once**: a page reload is not a launch,
@@ -421,12 +459,12 @@ mod tests {
     #[test]
     fn a_reload_answers_nothing_and_leaves_the_seat() {
         let (_dir, seats) = store();
-        seats.record(7, &lead());
+        seats.record(7, &seated(lead()));
         assert_eq!(answered(false, Some(&seats), Some(7)), None, "a reload is not the launch");
-        assert_eq!(seats.peek(7), Some(lead()), "and a reload does not take the seat");
+        assert_eq!(seats.peek(7), Some(seated(lead())), "and a reload does not take the seat");
         assert_eq!(
             answered(true, Some(&seats), Some(7)),
-            Some(lead()),
+            Some(seated(lead())),
             "the launch's own ask still answers it",
         );
     }
@@ -437,20 +475,20 @@ mod tests {
     #[test]
     fn a_launch_that_names_no_tap_still_arms_the_latch() {
         let (_dir, seats) = store();
-        seats.record(7, &lead());
+        seats.record(7, &seated(lead()));
         // The launcher starts the app: the first ask names no tap.
         assert_eq!(asked(&Ask { id: None, launch: 51 }, Some(&seats)), None);
         // A warm tap then opens the seat from the store without taking it ...
-        assert_eq!(seats.peek(7), Some(lead()), "the warm report left the seat");
+        assert_eq!(seats.peek(7), Some(seated(lead())), "the warm report left the seat");
         // ... and a reload in the same activity asks again, now naming the tap.
         assert_eq!(
             asked(&Ask { id: Some(7), launch: 51 }, Some(&seats)),
             None,
             "a reload after a warm tap must not open the seat",
         );
-        assert_eq!(seats.peek(7), Some(lead()), "and must not take it either");
+        assert_eq!(seats.peek(7), Some(seated(lead())), "and must not take it either");
         // The next activity launch is the launch that answers it.
-        assert_eq!(asked(&Ask { id: Some(7), launch: 52 }, Some(&seats)), Some(lead()));
+        assert_eq!(asked(&Ask { id: Some(7), launch: 52 }, Some(&seats)), Some(seated(lead())));
     }
 
     /// **Two notifications of one run never share an id**, or the second

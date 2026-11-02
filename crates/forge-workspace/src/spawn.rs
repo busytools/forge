@@ -3193,7 +3193,7 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "{project_path}"
-auto_start = true
+resume_lead = true
 model = "claude-sonnet-5"
 
 [[accounts]]
@@ -3652,12 +3652,12 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-auto_start = true
+resume_lead = true
 
 [[orgs.projects]]
 name = "gateway-backend"
 path = "~/Projects/gateway-backend"
-auto_start = false
+resume_lead = false
 
 [[accounts]]
 display_name = "Stargate"
@@ -9011,7 +9011,7 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "{project_path}"
-auto_start = true
+resume_lead = true
 
 [[accounts]]
 display_name = "Stargate"
@@ -9150,7 +9150,7 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "{project_path}"
-auto_start = true
+resume_lead = true
 
 [[accounts]]
 display_name = "Stargate"
@@ -10197,9 +10197,9 @@ mod lead_charter_tests {
     }
 
     /// The attention rule is the lead's posture toward the user, and both
-    /// halves read as the opposite of themselves when softened: the two
-    /// shapes become "ask when unsure", and the spec half becomes a
-    /// check-in. Pinned so a later edit cannot unship either silently.
+    /// halves read as the opposite of themselves when softened: the shapes
+    /// become "ask when unsure", and the spec half becomes a check-in.
+    /// Pinned so a later edit cannot unship either silently.
     #[test]
     fn lead_charter_carries_the_attention_rule() {
         assert!(
@@ -10207,14 +10207,19 @@ mod lead_charter_tests {
                 "Nothing waits on the user except a hold the user \
                  explicitly asked for"
             ),
-            "the two-shape rule's opening is pinned",
+            "the rule's opening is pinned",
+        );
+        assert!(
+            DEFAULT_LEAD_CHARTER
+                .contains("a look they should give when they return (the board's decision wait)"),
+            "the at-convenience look is pinned beside the hold",
         );
         assert!(
             DEFAULT_LEAD_CHARTER.contains(
                 "the decision model, peer opinions and your own review already spent - something \
                  still genuinely ambiguous"
             ),
-            "shape (b)'s channels and its bar are pinned together",
+            "shape (c)'s channels and its bar are pinned together",
         );
         assert!(
             DEFAULT_LEAD_CHARTER.contains("A spec that exists is followed without check-ins"),

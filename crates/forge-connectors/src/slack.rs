@@ -117,7 +117,10 @@ pub trait SlackHost: Send + Sync {
     /// The newest edit stamp a whole read has already judged. A whole read
     /// tests `edited` against this, never against the reply cursor: the cheap
     /// tick moves the cursor to the newest reply, and an edit below it would
-    /// otherwise be behind the cursor forever.
+    /// otherwise be behind the cursor forever. **Durable with the thread
+    /// row**, not process state: a restart that lost it would judge every
+    /// edited reply against nothing and re-offer corrections already
+    /// delivered.
     fn thread_edit_watermark(
         &self,
         workspace: &str,
@@ -3712,6 +3715,14 @@ mod tests {
                 .insert(format!("{workspace}/{conversation}/{parent}"), at);
         }
 
+        /// Drop every process-lifetime clock and keep every durable record:
+        /// the state a restarted process starts from.
+        fn restart(&self) {
+            self.thread_full_reads.lock().expect("lock").clear();
+            self.thread_first_walks.lock().expect("lock").clear();
+            self.thread_edit_watermarks.lock().expect("lock").clear();
+        }
+
         fn history_calls(&self) -> usize {
             *self.history_calls.lock().expect("lock")
         }
@@ -3922,6 +3933,7 @@ mod tests {
                 .entry(format!("{workspace}/{conversation}/{parent_ts}"))
                 .or_insert_with(|| SlackThreadRecord {
                     cursor: String::new(),
+                    edit_watermark: None,
                     owners: Vec::new(),
                     participating: false,
                 });
@@ -3983,11 +3995,18 @@ mod tests {
             conversation: &str,
             parent_ts: &str,
         ) -> Option<String> {
-            self.thread_edit_watermarks
-                .lock()
-                .expect("lock")
-                .get(&format!("{workspace}/{conversation}/{parent_ts}"))
-                .cloned()
+            let key = format!("{workspace}/{conversation}/{parent_ts}");
+            if let Some(mark) = self.thread_edit_watermarks.lock().expect("lock").get(&key).cloned()
+            {
+                return Some(mark);
+            }
+            // The row is where a real host keeps it, so a restart reads it
+            // back instead of judging the whole thread from the beginning.
+            // A row with no stamp is approximated by its cursor, the same
+            // fallback the real host applies.
+            self.threads.lock().expect("lock").get(&key).and_then(|record| {
+                record.edit_watermark.clone().or_else(|| Some(record.cursor.clone()))
+            })
         }
 
         fn set_thread_edit_watermark(
@@ -3997,10 +4016,11 @@ mod tests {
             parent_ts: &str,
             ts: &str,
         ) {
-            self.thread_edit_watermarks
-                .lock()
-                .expect("lock")
-                .insert(format!("{workspace}/{conversation}/{parent_ts}"), ts.to_owned());
+            let key = format!("{workspace}/{conversation}/{parent_ts}");
+            self.thread_edit_watermarks.lock().expect("lock").insert(key.clone(), ts.to_owned());
+            if let Some(record) = self.threads.lock().expect("lock").get_mut(&key) {
+                record.edit_watermark = Some(ts.to_owned());
+            }
         }
 
         fn follow_thread(
@@ -4022,6 +4042,7 @@ mod tests {
                     // after the message that anchored it.
                     SlackThreadRecord {
                         cursor: since.to_owned(),
+                        edit_watermark: Some(since.to_owned()),
                         owners: Vec::new(),
                         participating: false,
                     }
@@ -5396,6 +5417,30 @@ mod tests {
                 .any(|message| message.ts == "150.0" && message.text == "the answer, corrected"),
             "and its thread's corrected reply rides the fresh read: {delivered:?}",
         );
+
+        // The conversation batch hands the correction over and advances the
+        // thread's edit stamp; the reply cursor stays at 150. A restart must
+        // read that stamp back, or the next whole read offers the 350 edit
+        // again - a mark seeded from the cursor (150) does exactly that.
+        host.restart();
+        let calls_before = host.replies_calls();
+        sweep(&host, &host, "acme").await.expect("the first sweep after a restart");
+        assert!(host.replies_calls() > calls_before, "the thread was walked after the restart");
+        assert_eq!(
+            host.replies_oldest().last(),
+            Some(&None),
+            "the walk reads the thread whole: {:?}",
+            host.replies_oldest(),
+        );
+        assert_eq!(
+            host.delivered()
+                .iter()
+                .filter(|message| message.text == "the answer, corrected")
+                .count(),
+            1,
+            "the correction is not handed over twice: {:?}",
+            host.delivered(),
+        );
     }
 
     /// A correction in a thread the user is in, with its parent never news
@@ -5518,6 +5563,89 @@ mod tests {
                 .iter()
                 .any(|message| message.ts == "150.0" && message.text == "the answer, corrected"),
             "the whole read finds the correction: {:?}",
+            host.delivered(),
+        );
+    }
+
+    /// **A correction handed over before a restart must not be handed over
+    /// again.** The edit stamp is durable with the thread row; a restart
+    /// clears the process clocks, and the first whole read after it judges
+    /// every edited reply against that stamp. Lost, the read hands the
+    /// thread's whole edit history over again, each one labelled old and
+    /// edited.
+    #[tokio::test]
+    async fn a_restart_does_not_re_deliver_an_edit_the_thread_row_already_judged() {
+        let host = FakeHost::with_subscriptions(vec![sub_conversation_owned_by(
+            "acme",
+            "forge",
+            Some("tester"),
+            "C1",
+        )]);
+        // Replies never appear in history, so only the thread walk sees
+        // them; the parent brings the thread into the sweep.
+        let parent = parent_with_latest_reply("100.0", 2, "150.0");
+        host.set_watermark("acme", "C1", "050.0");
+        host.seed_history("C1", vec![parent.clone()]);
+        host.seed_replies(
+            "C1",
+            "100.0",
+            vec![
+                parent.clone(),
+                history_message("105.0", "U1", "the user's own reply"),
+                reply("150.0", "100.0", "U8", "the answer"),
+            ],
+        );
+        sweep(&host, &host, "acme").await.expect("the trigger sweep");
+        assert!(
+            host.delivered().iter().any(|message| message.ts == "150.0"),
+            "the trigger sweep delivers the reply: {:?}",
+            host.delivered(),
+        );
+
+        // The reply is corrected; the correction lands and moves the stamp.
+        let mut corrected = reply("150.0", "100.0", "U8", "the answer, corrected");
+        corrected.edited = Some("990.0".to_owned());
+        // An edit does not move `latest_reply`, so the parent's window row
+        // is unchanged.
+        host.seed_history("C1", vec![parent_with_latest_reply("100.0", 2, "150.0")]);
+        host.seed_replies(
+            "C1",
+            "100.0",
+            vec![parent, history_message("105.0", "U1", "the user's own reply"), corrected],
+        );
+        sweep(&host, &host, "acme").await.expect("the correction's sweep");
+        assert_eq!(
+            host.delivered()
+                .iter()
+                .filter(|message| message.text == "the answer, corrected")
+                .count(),
+            1,
+            "the correction is handed over once: {:?}",
+            host.delivered(),
+        );
+
+        // A restart keeps the row and drops every process clock.
+        host.restart();
+        let calls_before = host.replies_calls();
+
+        sweep(&host, &host, "acme").await.expect("the first sweep after a restart");
+        assert!(
+            host.replies_calls() > calls_before,
+            "the thread was walked after the restart: {calls_before} calls before",
+        );
+        assert_eq!(
+            host.replies_oldest().last(),
+            Some(&None),
+            "and the first post-restart walk reads the thread whole: {:?}",
+            host.replies_oldest(),
+        );
+        assert_eq!(
+            host.delivered()
+                .iter()
+                .filter(|message| message.text == "the answer, corrected")
+                .count(),
+            1,
+            "the correction is not handed over again after the restart: {:?}",
             host.delivered(),
         );
     }
@@ -5752,6 +5880,67 @@ mod tests {
             host.delivered().iter().any(|message| message.text == "the answer, corrected"),
             "the retry still finds the correction: {:?}",
             host.delivered(),
+        );
+
+        // A newer reply moves the cursor above the correction, so the stamp,
+        // never the cursor, is what judges the next edit: a mark seeded from
+        // the cursor (500) would drop the 450 correction.
+        host.seed_replies(
+            "C1",
+            "100.0",
+            vec![
+                reply("150.0", "100.0", "U8", "the answer, corrected"),
+                reply("300.0", "100.0", "U8", "the second answer"),
+                reply("500.0", "100.0", "U8", "a newer answer"),
+            ],
+        );
+        sweep(&host, &host, "acme").await.expect("the newer reply's cheap tick");
+        assert_eq!(
+            host.thread_cursor("acme", "C1", "100.0"),
+            Some("500.0".to_owned()),
+            "the cursor moved past the correction",
+        );
+
+        // A restart empties the cache, so the mark comes from the row: 400,
+        // the last handed edit stamp, never the 500 cursor.
+        host.restart();
+        let mut later = reply("150.0", "100.0", "U8", "the answer, corrected again");
+        later.edited = Some("450.0".to_owned());
+        host.seed_replies(
+            "C1",
+            "100.0",
+            vec![
+                later,
+                reply("300.0", "100.0", "U8", "the second answer"),
+                reply("500.0", "100.0", "U8", "a newer answer"),
+            ],
+        );
+        sweep(&host, &host, "acme").await.expect("the first sweep after a restart");
+        assert_eq!(
+            host.replies_oldest().last(),
+            Some(&None),
+            "the walk reads the thread whole: {:?}",
+            host.replies_oldest(),
+        );
+        assert!(
+            host.delivered().iter().any(|message| message.text == "the answer, corrected again"),
+            "an edit below the cursor but above the stamp still arrives: {:?}",
+            host.delivered(),
+        );
+    }
+
+    /// The double mirrors the host's legacy seed: a row with no edit stamp
+    /// answers with its cursor, so a test cannot pass on a mark the real
+    /// host would derive differently.
+    #[test]
+    fn the_fake_host_seeds_an_unstamped_thread_row_from_its_cursor() {
+        let host = FakeHost::default();
+        host.set_thread_watermark("acme", "C1", "100.0", "500.0");
+
+        assert_eq!(
+            host.thread_edit_watermark("acme", "C1", "100.0").as_deref(),
+            Some("500.0"),
+            "a row with no stamp reads its cursor, as the real host does",
         );
     }
 

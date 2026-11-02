@@ -470,6 +470,7 @@ mod tests {
     fn thread_record(cursor: &str, owners: &[(&str, Option<&str>)]) -> SlackThreadRecord {
         SlackThreadRecord {
             cursor: cursor.to_owned(),
+            edit_watermark: None,
             participating: false,
             owners: owners
                 .iter()
@@ -488,11 +489,17 @@ mod tests {
 
         let record = SlackThreadRecord {
             participating: true,
+            edit_watermark: Some("1700000000.000400".to_owned()),
             ..thread_record("1700000000.000100", &[("forge", Some("tester")), ("forge", None)])
         };
         set_thread(&db, "acme", "C1", "100.000001", &record).expect("set");
         let back = thread(&db, "acme", "C1", "100.000001").expect("get").expect("present");
         assert_eq!(back.cursor, "1700000000.000100", "the cursor survives verbatim");
+        assert_eq!(
+            back.edit_watermark.as_deref(),
+            Some("1700000000.000400"),
+            "the edit stamp survives, or a restart re-offers the correction",
+        );
         assert_eq!(back.owners.len(), 2, "both owners ride along");
         assert_eq!(back.owners[0].team_role.as_deref(), Some("tester"));
         assert!(

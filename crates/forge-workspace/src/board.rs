@@ -101,6 +101,28 @@ pub enum Miss {
     UnaccountedWorker(String),
 }
 
+/// One wait that is on the person, named for the surface that raises it.
+///
+/// **The board is the store; this is the read.** A decision wait is already a
+/// row with a `waiting_on` block, and the rail draws this beside the count so
+/// the person can see what is being asked without opening the board page.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct AttentionItem {
+    /// The task's id: the wait's identity, so a raise is a new id or a new
+    /// `at` rather than a second item for the same ask.
+    pub task: String,
+    /// The seat that raised it, by its session label.
+    pub owner: String,
+    /// The row's subject, in the row's own words.
+    pub subject: String,
+    /// The ask's own words, verbatim.
+    pub words: String,
+    /// When the wait began, stamped as it is raised; a stored row without
+    /// one falls back to its creation.
+    pub at: SystemTime,
+}
+
 /// One project as the fleet page draws it.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -113,6 +135,9 @@ pub struct FleetRow {
     pub queue: usize,
     /// Rows waiting on the user's decision.
     pub waiting_on_user: usize,
+    /// The waits themselves, so the mark beside the count can say what is
+    /// being asked without the board page.
+    pub attention: Vec<AttentionItem>,
     /// Every row the project holds, which the home's header totals.
     pub rows: usize,
     pub misses: Vec<Miss>,
@@ -162,6 +187,32 @@ fn is_terminal(status: TaskStatus) -> bool {
 /// The retro marker: a link labelled `retro` on the epic.
 fn retro_ran(task: &Task) -> bool {
     task.links.iter().any(|l| l.label.as_deref() == Some("retro"))
+}
+
+/// The ask's own words, as the mark and its popover word it.
+///
+/// A detail-less wait - and a verification park, which often carries none -
+/// would otherwise draw a blank line and notify with an empty body; the row's
+/// own detail, the look a park is owed, and the subject are each a truer
+/// answer than nothing.
+fn attention_words(task: &Task) -> String {
+    let said = task.waiting_on.as_ref().and_then(|wait| wait.detail.as_deref());
+    for words in [said, task.detail.as_deref()] {
+        if let Some(words) = words.map(str::trim).filter(|words| !words.is_empty()) {
+            return words.to_owned();
+        }
+    }
+    if task.waiting_on.as_ref().is_some_and(|wait| wait.verification) {
+        return "the look is owed".to_owned();
+    }
+    let subject = task.subject.trim();
+    if subject.is_empty() {
+        // Nothing requires a subject to be non-empty; the board words a
+        // detail-less decision the same way rather than drawing a blank.
+        "A decision is waiting on you.".to_owned()
+    } else {
+        subject.to_owned()
+    }
 }
 
 impl Workspace {
@@ -264,6 +315,29 @@ impl Workspace {
                     .iter()
                     .filter(|t| t.status == TaskStatus::Waiting && crate::tasks::parked_on_user(t))
                     .count();
+                // The wait's own start, stamped as the wait is raised:
+                // `updated_at` moves on any edit of a waiting row, and a
+                // notification keyed on it would fire again for an edit that
+                // answered nothing. A row stored before the field existed
+                // falls back to its creation, not to that edit.
+                let attention = tasks
+                    .iter()
+                    .filter(|t| t.status == TaskStatus::Waiting && crate::tasks::parked_on_user(t))
+                    .map(|t| AttentionItem {
+                        task: t.id.as_str().to_owned(),
+                        owner: t
+                            .owner
+                            .as_ref()
+                            .map_or_else(|| "lead".to_owned(), |seat| seat.label().to_owned()),
+                        subject: t.subject.clone(),
+                        words: attention_words(t),
+                        at: t
+                            .waiting_on
+                            .as_ref()
+                            .and_then(|wait| wait.since)
+                            .unwrap_or(t.created_at),
+                    })
+                    .collect();
                 let mut misses = Vec::new();
                 if queue > 0 && live_workers < slots {
                     misses.push(Miss::StalledQueue);
@@ -275,6 +349,7 @@ impl Workspace {
                     slots: Some(slots),
                     queue,
                     waiting_on_user,
+                    attention,
                     rows: tasks.len(),
                     misses,
                 }
@@ -584,6 +659,7 @@ mod tests {
             on: None,
             verification: false,
             parked: false,
+            since: None,
         });
         ws.seed_test_task(held);
         ws.seed_test_task(task("t-plain", TaskStatus::Pending));
@@ -629,6 +705,7 @@ mod tests {
             on: None,
             verification: false,
             parked: false,
+            since: None,
         });
         waiting.updated_at = epoch(0);
         ws.seed_test_task(waiting);
@@ -650,6 +727,7 @@ mod tests {
             on: None,
             verification: false,
             parked,
+            since: None,
         };
         let mut parked = task("t-parked", TaskStatus::Waiting);
         parked.waiting_on = Some(wait(true));
@@ -758,6 +836,7 @@ mod tests {
                 on: None,
                 verification: true,
                 parked: false,
+                since: None,
             });
             row
         };
@@ -771,6 +850,177 @@ mod tests {
             .expect("the project's row")
             .waiting_on_user;
         assert_eq!(on_you, 1, "the own-gate park counts; the inherited shape does not");
+    }
+
+    /// A project's fleet row carries the waits it counts, named for the
+    /// surface that raises them (#2756): the row, its seat, its subject, the
+    /// ask's own words, and when it began. A resource wait is counted by
+    /// neither.
+    #[test]
+    fn a_fleet_row_carries_the_waits_it_counts() {
+        let dir = tempdir().expect("tempdir");
+        let ws = fixture(dir.path());
+        let mut decision = task("t-decision", TaskStatus::Waiting);
+        decision.subject = "ship the parser".to_owned();
+        decision.updated_at = epoch(1_700_000_500);
+        decision.owner = Some(SessionSlot::worker("TestOrg", PROJECT, "w-1"));
+        decision.waiting_on = Some(Waiting {
+            kind: Some(WaitingKind::Decision),
+            detail: Some("sign this off".to_owned()),
+            on: None,
+            verification: false,
+            parked: false,
+            since: Some(epoch(1_700_000_000)),
+        });
+        ws.seed_test_task(decision);
+        let mut resource = task("t-resource", TaskStatus::Waiting);
+        resource.waiting_on = Some(Waiting {
+            kind: Some(WaitingKind::Resource),
+            detail: Some("a CI run".to_owned()),
+            on: None,
+            verification: false,
+            parked: false,
+            since: None,
+        });
+        ws.seed_test_task(resource);
+
+        let row =
+            ws.fleet_rows().into_iter().find(|r| r.project == PROJECT).expect("the project's row");
+        assert_eq!(row.waiting_on_user, 1, "only the decision wait is on the user");
+        assert_eq!(row.attention.len(), 1, "and only it is carried");
+        let item = &row.attention[0];
+        assert_eq!(item.task, "t-decision", "the row's own id");
+        assert_eq!(item.owner, "w-1", "the seat that raised it");
+        assert_eq!(item.subject, "ship the parser", "the row's subject");
+        assert_eq!(item.words, "sign this off", "the ask's own words");
+        assert_eq!(item.at, epoch(1_700_000_000), "the moment the wait began");
+    }
+
+    /// **The wait is dated from its own start, not the row's last edit.** A
+    /// waiting row that gains a link, is parked or is dragged moves
+    /// `updated_at`, and a notification keyed on that fires again for an edit
+    /// that answered nothing.
+    #[test]
+    fn a_wait_is_dated_from_its_own_start_not_its_last_edit() {
+        let dir = tempdir().expect("tempdir");
+        let ws = fixture(dir.path());
+        let mut decision = task("t-decision", TaskStatus::Waiting);
+        decision.updated_at = epoch(1_700_000_500);
+        decision.waiting_on = Some(Waiting {
+            kind: Some(WaitingKind::Decision),
+            detail: Some("sign this off".to_owned()),
+            on: None,
+            verification: false,
+            parked: false,
+            since: Some(epoch(1_700_000_000)),
+        });
+        ws.seed_test_task(decision);
+
+        let row =
+            ws.fleet_rows().into_iter().find(|r| r.project == PROJECT).expect("the project's row");
+        assert_eq!(
+            row.attention[0].at,
+            epoch(1_700_000_000),
+            "the wait's own start, not the edit that moved the row",
+        );
+    }
+
+    /// **A wait stored before the field existed reads as its creation.** The
+    /// fallback is `created_at`, never `updated_at`: a row edited after it
+    /// began must not re-notify.
+    #[test]
+    fn a_wait_with_no_stamp_falls_back_to_its_creation() {
+        let dir = tempdir().expect("tempdir");
+        let ws = fixture(dir.path());
+        let mut decision = task("t-decision", TaskStatus::Waiting);
+        decision.created_at = epoch(1_700_000_000);
+        decision.updated_at = epoch(1_700_000_500);
+        decision.waiting_on = Some(Waiting {
+            kind: Some(WaitingKind::Decision),
+            detail: Some("sign this off".to_owned()),
+            on: None,
+            verification: false,
+            parked: false,
+            since: None,
+        });
+        ws.seed_test_task(decision);
+
+        let row =
+            ws.fleet_rows().into_iter().find(|r| r.project == PROJECT).expect("the project's row");
+        assert_eq!(row.attention[0].at, epoch(1_700_000_000), "the row's creation, not its edit");
+    }
+
+    /// **A wait with no words still says something.** A verification park and
+    /// a detail-less decision wait would otherwise draw a blank line and
+    /// notify with an empty body; the row's detail, the look a park is owed
+    /// and the subject are each a truer answer than nothing.
+    #[test]
+    fn a_wait_without_words_falls_back_to_the_row() {
+        let dir = tempdir().expect("tempdir");
+        let ws = fixture(dir.path());
+
+        let mut blank = task("t-blank", TaskStatus::Waiting);
+        blank.detail = Some("the plan is in the row".to_owned());
+        blank.waiting_on = Some(Waiting {
+            kind: Some(WaitingKind::Decision),
+            detail: Some("   ".to_owned()),
+            on: None,
+            verification: false,
+            parked: false,
+            since: None,
+        });
+        ws.seed_test_task(blank);
+
+        let mut look = task("t-look", TaskStatus::Waiting);
+        look.verify = Some(Verify::User);
+        look.waiting_on = Some(Waiting {
+            kind: Some(WaitingKind::Decision),
+            detail: None,
+            on: None,
+            verification: true,
+            parked: false,
+            since: None,
+        });
+        ws.seed_test_task(look);
+
+        let mut bare = task("t-bare", TaskStatus::Waiting);
+        bare.waiting_on = Some(Waiting {
+            kind: Some(WaitingKind::Decision),
+            detail: None,
+            on: None,
+            verification: false,
+            parked: false,
+            since: None,
+        });
+        ws.seed_test_task(bare);
+
+        // Nothing requires a subject to be non-empty: a blank one still has
+        // words rather than an empty notification body.
+        let mut nameless = task("t-nameless", TaskStatus::Waiting);
+        nameless.subject = "   ".to_owned();
+        nameless.waiting_on = Some(Waiting {
+            kind: Some(WaitingKind::Decision),
+            detail: None,
+            on: None,
+            verification: false,
+            parked: false,
+            since: None,
+        });
+        ws.seed_test_task(nameless);
+
+        let row =
+            ws.fleet_rows().into_iter().find(|r| r.project == PROJECT).expect("the project's row");
+        let words = |task: &str| {
+            row.attention.iter().find(|item| item.task == task).expect("the item").words.clone()
+        };
+        assert_eq!(words("t-blank"), "the plan is in the row", "a blank detail takes the row's");
+        assert_eq!(words("t-look"), "the look is owed", "a verification park says what it wants");
+        assert_eq!(
+            words("t-nameless"),
+            "A decision is waiting on you.",
+            "a blank subject still words the ask"
+        );
+        assert_eq!(words("t-bare"), "subject t-bare", "nothing anywhere takes the subject");
     }
 
     #[test]

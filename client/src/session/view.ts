@@ -49,6 +49,7 @@ import type { Connection } from '../socket';
 import type { BoardWire, ProjectBoardWire } from '../wire/board';
 import type {
   AgentRow,
+  AttentionRow,
   CronEntry,
   HomeWire,
   Lifecycle,
@@ -121,6 +122,8 @@ export interface RailProject {
   age: string;
   asleep: boolean;
   row: Row;
+  /** The project's decision waits, which its own row's mark lists. */
+  waits: AttentionRow[];
   /** The workers it draws, which are the ones awake. */
   workers: Row[];
   /**
@@ -175,8 +178,10 @@ interface PaletteSection {
 }
 
 /** A seat's state in the palette's two or three words. */
-function paletteWord(row: AgentRow, unseen: SessionSlot[]): string {
+function paletteWord(row: AgentRow, unseen: SessionSlot[], attention: number): string {
   if (row.pending !== null) return 'needs you';
+  // A decision wait is the person's too, and the rail ranks it with the ask.
+  if (attention > 0) return 'needs you';
   const state = stateOf(row, unseen);
   switch (state.kind) {
     case 'failed-turn':
@@ -221,15 +226,25 @@ export function paletteRows(wire: HomeWire, slot: SessionSlot): PaletteSection[]
   // **One rule with the rail's own ranker**: the palette and the rail draw
   // the same seat two layers apart, so a seat that reads working on the rail
   // cannot read asleep here. rankOf's 0/1/2 is needs-person / working /
-  // asleep.
-  const rank = (row: AgentRow): number => rankOf(stateOf(row, unseen), row.pending);
+  // asleep, and a seat's own decision waits rank with its asks.
+  const attentionOf = (row: AgentRow): number => {
+    const fleet = wire.fleet.find((entry) => {
+      if (entry.project !== row.slot.project) return false;
+      const project = wire.projects.find((held) => held.project.name === entry.project);
+      return project === undefined || project.project.org === row.slot.org;
+    });
+    if (fleet === undefined) return 0;
+    return fleet.attention.filter((wait) => wait.owner === row.label).length;
+  };
+  const rank = (row: AgentRow): number =>
+    rankOf(stateOf(row, unseen), row.pending, attentionOf(row));
   const wants = (row: AgentRow): boolean => rank(row) === 0;
   const working = (row: AgentRow): boolean => rank(row) === 1;
   const seat = (row: AgentRow): PaletteRow => ({
     id: `${row.slot.org}/${row.slot.project}/${row.label}`,
     kind: 'seat',
     label: row.slot.label,
-    detail: `${row.slot.project} \u{b7} ${paletteWord(row, unseen)}`,
+    detail: `${row.slot.project} \u{b7} ${paletteWord(row, unseen, attentionOf(row))}`,
     href: hrefForSlot(row.slot),
     // A project's identity is (org, name): two orgs sharing a project name
     // would otherwise both wear the chip, and Enter would land in the wrong
@@ -771,7 +786,8 @@ function whyOf(lead: Row, workers: Row[]): { line: string; bad: boolean } | null
 }
 
 /**
- * The rail, grouped by the strongest state among each project's own rows.
+ * The rail, grouped by each project's own decision waits and the strongest
+ * state among its rows.
  *
  * The projects keep the roster's order inside a group, because that is
  * `forge.toml`'s order and the rail is how a person reads the fleet - which is
@@ -807,11 +823,14 @@ export function railGroups(
   }));
 
   for (const entry of home.projects) {
-    const { lead, workers } = projectRows(home, entry, board);
+    const { lead, workers, waits } = projectRows(home, entry, board);
     const all = [lead, ...workers];
     const rankOfRow = (row: Row): number =>
-      closing(row.slot) ? 2 : rankOf(row.state, row.pending);
-    const rank = all.reduce((best, row) => Math.min(best, rankOfRow(row)), 2);
+      closing(row.slot) ? 2 : rankOf(row.state, row.pending, row.attention);
+    // The project's own waits seed the rank: a wait whose seat has no row (a
+    // sleeping worker) has no row to lift it, and must not sit in Working.
+    const base = waits.length > 0 ? 0 : 2;
+    const rank = all.reduce((best, row) => Math.min(best, rankOfRow(row)), base);
     const group = groups[rank];
     if (group === undefined) continue;
     const sleeping = workers.filter((row) => rankOfRow(row) === 2);
@@ -827,6 +846,7 @@ export function railGroups(
       age: whenOf(lead, now),
       asleep: rank === 2,
       row: lead,
+      waits,
       workers: workers.filter((row) => rankOfRow(row) !== 2),
       sleeping,
       // A closing seat writes on no line: the lead's whole line goes with it,

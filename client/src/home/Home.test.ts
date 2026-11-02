@@ -210,6 +210,42 @@ describe('the home page as it draws', () => {
     );
   });
 
+  /// **The mark draws on the project row and on the seat that holds a wait.**
+  /// The fixture's fleet carries no attention item, so a mark handed the
+  /// project's waits where a seat's belong - or the other way round - would
+  /// still read green without one here.
+  it('draws the decision-wait mark on the project and its seat', () => {
+    const [fleet] = homeWire.fleet;
+    if (fleet === undefined) throw new Error('the fixture holds no fleet row');
+    const body = draw({
+      wire: {
+        ...homeWire,
+        fleet: [
+          {
+            ...fleet,
+            waiting_on_user: 1,
+            attention: [
+              {
+                task: 't1',
+                owner: 'lead',
+                subject: 'the parser',
+                words: 'sign this off',
+                at: { secs_since_epoch: 5, nanos_since_epoch: 0 },
+              },
+            ],
+          },
+        ],
+      },
+    });
+    expect(
+      body.match(/aria-label="1 decision wait on you"/g)?.length,
+      'the project row and the lead chip each carry it',
+    ).toBe(2);
+    expect(body, 'and the words ride the hover title').toContain(
+      'title="1 decision wait on you: sign this off"',
+    );
+  });
+
   /**
    * **The fleet reads in the rail's three sections.** The home used to list
    * every project flat, so a sleeping project drew a hollow mark and no word
