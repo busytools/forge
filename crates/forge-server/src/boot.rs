@@ -652,9 +652,14 @@ pub fn start_boot_wave(workspace: Arc<Workspace>, project: Option<String>, force
             );
         }
         // Boot wave only: --new makes the boot leads start fresh instead
-        // of resuming (and cascades to their workers).
-        let launch_settings =
-            forge_workspace::SessionLaunchSettings { force_new, ..Default::default() };
+        // of resuming (and cascades to their workers). A spawn that does
+        // resume takes the restart note as its first turn; a fresh one
+        // delivers nothing.
+        let launch_settings = forge_workspace::SessionLaunchSettings {
+            force_new,
+            resume_kick: Some(forge_workspace::LEAD_RESTART_NOTE.to_owned()),
+            ..Default::default()
+        };
         let targets: Vec<String> = match project {
             Some(name) => vec![name],
             None => crate::surface::ViewSurface::new(Arc::clone(&workspace)).roster().resume_lead(),

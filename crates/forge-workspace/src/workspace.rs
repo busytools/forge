@@ -419,6 +419,19 @@ reviewer kept on as a long-lived worker.";
 /// than start the task over.
 const DYNAMIC_WORKER_RESTART_NOTE: &str = "This session was restarted by forge. Your prior conversation and progress are in the history above. Continue where you left off; do not restart the task. If the history's timestamps disagree with the clock and the live schedules, believe the clock and the schedules, and still do the concrete asks.";
 
+/// The first turn a boot spawn delivers to a lead whose session it
+/// resumed. A lead has no kick of its own, so this note is what turns a
+/// resumed conversation into work continued rather than a seat idle at a
+/// prompt.
+pub const LEAD_RESTART_NOTE: &str = "forge restarted. Your prior conversation is in the history above; continue where you left off and do not restart finished work. Read the project handoff (`handoff.md` in the project's memory directory) and the task board before acting. If the history's timestamps disagree with the clock and the live schedules, believe the clock and the schedules.";
+
+/// The restart note a boot spawn hands its seat: only a spawn that
+/// resumed a stored session delivers one, so a fresh spawn or `--new`
+/// clears whatever a previous spawn left.
+fn resume_kick_for(resumed: bool, requested: Option<String>) -> Option<String> {
+    if resumed { requested } else { None }
+}
+
 /// One enqueue onto the workspace-level worker-kick channel
 /// (#259). Built by `maybe_kick_worker_on_connected` (and any
 /// future kick site); drained by the workspace's
@@ -3493,6 +3506,11 @@ impl Workspace {
         // Connected-time respawn skips the store lookup and brings its
         // workers up fresh alongside the fresh lead.
         domain_arc.lock().spawned_force_new = settings.force_new;
+        // The boot wave's restart note belongs to this spawn only when it
+        // actually resumed; a fresh spawn (`--new` included) clears what a
+        // previous spawn left.
+        domain_arc.lock().pending_lead_resume_note =
+            resume_kick_for(resuming, settings.resume_kick.take());
         // The effort this spawn asked for, so a session whose hook has
         // not reported one yet still answers with the level it runs at.
         domain_arc.lock().configured_effort =
@@ -12838,6 +12856,62 @@ provider = "anthropic"
         forge_agent::set_test_sdk_binary(None);
     }
 
+    /// **A boot spawn that resumes the lead hands it the restart note as
+    /// its first turn.** This is the whole chain: the boot wave's launch
+    /// setting, the spawn's resume gate, and the Connected hook. A lead
+    /// the boot started fresh is covered by
+    /// `a_resume_kick_reaches_only_a_spawn_that_resumed`.
+    #[tokio::test]
+    async fn a_boot_spawn_kicks_a_resumed_lead_with_the_restart_note() {
+        let dir = tempdir().expect("tempdir");
+        let project = tempdir().expect("project");
+        let workspace = resume_workspace(dir.path(), project.path());
+        forge_agent::set_test_sdk_binary(Some(id_preserving_mock(dir.path())));
+        workspace.start_kick_dispatcher();
+        let key = SessionSlot::lead("Default", "forge");
+        let known = "11111111-2222-3333-4444-555555555555";
+        workspace.record_session_id("Default", "forge", "lead", known);
+
+        let mut updates = workspace.subscribe_mirror();
+        let spawned = workspace.dispatch(Command::SpawnProject {
+            project_name: "forge".to_owned(),
+            launch_settings: SessionLaunchSettings {
+                resume_kick: Some(LEAD_RESTART_NOTE.to_owned()),
+                ..Default::default()
+            },
+        });
+        assert!(spawned.is_ok(), "the boot spawn is taken: {spawned:?}");
+
+        let note = tokio::time::timeout(Duration::from_secs(30), async {
+            let mut connected = false;
+            while let Some(seat) = updates.recv().await {
+                match &*seat.update {
+                    SessionUpdate::Connected { key: seen, .. } if *seen == key => {
+                        connected = true;
+                    }
+                    SessionUpdate::ChatAppended {
+                        key: seen,
+                        msg: Message::User { message, .. },
+                        ..
+                    } if connected && *seen == key => {
+                        if let Some(forge_primitives::ContentBlock::Text { text, .. }) =
+                            message.content.first()
+                            && text == LEAD_RESTART_NOTE
+                        {
+                            return true;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            false
+        })
+        .await
+        .expect("the resumed lead connects");
+        assert!(note, "a boot-resumed lead's first turn is the restart note");
+        forge_agent::set_test_sdk_binary(None);
+    }
+
     /// **The worker restore dispatches the row's own spawn.** The id named
     /// wins over the stale id its row still holds, and the row's charter,
     /// kick, tree, families and interactive flag carry the spawn. The boot
@@ -19967,6 +20041,45 @@ mod worker_respawn_tests {
         assert!(
             DYNAMIC_WORKER_RESTART_NOTE.contains("still do the concrete asks"),
             "the note keeps the brief's asks, which are usually right",
+        );
+    }
+
+    /// The lead restart note is the first turn a boot-resumed lead reads.
+    /// Pinned so it sends the lead to the handoff and the board before it
+    /// acts, and to the clock over a stale history.
+    #[test]
+    fn the_lead_restart_note_names_the_handoff_the_board_and_the_clock() {
+        assert!(LEAD_RESTART_NOTE.contains("forge restarted"), "the note says what happened");
+        assert!(
+            LEAD_RESTART_NOTE.contains("continue where you left off"),
+            "the note tells the lead to carry on",
+        );
+        assert!(
+            LEAD_RESTART_NOTE.contains("do not restart finished work"),
+            "and not to redo what is already done",
+        );
+        assert!(
+            LEAD_RESTART_NOTE.contains("handoff.md"),
+            "the note sends the lead to the project handoff",
+        );
+        assert!(LEAD_RESTART_NOTE.contains("task board"), "and to the task board before it acts",);
+        assert!(
+            LEAD_RESTART_NOTE.contains("believe the clock and the schedules"),
+            "the note names which side wins when the history disagrees",
+        );
+    }
+
+    /// A boot spawn's restart note is delivered only when the spawn resumed
+    /// a stored session: a fresh spawn, or `--new`, sends nothing even
+    /// though the boot wave asked for the note.
+    #[test]
+    fn a_resume_kick_reaches_only_a_spawn_that_resumed() {
+        let note = || Some("continue where you left off".to_owned());
+        assert_eq!(resume_kick_for(true, note()), note(), "a resumed spawn takes the note");
+        assert!(resume_kick_for(false, note()).is_none(), "a fresh spawn delivers none",);
+        assert!(
+            resume_kick_for(true, None).is_none(),
+            "and a caller that asked for no note gets none",
         );
     }
 

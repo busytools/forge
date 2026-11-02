@@ -211,6 +211,10 @@ pub struct DomainSession {
     /// up fresh alongside their fresh lead. `false` for every non-boot
     /// spawn.
     pub spawned_force_new: bool,
+    /// A boot spawn's lead restart note, waiting for the Connected hook
+    /// to deliver it as the lead's first turn. `None` for every other
+    /// spawn, and cleared by the hook so a reconnect repeats nothing.
+    pub pending_lead_resume_note: Option<String>,
     /// Whether the spawn that opened this session wrote the worker's
     /// durable row rather than adopting one that was already there.
     /// Stamped at spawn time from the spawn's role, and read by the
@@ -703,6 +707,7 @@ impl DomainSession {
             prompt_queue: Vec::new(),
             lifecycle_frames: None,
             spawned_force_new: false,
+            pending_lead_resume_note: None,
             spawn_wrote_row: false,
             runtime_state: None,
             turn_pending: false,
