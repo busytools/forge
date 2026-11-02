@@ -774,7 +774,8 @@ function whyOf(lead: Row, workers: Row[]): { line: string; bad: boolean } | null
 }
 
 /**
- * The rail, grouped by the strongest state among each project's own rows.
+ * The rail, grouped by each project's own decision waits and the strongest
+ * state among its rows.
  *
  * The projects keep the roster's order inside a group, because that is
  * `forge.toml`'s order and the rail is how a person reads the fleet - which is
