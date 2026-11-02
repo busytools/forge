@@ -6789,8 +6789,8 @@ describe('the dock', () => {
     expect(showBrowser).toHaveBeenCalledTimes(2);
     expect(
       showBrowser,
-      'the retry asks for the profile current tab, not the parked ask dead tab',
-    ).toHaveBeenLastCalledWith(null, SLOT, null, null);
+      'the retry asks for the page the hand-off named, not a tab number',
+    ).toHaveBeenLastCalledWith(null, SLOT, null, 'page-2');
     expect(surface.phase, 'the second ask landed').toBe('live');
   });
 
