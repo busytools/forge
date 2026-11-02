@@ -28,11 +28,14 @@ pub(crate) use forge_dictate::catalogue::PREFERRED_DOWNLOADS;
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct DictateModelsSnapshot {
     /// Whether `[dictate] enabled` is set. Carried rather than inferred
-    /// from an empty `in_use`: a switched-off section and a failed
-    /// preflight both empty it.
+    /// from an empty `in_use`: a failed preflight empties it, and a
+    /// switched-off section still carries the speaking row.
     pub enabled: bool,
     /// Where the dictation models land.
     pub models_dir: Option<PathBuf>,
+    /// Where the speaking model's two files land, which is `[tts]`'s own
+    /// directory rather than dictation's.
+    pub speaking_models_dir: Option<PathBuf>,
     /// The models forge is configured to run, pins and live state.
     pub in_use: Vec<InUseModel>,
     /// The catalogue's own freshness.
@@ -489,6 +492,7 @@ impl crate::Workspace {
         DictateModelsSnapshot {
             enabled: settings.enabled,
             models_dir: settings.models_dir(),
+            speaking_models_dir: config.tts.models_dir(),
             in_use,
             check: state.check.clone(),
             updates: if settings.enabled { updates_for(entries, &specs) } else { Vec::new() },

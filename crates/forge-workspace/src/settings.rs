@@ -1115,17 +1115,6 @@ const TTS_KEYS: &[ConfigKey] = &[
         },
     },
     ConfigKey {
-        path: "tts.speaking_model",
-        area: "voice",
-        class: EffectClass::Restart,
-        rows: |config| {
-            vec![text(
-                "tts.speaking_model",
-                config.tts.speaking_model.clone().unwrap_or_else(|| "not set".to_owned()),
-            )]
-        },
-    },
-    ConfigKey {
         path: "tts.language",
         area: "voice",
         class: EffectClass::Restart,
@@ -1532,7 +1521,6 @@ context = "email"
 [tts]
 enabled = true
 models_dir = "/tmp/tts-models"
-speaking_model = "qwen3-tts-12hz-1.7b-base"
 language = "en"
 max_utterance_seconds = 60
 
@@ -2088,15 +2076,15 @@ models = ["m"]
         );
     }
 
-    /// `[dictate]` is an area of its own, and every key it holds is drawn
-    /// there rather than under the client that captures through it.
+    /// The voice area holds both directions: every `[dictate]` and `[tts]`
+    /// key is drawn there rather than under the client that captures.
     #[test]
     fn the_voice_area_holds_both_directions() {
         let config = load(EVERY_KEY);
         let document = document(&config, "v", Path::new("/tmp/forge.toml"));
         let voice =
             document.areas.iter().find(|area| area.id == "voice").expect("the voice area is drawn");
-        assert_eq!(voice.keys.len(), 17, "every [dictate] and [tts] key draws there");
+        assert_eq!(voice.keys.len(), 16, "every [dictate] and [tts] key draws there");
         assert!(
             voice
                 .keys

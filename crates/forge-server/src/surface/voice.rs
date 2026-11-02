@@ -1,23 +1,9 @@
-//! `voice()`: the speaking role's switch, model directory, and the seat's
-//! listener count.
-
-use std::path::PathBuf;
+//! `voices()`: the speaking role's switch and model directory, and the
+//! release a dropped connection owes every seat it was listening to.
 
 use forge_primitives::SessionSlot;
 
 use super::ViewSurface;
-
-/// The voice read one seat's control draws.
-pub struct VoiceView {
-    /// Whether `[tts] enabled` is set: without it nothing synthesises and
-    /// the control has nothing to turn on.
-    pub enabled: bool,
-    /// Where the speaking model lands. `None` when the platform has no usable
-    /// cache directory and none was configured.
-    pub models_dir: Option<PathBuf>,
-    /// Clients with voice on for this seat, including this one.
-    pub listeners: u32,
-}
 
 impl ViewSurface {
     /// The `[tts]` section's own read: on or off, and where its model lands.
@@ -31,14 +17,6 @@ impl ViewSurface {
     pub fn voice_release(&self, client: u64) -> Vec<SessionSlot> {
         self.workspace.voice_release(client)
     }
-
-    /// The seat's voice state. `listeners` is per seat, which is why the read
-    /// names one.
-    pub fn voice(&self, key: &SessionSlot) -> VoiceView {
-        let view = self.workspace.voices();
-        let listeners = u32::try_from(self.workspace.voice_listeners(key)).unwrap_or(u32::MAX);
-        VoiceView { enabled: view.enabled, models_dir: view.models_dir, listeners }
-    }
 }
 
 #[cfg(test)]
@@ -47,17 +25,19 @@ mod tests {
 
     use super::*;
 
-    /// Catches either field being read from a source other than the settings:
-    /// a switched-off `[tts]` must read as off, and the directory is the
+    /// A switched-off `[tts]` reads as off, and the directory is the
     /// config's answer rather than the platform default.
     #[test]
-    fn voice_reads_the_tts_settings() {
+    fn voices_reads_the_tts_settings() {
         let (workspace, _dir) = crate::surface::testing::workspace();
         let surface = ViewSurface::new(Arc::clone(&workspace));
-        let seat = SessionSlot::from_str_for_test("voice");
 
-        let view = surface.voice(&seat);
+        let view = surface.voices();
         assert!(!view.enabled, "the fixture's [tts] is absent, which is off");
-        assert_eq!(view.listeners, 0);
+        assert!(
+            view.models_dir.as_ref().is_some_and(|dir| dir.ends_with("forge-tts")),
+            "an unset models_dir is the platform cache, got: {:?}",
+            view.models_dir,
+        );
     }
 }

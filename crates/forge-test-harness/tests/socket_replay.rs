@@ -1371,6 +1371,7 @@ fn frames_record() -> Value {
             models: DictateModelsSnapshot {
                 enabled: true,
                 models_dir: Some(PathBuf::from("/tmp/models")),
+                speaking_models_dir: Some(PathBuf::from("/tmp/tts-models")),
                 in_use: vec![InUseModel {
                     role: forge_workspace::DictateRole::Transcribing,
                     file: "cohere-transcribe-03-2026-Q4_K_M.gguf".to_owned(),

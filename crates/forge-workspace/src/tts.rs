@@ -8,9 +8,6 @@ use serde::Deserialize;
 
 use crate::dictate::{DictateModel, DictateModelState, DictateRole};
 
-/// The compiled variant the speaking role's catalogue entry names.
-pub const SPEAKING_VARIANT: &str = "qwen3-tts-12hz-1.7b-base";
-
 /// The model files a speaking model is made of. The codec lives in the
 /// projector, so a pipeline without one cannot render.
 pub struct SpeakingModel {
@@ -20,8 +17,8 @@ pub struct SpeakingModel {
 
 impl SpeakingModel {
     /// The compiled entry: Qwen3-TTS 12Hz 1.7B Base, Q8_0, with the projector
-    /// that carries its audio codec. Both blobs publish a SHA-256, so both
-    /// are verified on arrival.
+    /// that carries its audio codec. Both blobs declare a SHA-256, and the
+    /// engine checks both before it loads them.
     ///
     /// The 0.6B checkpoint has no published GGUF; this is the build the
     /// llama.cpp tool documents. No parameter count is claimed because the
@@ -62,19 +59,14 @@ impl SpeakingModel {
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct TtsSettings {
-    /// Off unless asked for: turning it on costs a 2.3 GB download the first
-    /// time.
+    /// Off unless asked for. Turning it on needs the two model files placed
+    /// under `models_dir` by hand, about 2.3 GB together.
     #[serde(default)]
     pub enabled: bool,
     /// Where the model files live. Absent uses the platform cache directory.
     #[serde(default)]
     pub models_dir: Option<String>,
-    /// The model the speaking role runs, as the catalogue's variant name.
-    /// Set, it wins over every runtime pick and refuses Activate for the
-    /// role.
-    #[serde(default)]
-    pub speaking_model: Option<String>,
-    /// Spoken language. Absent autodetects.
+    /// Spoken language. Absent leaves the pipeline's own default, English.
     #[serde(default)]
     pub language: Option<String>,
     /// Upper bound on one utterance's text, not one sentence.
@@ -91,7 +83,6 @@ impl Default for TtsSettings {
         Self {
             enabled: false,
             models_dir: None,
-            speaking_model: None,
             language: None,
             max_utterance_seconds: default_max_utterance_seconds(),
         }
@@ -99,7 +90,9 @@ impl Default for TtsSettings {
 }
 
 impl TtsSettings {
-    /// The catalogue entry the speaking role runs.
+    /// The compiled model the speaking role runs. There is no key that
+    /// selects another: the two files are placed by hand and the engine
+    /// loads them.
     pub fn model(&self) -> SpeakingModel {
         SpeakingModel::qwen3_tts()
     }
@@ -112,11 +105,15 @@ impl TtsSettings {
         }
     }
 
-    /// The two files, resolved under the models directory.
+    /// The two files, resolved under the models directory, with the digests
+    /// their entries declare so a load can verify them.
     pub fn files(&self) -> Option<forge_tts::ModelFiles> {
         let dir = self.models_dir()?;
         let model = self.model();
-        Some(forge_tts::ModelFiles::from_dir(&dir, &model.base.file, Some(&model.projector.file)))
+        Some(
+            forge_tts::ModelFiles::from_dir(&dir, &model.base.file, Some(&model.projector.file))
+                .with_digests(model.base.sha256.clone(), model.projector.sha256.clone()),
+        )
     }
 
     /// The role's compiled pin.
@@ -160,10 +157,6 @@ impl crate::Workspace {
         TtsView { enabled: settings.enabled, snapshot, models_dir: settings.models_dir() }
     }
 
-    /// The speaking role's model rows alone.
-    pub fn voice_models(&self) -> TtsSnapshot {
-        self.voices().snapshot
-    }
 }
 
 #[cfg(test)]

@@ -114,12 +114,13 @@ fn section_for(role: DictateRole) -> &'static str {
     }
 }
 
-/// The `[dictate]` key that pins one role.
-fn key_for_role(role: DictateRole) -> &'static str {
+/// The config key that pins one role. The speaking role has none: its model
+/// is placed by hand and the engine loads it.
+fn key_for_role(role: DictateRole) -> Option<&'static str> {
     match role {
-        DictateRole::Transcribing => "transcribe_model",
-        DictateRole::Normalization => "cleanup_model",
-        DictateRole::Speaking => "speaking_model",
+        DictateRole::Transcribing => Some("transcribe_model"),
+        DictateRole::Normalization => Some("cleanup_model"),
+        DictateRole::Speaking => None,
     }
 }
 
@@ -163,7 +164,14 @@ pub(crate) fn resolve_role(
     // A config key wins over everything, and it never clears the record:
     // removing the key returns the role to the last runtime pick.
     if let Some(variant) = configured {
-        let key = key_for_role(role).to_owned();
+        let Some(key) = key_for_role(role).map(str::to_owned) else {
+            return RoleResolution::Chosen(ActiveModel {
+                role,
+                spec: pin,
+                from: ActiveFrom::Pin,
+                at: None,
+            });
+        };
         return match installed.iter().find(|model| model.variant == variant) {
             Some(record) => RoleResolution::Chosen(ActiveModel {
                 role,
@@ -789,15 +797,16 @@ impl Workspace {
         Ok(())
     }
 
-    /// The config key that pins one role, when one does.
+    /// The config key that pins one role, when one does. The speaking role
+    /// has none: its model is placed by hand and the engine loads it.
     fn pinning_key(&self, role: DictateRole) -> Option<String> {
         let config = self.config_arc();
         let pinned = match role {
             DictateRole::Transcribing => config.dictate.transcribe_model.as_ref(),
             DictateRole::Normalization => config.dictate.cleanup_model.as_ref(),
-            DictateRole::Speaking => config.tts.speaking_model.as_ref(),
+            DictateRole::Speaking => None,
         };
-        pinned.map(|_| key_for_role(role).to_owned())
+        pinned.and_then(|_| key_for_role(role).map(str::to_owned))
     }
 
     /// The compiled default one role runs, when it has one: the cleanup

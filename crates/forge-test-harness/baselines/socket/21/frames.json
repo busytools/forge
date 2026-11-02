@@ -384,6 +384,7 @@
         "results",
         "rows",
         "speaking_bench",
+        "speaking_models_dir",
         "speaking_results",
         "updates"
       ],

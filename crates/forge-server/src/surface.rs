@@ -41,7 +41,6 @@ pub use forge_workspace::protocol::PendingAsk;
 pub use forge_workspace::{DictateFailure, DictateModelState, DictateOutcome, LoadingState};
 pub use roster::Roster;
 pub use session::{SessionState, machine_turn};
-pub use voice::VoiceView;
 pub use workers::{WorkerRef, Workers};
 
 /// A view's read handle on the core.
