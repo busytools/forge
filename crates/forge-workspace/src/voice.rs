@@ -57,10 +57,11 @@ pub trait NoteDispatch: Send + Sync {
 }
 
 /// The note the first client's turn-on puts into the seat.
-pub const LISTENING_NOTE: &str = "The user is listening to this seat.\n\nAnything they should hear goes through mcp__forge__voice__say; the text written in the chat is not spoken.";
+pub const LISTENING_NOTE: &str = "The user is listening to this seat.\n\nSpeak what they should hear as you would say it in a live conversation: send each message's substance through mcp__forge__voice__say as well as writing it in the chat, keeping the spoken form simpler and shorter so it lands by ear. A reply that is only written is one they will not hear. When the stop note arrives, you may stop speaking.";
 
 /// What the session is told when the last client leaves.
-pub const NOT_LISTENING_NOTE: &str = "The user has stopped listening to this seat.";
+pub const NOT_LISTENING_NOTE: &str =
+    "The user has stopped listening to this seat.\n\nYou may stop speaking.";
 
 /// The envelope a note rides, so a view draws it as information rather than
 /// as the reader's own turn.
@@ -865,6 +866,41 @@ mod tests {
             note_envelope(NOT_LISTENING_NOTE),
             format!("[Voice]\n\n{NOT_LISTENING_NOTE}"),
             "the withdrawal rides the same envelope",
+        );
+    }
+
+    #[test]
+    fn the_listening_note_carries_the_conversational_register() {
+        assert!(
+            LISTENING_NOTE
+                .contains("Speak what they should hear as you would say it in a live conversation"),
+            "the note names the register",
+        );
+        assert!(
+            LISTENING_NOTE.contains("send each message's substance through mcp__forge__voice__say"),
+            "the note names the tool that makes it heard",
+        );
+        assert!(
+            LISTENING_NOTE
+                .contains("keeping the spoken form simpler and shorter so it lands by ear"),
+            "the spoken form is shorter than the page",
+        );
+        assert!(
+            LISTENING_NOTE.contains("A reply that is only written is one they will not hear"),
+            "a written-only reply is not heard",
+        );
+        assert!(
+            LISTENING_NOTE.contains("When the stop note arrives, you may stop speaking."),
+            "the note releases the agent when listening stops",
+        );
+    }
+
+    #[test]
+    fn the_stop_note_keeps_its_title_and_releases_the_agent() {
+        assert_eq!(
+            NOT_LISTENING_NOTE,
+            "The user has stopped listening to this seat.\n\nYou may stop speaking.",
+            "the reader's row is titled by its first line and the agent is released",
         );
     }
 

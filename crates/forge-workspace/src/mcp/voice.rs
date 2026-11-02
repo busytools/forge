@@ -40,9 +40,11 @@ impl Tool for Say {
     }
 
     fn description(&self) -> &'static str {
-        "Speak one utterance to the person listening to this seat. Use it for anything they should \
-         hear; the text you write in the chat is not spoken. Returns `spoken: queued` when the \
-         first audio renders, or `no listener` when no client has voice on for this seat."
+        "Speak one utterance to the person listening to this seat. While a listener is present, \
+         call this with the substance of each user-facing message, phrased for the ear rather \
+         than read from the page. Use it for anything they should hear; the text you write in \
+         the chat is not spoken. Returns `spoken: queued` when the first audio renders, or `no \
+         listener` when no client has voice on for this seat."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -141,5 +143,17 @@ mod tests {
     fn the_family_registers_one_tool_named_voice_say() {
         let server = add_tools(McpServerBuilder::new("forge", "0.0.0"), service(), slot()).build();
         assert_eq!(server.tool_names(), vec!["voice__say".to_owned()]);
+    }
+
+    #[test]
+    fn the_description_carries_the_conversational_rule() {
+        let description = Say { voice: service(), slot: slot() }.description();
+        assert!(
+            description.contains(
+                "While a listener is present, call this with the substance of each user-facing \
+                 message, phrased for the ear rather than read from the page."
+            ),
+            "the tool description carries the voice-mode rule: {description}",
+        );
     }
 }
