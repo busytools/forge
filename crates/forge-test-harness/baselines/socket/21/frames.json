@@ -169,7 +169,6 @@
     "BrowserResize": "browser_resize",
     "BrowserTabs": "browser_tabs",
     "BrowserView": "browser_view",
-    "BrowserViewPage": "browser_view_page",
     "ClientPerf": "client_perf",
     "Command": "command",
     "CommitDiff": "commit_diff",
@@ -201,8 +200,7 @@
       "/update/browser_hand_off_pending/handoff": [
         "id",
         "reason",
-        "tab",
-        "target"
+        "tab"
       ],
       "/update/browser_hand_off_pending/key": [
         "label",

@@ -482,12 +482,15 @@ mod tests {
         registry.adopt(1, lead.clone(), "t1", "one", "http://a/").expect("the tab");
         // **The page, not just the only tab**: a second page proves the
         // lookup resolves the target rather than answering the first row.
-        registry.adopt(2, lead, "t2", "two", "http://b/").expect("the second tab");
+        registry.adopt(2, lead.clone(), "t2", "two", "http://b/").expect("the second tab");
+        // **A row whose page a listing could not name carries an empty
+        // target**, and it must not answer a caller that named nothing.
+        registry.adopt(3, lead, "", "three", "http://c/").expect("a row with no page named");
         assert_eq!(registry.number_of("t1"), Some(1));
         assert_eq!(registry.number_of("t2"), Some(2));
         assert_eq!(registry.number_of("t9"), None);
         assert_eq!(registry.number_of(""), None, "a page nobody named is not a page");
-        assert_eq!(registry.listing(), "1: http://a/, 2: http://b/");
+        assert_eq!(registry.listing(), "1: http://a/, 2: http://b/, 3: http://c/");
     }
 
     #[test]

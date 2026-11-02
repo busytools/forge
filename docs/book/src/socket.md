@@ -87,7 +87,7 @@ for anything:
 ```json
 {
   "kind": "greeting",
-  "version": 21,
+  "version": 22,
   "forge_version": "1.1.25 · abc1234",
   "forge_version_short": "1.1.25+abc1234",
   "settings": {
@@ -392,10 +392,15 @@ again when it lets the seat go. That last one is the client's own held state
 rather than a frame - nothing on this wire says "forget the scope" - so a
 reconnect after it re-asks an ordinary record.
 
-**`browser_view {seat, tab, reply_to}`** - attach this connection to one of
-a seat's browser tabs as a viewer. `seat` names the seat whose browser to
-view; `tab` is a tab's number from the `browser_tabs` list, and omitting it
-takes the asking seat's current tab, else the profile's first. **The profile
+**`browser_view {seat, tab, reply_to}`** and **`browser_view_page {seat,
+target, reply_to}`** - attach this connection to one of a seat's browser
+tabs as a viewer. `seat` names the seat whose browser to view; `tab` is a
+tab's number from the `browser_tabs` list, and omitting it takes the asking
+seat's current tab, else the profile's first. **`browser_view_page` names
+the page instead** - the CDP target id a hand-off carries - and is what a
+hand-off's Open and its Retry send, because a tab number names a different
+tab after a host replacement. Both answer identically; a page that is gone
+is refused with the target and the tabs open now. **The profile
 is not on the wire**: a seat's profile is `forge.toml`'s, resolved from the
 project's `browser_profile`, else its org's, else `default`. The answer is a
 `browser_view` naming the profile's wire id, the profile key and the tab, a
