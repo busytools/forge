@@ -57,7 +57,7 @@ read as one system.
   web, lsp, skill, tool search, config, worktree, tool, and the one
   mutation row every edit draws whatever tool it was.
 - **A forge call** draws a card for its family - tasks, agents, cron,
-  documents, gotify, handoff, review, slack - and the System One decisions
+  documents, gotify, handoff, review, slack, voice - and the System One decisions
   draw as their own family, so a reader scanning for what the session decided
   does not find the three decision calls mixed among its cron and peer calls.
   The handoff's exit call is its own family: its family is handoff, it wears

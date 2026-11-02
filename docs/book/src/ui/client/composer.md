@@ -87,17 +87,19 @@ speaks to the agent: it fills the box with text and stops there. The voice
 switch is how the agent's replies are heard: it turns the seat's speech on
 or off for this client and does nothing else.
 
-**Voice is per client and per seat.** Enabling subscribes this client to
-the seat's clips; the first client in puts a short note into the session,
-so the agent is told once that the person is listening, and the last client
-out puts the stopped-listening note only when the reader turned the switch
-off themselves. A seat change pauses the switch and a return to a seat the
-reader had on reconnects it, so moving between seats does not toggle the
-agent. A closed client or a dropped socket turns the switch off. The clips
-play in the order the engine rendered them, each sentence following the one
-before, and a reconnect discards the queue rather than playing a
-conversation with holes in it, then resubscribes the switch if this client
-still wants voice.
+**Voice is per client and per seat.** Every connection on the seat receives
+its clips, and this client plays them only while its switch is on. The first
+client in puts a short note into the session, so the agent is told once that
+the person is listening. The last client out tells the agent the person
+stopped when the reader turned the switch off themselves, and when the
+connection that held that client goes away: a closed client or a dropped
+socket empties the seat's listener set too. A seat change pauses the switch
+and a return to a seat the reader had on reconnects it, so moving between
+seats does not toggle the agent. A closed client or a dropped socket turns
+the switch off. The clips play in the order the engine rendered them, each
+sentence following the one before, and a reconnect discards the queue rather
+than playing a conversation with holes in it, then resubscribes the switch if
+this client still wants voice.
 
 ## Dictation
 

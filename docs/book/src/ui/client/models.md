@@ -47,8 +47,9 @@ read and the actions are the server's (`Subject::DictateModels`,
 `ModelSpec` - the size, quant, parameters, digest and licence it declares -
 and never off the feed, so a model the feed does not carry still draws
 whole. The second line is the feed's: its runtime
-measurement and its languages. A model with no join says `not in the feed`
-rather than borrowing a measurement. The third line says where the model
+measurement and its languages. A model with no join draws the runtime its
+spec declares beside `not in the feed` rather than borrowing a measurement -
+the speaking row's runtime is `llama.cpp`. The third line says where the model
 came from: `compiled default`, `installed here`, or `pinned by [dictate]
 <key>` - naming the key, because that key is what has to go for the runtime
 to move the role. **The speaking row says its files are placed by hand**:
@@ -155,9 +156,10 @@ that scores term accuracy as well as word error rate. The public tier is a
 fixed LibriSpeech test-clean slice embedded in the binary with its
 transcripts and digests; the first bench installs it beside the models, with
 an ATTRIBUTION file written beside the clips, so a machine that has never
-recorded anything still has something to score. The installer restores any clip whose bytes
-differ from the bundled slice before a bench scores it, and a manifest that names a missing clip
-is refused by name. **The page records that
+recorded anything still has something to score. The installer rewrites the
+slice before a bench scores it whenever the manifest or any clip differs from
+what the binary carries, so a tampered or missing clip is replaced rather
+than scored. **The page records that
 passage itself**: the section draws the passage and the record control, and a
 press opens this client's microphone through the composer's own capture. The
 recording is not a take - no session owns it and nothing is transcribed,

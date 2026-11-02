@@ -1,14 +1,14 @@
 src/ui/client/board.md 2368
 src/ui/client/browser.md 4691
-src/ui/client/composer.md 2708
+src/ui/client/composer.md 2742
 src/ui/client/connect.md 1773
 src/ui/client/document.md 2673
 src/ui/client/extensions.md 1780
 src/ui/client/files.md 1917
 src/ui/client/home.md 2830
 src/ui/client/index.md 718
-src/ui/client/models.md 4428
+src/ui/client/models.md 4445
 src/ui/client/queue.md 772
 src/ui/client/review.md 5405
-src/ui/client/session.md 5582
+src/ui/client/session.md 5583
 src/ui/client/settings.md 1879
