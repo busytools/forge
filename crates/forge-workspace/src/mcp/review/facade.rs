@@ -546,7 +546,7 @@ mod resolve_scope_tests {
             org: "TestOrg".to_owned(),
             accounts: Vec::new(),
             fallback_accounts: Vec::new(),
-            auto_start: false,
+            resume_lead: false,
             model: None,
             env: std::collections::HashMap::new(),
             env_file: None,

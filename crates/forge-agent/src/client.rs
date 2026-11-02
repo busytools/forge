@@ -41,6 +41,15 @@ pub struct SessionLaunchSettings {
     /// sent to `claude`. Defaults `false`; only the boot dispatch sets it.
     #[serde(skip)]
     pub force_new: bool,
+    /// The first turn a lead receives when this spawn carries a stored
+    /// id to resume. The boot wave sets it so a restarted lead continues
+    /// without a human prompt; the spawn delivers it only then, so a
+    /// first boot or `--new` sends nothing. A resume the CLI refuses
+    /// still takes the note, whose wording does not depend on history.
+    /// Pure workspace-side routing - `#[serde(skip)]` keeps it out of
+    /// every serialized form.
+    #[serde(skip)]
+    pub resume_kick: Option<String>,
     /// Per-spawn env overrides layered over the account env this
     /// session spawns under. A present key replaces, an absent key
     /// keeps, and a key mapped to an empty string removes the variable.

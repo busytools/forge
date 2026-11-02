@@ -3193,7 +3193,7 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "{project_path}"
-auto_start = true
+resume_lead = true
 model = "claude-sonnet-5"
 
 [[accounts]]
@@ -3652,12 +3652,12 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-auto_start = true
+resume_lead = true
 
 [[orgs.projects]]
 name = "gateway-backend"
 path = "~/Projects/gateway-backend"
-auto_start = false
+resume_lead = false
 
 [[accounts]]
 display_name = "Stargate"
@@ -9011,7 +9011,7 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "{project_path}"
-auto_start = true
+resume_lead = true
 
 [[accounts]]
 display_name = "Stargate"
@@ -9150,7 +9150,7 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "{project_path}"
-auto_start = true
+resume_lead = true
 
 [[accounts]]
 display_name = "Stargate"

@@ -38,7 +38,7 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-auto_start = true
+resume_lead = true
 model = "claude-sonnet-5"
 
 [[orgs.projects]]
@@ -100,7 +100,7 @@ provider = "anthropic"
 /// site passes every unit test. This asserts on what the handle
 /// actually carries.
 ///
-/// `Named` is the arm production takes - every `auto_start = true`
+/// `Named` is the arm production takes - every `resume_lead = true`
 /// project and every `--project NAME` reaches it. It also covers
 /// `[accounts.env]`, which had no end-to-end coverage of its own.
 #[tokio::test]
@@ -119,7 +119,7 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-auto_start = true
+resume_lead = true
 model = "claude-sonnet-5"
 env = { AIRMAIL_TOKEN = "forge-value" }
 
@@ -205,7 +205,7 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-auto_start = true
+resume_lead = true
 model = "deepseek-v4.1-flash"
 
 [[orgs.projects]]

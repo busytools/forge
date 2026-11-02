@@ -15,8 +15,9 @@ pub use forge_primitives::ProjectKey;
 /// What [`crate::Workspace::get_agent_handle`] should hand back.
 #[derive(Clone, Debug)]
 pub enum SessionTarget {
-    /// The lead of the project marked `default = true` in
-    /// `forge.toml`. Errors if no default is configured.
+    /// The lead of the fallback project: the alphabetically-first
+    /// project carrying `resume_lead = true`, else the
+    /// alphabetically-first project overall.
     Default,
     /// Open the lead of the project whose `name` matches the given
     /// string in `forge.toml`. Errors with `ProjectNotFound` if no

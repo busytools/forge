@@ -624,7 +624,7 @@ async fn wait_for_accounts(workspace: &Arc<Workspace>, timeout: std::time::Durat
 
 /// The boot spawn, for a process with no view: hold until the accounts
 /// settle, then dispatch the wave a view's connect path dispatches -
-/// the named project's lead, or every `auto_start` project, in forge.toml
+/// the named project's lead, or every `resume_lead` project, in forge.toml
 /// order.
 ///
 /// Settling is terminal rather than `Ready` - a bailed account releases
@@ -652,12 +652,17 @@ pub fn start_boot_wave(workspace: Arc<Workspace>, project: Option<String>, force
             );
         }
         // Boot wave only: --new makes the boot leads start fresh instead
-        // of resuming (and cascades to their workers).
-        let launch_settings =
-            forge_workspace::SessionLaunchSettings { force_new, ..Default::default() };
+        // of resuming (and cascades to their workers). A spawn that does
+        // resume takes the restart note as its first turn; a fresh one
+        // delivers nothing.
+        let launch_settings = forge_workspace::SessionLaunchSettings {
+            force_new,
+            resume_kick: Some(forge_workspace::LEAD_RESTART_NOTE.to_owned()),
+            ..Default::default()
+        };
         let targets: Vec<String> = match project {
             Some(name) => vec![name],
-            None => crate::surface::ViewSurface::new(Arc::clone(&workspace)).roster().auto_start(),
+            None => crate::surface::ViewSurface::new(Arc::clone(&workspace)).roster().resume_lead(),
         };
         for project_name in targets {
             let cmd = forge_workspace::Command::SpawnProject {
@@ -704,7 +709,8 @@ pub fn stop_result(unready: &[forge_primitives::SessionSlot]) -> anyhow::Result<
 #[cfg(test)]
 mod tests {
     use super::{
-        BOOT_WAVE_WAIT, start_config_watch, start_subsystems, stop_result, wait_for_accounts,
+        BOOT_WAVE_WAIT, start_boot_wave, start_config_watch, start_subsystems, stop_result,
+        wait_for_accounts,
     };
     #[cfg(target_os = "macos")]
     use super::{configure_fleet_profiles, reap_then_prune};
@@ -740,15 +746,18 @@ mod tests {
     /// then handed on - a busy box can take it in between, and the listener's
     /// failed bind is logged rather than read here.
     fn boot_fixture() -> (Arc<Workspace>, tempfile::TempDir) {
-        fixture(false)
+        fixture(false, false)
     }
 
     /// The same boot, with the socket serving on a port the OS hands out.
     fn socket_fixture() -> (Arc<Workspace>, tempfile::TempDir) {
-        fixture(true)
+        fixture(true, false)
     }
 
-    fn fixture(serve: bool) -> (Arc<Workspace>, tempfile::TempDir) {
+    /// The bare boot, optionally with `notes`, the second-declared
+    /// project, pinned to resume its lead and the first-declared `forge`
+    /// left unpinned beside it, so a wave test can tell the two apart.
+    fn fixture(serve: bool, resume_lead: bool) -> (Arc<Workspace>, tempfile::TempDir) {
         let dir = tempfile::tempdir().expect("tempdir");
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a free port");
         let port = listener.local_addr().expect("the port the OS handed out").port();
@@ -758,6 +767,11 @@ mod tests {
         drop(socket);
         let forge = dir.path().join("forge");
         std::fs::create_dir_all(&forge).expect("forge/");
+        let pinned = if resume_lead {
+            "\n[[orgs.projects]]\nname = \"notes\"\npath = \"/tmp\"\nresume_lead = true\n"
+        } else {
+            ""
+        };
         std::fs::write(
             forge.join("forge.toml"),
             format!(
@@ -769,7 +783,7 @@ accounts = [\"Stub\"]
 [[orgs.projects]]
 name = \"forge\"
 path = \"/tmp\"
-
+{pinned}
 [[accounts]]
 display_name = \"Stub\"
 token = \"t\"
@@ -789,6 +803,115 @@ port = {port}
         .expect("write forge.toml");
         let workspace = Workspace::new_for_test(dir.path().to_owned()).expect("workspace");
         (Arc::new(workspace), dir)
+    }
+
+    /// Drain the intercepted app-level commands until the wave's spawns
+    /// arrive. The wave is a spawned task, so the command lands after
+    /// `start_boot_wave` returns rather than inside it.
+    async fn spawned_projects(
+        workspace: &Arc<Workspace>,
+    ) -> Vec<(String, forge_workspace::SessionLaunchSettings)> {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let spawned: Vec<_> = workspace
+                    .drain_test_dispatch_buffer()
+                    .into_iter()
+                    .filter_map(|command| match command {
+                        forge_workspace::Command::SpawnProject {
+                            project_name,
+                            launch_settings,
+                        } => Some((project_name, launch_settings)),
+                        _ => None,
+                    })
+                    .collect();
+                if !spawned.is_empty() {
+                    return spawned;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the boot wave dispatches its spawns")
+    }
+
+    /// **The boot wave is the only production site that asks for the
+    /// restart note.** On a bare launch it is sent only for the projects
+    /// pinned to resume, so an unpinned project is not in the wave at
+    /// all. The intercept replaces the spawn, so what is read here is the
+    /// command the wave would send.
+    #[tokio::test]
+    async fn the_boot_wave_pins_each_resume_lead_project_with_the_restart_note() {
+        let (workspace, _dir) = fixture(false, true);
+        workspace.enable_test_dispatch_intercept();
+        workspace.seed_test_ready_account("Stub");
+        workspace.seed_test_gateway_ready(true);
+        assert!(
+            wait_for_accounts(&workspace, Duration::from_secs(30)).await,
+            "the fixture's accounts settle before the wave",
+        );
+
+        start_boot_wave(Arc::clone(&workspace), None, false);
+
+        let spawned = spawned_projects(&workspace).await;
+        assert_eq!(spawned.len(), 1, "only the pinned project is in the wave: {spawned:?}");
+        assert_eq!(spawned[0].0, "notes", "and it is the project that set the key");
+        assert!(!spawned[0].1.force_new, "a normal launch is not a --new one");
+        assert_eq!(
+            spawned[0].1.resume_kick.as_deref(),
+            Some(forge_workspace::LEAD_RESTART_NOTE),
+            "the wave asks for the restart note",
+        );
+    }
+
+    /// `--new` still asks for the note: the spawn's resume gate is what
+    /// drops it, so the wave's own contract does not depend on the flag.
+    #[tokio::test]
+    async fn the_boot_wave_asks_for_the_restart_note_under_new_as_well() {
+        let (workspace, _dir) = fixture(false, true);
+        workspace.enable_test_dispatch_intercept();
+        workspace.seed_test_ready_account("Stub");
+        workspace.seed_test_gateway_ready(true);
+        assert!(
+            wait_for_accounts(&workspace, Duration::from_secs(30)).await,
+            "the fixture's accounts settle before the wave",
+        );
+
+        start_boot_wave(Arc::clone(&workspace), None, true);
+
+        let spawned = spawned_projects(&workspace).await;
+        assert_eq!(spawned.len(), 1, "only the pinned project is in the wave: {spawned:?}");
+        assert!(spawned[0].1.force_new, "--new reaches the command");
+        assert_eq!(
+            spawned[0].1.resume_kick.as_deref(),
+            Some(forge_workspace::LEAD_RESTART_NOTE),
+            "a --new wave still asks for the note; the spawn decides delivery",
+        );
+    }
+
+    /// **A project named on the command line starts whether or not it is
+    /// pinned**, and it takes the same note request, so a named unpinned
+    /// project with a stored id gets the note too.
+    #[tokio::test]
+    async fn the_boot_wave_starts_a_named_project_even_when_unpinned() {
+        let (workspace, _dir) = fixture(false, true);
+        workspace.enable_test_dispatch_intercept();
+        workspace.seed_test_ready_account("Stub");
+        workspace.seed_test_gateway_ready(true);
+        assert!(
+            wait_for_accounts(&workspace, Duration::from_secs(30)).await,
+            "the fixture's accounts settle before the wave",
+        );
+
+        start_boot_wave(Arc::clone(&workspace), Some("forge".to_owned()), false);
+
+        let spawned = spawned_projects(&workspace).await;
+        assert_eq!(spawned.len(), 1, "the named project alone: {spawned:?}");
+        assert_eq!(spawned[0].0, "forge", "the named project starts though it is unpinned");
+        assert_eq!(
+            spawned[0].1.resume_kick.as_deref(),
+            Some(forge_workspace::LEAD_RESTART_NOTE),
+            "and a named project takes the same note request",
+        );
     }
 
     /// **`serve_socket` returns with the fold already subscribed.** The boot

@@ -646,6 +646,7 @@ impl SessionTask {
                         let force_new = self.domain.lock().spawned_force_new;
                         maybe_respawn_workers_on_connected(&workspace, &self.key, force_new);
                         maybe_kick_worker_on_connected(&workspace, &self.key);
+                        maybe_kick_lead_on_connected(&workspace, &self.key, &self.domain);
                         // A session that arrived by a handoff is measured for
                         // its first ten turns, which is what says whether the
                         // brief carried enough. This is the boot/resume
@@ -2678,12 +2679,30 @@ fn maybe_kick_worker_on_connected(workspace: &Arc<crate::Workspace>, slot: &crat
     workspace.enqueue_kick(crate::workspace::KickRequest { slot: slot.clone(), prompt_body: kick });
 }
 
+/// A lead's first turn after a boot spawn handed it a stored session id
+/// to resume: the restart note the spawn stamped on the domain. The hook
+/// takes the note, so a reconnect repeats nothing, and a first boot or
+/// `--new` never stamped one.
+fn maybe_kick_lead_on_connected(
+    workspace: &Arc<crate::Workspace>,
+    slot: &crate::SessionSlot,
+    domain: &Mutex<DomainSession>,
+) {
+    if !slot.is_lead() {
+        return;
+    }
+    let Some(note) = domain.lock().pending_lead_resume_note.take() else { return };
+    workspace.enqueue_kick(crate::workspace::KickRequest { slot: slot.clone(), prompt_body: note });
+}
+
 /// Test-only entry point for the Connected hooks.
-/// Drives both `maybe_respawn_workers_on_connected` (lead path) and
+/// Drives `maybe_respawn_workers_on_connected` (lead path) and
 /// `maybe_kick_worker_on_connected` (worker path) directly without
 /// constructing a `SessionTask` or pumping through the actor - the
 /// `connected_hook_tests` module uses this to assert the trigger logic.
-/// Only one hook fires per call: the slot's label selects.
+/// The slot's label selects: a lead drives the respawn, a worker its
+/// kick. The lead restart-note hook is exercised by its own test, which
+/// needs the session's domain.
 #[cfg(test)]
 fn on_connected_for_test(
     workspace: &Arc<crate::Workspace>,
@@ -13057,6 +13076,54 @@ mod connected_hook_tests {
                 "inline kick delivered verbatim",
             );
         }
+    }
+
+    /// A boot spawn that resumed a lead hands the restart note to the
+    /// Connected hook, which kicks it once as the lead's first turn. The
+    /// hook takes the note, so a reconnect repeats nothing; a worker slot
+    /// never takes a lead's note.
+    #[tokio::test(start_paused = true)]
+    async fn a_lead_restart_note_is_kicked_once_and_only_for_a_lead() {
+        let (workspace, _update_rx) = Workspace::testing_stub();
+        workspace.enable_test_dispatch_intercept();
+        workspace.start_kick_dispatcher();
+        let lead = lead_slot("proj-x");
+        let mut domain = DomainSession::new(lead.clone(), None);
+        domain.pending_lead_resume_note = Some("continue where you left off".to_owned());
+        let domain = Mutex::new(domain);
+
+        maybe_kick_lead_on_connected(&workspace, &lead, &domain);
+        tokio::task::yield_now().await;
+        tokio::task::yield_now().await;
+
+        let dispatched = workspace.drain_test_dispatch_buffer();
+        let prompts: Vec<&Command> = dispatched
+            .iter()
+            .filter(|c| matches!(c, Command::Prompt { .. } | Command::PromptUnder { .. }))
+            .collect();
+        assert_eq!(prompts.len(), 1, "a resumed lead is kicked exactly once");
+        if let Command::Prompt { key, text, .. } | Command::PromptUnder { key, text, .. } =
+            prompts[0]
+        {
+            assert_eq!(key, &lead, "the note targets the lead's own slot");
+            assert_eq!(text, "continue where you left off", "the note arrives verbatim");
+        }
+
+        maybe_kick_lead_on_connected(&workspace, &lead, &domain);
+        let worker = crate::SessionSlot::from_str_for_test("w");
+        let mut worker_domain = DomainSession::new(worker.clone(), None);
+        worker_domain.pending_lead_resume_note = Some("never delivered".to_owned());
+        maybe_kick_lead_on_connected(&workspace, &worker, &Mutex::new(worker_domain));
+        // The dispatcher fires one kick per interval, so the clock has to
+        // move before a second enqueue can reach the buffer: without the
+        // advance, a hook that left the note in place would read as clean.
+        tokio::time::advance(std::time::Duration::from_secs(2)).await;
+        tokio::task::yield_now().await;
+        tokio::task::yield_now().await;
+        assert!(
+            workspace.drain_test_dispatch_buffer().is_empty(),
+            "a reconnect after the note was taken and a worker slot deliver nothing",
+        );
     }
 
     /// #695: the same inline kick with an underscore in the label as the

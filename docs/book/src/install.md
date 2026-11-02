@@ -273,7 +273,7 @@ project, and at least one account. The
 [configuration reference](./configuration.md) has a complete example.
 
 ```bash
-forge              # open the auto-start projects
+forge              # start the resume_lead projects
 forge <PROJECT>    # open a specific project by its forge.toml name
 ```
 

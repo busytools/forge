@@ -661,7 +661,7 @@ impl Workspace {
             org: "TestOrg".to_owned(),
             accounts: vec!["acct-a".to_owned()],
             fallback_accounts: Vec::new(),
-            auto_start: false,
+            resume_lead: false,
             model: None,
             env: std::collections::HashMap::new(),
             env_file: None,
