@@ -280,7 +280,10 @@ export interface AttentionRow {
 
 /** One wait narrowed where it enters; an unreadable item refuses the read. */
 export function attentionFrom(value: unknown): AttentionRow {
-  const held = (typeof value === 'object' && value !== null ? value : {}) as Record<string, unknown>;
+  const held = (typeof value === 'object' && value !== null ? value : {}) as Record<
+    string,
+    unknown
+  >;
   const { task, owner, subject, words, at } = held;
   if (
     typeof task !== 'string' ||
