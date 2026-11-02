@@ -1289,6 +1289,43 @@ mod tests {
         assert_eq!(ws.dictate_bench(), BenchState::Idle);
     }
 
+    /// A settled speaking run releases the one bench slot too.
+    #[test]
+    fn a_settled_speaking_run_releases_the_claim() {
+        let (ws, _updates, _config, _models) = voice_stub();
+        ws.claim_bench().expect("the claim is free");
+
+        ws.settle_speaking_bench(Err("stopped".to_owned()));
+
+        assert!(!ws.bench_running(), "the claim is released");
+    }
+
+    /// A failed run releases the slot, so a second bench can start.
+    #[test]
+    fn a_failed_bench_leaves_the_slot_free() {
+        let (ws, _updates, _config, _models) = voice_stub();
+        ws.claim_bench().expect("the claim is free");
+
+        ws.fail_bench(
+            target("asr.gguf", BenchRole::Transcribing),
+            "the model would not load".to_owned(),
+        );
+
+        ws.claim_bench().expect("the claim is free again");
+    }
+
+    /// A stopped run releases the slot, so a second bench can start.
+    #[test]
+    fn a_stopped_bench_leaves_the_slot_free() {
+        let (ws, _updates, _config, _models) = voice_stub();
+        ws.claim_bench().expect("the claim is free");
+        ws.dictate_bench_cancel.store(true, Ordering::Relaxed);
+
+        ws.settle_bench(&target("asr.gguf", BenchRole::Transcribing), "stopped".to_owned());
+
+        ws.claim_bench().expect("the claim is free again");
+    }
+
     /// A run that ends any other way lands failed, with its own reason.
     #[test]
     fn a_run_that_ends_without_a_result_lands_failed() {
