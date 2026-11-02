@@ -2680,9 +2680,8 @@ fn maybe_kick_worker_on_connected(workspace: &Arc<crate::Workspace>, slot: &crat
 }
 
 /// A lead's first turn after a boot spawn resumed it: the restart note
-/// the spawn stamped on the domain. The caller takes the note, so a
-/// reconnect passes `None` and repeats nothing, and a fresh spawn never
-/// stamped one.
+/// the spawn stamped on the domain. The hook takes the note, so a
+/// reconnect repeats nothing, and a fresh spawn never stamped one.
 fn maybe_kick_lead_on_connected(
     workspace: &Arc<crate::Workspace>,
     slot: &crate::SessionSlot,
