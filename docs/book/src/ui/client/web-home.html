@@ -595,6 +595,8 @@
        number. */
     .attn { display: inline-flex; align-items: center; gap: 5px;
       flex: none; white-space: nowrap;
+      /* The row's stretched link is the overlay; the mark rides above it. */
+      position: relative; z-index: 1;
       background: none; border: 0; border-radius: 6px; padding: 2px 5px;
       color: var(--warn); font-family: var(--mono); font-size: 12.5px;
       cursor: pointer; }

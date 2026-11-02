@@ -286,6 +286,8 @@
      count, never colour alone, with the asks themselves behind it. */
   .attn { display: inline-flex; align-items: center; gap: 5px; flex: none;
     white-space: nowrap; background: none; border: 0; border-radius: 6px;
+    /* The row's stretched link is the overlay; the mark rides above it. */
+    position: relative; z-index: 1;
     padding: 2px 5px; color: var(--warn); font-family: var(--mono);
     font-size: var(--fs-data); cursor: pointer; }
   .attn:hover { background: rgba(201,161,59,.12); }
