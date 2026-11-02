@@ -5026,27 +5026,27 @@ impl Profile {
                         // (rule 20). The host holds it until someone answers
                         // it, so this is what tells a call that it may not
                         // drive that tab yet (#2754).
-                        if let Some(profile) = profile.upgrade() {
-                            if note_dialog(&profile, generation, tab, &dialog, &message, state) {
-                                // **The strip hears it now**, not at the next
-                                // call or the idle sweep: a raise and an answer
-                                // both happen with no call behind them, and a
-                                // row that kept drawing `idle` is what hides
-                                // why the page ignores input (#2765).
-                                profile.rows.send_modify(|list| {
-                                    if let Some(row) =
-                                        list.rows.iter_mut().find(|row| row.number == tab)
-                                    {
-                                        row.dialog = match state {
-                                            JsDialogState::Shown => Some(BrowserTabDialog {
-                                                kind: dialog.clone(),
-                                                message: message.clone(),
-                                            }),
-                                            JsDialogState::Answered | JsDialogState::Closed => None,
-                                        };
-                                    }
-                                });
-                            }
+                        if let Some(profile) = profile.upgrade()
+                            && note_dialog(&profile, generation, tab, &dialog, &message, state)
+                        {
+                            // **The strip hears it now**, not at the next
+                            // call or the idle sweep: a raise and an answer
+                            // both happen with no call behind them, and a
+                            // row that kept drawing `idle` is what hides
+                            // why the page ignores input (#2765).
+                            profile.rows.send_modify(|list| {
+                                if let Some(row) =
+                                    list.rows.iter_mut().find(|row| row.number == tab)
+                                {
+                                    row.dialog = match state {
+                                        JsDialogState::Shown => Some(BrowserTabDialog {
+                                            kind: dialog.clone(),
+                                            message: message.clone(),
+                                        }),
+                                        JsDialogState::Answered | JsDialogState::Closed => None,
+                                    };
+                                }
+                            });
                         }
                         tracing::debug!(
                             event_name = "browser_js_dialog",
