@@ -816,6 +816,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_paused_last_listener_says_nothing() {
+        let fixture = service_with(|| StubEngine::new(Arc::new(Mutex::new(Vec::new()))));
+        let said = |fixture: &Fixture| fixture.notes.said.lock().expect("unpoisoned").clone();
+
+        fixture.service.set_listening(&seat(), 1, true, false);
+        assert_eq!(said(&fixture), vec![LISTENING_NOTE.to_owned()]);
+
+        // A seat change is a pause, not a goodbye: the last listener leaves
+        // without an explicit off, so the agent is not told the user stopped.
+        fixture.service.set_listening(&seat(), 1, false, false);
+        assert_eq!(said(&fixture), vec![LISTENING_NOTE.to_owned()], "a pause fires no note");
+        assert_eq!(fixture.service.listeners(&seat()), 0);
+
+        // The note survives the pause, so a return does not tell the agent
+        // it came back.
+        fixture.service.set_listening(&seat(), 1, true, false);
+        assert_eq!(
+            said(&fixture),
+            vec![LISTENING_NOTE.to_owned()],
+            "a return after a pause says nothing",
+        );
+    }
+
+    #[tokio::test]
     async fn a_dropped_connection_leaves_every_seat_it_listened_to() {
         let fixture = service_with(|| StubEngine::new(Arc::new(Mutex::new(Vec::new()))));
         let first = seat();
