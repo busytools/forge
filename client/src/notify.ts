@@ -11,12 +11,18 @@
  * `pending_seq`, and the server run's `boot_id` - the ask's identity. A re-read
  * cannot change it and an answer cannot fake it, so an ask is announced once
  * and an answer that shrinks a batch announces nothing.
+ *
+ * A decision wait on the task board is the second kind: its identity is the
+ * task and the moment it was raised, and it notifies once per raise with no
+ * focus exemption, because the app being frontmost does not mean the project
+ * holding the wait is being looked at.
  */
 
 import { canHost } from './browser/host';
+import { orgOf } from './home/view';
 import { subjectKey } from './protocol';
 import { goTo } from './routes';
-import type { AgentRow, PendingKind } from './wire/home';
+import type { AgentRow, HomeWire, PendingKind, WireTime } from './wire/home';
 import type { SessionSlot } from './wire/types';
 
 /** One ask the person should hear about. */
@@ -25,16 +31,40 @@ export interface AskNotice {
   kind: PendingKind;
 }
 
-/** What the page has announced: one ask identity per seat. */
+/** One decision wait as the notify rule reads it. */
+export interface WaitRow {
+  /** The seat that raised it. */
+  slot: SessionSlot;
+  /** The task's id, the wait's identity with `at`. */
+  task: string;
+  /** The ask's own words, verbatim. */
+  words: string;
+  /** When the wait began; a re-raise carries a later one. */
+  at?: WireTime;
+}
+
+/** One decision wait that is news. */
+export interface WaitNotice {
+  slot: SessionSlot;
+  task: string;
+  words: string;
+  /** The other waits the same read carries for this seat. */
+  more: number;
+}
+
+/** What the page has announced: an ask identity per seat, and a wait's. */
 export interface AskState {
   seen: Map<string, string>;
-  /** Whether a roster read has seeded the marks. */
+  /** The waits already announced, keyed by seat and task. */
+  waitSeen: Map<string, string>;
+  /** Whether a roster read has seeded each rule; they share a read, not a flag. */
   seeded: boolean;
+  waitsSeeded: boolean;
 }
 
 /** Fresh state for one page's launch. */
 export function askState(): AskState {
-  return { seen: new Map(), seeded: false };
+  return { seen: new Map(), waitSeen: new Map(), seeded: false, waitsSeeded: false };
 }
 
 /**
@@ -82,6 +112,70 @@ export function rising(
   return notices;
 }
 
+/**
+ * The decision waits one home read raises.
+ *
+ * **A wait is news once, and a launch is the launch's own history**: the
+ * first read seeds and announces nothing, so a reload with three open waits
+ * fires none. Its identity is the task and the moment it was raised, scoped
+ * to the server run - a re-read cannot change it, and a wait answered and
+ * raised again is a new one.
+ *
+ * **A raise notifies whatever is on screen.** There is no shown-seat
+ * exemption here, because the app being frontmost does not mean the project
+ * holding the wait is being looked at.
+ *
+ * A read's waits are grouped by seat, and a seat with any new one raises a
+ * single notice naming the first and counting the rest.
+ */
+export function waitsRising(state: AskState, boot: string, rows: WaitRow[]): WaitNotice[] {
+  const first = !state.waitsSeeded;
+  state.waitsSeeded = true;
+  const live = new Set<string>();
+  const seats = new Map<string, { slot: SessionSlot; waits: WaitRow[] }>();
+  for (const row of rows) {
+    const seat = subjectKey({ session: row.slot });
+    live.add(`${seat}:${row.task}`);
+    const held = seats.get(seat);
+    if (held === undefined) seats.set(seat, { slot: row.slot, waits: [row] });
+    else held.waits.push(row);
+  }
+  const notices: WaitNotice[] = [];
+  for (const { slot, waits } of seats.values()) {
+    let announced = false;
+    for (const wait of waits) {
+      const key = `${subjectKey({ session: slot })}:${wait.task}`;
+      const at = wait.at;
+      const stamp = at === undefined ? '' : `${at.secs_since_epoch}.${at.nanos_since_epoch}`;
+      const mark = `${boot}:${stamp}`;
+      if (state.waitSeen.get(key) === mark) continue;
+      state.waitSeen.set(key, mark);
+      if (first) continue;
+      if (announced) continue;
+      announced = true;
+      notices.push({ slot, task: wait.task, words: wait.words, more: waits.length - 1 });
+    }
+  }
+  // An answered wait leaves no mark, so the same task raised again is news.
+  for (const key of [...state.waitSeen.keys()]) {
+    if (!live.has(key)) state.waitSeen.delete(key);
+  }
+  return notices;
+}
+
+/** Every decision wait the home read carries, with the seat that raised it. */
+export function waitRows(wire: HomeWire): WaitRow[] {
+  return wire.fleet.flatMap((row) => {
+    const org = orgOf(wire, row.project);
+    return row.attention.map((wait) => ({
+      slot: { org, project: row.project, label: wait.owner },
+      task: wait.task,
+      words: wait.words,
+      at: wait.at,
+    }));
+  });
+}
+
 /** One ask as the OS shows it. */
 export function askWords(notice: AskNotice): { title: string; body: string } {
   const { project, label } = notice.slot;
@@ -95,6 +189,14 @@ export function askWords(notice: AskNotice): { title: string; body: string } {
   return { title: `forge \u{b7} ${seat}`, body };
 }
 
+/** One decision wait as the OS shows it. */
+export function waitWords(notice: WaitNotice): { title: string; body: string } {
+  const { project, label } = notice.slot;
+  const seat = label === 'lead' ? project : `${project} \u{b7} ${label}`;
+  const others = notice.more === 0 ? '' : ` (and ${notice.more} more)`;
+  return { title: `forge \u{b7} ${seat}`, body: `${notice.words}${others}` };
+}
+
 /**
  * Whether this page is the one that raises notifications.
  *
@@ -105,13 +207,24 @@ export function notifiesFromThePage(): boolean {
   return !canHost();
 }
 
+/** One notification, as the page's own surface carries it. */
+interface Held {
+  slot: SessionSlot;
+  words: { title: string; body: string };
+}
+
 /** Raise one ask's notification on a page with no shell. */
 export function deliverAsk(notice: AskNotice): void {
-  notifyPage(notice, askWords(notice));
+  notifyPage({ slot: notice.slot, words: askWords(notice) });
+}
+
+/** Raise one decision wait's notification on a page with no shell. */
+export function deliverWait(notice: WaitNotice): void {
+  notifyPage({ slot: notice.slot, words: waitWords(notice) });
 }
 
 /** What waits for a gesture that can carry the permission prompt. */
-const waiting: { notice: AskNotice; words: { title: string; body: string } }[] = [];
+const waiting: Held[] = [];
 
 /** Whether a gesture listener is up. */
 let armed = false;
@@ -124,27 +237,27 @@ let armed = false;
  * reject and nothing would ever show; the first gesture after a would-notify
  * ask carries it instead. A denial is respected silently and never retried.
  */
-function notifyPage(notice: AskNotice, words: { title: string; body: string }): void {
+function notifyPage(held: Held): void {
   if (typeof Notification === 'undefined') return;
   if (Notification.permission === 'denied') return;
   if (Notification.permission === 'granted') {
-    show(notice, words);
+    show(held);
     return;
   }
-  waiting.push({ notice, words });
+  waiting.push(held);
   if (waiting.length > 8) waiting.shift();
   arm();
 }
 
 /** One notification, whose click opens the seat it was raised for. */
-function show(notice: AskNotice, words: { title: string; body: string }): void {
-  const note = new Notification(words.title, {
-    body: words.body,
-    tag: subjectKey({ session: notice.slot }),
+function show(held: Held): void {
+  const note = new Notification(held.words.title, {
+    body: held.words.body,
+    tag: subjectKey({ session: held.slot }),
   });
   note.onclick = () => {
     window.focus();
-    goTo({ name: 'session', slot: notice.slot });
+    goTo({ name: 'session', slot: held.slot });
     note.close();
   };
 }
@@ -176,7 +289,7 @@ function arm(): void {
           requeue();
           return;
         }
-        for (const { notice, words } of held) show(notice, words);
+        for (const entry of held) show(entry);
       },
       () => {
         // A refused request is no answer; the asks wait for the next gesture.

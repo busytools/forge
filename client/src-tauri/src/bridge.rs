@@ -200,6 +200,8 @@ struct State {
 /// `PlatformAlerts`, which hands each notice to the notification thread.
 trait Alerts: Send + Sync {
     fn raise(&self, seat: &SessionSlot, kind: crate::asks::AskKind);
+    /// A decision wait on the board, announced once per raise.
+    fn raise_wait(&self, notice: &crate::asks::WaitNotice);
 }
 
 /// The shell's delivery: one job per notice on the notification thread.
@@ -210,6 +212,10 @@ struct PlatformAlerts {
 impl Alerts for PlatformAlerts {
     fn raise(&self, seat: &SessionSlot, kind: crate::asks::AskKind) {
         crate::notify::raise(&self.app, seat, kind);
+    }
+
+    fn raise_wait(&self, notice: &crate::asks::WaitNotice) {
+        crate::notify::raise_wait(&self.app, notice);
     }
 }
 
@@ -817,6 +823,8 @@ impl Bridge {
         // never makes.
         let notices = self.asks_moved();
         self.raise(notices);
+        let waits = self.waits_moved();
+        self.raise_waits(waits);
     }
 
     /// The seat the page has on screen, as the last `showing` said.
@@ -941,11 +949,34 @@ impl Bridge {
             .unwrap_or_default()
     }
 
+    /// The decision waits the held home read raises, over the same roster.
+    ///
+    /// **The rule is the page's** (`crate::asks`), as the asks' is, and it
+    /// reads the fleet rows the same snapshot carries.
+    fn waits_moved(&self) -> Vec<crate::asks::WaitNotice> {
+        let mut state = self.lock();
+        let State { records, asks, .. } = &mut *state;
+        records
+            .read("home")
+            .and_then(Result::ok)
+            .map(|data| asks.waits_rising(data))
+            .unwrap_or_default()
+    }
+
     /// Raise one roster read's notices where this bridge has a delivery.
     fn raise(&self, notices: Vec<(SessionSlot, crate::asks::AskKind)>) {
         let Some(alerts) = self.alerts.as_ref() else { return };
         for (seat, kind) in notices {
             alerts.raise(&seat, kind);
+        }
+    }
+
+    /// Raise one roster read's decision waits where this bridge has a
+    /// delivery.
+    fn raise_waits(&self, notices: Vec<crate::asks::WaitNotice>) {
+        let Some(alerts) = self.alerts.as_ref() else { return };
+        for notice in notices {
+            alerts.raise_wait(&notice);
         }
     }
 
@@ -965,12 +996,15 @@ impl Bridge {
         self.attention.store(looking, Ordering::Relaxed);
         let notices = self.asks_moved();
         self.raise(notices);
+        let waits = self.waits_moved();
+        self.raise_waits(waits);
         if let Some(app) = self.app.as_ref() {
             crate::notify::review(app);
         }
     }
 
-    /// One ask's own frame: read the roster again while the home is held.
+    /// One ask's or decision wait's own frame: read the roster again while
+    /// the home is held.
     ///
     /// **Only a read moves the roster's pending field**, and the page's own
     /// read is not a guarantee: its heartbeat is a page timer, and WebKit
@@ -979,12 +1013,18 @@ impl Bridge {
     /// roster is always asked for here - one extra encode per ask is the
     /// cost of not missing the ask that lands in that window. A view that is
     /// not holding the home (a connect screen) asks nothing.
+    ///
+    /// **A board change is the same door for a wait**: the fleet row's
+    /// waits ride the home snapshot, so a task update that is never read
+    /// would leave a raise unannounced while the page is parked - the one
+    /// state notifications exist for.
     fn ask_arrived(&self, update: &Value) {
         let ask = [
             "permission_request",
             "question_request",
             "browser_hand_off_pending",
             "document_hand_off_pending",
+            "tasks_changed",
         ]
         .iter()
         .any(|key| update.get(*key).is_some());
@@ -1385,6 +1425,8 @@ impl Bridge {
                 if key == "home" {
                     let notices = self.asks_moved();
                     self.raise(notices);
+                    let waits = self.waits_moved();
+                    self.raise_waits(waits);
                 }
             }
             "update" => {
@@ -2150,17 +2192,26 @@ mod tests {
     #[derive(Default)]
     struct Recorded {
         notices: Mutex<Vec<(SessionSlot, crate::asks::AskKind)>>,
+        waits: Mutex<Vec<crate::asks::WaitNotice>>,
     }
 
     impl Recorded {
         fn take(&self) -> Vec<(SessionSlot, crate::asks::AskKind)> {
             self.notices.lock().unwrap_or_else(PoisonError::into_inner).clone()
         }
+
+        fn waits(&self) -> Vec<crate::asks::WaitNotice> {
+            self.waits.lock().unwrap_or_else(PoisonError::into_inner).clone()
+        }
     }
 
     impl Alerts for Recorded {
         fn raise(&self, seat: &SessionSlot, kind: crate::asks::AskKind) {
             self.notices.lock().unwrap_or_else(PoisonError::into_inner).push((seat.clone(), kind));
+        }
+
+        fn raise_wait(&self, notice: &crate::asks::WaitNotice) {
+            self.waits.lock().unwrap_or_else(PoisonError::into_inner).push(notice.clone());
         }
     }
 
@@ -2660,6 +2711,57 @@ mod tests {
             vec![(SessionSlot::worker("Busytools", "forge", "w1"), crate::asks::AskKind::Question)],
             "the new ask is the one raised",
         );
+    }
+
+    /// One decision wait, as the fleet row carries it.
+    fn wait(task: &str, owner: &str, words: &str) -> Value {
+        json!({
+            "task": task,
+            "owner": owner,
+            "subject": "the parser",
+            "words": words,
+            "at": { "secs_since_epoch": 5, "nanos_since_epoch": 0 },
+        })
+    }
+
+    /// A home read whose one project holds `waits`.
+    fn waiting_home(waits: &Value) -> Value {
+        json!({
+            "boot_id": "run-1",
+            "agents": [],
+            "projects": [{ "project": { "org": "Busytools", "name": "forge" } }],
+            "fleet": [{ "project": "forge", "attention": waits }],
+        })
+    }
+
+    /// **A decision wait is news once**, on the same home read the asks ride:
+    /// the launch announces none, a raise announces one, and the re-read that
+    /// still carries it announces nothing.
+    #[tokio::test]
+    async fn a_home_read_raises_a_new_decision_wait_once() {
+        let (bridge, _rx, recorded) = bridge_recording();
+        let mut server = stub().await;
+        bridge.connect(server.url.clone());
+        connected(&bridge).await;
+        bridge.subscribe(json!("home"), true, false);
+        let _ = server.heard_until(|v| v["kind"] == "subscribe").await;
+
+        sent(&bridge, home_snapshot(waiting_home(&json!([]))));
+        assert!(recorded.waits().is_empty(), "launch is not news");
+
+        sent(&bridge, home_snapshot(waiting_home(&json!([wait("t1", "lead", "sign this off")]))));
+        assert_eq!(
+            recorded.waits(),
+            vec![crate::asks::WaitNotice {
+                slot: SessionSlot::lead("Busytools", "forge"),
+                task: "t1".to_owned(),
+                words: "sign this off".to_owned(),
+                more: 0,
+            }],
+            "the new wait is the one raised",
+        );
+        sent(&bridge, home_snapshot(waiting_home(&json!([wait("t1", "lead", "sign this off")]))));
+        assert_eq!(recorded.waits().len(), 1, "the same wait is not news");
     }
 
     /// **Clearing the shown seat is what announces the ask it held.** The ask

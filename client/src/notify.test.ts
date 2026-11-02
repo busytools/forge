@@ -2,7 +2,15 @@
 import { get } from 'svelte/store';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { askState, askWords, notifiesFromThePage, rising, type AskState } from './notify';
+import {
+  askState,
+  askWords,
+  notifiesFromThePage,
+  rising,
+  waitsRising,
+  waitWords,
+  type AskState,
+} from './notify';
 import type { AgentRow } from './wire/home';
 import type { SessionSlot } from './wire/types';
 
@@ -187,6 +195,46 @@ describe('which asks are news', () => {
       ),
       'a new question is news',
     ).toHaveLength(1);
+  });
+});
+
+describe('which decision waits are news', () => {
+  const at = (secs: number) => ({ secs_since_epoch: secs, nanos_since_epoch: 0 });
+
+  /// **A wait is announced once, and a launch announces none.** Its identity
+  /// is the task and the moment it was raised, scoped to the server run, so
+  /// a re-read is not news and a wait answered and raised again is.
+  it('announces a decision wait once, and nothing at boot', () => {
+    const state = askState();
+    const first = waitsRising(state, 'boot-1', [
+      { slot: LEAD, task: 't1', words: 'sign this off', at: at(5) },
+    ]);
+    expect(first, 'the launch seeds').toEqual([]);
+    const again = waitsRising(state, 'boot-1', [
+      { slot: LEAD, task: 't1', words: 'sign this off', at: at(5) },
+    ]);
+    expect(again, 'the same wait is not news').toEqual([]);
+    const second = waitsRising(state, 'boot-1', [
+      { slot: LEAD, task: 't1', words: 'sign this off', at: at(5) },
+      { slot: LEAD, task: 't2', words: 'look at this', at: at(9) },
+    ]);
+    expect(second, 'the second raise is one notice, naming the count').toEqual([
+      { slot: LEAD, task: 't2', words: 'look at this', more: 1 },
+    ]);
+    expect(second.map(waitWords), 'the notification names the seat and the ask').toEqual([
+      { title: 'forge \u{b7} forge', body: 'look at this (and 1 more)' },
+    ]);
+  });
+
+  /// **A wait has no focus exemption**, so the rule takes no shown seat at
+  /// all: the app being frontmost does not mean its project is being looked
+  /// at.
+  it("announces a raise on the project's own lead", () => {
+    const state = askState();
+    waitsRising(state, 'boot-1', []);
+    expect(
+      waitsRising(state, 'boot-1', [{ slot: LEAD, task: 't1', words: 'sign this off', at: at(5) }]),
+    ).toEqual([{ slot: LEAD, task: 't1', words: 'sign this off', more: 0 }]);
   });
 });
 

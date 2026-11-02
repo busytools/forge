@@ -14,9 +14,12 @@
   import {
     askState,
     deliverAsk,
+    deliverWait,
     launchSeat,
     notifiesFromThePage,
     rising,
+    waitsRising,
+    waitRows,
     watchNotificationClicks,
   } from '../notify';
   import { noteSeatClick, setPerfSocket } from '../perf';
@@ -274,6 +277,11 @@
     if (wire === null) return;
     const notices = rising(asks, wire.boot_id, wire.agents, shownSeat(route), looking);
     for (const notice of notices) deliverAsk(notice);
+    // **A decision wait is the second channel**, and a raise notifies with
+    // no focus exemption - the app being frontmost does not mean the project
+    // holding the wait is being looked at.
+    const waits = waitsRising(asks, wire.boot_id, waitRows(wire));
+    for (const notice of waits) deliverWait(notice);
   });
 
   /** A shell's notification click names its seat; the page owns the route. */

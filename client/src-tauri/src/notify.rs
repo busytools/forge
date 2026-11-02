@@ -21,7 +21,7 @@ use serde_json::Value;
 use tauri::{AppHandle, Emitter as _, Manager as _};
 use tauri_plugin_notification::{ActionPerformed, NotificationExt, PermissionState};
 
-use crate::asks::AskKind;
+use crate::asks::{AskKind, WaitNotice};
 
 /// The channel Android delivers these on.
 const CHANNEL: &str = "asks";
@@ -30,10 +30,35 @@ const SEAT_EXTRA: &str = "seat";
 /// The action a click on the notification itself reports.
 const TAP: &str = "tap";
 
+/// What one notification says beyond the seat it belongs to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Notice {
+    /// An ask holding a seat's turn.
+    Ask(AskKind),
+    /// A decision wait on the board, with the asks the same read carried
+    /// behind it.
+    Wait { words: String, more: usize },
+}
+
+impl Notice {
+    fn body(&self) -> String {
+        match self {
+            Self::Ask(kind) => kind.body().to_owned(),
+            Self::Wait { words, more } => {
+                if *more == 0 {
+                    words.clone()
+                } else {
+                    format!("{words} (and {more} more)")
+                }
+            }
+        }
+    }
+}
+
 /// One piece of work for the notification thread.
 enum Job {
-    /// One ask the bridge decided is news.
-    Raise(SessionSlot, AskKind),
+    /// One notice the bridge decided is news.
+    Raise(SessionSlot, Notice),
     /// The person may have come back to the app: ask a held prompt, or show
     /// what waited for one.
     Review,
@@ -118,7 +143,7 @@ trait Platform {
     fn looking(&self) -> bool;
     fn permission(&self) -> PermissionState;
     fn request(&self) -> Result<PermissionState, String>;
-    fn show(&self, seat: &SessionSlot, kind: AskKind) -> Result<(), String>;
+    fn show(&self, seat: &SessionSlot, notice: &Notice) -> Result<(), String>;
     /// Open the seat a tap names while the app is already running.
     #[cfg(target_os = "android")]
     fn tap(&self, id: i32);
@@ -147,14 +172,14 @@ impl Platform for Shell {
         open_tap(&self.app, id);
     }
 
-    fn show(&self, seat: &SessionSlot, kind: AskKind) -> Result<(), String> {
+    fn show(&self, seat: &SessionSlot, notice: &Notice) -> Result<(), String> {
         let held = serde_json::to_value(seat).map_err(|why| why.to_string())?;
         let builder = self
             .app
             .notification()
             .builder()
             .title(title(seat))
-            .body(kind.body())
+            .body(notice.body())
             .channel_id(CHANNEL)
             .extra(SEAT_EXTRA, held);
         // **A tap that launches the app names its seat by the id the launch
@@ -172,8 +197,8 @@ struct Worker<P: Platform> {
     platform: P,
     /// Set only by an explicit denial to a request this thread made.
     refused: bool,
-    /// Asks that would have been shown but for the permission.
-    pending: Vec<(SessionSlot, AskKind)>,
+    /// Notices that would have been shown but for the permission.
+    pending: Vec<(SessionSlot, Notice)>,
     /// Whether anything has been shown yet.
     showed: bool,
 }
@@ -181,25 +206,25 @@ struct Worker<P: Platform> {
 impl<P: Platform> Worker<P> {
     fn run(&mut self, job: Job) {
         match job {
-            Job::Raise(seat, kind) => self.raise(seat, kind),
+            Job::Raise(seat, notice) => self.raise(seat, notice),
             Job::Review => self.review(),
             #[cfg(target_os = "android")]
             Job::Tap(id) => self.platform.tap(id),
         }
     }
 
-    fn raise(&mut self, seat: SessionSlot, kind: AskKind) {
+    fn raise(&mut self, seat: SessionSlot, notice: Notice) {
         if self.refused {
             return;
         }
         let state = self.platform.permission();
         match step(state, self.refused, self.platform.looking()) {
-            Step::Show => self.show(&seat, kind),
+            Step::Show => self.show(&seat, &notice),
             Step::Ask => {
-                self.hold(seat, kind);
+                self.hold(seat, notice);
                 self.ask();
             }
-            Step::Hold => self.hold(seat, kind),
+            Step::Hold => self.hold(seat, notice),
             Step::Nothing => {}
         }
     }
@@ -218,13 +243,13 @@ impl<P: Platform> Worker<P> {
         }
     }
 
-    /// Remember one ask until the permission can carry it. The same seat and
-    /// kind while one waits is the same ask.
-    fn hold(&mut self, seat: SessionSlot, kind: AskKind) {
-        if self.pending.iter().any(|(held, held_kind)| held == &seat && *held_kind == kind) {
+    /// Remember one notice until the permission can carry it. The same seat
+    /// and notice while one waits is the same one.
+    fn hold(&mut self, seat: SessionSlot, notice: Notice) {
+        if self.pending.iter().any(|(held, held_notice)| held == &seat && *held_notice == notice) {
             return;
         }
-        self.pending.push((seat, kind));
+        self.pending.push((seat, notice));
     }
 
     /// Ask for the permission, and act only on the answer.
@@ -247,13 +272,13 @@ impl<P: Platform> Worker<P> {
 
     /// Show everything a granted permission was holding.
     fn drain(&mut self) {
-        for (seat, kind) in std::mem::take(&mut self.pending) {
-            self.show(&seat, kind);
+        for (seat, notice) in std::mem::take(&mut self.pending) {
+            self.show(&seat, &notice);
         }
     }
 
-    fn show(&mut self, seat: &SessionSlot, kind: AskKind) {
-        if let Err(why) = self.platform.show(seat, kind) {
+    fn show(&mut self, seat: &SessionSlot, notice: &Notice) {
+        if let Err(why) = self.platform.show(seat, notice) {
             // **A notification is not worth a silent failure**: the log names
             // the seat so a missing banner is answerable after the fact.
             tauri_plugin_log::log::warn!(
@@ -373,7 +398,13 @@ pub fn init(app: &AppHandle) {
 
 /// Raise one ask's notification on the seat it belongs to.
 pub(crate) fn raise(app: &AppHandle, seat: &SessionSlot, kind: AskKind) {
-    let _ = jobs(app).send(Job::Raise(seat.clone(), kind));
+    let _ = jobs(app).send(Job::Raise(seat.clone(), Notice::Ask(kind)));
+}
+
+/// Raise one decision wait's notification on the seat that raised it.
+pub(crate) fn raise_wait(app: &AppHandle, notice: &WaitNotice) {
+    let held = Notice::Wait { words: notice.words.clone(), more: notice.more };
+    let _ = jobs(app).send(Job::Raise(notice.slot.clone(), held));
 }
 
 /// The person's attention moved: a held ask may be shown now.
@@ -425,7 +456,7 @@ mod tests {
         answers: RefCell<VecDeque<Result<PermissionState, String>>>,
         requests: Cell<usize>,
         looking: Cell<bool>,
-        shown: RefCell<Vec<(SessionSlot, AskKind)>>,
+        shown: RefCell<Vec<(SessionSlot, Notice)>>,
     }
 
     impl Fake {
@@ -462,8 +493,8 @@ mod tests {
             answer
         }
 
-        fn show(&self, seat: &SessionSlot, kind: AskKind) -> Result<(), String> {
-            self.shown.borrow_mut().push((seat.clone(), kind));
+        fn show(&self, seat: &SessionSlot, notice: &Notice) -> Result<(), String> {
+            self.shown.borrow_mut().push((seat.clone(), notice.clone()));
             Ok(())
         }
     }
@@ -488,8 +519,8 @@ mod tests {
             true,
         ));
         let mut worker = worker(&fake);
-        worker.run(Job::Raise(lead(), AskKind::Question));
-        worker.run(Job::Raise(lead(), AskKind::Permission));
+        worker.run(Job::Raise(lead(), Notice::Ask(AskKind::Question)));
+        worker.run(Job::Raise(lead(), Notice::Ask(AskKind::Permission)));
         assert_eq!(fake.requests.get(), 2, "no answer is not a refusal");
         assert!(fake.shown.borrow().is_empty(), "and nothing was shown without an answer");
     }
@@ -501,8 +532,8 @@ mod tests {
         let fake =
             Rc::new(Fake::new(PermissionState::Denied, vec![Ok(PermissionState::Denied)], true));
         let mut worker = worker(&fake);
-        worker.run(Job::Raise(lead(), AskKind::Question));
-        worker.run(Job::Raise(lead(), AskKind::Permission));
+        worker.run(Job::Raise(lead(), Notice::Ask(AskKind::Question)));
+        worker.run(Job::Raise(lead(), Notice::Ask(AskKind::Permission)));
         assert_eq!(fake.requests.get(), 1, "a refusal is not asked again");
         assert!(fake.shown.borrow().is_empty(), "and a refusal shows nothing");
     }
@@ -515,7 +546,7 @@ mod tests {
         let fake =
             Rc::new(Fake::new(PermissionState::Denied, vec![Ok(PermissionState::Granted)], false));
         let mut worker = worker(&fake);
-        worker.run(Job::Raise(lead(), AskKind::HandOff));
+        worker.run(Job::Raise(lead(), Notice::Ask(AskKind::HandOff)));
         assert_eq!(fake.requests.get(), 0, "no prompt behind another app");
         assert!(fake.shown.borrow().is_empty(), "and nothing shown yet");
 
@@ -524,7 +555,7 @@ mod tests {
         assert_eq!(fake.requests.get(), 1, "the person is back, so the ask is put to them");
         let shown = fake.shown.borrow();
         assert_eq!(shown.len(), 1, "the held ask is shown once");
-        assert_eq!(shown[0], (lead(), AskKind::HandOff));
+        assert_eq!(shown[0], (lead(), Notice::Ask(AskKind::HandOff)));
     }
 
     /// A granted permission shows the ask at once, with no request.
@@ -532,11 +563,21 @@ mod tests {
     fn a_granted_permission_shows_without_asking() {
         let fake = Rc::new(Fake::new(PermissionState::Granted, Vec::new(), true));
         let mut worker = worker(&fake);
-        worker.run(Job::Raise(lead(), AskKind::Question));
+        worker.run(Job::Raise(lead(), Notice::Ask(AskKind::Question)));
         assert_eq!(fake.requests.get(), 0, "nothing to ask for");
         let shown = fake.shown.borrow();
         assert_eq!(shown.len(), 1);
-        assert_eq!(shown[0], (lead(), AskKind::Question));
+        assert_eq!(shown[0], (lead(), Notice::Ask(AskKind::Question)));
+    }
+
+    /// **A wait's notification carries the ask's own words**, and a batch
+    /// says how many more are behind the one it names.
+    #[test]
+    fn a_wait_notification_names_its_words_and_the_rest() {
+        let one = Notice::Wait { words: "sign this off".to_owned(), more: 0 };
+        assert_eq!(one.body(), "sign this off");
+        let batch = Notice::Wait { words: "sign this off".to_owned(), more: 2 };
+        assert_eq!(batch.body(), "sign this off (and 2 more)");
     }
 
     /// **A click reaches the seat the notification was posted for.** The

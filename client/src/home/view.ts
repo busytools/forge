@@ -383,7 +383,7 @@ export function fleetGroups(rows: FleetViewRow[]): FleetGroup[] {
 }
 
 /** The org a project row belongs to, from the projects list. */
-function orgOf(wire: HomeWire, project: string): string {
+export function orgOf(wire: HomeWire, project: string): string {
   return wire.projects.find((entry) => entry.project.name === project)?.project.org ?? '';
 }
 

@@ -98,6 +98,19 @@ fn asked_of(row: &Value) -> Result<Option<Asked>, String> {
     Ok(Some(Asked { slot, kind, seq }))
 }
 
+/// One decision wait that is news, as the shell raises it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WaitNotice {
+    /// The seat that raised it.
+    pub slot: SessionSlot,
+    /// The task's id, which with `at` is the wait's identity.
+    pub task: String,
+    /// The ask's own words, verbatim.
+    pub words: String,
+    /// The other waits the same read carries for this seat.
+    pub more: usize,
+}
+
 /// What has been announced, and whether a roster read has seeded it.
 #[derive(Default)]
 pub struct Asks {
@@ -107,6 +120,10 @@ pub struct Asks {
     /// again, and a mark from a dead run must never match a live one.
     seen: HashMap<SessionSlot, (String, AskKind, u64)>,
     seeded: bool,
+    /// The decision waits already announced: a seat and a task, by the run
+    /// and the moment the wait began.
+    wait_seen: HashMap<(SessionSlot, String), String>,
+    waits_seeded: bool,
 }
 
 impl Asks {
@@ -165,6 +182,127 @@ impl Asks {
         self.seen.retain(|slot, _| live.contains(slot));
         notices
     }
+
+    /// The decision waits one home read raises.
+    ///
+    /// **A first read is the launch's own history**, exactly as the asks
+    /// are, so a relaunch with waits open announces none. The identity is the
+    /// task and the moment the wait began, scoped to the server run: a
+    /// re-read cannot change it, and a wait answered and raised again is a
+    /// new one.
+    ///
+    /// **A raise notifies whatever is on screen**: the app being frontmost
+    /// does not mean the project holding the wait is being looked at. A read
+    /// is grouped by seat, and a seat with any new wait raises one notice
+    /// naming the first and counting the rest.
+    pub fn waits_rising(&mut self, data: &Value) -> Vec<WaitNotice> {
+        let Some(rows) = data.get("fleet").and_then(Value::as_array) else {
+            return Vec::new();
+        };
+        let boot = data.get("boot_id").and_then(Value::as_str).unwrap_or_default();
+        let mut waits: Vec<(SessionSlot, WaitRow)> = Vec::new();
+        for row in rows {
+            let Some(project) = row.get("project").and_then(Value::as_str) else {
+                continue;
+            };
+            let Some(org) = org_of(data, project) else {
+                tauri_plugin_log::log::debug!(
+                    "a fleet row names a project with no org, so its waits cannot be opened: {project}",
+                );
+                continue;
+            };
+            let Some(items) = row.get("attention").and_then(Value::as_array) else {
+                continue;
+            };
+            for item in items {
+                match wait_of(item, &org, project) {
+                    Ok(wait) => waits.push(wait),
+                    Err(why) => tauri_plugin_log::log::debug!(
+                        "a decision wait could not be read for the notify rule: {why}",
+                    ),
+                }
+            }
+        }
+        let first = !self.waits_seeded;
+        self.waits_seeded = true;
+        let mut live = HashSet::with_capacity(waits.len());
+        let mut seats: Vec<(SessionSlot, Vec<WaitRow>)> = Vec::new();
+        for (slot, wait) in waits {
+            live.insert((slot.clone(), wait.task.clone()));
+            match seats.iter_mut().find(|(held, _)| held == &slot) {
+                Some((_, group)) => group.push(wait),
+                None => seats.push((slot, vec![wait])),
+            }
+        }
+        let mut notices = Vec::new();
+        for (slot, group) in seats {
+            let mut announced = false;
+            for wait in &group {
+                let mark = format!("{boot}:{}", wait.at);
+                if self.wait_seen.get(&(slot.clone(), wait.task.clone())) == Some(&mark) {
+                    continue;
+                }
+                self.wait_seen.insert((slot.clone(), wait.task.clone()), mark);
+                if first || announced {
+                    continue;
+                }
+                announced = true;
+                notices.push(WaitNotice {
+                    slot: slot.clone(),
+                    task: wait.task.clone(),
+                    words: wait.words.clone(),
+                    more: group.len() - 1,
+                });
+            }
+        }
+        // An answered wait leaves no mark, so the same task raised again is
+        // news.
+        self.wait_seen.retain(|key, _| live.contains(key));
+        notices
+    }
+}
+
+/// One wait as the rule groups it: the task, the ask's words and its moment.
+struct WaitRow {
+    task: String,
+    words: String,
+    at: String,
+}
+
+/// One wait's seat and row, or the reason it cannot be read.
+fn wait_of(item: &Value, org: &str, project: &str) -> Result<(SessionSlot, WaitRow), String> {
+    let task = item.get("task").and_then(Value::as_str);
+    let owner = item.get("owner").and_then(Value::as_str);
+    let words = item.get("words").and_then(Value::as_str);
+    let (Some(task), Some(owner), Some(words)) = (task, owner, words) else {
+        return Err("the wait does not name its task, seat and words".to_owned());
+    };
+    let slot = match owner {
+        "lead" => SessionSlot::lead(org, project),
+        label => SessionSlot::worker(org, project, label),
+    };
+    // A server too old to send the moment still announces the wait; the task
+    // alone is then its identity.
+    let at = item
+        .get("at")
+        .and_then(|held| {
+            let secs = held.get("secs_since_epoch").and_then(Value::as_u64)?;
+            let nanos = held.get("nanos_since_epoch").and_then(Value::as_u64)?;
+            Some(format!("{secs}.{nanos}"))
+        })
+        .unwrap_or_default();
+    Ok((slot, WaitRow { task: task.to_owned(), words: words.to_owned(), at }))
+}
+
+/// The org a fleet row's project belongs to, from the same read's projects.
+fn org_of(data: &Value, project: &str) -> Option<String> {
+    for row in data.get("projects")?.as_array()? {
+        let held = row.get("project")?;
+        if held.get("name").and_then(Value::as_str) == Some(project) {
+            return held.get("org").and_then(Value::as_str).map(str::to_owned);
+        }
+    }
+    None
 }
 
 #[cfg(test)]
