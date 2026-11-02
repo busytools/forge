@@ -51,6 +51,12 @@ interface Frame {
   update: SessionUpdate;
 }
 
+/** Where the stream stood when a fresh answer was asked for. */
+interface Ask {
+  generation: number;
+  frames: number;
+}
+
 /** A range of numbers nobody has delivered or repaired yet. */
 export interface Range {
   from: number;
@@ -89,6 +95,27 @@ interface StreamState {
   missing: Range[];
   /** The ranges an ask has already gone out for. */
   asked: Range[];
+  /**
+   * The asks spent on this seat, oldest first; an answer consumes one.
+   *
+   * **What tells a stale answer from a restart.** An answer can be encoded
+   * before frames this gate already delivered; the mark its ask went out at
+   * says whether anything arrived after it. Answers come back in ask order,
+   * so the oldest mark judges the next one.
+   */
+  askedAt: Ask[];
+  /**
+   * Bumped by every reset - a seal, an occupant change, a refused range.
+   * **A mark from before one cannot judge an answer to it**: the answer is
+   * counting a run that no longer exists.
+   */
+  generation: number;
+  /**
+   * Every numbered frame this seat has delivered or held, counted across
+   * resets. **What says whether anything arrived after an ask**, where
+   * `seenThrough` resets and so cannot.
+   */
+  framesSeen: number;
   /** Update frames seen but not yet deliverable, in arrival order. */
   waiting: Frame[];
   /** Repaired frames received but not yet delivered, in arrival order. */
@@ -127,6 +154,9 @@ function stateOf(streams: Map<string, StreamState>, key: string): StreamState {
       seenThrough: 0,
       missing: [],
       asked: [],
+      askedAt: [],
+      generation: 0,
+      framesSeen: 0,
       waiting: [],
       repairs: [],
       origin: null,
@@ -214,6 +244,11 @@ export class StreamGate {
         const header = (message.data as { header?: { session_id?: unknown; seq?: unknown } } | null)
           ?.header;
         const occupant = typeof header?.session_id === 'string' ? header.session_id : null;
+        // **The mark is judged against the generation this answer was asked
+        // under**, taken before the reset the answer itself may report: a
+        // snapshot announcing a new occupant is still the answer to the ask
+        // that produced it, while a mark from before an earlier seal is not.
+        const askedIn = state.generation;
         if (occupant !== null && occupant !== state.epoch) {
           // A new occupant counts from 1 again, hold and all.
           this.clear(state);
@@ -221,6 +256,10 @@ export class StreamGate {
           state.expecting = 1;
           state.seenThrough = 0;
         }
+        // **Every answer consumes one ask**, whether or not it is adopted:
+        // answers return in ask order, so the oldest mark is the one this
+        // one was sent in answer to.
+        const mark = state.askedAt.shift();
         if (typeof header?.seq === 'number' && this.settled(state)) {
           // **The answer is the authority on where the stream stands**, the
           // same rule the store reads it by: a restart under the same
@@ -228,8 +267,26 @@ export class StreamGate {
           // lower what this expects - a monotonic maximum would leave the
           // restarted run's frames reading as already drawn. A hold in
           // flight is where the answer is NOT: its ranges decide.
-          state.expecting = header.seq;
-          state.seenThrough = header.seq - 1;
+          //
+          // **A stale answer is not the authority.** One encoded before
+          // frames this gate already delivered names a number the stream has
+          // passed; adopting it rewinds the count onto numbers every reader
+          // holds, and the next live frame asks for them again. Only an
+          // answer to an ask nothing has arrived behind may lower the count.
+          // The trade runs the other way for a restart already emitting when
+          // the ask went out: its low answer is refused, and its frames read
+          // as already drawn.
+          //
+          // **An answer with no ask behind it is the first anchor**, and the
+          // one case that adopts unjudged: nothing here has drawn a number
+          // for it to contradict.
+          if (
+            mark === undefined ||
+            (mark.generation === askedIn && mark.frames === state.framesSeen)
+          ) {
+            state.expecting = header.seq;
+            state.seenThrough = header.seq - 1;
+          }
         }
         return [message];
       }
@@ -270,6 +327,7 @@ export class StreamGate {
           // replay or a reorder - the readers decide what to do with it.
           return [message];
         }
+        state.framesSeen += 1;
         state.waiting.push({ seq, span, update: message.update });
         if (seq > state.seenThrough + 1) {
           // A hole opens here - and one that opens while an earlier hole is
@@ -296,7 +354,23 @@ export class StreamGate {
         if (slot === undefined) return [message];
         const key = subjectKey({ session: slot });
         const state = this.streams.get(key);
-        if (state === undefined || !state.anchored || this.settled(state)) return [message];
+        if (state === undefined || !state.anchored) return [message];
+        if (this.settled(state)) {
+          // **A repair that lands while nothing waits still moves the count.**
+          // The frames pass through, but their numbers are seen: a later live
+          // frame above them is a successor, not a hole over numbers every
+          // reader already holds.
+          for (const frame of message.frames) {
+            const carried = frame as { seq: number; span?: unknown };
+            const span = typeof carried.span === 'number' && carried.span > 0 ? carried.span : 1;
+            if (carried.seq <= state.expecting && state.expecting < carried.seq + span) {
+              state.framesSeen += 1;
+              state.expecting = carried.seq + span;
+              state.seenThrough = Math.max(state.seenThrough, carried.seq + span - 1);
+            }
+          }
+          return [message];
+        }
         state.origin = { slot, epoch: message.epoch ?? null };
         for (const frame of message.frames) {
           const carried = frame as { seq: number; span?: unknown };
@@ -307,6 +381,7 @@ export class StreamGate {
           // land; keeping it would hand the readers the same frame again on
           // release.
           if (frame.seq + span - 1 < state.expecting) continue;
+          state.framesSeen += 1;
           state.repairs.push({ seq: frame.seq, span, update: frame.update });
         }
         const out = this.drain(state);
@@ -362,6 +437,22 @@ export class StreamGate {
     state.epoch = null;
     state.expecting = 1;
     state.seenThrough = 0;
+    state.askedAt.length = 0;
+  }
+
+  /**
+   * Record that the connection has asked this seat for a fresh answer.
+   *
+   * **The mark a stale answer is judged against.** The answer can be encoded
+   * before frames this gate has already delivered; where the stream stood
+   * when the ask went out is what says whether anything arrived after it.
+   *
+   * **The state is created here when it does not exist**, because an ask can
+   * go out before the seat's first frame ever lands.
+   */
+  askSent(slot: SessionSlot): void {
+    const state = stateOf(this.streams, subjectKey({ session: slot }));
+    state.askedAt.push({ generation: state.generation, frames: state.framesSeen });
   }
 
   /** Whether nothing is in flight for this seat. */
@@ -497,6 +588,10 @@ export class StreamGate {
     state.deadline = null;
     state.missing.length = 0;
     state.asked.length = 0;
+    // **The marks stay, and the generation moves past them.** An answer to
+    // an ask sent before the reset is still on the wire, and it must be
+    // refused rather than taken for the first anchor.
+    state.generation += 1;
     state.waiting.length = 0;
     state.repairs.length = 0;
     state.origin = null;
