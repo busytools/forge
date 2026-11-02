@@ -356,11 +356,13 @@ define_class!(
         unsafe fn scroll_wheel(&self, event: &objc2_app_kit::NSEvent) {
             let point = self.convertPoint_fromView(event.locationInWindow(), None);
             let (x, y) = self.page_point_of(point);
+            let (delta_x, delta_y) =
+                input::wheel_deltas(event.scrollingDeltaX(), event.scrollingDeltaY());
             self.send(BrowserInputEvent::Wheel {
                 x,
                 y,
-                delta_x: -event.scrollingDeltaX(),
-                delta_y: -event.scrollingDeltaY(),
+                delta_x,
+                delta_y,
                 modifiers: input::modifiers(event.modifierFlags()),
             });
         }
