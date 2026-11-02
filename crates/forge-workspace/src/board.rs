@@ -118,7 +118,8 @@ pub struct AttentionItem {
     pub subject: String,
     /// The ask's own words, verbatim.
     pub words: String,
-    /// When the wait began, off the row's last update.
+    /// When the wait began, stamped as it is raised; a stored row without
+    /// one falls back to its creation.
     pub at: SystemTime,
 }
 
@@ -204,7 +205,14 @@ fn attention_words(task: &Task) -> String {
     if task.waiting_on.as_ref().is_some_and(|wait| wait.verification) {
         return "the look is owed".to_owned();
     }
-    task.subject.clone()
+    let subject = task.subject.trim();
+    if subject.is_empty() {
+        // Nothing requires a subject to be non-empty; the board words a
+        // detail-less decision the same way rather than drawing a blank.
+        "A decision is waiting on you.".to_owned()
+    } else {
+        subject.to_owned()
+    }
 }
 
 impl Workspace {
@@ -986,6 +994,20 @@ mod tests {
         });
         ws.seed_test_task(bare);
 
+        // Nothing requires a subject to be non-empty: a blank one still has
+        // words rather than an empty notification body.
+        let mut nameless = task("t-nameless", TaskStatus::Waiting);
+        nameless.subject = "   ".to_owned();
+        nameless.waiting_on = Some(Waiting {
+            kind: Some(WaitingKind::Decision),
+            detail: None,
+            on: None,
+            verification: false,
+            parked: false,
+            since: None,
+        });
+        ws.seed_test_task(nameless);
+
         let row =
             ws.fleet_rows().into_iter().find(|r| r.project == PROJECT).expect("the project's row");
         let words = |task: &str| {
@@ -993,6 +1015,11 @@ mod tests {
         };
         assert_eq!(words("t-blank"), "the plan is in the row", "a blank detail takes the row's");
         assert_eq!(words("t-look"), "the look is owed", "a verification park says what it wants");
+        assert_eq!(
+            words("t-nameless"),
+            "A decision is waiting on you.",
+            "a blank subject still words the ask"
+        );
         assert_eq!(words("t-bare"), "subject t-bare", "nothing anywhere takes the subject");
     }
 
