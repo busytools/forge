@@ -533,10 +533,8 @@ mod tests {
 
     /// **The page's scroll record crosses the shell whole.** This struct is
     /// the boundary the desktop writes through, and a field it does not name
-    /// is parsed away before the write: every desktop scroll line reached the
-    /// log bare until these were named, which is why the drift had no
-    /// evidence. The line below is the page's own shape, so the key names are
-    /// pinned as well as the fields.
+    /// is parsed away before the write, so this line is the page's own shape
+    /// and pins the shell's names with it.
     #[test]
     fn the_pages_scroll_record_survives_the_write() {
         let line = r#"{"schema":"forge-perf/v1","kind":"scroll","run_id":"r","ts_ms":12,"from":1204.0,"to":1150.0,"height":9000.0,"room":812.0,"shrank":true,"rose":true,"foot":false,"reader":false,"aimed":false,"restore_owed":true,"pin":false,"surface":"session","session":"Busytools/forge/lead"}"#;
@@ -544,9 +542,11 @@ mod tests {
             serde_json::from_str(line).expect("the page's scroll record parses");
 
         let dir = tempfile::tempdir().expect("tempdir");
-        append(dir.path(), &[parsed], MAX_BYTES).expect("append");
+        append(dir.path(), &[parsed, record("frame")], MAX_BYTES).expect("append");
         let text = std::fs::read_to_string(dir.path().join(PERF_LOG_NAME)).expect("read back");
-        let written: serde_json::Value = serde_json::from_str(text.trim()).expect("a JSON line");
+        let lines: Vec<serde_json::Value> =
+            text.lines().map(|line| serde_json::from_str(line).expect("a JSON line")).collect();
+        let written = &lines[0];
         assert_eq!(written["from"], 1_204.0, "where the column came from: {text}");
         assert_eq!(written["to"], 1_150.0, "and landed: {text}");
         assert_eq!(written["height"], 9_000.0, "the content it moved against: {text}");
@@ -558,6 +558,8 @@ mod tests {
         assert_eq!(written["aimed"], false, "and none was heading to the foot: {text}");
         assert_eq!(written["restore_owed"], true, "a place was owed: {text}");
         assert_eq!(written["pin"], false, "the pin did not write it: {text}");
+        assert!(lines[1].get("from").is_none(), "no scroll fields on a frame: {text}");
+        assert!(lines[1].get("rose").is_none(), "and no flags: {text}");
     }
 
     /// A state the page has not been taught yet is carried rather than

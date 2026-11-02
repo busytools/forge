@@ -968,6 +968,8 @@ describe('the open a conversation begins', () => {
       to: 1200,
       height: 4000,
       room: 1000,
+      shrank: false,
+      rose: false,
       foot: false,
       reader: false,
       aimed: false,
