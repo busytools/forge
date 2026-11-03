@@ -247,6 +247,14 @@ unless you have overridden `CARGO_INSTALL_ROOT` or `CARGO_HOME`. It
 builds whatever branch is checked out; it does not clone, fetch or
 reset.
 
+It also ships transcribe's shared libraries beside the binary. The 0.4
+ggml builds as a shared library, because its static copy duplicates
+llama-cpp-2's symbols in one Linux binary, and the loader does not search
+the executable's own directory: `forge` carries a loader path naming that
+directory, and the `libtranscribe` and `libggml*` files land beside it. No
+environment variable is involved. A hand-rolled `cargo install` copies only
+the binary and leaves one that cannot start.
+
 One side effect worth knowing about: it regenerates the zsh completion
 at `~/.zsh/completions/_forge` (override the directory with
 `FORGE_ZSH_COMPLETION_DIR`) and removes `~/.zcompdump*` so the next

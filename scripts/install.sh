@@ -80,6 +80,11 @@ CARGO_ARGS=(
     --bin forge
     --locked
     --force
+    # The build must land in the repo's own target dir: the transcribe
+    # libraries forge-dictate stages beside the profile are what gets
+    # installed next to the binary, and `cargo install` otherwise builds in a
+    # temporary dir it deletes.
+    --target-dir "$FORGE_REPO/target"
 )
 # cd into FORGE_REPO so rustup picks up its rust-toolchain.toml - without
 # this, cargo uses the global default toolchain which may be older than
@@ -99,7 +104,21 @@ CARGO_ARGS=(
 FORGE_BIN_DIR="${CARGO_INSTALL_ROOT:-${CARGO_HOME:-$HOME/.cargo}}/bin"
 FORGE_BIN="$FORGE_BIN_DIR/forge"
 
+# transcribe's ggml is built shared, and the binary's rpath names its own
+# directory, so the libraries ship beside it. The build staged them next to
+# the release profile; without them the binary does not start.
+FORGE_TRANSCRIBE_LIBS="$FORGE_REPO/target/$BUILD_LABEL/transcribe-libs"
+[ -d "$FORGE_TRANSCRIBE_LIBS" ] \
+    || die "transcribe's shared libraries were not staged at $FORGE_TRANSCRIBE_LIBS - the release build did not produce them"
+cp -R "$FORGE_TRANSCRIBE_LIBS/." "$FORGE_BIN_DIR/"
+
+# The install is only done if the binary starts: the loader names what it
+# could not find, which is the one failure an installed copy has.
+"$FORGE_BIN" --version > /dev/null \
+    || die "the installed binary does not start - run $FORGE_BIN directly for the loader's error"
+
 log_success "forge installed at $FORGE_BIN"
+log_success "  transcribe/ggml libraries shipped beside it"
 log_success "  forge @ $CURRENT_SHA (branch: $CURRENT_BRANCH, build: $BUILD_LABEL)"
 
 # The browser host: its own signed bundle beside forge's machine-local state.
