@@ -161,11 +161,22 @@
    * has no place at all.
    */
   const placements = $derived(placeThreads(held.threads, lines.length));
-  const placed = $derived(placements.filter((held) => held.line !== null));
-  const unplaceable = $derived(placements.filter((held) => held.line === null));
 
   /** The comment targets: rendered blocks for markdown, lines for text. */
   const rows = $derived(held.kind === 'text' ? rowsOf(text, 'text') : rowsOf(text, 'markdown'));
+
+  /** The store echoes a draft back as a thread with the same id. The shelf
+   *  row is the one that draws only while a row would hold it; past the last
+   *  row the echo is the only one left. */
+  const draftIds = $derived(
+    new Set(
+      drafts.filter((draft) => rows.some((row) => holdsDraft(row, draft))).map((draft) => draft.id),
+    ),
+  );
+  const placed = $derived(
+    placements.filter((held) => held.line !== null && !draftIds.has(held.thread.id)),
+  );
+  const unplaceable = $derived(placements.filter((held) => held.line === null));
 
   /**
    * The drift is written back where it is drawn: a diff's overlay ages a
@@ -180,6 +191,7 @@
     for (const held of placements) {
       if (!held.stale) continue;
       const thread = held.thread;
+      if (draftIds.has(thread.id)) continue;
       // **A read with no landing is an older server, not drift.** Aging every
       // thread on one would write Outdated into the store for a document the
       // server never placed, so only a landing that is present ages.
@@ -915,6 +927,12 @@
     );
   }
 
+  /** Whether a row holds a draft's line: the one condition the row's own
+   *  draw and the store echo's suppression share. */
+  function holdsDraft(row: DocRow, draft: DocDraft): boolean {
+    return draft.line >= row.line && draft.line <= row.end;
+  }
+
   /** The source lines a rendered block spans, the gutter's own targets. */
   function rowLines(row: DocRow): number[] {
     const numbers: number[] = [];
@@ -1065,7 +1083,7 @@
             </div>
           {/if}
         {/each}
-        {#each drafts.filter((draft) => draft.line >= row.line && draft.line <= row.end) as draft (draft.id)}
+        {#each drafts.filter((draft) => holdsDraft(row, draft)) as draft (draft.id)}
           <div class="doc-note doc-draft">
             <span class="doc-who">you</span>
             <span class="doc-where">line {draft.line}</span>
