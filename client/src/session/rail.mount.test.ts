@@ -188,6 +188,12 @@ describe('the rail on a project holding decision waits', () => {
     const project = mark(3);
     expect(project, 'the project row carries all three waits').not.toBeNull();
     expect(mark(1), "and the worker's own row carries its one").not.toBeNull();
+    // The wait is a mark, not a lift (Ved, 2026-11-03): two idle seats keep
+    // the project in working, and the marks above are the whole of it.
+    expect(
+      document.querySelector('.state.needs'),
+      'the wait lifted the project out of working',
+    ).toBeNull();
 
     project?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     flushSync();
@@ -205,6 +211,31 @@ describe('the rail on a project holding decision waits', () => {
       ),
       "and each item opens the project's board, where the row waits",
     ).toEqual(['/board/TestOrg/proj', '/board/TestOrg/proj', '/board/TestOrg/proj']);
+  });
+
+  /// **A wait behind the asleep fold opens it.** The rail's asleep half folds,
+  /// and the mark on a row inside a closed fold is a signal the reader cannot
+  /// see; the fold opens itself the way it already does for the seat the page
+  /// is showing.
+  it('opens the asleep fold that hides a decision wait', () => {
+    const home = waiting(WAITS);
+    const sleeping: HomeWire = {
+      ...home,
+      agents: home.agents.map((agent) => ({ ...agent, lifecycle: 'Sleeping' })),
+    };
+    // A page on another project, so nothing but the wait can open the fold:
+    // the seat the page shows opens it by the rail's other rule.
+    const elsewhere: SessionSlot = { org: 'Other', project: 'other', label: 'lead' };
+    app = mount(Rail, {
+      target: document.body,
+      props: { home: sleeping, current: elsewhere, now: 0, connection: recording() },
+    });
+    flushSync();
+
+    const fold = document.querySelector<HTMLDetailsElement>('details.gfold');
+    expect(fold, 'the asleep section drew no fold').not.toBeNull();
+    expect(fold?.open, 'the fold stayed shut over the only signal').toBe(true);
+    expect(mark(3), 'the mark hides inside the closed fold').not.toBeNull();
   });
 
   /// **A wait ends when its row leaves waiting** (review focus 2): the mark

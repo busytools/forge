@@ -634,6 +634,27 @@
   <ul class="fleet">
     <li class="fleet-row" title="when the project last moved">
       <span class="dot warn"></span>
+      <a class="fleet-name fleet-go" href="./web-session.html">hub-modules</a>
+      <span class="fleet-where">main</span>
+      <span class="fleet-when">40m</span>
+      <span class="fleet-seats">
+        <a class="fleet-seat" href="./web-session.html"><span class="dot warn"></span>hub-modules-l</a>
+        <a class="fleet-seat" href="./web-session.html"><span class="dot live"></span>steward</a>
+      </span>
+      <span class="fleet-counts">2 of 2 slots &middot; queue 0</span>
+      <span class="fleet-misses"></span>
+      <a class="fleet-open" href="./web-board.html">open board &rarr;</a>
+    </li>
+  </ul>
+
+  <div class="state">working <span class="n">2</span></div>
+  <ul class="fleet">
+    <!-- A project holding decision waits keeps the marks and their counts on
+         its row and on the seat that raised them, and stays in the group its
+         own seats put it in: a task wait is often future work, and its seat
+         can be asleep. -->
+    <li class="fleet-row" title="when the project last moved">
+      <span class="dot live"></span>
       <span class="fleet-name-cell">
         <a class="fleet-name fleet-go" href="./web-session.html">forge</a>
         <button class="attn" type="button" aria-label="2 decision waits on you"
@@ -654,23 +675,6 @@
       </span>
       <span class="fleet-counts">3 of 4 slots &middot; queue 1</span>
       <span class="fleet-misses"><span class="fleet-miss stalled">queue is stalling</span></span>
-      <a class="fleet-open" href="./web-board.html">open board &rarr;</a>
-    </li>
-  </ul>
-
-  <div class="state">working <span class="n">2</span></div>
-  <ul class="fleet">
-    <li class="fleet-row" title="when the project last moved">
-      <span class="dot live"></span>
-      <a class="fleet-name fleet-go" href="./web-session.html">hub-modules</a>
-      <span class="fleet-where">main</span>
-      <span class="fleet-when">40m</span>
-      <span class="fleet-seats">
-        <a class="fleet-seat" href="./web-session.html"><span class="dot live"></span>hub-modules-l</a>
-        <a class="fleet-seat" href="./web-session.html"><span class="dot live"></span>steward</a>
-      </span>
-      <span class="fleet-counts">2 of 2 slots &middot; queue 0</span>
-      <span class="fleet-misses"></span>
       <a class="fleet-open" href="./web-board.html">open board &rarr;</a>
     </li>
     <li class="fleet-row" title="when the project last moved">

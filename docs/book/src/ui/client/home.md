@@ -24,15 +24,17 @@ nothing to draw, and the client never falls back to bundled data.
 | Upstream | the core's held service status, above the band and only when there is one: `claude status` and the status line's own words, in the warn tone or the bad one an error report takes | `service_status` |
 | Header | the brand mark, `forge`, and the three builds as labelled pairs - `server` (the forge serving the socket), `client` (this app) and `claude` (the CLI both drive) - with `socket` and its protocol beside them; each update notice sits on the build it belongs to (in a browser, the latest published), and the fleet totals close the line | `ClientSettings.mark` from the greeting; `forge_version_short`; `CLIENT_VERSION`; `PROTOCOL_VERSION`; `cli_version`; the shell's update check, or the served `latest.json`; `agents`, `fleet` and `projects` counted |
 | Band | six cards: the gateway listener, the client's own address, dictation, the account pool, the extensions, and the settings | `accounts.gateway`, the connection the client made, `dictate.snapshot`, `accounts.loading`, the `extensions` subject |
-| Fleet sections | up to three sections, the rail's own: `needs you`, `working` and `asleep`, each appearing when it holds a project and carrying its count; the asleep section starts expanded here but folds behind its count when closed, so the page can put the quiet half away | the same rank the rail groups by, read from each project's own decision waits and its strongest seat - an ask first, then a run, then a sleep |
+| Fleet sections | up to three sections, the rail's own: `needs you`, `working` and `asleep`, each appearing when it holds a project and carrying its count; the asleep section starts expanded here but folds behind its count when closed, so the page can put the quiet half away | the same rank the rail groups by, read from each project's strongest seat - an ask first, then a run, then a sleep; a decision wait is a mark on the row and never a rank |
 | Fleet row | one per project: the strongest seat mark, the project, its branch and changed-file count, when it last moved (the newest write among its seats and the sessions its catalog remembers, `now`/`3h`/`2d`, or `never` for a project with neither a seat nor a session behind it), its seats, `live of cap slots · queue`, the named misses, and the ways in - the row itself, each seat, and the board | `fleet` for the counts and the misses; `projects` for the tree; `agents` and `projects[].sessions` for the seats and the age |
 | Decision-wait mark | a glyph and a count on a project row and on each seat row that holds a wait, never colour alone. Opening it lists the wait's seat, its row's subject, the ask's own words - the row's detail, the look a park is owed, the subject when the ask carries none, or the board's sentence when even the subject is blank - and its age, and each item opens the project's board, where the row waits and can be answered. Opening a seat does not clear a wait: it ends when the row leaves waiting, and the mark goes with the read that drops it | `fleet[].attention` |
 
 The fleet reads in the same three sections the session rail draws, ranked
-from each project's own decision waits and its strongest seat: a project
-holding a decision wait reads in `needs you` even when its seat has no row,
-a worker holding an ask lifts it there too, and a project with no live seat
-and no wait ranks asleep. The asleep section folds, like the rail's, but starts expanded
+from each project's strongest seat: a worker holding an ask lifts its
+project into `needs you`, and a project with no live seat ranks asleep.
+**A decision wait does not move a row** (Ved, 2026-11-03): a task wait is
+often future work and its seat can be asleep, so the mark and its count stay
+on the project's row and on the seat's chip while the row keeps the group
+its own state names. The asleep section folds, like the rail's, but starts expanded
 on this page - the rail keeps its own folded, because there the fleet is a
 column beside the conversation rather than the page itself. Its count rides
 the heading, so a closed section cannot read as an empty one.

@@ -246,6 +246,45 @@ describe('the home page as it draws', () => {
     );
   });
 
+  /// **The mark is not a lift** (Ved, 2026-11-03): a task wait is often future
+  /// work and its seat can be asleep, so the project keeps the group its own
+  /// seats put it in while the mark and its count stay on the row. The
+  /// fixture's lead holds a permission ask, cleared here to leave the wait as
+  /// the row's only claim.
+  it('marks a project holding a decision wait without pulling it into needs you', () => {
+    const [fleet] = homeWire.fleet;
+    if (fleet === undefined) throw new Error('the fixture holds no fleet row');
+    const body = draw({
+      wire: {
+        ...homeWire,
+        agents: homeWire.agents.map((agent) => ({ ...agent, pending: null })),
+        fleet: [
+          {
+            ...fleet,
+            waiting_on_user: 1,
+            attention: [
+              {
+                task: 't1',
+                owner: 'lead',
+                subject: 'the parser',
+                words: 'sign this off',
+                at: { secs_since_epoch: 5, nanos_since_epoch: 0 },
+              },
+            ],
+          },
+        ],
+      },
+    });
+    expect(body, 'the wait pulled the project into needs you').not.toContain('class="state needs"');
+    expect(body, 'the project did not draw under working').toMatch(
+      /working <span class="n">1<\/span>/,
+    );
+    expect(
+      body.match(/aria-label="1 decision wait on you"/g)?.length,
+      'the project row and the lead chip each carry the mark',
+    ).toBe(2);
+  });
+
   /**
    * **The fleet reads in the rail's three sections.** The home used to list
    * every project flat, so a sleeping project drew a hollow mark and no word

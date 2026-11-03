@@ -262,12 +262,14 @@ describe('the rail', () => {
     ).toBe('asked you a question');
   });
 
-  /// **A wait whose seat has no row still lifts the project into needs-you.**
-  /// A sleeping project's worker leaves no row of its own, so the seed is the
-  /// project's waits - the rail's half of the rank fix.
-  it('lifts a project into needs you for a wait with no seat row', () => {
+  /// **A wait whose seat has no row stays a mark, not a lift.** A sleeping
+  /// project's worker leaves no row of its own, so the project's waits are the
+  /// only place the ask can be seen - and they are all they are: the project
+  /// keeps the group its own state puts it in, with the mark and its list on
+  /// the row (Ved, 2026-11-03).
+  it('keeps a wait with no seat row marked, without lifting the project', () => {
     const home = withHome({
-      agents: [{ ...lead(), pending: null }],
+      agents: [{ ...lead(), lifecycle: 'Sleeping', pending: null }],
       fleet: [
         {
           project: 'proj',
@@ -289,11 +291,50 @@ describe('the rail', () => {
         },
       ],
     });
-    const needs = railGroups(home, LEAD, 0).find((group) => group.heading === 'needs you');
+    const groups = railGroups(home, LEAD, 0);
     expect(
-      needs?.projects.map((entry) => entry.name),
-      'the wait lifted the project out of working',
+      groups.find((group) => group.heading === 'needs you'),
+      'the wait lifted the project out of its own group',
+    ).toBeUndefined();
+    const asleep = groups.find((group) => group.heading === 'asleep');
+    expect(
+      asleep?.projects.map((entry) => entry.name),
+      'the project kept its own group',
     ).toEqual(['proj']);
+    expect(asleep?.projects[0]?.waits, 'and the mark still lists the wait').toHaveLength(1);
+  });
+
+  /// **A wait behind the asleep fold is visible without expanding it.** The
+  /// fold opens itself when it hides a decision wait, the way it already does
+  /// for the seat the page is showing: a mark inside a closed fold is a
+  /// signal the reader cannot see.
+  it('opens the asleep fold when it hides a decision wait', () => {
+    const elsewhere: SessionSlot = { org: 'Other', project: 'other', label: 'lead' };
+    const home = withHome({
+      agents: [{ ...lead(), lifecycle: 'Sleeping', pending: null }],
+      fleet: [
+        {
+          project: 'proj',
+          live_workers: 1,
+          slots: 2,
+          queue: 0,
+          waiting_on_user: 1,
+          attention: [
+            {
+              task: 't1',
+              owner: 'lead',
+              subject: 'the parser',
+              words: 'sign this off',
+              at: { secs_since_epoch: 5, nanos_since_epoch: 0 },
+            },
+          ],
+          rows: 0,
+          misses: [],
+        },
+      ],
+    });
+    const asleep = railGroups(home, elsewhere, 0).find((group) => group.heading === 'asleep');
+    expect(asleep?.holds, 'the fold stayed shut over the only signal').toBe(true);
   });
 
   /** **A parked hand-off is a third ask, and the row names it as itself**
@@ -1182,16 +1223,22 @@ describe("the palette's rows", () => {
     expect(leads[0]?.id, 'the wrong org wore it').toBe('TestOrg/proj/lead');
   });
 
-  /// **A decision wait ranks a seat with the asks**, as the rail ranks it: a
-  /// seat in needs-you on the rail must not sit under working in Cmd+K.
-  it('puts a seat holding a decision wait in needs you', () => {
+  /// **A decision wait keeps its seat where its own state puts it**, as the
+  /// rail keeps it: a task wait is often future work and its seat can be
+  /// asleep, so only a pending ask ranks a seat with the asks (Ved,
+  /// 2026-11-03).
+  it('keeps a seat holding a decision wait in its own group, and a pending ask in needs you', () => {
     const wire = withHome({
-      agents: [agent('runner', { lifecycle: 'Running' }), agent('waiting')],
+      agents: [
+        agent('runner', { lifecycle: 'Running' }),
+        agent('waiting'),
+        agent('asked', { pending: 'question' }),
+      ],
       fleet: [
         {
           project: 'proj',
-          live_workers: 2,
-          slots: 2,
+          live_workers: 3,
+          slots: 3,
           queue: 0,
           waiting_on_user: 1,
           attention: [
@@ -1211,10 +1258,17 @@ describe("the palette's rows", () => {
     const sections = paletteRows(wire, LEAD);
     expect(
       sections[0]?.rows.map((row) => row.label),
-      'the wait lifted its seat',
-    ).toEqual(['waiting']);
-    expect(sections[0]?.rows[0]?.detail, 'and the line says needs you').toContain('needs you');
-    expect(sections[1]?.rows.map((row) => row.label)).toEqual(['runner']);
+      'the pending ask is the one that needs a person',
+    ).toEqual(['asked']);
+    expect(
+      sections[1]?.rows.map((row) => row.label),
+      'the wait lifted its seat out of its own group',
+    ).toEqual(['runner', 'waiting']);
+    const waiting = sections[1]?.rows.find((row) => row.label === 'waiting')?.detail ?? '';
+    expect(waiting, 'the line says the state its lifecycle names').toContain('idle');
+    expect(waiting, 'the palette has no mark, so the count must be in the line').toContain(
+      '1 wait',
+    );
   });
 
   /**

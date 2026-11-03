@@ -104,10 +104,8 @@ export interface Row {
   gate: string | null;
   task: TaskCell | null;
   pending: 'question' | 'permission' | 'hand_off' | null;
-  /** The decision waits this seat holds: a mark, a rank, and the list behind it. */
+  /** The decision waits this seat holds: the mark, and the list behind it. */
   waits: AttentionRow[];
-  /** How many decision waits this seat holds: a mark, and a rank. */
-  attention: number;
   reason: string | null;
   lastActivity: WireTime | null;
   /**
@@ -182,17 +180,16 @@ export interface FleetViewRow {
   leadHref: string;
   /** The strongest seat state, drawn with the same `Mark` a seat row uses. */
   state: RowState;
-  /** The project's decision waits, which its mark lists and its rank reads. */
+  /** The project's decision waits, which its mark lists and its popover draws. */
   waits: AttentionRow[];
   place: { branch: string | null; files: string | null };
   gate: string | null;
-  /** Each seat's state and its ask, which is what its rank is read from. */
+  /** Each seat's state and its waits, which its chip's mark lists. */
   seats: {
     label: string;
     state: RowState;
     pending: 'question' | 'permission' | 'hand_off' | null;
     waits: AttentionRow[];
-    attention: number;
     href: string;
   }[];
   /**
@@ -251,7 +248,6 @@ export function fleetRows(wire: HomeWire): FleetViewRow[] {
         state: stateOf(agent, wire.unseen),
         pending: agent.pending,
         waits: mine,
-        attention: mine.length,
         href: hrefForSlot(agent.slot),
       };
     });
@@ -343,9 +339,10 @@ export const groupClassOf = (rank: number): string => (rank === 0 ? 'state needs
  *
  * A row ranks by its strongest seat - an ask outranks a run, a run outranks a
  * sleep - and a project with no live seat ranks asleep, which is what the
- * home's flat list could not say. **The project's own waits rank it first**:
- * a wait whose seat has no row (a sleeping project's worker) has no seat to
- * carry the rank, and would otherwise leave a blocked project in Working.
+ * home's flat list could not say. **A decision wait is not part of the rank**:
+ * a task wait is often future work and its seat can be asleep, so the mark
+ * and its list stay on the row while the group stays the seats' own (Ved,
+ * 2026-11-03).
  */
 export function fleetGroups(rows: FleetViewRow[]): FleetGroup[] {
   const groups: FleetGroup[] = GROUP_HEADINGS.map((heading, rank) => ({
@@ -357,8 +354,8 @@ export function fleetGroups(rows: FleetViewRow[]): FleetGroup[] {
   }));
   for (const row of rows) {
     const rank = row.seats.reduce(
-      (best, seat) => Math.min(best, rankOf(seat.state, seat.pending, seat.attention)),
-      row.waits.length > 0 ? 0 : 2,
+      (best, seat) => Math.min(best, rankOf(seat.state, seat.pending)),
+      2,
     );
     const group = groups[rank];
     if (group === undefined) continue;
@@ -494,18 +491,20 @@ export function markOf(state: RowState): { class: string; dot: string } {
  * Shared by both surfaces because the grouping must not diverge: the home's
  * headings and the rail's sections are the same three states, and a rank
  * computed twice would drift the first time one of them grew a state.
+ *
+ * **Needs-you is the states that need a person NOW**: a pending ask (a
+ * question, a permission, a hand-off), a failed turn or a death the reader has
+ * not been shown, and the lifecycles Attention, Failed and AuthRequired. A
+ * decision wait is not one of them - it is a mark on the row, and a task wait
+ * is often future work whose seat can be asleep.
  */
 export function rankOf(
   state: RowState,
   pending: 'question' | 'permission' | 'hand_off' | null,
-  attention = 0,
 ): number {
   // An ask outranks the lifecycle: a session holds a prompt while the core
   // still calls it idle, and what it is waiting on is a person.
   if (pending !== null) return 0;
-  // **A decision wait is the person's too**, so it ranks with the attention
-  // states: a seat waiting on the user must not sit below one merely busy.
-  if (attention > 0) return 0;
   if (state.kind === 'unseen') return 1;
   // A failed turn is the seat's own version of a needed person, so it ranks
   // with the attention states rather than with the completions - and so does
@@ -978,7 +977,6 @@ function rowOf(
           },
     pending: agent.pending,
     waits: mine,
-    attention: mine.length,
     reason: agent.reason,
     lastActivity: agent.last_activity,
     failedTurn: agent.failed_turn,
@@ -1018,7 +1016,6 @@ function dormantRow(wire: ProjectWire, lastRan: WireTime | null, waits: Attentio
     task: null,
     pending: null,
     waits: mine,
-    attention: mine.length,
     reason: null,
     lastActivity: lastRan,
     failedTurn: null,
@@ -1028,11 +1025,10 @@ function dormantRow(wire: ProjectWire, lastRan: WireTime | null, waits: Attentio
 /**
  * One project's rows: its lead, and its workers under it.
  *
- * Exported because the session page's rail draws the same rows. It groups
- * projects by their own decision waits and the strongest state among their
- * rows, and keeps them in `forge.toml`'s order, which is the roster's order
- * rather than the org grouping the home sorts into - so the rail cannot read
- * them off `homeView`.
+ * Exported because the session page's rail draws the same rows. The rail
+ * groups the projects by the strongest state among their rows and keeps them
+ * in `forge.toml`'s order, which is the roster's order rather than the org
+ * grouping the home sorts into - so the rail cannot read them off `homeView`.
  *
  * `board` is the project's own rows, from the board's subject (#2517): the
  * home no longer carries them, and a rail that passes `null` (a landing that
