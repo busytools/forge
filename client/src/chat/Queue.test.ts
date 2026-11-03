@@ -24,6 +24,11 @@ import Composed from './testing/Composed.svelte';
 
 const SLOT: SessionSlot = { org: 'Busytools', project: 'forge', label: 'lead' };
 
+/** The component's own style block: its rule is not in the app sheet, and the
+ * test environment does not inject it beside the mount. */
+const QUEUE_STYLE =
+  /<style>([\s\S]*?)<\/style>/.exec(readFileSync('src/chat/Queue.svelte', 'utf8'))?.[1] ?? '';
+
 const row = (uuid: string): QueuedPromptRow => ({ uuid, source: 'you', text: uuid });
 
 const rows = (...texts: string[]): QueuedPromptRow[] =>
@@ -132,6 +137,28 @@ describe('the queue pile', () => {
     draw([], connection);
 
     expect(host.querySelector('.pile')).toBeNull();
+  });
+
+  it('sits at the conversation foot with no seam above it', () => {
+    // The gap between the last chat row and the pile's top read as a row of
+    // its own (Ved, 2026-11-03). The pile keeps its own height and its gap
+    // below, and takes none above: the header meets the last row.
+    const { connection } = recording();
+    draw(rows('one'), connection);
+
+    // The rule lives in the component's own style block, which this
+    // environment does not inject; the cascade is read against the source
+    // block beside the markup the component drew.
+    const markup = host.innerHTML;
+    const dom = new JSDOM(
+      `<!doctype html><html><head><style>${QUEUE_STYLE}</style></head><body><div class="conv">${markup}</div></body></html>`,
+      { pretendToBeVisual: true },
+    );
+    const held = dom.window.document.querySelector('.pile');
+    if (held === null) throw new Error('the pile did not draw');
+    const style = dom.window.getComputedStyle(held);
+    expect(Number.parseFloat(style.marginTop), 'no seam above the pile').toBe(0);
+    expect(Number.parseFloat(style.marginBottom), 'the gap below it to the box stays').toBe(8);
   });
 
   it('walks from the newest to the oldest and back into the box', () => {
