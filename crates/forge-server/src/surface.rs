@@ -390,7 +390,7 @@ impl ViewSurface {
         .map_err(|refusal| refusal.to_string())
     }
 
-    /// The handoff row a seat's occupant arrived by, for a record built
+    /// The handoff record a seat's occupant arrived by, for a record built
     /// where the transport holds no live copy of the conversation.
     ///
     /// Looked up by the occupant, not by recency: a later handoff that never

@@ -5788,7 +5788,7 @@ impl Workspace {
         // opens every turn the machinery starts - and a page attaching
         // mid-turn anchors its running clock on the first row that carries a
         // stamp.
-        let mut frame = Message::display_only_user(text.clone(), uuid.clone());
+        let mut frame = Message::display_only_prompt(text.clone(), Vec::new(), uuid.clone());
         frame.stamp_if_absent(&crate::install::rfc3339_now());
         // One source for both the dispatch and the frame the dispatch forges:
         // the row a view labels and the frame a reader's follow reads arm

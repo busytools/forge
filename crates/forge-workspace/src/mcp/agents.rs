@@ -157,10 +157,10 @@ impl Tool for Handoff {
          \
          forge writes the ground truth itself - the seat, the working directory, the branch, the \
          role, the files and the dirty list, the board rows, what is still running and the \
-         transcript path - and the note you pass becomes the judgment half of the brief, \
-         delivered as the new session's first turn, below a handoff row that keeps the previous \
-         conversation on screen. The swap happens after the current turn ends, never in the \
-         middle of it, on the same order `/new` uses. \
+         transcript path - and the note you pass becomes the judgment half of the brief. The \
+         brief opens the new session as its first turn, drawn as the handoff row. The swap \
+         happens after the current turn ends, never in the middle of it, on the same order \
+         `/new` uses. \
          \
          Pass the note the skill has you write: the continuation the next session needs, in \
          whatever shape reads best."

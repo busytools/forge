@@ -3,7 +3,6 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::messages::Message;
 use crate::session_slot::SessionSlot;
 
 /// Why a session handed over.
@@ -101,16 +100,6 @@ pub struct HandoffRecord {
     /// change does not rewrite what the record means.
     pub at_percent: u8,
     pub brief: HandoffBrief,
-    /// The turn the handing-over session ran the procedure in: the prompt
-    /// forge wrote, the calls it made and the exit call.
-    ///
-    /// **Carried because the transcript that holds it belongs to a session a
-    /// view has left.** A client attaching after the swap reads the
-    /// successor's history and would draw only the row; the turn's own frames
-    /// come from here. Empty when the predecessor's transcript could not be
-    /// read, or when no procedure prompt is in it.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub judgment_turn: Vec<Message>,
     /// The handover's transcript, which holds everything the brief does not.
     pub transcript_path: String,
     /// RFC 3339.
@@ -150,7 +139,6 @@ mod tests {
             max_tokens: Some(1_020_000),
             at_percent: 85,
             brief: HandoffBrief::default(),
-            judgment_turn: Vec::new(),
             transcript_path: "/tmp/9cfe315c.jsonl".to_owned(),
             at: "2026-10-24T08:00:00Z".to_owned(),
             cycle: HandoffCycle { requests: 514, turns: 96, prompt_tokens: 4_970_000_000 },

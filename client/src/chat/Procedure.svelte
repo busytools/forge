@@ -6,16 +6,20 @@
   import Prose from './Prose.svelte';
 
   /**
-   * The handoff's procedure prompt: forge's own text that opens the judgment
-   * turn, asking the handing-over session to run the handoff skill.
+   * A handoff's own prompt: forge's text that opens the handing-over session's
+   * judgment turn, or the brief that opens the successor's first.
    *
    * **It is the turn's opening row, not a nudge inside one.** It carries the
    * handoff's own mark and names itself, because it says why the seat is
-   * about to be replaced; opened, it reads as the whole procedure the
-   * handing-over session was given. The calls that follow it are the work it
-   * set going, drawn as any turn's calls are.
+   * about to be replaced or what replaced it; opened, it reads as the whole
+   * text the session was given. The calls that follow it are the work it set
+   * going, drawn as any turn's calls are.
    */
-  let { text, open = false }: { text: string; open?: boolean } = $props();
+  let {
+    text,
+    label = 'handoff procedure',
+    open = false,
+  }: { text: string; label?: string; open?: boolean } = $props();
 
   /** Whether the row is open; a closed row carries its name and nothing else. */
   let opened = $state(untrack(() => open));
@@ -24,7 +28,7 @@
 <details class="leaf procedure" bind:open={opened}>
   <summary>
     <Icon name="handoff" class="gl" />
-    <span class="k">handoff procedure</span>
+    <span class="k">{label}</span>
     <Chevron />
   </summary>
   {#if opened}

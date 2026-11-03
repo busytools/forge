@@ -604,7 +604,7 @@ impl From<&PendingAsk> for PendingAskWire {
     }
 }
 
-/// The handoff row a record carries.
+/// The handoff record a page carries.
 ///
 /// **The live copy answers first, and a copy with none asks the store** -
 /// `stored` runs in the `or_else`, so the store is read only when the copy
@@ -2821,7 +2821,6 @@ mod tests {
             max_tokens: Some(1_000_000),
             at_percent: 85,
             brief: forge_primitives::HandoffBrief::default(),
-            judgment_turn: Vec::new(),
             transcript_path: "/tmp/old.jsonl".to_owned(),
             at: "2026-10-24T08:00:00Z".to_owned(),
             cycle: forge_primitives::HandoffCycle::default(),

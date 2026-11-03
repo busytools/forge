@@ -27,15 +27,6 @@ const DIRTY_CAP: usize = 20;
 /// for, with its pointer lines, and no more.
 const JUDGMENT_CAP: usize = 5_000;
 
-/// The carried judgment turn's ceiling, in JSON bytes.
-///
-/// **A turn is not a transcript, and this one rides every seat read** - the
-/// record crosses the socket on every snapshot and is written to the store
-/// per handoff. One turn of a procedure that reads a large file must not
-/// become a megabyte on a page read; generous enough that an ordinary turn
-/// (measured at ~42k in the scratch stack) fits whole.
-const JUDGMENT_TURN_CAP: usize = 256 * 1024;
-
 /// What the seat is, so the brief can say which charter it belongs to
 /// without repeating a charter the launch already carries.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,8 +51,6 @@ pub(crate) struct GroundTruth {
     /// Every path the handover read, which the successor's re-reads are
     /// measured against. Store-only: no view draws it.
     pub reads: Vec<String>,
-    /// The turn the procedure ran in, for a view attaching after the swap.
-    pub judgment_turn: Vec<Message>,
 }
 
 /// How many of the successor's turns are measured.
@@ -154,122 +143,8 @@ pub(crate) fn assemble(
     sections.push(board_section(seat.slot, board));
     sections.extend(live);
     sections.push(record_section(seat));
-    GroundTruth {
-        sections,
-        cycle: cycle(messages, turns),
-        reads: read_set(messages, memory_roots),
-        judgment_turn: judgment_turn(messages),
-    }
+    GroundTruth { sections, cycle: cycle(messages, turns), reads: read_set(messages, memory_roots) }
 }
-
-/// The turn the handing-over session ran the handoff procedure in.
-///
-/// **From the procedure prompt to the end of the transcript.** The prompt is
-/// forge's own row and everything after it is the turn. The LAST match is
-/// taken because a handoff that was abandoned still leaves its prompt in the
-/// transcript, and the turn a view draws is the one that actually handed
-/// over.
-fn judgment_turn(messages: &[Message]) -> Vec<Message> {
-    messages
-        .iter()
-        .rposition(is_procedure_prompt)
-        .map_or_else(Vec::new, |at| cap_turn(&messages[at..]))
-}
-
-/// Keep the turn under [`JUDGMENT_TURN_CAP`]: the prompt always, then the
-/// newest of the rest that fits, and one line saying what was left out.
-///
-/// **The cut is stated, never silent.** The reader sees a turn that ends with
-/// an omission row pointing at the transcript, rather than a short turn that
-/// reads as the whole of what the old session did.
-///
-/// **The weight is the serialized ARRAY**, separators included, because that
-/// is what the record carries and what the wire measures. A message that will
-/// not serialize counts as the whole ceiling rather than as nothing, so a
-/// failure can only shorten the turn, never overflow it. A prompt that is
-/// itself past the ceiling is carried alone: dropping the row the turn is
-/// recognised by would cost more than the bound is worth.
-fn cap_turn(turn: &[Message]) -> Vec<Message> {
-    let weigh = |messages: &[Message]| {
-        serde_json::to_string(messages).map_or(usize::MAX, |json| json.len())
-    };
-    if weigh(turn) <= JUDGMENT_TURN_CAP {
-        return turn.to_vec();
-    }
-    let Some(prompt) = turn.first() else { return Vec::new() };
-    let rest = &turn[1..];
-    // Keep the newest messages that fit, dropping from the oldest end. The
-    // common case is a step or two; a turn with many large messages pays one
-    // serialization each, once per handoff.
-    let mut take = rest.len();
-    loop {
-        let mut capped = Vec::with_capacity(take + 2);
-        capped.push(prompt.clone());
-        capped.extend(rest[rest.len() - take..].iter().cloned());
-        capped.push(omission(rest.len() - take));
-        if weigh(&capped) <= JUDGMENT_TURN_CAP || take == 0 {
-            return capped;
-        }
-        take -= 1;
-    }
-}
-
-/// The row a capped turn ends on: a notice, so the fold draws it as the
-/// machinery's line rather than the reader's words.
-///
-/// **A stable id, because the record is seeded more than once.** A view folds
-/// the turn from every seat read and reconnect; a frame with no id is one
-/// nothing can pair, so each seed would append the line again and the cut
-/// would multiply down the turn. `uuid` flattens onto the frame, which is
-/// what the client's own matching reads.
-fn omission(dropped: usize) -> Message {
-    Message::System {
-        subtype: "forge_notice".to_owned(),
-        session_id: None,
-        data: serde_json::json!({
-            "uuid": HANDOFF_TURN_CUT_ID,
-            "severity": "info",
-            "text": format!(
-                "[cut; {dropped} earlier messages of this turn are in the previous session - \
-                 resume it from the handoff row]"
-            ),
-        }),
-    }
-}
-
-/// The omission row's id, shared so a reader that pairs frames by id knows
-/// the line is one fact however often the record is seeded.
-pub(crate) const HANDOFF_TURN_CUT_ID: &str = "forge_handoff_turn_cut";
-
-/// Whether a row is the handoff procedure's own prompt: minted under the
-/// procedure's prefix and opening on the words the machinery matcher reads.
-///
-/// **Both halves, not the words alone.** A reader can type the opening as
-/// easily as the machinery writes it, and the id is the only fact about the
-/// sender the transcript keeps.
-///
-/// **Two carriers, because the CLI has two.** The prompt normally lands as
-/// the row's own words; one queued behind a running turn lands as a
-/// `queued_command` block carrying the prompt's id on `source_uuid` instead,
-/// which is the same pairing the client's fold reads. Missing that carrier
-/// would draw the row live and carry no turn at all on a reload.
-fn is_procedure_prompt(message: &Message) -> bool {
-    let Message::User { uuid, message: envelope, .. } = message else { return false };
-    let minted = |id: &str| id.starts_with(forge_sdk::request_id::HANDOFF_PROMPT_PREFIX);
-    let opens = |text: &str| text.trim_start().starts_with(MACHINE_PREFIX);
-    if uuid.as_deref().is_some_and(minted)
-        && text_of(&envelope.content).is_some_and(|text| opens(&text))
-    {
-        return true;
-    }
-    envelope.content.iter().any(|block| match block {
-        ContentBlock::QueuedCommand { prompt, source_uuid, .. } => {
-            source_uuid.as_deref().is_some_and(minted) && opens(&result_text(prompt))
-        }
-        _ => false,
-    })
-}
-
 /// The directories the handoff's own memory writes land in: the project's
 /// memory dir, and the environment's own where the cross-project notes live.
 ///
@@ -738,22 +613,6 @@ fn tool_uses(messages: &[Message]) -> impl Iterator<Item = (&str, &str, &serde_j
             .collect::<Vec<_>>()
             .into_iter()
     })
-}
-
-fn result_text(content: &serde_json::Value) -> String {
-    if let Some(text) = content.as_str() {
-        return text.to_owned();
-    }
-    if let Some(blocks) = content.as_array() {
-        let joined: Vec<&str> = blocks
-            .iter()
-            .filter_map(|block| block.get("text").and_then(serde_json::Value::as_str))
-            .collect();
-        if !joined.is_empty() {
-            return joined.join("\n");
-        }
-    }
-    content.to_string()
 }
 
 /// The plain text of an assistant turn's blocks, when it holds any.
@@ -1508,7 +1367,7 @@ impl crate::Workspace {
             }
         };
         let truth = ground_truth(self.config_dir(), &seat, &board, live).await;
-        let GroundTruth { sections, cycle, reads, judgment_turn } = truth;
+        let GroundTruth { sections, cycle, reads } = truth;
         let record = HandoffRecord {
             slot: request.slot.clone(),
             from: request.from.clone(),
@@ -1519,7 +1378,6 @@ impl crate::Workspace {
             max_tokens: request.fill.map(|fill| fill.max_tokens),
             at_percent: request.at_percent,
             brief: HandoffBrief { ground_truth: sections, judgment: request.judgment },
-            judgment_turn,
             transcript_path: transcript_path.display().to_string(),
             at: crate::install::rfc3339_now(),
             cycle,
@@ -2475,9 +2333,9 @@ fix the parser, then the client row.";
         );
     }
 
-    /// The brief reaches the successor as a prompt and nowhere else: its
-    /// text is already in the handoff row, so a forged conversation row
-    /// would draw it twice (and the transcript a third time on reload).
+    /// The brief reaches the successor as a prompt and nowhere else: the
+    /// transcript's own row for that prompt is the handoff row, so a forged
+    /// display frame would draw it a second time, live and on every reload.
     #[test]
     fn the_brief_does_not_forge_a_second_row() {
         use crate::protocol::PromptSource;
@@ -2934,171 +2792,6 @@ fix the parser, then the client row.";
         for heading in ["Where it stood", "Pointers", "Done means"] {
             assert!(!flat.contains(heading), "the shipped skill prescribes '{heading}' again");
         }
-    }
-
-    /// The judgment turn is what a view draws when it attaches after the
-    /// swap, and the transcript it lives in belongs to the session that left.
-    /// So the record carries it: from the procedure prompt the handing-over
-    /// session ran to the end of its transcript.
-    ///
-    /// **The last procedure prompt, not the first.** The brief a successor
-    /// arrives by is a machinery row too, and it does not open like the
-    /// procedure; and an abandoned handoff leaves an earlier prompt behind,
-    /// so the closing turn is the newest match.
-    #[test]
-    fn the_record_carries_the_judgment_turn_and_its_calls() {
-        let procedure = |marker: &str| {
-            let mut prompt = user(&format!("{MACHINE_PREFIX} {marker}"));
-            if let Message::User { uuid, .. } = &mut prompt {
-                *uuid = Some(forge_sdk::request_id::next_handoff_prompt_id());
-            }
-            prompt
-        };
-        let messages = vec![
-            user("ship the handoff"),
-            // A handoff that was abandoned leaves its own prompt behind; the
-            // turn the record carries is the one that actually handed over.
-            procedure("the abandoned one"),
-            assistant(vec![text("the handoff was cancelled")], None),
-            call("t1", "mcp__forge__memory_write", serde_json::json!({ "path": "/x" })),
-            result("t1", "ok", false),
-            procedure("the rest of it"),
-            assistant(vec![text("Now: done")], None),
-            call("t2", "mcp__forge__agents__handoff", serde_json::json!({ "brief": "Now: done" })),
-            result("t2", "{\"status\":\"handoff note accepted\"}", false),
-        ];
-        let ground =
-            assemble(&seat(), &messages, &HandoffGitState::default(), &[], &[], Vec::new());
-        assert_eq!(
-            ground.judgment_turn.len(),
-            4,
-            "the prompt, the call, the answer and the text: {:?}",
-            ground.judgment_turn,
-        );
-        assert!(
-            !ground.judgment_turn.iter().any(|message| matches!(
-                message,
-                Message::User { message, .. }
-                    if text_of(&message.content)
-                        .is_some_and(|text| text.ends_with("the abandoned one"))
-            )),
-            "the abandoned handoff's prompt is not the turn: {:?}",
-            ground.judgment_turn.first(),
-        );
-        assert!(
-            matches!(
-                ground.judgment_turn.first(),
-                Some(Message::User { uuid: Some(id), .. })
-                    if id.starts_with(forge_sdk::request_id::HANDOFF_PROMPT_PREFIX)
-            ),
-            "the turn opens on the procedure prompt itself: {:?}",
-            ground.judgment_turn.first(),
-        );
-        assert!(
-            !ground.judgment_turn.iter().any(|message| matches!(
-                message,
-                Message::User { message, .. }
-                    if text_of(&message.content).is_some_and(|text| text == "ship the handoff")
-            )),
-            "the work before the handoff is not part of it",
-        );
-    }
-
-    /// **The CLI has two carriers for a prompt, and the record must read
-    /// both.** A prompt queued behind a running turn lands as a
-    /// `queued_command` block with the prompt's id on `source_uuid`; reading
-    /// only the row's own words would draw the procedure live and carry no
-    /// turn at all on a reload.
-    #[test]
-    fn a_queued_procedure_prompt_is_the_turn_too() {
-        let mut queued = user("");
-        if let Message::User { message: envelope, .. } = &mut queued {
-            envelope.content = vec![ContentBlock::QueuedCommand {
-                prompt: serde_json::Value::String(format!("{MACHINE_PREFIX} queued")),
-                command_mode: Some("prompt".to_owned()),
-                source_uuid: Some(forge_sdk::request_id::next_handoff_prompt_id()),
-                extras: Extras::new(),
-            }];
-        }
-        let messages = vec![
-            user("ship the handoff"),
-            queued,
-            call("t2", "mcp__forge__agents__handoff", serde_json::json!({ "brief": "Now: done" })),
-            result("t2", "ok", false),
-        ];
-        let ground =
-            assemble(&seat(), &messages, &HandoffGitState::default(), &[], &[], Vec::new());
-        assert_eq!(
-            ground.judgment_turn.len(),
-            3,
-            "the queued prompt, the call and its answer: {:?}",
-            ground.judgment_turn,
-        );
-        assert!(
-            matches!(
-                ground.judgment_turn.first(),
-                Some(Message::User { message, .. })
-                    if message.content.iter().any(|block| matches!(
-                        block,
-                        ContentBlock::QueuedCommand { source_uuid: Some(id), .. }
-                            if id.starts_with(forge_sdk::request_id::HANDOFF_PROMPT_PREFIX)
-                    ))
-            ),
-            "and the turn opens on that carrier: {:?}",
-            ground.judgment_turn.first(),
-        );
-    }
-
-    /// **The carried turn is capped, and the cut is stated.** It rides every
-    /// seat read and every stored row; a procedure that read a large file must
-    /// not make the record megabytes, and a shortened turn must not read as
-    /// the whole of what the old session did.
-    #[test]
-    fn a_turn_past_the_cap_keeps_its_prompt_and_states_the_cut() {
-        let mut prompt = user(&format!("{MACHINE_PREFIX} the rest of it"));
-        if let Message::User { uuid, .. } = &mut prompt {
-            *uuid = Some(forge_sdk::request_id::next_handoff_prompt_id());
-        }
-        let messages = vec![
-            user("ship it"),
-            prompt.clone(),
-            assistant(vec![text("Now: the first thing")], None),
-            assistant(vec![text(&"x".repeat(JUDGMENT_TURN_CAP))], None),
-            assistant(vec![text("Now: the last thing")], None),
-        ];
-        let ground =
-            assemble(&seat(), &messages, &HandoffGitState::default(), &[], &[], Vec::new());
-        let turn = &ground.judgment_turn;
-        assert!(turn.len() >= 2, "the prompt, the omission and what fitted: {}", turn.len());
-        assert_eq!(turn.first(), Some(&prompt), "the prompt is kept whole");
-        assert!(
-            matches!(turn.last(), Some(Message::System { subtype, data, .. })
-                if subtype == "forge_notice"
-                    && data.get("uuid").and_then(serde_json::Value::as_str)
-                        == Some(HANDOFF_TURN_CUT_ID)
-                    && data
-                        .get("text")
-                        .and_then(serde_json::Value::as_str)
-                        .is_some_and(|text| text.contains("[cut;") && text.contains("earlier messages"))),
-            "the turn ends on the stated cut, with the id that keeps it one line: {:?}",
-            turn.last(),
-        );
-        assert!(
-            serde_json::to_string(turn).map_or(usize::MAX, |json| json.len()) <= JUDGMENT_TURN_CAP,
-            "and the carried array, separators included, stays at the ceiling",
-        );
-    }
-
-    /// **A turn that never ran is not an empty turn.** A handover whose
-    /// transcript carries no procedure prompt - a read that failed, or an
-    /// exit call with no turn behind it - must carry nothing rather than a
-    /// stub row every seat that arrived by it would draw.
-    #[test]
-    fn a_handoff_with_no_procedure_prompt_carries_no_turn() {
-        let messages = vec![user("ship it"), assistant(vec![text("done")], None)];
-        let ground =
-            assemble(&seat(), &messages, &HandoffGitState::default(), &[], &[], Vec::new());
-        assert!(ground.judgment_turn.is_empty(), "no prompt, no turn: {:?}", ground.judgment_turn);
     }
 
     /// `is_machine_prompt` recognizes forge's own turn by this exact prefix;

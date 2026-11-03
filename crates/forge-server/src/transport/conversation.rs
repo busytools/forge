@@ -137,6 +137,16 @@ pub struct Conversation {
     /// mid-call delivery from being cut off from a result that has not
     /// streamed yet (#2379).
     live: bool,
+    /// The display rows for prompts the CLI has not started yet, by prompt id.
+    ///
+    /// **A prompt dispatched mid-turn is not where it will land.** The CLI
+    /// writes its own row when it takes the prompt, after the assistant text
+    /// still being written, while this copy is handed the dispatch frame
+    /// before that text arrives; placing the row at its dispatch is what draws
+    /// the reader's words above the answer they followed (#2816). Held until
+    /// the prompt's lifecycle says `started`, and dropped when the CLI settles
+    /// it without starting it.
+    queued: HashMap<String, Message>,
 }
 
 impl Conversation {
@@ -176,6 +186,7 @@ impl Conversation {
             occupant: None,
             handoff: None,
             live,
+            queued: HashMap::new(),
         }
     }
 
@@ -254,6 +265,44 @@ impl Conversation {
     /// One frame the session emitted.
     pub fn append(&mut self, message: Message) {
         self.push(message);
+    }
+
+    /// One frame from the session, held aside when it is a prompt's display
+    /// row that the CLI has not started yet.
+    fn append_or_hold(&mut self, message: Message) {
+        if message.awaits_delivery()
+            && let Some(id) = frame_id(&message)
+        {
+            self.queued.insert(id.to_owned(), message);
+            return;
+        }
+        self.push(message);
+    }
+
+    /// One prompt's lifecycle, as the CLI reported it.
+    ///
+    /// **`started` is where the row lands**: the CLI took the prompt there,
+    /// so everything that arrived before it stays above the words. A prompt
+    /// the CLI settles without starting it drops: no turn will draw it, and
+    /// the page copy never carries a row for one.
+    fn lifecycle(&mut self, uuid: &str, state: &str) {
+        match state {
+            "started" => {
+                if let Some(message) = self.queued.remove(uuid) {
+                    self.push(message);
+                }
+            }
+            "cancelled" | "discarded" | "refused" | "completed" => {
+                self.queued.remove(uuid);
+            }
+            _ => {}
+        }
+    }
+
+    /// The queue goes with an occupant: its prompts belong to a conversation
+    /// this copy no longer holds.
+    fn clear_queued(&mut self) {
+        self.queued.clear();
     }
 
     /// One row this transport forged for display, which no transcript holds.
@@ -361,8 +410,8 @@ impl Conversation {
         self.compaction_count
     }
 
-    /// The handoff row this copy draws, if the last swap under its occupant
-    /// was one.
+    /// The handoff record this copy holds, if the last swap under its
+    /// occupant was one.
     ///
     /// **A record only stands for the occupant it names.** A `/new` or a
     /// resume after a handoff leaves the row describing a session this copy
@@ -838,12 +887,30 @@ impl Conversations {
                 // never sees gets lost. The boundary is appended, the task
                 // counts it, and a reader keeps the history a compaction did
                 // not take away.
+                //
+                // **A prompt's display row is the exception**, and it is held
+                // rather than appended until its lifecycle says the CLI took
+                // it: the frame is dispatched mid-turn, before the assistant
+                // text it will land after (#2816).
                 if let Some(held) = self.get(slot) {
                     let mut conversation = held.lock();
-                    conversation.append(msg.clone());
+                    conversation.append_or_hold(msg.clone());
                     if let Some(seq) = seq {
                         conversation.set_watermark(seq);
                     }
+                }
+            }
+            // A prompt's own queue state, which is what releases the row a
+            // mid-turn dispatch held: `started` is the position the CLI gave
+            // it, and a prompt settled before starting never draws at all.
+            SessionUpdate::PromptLifecycle { uuid, state, .. } => {
+                let Some(held) = self.get(slot) else {
+                    return;
+                };
+                let mut conversation = held.lock();
+                conversation.lifecycle(uuid, state);
+                if let Some(seq) = seq {
+                    conversation.set_watermark(seq);
                 }
             }
             // A delivery is a row a CONNECTION forges per client at send
@@ -900,7 +967,18 @@ impl Conversations {
         if let Some(held) = self.get(slot) {
             {
                 let mut conversation = held.lock();
+                // **A reseed of the same occupant keeps the prompts it is
+                // still waiting on; another occupant's queue is not this
+                // conversation's.** A reconnect mid-queue is the first shape,
+                // a `/new` or a handoff's successor the second.
+                let changed = match (conversation.occupant(), occupant) {
+                    (Some(held), Some(next)) => held.as_str() != next.as_str(),
+                    _ => false,
+                };
                 conversation.seed(history.to_vec(), compaction_count, carried);
+                if changed {
+                    conversation.clear_queued();
+                }
                 conversation.set_watermark(0);
                 if let Some(occupant) = occupant {
                     conversation.set_occupant(Some(occupant.clone()));
@@ -1116,7 +1194,6 @@ mod tests {
             max_tokens: Some(1_000_000),
             at_percent: 85,
             brief: forge_primitives::HandoffBrief::default(),
-            judgment_turn: Vec::new(),
             transcript_path: "/tmp/old.jsonl".to_owned(),
             at: "2026-10-24T08:00:00Z".to_owned(),
             cycle: forge_primitives::HandoffCycle::default(),
@@ -1334,6 +1411,159 @@ mod tests {
         let conversation = conversation.lock();
         let said: Vec<String> = conversation.messages().iter().map(said).collect();
         assert_eq!(said, vec!["from the replay".to_owned(), "after".to_owned()]);
+    }
+
+    /// A prompt sent mid-turn lands where the CLI took it, not where forge
+    /// dispatched it (#2816).
+    ///
+    /// **The two frames that disagree are one paragraph apart in the
+    /// transcript.** The dispatch frame is emitted while the turn is still
+    /// being written, so a copy that appends it draws the reader's words above
+    /// the assistant text they came after; the CLI writes its own row when it
+    /// takes the prompt, which is what `started` reports.
+    #[test]
+    fn a_queued_send_enters_the_copy_when_the_cli_starts_it() {
+        let held = Conversations::new();
+        held.insert(&a_seat(), Conversation::new(vec![a_frame("the turn so far")], 0, 0));
+        held.apply(
+            &SessionUpdate::ChatAppended {
+                key: a_seat(),
+                msg: a_working_frame(),
+                origin: None,
+                source: None,
+            },
+            None,
+        );
+        // The running turn ends before the CLI takes the queued prompt, which
+        // is the shape the transcript has: the prompt's row opens the turn
+        // that follows it.
+        held.apply(
+            &SessionUpdate::ChatAppended {
+                key: a_seat(),
+                msg: a_result_frame(),
+                origin: None,
+                source: None,
+            },
+            None,
+        );
+        let prompt = Message::display_only_prompt(
+            "sent mid-turn".to_owned(),
+            Vec::new(),
+            "p-mid-turn".to_owned(),
+        );
+        held.apply(
+            &SessionUpdate::ChatAppended { key: a_seat(), msg: prompt, origin: None, source: None },
+            None,
+        );
+
+        let before_start = {
+            let conversation = held.get(&a_seat()).expect("the seat is held");
+            let conversation = conversation.lock();
+            conversation.messages().iter().map(said).collect::<Vec<_>>()
+        };
+        assert_eq!(
+            before_start.len(),
+            3,
+            "the dispatch row is held out of the copy while the CLI has not started it: \
+             {before_start:?}",
+        );
+        assert!(
+            !before_start.iter().any(|text| text == "sent mid-turn"),
+            "and the held row is nowhere in it: {before_start:?}",
+        );
+
+        held.apply(
+            &SessionUpdate::PromptLifecycle {
+                key: a_seat(),
+                uuid: "p-mid-turn".to_owned(),
+                state: "started".to_owned(),
+            },
+            None,
+        );
+        let answer: Message = serde_json::from_value(serde_json::json!({
+            "type": "assistant",
+            "uuid": "a-answer",
+            "message": {
+                "id": "msg_answer",
+                "role": "assistant",
+                "model": "claude-opus-5",
+                "content": [{ "type": "text", "text": "answered after the send" }],
+            },
+            "session_id": "5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45",
+        }))
+        .expect("an assistant frame");
+        held.apply(
+            &SessionUpdate::ChatAppended { key: a_seat(), msg: answer, origin: None, source: None },
+            None,
+        );
+
+        let conversation = held.get(&a_seat()).expect("the seat is held");
+        let (messages, opens_at) = conversation.read(|held| {
+            (
+                held.messages().iter().map(said).collect::<Vec<_>>(),
+                held.rendered().turns.iter().map(|turn| turn.opens_at).collect::<Vec<_>>(),
+            )
+        });
+        assert_eq!(messages.len(), 5, "the held row and the answer joined the copy: {messages:?}");
+        assert_eq!(
+            messages[3], "sent mid-turn",
+            "the row enters at the start the CLI reported, above nothing that came before it",
+        );
+        assert_eq!(
+            opens_at.last(),
+            Some(&3),
+            "and the fold opens its turn at the row, with the answer that follows joined to it",
+        );
+    }
+
+    /// A prompt the CLI settles before starting it never draws a row.
+    ///
+    /// **Held is not drawn and not queued forever.** The dispatch frame is a
+    /// lie about a prompt that will never run, so the terminal state removes
+    /// it rather than leaving a row the page copy can never place.
+    #[test]
+    fn a_send_cancelled_before_it_starts_never_enters_the_copy() {
+        let held = Conversations::new();
+        held.insert(&a_seat(), Conversation::new(vec![a_frame("the turn")], 0, 0));
+        held.apply(
+            &SessionUpdate::ChatAppended {
+                key: a_seat(),
+                msg: Message::display_only_prompt(
+                    "dropped before it ran".to_owned(),
+                    Vec::new(),
+                    "p-cancelled".to_owned(),
+                ),
+                origin: None,
+                source: None,
+            },
+            None,
+        );
+        held.apply(
+            &SessionUpdate::PromptLifecycle {
+                key: a_seat(),
+                uuid: "p-cancelled".to_owned(),
+                state: "cancelled".to_owned(),
+            },
+            None,
+        );
+        // A late `started` for the same id proves the row is gone from the
+        // queue rather than merely skipped once.
+        held.apply(
+            &SessionUpdate::PromptLifecycle {
+                key: a_seat(),
+                uuid: "p-cancelled".to_owned(),
+                state: "started".to_owned(),
+            },
+            None,
+        );
+
+        let conversation = held.get(&a_seat()).expect("the seat is held");
+        let messages: Vec<String> = conversation.lock().messages().iter().map(said).collect();
+        assert_eq!(
+            messages,
+            vec!["the turn".to_owned()],
+            "a prompt settled before it started is in no copy at all",
+        );
     }
 
     /// A compaction the session reports MOVES the seat's count, which is what

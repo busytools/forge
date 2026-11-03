@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 
-import { handoffFrame } from '../wire/handoff';
 import { cronNames } from './cron-names.svelte';
 import { familyOf } from './families';
 import { runningMs } from './report';
@@ -4062,13 +4061,35 @@ describe('a page seam that re-serves a result', () => {
     expect(kinds(stray), 'an unpaired result is drawn nowhere at all').toEqual([]);
   });
 
-  it('draws the handoff brief nowhere but the handoff row', () => {
-    const brief = fold([
-      heard([{ type: 'text', text: 'HANDOFF - old -> new\n\nPART 1: GROUND TRUTH\nseat: x' }], {
-        uuid: 'forge_nudge_12_ab12cd34',
-      }),
+  it('draws the handoff brief as the procedure row, live and reloaded alike', () => {
+    const brief = 'HANDOFF - old -> new\n\nPART 1: GROUND TRUTH\nseat: x';
+    const live = fold([
+      heard([{ type: 'text', text: brief }], { uuid: 'forge_nudge_12_ab12cd34' }),
     ]);
-    expect(kinds(brief), 'the brief reaches the page through the handoff row').toEqual([]);
+    expect(kinds(live), "the brief is work, not the reader's own turn").toEqual(['leaves']);
+    expect(
+      proceduresOf(live[0]).map((row) => [row.text, row.label]),
+      'the whole brief is kept, under the handoff mark',
+    ).toEqual([[brief, 'handoff']]);
+
+    const reloaded = fold([
+      heard(
+        [
+          {
+            type: 'queued_command',
+            commandMode: 'prompt',
+            prompt: brief,
+            source_uuid: 'forge_nudge_12_ab12cd34',
+          },
+        ],
+        { uuid: 'c9351772-2ce7-4c28-88e1-6fcad33c0905' },
+      ),
+    ]);
+    expect(
+      proceduresOf(reloaded[0]).map((row) => row.text),
+      'the read draws it the same',
+    ).toEqual([brief]);
+
     const typed = fold([
       heard([{ type: 'text', text: 'HANDOFF - my own notes for the next session' }], {
         uuid: 'forge_prompt_13_99aa88bb',
@@ -4077,34 +4098,6 @@ describe('a page seam that re-serves a result', () => {
     expect(kinds(typed), 'a reader typing the same words keeps their own row').toEqual(['user']);
     const real = fold([heard([{ type: 'text', text: 'a real prompt' }])]);
     expect(kinds(real), "and a person's own words still draw").toEqual(['user']);
-  });
-
-  it('folds a handoff frame into the row that joins two sessions', () => {
-    const units = fold([
-      said([{ type: 'text', text: 'the work so far' }]),
-      handoffFrame({
-        from: 'old-session-id',
-        to: 'new-session-id',
-        reason: 'fill',
-        fill_percent: 85,
-        total_tokens: null,
-        max_tokens: null,
-        at_percent: 85,
-        at: null,
-        cycle: { requests: 0, turns: 0, prompt_tokens: 0 },
-        successor: null,
-        ground_truth: [{ label: 'seat', lines: ['Busytools/forge/lead'] }],
-        judgment: [{ label: 'Next', lines: ['the client row'] }],
-        judgment_turn: [],
-      }),
-      said([{ type: 'text', text: 'picked up' }]),
-    ]);
-    expect(kinds(units), 'prose, the row, then the successor').toEqual(['text', 'handoff', 'text']);
-    const row = units.find((unit) => unit.kind === 'handoff');
-    const handed = row?.kind === 'handoff' ? row.handoff : null;
-    expect(handed?.to, 'the row names the session that continues').toBe('new-session-id');
-    expect(handed?.ground_truth[0]?.label, 'the ground truth rides the row').toBe('seat');
-    expect(handed?.judgment[0]?.label, 'and the judgment with it').toBe('Next');
   });
 });
 

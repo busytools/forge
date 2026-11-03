@@ -127,7 +127,6 @@ describe('the controls that draw a boundary nothing else carries', () => {
     expect(boundaryOf('.dock .btn', SHEET), "the dock's permission buttons").toBe(CONTROL);
     expect(boundaryOf('.micb', SHEET), "the dock's mic").toBe(CONTROL);
     expect(boundaryOf('.cp', SHEET), 'the copy button').toBe(CONTROL);
-    expect(boundaryOf('.handoff .sessions .cp', SHEET), "the handoff row's copy").toBe(CONTROL);
     expect(boundaryOf('.extensions-page .ext-add-in', SHEET), 'the extensions add field').toBe(
       INSET,
     );
