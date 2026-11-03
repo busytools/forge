@@ -62,7 +62,7 @@ carries its line:
 **The all-changes diff is measured against a base the page's own read answers
 at once, and the check that keeps it fresh runs off the read.** Opening the
 review page asks the server for a review-scoped read. On a seat with a
-session, that read never waits on the network: it answers the last completed
+session, the base fetch is never waited on: it answers the last completed
 check the checkout holds, or the base unchecked when it holds none, pinned to
 the local tip the diff is read at, and it kicks a throttled background
 refresh either way. **A seat with no session is the one exception**: no watch
@@ -77,7 +77,8 @@ the page draws its state without its age. While the
 record is being read the page says `Reading the base for the diff...` with the
 work spinner; the check itself is no longer part of that wait.
 
-**A read never joins a refresh already in flight.** When a check
+**A read with a watch behind it never joins a refresh already in flight.**
+When a check
 lands, the seat's row carries the measurement at its next watch pass and
 arrives as `work_changed`; the page sees the measured base - its state or the
 words a failed check left - disagree with the one its own read drew and asks

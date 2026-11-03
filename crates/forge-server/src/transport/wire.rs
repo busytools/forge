@@ -2462,7 +2462,8 @@ async fn session(
     // **Only the review page's own read checks the base.** An ordinary record
     // read serves the stores as they stand - a seat page never waits on the
     // network - and the review read answers the last completed check and kicks
-    // a background refresh, so it never waits on the fetch either (#2818).
+    // a background refresh. A seat with no session is the exception: no watch
+    // delivers a kicked check there, so that read waits for its own (#2818).
     let at = std::time::Instant::now();
     let refresh = if review { surface.refresh_diff_base(slot, &held).await } else { None };
     timings.base_ms = slice_ms(at);

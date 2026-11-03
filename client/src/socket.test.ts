@@ -449,8 +449,8 @@ describe('the connection', () => {
 
   /**
    * **The review page's own read carries its flag to the server.** It is the
-   * one subscribe that may wait on the network, so the flag has to ride the
-   * ask rather than be inferred from the subject.
+   * subscribe whose read checks the base, so the flag has to ride the ask
+   * rather than be inferred from the subject.
    */
   it('asks a review-scoped read when the page says so', async () => {
     const { server, conn } = await connected();
@@ -1428,6 +1428,29 @@ describe('the connection', () => {
       server.received.length,
       "the bound kept asking on its cadence past the read's one retry",
     ).toBe(3);
+  });
+
+  /**
+   * **A review subscribe is bounded like any other.** Nothing at this
+   * transport exempts it: its server-side wait is bounded, so an unanswered
+   * review read is presumed lost at the pass and asked again with its scope.
+   */
+  it('re-asks a review subscribe that goes unanswered', async () => {
+    const server = await stubServer();
+    servers.push(server);
+    const conn = connect(server.url, SHORT_READ_BOUND_MS);
+    opened.push(conn);
+    const seat: Subject = { session: LEAD };
+    conn.subscribe(seat, { review: true });
+    await until(() => server.received.length === 1, 'the review subscribe');
+
+    await until(() => server.received.length >= 3, "the bound's re-ask pair");
+    expect(server.received[2], 'and the re-ask keeps the review scope').toEqual({
+      kind: 'subscribe',
+      what: seat,
+      answering: false,
+      review: true,
+    });
   });
 
   /**

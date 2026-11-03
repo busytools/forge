@@ -30,11 +30,12 @@
  * no store is asked for by nobody and is left alone - a visited seat keeps
  * its store, so a seat's read is bounded for the connection's life.
  *
- * **Every read gets the same bound, the review page's own included.** The
- * server no longer waits on the network for a review read (it answers the
- * base it last checked and refreshes off the read), so there is no
- * legitimately long read left for this side to exempt: an unanswered review
- * read is as lost as any other.
+ * **Every read gets the same bound, the review page's own included.** A
+ * review read answers the base it last checked and refreshes off the read, so
+ * the ordinary case has no server-side wait; a seat with no session is the
+ * one exception, where the read carries the base check itself. That wait is
+ * bounded server-side, and the slow-retry trade above is what covers it: the
+ * pass can land inside the wait and buy one extra record, never a storm.
  */
 
 import type { Subject } from './protocol';

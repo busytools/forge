@@ -31,6 +31,24 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+describe('a read armed again', () => {
+  /**
+   * **A second arm replaces the first timer, never stacks.** Every ask a
+   * subject gets re-arms its read, and two timers would ask twice for one
+   * pass.
+   */
+  it('asks once when the same subject is armed twice', () => {
+    vi.useFakeTimers();
+    const { stores, bounds, asked } = bounded();
+    stores.open(HOME);
+    bounds.arm(HOME);
+    bounds.arm(HOME);
+
+    vi.advanceTimersByTime(5_000);
+    expect(asked, 'one pass, not one per arm').toEqual([HOME]);
+  });
+});
+
 describe('a read that is not answered', () => {
   /**
    * **A slow answer buys one retry, not one per cadence** (#2561). A whole

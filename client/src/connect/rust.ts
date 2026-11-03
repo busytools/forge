@@ -238,13 +238,6 @@ class RustConnection implements Connection {
    */
   private readonly bounds: ReadBounds;
 
-  /**
-   * The scope each subject was last asked with, for the read bound's retry.
-   *
-   * **The retry says nothing on the invoke** - the shell keeps the held scope
-   * - and it is bounded like every other read: no read has a server-side wait
-   * long enough to earn an exemption.
-   */
   /** The ordinary pass this connection bounds its reads with. */
   private readonly boundMs: number;
 
@@ -601,8 +594,9 @@ class RustConnection implements Connection {
     if (this.state !== 'open') return false;
     if (typeof what !== 'string') this.gate.askSent(what.session);
     // **A re-ask that states no scope keeps the shell's held one.** The
-    // deadline is the ordinary pass either way: no read has a server-side
-    // wait long enough to exempt it.
+    // deadline is the ordinary pass either way: a sessionless review read's
+    // wait is bounded server-side, and the bound's slow-retry trade covers a
+    // pass that lands inside it.
     const stated = options?.review;
     this.bounds.arm(what, this.boundMs);
     const payload = stated === undefined ? { what } : { what, review: stated };

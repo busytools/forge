@@ -90,19 +90,20 @@ pub(super) fn tokio_command(program: &str) -> tokio::process::Command {
 /// before a caller's first poll, so a case that needs a child which
 /// cannot - a zero-budget refusal - has to drive a wrapper of its own.
 pub(super) fn tokio_git_command(cwd: &std::path::Path) -> tokio::process::Command {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "testing"))]
     if let Some(program) = test_git_program(cwd) {
         return tokio_command(&program.to_string_lossy());
     }
-    #[cfg(not(test))]
+    #[cfg(not(any(test, feature = "testing")))]
     let _ = cwd;
     tokio_command("git")
 }
 
 /// Point every `git` spawn positioned at `cwd` at `program`, for this
-/// process's tests. Keyed by directory so parallel cases never run the
-/// machine's `git` through another case's wrapper.
-#[cfg(test)]
+/// process's tests and for a crate whose fixtures build on the `testing`
+/// feature. Keyed by directory so parallel cases never run the machine's `git`
+/// through another case's wrapper.
+#[cfg(any(test, feature = "testing"))]
 pub(super) fn point_git_at(cwd: &std::path::Path, program: &std::path::Path) {
     git_programs()
         .lock()
@@ -111,7 +112,7 @@ pub(super) fn point_git_at(cwd: &std::path::Path, program: &std::path::Path) {
 }
 
 /// Drop a directory's pointer, back to the machine's `git`.
-#[cfg(test)]
+#[cfg(any(test, feature = "testing"))]
 pub(super) fn clear_git_point(cwd: &std::path::Path) {
     git_programs()
         .lock()
@@ -119,7 +120,7 @@ pub(super) fn clear_git_point(cwd: &std::path::Path) {
         .retain(|(pointed, _)| pointed != cwd);
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "testing"))]
 fn test_git_program(cwd: &std::path::Path) -> Option<std::path::PathBuf> {
     git_programs()
         .lock()
@@ -130,7 +131,7 @@ fn test_git_program(cwd: &std::path::Path) -> Option<std::path::PathBuf> {
         .map(|(_, program)| program.clone())
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "testing"))]
 fn git_programs() -> &'static std::sync::Mutex<Vec<(std::path::PathBuf, std::path::PathBuf)>> {
     static POINTS: std::sync::OnceLock<
         std::sync::Mutex<Vec<(std::path::PathBuf, std::path::PathBuf)>>,

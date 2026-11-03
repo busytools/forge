@@ -601,6 +601,20 @@ pub fn last_base_measurement(cwd: &Path, default_branch: &str) -> Option<BaseMea
         .cloned()
 }
 
+/// Point `cwd`'s `git` spawns at `program`: the `testing` feature's seam, so a
+/// crate whose fixtures need a held child drives the same wrapper this crate's
+/// own tests do. Pair with [`clear_git_point_for_tests`].
+#[cfg(any(test, feature = "testing"))]
+pub fn point_git_at_for_tests(cwd: &Path, program: &Path) {
+    crate::env::git_command::point_git_at(cwd, program);
+}
+
+/// Drop `cwd`'s pointer, back to the machine's `git`.
+#[cfg(any(test, feature = "testing"))]
+pub fn clear_git_point_for_tests(cwd: &Path) {
+    crate::env::git_command::clear_git_point(cwd);
+}
+
 /// The repository a checkout belongs to, as the fetch gate's key: git's
 /// common dir, canonicalised.
 ///
@@ -801,17 +815,10 @@ async fn stored_base(cwd: &Path, default_branch: &str, decided_at: Instant) -> B
             .filter(|measured| measured.at <= tip_at && measurement_in_window(measured, tip_at))
     });
     match measured {
-        Some(measured) => BaseRefresh {
-            state: if base_ref.is_some() { measured.state } else { BaseState::Unverified },
-            base_ref,
-            error: measured.error,
-            cut: false,
-            unanswered: false,
-            // **The instant the check was made**, not this read's: a run
-            // publishing while the read is answered must still land newer than
-            // the place this answer is stored.
-            at: measured.at,
-        },
+        // **The instant the check was made**, not this read's: a run
+        // publishing while the read is answered must still land newer than
+        // the place this answer is stored.
+        Some(measured) => answer_measurement(measured, base_ref),
         None => BaseRefresh {
             state: BaseState::Unverified,
             base_ref,
@@ -845,9 +852,55 @@ pub async fn refresh_base_now(cwd: &Path, default_branch: &str) -> BaseRefresh {
         };
     }
     if claim_refresh_slot(cwd, decided_at, WATCH_REFRESH_INTERVAL) {
-        return refresh_base(cwd, default_branch, COMMAND_TIMEOUT).await;
+        // **The display budget, not the scan's**: forge's own ssh gives up at
+        // `ConnectTimeout=15` and http at `lowSpeedTime=20`, so a ten-second
+        // bound would cut the fetch before git could name its failure and the
+        // page would draw "could not be checked" with no reason.
+        let refresh = refresh_base(cwd, default_branch, DISPLAY_FETCH_BUDGET).await;
+        give_back_slot(cwd, &refresh);
+        return refresh;
     }
-    stored_base(cwd, default_branch, decided_at).await
+    // **The slot is another run's.** Answer the check it left when there is
+    // one; otherwise wait on a run - a sessionless page has no watch to heal
+    // an answer that names no check.
+    match last_base_measurement(cwd, default_branch)
+        .filter(|measured| measurement_in_window(measured, decided_at))
+    {
+        Some(measured) => {
+            let base_ref = local_tip(cwd, default_branch, COMMAND_TIMEOUT).await;
+            answer_measurement(measured, base_ref)
+        }
+        None => {
+            let refresh = refresh_base(cwd, default_branch, DISPLAY_FETCH_BUDGET).await;
+            give_back_slot(cwd, &refresh);
+            refresh
+        }
+    }
+}
+
+/// The answer a stored check gives a drawing read: its state, words and
+/// instant, pinned to the local tip the caller read beside it.
+fn answer_measurement(measured: BaseMeasurement, base_ref: Option<String>) -> BaseRefresh {
+    BaseRefresh {
+        state: if base_ref.is_some() { measured.state } else { BaseState::Unverified },
+        base_ref,
+        error: measured.error,
+        cut: false,
+        unanswered: false,
+        at: measured.at,
+    }
+}
+
+/// **A run that answered no check gives the slot back.** A cut or aborted run
+/// measured nothing; leaving its claim stamped would answer silence for the
+/// whole window on the one seat whose read is what heals it.
+fn give_back_slot(cwd: &Path, refresh: &BaseRefresh) {
+    if !refresh.cut && !refresh.unanswered {
+        return;
+    }
+    if let Some(slots) = LAST_WATCH_REFRESH.get() {
+        slots.lock().remove(cwd);
+    }
 }
 
 /// Whether a measurement still answers a drawing read: the store's own window,
@@ -858,8 +911,9 @@ fn measurement_in_window(measured: &BaseMeasurement, now: Instant) -> bool {
 
 /// [`refresh_base_for_display`] with a bound: a test gives the refresh one the
 /// machine's load cannot eat, since a budget spent starting a child is the
-/// machine's bound rather than the test's subject. Production's only bound is
-/// the kick's, which calls [`refresh_base`] with the scan's own child budget.
+/// machine's bound rather than the test's subject. Production's bounds are the
+/// kick's (the scan's child budget) and a sessionless read's (the display
+/// budget), both reaching [`refresh_base`].
 #[cfg(test)]
 async fn refresh_base_within(cwd: &Path, default_branch: &str, budget: Duration) -> BaseRefresh {
     refresh_base(cwd, default_branch, budget).await
@@ -905,37 +959,51 @@ async fn refresh_base_owned(cwd: &Path, default_branch: &str, budget: Duration) 
     } else {
         git_command::SshCommand::User
     };
-    let (state, base_ref, error, cut) =
-        if let Some(remote_branch) = default_branch.strip_prefix("origin/") {
-            let fetched = fetch_base(cwd, remote_branch, deadline, budget, ssh).await;
-            if fetched.error.is_none() {
-                // **The ref is fresh now.** Stamping the kick's window here is what
-                // keeps a scan seconds later from fetching the same answer again.
-                stamp_refresh_slot(cwd, Instant::now());
-            }
-            // **A successful fetch is the answer, so the remote is not asked
-            // again.** `fetch_base` carries an explicit
-            // `+refs/heads/<b>:refs/remotes/origin/<b>` refspec, which writes that
-            // destination whatever the repository's own `remote.origin.fetch`
-            // says, and a fetch that cannot find the ref exits non-zero. So exit 0
-            // leaves the ref at the remote's tip and the base is current by
-            // construction. This replaces the post-fetch `ls-remote` that guarded
-            // against a fetch writing nothing: the explicit refspec is what makes
-            // that guard unnecessary. A fetch that failed wrote nothing, and no
-            // remote tip is read to count a lag against, so its base is answered
-            // unchecked with git's own words rather than with a count.
-            let base_ref = local_tip(cwd, default_branch, remaining(deadline)).await;
-            let state = if fetched.error.is_none() && base_ref.is_some() {
-                BaseState::Current
-            } else {
-                BaseState::Unverified
-            };
-            (state, base_ref, fetched.error, fetched.cut)
-        } else {
-            let (state, local) = local_base(cwd, default_branch, deadline).await;
-            (state, local, None, false)
+    // **A non-origin name never reaches here**: both callers branch on a
+    // remote-tracking default first, and a local base is answered by
+    // [`local_base`] rather than fetched. Unchecked rather than a guess if
+    // that ever changes.
+    let Some(remote_branch) = default_branch.strip_prefix("origin/") else {
+        return BaseRefresh {
+            state: BaseState::Unverified,
+            base_ref: local_tip(cwd, default_branch, remaining(deadline)).await,
+            error: None,
+            cut: false,
+            unanswered: false,
+            at: Instant::now(),
         };
-    BaseRefresh { state, base_ref, error, cut, unanswered: false, at: Instant::now() }
+    };
+    let fetched = fetch_base(cwd, remote_branch, deadline, budget, ssh).await;
+    if fetched.error.is_none() {
+        // **The ref is fresh now.** Stamping the kick's window here is what
+        // keeps a scan seconds later from fetching the same answer again.
+        stamp_refresh_slot(cwd, Instant::now());
+    }
+    // **A successful fetch is the answer, so the remote is not asked
+    // again.** `fetch_base` carries an explicit
+    // `+refs/heads/<b>:refs/remotes/origin/<b>` refspec, which writes that
+    // destination whatever the repository's own `remote.origin.fetch`
+    // says, and a fetch that cannot find the ref exits non-zero. So exit 0
+    // leaves the ref at the remote's tip and the base is current by
+    // construction. This replaces the post-fetch `ls-remote` that guarded
+    // against a fetch writing nothing: the explicit refspec is what makes
+    // that guard unnecessary. A fetch that failed wrote nothing, and no
+    // remote tip is read to count a lag against, so its base is answered
+    // unchecked with git's own words rather than with a count.
+    let base_ref = local_tip(cwd, default_branch, remaining(deadline)).await;
+    let state = if fetched.error.is_none() && base_ref.is_some() {
+        BaseState::Current
+    } else {
+        BaseState::Unverified
+    };
+    BaseRefresh {
+        state,
+        base_ref,
+        error: fetched.error,
+        cut: fetched.cut,
+        unanswered: false,
+        at: Instant::now(),
+    }
 }
 
 /// The state of a base that names no remote-tracking ref, and the sha it
@@ -4663,11 +4731,21 @@ mod tests {
     /// that kicks it answers unchecked without words it has not seen; the
     /// measurement the failed run leaves carries git's first line to the next
     /// read, which is what the page draws beside the base line.
+    ///
+    /// **The fetch is held, not failed on arrival**: a failure that lands while
+    /// the first read is still finishing would be re-read from the store and
+    /// answered with words that read did not wait for.
     #[tokio::test(flavor = "current_thread")]
     async fn a_failed_fetch_carries_gits_own_words() {
         let (_upstream, dir) = stale_base_fixture();
         let bin = tempfile::tempdir().expect("wrapper dir");
-        fail_fetch_at(dir.path(), bin.path());
+        let release = bin.path().join("fetch-release");
+        let body = format!(
+            "while [ ! -e '{release}' ]; do /bin/sleep 0.02; done; \
+             echo 'fatal: forced fetch failure' >&2; exit 128",
+            release = release.display(),
+        );
+        write_wrapper(dir.path(), bin.path(), "held-failing-git", &[], &body);
 
         let unchecked = refresh_base_for_display(dir.path(), "origin/main").await;
         assert_eq!(unchecked.state, BaseState::Unverified);
@@ -4675,6 +4753,7 @@ mod tests {
             unchecked.error.is_none(),
             "the read that kicked the fetch names no failure it has not seen: {unchecked:?}",
         );
+        std::fs::write(&release, b"go").expect("release the fetch");
         let _ = settle_background_fetches().await;
 
         let refresh = refresh_base_for_display(dir.path(), "origin/main").await;
@@ -4845,6 +4924,91 @@ mod tests {
 
         assert!(answer.error.is_none() && !answer.cut && !answer.unanswered);
         crate::env::git_command::clear_git_point(dir.path());
+    }
+
+    /// **A sessionless read waits on the kick that claimed its slot.** An
+    /// ordinary seat read's scan kicks a refresh and claims the cwd slot; a
+    /// review read inside that window must wait on the in-flight run rather
+    /// than answer unchecked - no watch exists to heal a miss (#2818).
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_sessionless_read_waits_on_the_kick_that_claimed_its_slot() {
+        let (upstream, dir) = stale_base_fixture();
+        let bin = tempfile::tempdir().expect("wrapper dir");
+        let held = held_fetch_at(dir.path(), bin.path());
+
+        kick_background_fetch(dir.path(), "origin/main", TEST_GIT_BUDGET);
+        wait_for_within(|| held.starts() == 1, "the kick's fetch to start", TEST_GIT_BUDGET).await;
+        let probes_before = held.probes();
+
+        let reader = tokio::spawn({
+            let dir = dir.path().to_path_buf();
+            async move { refresh_base_now(&dir, "origin/main").await }
+        });
+        // It reaches the registry, and the held fetch is what it waits on.
+        wait_for_within(
+            || held.probes() > probes_before,
+            "the read to reach the registry",
+            TEST_GIT_BUDGET,
+        )
+        .await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(!reader.is_finished(), "the read waits on the run its slot names");
+
+        held.release();
+        let answer = timeout(TEST_GIT_BUDGET, reader)
+            .await
+            .expect("the read answered")
+            .expect("the read task finished");
+        let _ = settle_background_fetches().await;
+        crate::env::git_command::clear_git_point(dir.path());
+
+        assert_eq!(answer.state, BaseState::Current, "the joined run's check answers");
+        assert_eq!(
+            answer.base_ref.as_deref(),
+            Some(rev_parse(upstream.path(), "main").as_str()),
+            "with the base at the remote's tip",
+        );
+        assert_eq!(held.starts(), 1, "the read joined the kick rather than fetching again");
+    }
+
+    /// **A run that answered no check gives its slot back.** A cut or aborted
+    /// run measured nothing; leaving its claim stamped would answer silence
+    /// for the whole window on the one seat whose read is what heals it.
+    #[test]
+    fn a_run_without_a_check_gives_the_slot_back() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let now = Instant::now();
+        assert!(
+            claim_refresh_slot(dir.path(), now, WATCH_REFRESH_INTERVAL),
+            "the fixture claims the slot",
+        );
+        let answered = BaseRefresh {
+            state: BaseState::Current,
+            base_ref: Some("abc123".to_owned()),
+            error: None,
+            cut: false,
+            unanswered: false,
+            at: Instant::now(),
+        };
+        give_back_slot(dir.path(), &answered);
+        assert!(
+            !claim_refresh_slot(dir.path(), Instant::now(), WATCH_REFRESH_INTERVAL),
+            "a run that answered keeps its slot",
+        );
+
+        let cut = BaseRefresh {
+            state: BaseState::Unverified,
+            base_ref: None,
+            error: Some("the fetch did not finish inside the 30s it was given".to_owned()),
+            cut: true,
+            unanswered: false,
+            at: Instant::now(),
+        };
+        give_back_slot(dir.path(), &cut);
+        assert!(
+            claim_refresh_slot(dir.path(), Instant::now(), WATCH_REFRESH_INTERVAL),
+            "a run without a check gives the slot back",
+        );
     }
 
     /// **A fetch its budget cut is not a measurement, and the reading after it
