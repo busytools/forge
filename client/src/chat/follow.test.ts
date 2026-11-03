@@ -29,8 +29,18 @@ vi.mock('./conversation', async (importOriginal) => {
   return frozenConversation(await importOriginal<typeof import('./conversation')>());
 });
 
-const { clear, element, layout, list, measured, pinned, setElement, setMeasured, setModel } =
-  await import('./testing/records');
+const {
+  clear,
+  element,
+  layout,
+  list,
+  measured,
+  pinned,
+  quantised,
+  setElement,
+  setMeasured,
+  setModel,
+} = await import('./testing/records');
 const { conversationsFor } = await import('./conversations');
 const { subjectKey } = await import('../protocol');
 const { default: Chat } = await import('./Chat.svelte');
@@ -178,6 +188,26 @@ function stub() {
     for (const fn of listeners) fn(message);
     flushSync();
   };
+  /** One frame arriving on the seat, the way a running turn's do. */
+  const frameMessage = (): ServerMessage => ({
+    kind: 'update',
+    update: { chat_appended: { key: LEAD, msg: said('a line arriving') } },
+  });
+  /** The reader's own prompt, as the dispatch forges it on the seat. */
+  const promptMessage = (): ServerMessage => ({
+    kind: 'update',
+    update: {
+      chat_appended: {
+        key: LEAD,
+        source: 'you',
+        msg: {
+          type: 'user',
+          uuid: 'said-once',
+          message: { role: 'user', content: [{ type: 'text', text: 'what is this' }] },
+        },
+      },
+    },
+  });
 
   return {
     connection,
@@ -241,10 +271,7 @@ function stub() {
     },
     /** One frame arriving on the seat, the way a running turn's do. */
     frame(): void {
-      send({
-        kind: 'update',
-        update: { chat_appended: { key: LEAD, msg: said('a line arriving') } },
-      });
+      send(frameMessage());
     },
     /**
      * A prompt the reader sends, as the dispatch forges it on the seat.
@@ -254,20 +281,18 @@ function stub() {
      * one prompt agree about its sender.
      */
     prompt(): void {
-      send({
-        kind: 'update',
-        update: {
-          chat_appended: {
-            key: LEAD,
-            source: 'you',
-            msg: {
-              type: 'user',
-              uuid: 'said-once',
-              message: { role: 'user', content: [{ type: 'text', text: 'what is this' }] },
-            },
-          },
-        },
-      });
+      send(promptMessage());
+    },
+    /**
+     * The reader's send and the turn's next frame in ONE task, so the fold
+     * takes both before any pass runs between them.
+     */
+    promptThenFrame(): void {
+      for (const fn of listeners) {
+        fn(promptMessage());
+        fn(frameMessage());
+      }
+      flushSync();
     },
     /**
      * A prose turn the core forged for words that are nobody's send: forge's
@@ -586,6 +611,32 @@ describe('whether the column follows the newest end', () => {
     ]);
   });
 
+  it('keeps following when a fractional pin reads back below its target', async () => {
+    // **The browser rounds the offset it lands on**, so a pin that holds at
+    // the list's fractional model foot can read back a half pixel short of
+    // it. Latching that as "the reader is not at the foot" stops the follow
+    // for good while the stream keeps growing - the opposite of the fix.
+    const server = stub();
+    await draw(server);
+    readerAt(FOOT);
+    await settle();
+    clear();
+    quantised(0.5);
+
+    // The browser counts a row the list has not measured, and the model foot
+    // is 700.2, which lands on the half-pixel grid at 700.
+    setModel(1000.2);
+    setElement(TOTAL + 400, VIEWPORT);
+    server.frame();
+    await settle();
+    clear();
+
+    server.frame();
+    await settle();
+
+    expect(pinned(), 'the follow survives a read-back a half pixel short').not.toEqual([]);
+  });
+
   it('does not pin onto a slot the list has reserved for the newest turn but not drawn', async () => {
     // **The foot a send lands on.** An appended turn is reserved a slot at the
     // list's estimate and drawn a frame later, so for that frame the element's
@@ -777,10 +828,11 @@ describe('whether the column follows the newest end', () => {
   it('holds a parked reader through a handoff to its successor', async () => {
     // **The handoff is an arrival, not the reader moving.** The successor
     // keeps the conversation above its row, so the rows stay mounted where
-    // the reader left them - and a follow re-armed by the swap carries a
-    // reader who scrolled away down to the foot on the successor's first
-    // frame (Ved, 2026-11-03: "after a document hand-off the scroll moved
-    // although I had not touched it").
+    // the reader left them - and an arrival carries a reader who scrolled
+    // away down to the foot on the successor's first frame (Ved, 2026-11-03:
+    // "after a document hand-off the scroll moved although I had not touched
+    // it"). What holds this here is the pin's own gate; the fold's half - the
+    // follow no longer flipping at the swap - is the conversation test's.
     const server = stub();
     await draw(server);
     readerAt(0);
@@ -868,6 +920,28 @@ describe('whether the column follows the newest end', () => {
 
     expect(pinned(), 'a follow nobody at the foot armed may not move the reader').toEqual([]);
     expect(element.offset, 'the reader stays where they put themselves').toBe(parked);
+  });
+
+  it('draws the way back while the follow is on but the foot is out of reach', async () => {
+    // **A follow that is not pinning is not a reader at the end.** The flag
+    // can be on while the column holds position - the state the gate above
+    // builds - and the control is the only way back, so it follows the pin's
+    // condition rather than the flag alone.
+    const server = stub();
+    await draw(server);
+    readerAt(0);
+    await settle();
+    clear();
+
+    const chat = conversationsFor(server.connection).live.get(subjectKey({ session: LEAD }))?.chat;
+    expect(chat, 'precondition: the column holds the seat conversation').toBeDefined();
+    chat?.following(true);
+    await settle();
+
+    expect(
+      document.querySelector('button.follow'),
+      'the way back is drawn while nothing is pinning',
+    ).not.toBeNull();
   });
 
   it('follows again once the reader is back at the very end', async () => {
@@ -1576,6 +1650,28 @@ describe('whether the column follows the newest end', () => {
     expect(pinned(), 'the new conversation opens at its foot').toEqual([PIN]);
   });
 
+  it('opens a plain new conversation at the foot for a parked reader', async () => {
+    // **A plain swap unmounts the list, and what mounts opens following.**
+    // The rows are new and the reader has no place in them, so the column
+    // lands at the foot - the list's own attach is the only thing that says a
+    // fresh viewport is at its start rather than wherever the old one was
+    // left.
+    const server = stub();
+    await draw(server);
+    readerAt(0);
+    await settle();
+    clear();
+
+    server.replaced();
+    await settle();
+    clear();
+
+    server.page([turn('n1'), turn('n2')]);
+    await settle();
+
+    expect(pinned(), 'the new conversation opens at its foot').toEqual([PIN]);
+  });
+
   it('lands back at the foot when the reader returns to a seat they left scrolled up', async () => {
     // **A place belongs to the visit, not to the seat** (#1673). A seat's
     // conversation is kept, and its follow flag was kept with it - so a seat
@@ -1811,6 +1907,41 @@ describe('whether the column follows the newest end', () => {
     await settle();
 
     expect(element.offset, "the reader's row carried them down with it").toBe(250);
+  });
+
+  it('restores the row of a reader whose follow is on but not pinning', async () => {
+    // **The other half of the third state.** A follow can be on while the
+    // column holds position; the observer's pass must not read that flag
+    // alone and skip the restore, or a parked row moves under the reader
+    // whenever the layout above them changes.
+    const server = stub();
+    clear();
+    clearObservers();
+    setMeasured(TOTAL, VIEWPORT);
+    app = mount(Chat, {
+      target: document.body,
+      props: { slot: LEAD, connection: server.connection },
+    });
+    flushSync();
+    server.page([spoken('t1'), spoken('t2'), spoken('t3')]);
+    await settle();
+
+    layOut(40);
+    readerAt(50);
+    await settle();
+    // The follow is turned on by an arrival while the reader stays parked -
+    // the state the pin's gate holds.
+    const chat = conversationsFor(server.connection).live.get(subjectKey({ session: LEAD }))?.chat;
+    expect(chat, 'precondition: the column holds the seat conversation').toBeDefined();
+    chat?.following(true);
+    await settle();
+    clear();
+
+    layOut(40, 240);
+    resized();
+    await settle();
+
+    expect(element.offset, "the reader's row is still their place").toBe(250);
   });
 
   /**
@@ -2167,6 +2298,24 @@ describe('whether the column follows the newest end', () => {
     await settle();
 
     expect(pinned(), 'a prompt is where the reader wants to be, wherever they were').toEqual([PIN]);
+  });
+
+  it("keeps a send's arm through the frame that follows it", async () => {
+    // **The turn's next frame must not spend the arm.** A send arms the
+    // follow, and the frame that lands before the pin's pass folds through
+    // the same append path - rebuilding the arm from that frame's own
+    // `source` alone would drop the reader's send and leave a parked reader
+    // where they were.
+    const server = stub();
+    await draw(server);
+    readerAt(0);
+    await settle();
+    clear();
+
+    server.promptThenFrame();
+    await settle();
+
+    expect(pinned(), "the reader's own send still lands the foot").toEqual([PIN]);
   });
 
   it('brings the reader back for their own send the CLI queued', async () => {

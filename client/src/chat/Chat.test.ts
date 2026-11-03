@@ -18,7 +18,7 @@ import { subagents } from './subagents.svelte';
 import { PRE_RESUME, RESUME, RESUME_END, RESUME_KEY } from './testing/resume-2503';
 import SeatSwitch from './testing/seat-switch.svelte';
 import { installResizeObserver, resized } from './testing/viewport';
-import { clear, measured as listMeasured, setMeasured } from './testing/records';
+import { clear, measured as listMeasured, setElement, setMeasured } from './testing/records';
 
 installResizeObserver();
 
@@ -2503,5 +2503,52 @@ describe('the drawn mark', () => {
       states.indexOf('conversation'),
       'the content drawing follows the placeholder on the same open',
     ).toBeGreaterThan(0);
+  });
+});
+
+describe('the scroll record a pin writes', () => {
+  /** One turn as a page carries it: enough for the list to draw a row. */
+  const pageTurn = (key: string): unknown => ({
+    key,
+    messages: [
+      {
+        type: 'assistant',
+        uuid: `a-${key}`,
+        message: { role: 'assistant', content: [{ type: 'text', text: key }] },
+      },
+    ],
+  });
+
+  it('says the foot on a pin at the foot, and short of it on a model hold', async () => {
+    // **The record is one of this fix's own behaviours**: a pin at the foot
+    // still reads as a pin that reached it, and one that stops at the list's
+    // measured end says so rather than claiming a foot it never reached.
+    const server = stub();
+    scrollMark.mockClear();
+    setMeasured(1000.31, 300);
+    draw({}, server);
+    server.answer([pageTurn('t1')]);
+    await painted();
+
+    const opened: unknown = scrollMark.mock.calls.at(-1)?.[0];
+    expect(opened, 'the landing pin is a pin, and it reached the foot').toMatchObject({
+      pin: true,
+      foot: true,
+      reader: false,
+      aimed: false,
+    });
+
+    scrollMark.mockClear();
+    // The browser counts a row the list has not measured, so the pin holds at
+    // the list's own end: still a pin, and short of the browser's foot.
+    setElement(1400.31, 300);
+    resized();
+    await painted();
+
+    const held: unknown = scrollMark.mock.calls.at(-1)?.[0];
+    expect(held, 'a model hold is a pin that stopped short of the foot').toMatchObject({
+      pin: true,
+      foot: false,
+    });
   });
 });

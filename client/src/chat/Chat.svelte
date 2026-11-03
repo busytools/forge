@@ -106,6 +106,16 @@
   const HOLD_MAX_MS = 250;
   /** How far above the last pin counts as the reader when no input preceded it. */
   const DISARM_SLACK = 48;
+  /** How far above the very end still counts as standing at the foot. */
+  const FOOT_NEAR = 48;
+  /**
+   * How far short of its target a scroll read-back may land.
+   *
+   * **Browsers round `scrollTop` to a fraction of a pixel**, so a pin written
+   * at the list's fractional model foot can read back below it - which is
+   * still the foot, not a reader who moved.
+   */
+  const FOOT_QUANTUM = 1;
   /** How long after a wheel, touch or up-scrolling key its events read as the reader's. */
   const READER_WINDOW_MS = 250;
   /** The keys a focused row scrolls the column UP with, which are the ones that may disarm. */
@@ -550,8 +560,11 @@
    * own move away and comes back only where a pin or a scroll leaves them at
    * the end - so a follow re-armed by a handoff or any other arrival holds a
    * parked reader where they are instead of yanking them down.
+   *
+   * Reactive, because the way-back control is drawn from it: a reader whose
+   * follow is on but whose pin cannot fire needs the door back.
    */
-  let footHeld = true;
+  let footHeld = $state(true);
   /** How many layout passes the observer has already put a parked reader back for. */
   let restored = 0;
   /**
@@ -790,7 +803,10 @@
       // without passing this wrapper, so a guard only here would let a column
       // that overflowed during the beat ask a page it does not need.
       fillFittingRoom();
-      if (held.following) land();
+      // **A follow that cannot pin is a parked reader too.** The flag can be
+      // on while the column holds position, and that reader's row still moves
+      // under them - so the pin's own condition decides which pass runs.
+      if (held.following && pinning()) land();
       // A reader away from the foot has a place of their own, and a size change
       // is one of the two ways it moves under them. **Not while the prepend
       // compensation is on**, same as the effect's own pass: that path holds
@@ -954,6 +970,18 @@
    */
   function atFoot(): boolean {
     return viewport !== null && viewport.scrollTop + viewport.clientHeight >= viewport.scrollHeight;
+  }
+
+  /**
+   * Whether the column may pin the foot right now.
+   *
+   * **The reader stands at the end, or their own send is carrying them
+   * there.** The follow flag alone is not enough: it can be on while the
+   * column holds a reader's position, and a pin in that state is the drift
+   * this rule exists to stop.
+   */
+  function pinning(): boolean {
+    return footHeld || held.send_armed;
   }
 
   /**
@@ -1535,7 +1563,10 @@
     // where their own send armed the follow.** Every other arm of the follow -
     // a handoff's successor, a turn landing, a new row - is an arrival, and an
     // arrival holds the position the reader chose.
-    if (!force && !footHeld && !held.send_armed) return 0;
+    // Read untracked: the pass runs from effects, and its own write to
+    // `footHeld` must not make that effect a reason to run again - a second
+    // pass would write the same offset and record a pin nobody asked for.
+    if (!force && !untrack(() => pinning())) return 0;
     // **The reader's own ask is the arm, and it outlives a held-back pass.**
     // A forced pass can still be stopped below by a reserved row with nothing
     // written; the next pass is unforced, so unless the ask counts as standing
@@ -1604,8 +1635,9 @@
     placed = viewport.scrollTop;
     // **The pin leaves the reader at the end it could reach**: the browser's,
     // or the list's own while the browser counts a row it has not drawn. Both
-    // are the foot for the next arrival's decision.
-    footHeld = viewport.scrollTop >= reachable;
+    // are the foot for the next arrival's decision - give or take the fraction
+    // the browser rounds the offset to.
+    footHeld = viewport.scrollTop >= reachable - FOOT_QUANTUM;
     return foot;
   }
 
@@ -2047,7 +2079,7 @@
     // moves it: a size change moves the foot under a reader standing still,
     // and the follow is what absorbs that. A few pixels above the end is the
     // notch a row's measurement leaves, not a place of their own.
-    if (offset !== was) footHeld = height - offset - room <= DISARM_SLACK;
+    if (offset !== was) footHeld = height - offset - room <= FOOT_NEAR;
     const byReader = readerMoved();
     const aimed = aimedAtFoot();
     // **Every move is written, flagged.** A machine move has no other record -
@@ -2281,11 +2313,11 @@
   {#if outstanding > 0}
     <div class="older-loading" role="status">Loading older messages…</div>
   {/if}
-  <!-- The way back to the foot, shown ONLY while the reader is away from it:
-       following means the newest row is on screen, so its presence is the
-       state read at a glance and its click is the whole way back - at the
-       foot and following again, in one move. -->
-  {#if !held.following}
+  <!-- The way back to the foot, shown whenever the column is not pinning:
+       a reader parked with the follow still on has no other door, and the
+       click is the whole way back - at the foot and following again, in one
+       move. -->
+  {#if !held.following || !pinning()}
     <button
       class="follow"
       type="button"

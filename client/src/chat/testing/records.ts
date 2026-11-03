@@ -51,6 +51,7 @@ export function clear(): void {
   layout.reads = 0;
   boxes.container = 0;
   boxes.items = [];
+  element.quantise = 0;
 }
 
 /** The last pair the list was handed. */
@@ -92,7 +93,7 @@ export const reported = { size: 0, viewport: 0 };
  * The browser clamps the scroll on the element, so this is the only side the
  * column may decide the foot from.
  */
-export const element = { offset: 0, height: 0, viewport: 0, width: 0 };
+export const element = { offset: 0, height: 0, viewport: 0, width: 0, quantise: 0 };
 
 /**
  * A list that has MEASURED, with the reader at its start.
@@ -138,6 +139,18 @@ export function measured(container: number, items: { top: number; height: number
 export function setElement(height: number, viewport: number): void {
   element.height = height;
   element.viewport = viewport;
+}
+
+/**
+ * The grid a real browser rounds a scroll offset onto, in pixels.
+ *
+ * **Chromium rounds `scrollTop` to the nearest half pixel**, so a pin written
+ * at a fractional offset reads back a little above or below what was asked.
+ * The stub stores doubles exactly, which is why a test has to opt into the
+ * quantisation to see it.
+ */
+export function quantised(step: number): void {
+  element.quantise = step;
 }
 
 /** The list catching up on a measurement the browser already counted. */
