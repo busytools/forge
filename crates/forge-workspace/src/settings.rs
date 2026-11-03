@@ -720,7 +720,8 @@ const CONNECTOR_KEYS: &[ConfigKey] = &[
     ConfigKey {
         path: "huggingface.token",
         area: "connectors",
-        class: EffectClass::Restart,
+        // Read at each install, so a save applies on the next press.
+        class: EffectClass::Live,
         rows: |config| {
             vec![text(
                 "huggingface.token",

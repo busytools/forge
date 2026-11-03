@@ -1221,6 +1221,7 @@ mod tests {
                     variants: Vec::new(),
                     voices: Vec::new(),
                     voice: None,
+                    preview_error: None,
                 },
                 in_use: Vec::new(),
                 check: forge_workspace::catalogue::CatalogueCheck::Never,

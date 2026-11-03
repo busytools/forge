@@ -540,6 +540,7 @@
         "enabled",
         "from",
         "models_dir",
+        "preview_error",
         "snapshot",
         "speaking_model",
         "variants",
@@ -553,9 +554,6 @@
         "quant",
         "size",
         "variant"
-      ],
-      "/update/dictate_models_changed/models/speaking/from": [
-        "from"
       ],
       "/update/dictate_models_changed/models/speaking/snapshot": [
         "models"

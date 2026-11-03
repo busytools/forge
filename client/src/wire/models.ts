@@ -326,6 +326,9 @@ export interface SpeakingWire {
   voices: string[];
   /** The configured voice; `null` means the engine's default. */
   voice: string | null;
+  /** The last preview's render failure, when one failed after its dispatch
+   * was accepted. Cleared by the next preview. */
+  preview_error: string | null;
 }
 
 /** Everything the models page draws, in one read. */
@@ -537,6 +540,7 @@ function speakingFrom(speaking: SpeakingWire | undefined): SpeakingWire {
       variants: [],
       voices: [],
       voice: null,
+      preview_error: null,
     };
   }
   return {
@@ -551,6 +555,7 @@ function speakingFrom(speaking: SpeakingWire | undefined): SpeakingWire {
     variants: (speaking.variants ?? []).map((variant) => speakingVariantFrom(variant)),
     voices: speaking.voices ?? [],
     voice: speaking.voice ?? null,
+    preview_error: speaking.preview_error ?? null,
   };
 }
 

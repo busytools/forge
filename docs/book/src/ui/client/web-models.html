@@ -573,7 +573,7 @@
       <button class="chip" type="button">use the default</button>
       <p class="note">54 voices come with the model &middot; the default is <code>af_heart</code>, and the settings page sets the voice every reply renders in</p>
     </div>
-    <div class="tnote">The variants are the Hub's ONNX exports of one model; the voices are the style files every variant shares, so installing a second quantisation costs the model file alone. A switch builds the new engine before it swaps, so a load that fails leaves the previous one serving.</div>
+    <div class="tnote">The variants are the Hub's ONNX exports of one model; every install fetches the chosen model file and the voice set beside it. A switch builds the new engine before it swaps, so a load that fails leaves the previous one serving.</div>
   </div>
 
   <div class="tile">

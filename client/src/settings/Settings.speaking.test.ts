@@ -6,6 +6,7 @@ import { emptyHome, settingsWire } from '../dev/settings.fixture';
 import { modelsWire } from '../models/testing';
 import { lastSeat } from '../routes';
 import type { Connection } from '../socket';
+import { resetVoices } from '../voice/registry';
 import type { DictateModelsWire, SpeakingFrom } from '../wire/models';
 import Settings from './Settings.svelte';
 import { settingsFrame } from './frame';
@@ -22,6 +23,7 @@ afterEach(async () => {
   app = null;
   settingsFrame.set({ status: 'waiting' });
   lastSeat.set(null);
+  resetVoices();
   document.body.innerHTML = '';
 });
 
@@ -46,6 +48,9 @@ function connection(
       updates: [],
       dropped: 0,
     }),
+    // The settings page pumps the last seat's voice while it is open; this
+    // page's fake holds no seat store.
+    store: () => undefined,
     unsubscribe: () => {},
     refresh: () => true,
     onStatus: () => () => {},
@@ -142,6 +147,19 @@ describe("the settings page's speaking card", () => {
     );
     expect(button?.disabled).toBe(true);
     expect(bodyText()).toContain('open a session and turn the speaker on');
+  });
+
+  /** A render that fails after the command was accepted is the core's
+   * failure, not a refusal, so it arrives on the speaking read and is drawn
+   * under the card. */
+  it('draws a preview render failure the read carries', () => {
+    const wire = {
+      ...modelsWire,
+      speaking: { ...modelsWire.speaking, preview_error: 'the render died' },
+    };
+    draw(connection({ dispatched: [], edits: [] }, wire));
+
+    expect(bodyText()).toContain('the render died');
   });
 
   /** The choice is the page's own edit: staged by the card, written by the

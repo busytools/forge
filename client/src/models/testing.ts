@@ -187,6 +187,7 @@ export const modelsWire: DictateModelsWire = modelsFrom({
     ],
     voices: ['af_heart', 'bf_emma'],
     voice: 'bf_emma',
+    preview_error: null,
   },
   check: { state: 'fresh', at: '2026-10-06T06:12:00Z', release: 'v0.3.1', skipped: 0 },
   updates: [

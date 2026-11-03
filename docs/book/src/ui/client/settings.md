@@ -33,6 +33,12 @@ with the loader's or the guard's own words. The watcher's reload push
 carries the new document to every client. A save with no answer is a
 timeout the bar reports.
 
+The speaking card is the page's one other read: while the voice area is
+selected it watches the `dictate_models` subject through the models read, and
+lets the subscription go when another area is selected. The speaking model,
+its install state and the voice list come from that read; the chosen voice
+comes from the settings document above.
+
 ## What it draws
 
 | Piece | What it is |
@@ -47,7 +53,7 @@ timeout the bar reports.
 | Restart banner | After a save lands, exactly the restart-class keys it carried, with no restart button. |
 | A new entry | A dashed card headed by its name and `new <group>`, its fields empty and required-marked, discarded or saved with the batch. |
 | A pending removal | The card head reads `removed on save`, with Undo; its lines are not drawn. |
-| The speaking card | The voice area's own block above its key cards: the speaking model row with its one control - install, activate or use the default - the directory the files live in, and the voices the installed model carries, each with `use` and `preview`. |
+| The speaking card | The voice area's own block above its key cards: the speaking model row with its one control - install, activate or use the default - the directory the files live in, and the voices the installed model carries, each with a `preview` and a `use` except the chosen one. |
 
 ## The rules
 
@@ -116,8 +122,8 @@ timeout the bar reports.
   edits, and every one of them is disabled while one is in flight.
 - **A preview plays on the seat the reader was last on**, through that
   seat's own voice stream. It needs the seat's speaker switch on, and the
-  card says so rather than opening a second playback path; a core that
-  refuses the switch refusal is drawn in its own words under the card.
+  card says so rather than opening a second playback path; a core refusal is
+  drawn in its own words under the card.
 
 ## The states the page can be in
 
@@ -158,11 +164,14 @@ timeout the bar reports.
 - **No seat for a preview** - the reader has not opened a session since
   this client started, so every preview control is disabled and the card
   says to open one and turn its speaker on.
-- **A speaking model not installed** - the card lists the variants with
-  their install controls, and the voices section says they arrive with the
-  model.
-- **A speaking install or switch in flight** - every speaking control is
-  disabled until the core's own state settles.
+- **Reading** - the models subscription has not answered; the card says it
+  is reading the speaking model's state.
+- **Speech off** - `[tts] enabled` is unset, so there is no speaking model
+  to run and the card says so.
+- **A speaking model not installed** - the card draws the model row with its
+  install control, and the voices section says they arrive with the model.
+- **A speaking install or switch in flight** - the speaking model's controls
+  are disabled until the core's own state settles.
 - **An unknown speaking state** - a speaking read this client cannot parse
   draws as itself rather than as an installable model.
 

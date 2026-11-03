@@ -163,6 +163,20 @@ describe('the models page as it draws', () => {
     expect(html, 'the voices the model carries are counted').toContain('2 voices');
   });
 
+  /// A pinned speaking role refuses the switch, so the row draws no control
+  /// that would always be refused.
+  it('draws no switch for a config-pinned speaking role', () => {
+    const pinned = {
+      ...modelsWire,
+      speaking: { ...modelsWire.speaking, from: 'config' as const },
+    } as DictateModelsWire;
+    const host = open(pinned);
+    host.querySelector<HTMLButtonElement>('[aria-label="show the speaking updates"]')?.click();
+    flushSync();
+
+    expect(host.innerHTML).not.toContain('use for speaking');
+  });
+
   /**
    * The proposal's comparison, both sides of both numbers, and the link an
    * adoption takes: the note under it says a proposal becomes a pull request.

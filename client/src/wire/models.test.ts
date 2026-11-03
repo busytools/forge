@@ -101,6 +101,23 @@ describe("the models page's snapshot, narrowed once where it enters", () => {
     expect(wire.speaking.from).toBe('unknown');
   });
 
+  /** The wire emits a bare name. A tagged `{"from":"installed"}` object is a
+   * shape this client cannot read and must not be mistaken for a source,
+   * which is the bug that hid the whole speaking UI. */
+  it('does not read a tagged from object as a source', () => {
+    const base = payload({}).speaking;
+    const wire = modelsFrom(payload({ speaking: { ...base, from: { from: 'installed' } } }));
+
+    expect(wire.speaking.from).toBe('unknown');
+  });
+
+  it('carries a preview render failure beside the speaking read', () => {
+    const base = payload({}).speaking;
+    const wire = modelsFrom(payload({ speaking: { ...base, preview_error: 'the render died' } }));
+
+    expect(wire.speaking.preview_error).toBe('the render died');
+  });
+
   /** The speaking bench's state is narrowed at the same boundary: a page
    * that trusted an unknown tag would draw a run that is not there. */
   it('narrows a speaking bench state outside the shipped set to unknown', () => {

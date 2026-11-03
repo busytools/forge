@@ -1202,7 +1202,8 @@ pub(crate) fn load_from_text(path: PathBuf, raw: &str) -> Result<LoadedConfig, W
         tracing::warn!(
             target: "forge_workspace::config",
             event_name = "tts_language_key_ignored",
-            "[tts] language is no longer read; the speaking model is English-only",
+            "[tts] language is no longer read; the speaking engine takes no language field, so \
+             the key and its value can be deleted",
         );
     }
 

@@ -17,9 +17,7 @@ pub const SPEAKING_MODEL: &str = "hexgrad/Kokoro-82M";
 /// engine loads.
 pub const HUB_REPO: &str = "onnx-community/Kokoro-82M-v1.0-ONNX";
 
-/// The variant the role runs when nothing chooses another: the int8 model
-/// the local benchmark measured at 1.87% WER, 318 ms to first audio, 8.84x
-/// real time and 417 MiB peak.
+/// The variant the role runs when nothing chooses another: the int8 export.
 pub const PINNED_VARIANT: &str = "kokoro-82m-int8";
 
 /// One ONNX variant of the model the Hub publishes.
@@ -156,8 +154,8 @@ impl SpeakingInstall {
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct TtsSettings {
-    /// Off unless asked for. Turning it on installs the speaking model from
-    /// the Hub.
+    /// Off unless asked for. Turning it on makes the speaking role available;
+    /// the model installs from the models page or the settings card.
     #[serde(default)]
     pub enabled: bool,
     /// Where the model files live. Absent uses the platform cache directory.
@@ -172,8 +170,8 @@ pub struct TtsSettings {
     #[serde(default)]
     pub voice: Option<String>,
     /// Ghost of the retired `[tts] language` hint: read only so a stale
-    /// config keeps loading. Kokoro is English-only, so there is nothing to
-    /// set.
+    /// config keeps loading. The engine takes the voice id and no language
+    /// field, so there is nothing for the key to set.
     #[serde(default)]
     pub language: Option<toml::Value>,
     /// Upper bound on one utterance's text, as a character estimate at a
@@ -248,9 +246,10 @@ pub struct SpeakingVariantView {
     pub active: bool,
 }
 
-/// Where the active speaking model came from.
+/// Where the active speaking model came from. A bare name on the wire: the
+/// speaking read has one `from`, and a tag object would nest it.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(tag = "from", rename_all = "snake_case")]
+#[serde(rename_all = "snake_case")]
 pub enum SpeakingFrom {
     /// `[tts] speaking_model` names it.
     Config,
@@ -279,6 +278,9 @@ pub struct TtsView {
     pub voices: Vec<String>,
     /// The configured voice; absent means the engine's default.
     pub voice: Option<String>,
+    /// The last preview's render failure, when one failed after the command
+    /// was accepted. Cleared by the next preview.
+    pub preview_error: Option<String>,
 }
 
 impl crate::Workspace {
@@ -385,6 +387,7 @@ impl crate::Workspace {
             variants: VARIANTS.iter().map(row).collect(),
             voices: active_voices,
             voice: settings.voice.clone(),
+            preview_error: self.voice_preview_error.lock().ok().and_then(|slot| slot.clone()),
         }
     }
 }
@@ -419,6 +422,15 @@ mod tests {
         assert_eq!(variant.file, "model_fp16.onnx");
     }
 
+    /// The speaking read's `from` is a bare name: the client compares it
+    /// against a list of strings, and a tag object would read as unknown on
+    /// both pages.
+    #[test]
+    fn the_speaking_source_crosses_as_a_bare_name() {
+        let value = serde_json::to_value(super::SpeakingFrom::Installed).expect("it serializes");
+        assert_eq!(value, serde_json::json!("installed"));
+    }
+
     #[test]
     fn a_configured_name_that_is_not_a_model_is_refused_by_name() {
         let settings: TtsSettings =
@@ -426,5 +438,28 @@ mod tests {
         let error = settings.configured_variant().expect_err("refused");
         assert!(error.contains("hexgrad/Kokoro-90M"), "got: {error}");
         assert!(error.contains("speaking_model"), "got: {error}");
+    }
+
+    /// A save marked restart cannot move the read away from the running
+    /// service: the home read and the registered set answer the same flag
+    /// until the restart takes it.
+    #[tokio::test]
+    async fn a_saved_tts_off_does_not_move_the_read_before_the_restart() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let mut config = crate::config::LoadedConfig::empty_for_test();
+        config.tts.enabled = true;
+        let (workspace, _updates) =
+            crate::Workspace::testing_stub_with_config(dir.path().to_path_buf(), config)
+                .expect("the stub builds");
+        assert!(workspace.voice_enabled(), "the fixture starts on");
+        let _service = workspace.voice_service();
+
+        // The save lands, and the key is marked restart.
+        let mut saved = crate::config::LoadedConfig::empty_for_test();
+        saved.tts.enabled = false;
+        *workspace.config.write() = std::sync::Arc::new(saved);
+
+        assert!(workspace.voice_enabled(), "the running service still answers on");
+        assert!(workspace.voices().enabled, "the home read follows the service");
     }
 }

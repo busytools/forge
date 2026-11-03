@@ -1398,6 +1398,7 @@ fn frames_record() -> Value {
                     }],
                     voices: vec!["af_heart".to_owned(), "bf_emma".to_owned()],
                     voice: Some("bf_emma".to_owned()),
+                    preview_error: None,
                 },
                 in_use: vec![InUseModel {
                     role: forge_workspace::DictateRole::Transcribing,

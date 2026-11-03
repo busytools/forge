@@ -641,6 +641,9 @@ pub struct Workspace {
     /// dispatch hold a `Weak<Workspace>`, which does not exist while the
     /// value is still being constructed.
     pub(crate) voice: std::sync::OnceLock<Arc<crate::voice::VoiceService>>,
+    /// The last voice preview's render failure, for the settings card to
+    /// draw. Cleared when the next preview is asked for.
+    pub(crate) voice_preview_error: std::sync::Mutex<Option<String>>,
     /// Catalog of sessions per project. Populated by the background
     /// catalog scan once [`Workspace::start_catalog_scan`] runs;
     /// mutated in-place by [`Workspace::record_connected_session`]
@@ -2430,6 +2433,7 @@ impl Workspace {
             reload_gate: std::sync::Mutex::new(()),
             systemone: parking_lot::RwLock::new(systemone),
             voice: std::sync::OnceLock::new(),
+            voice_preview_error: std::sync::Mutex::new(None),
             catalog,
             app_support,
             pool: Mutex::new(HashMap::new()),
@@ -6497,6 +6501,10 @@ impl Workspace {
                     forge_tts::select_voice(Some(&voice), &installed).map_err(|error| {
                         crate::DispatchError::VoiceOff { reason: error.to_string() }
                     })?;
+                    if let Ok(mut slot) = self.voice_preview_error.lock() {
+                        *slot = None;
+                    }
+                    let this = Arc::clone(self);
                     tokio::spawn(async move {
                         if let Err(error) = service.preview(&key, voice).await {
                             tracing::warn!(
@@ -6505,6 +6513,10 @@ impl Workspace {
                                 %error,
                                 "the voice preview did not render"
                             );
+                            if let Ok(mut slot) = this.voice_preview_error.lock() {
+                                *slot = Some(error.to_string());
+                            }
+                            this.push_models();
                         }
                     });
                     return Ok(());

@@ -46,12 +46,16 @@ impl Hub {
     pub fn new(token: Option<String>) -> Result<Self, String> {
         // A stalled Hub must fail the install rather than hold it in
         // `Downloading` forever; the total is a backstop for one big file.
-        let client = reqwest::Client::builder()
-            .connect_timeout(CONNECT_TIMEOUT)
-            .read_timeout(READ_TIMEOUT)
-            .timeout(TOTAL_TIMEOUT)
-            .build()
-            .map_err(|error| format!("the Hub client did not build: {error}"))?;
+        // The trust roots are the machine's, so a corporate MITM CA in
+        // `NODE_EXTRA_CA_CERTS` or `SSL_CERT_FILE` reaches the Hub too.
+        let client = forge_agent::http_trust::with_extra_roots(
+            reqwest::Client::builder()
+                .connect_timeout(CONNECT_TIMEOUT)
+                .read_timeout(READ_TIMEOUT)
+                .timeout(TOTAL_TIMEOUT),
+        )
+        .build()
+        .map_err(|error| format!("the Hub client did not build: {error}"))?;
         Ok(Self { client, token })
     }
 

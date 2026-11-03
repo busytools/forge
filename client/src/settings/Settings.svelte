@@ -1,8 +1,11 @@
 <script lang="ts">
   import type { HomeRead } from '../home/live';
   import { watchModels } from '../models/live';
+  import { boxKey } from '../composer/box.svelte';
   import type { Command } from '../protocol';
   import { goTo, holdRoute, lastSeat, type Route } from '../routes';
+  import { voiceFor } from '../voice/registry';
+  import { connectionPort } from '../voice/voice.svelte';
   import type { Connection } from '../socket';
   import type { SettingsDocument, SettingsEditRequest, SettingsKey } from '../wire/settings';
   import type { ActivateState, InstallState, SpeakingWire } from '../wire/models';
@@ -92,6 +95,17 @@
   /** The core's own words for a refused speaking action. */
   let speakingRefusal = $state<string | null>(null);
   const seat = $derived($lastSeat);
+
+  // The settings route holds no composer, so the seat's cached voice is
+  // pumped here while the page is open: a preview's frames play now rather
+  // than waiting for the session page to return and playing stale.
+  $effect(() => {
+    const at = seat;
+    if (at === null) return;
+    const voice = voiceFor(boxKey(at), connectionPort(connection, at));
+    const held = connection.store({ session: at });
+    return held?.value.subscribe(() => voice.pump());
+  });
   const speaking = $derived(models.speaking);
   /** The saved voice, off the settings document: a save's reload push moves
    * this without a second read of the models snapshot. */
@@ -135,7 +149,13 @@
 
   function speakingAct(command: Command): void {
     speakingRefusal = null;
-    void connection.dispatch(command);
+    try {
+      void connection.dispatch(command);
+    } catch (why) {
+      // A dispatch with no open socket throws before anything is sent; that
+      // belongs on the card beside a refusal, not in the console.
+      speakingRefusal = why instanceof Error ? why.message : String(why);
+    }
   }
 
   /** Stage the voice choice as this page's own edit, written by its Save. */
@@ -566,7 +586,7 @@
       speakingActivate={models.activate}
       speakingBusy={models.busy}
       {speakingVoice}
-      {speakingRefusal}
+      speakingRefusal={speakingRefusal ?? speaking?.preview_error ?? null}
       previewSeat={seat}
       onSpeakingInstall={(variant: string) => speakingAct({ dictate_install: { variant } })}
       onSpeakingActivate={(file: string) =>

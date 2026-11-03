@@ -529,7 +529,9 @@
             <span class="spacer"></span>
             {#if variant.active}
               <span class="chip"><span class="dot ok"></span>active</span>
-            {:else if variant.installed}
+            {:else if variant.installed && wire.speaking.from !== 'config'}
+              <!-- A config-pinned role refuses the switch, so the control
+                   is not drawn: a press that always errors reads as broken. -->
               <button
                 class="chip"
                 type="button"
