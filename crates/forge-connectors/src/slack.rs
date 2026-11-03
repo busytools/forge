@@ -144,6 +144,11 @@ pub trait SlackHost: Send + Sync {
     /// report itself for every author on every tick.
     fn first_author_failure(&self, workspace: &str, user: &str) -> bool;
 
+    /// The same once-per-user line for a held draft's tag lookup. Kept apart
+    /// from [`Self::first_author_failure`] so a draft's miss does not spend
+    /// the line the sweep relies on, and the sweep's does not hide the draft's.
+    fn first_draft_user_failure(&self, workspace: &str, user: &str) -> bool;
+
     /// Track a thread, owned by the matching subscription. A new row's cursor
     /// starts at `since`, which the caller picks to be recent enough to
     /// survive the idle window and below everything still worth delivering.
@@ -441,7 +446,7 @@ pub fn mention_ids(text: &str) -> Vec<String> {
         let after = &rest[start + 2..];
         let Some(end) = after.find('>') else { break };
         let id = after[..end].split('|').next().unwrap_or_default();
-        if !id.is_empty()
+        if id.chars().next().is_some_and(|first| first.is_ascii_alphabetic())
             && id.chars().all(|ch| ch.is_ascii_alphanumeric())
             && !ids.iter().any(|seen| seen == id)
         {
@@ -773,7 +778,7 @@ pub async fn user_display_name(
             None
         }
         Err(error) => {
-            if host.first_author_failure(workspace, user) {
+            if host.first_draft_user_failure(workspace, user) {
                 tracing::warn!(
                     target: "forge_connectors::slack",
                     event_name = "slack_draft_user_unreadable",
@@ -3525,8 +3530,8 @@ mod tests {
             "a labelled mention is its id, and a repeated tag is one person",
         );
         assert!(
-            mention_ids("<#C1> <https://example.com|the doc> <@>").is_empty(),
-            "a channel, a link and an empty mention tag nobody",
+            mention_ids("<#C1> <https://example.com|the doc> <@> <@123>").is_empty(),
+            "a channel, a link, an empty mention and a non-user token tag nobody",
         );
     }
 
@@ -3546,6 +3551,11 @@ mod tests {
             one_line_excerpt("abcdefghij", 4),
             "abcd...",
             "a word with no boundary is cut at the bound",
+        );
+        assert_eq!(
+            one_line_excerpt("one two three four five six", 20),
+            "one two three four...",
+            "the cut lands on the word boundary inside the bound",
         );
     }
 
@@ -3572,6 +3582,11 @@ mod tests {
         assert_eq!(parent.ts, "100.0", "the parent is the message the thread starts at");
         assert_eq!(parent.text, "the parent");
         assert_eq!(parent.user.as_deref(), Some("U2"), "the author id rides the parent");
+        assert_eq!(
+            *fake.replies_limits.lock().expect("lock"),
+            vec![1],
+            "the card needs the parent alone, so the read asks for one message",
+        );
     }
 
     /// A failed thread read is surfaced rather than turned into a blank
@@ -3599,6 +3614,11 @@ mod tests {
         let name = user_display_name(fake.as_ref(), api.as_ref(), "acme", "U2").await;
         assert_eq!(name.as_deref(), Some("bob"));
         assert_eq!(*fake.user_info_calls.lock().expect("lock"), 0, "the cache is the point");
+        assert_eq!(
+            *fake.cache_workspaces.lock().expect("lock"),
+            vec!["acme".to_owned(), "acme".to_owned()],
+            "the seeding write and the read both name the draft's workspace",
+        );
     }
 
     /// A miss asks once, hands the name back, and remembers it.
@@ -3635,6 +3655,24 @@ mod tests {
             fake.resolved_names().is_empty(),
             "a failure is not a name to remember: {:?}",
             fake.resolved_names(),
+        );
+    }
+
+    /// Slack answering `user_not_found` is settled: the miss is remembered as
+    /// no name, so a second draft does not spend another call on it.
+    #[tokio::test]
+    async fn a_settled_miss_is_remembered_as_no_name() {
+        let fake = Arc::new(FakeHost::default());
+        FakeHost::set_api_self(&fake);
+        let api = Arc::clone(&fake) as Arc<dyn SlackApi>;
+
+        assert_eq!(user_display_name(fake.as_ref(), api.as_ref(), "acme", "U404").await, None);
+        assert_eq!(user_display_name(fake.as_ref(), api.as_ref(), "acme", "U404").await, None);
+        assert_eq!(*fake.user_info_calls.lock().expect("lock"), 1, "a settled miss costs one call");
+        assert_eq!(
+            fake.resolved_names().get("U404").map(String::as_str),
+            Some(""),
+            "the empty name is the record that the miss is settled",
         );
     }
 
@@ -3739,6 +3777,11 @@ mod tests {
         replies_calls: std::sync::Mutex<usize>,
         /// The 0-based `conversations.replies` call that answers 429.
         replies_rate_limit_at: std::sync::Mutex<Option<usize>>,
+        /// The `limit` each `conversations.replies` call carried.
+        replies_limits: std::sync::Mutex<Vec<u32>>,
+        /// The workspace every user-name cache call carried, so a test can
+        /// prove the cache is keyed per workspace.
+        cache_workspaces: std::sync::Mutex<Vec<String>>,
         /// How many `conversations.history` calls were made, so a test can
         /// assert which clock read a conversation and how often.
         history_calls: std::sync::Mutex<usize>,
@@ -4028,15 +4071,21 @@ mod tests {
             self.user_id_slot.lock().expect("lock").clone()
         }
 
-        fn user_name(&self, _workspace: &str, user: &str) -> Option<String> {
+        fn user_name(&self, workspace: &str, user: &str) -> Option<String> {
+            self.cache_workspaces.lock().expect("lock").push(workspace.to_owned());
             self.resolved_names.lock().expect("lock").get(user).cloned()
         }
 
-        fn set_user_name(&self, _workspace: &str, user: &str, name: &str) {
+        fn set_user_name(&self, workspace: &str, user: &str, name: &str) {
+            self.cache_workspaces.lock().expect("lock").push(workspace.to_owned());
             self.resolved_names.lock().expect("lock").insert(user.to_owned(), name.to_owned());
         }
 
         fn first_author_failure(&self, _workspace: &str, user: &str) -> bool {
+            self.reported_failures.lock().expect("lock").insert(user.to_owned())
+        }
+
+        fn first_draft_user_failure(&self, _workspace: &str, user: &str) -> bool {
             self.reported_failures.lock().expect("lock").insert(user.to_owned())
         }
 
@@ -4407,9 +4456,10 @@ mod tests {
             channel: &str,
             ts: &str,
             oldest: Option<&str>,
-            _limit: u32,
+            limit: u32,
             cursor: Option<&str>,
         ) -> Result<MessagePage, SlackError> {
+            self.replies_limits.lock().expect("lock").push(limit);
             let call = {
                 let mut calls = self.replies_calls.lock().expect("lock");
                 let call = *calls;

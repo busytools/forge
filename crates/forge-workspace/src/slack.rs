@@ -1669,6 +1669,11 @@ impl SlackHost for SlackSubsystemHost {
         ws.slack_author_failures.lock().insert((workspace.to_owned(), user.to_owned()))
     }
 
+    fn first_draft_user_failure(&self, workspace: &str, user: &str) -> bool {
+        let Some(ws) = self.0.upgrade() else { return true };
+        ws.slack_draft_user_failures.lock().insert((workspace.to_owned(), user.to_owned()))
+    }
+
     fn follow_thread(
         &self,
         workspace: &str,

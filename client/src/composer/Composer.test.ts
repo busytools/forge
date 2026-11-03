@@ -4421,6 +4421,9 @@ describe('the one body slot', () => {
  * what happens to a take that is still running behind it.
  */
 describe('the dock', () => {
+  /** A message stamp as the wire sends it, read by every Slack card below. */
+  const STAMP = '1758901234.482910';
+
   /** Every command the composer sent, in order. */
   const commands = (harness: { sent: { command: Record<string, unknown> }[] }) =>
     harness.sent.map((entry) => entry.command);
@@ -6220,7 +6223,7 @@ describe('the dock', () => {
     open({ record: record({ pending_asks: [slackDraftAsk()] }) });
 
     expect(drawn()).toContain('Post to Slack');
-    expect(drawn()).toContain('Trust Machines · granite-staging-alerts');
+    expect(drawn()).toContain('Trust Machines · #granite-staging-alerts');
     expect(drawn(), 'the words being approved are shown in full').toContain(
       'Deploy finished on staging.',
     );
@@ -6254,7 +6257,7 @@ describe('the dock', () => {
     // The `·` separators before the thread and the tags are drawn by CSS, so
     // the text carries the segments and the names; the gaps are the layout's.
     expect(dest(), 'the thread is named by its author and its opening words').toBe(
-      `Trust Machines · granite-staging-alerts thread: @alice "the staging deploy is green..." tags: @bob,@carol`,
+      `Trust Machines · #granite-staging-alerts thread: @alice "the staging deploy is green..." · tags: @bob,@carol`,
     );
     expect(drawn(), 'the dock says where it goes, not which tool asked').not.toContain(
       'slack__post',
@@ -6269,7 +6272,7 @@ describe('the dock', () => {
     });
 
     expect(dest(), 'no thread means no segment and no leftover separator').toBe(
-      'Trust Machines · granite-staging-alerts tags: @bob',
+      'Trust Machines · #granite-staging-alerts · tags: @bob',
     );
     expect(dest(), 'and no empty thread label is drawn').not.toContain('thread:');
   });
@@ -6287,7 +6290,7 @@ describe('the dock', () => {
     });
 
     expect(dest(), 'a label with no names behind it would read as a failed read').toBe(
-      `Trust Machines · granite-staging-alerts thread: @alice "should we roll the rest of the fleet now?"`,
+      `Trust Machines · #granite-staging-alerts thread: @alice "should we roll the rest of the fleet now?"`,
     );
     expect(dest()).not.toContain('tags:');
   });
@@ -6306,13 +6309,14 @@ describe('the dock', () => {
     });
 
     expect(dest(), 'an id is drawn as the id, never dropped and never invented over').toBe(
-      `Trust Machines · granite-staging-alerts thread: ${STAMP} tags: U3`,
+      `Trust Machines · #granite-staging-alerts thread: ${STAMP} · tags: U3`,
     );
   });
 
-  it('keeps a long excerpt whole in the card, with the full line in the title', () => {
-    const excerpt =
-      'the canary is holding at 1% and every check is green, but the p99 on the read path is still 40ms above where it sat before the rollout';
+  it('draws the server-cut excerpt with the same line in its title', () => {
+    // The core bounds an excerpt to ~80 characters at a word boundary and
+    // marks the cut, so nothing longer than this can arrive on the wire.
+    const excerpt = 'the canary is holding at 1% and every check is green, but the p99 is still...';
     open({
       record: record({
         pending_asks: [
@@ -6322,13 +6326,8 @@ describe('the dock', () => {
     });
 
     const ex = document.querySelector('.dock .dest .ex');
-    expect(
-      ex?.textContent,
-      'the card carries the excerpt whole and truncates it for the width',
-    ).toBe(`"${excerpt}"`);
-    expect(ex?.getAttribute('title'), 'the full line is reachable from the truncated one').toBe(
-      excerpt,
-    );
+    expect(ex?.textContent, 'the card draws the excerpt the core resolved').toBe(`"${excerpt}"`);
+    expect(ex?.getAttribute('title'), 'and the whole excerpt is reachable from it').toBe(excerpt);
   });
 
   it('draws a held config write with its key and both values', () => {
@@ -6701,7 +6700,6 @@ describe('the dock', () => {
   // The server sets `thread_ts` to the target MESSAGE's ts on every non-post
   // operation - the field is a reply thread only for a post or an upload - so
   // these rows carry the shape a real server sends, not a null.
-  const STAMP = '1758901234.482910';
   const OPERATION_CARDS: [string, string | null, string, string, string, string | null][] = [
     ['post', null, 'Post to Slack', 'Post', 'Do not post', null],
     ['post', STAMP, 'Reply in Slack', 'Post', 'Do not post', `thread: ${STAMP}`],
@@ -6739,7 +6737,7 @@ describe('the dock', () => {
       expect(
         dest.replace(/\s+/g, ' ').trim(),
         'a message stamp and a thread stamp are different facts',
-      ).toBe(`Trust Machines · granite-staging-alerts${stamp === null ? '' : ` ${stamp}`}`);
+      ).toBe(`Trust Machines · #granite-staging-alerts${stamp === null ? '' : ` ${stamp}`}`);
     },
   );
 

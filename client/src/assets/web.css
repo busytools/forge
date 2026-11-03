@@ -3386,11 +3386,13 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
 .dock .d-head .qm { color: var(--accent); font-weight: 500; flex: none; }
 /* The trailing element of the head - the tool's name, the verb a post is -
    sits at the far edge, which is how the mock draws the head. */
-/* The destination line takes the room left over, so the verb is fixed and
-   never shrinks. */
 .dock .d-head .q { color: var(--dim); font-family: var(--mono); font-size: var(--fs-data);
-  flex: 0 0 auto; margin-left: auto;
+  margin-left: auto;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The destination line takes the room left over, so the verb on the head that
+   carries it is fixed and never shrinks. Scoped: every other head's `.q` keeps
+   shrinking, because an approval's title can be longer than its card. */
+.dock .d-head .q.dest-verb { flex: 0 0 auto; }
 .dock .d-head .q.mono { font-weight: 400; }
 .dock .d-q { font-size: 16px; font-weight: 500; letter-spacing: -.01em;
   color: var(--text); overflow-wrap: anywhere; }
@@ -3440,7 +3442,7 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
   white-space: nowrap; }
 .dock .pin .sp { flex: none; color: var(--dim); opacity: .6; }
 .dock .pin .ch { flex: none; color: var(--text); font-weight: 500; white-space: nowrap; }
-.dock .thr { display: inline-flex; align-items: baseline; gap: 6px; flex: 0 1 auto;
+.dock .thr { display: inline-flex; align-items: baseline; gap: 6px; flex: 1 1 0;
   min-width: 0; }
 .dock .thr::before { content: "\00b7" / ""; flex: none; color: var(--dim); opacity: .6;
   margin-right: 2px; }
@@ -3448,16 +3450,19 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
 .dock .thr .who { flex: none; color: var(--text); font-weight: 500; white-space: nowrap; }
 .dock .thr .ex { flex: 1 1 auto; min-width: 12ch; color: var(--muted);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.dock .tgs { display: inline-flex; align-items: baseline; gap: 5px; flex: 0 0 auto; }
-.dock .tgs::before { content: "\00b7" / ""; flex: none; color: var(--dim); opacity: .6;
-  margin-right: 2px; }
+/* The separator is its own item so a tag list that takes the next row leaves
+   it at the end of the row above, never as that row's opening glyph. */
+.dock .tsep { flex: none; color: var(--dim); opacity: .6; }
+.dock .tgs { display: inline-flex; align-items: baseline; gap: 5px;
+  flex: 0 1 auto; min-width: 0; flex-wrap: wrap; }
 .dock .tgs .nm { color: var(--muted); white-space: nowrap; }
 /* Below 980 the pill cannot share a row with the thread, so the thread and
    the tags each take a row of their own and the chip stacks its halves rather
    than cutting either to a few letters. */
 @container (max-width: 980px) {
   .dock .thr { flex: 0 0 100%; }
-  .dock .thr::before, .dock .tgs::before { content: none; }
+  .dock .thr::before { content: none; }
+  .dock .tsep { display: none; }
   .dock .tgs { flex-basis: 100%; }
   .dock .pin { flex-shrink: 1; flex-wrap: wrap; row-gap: 0; border-radius: 12px; }
   .dock .pin .sp { display: none; }
@@ -3469,6 +3474,7 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
   .dock .dest { column-gap: 8px; }
   .dock .thr { flex-wrap: wrap; row-gap: 0; }
   .dock .thr .ex { flex: 1 1 100%; min-width: 0; }
+  .dock .d-head .q { font-size: var(--fs-label); }
 }
 .dock .reason { color: var(--warn); font-size: var(--fs-base); }
 .dock .desc { color: var(--dim); font-size: var(--fs-base); }

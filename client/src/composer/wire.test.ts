@@ -155,6 +155,31 @@ describe('the ask as the composer reads it', () => {
     expect(held.request.tagged, 'and no tags reads as none, not as a placeholder').toEqual([]);
   });
 
+  it('reads a malformed thread or tag row as nothing it can draw', () => {
+    const held = askFrom({
+      kind: 'slack_draft',
+      request: {
+        id: '0192e1c0-0000-7000-8000-000000000000',
+        workspace: 'Trust Machines',
+        conversation: 'C0123',
+        conversation_label: '#granite-staging-alerts',
+        thread_ts: '1758901234.482910',
+        text: 'Deploy finished <@U2>.',
+        operation: 'post',
+        // A thread with no author cannot be drawn without inventing one.
+        thread: { excerpt: 'no author here' },
+        // A tag with no id is not a person; a row that names one survives.
+        tagged: [{ name: 'no id' }, { id: 'U2', name: 'bob' }, 'junk'],
+      },
+    });
+    if (held?.kind !== 'slack_draft') throw new Error('the held post did not narrow');
+
+    expect(held.request.thread, 'an authorless thread is no thread name').toBeNull();
+    expect(held.request.tagged, 'only rows that name a person are tags').toEqual([
+      { id: 'U2', name: 'bob' },
+    ]);
+  });
+
   it('narrows an operation this client is older than to neutral, not a post', () => {
     const held = askFrom({
       kind: 'slack_draft',

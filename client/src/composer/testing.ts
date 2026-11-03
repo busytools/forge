@@ -162,7 +162,7 @@ export function slackDraftAsk(over: Record<string, unknown> = {}): unknown {
       id: '0192e1c0-0000-7000-8000-000000000000',
       workspace: 'Trust Machines',
       conversation: 'C0123456789',
-      conversation_label: 'granite-staging-alerts',
+      conversation_label: '#granite-staging-alerts',
       thread_ts: null,
       text: 'Deploy finished on staging.',
       operation: 'post',

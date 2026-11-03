@@ -210,8 +210,9 @@
   .dock .d-head { display: flex; align-items: baseline; gap: 9px; font-size: var(--fs-base); }
   .dock .d-head .qm { color: var(--accent); font-weight: 500; flex: none; }
   .dock .d-head .q { color: var(--dim); font-family: var(--mono); font-size: var(--fs-data);
-    flex: 0 0 auto; margin-left: auto; overflow: hidden; text-overflow: ellipsis;
-    white-space: nowrap; }
+    margin-left: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* The verb on the head that carries the destination line is fixed. */
+  .dock .d-head .q.dest-verb { flex: 0 0 auto; }
   .dock .d-q { font-size: 16px; font-weight: 500; color: var(--text); }
   .dock .headend { margin-left: auto; display: flex; align-items: center; gap: 5px; }
   .dock .segs { display: flex; align-items: center; gap: 5px; }
@@ -236,7 +237,7 @@
     white-space: nowrap; }
   .dock .pin .sp { flex: none; color: var(--dim); opacity: .6; }
   .dock .pin .ch { flex: none; color: var(--text); font-weight: 500; white-space: nowrap; }
-  .dock .thr { display: inline-flex; align-items: baseline; gap: 6px; flex: 0 1 auto;
+  .dock .thr { display: inline-flex; align-items: baseline; gap: 6px; flex: 1 1 0;
     min-width: 0; }
   .dock .thr::before { content: "\00b7" / ""; flex: none; color: var(--dim); opacity: .6;
     margin-right: 2px; }
@@ -244,13 +245,18 @@
   .dock .thr .who { flex: none; color: var(--text); font-weight: 500; white-space: nowrap; }
   .dock .thr .ex { flex: 1 1 auto; min-width: 12ch; color: var(--muted);
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .dock .tgs { display: inline-flex; align-items: baseline; gap: 5px; flex: 0 0 auto; }
-  .dock .tgs::before { content: "\00b7" / ""; flex: none; color: var(--dim); opacity: .6;
-    margin-right: 2px; }
+  /* The separator is its own item so a tag list that takes the next row
+     leaves it at the end of the row above, never as that row's opener. */
+  .dock .tsep { flex: none; color: var(--dim); opacity: .6; }
+  .dock .tgs { display: inline-flex; align-items: baseline; gap: 5px;
+    flex: 0 1 auto; min-width: 0; flex-wrap: wrap; }
   .dock .tgs .nm { color: var(--muted); white-space: nowrap; }
+  /* Below 980 the pill cannot share a row with the thread, so the thread and
+     the tags each take a row of their own. */
   @container (max-width: 980px) {
     .dock .thr { flex: 0 0 100%; }
-    .dock .thr::before, .dock .tgs::before { content: none; }
+    .dock .thr::before { content: none; }
+    .dock .tsep { display: none; }
     .dock .tgs { flex-basis: 100%; }
     .dock .pin { flex-shrink: 1; flex-wrap: wrap; row-gap: 0; border-radius: 12px; }
     .dock .pin .sp { display: none; } }
@@ -258,7 +264,8 @@
     .dock .d-head { gap: 7px; }
     .dock .dest { column-gap: 8px; }
     .dock .thr { flex-wrap: wrap; row-gap: 0; }
-    .dock .thr .ex { flex: 1 1 100%; min-width: 0; } }
+    .dock .thr .ex { flex: 1 1 100%; min-width: 0; }
+    .dock .d-head .q { font-size: var(--fs-label); } }
   .dock .reason { color: var(--warn); font-size: var(--fs-base); }
   .dock .desc { color: var(--dim); font-size: var(--fs-base); }
   /* A held write's value: monospace, bordered and scrollable, as the client
@@ -329,10 +336,13 @@
     font-size: var(--fs-base); line-height: 1.45; padding: 2px 0; }
   .dock .refusal { border: 1px solid rgba(224,104,62,.45); border-radius: 10px;
     padding: 7px 10px; color: var(--bad); font-size: var(--fs-base); }
-  .dock .sent { font-size: var(--fs-base); color: var(--text); white-space: pre-wrap;
-    font-family: var(--mono); border: 1px solid var(--line); border-left: 2px solid var(--accent);
-    border-radius: 0 10px 10px 0; padding: 9px 13px;
-    background: linear-gradient(90deg, rgba(244,118,0,.07), transparent); }
+  /* The held draft is drawn through the same `.preview` panel an option's
+     prose uses: Slack text is markdown, and the app renders it there. */
+  .dock .preview { border: 1px solid var(--line); border-radius: 9px;
+    padding: 7px 11px; font-size: var(--fs-data); color: var(--muted);
+    max-height: min(34vh, 320px); overflow-y: auto; }
+  .prose { overflow-wrap: anywhere; }
+  .prose p + p { margin-top: 20px; }
   .ask-body.covered { display: none; }
 
   /* ---------- autocomplete: a popover over the conversation ---------- */
@@ -815,14 +825,17 @@ on the folded bar.</p>
               <span class="thr"><span class="lbl">thread:</span>
                 <span class="who">@alice</span>
                 <span class="ex" title="the staging deploy is green and the canary held for twenty minutes">&quot;the staging deploy is green...&quot;</span></span>
+              <span class="tsep" aria-hidden="true">&middot;</span>
               <span class="tgs"><span class="lbl">tags:</span>
                 <span class="nm">@bob,</span>
                 <span class="nm">@carol</span></span>
             </span>
-            <span class="q">Reply in Slack</span>
+            <span class="q dest-verb">Reply in Slack</span>
             <span class="chevb"><svg class="ic"><use href="#i-down"/></svg></span></div>
-          <div class="sent">Confirmed - the replica caught the bad statement, so production is
-            clear to take the same set.</div>
+          <div class="preview" tabindex="0" role="region" aria-label="the post held for approval">
+            <div class="prose"><p>Confirmed - the replica caught the bad statement, so production is
+              clear to take the same set.</p></div>
+          </div>
           <div class="acts"><span class="btn p">Post</span><span class="btn">Send back with feedback</span><span class="btn d">Do not post</span></div>
         </div></div></div>
       </div></div>
@@ -846,13 +859,16 @@ on the folded bar.</p>
               <span class="pin"><span class="ws" title="Trust Machines">Trust Machines</span>
                 <span class="sp" aria-hidden="true">&middot;</span>
                 <span class="ch">#granite-staging-alerts</span></span>
+              <span class="tsep" aria-hidden="true">&middot;</span>
               <span class="tgs"><span class="lbl">tags:</span>
                 <span class="nm">@bob</span></span>
             </span>
-            <span class="q">Post to Slack</span>
+            <span class="q dest-verb">Post to Slack</span>
             <span class="chevb"><svg class="ic"><use href="#i-down"/></svg></span></div>
-          <div class="sent">Confirmed - the replica caught the bad statement, so production is
-            clear to take the same set.</div>
+          <div class="preview" tabindex="0" role="region" aria-label="the post held for approval">
+            <div class="prose"><p>Confirmed - the replica caught the bad statement, so production is
+              clear to take the same set.</p></div>
+          </div>
           <div class="acts"><span class="btn p">Post</span><span class="btn">Send back with feedback</span><span class="btn d">Do not post</span></div>
           <div class="sendback"><span class="fld">say staging, not prod</span><span class="btn">Send back</span></div>
         </div></div></div>
@@ -882,9 +898,11 @@ on the folded bar.</p>
                 <span class="who">@ved</span>
                 <span class="ex" title="the replica caught the bad statement, so production is clear">&quot;the replica caught the bad statement...&quot;</span></span>
             </span>
-            <span class="q">Delete in Slack</span>
+            <span class="q dest-verb">Delete in Slack</span>
             <span class="chevb"><svg class="ic"><use href="#i-down"/></svg></span></div>
-          <div class="sent">[delete] message 1758901234.482910</div>
+          <div class="preview" tabindex="0" role="region" aria-label="the delete held for approval">
+            <div class="prose"><p>[delete] message 1758901234.482910</p></div>
+          </div>
           <div class="acts"><span class="btn p">Delete</span><span class="btn">Send back with feedback</span><span class="btn d">Keep it</span></div>
         </div></div></div>
       </div></div>

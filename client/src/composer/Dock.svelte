@@ -193,7 +193,7 @@
   interface Dest {
     workspace: string;
     conversation: string;
-    noun: string;
+    noun: 'thread' | 'message';
     threadTs: string | null;
     thread: SlackThreadName | null;
     tagged: SlackPerson[];
@@ -1278,6 +1278,10 @@
           {/if}
           {#if slackDest.tagged.length > 0}
             {@const tagged = slackDest.tagged}
+            <!-- The separator is an item of its own so a tag list that wraps
+                 to its own row does not start with a bullet: it stays at the
+                 end of the row above. -->
+            <span class="tsep" aria-hidden="true">·</span>
             <span class="tgs">
               <span class="lbl">tags:</span>
               {#each tagged as person, at (person.id)}
@@ -1290,7 +1294,7 @@
             </span>
           {/if}
         </span>
-        <span class="q mono">{slackVerbs.head}</span>
+        <span class="q mono dest-verb">{slackVerbs.head}</span>
         {@render foldButton()}
       </div>
       <!-- The body verbatim: this is what would go out, so the reader approves
