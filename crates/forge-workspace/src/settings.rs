@@ -1458,9 +1458,116 @@ pub(crate) fn target(document: &SettingsDocument, path: &str) -> Option<Settings
     None
 }
 
+/// One catalogue pattern's own metadata, for a key the config does not set
+/// and therefore emits no row for.
+pub(crate) struct CatalogueKeyTarget {
+    pub class: EffectClass,
+    pub edit: SettingsEdit,
+}
+
+/// The catalogue entry a pattern names, or `None` when it is not a key the
+/// loader accepts.
+pub(crate) fn catalogue_target(pattern: &str) -> Option<CatalogueKeyTarget> {
+    all_keys()
+        .find(|key| key.path == pattern)
+        .map(|key| CatalogueKeyTarget { class: key.class, edit: edit_wire(edit_spec(key.path)) })
+}
+
+/// The row a writer locates for a key the document does not carry: its
+/// pattern and path are the edit's own, and only the fields `set_key` reads
+/// are populated.
+pub(crate) fn synthetic_key(path: &str, pattern: &str) -> Option<SettingsKey> {
+    let catalogue = catalogue_target(pattern)?;
+    Some(SettingsKey {
+        path: path.to_owned(),
+        leaf: path.rsplit('.').next().unwrap_or(path).to_owned(),
+        group: Vec::new(),
+        pattern: pattern.to_owned(),
+        // `set_key` validates and locates from `edit`, `pattern` and `path`;
+        // these describe a document row it does not have.
+        kind: SettingKind::String,
+        value: serde_json::Value::Null,
+        class: catalogue.class,
+        edit: catalogue.edit,
+    })
+}
+
+/// The target a caller's path names for a read or a write.
+///
+/// A configured key is the document's own row. **A catalogue key the config
+/// does not set emits no row at all** - an optional `browser_profile`, an
+/// `env_file`, a handoff policy - so the path is matched back to its
+/// catalogue pattern here: the key is addressable with `current` null, and
+/// the writer creates it on the write. The instances a pattern takes must
+/// still exist, so a mistyped account, org, project or workspace resolves to
+/// nothing rather than to a key nothing owns.
+pub(crate) fn resolve_target(
+    config: &LoadedConfig,
+    document: &SettingsDocument,
+    path: &str,
+) -> Option<SettingsTarget> {
+    if let Some(row) = target(document, path) {
+        return Some(row);
+    }
+    let mut best: Option<(usize, SettingsTarget)> = None;
+    for key in all_keys() {
+        let Some(names) = crate::settings_write::match_pattern(key.path, path) else { continue };
+        if !instances_exist(config, key.path, &names) {
+            continue;
+        }
+        // A dotted instance name can let a broader pattern match the same
+        // path; the pattern with more literal segments is the specific one.
+        let literals = key
+            .path
+            .split('.')
+            .filter(|segment| *segment != "*" && !segment.ends_with("[]"))
+            .count();
+        let found = SettingsTarget {
+            path: path.to_owned(),
+            pattern: key.path.to_owned(),
+            area: key.area.to_owned(),
+            class: key.class,
+            edit: edit_wire(edit_spec(key.path)),
+            current: serde_json::Value::Null,
+        };
+        if best.as_ref().is_none_or(|(best_literals, _)| literals > *best_literals) {
+            best = Some((literals, found));
+        }
+    }
+    best.map(|(_, found)| found)
+}
+
+/// Whether the instance names a pattern took all exist in `config`.
+fn instances_exist(config: &LoadedConfig, pattern: &str, names: &[String]) -> bool {
+    if pattern.starts_with("orgs[].projects[].") {
+        let (Some(org), Some(project)) = (names.first(), names.get(1)) else { return false };
+        return config.projects.iter().any(|held| &held.org == org && &held.name == project);
+    }
+    if pattern.starts_with("orgs[].") {
+        let Some(org) = names.first() else { return false };
+        return config.projects.iter().any(|held| &held.org == org);
+    }
+    if pattern.starts_with("accounts[].") {
+        let Some(account) = names.first() else { return false };
+        return config.accounts.iter().any(|held| &held.display_name == account);
+    }
+    if pattern.starts_with("slack[].") {
+        let Some(workspace) = names.first() else { return false };
+        return config.slack.iter().any(|held| &held.workspace == workspace);
+    }
+    // `models.*` and the global tables have no entry list to check against:
+    // setting a model's key creates its table, which the loader accepts.
+    true
+}
+
 /// The project a concrete path belongs to, when the path is one of a
 /// project's keys. The config's own names are matched, longest first, so a
 /// project name containing a dot stays one name.
+///
+/// **Org-level keys are not a project's**, so `orgs.<org>.browser_profile`
+/// and the org's Slack binding read freely like a global key: the read
+/// policy scopes the keys that sit under `orgs.<org>.projects.<project>`.
+/// Every write is held either way.
 pub(crate) fn owning_project<'a>(
     config: &'a LoadedConfig,
     path: &str,
@@ -2457,6 +2564,38 @@ path = "/tmp/two"
         assert_eq!(resolved.area, "accounts");
         assert_eq!(resolved.current, json!("t"));
         assert!(target(&document, "accounts.Nobody.token").is_none());
+    }
+
+    /// A catalogue key the config does not set emits no row, and still
+    /// resolves: the index lists it as unset, so `settings__get` and
+    /// `settings__set` must be able to address it.
+    #[test]
+    fn an_optional_key_the_config_does_not_set_still_resolves() {
+        let config = load(TWO_PROJECTS);
+        let document = document(&config, "v", Path::new("/tmp/forge.toml"));
+
+        let project_key = resolve_target(&config, &document, "orgs.Acme.projects.one.env_file")
+            .expect("an unset project optional resolves");
+        assert_eq!(project_key.pattern, "orgs[].projects[].env_file");
+        assert_eq!(project_key.current, serde_json::Value::Null);
+
+        let org_key = resolve_target(&config, &document, "orgs.Acme.slack.workspace")
+            .expect("an unset org optional resolves");
+        assert_eq!(org_key.pattern, "orgs[].slack.workspace");
+        assert_eq!(org_key.current, serde_json::Value::Null);
+
+        let handoff = resolve_target(&config, &document, "orgs.Acme.projects.one.handoff.enabled")
+            .expect("an unset handoff key resolves");
+        assert_eq!(handoff.pattern, "orgs[].projects[].handoff.enabled");
+
+        assert!(
+            resolve_target(&config, &document, "orgs.Acme.projects.nope.env_file").is_none(),
+            "a project the config does not declare resolves to nothing",
+        );
+        assert!(
+            resolve_target(&config, &document, "orgs.Nope.browser_profile").is_none(),
+            "an org the config does not declare resolves to nothing",
+        );
     }
 
     /// The project a path belongs to is read off the config's own names, so

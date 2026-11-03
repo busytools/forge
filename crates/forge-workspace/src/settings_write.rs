@@ -108,18 +108,37 @@ fn set_key(
     edit: &SettingsEditRequest,
     document: &SettingsDocument,
 ) -> Result<(), WriteError> {
-    let key = find_key(document, &edit.key_path).ok_or_else(|| {
-        invalid(
-            format!("`{}` is no longer in this config", edit.key_path),
-            Some(edit.key_path.clone()),
-        )
-    })?;
-    if !edit.pattern.is_empty() && edit.pattern != key.pattern {
-        return Err(invalid(
-            format!("`{}` is not the key it was loaded as", edit.key_path),
-            Some(edit.key_path.clone()),
-        ));
-    }
+    let absent;
+    let key: &SettingsKey = match find_key(document, &edit.key_path) {
+        Some(found) => {
+            if !edit.pattern.is_empty() && edit.pattern != found.pattern {
+                return Err(invalid(
+                    format!("`{}` is not the key it was loaded as", edit.key_path),
+                    Some(edit.key_path.clone()),
+                ));
+            }
+            found
+        }
+        // **An optional key the config does not set emits no row.** The
+        // edit carries the catalogue pattern that would create it, and the
+        // writer locates from the pattern rather than the missing row.
+        None if !edit.pattern.is_empty() => {
+            absent =
+                crate::settings::synthetic_key(&edit.key_path, &edit.pattern).ok_or_else(|| {
+                    invalid(
+                        format!("`{}` is not a catalogue key", edit.key_path),
+                        Some(edit.key_path.clone()),
+                    )
+                })?;
+            &absent
+        }
+        None => {
+            return Err(invalid(
+                format!("`{}` is no longer in this config", edit.key_path),
+                Some(edit.key_path.clone()),
+            ));
+        }
+    };
     let value = edit.value.clone().unwrap_or(serde_json::Value::Null);
     if value.is_null() {
         return remove_leaf(doc, key);
@@ -289,6 +308,15 @@ fn array_step(table: &str, name: &str) -> Option<Step> {
         "slack" => Step::Slack(name.to_owned()),
         _ => return None,
     })
+}
+
+/// Whether `path` fills `pattern`, and the instance names it took. The
+/// catalogue's own matcher, so a key the config does not set can still be
+/// resolved back to the pattern that would write it.
+pub(crate) fn match_pattern(pattern: &str, path: &str) -> Option<Vec<String>> {
+    let parts = parts_of(pattern)?;
+    let mut names = Vec::new();
+    match_path(&parts, path, &mut names).then_some(names)
 }
 
 /// Match a pattern against a display path, shortest wildcard names first, and
