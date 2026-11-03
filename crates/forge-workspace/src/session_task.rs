@@ -1139,8 +1139,8 @@ impl SessionTask {
                             event_name = "lifecycle_frames_absent",
                             outcome = "pile_disabled",
                             "this session's CLI does not advertise msg_lifecycle_v1, so queued \
-                             prompts cannot be followed here; the pile is not drawn for this seat \
-                             and its prompts draw at dispatch",
+                             prompts cannot be followed here; the pile is not drawn for this seat, \
+                             its waiting rows drew on this frame and later prompts draw at dispatch",
                         );
                     }
                 }
@@ -1299,16 +1299,17 @@ impl SessionTask {
 
     /// The row a person's prompt draws.
     ///
-    /// **Emitted at `started`, never at dispatch** (#2816): the CLI queues a
-    /// prompt sent while a turn runs and takes it when that turn ends, so a
-    /// row forged at dispatch drew above the answer still being written. The
-    /// held copy needs it here for the other half: the CLI never echoes a
-    /// stdin prompt on the wire, so this frame is the page's only carrier of
-    /// the reader's own words.
+    /// **Emitted at `started` wherever the CLI can follow a queue** (#2816):
+    /// the CLI queues a prompt sent while a turn runs and takes it when that
+    /// turn ends, so a row forged at dispatch drew above the answer still
+    /// being written. The held copy needs it here for the other half: the CLI
+    /// never echoes a stdin prompt on the wire, so this frame is the page's
+    /// only carrier of the reader's own words.
     ///
-    /// A CLI that cannot follow a queue has no `started` to wait for, so the
-    /// dispatch draws the row instead - the one case where dispatch is still
-    /// the only carrier.
+    /// **Two fallbacks draw at dispatch**, because no `started` is coming: a
+    /// CLI that cannot follow a queue, and a dispatch that fails after the
+    /// prompt was recorded. An occupant that dies or is replaced draws the
+    /// queued rows on the connect or the failure frame instead.
     fn emit_prompt_row(
         &self,
         text: &str,
@@ -1709,6 +1710,9 @@ impl SessionTask {
             return;
         }
         let uuid = forge_sdk::request_id::next_forged_prompt_id();
+        // The brief's own first line names the pair that handed over; kept
+        // before the text moves into the dispatch.
+        let first = pending.text.lines().next().unwrap_or_default().to_owned();
         if let Err(error) = workspace.dispatch_handoff_brief(key, pending.text, uuid) {
             tracing::warn!(
                 target: "forge_workspace::session_task",
@@ -1718,15 +1722,16 @@ impl SessionTask {
                 "the handoff brief could not be delivered to its successor",
             );
             // **The successor is told.** A seat that connected and got no
-            // brief looks like a session that started empty; the handoff
-            // record names the session that handed over, so the failure is
-            // stated rather than inferred.
+            // brief looks like a session that started empty; the brief's first
+            // line names the session that handed over, and `/resume` is the
+            // recovery.
             self.emit(SessionUpdate::Notice {
                 key: key.clone(),
                 severity: NoticeSeverity::Error,
-                text: "the handoff brief could not be delivered to this session; the handoff \
-                       record names the session that handed over"
-                    .to_owned(),
+                text: format!(
+                    "the handoff brief could not be delivered to this session ({first}); \
+                     resume the session that handed over with /resume"
+                ),
             });
         }
     }
@@ -5044,7 +5049,6 @@ mod tests {
                 max_tokens: Some(1_000_000),
                 at_percent: 85,
                 brief: forge_primitives::HandoffBrief::default(),
-                judgment_turn: Vec::new(),
                 transcript_path: "/tmp/old.jsonl".to_owned(),
                 at: "2026-10-24T08:00:00Z".to_owned(),
                 cycle: forge_primitives::HandoffCycle::default(),
@@ -5101,7 +5105,6 @@ mod tests {
                 max_tokens: Some(1_000_000),
                 at_percent: 85,
                 brief: forge_primitives::HandoffBrief::default(),
-                judgment_turn: Vec::new(),
                 transcript_path: "/tmp/old.jsonl".to_owned(),
                 at: "2026-10-24T08:00:00Z".to_owned(),
                 cycle: forge_primitives::HandoffCycle::default(),

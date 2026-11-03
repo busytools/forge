@@ -142,8 +142,8 @@ const record = (
   },
 });
 
-/** One handoff record, as the wire carries it. */
-const handoffRecord = (from: string, to: string, turn: unknown[] = []): unknown => ({
+/** One handoff record, as the wire carries it: the swap signal, drawn nowhere. */
+const handoffRecord = (from: string, to: string): unknown => ({
   slot: LEAD,
   from,
   to,
@@ -157,40 +157,9 @@ const handoffRecord = (from: string, to: string, turn: unknown[] = []): unknown 
     ground_truth: [{ label: 'seat', lines: ['Busytools/forge/lead'] }],
     judgment: [{ label: 'Next', lines: ['the client row'] }],
   },
-  judgment_turn: turn,
   transcript_path: '/tmp/old.jsonl',
   at: '2026-10-24T08:00:00Z',
 });
-
-/** The judgment turn the record carries: the procedure, then the exit call. */
-const judgmentTurn = (): unknown[] => [
-  {
-    type: 'user',
-    uuid: 'forge_nudge_handoff_7_feedface',
-    message: {
-      role: 'user',
-      content: [{ type: 'text', text: 'A handoff is starting for this session:' }],
-    },
-  },
-  {
-    type: 'assistant',
-    uuid: 'a-exit',
-    message: {
-      id: 'm-exit',
-      role: 'assistant',
-      model: 'm',
-      content: [{ type: 'tool_use', id: 'c-exit', name: 'mcp__forge__agents__handoff', input: {} }],
-    },
-  },
-  {
-    type: 'user',
-    uuid: 'r-exit',
-    message: {
-      role: 'user',
-      content: [{ type: 'tool_result', tool_use_id: 'c-exit', content: '{"status":"ok"}' }],
-    },
-  },
-];
 
 /** One live hook frame, as the stream sends a run's lifecycle. */
 const hook = (id: string, subtype: string): unknown => ({
@@ -5006,16 +4975,16 @@ describe('the conversation the chat draws', () => {
     ).toContain('t1');
 
     // The handoff is the swap signal, not a row: nothing joins the two
-    // conversations and the record's judgment turn is not seeded.
-    server.update({ handoff: { key: LEAD, handoff: handoffRecord('old', 'new', judgmentTurn()) } });
+    // conversations and nothing the record carries is seeded.
+    server.update({ handoff: { key: LEAD, handoff: handoffRecord('old', 'new') } });
     expect(
       get(chat.value).turns.map((held) => held.key),
       'no row joins the two conversations',
     ).not.toContain('handoff:old:new');
     expect(
       JSON.stringify(get(chat.value).turns),
-      'and the record draws no turn of its own',
-    ).not.toContain('forge_nudge_handoff_7_feedface');
+      'and the record draws no row of its own',
+    ).not.toContain('the client row');
 
     const asked = server.more().length;
     server.update({ session_replaced: { key: LEAD, session_id: 'new' } });

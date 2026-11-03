@@ -1167,8 +1167,9 @@ because the one frame stands for the run the flush carried.
 **A prompt frame carries no `origin` since v27.** The field said whether
 the core's own input handler or a view submitted the words, and it is gone
 with the dispatch-time row it described: the row is drawn when the CLI
-starts the prompt, so no frame needs it. A client older than v27 reads it
-as absent and draws as it did.
+starts the prompt, so no frame needs it. A client older than v27 reads the
+field as absent; what it draws for a dispatch is that client's own rule,
+unchanged by the missing field.
 
 **And it carries a `source`**, the same label the queued row wears: `you`
 for a person's send, and the delivery's or the machinery's own kind

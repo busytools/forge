@@ -156,8 +156,8 @@ impl ViewSurface {
     /// the writes it needs and not the whole core, so nothing here grows a
     /// way to reach the workspace itself.
     pub fn dispatch(&self, command: Command) -> Result<(), DispatchError> {
-        // A view's entry rather than the core's: a prompt's frame says the
-        // words came from a view over the socket, which no view has drawn.
+        // A view's entry rather than the core's: the press is routed through
+        // the view's own door, and no frame marks who sent it since v27.
         self.workspace.dispatch_from_view(command)
     }
 

@@ -248,7 +248,8 @@ pub mod wire;
 /// that, because it is the old client. `ChatAppended.origin` and
 /// `PromptUnder.origin` were the dispatch-time row's bookkeeping; the row is
 /// drawn when the CLI starts the prompt, so nothing carries an origin. A v26
-/// client reads both as absent and draws as it did.
+/// client reads both fields as absent; what it draws for a dispatch is that
+/// client's own rule, unchanged by the missing field.
 /// `baselines/socket/26/` is the record a v26 server emitted.
 ///
 /// **Additive fields do not bump.** `diff.base_error` is one, carried on the
