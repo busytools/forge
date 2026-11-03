@@ -207,6 +207,13 @@ pub mod wire;
 /// wrong tab, so the numbers move. `baselines/socket/21/` is the record a v21
 /// server emitted.
 ///
+/// **v23 answers a document hand-off explicitly and lands its threads.** A
+/// hand-off ends on `approve` or `feedback` with a note rather than a bare
+/// `done`, and a document read's threads carry the `resolution` that places
+/// each one in the document as it reads now. A v22 half reads either shape
+/// as something it does not know, so the two halves move together.
+/// `baselines/socket/22/` is the record a v22 server emitted.
+///
 /// **Additive fields do not bump.** `diff.base_error` is one, carried on the
 /// v16-era record: a client older than the field draws the vaguer line it
 /// always drew, and nothing it sends changes.
