@@ -336,30 +336,42 @@ describe('the queue pile', () => {
     expect(second?.textContent, 'with no raw backticks').not.toContain('`marks`');
   });
 
-  it('says what an ending was, with the words it carried', () => {
+  it('says a discarded ending and the words it carried', () => {
     const { connection } = recording();
-    for (const [state, said] of [
-      ['discarded', 'discarded, never sent: the lost one'],
-      ['refused', 'refused by a hook: the refused one'],
-    ] as const) {
-      const text = state === 'discarded' ? 'the lost one' : 'the refused one';
-      mount(Queue, {
-        target: host,
-        props: {
-          rows: [],
-          ended: { text, state },
-          slot: SLOT,
-          connection,
-        },
-      });
-      flushSync();
+    mount(Queue, {
+      target: host,
+      props: {
+        rows: [],
+        ended: { text: 'the lost one', state: 'discarded' },
+        slot: SLOT,
+        connection,
+      },
+    });
+    flushSync();
 
-      expect(
-        host.querySelector('.ended')?.textContent,
-        'a row that vanishes silently reads as one that was delivered',
-      ).toBe(said);
-      host.replaceChildren();
-    }
+    expect(
+      host.querySelector('.ended')?.textContent,
+      'a row that vanishes silently reads as one that was delivered',
+    ).toBe('discarded, never sent: the lost one');
+  });
+
+  it('says a refused ending and the words it carried', () => {
+    const { connection } = recording();
+    mount(Queue, {
+      target: host,
+      props: {
+        rows: [],
+        ended: { text: 'the refused one', state: 'refused' },
+        slot: SLOT,
+        connection,
+      },
+    });
+    flushSync();
+
+    expect(
+      host.querySelector('.ended')?.textContent,
+      'the refusal names the prompt it refused',
+    ).toBe('refused by a hook: the refused one');
   });
 
   /**
