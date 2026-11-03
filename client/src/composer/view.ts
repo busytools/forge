@@ -153,10 +153,11 @@ export interface ComposerProps {
   /**
    * Whether this seat's first conversation page is still out.
    *
-   * **The band is where every narrative state speaks**, so the read wait is a
-   * line there rather than one on the column's own ground: the page hands it
-   * down from the conversation the column is folding, and the composer draws
-   * it as the one hold the body slot can take at a time.
+   * **The page hands it down from the conversation the column is folding**, and
+   * the composer draws it as a hold: nothing can be typed until the page lands,
+   * so it takes the one body slot rather than a row above a live field. A send
+   * made before the page lands still draws as the reader's own row in the
+   * column, so its words are never lost.
    */
   reading: boolean;
 }
@@ -241,6 +242,8 @@ interface Blocker {
   bad: boolean;
   /** Whether the line carries the wait, sweeping through its words. */
   shimmer: boolean;
+  /** Whether the line is a live region, announced as it appears. */
+  status?: boolean;
 }
 
 /** The line the box's own key hints draw, where the mockup draws them. */
@@ -257,10 +260,14 @@ const STOPPED: Pick<Blocker, 'bad' | 'shimmer'> = { bad: false, shimmer: false }
  * wait the reader caused, and naming it is what tells them what they are
  * waiting for.
  *
- * **A conversation whose first page is still out does not block the box.** The
- * seat is up and takes a prompt, so the read wait is drawn as a line on the
- * band above the field rather than in place of it; the words a send puts there
- * are drawn as the reader's echo in the column.
+ * **A conversation whose first page is still out holds the box like any other
+ * wait.** The reader has nothing to answer until the page lands, so the read
+ * wait takes the body rather than a row above it: a line that came and went
+ * above the field grew the composer and shrank it again (Ved, 2026-11-03).
+ * It is the last hold, because a machine turn or a command the reader sent is
+ * the more specific truth about what they are waiting for. A parked ask still
+ * wins, because the dock is the body when one waits, and a take in flight is
+ * the reader's own row - the hold would hide it with nowhere else to draw.
  */
 export function blocked(
   seat: SeatRead,
@@ -268,6 +275,7 @@ export function blocked(
   command: string | null,
   lead: boolean,
   askPending: boolean,
+  reading: boolean,
 ): Blocker | null {
   // Sign-in keeps its box: the hint above it is where the reader is told.
   if (seat.lifecycle === 'AuthRequired') return null;
@@ -322,6 +330,19 @@ export function blocked(
   }
   if (command !== null) {
     return { line: `Running ${command}`, sub: null, bad: false, shimmer: true };
+  }
+  // **The read wait is the last hold.** Nothing can be typed until the page
+  // lands, so a line above a live field is a row that comes and goes for no
+  // answer - but a parked ask is the dock and a take in flight is the
+  // reader's own row, and either takes the body instead.
+  if (reading && !askPending && composer.take === null) {
+    return {
+      line: 'Reading the conversation...',
+      sub: null,
+      bad: false,
+      shimmer: true,
+      status: true,
+    };
   }
   return null;
 }

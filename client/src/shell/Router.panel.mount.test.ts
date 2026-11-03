@@ -19,6 +19,7 @@
 import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { installResizeObserver } from '../chat/testing/viewport';
 import { homeWire } from '../dev/fixture.data';
 import type { ServerMessage, SessionUpdate, Subject } from '../protocol';
 import { PROTOCOL_VERSION } from '../protocol';
@@ -27,6 +28,8 @@ import { sessionFrom } from '../session/wire';
 import type { Connection, ConnectionStatus } from '../socket';
 import { Stores } from '../stores';
 import Router from './Router.svelte';
+
+installResizeObserver();
 
 const LEAD: SessionSlot = { org: 'TestOrg', project: 'proj', label: 'lead' };
 
@@ -166,6 +169,18 @@ function land(say: (message: ServerMessage) => void, message: ServerMessage): vo
 describe("the dictation panel through a turn's frames", () => {
   it('keeps the panel, its element and its settings as the frames land', () => {
     const wire = live();
+    // **The page has landed before the column mounts.** The read wait holds
+    // the box's body until then, and the mic is in that body - so a case
+    // about the panel opens on a seat that has answered, as a real one does
+    // after its first read.
+    const seeded = sessionFrom({
+      slot: LEAD,
+      state: { scan_cwd: '/tmp' },
+      conversation: { turns: [{ key: 't-1', messages: [] }] },
+    });
+    // The seat's store is opened before the page: the column seeds from it on
+    // mount, and nothing answers a visit that has already subscribed.
+    wire.stores.open({ session: LEAD }).set(seeded);
     app = mount(Router, {
       target: document.body,
       props: {
@@ -182,8 +197,6 @@ describe("the dictation panel through a turn's frames", () => {
     });
     flushSync();
 
-    const seeded = sessionFrom({ slot: LEAD, state: { scan_cwd: '/tmp' } });
-    wire.stores.open({ session: LEAD }).set(seeded);
     wire.say({ kind: 'snapshot', subject: { session: LEAD }, data: seeded });
     flushSync();
 

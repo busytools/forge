@@ -79,6 +79,20 @@ function emptyStore(what: Subject): Store {
 }
 
 /**
+ * A seat whose first conversation page has landed.
+ *
+ * The read wait holds the composer's body until the column reports the page
+ * landed, and a take's controls are in that body - so a case about the mic
+ * needs a seat that has answered, which is every seat after its first read.
+ */
+function landedStore(what: Subject): Store {
+  return {
+    ...emptyStore(what),
+    snapshot: () => ({ conversation: { turns: [{ key: 't-1', messages: [] }], cursor: null } }),
+  };
+}
+
+/**
  * A connection the session route can mount over: subscriptions answer with an
  * empty store (nothing about a seat is drawn here), and every call this test
  * is not about refuses loudly rather than passing quietly.
@@ -106,7 +120,7 @@ function connection(): Connection {
       fn('open');
       return () => {};
     },
-    store: (what: Subject) => emptyStore(what),
+    store: (what: Subject) => landedStore(what),
     settings: () => DEFAULT_SETTINGS,
     skew: () => null,
     serverProtocol: () => PROTOCOL_VERSION,

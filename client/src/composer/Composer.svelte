@@ -344,7 +344,7 @@
   );
 
   const blocker = $derived(
-    blocked(seat, composer, box.sent, slot.label === 'lead', dockAsk !== null),
+    blocked(seat, composer, box.sent, slot.label === 'lead', dockAsk !== null, reading),
   );
   const filled = $derived(box.draft.trim() !== '');
 
@@ -1183,7 +1183,11 @@
     offered: () => dictation,
     bind: () => composer.bind,
     mode: () => composer.mode,
-    machine: () => machineInForce(composer) !== null,
+    // The read wait begins nothing: its hold draws no field, and a take
+    // started there would carry words into a draft the reader cannot see.
+    // The other holds still allow a take (a Failed seat relies on it), so
+    // this keys on the read hold rather than on `reading`.
+    machine: () => machineInForce(composer) !== null || blocker?.status === true,
     // **Only where the bar's own toggle is offered**, so a press can never
     // open a line the reader has no control to close (the page still opening,
     // or on a tab the hand-off did not name).
@@ -1692,17 +1696,6 @@
        detail - a finger never sees them - which is the width the band could not
        spare for a second row. -->
   {#snippet fieldBody()}
-    <!-- **The read wait is the band's, above the field.** Every narrative
-         state speaks here; this one does not take the field with it, because
-         the seat is up and takes a prompt - a send made before the page lands
-         draws as the reader's own row in the column. -->
-    {#if reading && composer.take === null}
-      <!-- role=status is the live region the column carried on main: a
-           screen reader is told the page is reading, and told when it lands. -->
-      <div class="notice q" role="status">
-        <span class="shimmer">Reading the conversation...</span>
-      </div>
-    {/if}
     {#if line !== null && composer.take === null}
       <div class="notice {line.tone}">{line.text}</div>
     {/if}
@@ -1781,7 +1774,18 @@
     />
     <div class="slot">
       {#if blocker !== null}
-        <Hold line={blocker.line} sub={blocker.sub} bad={blocker.bad} shimmer={blocker.shimmer} />
+        <!-- Keyed on the live-region line so crossing into an announced hold
+             (waking -> reading) inserts a fresh node rather than adding role
+             to an existing one, which screen readers do not reliably announce. -->
+        {#key blocker.status === true ? blocker.line : null}
+          <Hold
+            line={blocker.line}
+            sub={blocker.sub}
+            bad={blocker.bad}
+            shimmer={blocker.shimmer}
+            status={blocker.status ?? false}
+          />
+        {/key}
       {:else if dockAsk !== null}
         <!-- **The ask stays mounted under the reader's draft.** The chip on
            the live row swaps the body; the dock is hidden rather than

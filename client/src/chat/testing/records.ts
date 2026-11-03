@@ -36,6 +36,26 @@ export function pinned(): Pin[] {
 }
 
 /**
+ * One move to an ITEM the column asked the list for.
+ *
+ * Kept apart from `pins`, which are offsets into the scroll element: the row a
+ * return restores may be outside the drawn window, and a move to its turn is
+ * what draws it - jsdom has no window, so the call is the observable.
+ */
+export interface ListMove {
+  /** The item index the list was asked to land on. */
+  at: number;
+  align: string | null;
+}
+
+export const moves: ListMove[] = [];
+
+/** Every item move the last-mounted column has asked for. */
+export function moved(): ListMove[] {
+  return moves;
+}
+
+/**
  * The element's own getting and setting, counted.
  *
  * jsdom measures no layout, so the only way the column's READ cost is
@@ -48,6 +68,7 @@ export const layout = { reads: 0 };
 export function clear(): void {
   records.length = 0;
   pins.length = 0;
+  moves.length = 0;
   layout.reads = 0;
   boxes.container = 0;
   boxes.items = [];

@@ -66,6 +66,13 @@
     set slot(next: SessionSlot) {
       held = { ...held, slot: next };
     },
+    /** Whether the seat's page is still out, which the composer holds for. */
+    get reading() {
+      return held.reading;
+    },
+    set reading(next: boolean) {
+      held = { ...held, reading: next };
+    },
   };
 </script>
 
