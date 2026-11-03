@@ -3021,8 +3021,11 @@ kbd { font-family: inherit; font-size: inherit; color: inherit;
 
 /* The take's card: one pill inside the box, at its top left, with the draft
    below it. It is a row rather than a floating reading, so the height it takes
-   is the height it uses. */
+   is the height it uses. **The card is its own container**, because the
+   readings' ladder below measures the room the readings have - the card's, not
+   the box's, since the row's controls take their share first (#2842). */
 .tc { align-self: flex-start; display: flex; max-width: 100%;
+  container-type: inline-size;
   align-items: center; gap: 10px; padding: 5px 10px; margin-bottom: 8px;
   border-radius: 999px;
   font-family: var(--mono); font-size: var(--fs-label); white-space: nowrap;
@@ -3135,7 +3138,7 @@ kbd { font-family: inherit; font-size: inherit; color: inherit;
    clock, graph, ready tally, frames, bytes, pace - and the dot, the way out
    and the state's colour are what remain. Items are removed, never reordered.
    Each step is one below the measured fit point in the real engine, against
-   the container's own measure (the box's content width), with the widest digits
+   the container's own measure (the card's content width), with the widest digits
    a take can be holding (90000 fr, 57.7 MB, 999 KB/s): the card is 506px with
    every reading, 457 without the clock, 331 without the graph, 267 without the
    tally, 196 without the frames, 124 without the bytes, and alone with the
@@ -3458,6 +3461,12 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
 .dock .btn.p { border-color: color-mix(in srgb, var(--accent) 50%, transparent);
   color: var(--hot); background: color-mix(in srgb, var(--accent) 10%, transparent); }
 .dock .btn.d { border-color: color-mix(in srgb, var(--bad) 45%, transparent); color: var(--bad); }
+/* The send-back's words, on the card the draft is drawn on. The field
+   takes the width and the verb sits at its end, the way the words row's
+   send glyph does. */
+.dock .sendback { display: flex; align-items: flex-start; gap: 8px; }
+.dock .sendback .notes { flex: 1; min-width: 0; width: auto; }
+.dock .btn:disabled { opacity: .5; cursor: default; }
 /* The words row, which is the prompt's LAST row and its input: it draws like
    any option, and the field inside it is the answer. Arriving on it puts the
    caret in it - no tint for that, the caret is the signal - and the mic rides
@@ -3496,6 +3505,8 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
   .dock .chevb { min-width: 44px; min-height: 44px; }
   .micb { min-height: 44px; min-width: 44px; }
   .sendb { min-height: 44px; min-width: 44px; }
+  /* The send-back field is a finger target like every other control. */
+  .dock .sendback .notes { min-height: 44px; }
 }
 /* The phase or the batch, for a screen reader only: the marks say nothing. */
 .dock .sr { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;

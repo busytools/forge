@@ -223,21 +223,31 @@ pub mod wire;
 /// and the two halves move together. `baselines/socket/23/` is the record a
 /// v23 server emitted.
 ///
-/// **v25 drops the handoff row from the conversation record and the prompt
+/// **v25 is a bump for the Slack draft's answer.** `respond_slack_post`
+/// carries an answer now rather than a boolean: the reader can send a held
+/// draft back with words for the agent, and `slack_draft_resolved` gains the
+/// `sent_back` ending. The draft's payload replaces `tool` with `operation`,
+/// because one `slack__edit` is a replacement or a deletion and one
+/// `slack__react` adds or removes - a card words its verbs from what will
+/// happen. A v24 server reads the new payload as a command it cannot decode,
+/// and a v24 client sends the old one this server refuses, so the numbers
+/// move. `baselines/socket/24/` is the record a v24 server emitted.
+///
+/// **v26 drops the handoff row from the conversation record and the prompt
 /// origin from the wire.** The record's `handoff` field was what a client
-/// drew the block from; the block is gone, so the field goes with it - a v24
-/// client reading a v25 record draws no block from it, and one that watches
+/// drew the block from; the block is gone, so the field goes with it - a v25
+/// client reading a v26 record draws no block from it, and one that watches
 /// the swap still receives the `handoff` update and draws its own block from
 /// that, because it is the old client. `ChatAppended.origin` and
 /// `PromptUnder.origin` were the dispatch-time row's bookkeeping; the row is
-/// drawn when the CLI starts the prompt, so nothing carries an origin. A v24
+/// drawn when the CLI starts the prompt, so nothing carries an origin. A v25
 /// client reads both as absent and draws as it did.
-/// `baselines/socket/24/` is the record a v24 server emitted.
+/// `baselines/socket/25/` is the record a v25 server emitted.
 ///
 /// **Additive fields do not bump.** `diff.base_error` is one, carried on the
 /// v16-era record: a client older than the field draws the vaguer line it
 /// always drew, and nothing it sends changes.
-pub const PROTOCOL_VERSION: u32 = 25;
+pub const PROTOCOL_VERSION: u32 = 26;
 
 /// The socket's keepalive: how often a connection is asked to prove it is
 /// still there, and how long it may stay silent before it is reaped.

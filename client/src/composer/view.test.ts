@@ -83,6 +83,10 @@ describe('the line a resolved draft leaves', () => {
       draftEndingLine({ answered: { approved: false } }).text,
       'declined is its own line',
     ).toContain('declined in another view');
+    expect(
+      draftEndingLine('sent_back').text,
+      "a send-back is neither of those, and the note is the agent's, not the view's",
+    ).toContain('sent back with feedback in another view');
   });
 
   it('still says the draft is gone for an ending this client is older than', () => {

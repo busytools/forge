@@ -310,6 +310,7 @@
       "/update/chat_appended": [
         "key",
         "msg",
+        "origin",
         "source"
       ],
       "/update/chat_appended/key": [
@@ -947,6 +948,56 @@
         "kind"
       ]
     },
+    "SlackDraftResolved": {
+      "": [
+        "kind",
+        "seq",
+        "span",
+        "update"
+      ],
+      "/update": [
+        "slack_draft_resolved"
+      ],
+      "/update/slack_draft_resolved": [
+        "ending",
+        "id",
+        "key"
+      ],
+      "/update/slack_draft_resolved/key": [
+        "label",
+        "org",
+        "project"
+      ]
+    },
+    "SlackPostPending": {
+      "": [
+        "kind",
+        "seq",
+        "span",
+        "update"
+      ],
+      "/update": [
+        "slack_post_pending"
+      ],
+      "/update/slack_post_pending": [
+        "draft",
+        "key"
+      ],
+      "/update/slack_post_pending/draft": [
+        "conversation",
+        "conversation_label",
+        "id",
+        "operation",
+        "text",
+        "thread_ts",
+        "workspace"
+      ],
+      "/update/slack_post_pending/key": [
+        "label",
+        "org",
+        "project"
+      ]
+    },
     "SnapshotBoard": {
       "": [
         "data",
@@ -1403,11 +1454,33 @@
         "attachments",
         "dispatch_id",
         "key",
+        "origin",
         "source",
         "text",
         "uuid"
       ],
       "/prompt_under/key": [
+        "label",
+        "org",
+        "project"
+      ]
+    },
+    "RespondSlackPost": {
+      "": [
+        "respond_slack_post"
+      ],
+      "/respond_slack_post": [
+        "answer",
+        "id",
+        "key"
+      ],
+      "/respond_slack_post/answer": [
+        "send_back"
+      ],
+      "/respond_slack_post/answer/send_back": [
+        "note"
+      ],
+      "/respond_slack_post/key": [
         "label",
         "org",
         "project"
