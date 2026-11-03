@@ -284,9 +284,9 @@ jobs:
   # and `testing` on its own. The job above covers neither - with every
   # feature on, it never exercises which configuration enables what: the
   # install build leaving `test-helpers` off, or `testing` having to
-  # forward it. It also runs the install: the shipped binary is the only
-  # artifact that runs outside the build tree, and transcribe's shared
-  # ggml has to resolve from beside it with no LD_LIBRARY_PATH.
+  # forward it. It also runs the install: the installed binary is the
+  # artifact a user runs, and transcribe's shared ggml has to resolve from
+  # beside it with no LD_LIBRARY_PATH.
   feature-configs:
     name: "install config: check and installed binary"
     needs: changes
@@ -337,6 +337,18 @@ jobs:
           fi
           mv "$resolved.aside" "$resolved"
           echo "installed binary boots with $(echo "$libs" | wc -l | tr -d ' ') transcribe/ggml libraries resolved from $CARGO_INSTALL_ROOT/bin"
+          # The build-tree rpath entry: the release binary finds the staged
+          # libraries one directory down.
+          env -u LD_LIBRARY_PATH target/release/forge --version
+          # A second install must land a new inode for the real library:
+          # copying over it would rewrite a running forge's mapping.
+          before=$(stat -c %i "$resolved")
+          scripts/install.sh
+          [ "$before" != "$(stat -c %i "$resolved")" ] || {
+            echo "the installed library kept its inode across an install" >&2
+            exit 1
+          }
+          env -u LD_LIBRARY_PATH "$bin" --version
 
   docs:
     name: cargo doc
