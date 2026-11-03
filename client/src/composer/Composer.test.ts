@@ -6588,6 +6588,28 @@ describe('the dock', () => {
     expect(drawn(), 'and the sending line goes with it').not.toContain('Sending your feedback');
   });
 
+  it('keeps the sending line while a record refresh re-hands the same draft', () => {
+    const harness = open({ record: record({ pending_asks: [slackDraftAsk()] }) });
+
+    action('Send back with feedback').click();
+    flushSync();
+    writeFeedback('say staging, not prod');
+    press('Enter');
+    expect(drawn(), 'the press registered').toContain(
+      'Sending your feedback to the agent. Nothing was sent.',
+    );
+
+    // The seat's read replaces the record while the answer is on its way. The
+    // draft it carries is the same one, so the press is still the last thing
+    // the reader did and its line stays until the answer really resolves.
+    harness.page.record = record({ pending_asks: [slackDraftAsk()] });
+    flushSync();
+
+    expect(drawn(), 'a refresh does not erase the press').toContain(
+      'Sending your feedback to the agent. Nothing was sent.',
+    );
+  });
+
   it('draws the revised draft after a send-back as its own card', () => {
     const harness = open({ record: record({ pending_asks: [slackDraftAsk()] }) });
 

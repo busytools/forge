@@ -469,10 +469,15 @@
    */
   $effect(() => {
     const held = ask;
-    if (held !== null && held.kind === 'slack_draft') {
-      box.shownDraft = held.request.id;
-      box.ended = null;
-    }
+    if (held === null || held.kind !== 'slack_draft') return;
+    const id = held.request.id;
+    // **The same draft re-handed is not a new one.** The record is replaced
+    // on every frame and on the session poll, and the `ask` object with it;
+    // clearing on that replacement erased a send-back's sending line inside
+    // the press-to-resolution window. Only a different draft starts blank.
+    if (box.shownDraft === id) return;
+    box.shownDraft = id;
+    box.ended = null;
   });
 
   /**
