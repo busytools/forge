@@ -4937,8 +4937,7 @@ mod tests {
                     if prompt.as_str() == Some("queued words")
                         && source_uuid.as_deref() == Some("p1")
             )),
-            "carrying the prompt's words and the id the live row pairs with: {:?}",
-            message,
+            "carrying the prompt's words and the id the live row pairs with: {message:?}",
         );
     }
 
