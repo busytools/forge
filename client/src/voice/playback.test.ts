@@ -12,8 +12,14 @@ import { Playback, type Speaker } from './playback.svelte';
 class FakeSpeaker implements Speaker {
   played: { pcm: number[]; rate: number }[] = [];
   private readonly endings: (() => void)[] = [];
+  unlocked = 0;
   stopped = 0;
   closed = false;
+
+  unlock(): Promise<void> {
+    this.unlocked += 1;
+    return Promise.resolve();
+  }
 
   async play(pcm: Int16Array, rate: number): Promise<void> {
     this.played.push({ pcm: Array.from(pcm), rate });
@@ -41,6 +47,17 @@ async function settle(): Promise<void> {
 }
 
 describe('the playback queue', () => {
+  /** A browser holds a context created outside a gesture suspended, and a
+   * clip scheduled on it is silent: the press wakes the device first. */
+  it('wakes the audio device when a gesture asks it to', async () => {
+    const speaker = new FakeSpeaker();
+    const playback = new Playback(speaker);
+
+    await playback.unlock();
+
+    expect(speaker.unlocked).toBe(1);
+  });
+
   it('starts playback on the first chunk and keeps the order', async () => {
     const speaker = new FakeSpeaker();
     const playback = new Playback(speaker);
@@ -52,6 +69,7 @@ describe('the playback queue', () => {
       'the first clip starts on arrival',
     ).toEqual([[1]]);
     expect(speaker.played[0]?.rate).toBe(24_000);
+    expect(playback.started, 'the start is counted for a preview press').toBe(1);
 
     playback.push(Int16Array.from([2]), 24_000);
     await settle();

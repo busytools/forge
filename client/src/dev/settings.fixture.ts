@@ -31,7 +31,7 @@ export const settingsWire: SettingsDocument = {
   version: '1.1.34+abc1234',
   source: '~/.claude/forge/forge.toml',
   fingerprint: '0123456789abcdef',
-  totals: { keys: 15, areas: 5 },
+  totals: { keys: 17, areas: 6 },
   areas: [
     {
       id: 'accounts',
@@ -158,6 +158,26 @@ export const settingsWire: SettingsDocument = {
           'auto_compact_window',
           'next_session',
           NUMBER,
+        ),
+      ],
+    },
+    {
+      id: 'voice',
+      name: 'voice',
+      note: 'the two directions: a take becomes text, and a reply becomes speech',
+      keys: [
+        key('tts.speaking_model', 'restart', { kind: 'string', text: 'hexgrad/Kokoro-82M' }, [
+          'tts',
+        ]),
+        key('tts.voice', 'restart', { kind: 'string', text: 'bf_emma' }, ['tts']),
+        key(
+          'tts.enabled',
+          'restart',
+          { kind: 'bool', text: 'true' },
+          ['tts'],
+          'enabled',
+          'restart',
+          BOOLEAN,
         ),
       ],
     },

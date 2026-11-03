@@ -411,6 +411,7 @@ impl Workspace {
             reload_gate: std::sync::Mutex::new(()),
             systemone: parking_lot::RwLock::new(systemone),
             voice: std::sync::OnceLock::new(),
+            voice_preview_error: std::sync::Mutex::new(None),
             catalog: Arc::new(Mutex::new(HashMap::new())),
             app_support,
             pool: Mutex::new(HashMap::new()),

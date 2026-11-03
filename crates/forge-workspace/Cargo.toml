@@ -56,6 +56,9 @@ rustix = { workspace = true, features = ["process"] }
 croner = { workspace = true }
 chrono = { workspace = true }
 redb = { workspace = true }
+# The speaking model's Hub download verifies each file's LFS digest.
+sha2 = { workspace = true }
+hex = { workspace = true }
 
 [dev-dependencies]
 # Captures the applied record for the value-absence guard. That record is

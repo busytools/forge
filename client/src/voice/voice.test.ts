@@ -36,21 +36,39 @@ class FakePort implements VoicePort {
 
 class FakeSpeaker implements Speaker {
   played: { pcm: number[]; rate: number }[] = [];
+  unlocked = 0;
   stopped = 0;
   closed = false;
+  private readonly endings: (() => void)[] = [];
+
+  unlock(): Promise<void> {
+    this.unlocked += 1;
+    return Promise.resolve();
+  }
 
   play(pcm: Int16Array, rate: number): Promise<void> {
     this.played.push({ pcm: Array.from(pcm), rate });
-    return Promise.resolve();
+    return new Promise<void>((resolve) => this.endings.push(resolve));
   }
 
   stop(): void {
     this.stopped += 1;
+    this.finish();
   }
 
   close(): void {
     this.closed = true;
   }
+
+  /** Let the clip sounding now end. */
+  finish(): void {
+    this.endings.shift()?.();
+  }
+}
+
+/** Let the player's own promise chain run. */
+async function settle(): Promise<void> {
+  for (let at = 0; at < 10; at += 1) await Promise.resolve();
 }
 
 function voice(): { voice: Voice; port: FakePort; speaker: FakeSpeaker } {
@@ -71,6 +89,17 @@ describe("one seat's voice", () => {
     expect(at.speaker.closed).toBe(true);
   });
 
+  /** Both gestures that ask for speech wake the device: the switch, whose
+   * replies arrive much later, and the preview press. */
+  it('wakes the audio device on the switch and on a preview press', () => {
+    const at = voice();
+    at.voice.turnOn();
+    expect(at.speaker.unlocked).toBe(1);
+
+    at.voice.unlock();
+    expect(at.speaker.unlocked).toBe(2);
+  });
+
   it("plays the seat's audio only while this client's voice is on", () => {
     const at = voice();
     at.port.queue.push({ voice_audio: { key: {}, seq: 0, sample_rate: 24_000, pcm: [1, 2] } });
@@ -81,6 +110,28 @@ describe("one seat's voice", () => {
     at.port.queue.push({ voice_audio: { key: {}, seq: 1, sample_rate: 24_000, pcm: [3, 4] } });
     at.voice.pump();
     expect(at.speaker.played).toEqual([{ pcm: [3, 4], rate: 24_000 }]);
+  });
+
+  /** A preview press takes the sounding clip off the speaker first, so the
+   * pressed voice is heard as its first chunk arrives rather than queued
+   * behind a clip already playing. */
+  it('stops the sounding clip when a preview press arrives, and the next plays', async () => {
+    const at = voice();
+    at.voice.turnOn();
+    at.port.queue.push({ voice_audio: { key: {}, seq: 0, sample_rate: 24_000, pcm: [1] } });
+    at.voice.pump();
+    expect(at.speaker.played.map((clip) => clip.pcm)).toEqual([[1]]);
+
+    at.voice.stop();
+    expect(at.speaker.stopped, 'the old preview stopped').toBe(1);
+
+    at.port.queue.push({ voice_audio: { key: {}, seq: 1, sample_rate: 24_000, pcm: [2] } });
+    at.voice.pump();
+    await settle();
+    expect(
+      at.speaker.played.map((clip) => clip.pcm),
+      'the pressed voice starts as soon as its chunk is there',
+    ).toEqual([[1], [2]]);
   });
 
   it("stops the old occupant's speech when the seat is replaced", () => {

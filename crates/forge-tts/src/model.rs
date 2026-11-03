@@ -1,4 +1,5 @@
-//! The two GGUF files a speaking model is made of.
+//! The files a speaking model is made of: one ONNX model and a directory of
+//! `<voice>.bin` styles.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -7,44 +8,64 @@ use sha2::{Digest as _, Sha256};
 
 use crate::Error;
 
-/// The model file and, where the pipeline keeps its codec in one, the
-/// projector beside it.
+/// A model's files, and the digests the install declared for them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelFiles {
+    /// The ONNX model file.
     pub model: PathBuf,
-    pub projector: Option<PathBuf>,
-    /// The digest the model's entry declares, checked before a load.
-    pub model_sha256: Option<String>,
-    /// The digest the projector's entry declares, checked before a load.
-    pub projector_sha256: Option<String>,
+    /// The directory of `<voice>.bin` style files.
+    pub voices: PathBuf,
+    /// Digests to check before a load, keyed by path.
+    pub digests: Vec<(PathBuf, String)>,
 }
 
 impl ModelFiles {
-    /// Resolve `model` and `projector` file names against `dir`.
-    pub fn from_dir(dir: &Path, model: &str, projector: Option<&str>) -> Self {
-        Self {
-            model: dir.join(model),
-            projector: projector.map(|name| dir.join(name)),
-            model_sha256: None,
-            projector_sha256: None,
-        }
+    /// The model file and the voice directory it renders with.
+    pub fn new(model: PathBuf, voices: PathBuf) -> Self {
+        Self { model, voices, digests: Vec::new() }
     }
 
-    /// Carry the digests the entries declare, so a load can verify them.
-    pub fn with_digests(mut self, model: Option<String>, projector: Option<String>) -> Self {
-        self.model_sha256 = model;
-        self.projector_sha256 = projector;
+    /// Carry the digests the install declared, so a load can verify them.
+    pub fn with_digests(mut self, digests: Vec<(PathBuf, String)>) -> Self {
+        self.digests = digests;
         self
     }
 
     /// Check every file against its declared digest. A file with no declared
     /// digest is left to the loader's own existence check.
     pub fn verify(&self) -> Result<(), Error> {
-        verify_digest(&self.model, self.model_sha256.as_deref())?;
-        if let Some(projector) = &self.projector {
-            verify_digest(projector, self.projector_sha256.as_deref())?;
+        if !self.model.is_file() {
+            return Err(Error::ModelMissing(self.model.display().to_string()));
+        }
+        if !self.voices.is_dir() {
+            return Err(Error::ModelMissing(self.voices.display().to_string()));
+        }
+        for (path, digest) in &self.digests {
+            verify_digest(path, Some(digest))?;
         }
         Ok(())
+    }
+
+    /// The installed voice ids: every `.bin` file stem in `voices`, sorted.
+    pub fn installed_voices(&self) -> Result<Vec<String>, Error> {
+        let entries = std::fs::read_dir(&self.voices)
+            .map_err(|error| Error::ModelMissing(format!("{}: {error}", self.voices.display())))?;
+        let mut voices = Vec::new();
+        for entry in entries {
+            let entry = entry
+                .map_err(|error| Error::Load(format!("{}: {error}", self.voices.display())))?;
+            let path = entry.path();
+            let is_style = path.extension().is_some_and(|extension| extension == "bin");
+            if !is_style {
+                continue;
+            }
+            let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
+                continue;
+            };
+            voices.push(stem.to_owned());
+        }
+        voices.sort();
+        Ok(voices)
     }
 }
 
@@ -79,33 +100,44 @@ pub fn verify_digest(path: &Path, expected: Option<&str>) -> Result<(), Error> {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
-
     use super::ModelFiles;
 
+    fn model(dir: &std::path::Path) -> ModelFiles {
+        ModelFiles::new(dir.join("model.onnx"), dir.join("voices"))
+    }
+
     #[test]
-    fn a_model_with_no_projector_is_still_a_model() {
-        let files =
-            ModelFiles::from_dir(Path::new("/tmp/tts"), "qwen3-tts-0.6b-base-q8.gguf", None);
-        assert_eq!(files.model, std::path::PathBuf::from("/tmp/tts/qwen3-tts-0.6b-base-q8.gguf"));
-        assert!(files.projector.is_none());
+    fn the_installed_voices_are_the_style_file_stems_sorted() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let voices = dir.path().join("voices");
+        std::fs::create_dir(&voices).expect("the voice dir is made");
+        for name in ["bf_emma.bin", "af_heart.bin", "am_adam.bin"] {
+            std::fs::write(voices.join(name), b"styles").expect("a style is written");
+        }
+        std::fs::write(voices.join("readme.txt"), b"not a voice").expect("a stray file");
+        let files = model(dir.path());
+        assert_eq!(
+            files.installed_voices().expect("the directory reads"),
+            vec!["af_heart".to_owned(), "am_adam".to_owned(), "bf_emma".to_owned()],
+        );
     }
 
     #[test]
     fn a_file_whose_digest_does_not_match_is_refused_by_name() {
         let dir = tempfile::tempdir().expect("a temp dir");
-        let path = dir.path().join("model.gguf");
+        std::fs::create_dir(dir.path().join("voices")).expect("the voice dir is made");
+        let path = dir.path().join("model.onnx");
         std::fs::write(&path, b"weights").expect("the file is written");
-        let files = ModelFiles::from_dir(dir.path(), "model.gguf", None)
-            .with_digests(Some("00".repeat(32)), None);
+        let files = model(dir.path()).with_digests(vec![(path.clone(), "00".repeat(32))]);
         let error = files.verify().expect_err("a wrong digest is refused");
-        assert!(error.to_string().contains("model.gguf"), "got: {error}");
+        assert!(error.to_string().contains("model.onnx"), "got: {error}");
     }
 
     #[test]
     fn a_file_whose_digest_matches_is_accepted() {
         let dir = tempfile::tempdir().expect("a temp dir");
-        let path = dir.path().join("model.gguf");
+        std::fs::create_dir(dir.path().join("voices")).expect("the voice dir is made");
+        let path = dir.path().join("model.onnx");
         std::fs::write(&path, b"weights").expect("the file is written");
         let digest = {
             use sha2::{Digest as _, Sha256};
@@ -113,8 +145,15 @@ mod tests {
             hasher.update(b"weights");
             hex::encode(hasher.finalize())
         };
-        let files =
-            ModelFiles::from_dir(dir.path(), "model.gguf", None).with_digests(Some(digest), None);
+        let files = model(dir.path()).with_digests(vec![(path, digest)]);
         files.verify().expect("the declared digest matches");
+    }
+
+    #[test]
+    fn a_missing_model_file_is_refused_before_a_load() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        std::fs::create_dir(dir.path().join("voices")).expect("the voice dir is made");
+        let error = model(dir.path()).verify().expect_err("a missing model is refused");
+        assert!(error.to_string().contains("model.onnx"), "got: {error}");
     }
 }

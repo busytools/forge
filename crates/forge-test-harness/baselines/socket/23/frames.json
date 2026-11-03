@@ -79,8 +79,6 @@
     "SessionReplaced": "session_replaced",
     "SetModeFailed": "set_mode_failed",
     "SetModelFailed": "set_model_failed",
-    "SettingsWritePending": "settings_write_pending",
-    "SettingsWriteResolved": "settings_write_resolved",
     "SlackDraftResolved": "slack_draft_resolved",
     "SlackMessageAppended": "slack_message_appended",
     "SlackPostPending": "slack_post_pending",
@@ -145,7 +143,6 @@
     "RespondBrowserHandOff": "respond_browser_hand_off",
     "RespondPermission": "respond_permission",
     "RespondQuestion": "respond_question",
-    "RespondSettingsWrite": "respond_settings_write",
     "RespondSlackPost": "respond_slack_post",
     "ResumeSession": "resume_session",
     "SetDictateOverride": "set_dictate_override",
@@ -166,7 +163,8 @@
     "UpsertReviewThread": "upsert_review_thread",
     "VoiceBenchStart": "voice_bench_start",
     "VoiceBenchStop": "voice_bench_stop",
-    "VoiceMode": "voice_mode"
+    "VoiceMode": "voice_mode",
+    "VoicePreview": "voice_preview"
   },
   "client_message": {
     "BrowserControl": "browser_control",
@@ -388,8 +386,8 @@
         "read_aloud",
         "results",
         "rows",
+        "speaking",
         "speaking_bench",
-        "speaking_models_dir",
         "speaking_results",
         "updates"
       ],
@@ -537,6 +535,37 @@
         "quant",
         "size_bytes"
       ],
+      "/update/dictate_models_changed/models/speaking": [
+        "active",
+        "enabled",
+        "from",
+        "models_dir",
+        "preview_error",
+        "snapshot",
+        "speaking_model",
+        "variants",
+        "voice",
+        "voices"
+      ],
+      "/update/dictate_models_changed/models/speaking/active": [
+        "active",
+        "file",
+        "installed",
+        "quant",
+        "size",
+        "variant"
+      ],
+      "/update/dictate_models_changed/models/speaking/snapshot": [
+        "models"
+      ],
+      "/update/dictate_models_changed/models/speaking/variants[]": [
+        "active",
+        "file",
+        "installed",
+        "quant",
+        "size",
+        "variant"
+      ],
       "/update/dictate_models_changed/models/speaking_bench": [
         "reason",
         "state"
@@ -555,6 +584,7 @@
       "/update/dictate_models_changed/models/speaking_results[]/metrics": [
         "clips",
         "first_audio_ms",
+        "peak_rss_bytes",
         "realtime_factor",
         "round_trip_wer"
       ],
@@ -902,33 +932,6 @@
       "": [
         "id",
         "kind"
-      ]
-    },
-    "SettingsWritePending": {
-      "": [
-        "kind",
-        "seq",
-        "span",
-        "update"
-      ],
-      "/update": [
-        "settings_write_pending"
-      ],
-      "/update/settings_write_pending": [
-        "ask",
-        "key"
-      ],
-      "/update/settings_write_pending/ask": [
-        "current",
-        "id",
-        "key",
-        "proposed",
-        "unset"
-      ],
-      "/update/settings_write_pending/key": [
-        "label",
-        "org",
-        "project"
       ]
     },
     "SnapshotBoard": {

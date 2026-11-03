@@ -64,9 +64,11 @@ rlimit = "0.11"
 # Default features carry openmp, which has no system library to link
 # against on a stock macOS toolchain.
 llama-cpp-2 = { version = "0.1.160", default-features = false }
-# The raw C API the mtmd audio path calls. Pinned here so forge-tts takes
-# the same build as the safe binding, and a crate cannot drift one of them.
-llama-cpp-sys-2 = { version = "0.1.160", default-features = false }
+# The speaking engine: Kokoro-82M through ONNX Runtime, with Misaki for G2P.
+kokoro-en = "0.1.5"
+# kokoro-en's own `ort = "2.0.0-rc.11"` is a caret range, and cargo resolves
+# rc.15, which breaks its source. Pin the newest RC it still compiles on.
+ort = "=2.0.0-rc.13"
 # Decodes the detokenizer's bytes; the decoder must persist across tokens
 # or a multi-byte character split between two pieces is replaced.
 encoding_rs = "0.8.35"
@@ -110,6 +112,15 @@ forge-server = { path = "crates/forge-server", version = "=1.1.41" }
 
 # Dev-only
 tempfile = "3"
+
+# ort-sys 2.0.0-rc.13's build script symlinks its provider dylibs into
+# target/<profile>/examples and panics when that directory does not exist;
+# ort-sys rc.15 guards it with `out_dir.exists()`. ort rc.13, which
+# kokoro-en compiles against, pins ort-sys to exactly this version, so the
+# one-line backport is carried here until kokoro-en reaches ort rc.15 or
+# later, and then this directory goes.
+[patch.crates-io]
+ort-sys = { path = "vendor/ort-sys" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

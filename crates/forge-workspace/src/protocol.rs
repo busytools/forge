@@ -880,6 +880,12 @@ pub enum Command {
         #[serde(skip)]
         initiator: Option<u64>,
     },
+    /// Play one voice on the seat's own stream, so it can be heard before it
+    /// is chosen. Refused when that seat's speaker switch is off.
+    VoicePreview {
+        key: SessionSlot,
+        voice: String,
+    },
 }
 
 impl Command {
@@ -904,7 +910,8 @@ impl Command {
             | Self::RespondQuestion { key, .. }
             | Self::SetDictateOverride { key, .. }
             | Self::ResetDictateOverrides { key }
-            | Self::VoiceMode { key, .. } => Some(key),
+            | Self::VoiceMode { key, .. }
+            | Self::VoicePreview { key, .. } => Some(key),
             Self::SpawnProject { .. }
             | Self::DictateStream { .. }
             | Self::DictateStop { .. }
@@ -1232,6 +1239,9 @@ impl std::fmt::Debug for Command {
             }
             Self::VoiceMode { key, on, .. } => {
                 f.debug_struct("VoiceMode").field("key", key).field("on", on).finish()
+            }
+            Self::VoicePreview { key, voice } => {
+                f.debug_struct("VoicePreview").field("key", key).field("voice", voice).finish()
             }
         }
     }

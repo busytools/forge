@@ -718,6 +718,18 @@ fn project_path(project: &LoadedProject, key: &str) -> String {
 }
 const CONNECTOR_KEYS: &[ConfigKey] = &[
     ConfigKey {
+        path: "huggingface.token",
+        area: "connectors",
+        // Read at each install, so a save applies on the next press.
+        class: EffectClass::Live,
+        rows: |config| {
+            vec![text(
+                "huggingface.token",
+                config.huggingface.token.clone().unwrap_or_else(|| "not set".to_owned()),
+            )]
+        },
+    },
+    ConfigKey {
         path: "gotify.url",
         area: "connectors",
         class: EffectClass::Restart,
@@ -1115,13 +1127,28 @@ const TTS_KEYS: &[ConfigKey] = &[
         },
     },
     ConfigKey {
-        path: "tts.language",
+        path: "tts.speaking_model",
         area: "voice",
         class: EffectClass::Restart,
         rows: |config| {
             vec![text(
-                "tts.language",
-                config.tts.language.clone().unwrap_or_else(|| "english".to_owned()),
+                "tts.speaking_model",
+                config
+                    .tts
+                    .speaking_model
+                    .clone()
+                    .unwrap_or_else(|| crate::tts::SPEAKING_MODEL.to_owned()),
+            )]
+        },
+    },
+    ConfigKey {
+        path: "tts.voice",
+        area: "voice",
+        class: EffectClass::Restart,
+        rows: |config| {
+            vec![text(
+                "tts.voice",
+                config.tts.voice.clone().unwrap_or_else(|| forge_tts::DEFAULT_VOICE.to_owned()),
             )]
         },
     },
@@ -1654,8 +1681,12 @@ context = "email"
 [tts]
 enabled = true
 models_dir = "/tmp/tts-models"
-language = "en"
+speaking_model = "hexgrad/Kokoro-82M"
+voice = "af_heart"
 max_utterance_seconds = 60
+
+[huggingface]
+token = "hf_test"
 
 [gotify]
 url = "https://gotify.test"
@@ -1835,6 +1866,7 @@ models = ["m"]
         let handoff = accepted_fields(&format!("{BASE}\n[handoff]\nzzz_unknown = 1\n"));
         let dictate = accepted_fields(&format!("{BASE}\n[dictate]\nzzz_unknown = 1\n"));
         let tts = accepted_fields(&format!("{BASE}\n[tts]\nzzz_unknown = 1\n"));
+        let huggingface = accepted_fields(&format!("{BASE}\n[huggingface]\nzzz_unknown = 1\n"));
         let gotify = accepted_fields(&format!("{BASE}\n[gotify]\nzzz_unknown = 1\n"));
         let systemone = accepted_fields(&format!("{BASE}\n[systemone]\nzzz_unknown = 1\n"));
         let slack = accepted_fields(&format!("{BASE}\n[[slack]]\nzzz_unknown = 1\n"));
@@ -1869,7 +1901,14 @@ models = ["m"]
                         .filter(|field| field.as_str() != "device")
                         .map(|field| format!("dictate.{field}")),
                 ),
-                "tts" => accepted.extend(tts.iter().map(|field| format!("tts.{field}"))),
+                "tts" => accepted.extend(
+                    tts.iter()
+                        .filter(|field| field.as_str() != "language")
+                        .map(|field| format!("tts.{field}")),
+                ),
+                "huggingface" => {
+                    accepted.extend(huggingface.iter().map(|field| format!("huggingface.{field}")));
+                }
                 "gotify" => accepted.extend(gotify.iter().map(|field| format!("gotify.{field}"))),
                 "systemone" => {
                     accepted.extend(systemone.iter().map(|field| format!("systemone.{field}")));
@@ -2217,7 +2256,7 @@ models = ["m"]
         let document = document(&config, "v", Path::new("/tmp/forge.toml"));
         let voice =
             document.areas.iter().find(|area| area.id == "voice").expect("the voice area is drawn");
-        assert_eq!(voice.keys.len(), 16, "every [dictate] and [tts] key draws there");
+        assert_eq!(voice.keys.len(), 17, "every [dictate] and [tts] key draws there");
         assert!(
             voice
                 .keys
@@ -2226,8 +2265,8 @@ models = ["m"]
             "no other table's key rides in the voice area",
         );
         assert!(
-            !voice.keys.iter().any(|key| key.path == "tts.speaker"),
-            "the speaking model uses its default voice, so there is no speaker key",
+            voice.keys.iter().any(|key| key.path == "tts.voice"),
+            "the speaking voice is a setting",
         );
         let groups: BTreeSet<Vec<String>> =
             voice.keys.iter().map(|key| key.group.clone()).collect();

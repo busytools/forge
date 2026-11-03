@@ -61,6 +61,7 @@ mod tests {
                 round_trip_wer: 0.125,
                 first_audio_ms: 3_400,
                 realtime_factor: 0.3,
+                peak_rss_bytes: 417 << 20,
             },
             at: at.to_owned(),
             corpus: CorpusId { clips: 3, audio_seconds: 9, sha256: sha.to_owned() },
