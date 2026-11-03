@@ -644,12 +644,22 @@ impl DomainSession {
         uuid: &str,
         source: crate::protocol::PromptSource,
         text: &str,
+        attachments: Vec<forge_primitives::ImageAttachment>,
     ) {
         self.prompt_queue.push(crate::protocol::QueuedPrompt {
             uuid: uuid.to_owned(),
             source,
             text: text.to_owned(),
+            attachments,
         });
+    }
+
+    /// The entry a lifecycle frame names, while it is still waiting.
+    ///
+    /// **Read before the frame advances the queue**, because `started` is a
+    /// settled state: the entry leaves the pile as the row it draws arrives.
+    pub(crate) fn queued_prompt(&self, uuid: &str) -> Option<&crate::protocol::QueuedPrompt> {
+        self.prompt_queue.iter().find(|prompt| prompt.uuid == uuid)
     }
 
     /// Advance a prompt's state from one of the CLI's lifecycle frames.

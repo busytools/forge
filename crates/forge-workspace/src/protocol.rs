@@ -1362,6 +1362,13 @@ pub struct QueuedPrompt {
     pub source: PromptSource,
     /// The prompt's words, as they were written.
     pub text: String,
+    /// What the prompt carried besides its words.
+    ///
+    /// **Kept here because the row is drawn at the CLI's start**, long after
+    /// the command that carried them is gone: the frame that opens the turn
+    /// draws the same attachments the dispatch did.
+    #[serde(default)]
+    pub attachments: Vec<forge_primitives::ImageAttachment>,
 }
 
 /// How loudly a [`SessionUpdate::Notice`] reads.

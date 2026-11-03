@@ -302,7 +302,7 @@ impl Workspace {
         let domain = self
             .domain_session_for(key)
             .unwrap_or_else(|| self.register_domain_session(key.clone(), None));
-        domain.lock().record_queued_prompt(uuid, source, text);
+        domain.lock().record_queued_prompt(uuid, source, text, Vec::new());
     }
 
     /// Construct an empty `Workspace` for use in unit tests. Skips

@@ -8639,10 +8639,9 @@ async fn a_prompt_a_client_sends_draws_no_row_at_dispatch() {
         panic!("a ping is answered with a pong")
     };
     assert!(
-        fleet
-            .dispatched()
-            .iter()
-            .any(|command| matches!(command, Command::PromptUnder { text, .. } if text == "hello there")),
+        fleet.dispatched().iter().any(
+            |command| matches!(command, Command::PromptUnder { text, .. } if text == "hello there")
+        ),
         "the prompt reaches the seat",
     );
 

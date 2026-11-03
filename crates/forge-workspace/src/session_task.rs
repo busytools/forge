@@ -1123,6 +1123,16 @@ impl SessionTask {
                                 // prompt the CLI settled without running.
                                 || (state == "completed" && !started_before))
                     };
+                    // **The page takes the prompt's row here, when the CLI
+                    // starts it** (#2816): the queue announced the words while
+                    // they waited, and a row forged at dispatch sat above the
+                    // answer the running turn was still writing. Read before
+                    // the advance, because `started` is a settled state and
+                    // the entry leaves the pile as its row arrives.
+                    let started_row = (state == "started")
+                        .then(|| self.domain.lock().queued_prompt(command_uuid).cloned())
+                        .flatten()
+                        .filter(|prompt| prompt.source == PromptSource::You);
                     let known = { self.domain.lock().advance_queued_prompt(command_uuid, state) };
                     // **A judgment prompt the CLI settles without running
                     // ends the handoff**, for the same reason a reader's
@@ -1144,6 +1154,12 @@ impl SessionTask {
                             state = %state,
                             "lifecycle frame for a prompt this session never recorded",
                         );
+                    }
+                    // **Before the lifecycle frame**, so a view holds the row
+                    // and drains it when the state lands rather than drawing
+                    // the announcement's bare words first.
+                    if let Some(prompt) = started_row {
+                        self.emit_prompt_row(&prompt);
                     }
                     self.emit(SessionUpdate::PromptLifecycle {
                         key: self.key.clone(),
@@ -1202,20 +1218,51 @@ impl SessionTask {
     ///
     /// Nothing is recorded for a session whose CLI has said it does not carry
     /// those frames: a row nothing can settle is worse than no row, and that
-    /// session draws its prompt the way it did before the pile existed.
-    fn record_queued(&self, uuid: &str, source: PromptSource, text: &str) {
+    /// session draws no row for the prompt at all - the row now arrives at
+    /// `started`, which such a CLI never sends.
+    fn record_queued(
+        &self,
+        uuid: &str,
+        source: PromptSource,
+        text: &str,
+        attachments: &[forge_primitives::ImageAttachment],
+    ) {
         {
             let mut guard = self.domain.lock();
             if guard.lifecycle_frames == Some(false) {
                 return;
             }
-            guard.record_queued_prompt(uuid, source, text);
+            guard.record_queued_prompt(uuid, source, text, attachments.to_vec());
         }
         self.emit(SessionUpdate::PromptQueued {
             key: self.key.clone(),
             uuid: uuid.to_owned(),
             source,
             text: text.to_owned(),
+        });
+    }
+
+    /// The row a person's prompt draws when the CLI starts it.
+    ///
+    /// **Emitted at `started`, never at dispatch** (#2816): the CLI queues a
+    /// prompt sent while a turn runs and takes it when that turn ends, so a
+    /// row forged at dispatch drew above the answer still being written. The
+    /// held copy needs it here for the other half: the CLI never echoes a
+    /// stdin prompt on the wire, so this frame is the page's only carrier of
+    /// the reader's own words.
+    fn emit_prompt_row(&self, prompt: &crate::protocol::QueuedPrompt) {
+        let images = forge_primitives::display_blocks(&prompt.attachments);
+        let mut framed = forge_primitives::Message::display_only_user_with_blocks(
+            prompt.text.clone(),
+            images,
+            prompt.uuid.clone(),
+        );
+        framed.stamp_if_absent(&crate::install::rfc3339_now());
+        self.emit(SessionUpdate::ChatAppended {
+            key: self.key.clone(),
+            msg: framed,
+            origin: None,
+            source: Some(prompt.source),
         });
     }
 
@@ -1242,7 +1289,7 @@ impl SessionTask {
         let cmd = match cmd {
             Command::Prompt { key, text, attachments } => {
                 let uuid = forge_sdk::request_id::next_prompt_id();
-                self.record_queued(&uuid, PromptSource::You, &text);
+                self.record_queued(&uuid, PromptSource::You, &text, &attachments);
                 Command::PromptUnder {
                     key,
                     text,
@@ -1272,7 +1319,7 @@ impl SessionTask {
                     );
                     return;
                 }
-                self.record_queued(&uuid, source, &text);
+                self.record_queued(&uuid, source, &text, &attachments);
                 Command::PromptUnder { key, text, attachments, uuid, source, dispatch_id, origin }
             }
             other => other,
@@ -5101,7 +5148,10 @@ mod tests {
         task.execute_command(Command::PromptUnder {
             key: slot.clone(),
             text: "sent mid turn".to_owned(),
-            attachments: Vec::new(),
+            attachments: vec![forge_primitives::ImageAttachment {
+                data: "iVBORw0KGgo=".to_owned(),
+                mime_type: "image/png".to_owned(),
+            }],
             uuid: "send-row-uuid".to_owned(),
             source: crate::protocol::PromptSource::You,
             dispatch_id: None,
@@ -5122,6 +5172,58 @@ mod tests {
             }
         }
         assert!(queued, "the queue announces the prompt until the CLI takes it");
+
+        // The CLI takes it: the row lands now, with the words the queue
+        // carried and the attachment the dispatch held.
+        task.translate_event(AgentEvent::SdkMessage {
+            session_id: "send-row-session".to_owned(),
+            msg: forge_primitives::Message::CommandLifecycle {
+                command_uuid: "send-row-uuid".to_owned(),
+                state: "started".to_owned(),
+                uuid: "lifecycle-1".to_owned(),
+                session_id: "send-row-session".to_owned(),
+                extras: forge_primitives::messages::Extras::new(),
+            },
+        });
+
+        let mut drawn = Vec::new();
+        while let Ok(frame) = update_rx.try_recv() {
+            if let SessionUpdate::ChatAppended { msg, source, .. } = &*frame.update {
+                drawn.push((msg.clone(), *source));
+            }
+        }
+        let [(msg, source)] = drawn.as_slice() else {
+            panic!("the start draws one row: {drawn:?}");
+        };
+        assert_eq!(*source, Some(crate::protocol::PromptSource::You), "the reader's own send");
+        let forge_primitives::Message::User { message, uuid, .. } = msg else {
+            panic!("the row is the user turn it draws: {msg:?}");
+        };
+        assert_eq!(uuid.as_deref(), Some("send-row-uuid"), "under the prompt's own id");
+        assert!(
+            message.content.iter().any(|block| matches!(
+                block,
+                forge_primitives::ContentBlock::Text { text, .. } if text == "sent mid turn"
+            )),
+            "carrying the words the queue announced: {message:?}",
+        );
+        let Some(forge_primitives::ContentBlock::Image { source, extras }) = message
+            .content
+            .iter()
+            .find(|block| matches!(block, forge_primitives::ContentBlock::Image { .. }))
+        else {
+            panic!("and the attachment the dispatch held: {message:?}");
+        };
+        assert_eq!(
+            source.get("media_type").and_then(serde_json::Value::as_str),
+            Some("image/png"),
+            "the row names the mime",
+        );
+        assert_eq!(
+            extras.get("forge_bytes").and_then(serde_json::Value::as_u64),
+            Some(8),
+            "and the eight bytes the payload weighed, never the payload",
+        );
     }
 
     /// A judgment turn that ends swaps the seat, and the row's judgment is
@@ -5709,6 +5811,7 @@ mod tests {
                 "queued-2",
                 crate::protocol::PromptSource::You,
                 "the next ask",
+                Vec::new(),
             );
         }
 

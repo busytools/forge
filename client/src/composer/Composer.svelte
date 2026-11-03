@@ -36,7 +36,7 @@
     takePhase,
     takeSilenceLine,
   } from './dictate.svelte';
-  import { FORGE_COMMANDS } from './forge-commands';
+  import { FORGE_COMMANDS, isForgeCommand } from './forge-commands';
   import {
     blocked,
     composerState,
@@ -1017,16 +1017,24 @@
     }
     const [first = ''] = text.split(/\s+/);
     if (first.startsWith('/')) box.sent = first;
-    // What the seat was doing when the words left: a send that starts a turn is
-    // taken by it, one sent into a turn already running is not (it is settled by
-    // the conversation carrying the words, or by a refusal).
-    //
-    // **Read from the connection's store rather than from the record this box
-    // draws.** The record is written once per painted frame, so a turn-start
-    // frame can be applied and not yet drawn - and a send posted as
-    // not-running is taken by the very publish that carries the turn, where a
-    // refusal can no longer reach it.
-    echoes.post(boxKey(slot), text, runningAt(connection, slot, running), uuid, dispatch);
+    // **A prompt the core answers itself draws no row** (#2816): a forge
+    // command, a misuse or a slash name this session cannot run never reaches
+    // a model, so no turn carries its words and the echo would stand as a row
+    // nothing clears. The core's answer is the feedback.
+    const advertised = advisoriesFrom(record.slash_commands).some((row) => row.name === first);
+    const answered = isForgeCommand(first) || (first.startsWith('/') && !advertised);
+    if (!answered) {
+      // What the seat was doing when the words left: a send that starts a turn
+      // is taken by it, one sent into a turn already running is not (it is
+      // settled by the conversation carrying the words, or by a refusal).
+      //
+      // **Read from the connection's store rather than from the record this box
+      // draws.** The record is written once per painted frame, so a turn-start
+      // frame can be applied and not yet drawn - and a send posted as
+      // not-running is taken by the very publish that carries the turn, where a
+      // refusal can no longer reach it.
+      echoes.post(boxKey(slot), text, runningAt(connection, slot, running), uuid, dispatch);
+    }
     box.draft = '';
   }
 
