@@ -4827,10 +4827,11 @@ fn a_said_frame(text: &str) -> forge_primitives::Message {
 /// One thinking-token counter, with a cumulative absolute that is not its
 /// delta - so summing the wrong field fails.
 fn a_counter_frame(at: usize, delta: i64) -> forge_primitives::Message {
+    let absolute = at.saturating_add(1) * usize::try_from(delta).expect("a positive delta");
     serde_json::from_value(serde_json::json!({
         "type": "system",
         "subtype": "thinking_tokens",
-        "estimated_tokens": ((at as i64 + 1) * delta) as u64,
+        "estimated_tokens": absolute,
         "estimated_tokens_delta": delta,
         "uuid": format!("t-{at}"),
         "session_id": "5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45",
@@ -10256,7 +10257,11 @@ async fn a_thought_heavy_resume_serves_its_whole_thinking_sum() {
         .filter(|frame| frame["subtype"] == "thinking_tokens")
         .filter_map(|frame| frame["estimated_tokens_delta"].as_i64())
         .sum();
-    assert_eq!(sum, counters as i64, "the served record carries the whole turn");
+    assert_eq!(
+        sum,
+        i64::try_from(counters).expect("the test's count fits"),
+        "the served record carries the whole turn",
+    );
 }
 
 /// The frame is the seat's session facts and no transcript, and small enough

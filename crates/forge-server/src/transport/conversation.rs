@@ -1151,10 +1151,11 @@ mod tests {
     /// One thinking-token counter, with a cumulative absolute that is not its
     /// delta - so summing the wrong field fails.
     fn a_counter(at: usize, delta: i64) -> Message {
+        let absolute = at.saturating_add(1) * usize::try_from(delta).expect("a positive delta");
         serde_json::from_value(serde_json::json!({
             "type": "system",
             "subtype": "thinking_tokens",
-            "estimated_tokens": ((at as i64 + 1) * delta) as u64,
+            "estimated_tokens": absolute,
             "estimated_tokens_delta": delta,
             "uuid": format!("t-{at}"),
             "session_id": "5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45",
@@ -1213,7 +1214,7 @@ mod tests {
         let counters = 5_100;
         let held = Held::new(Conversation::new(a_thought_heavy_turn(counters), 0, 0));
 
-        let dropped = held.read(|held| held.dropped_thinking());
+        let dropped = held.read(Conversation::dropped_thinking);
         assert!(dropped > 0, "the cut took the turn's leading counters");
 
         let page = page_with_debt(&held, u32::MAX);
@@ -1295,7 +1296,11 @@ mod tests {
 
         let held = Held::new(conversation);
         let page = page_with_debt(&held, u32::MAX);
-        assert_eq!(served_thinking(&page), counters as i64, "the page carries the whole turn");
+        assert_eq!(
+            served_thinking(&page),
+            i64::try_from(counters).expect("the test's count fits"),
+            "the page carries the whole turn",
+        );
     }
 
     /// **A settled seed keeps the debt its own cut produced.** The newest turn
@@ -1307,11 +1312,11 @@ mod tests {
         history.push(a_result_frame());
         let held = Held::new(Conversation::new(history, 0, 0));
 
-        assert!(held.read(|held| held.dropped_thinking()) > 0, "the seed's cut carries a debt");
+        assert!(held.read(Conversation::dropped_thinking) > 0, "the seed's cut carries a debt");
         let page = page_with_debt(&held, u32::MAX);
         assert_eq!(
             served_thinking(&page),
-            counters as i64,
+            i64::try_from(counters).expect("the test's count fits"),
             "the settled page carries the whole turn",
         );
     }

@@ -553,10 +553,11 @@ mod tests {
     /// One thinking-token counter, with a cumulative absolute that is not its
     /// delta - so summing the wrong field fails.
     fn a_counter(at: usize, delta: i64) -> Message {
+        let absolute = at.saturating_add(1) * usize::try_from(delta).expect("a positive delta");
         serde_json::from_value(serde_json::json!({
             "type": "system",
             "subtype": "thinking_tokens",
-            "estimated_tokens": ((at as i64 + 1) * delta) as u64,
+            "estimated_tokens": absolute,
             "estimated_tokens_delta": delta,
             "uuid": format!("t-{at}"),
             "session_id": "5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45",

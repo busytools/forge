@@ -10127,7 +10127,8 @@ provider = "anthropic"
                 })
                 .sum();
             assert_eq!(
-                sum, read as i64,
+                sum,
+                i64::try_from(read).expect("the test's count fits"),
                 "the handover carries the whole turn, not the suffix (connected_once: \
                  {connected_once})",
             );
