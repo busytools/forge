@@ -233,10 +233,17 @@ pub mod wire;
 /// and a v24 client sends the old one this server refuses, so the numbers
 /// move. `baselines/socket/24/` is the record a v24 server emitted.
 ///
+/// **v26 holds a config write for the reader.** `respond_settings_write` is a
+/// new command variant, and the settings MCP tools park a write as a
+/// `settings_write_pending` update a v25 client has no vocabulary for: it
+/// would read the parked write as nothing, and the agent's call would wait on
+/// a dock nobody draws. `baselines/socket/25/` is the record a v25 server
+/// emitted.
+///
 /// **Additive fields do not bump.** `diff.base_error` is one, carried on the
 /// v16-era record: a client older than the field draws the vaguer line it
 /// always drew, and nothing it sends changes.
-pub const PROTOCOL_VERSION: u32 = 25;
+pub const PROTOCOL_VERSION: u32 = 26;
 
 /// The socket's keepalive: how often a connection is asked to prove it is
 /// still there, and how long it may stay silent before it is reaped.

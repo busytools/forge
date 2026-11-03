@@ -1,8 +1,12 @@
 # forge.toml reference
 
 `forge.toml` is the only file forge reads for configuration. It is
-hand-authored; the settings page's save is the one path that writes it,
-and nothing else in forge does. A change is picked up while
+hand-authored; two paths write it - the settings page's save and the
+settings MCP tools (`settings__index` and `settings__get` read it,
+`settings__set` and `settings__unset` write it) - and both writers go
+through the same catalogue, validation and validated-temp-file writer, with
+an agent's edit held for the reader's approval before it applies. Nothing
+else in forge does. A change is picked up while
 forge runs: the server watches this one file, re-reads it whole, and
 applies what can take effect without a restart. A running session keeps
 the account it spawned on, its model, mode, cwd and child environment;
@@ -1102,10 +1106,12 @@ The socket comes up on `[server] bind:port` during the same boot, unless
 
 ## Config versus state
 
-`forge.toml` is the config half. forge re-reads it on a change, and the
-settings page's save is the one writer it ever has - a temp file in the
-same directory, validated by this loader, renamed over the path. Nothing
-else in forge writes it, which keeps it safe to sync between machines.
+`forge.toml` is the config half. forge re-reads it on a change, and its
+writers - the settings page's save and the settings MCP tools - go through
+one path: a temp file in the same directory, validated by this loader,
+renamed over the path, with an agent's edit held for the reader's approval
+first. Nothing else in forge writes it, which keeps it safe to sync between
+machines.
 
 Everything mutable lives in one embedded redb database per config dir, at
 `<app-support>/stores/<hash-of-config-dir>.redb` (a SHA-256 of the config

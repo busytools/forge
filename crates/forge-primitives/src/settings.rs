@@ -101,6 +101,43 @@ pub struct SettingsEdit {
     pub group: Option<String>,
 }
 
+/// One configuration write held for the reader's approval.
+///
+/// The blocked `settings__set` / `settings__unset` handler awaits the
+/// answer, and nothing reaches `forge.toml` unless it approved: this is the
+/// shape the dock draws while it waits, so it carries what a person decides
+/// on - the key, what it holds now, and what the write would leave.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SettingsWriteAsk {
+    /// The write's own id, which is what an answer is addressed by.
+    pub id: uuid::Uuid,
+    /// The concrete catalogue path the write names.
+    pub key: String,
+    /// The value the key stands at now; `null` when it is unset.
+    pub current: serde_json::Value,
+    /// The value the write would leave; `null` when it clears the key.
+    pub proposed: serde_json::Value,
+    /// Whether the write clears the key rather than setting it.
+    pub unset: bool,
+}
+
+/// What ended a held write, which a view that did not answer it has no other
+/// way to learn.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SettingsWriteEnding {
+    /// The reader approved it and the edit was written.
+    Applied,
+    /// The reader declined it; nothing was written.
+    Declined,
+    /// The reader approved it and the write did not land, in the writer's
+    /// own words. The ending is emitted after the write, so `Applied` above
+    /// never stands for a failed one.
+    Refused { message: String },
+    /// The asking session went away before the write was settled.
+    Abandoned,
+}
+
 /// One area of the config, as the page's sub-nav lists it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SettingsArea {

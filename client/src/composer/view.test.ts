@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { DictateWire } from '../wire/home';
-import { dictationOffered, draftEndingLine } from './view';
+import { dictationOffered, draftEndingLine, settingsWriteEndingLine } from './view';
 
 /** The home's dictate read, with whatever the test overrides. */
 function dictate(over: Partial<DictateWire> = {}): DictateWire {
@@ -97,5 +97,29 @@ describe('the line a resolved draft leaves', () => {
     expect(draftEndingLine(undefined).text, 'and a payload that carries none').toContain(
       'no longer waiting',
     );
+  });
+});
+
+/**
+ * The held write's ending shares the draft ending's wire shape, so its line
+ * must not borrow the draft's words: a person answering a config write from
+ * a second client is not told a Slack draft was posted.
+ */
+describe('the line a resolved config write leaves', () => {
+  it('names the write and the ending', () => {
+    expect(settingsWriteEndingLine('abandoned').text).toContain("config write's asking session");
+    expect(settingsWriteEndingLine('applied').text).toContain('applied from another view');
+    expect(settingsWriteEndingLine('declined').text).toContain('declined in another view');
+    const refused = settingsWriteEndingLine({ refused: { message: 'the file moved' } });
+    expect(refused.text).toContain('approved but did not land');
+    expect(refused.text).toContain('the file moved');
+    expect(refused.tone, 'a failed write is not quiet news').toBe('warn');
+    for (const ending of ['abandoned', 'applied', undefined]) {
+      expect(settingsWriteEndingLine(ending).text, 'never the Slack line').not.toContain('Slack');
+    }
+  });
+
+  it('still says the write is gone for an ending this client is older than', () => {
+    expect(settingsWriteEndingLine({ something_new: null }).text).toContain('no longer waiting');
   });
 });

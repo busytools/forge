@@ -3427,6 +3427,14 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
   border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px; }
 .dock .reason { color: var(--warn); font-size: var(--fs-base); }
 .dock .desc { color: var(--dim); font-size: var(--fs-base); }
+/* A held write's values, verbatim: a config value can be a number, a list or
+   an object, so both blocks are monospace and wrap rather than a form this
+   dock would have to invent a control for. */
+.dock .wv { margin: 0; padding: 8px 10px; border: 1px solid var(--line);
+  border-radius: 8px; background: var(--s1); color: var(--text);
+  font-family: var(--mono); font-size: var(--fs-data);
+  white-space: pre-wrap; overflow-wrap: anywhere;
+  max-height: 180px; overflow-y: auto; }
 /* A long option list scrolls in place rather than pushing the foot off a
    phone: the prompt lane is a lane, not a page, and the words row below it
    must stay reachable however many options the wire sent. */

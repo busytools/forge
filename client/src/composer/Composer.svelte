@@ -45,6 +45,7 @@
     joined,
     noticeLine,
     pendingAsk,
+    settingsWriteEndingLine,
     SIGN_IN_FALLBACK,
     type ComposerProps,
   } from './view';
@@ -332,7 +333,9 @@
   const dockAsk = $derived(
     ask !== null &&
       !(
-        (ask.kind === 'slack_draft' || ask.kind === 'browser_hand_off') &&
+        (ask.kind === 'slack_draft' ||
+          ask.kind === 'browser_hand_off' ||
+          ask.kind === 'settings_write') &&
         box.answered === ask.request.id &&
         box.refusal === null
       )
@@ -374,6 +377,9 @@
     }
     if (held.kind === 'document_hand_off') {
       return { mark: 'file', label: 'document waiting', tone: 'att' as const };
+    }
+    if (held.kind === 'settings_write') {
+      return { mark: 'settings', label: 'config write waiting', tone: 'att' as const };
     }
     return { mark: 'bell', label: 'browser waiting', tone: 'att' as const };
   });
@@ -495,6 +501,40 @@
       box.shownHandOff = held.request.id;
       box.ended = null;
     }
+  });
+
+  /**
+   * The held configuration write this box is drawing, remembered on the
+   * draft's own terms: the record drops it from `pending_asks` on the same
+   * update that says it ended.
+   */
+  $effect(() => {
+    const held = ask;
+    if (held !== null && held.kind === 'settings_write') {
+      box.shownWrite = held.request.id;
+      box.ended = null;
+    }
+  });
+
+  /**
+   * A held write leaving the core, read on the draft's own terms: the ending
+   * rides the update alone, and it is what tells a reader who did not answer
+   * it what happened.
+   */
+  $effect(() => {
+    return connection.onMessage((message) => {
+      if (message.kind !== 'update') return;
+      const [name, payload] = variantOf(message.update);
+      if (name !== 'settings_write_resolved') return;
+      const at = slotOf(message.update);
+      if (at === null) return;
+      const held = boxes.held(boxKey(at));
+      if (held === undefined) return;
+      const id = typeof payload['id'] === 'string' ? payload['id'] : null;
+      if (id === null || id !== held.shownWrite) return;
+      if (held.answered === id) return;
+      held.ended = settingsWriteEndingLine(payload['ending']);
+    });
   });
 
   /**
@@ -945,6 +985,10 @@
       // same terms: the dock is gone by then, and the reason belongs where it
       // stood.
       if (message.what === 'respond_browser_hand_off') {
+        box.ended = { tone: 'warn', text: message.why };
+        return;
+      }
+      if (message.what === 'respond_settings_write') {
         box.ended = { tone: 'warn', text: message.why };
         return;
       }
@@ -1545,6 +1589,7 @@
       return `question:${current.request.toolId}:${String(current.request.index)}`;
     }
     if (current.kind === 'browser_hand_off') return `handoff:${current.request.id}`;
+    if (current.kind === 'settings_write') return `settings:${current.request.id}`;
     return `slack:${current.request.id}`;
   }
 
@@ -1561,7 +1606,8 @@
     if (
       current.kind === 'slack_draft' ||
       current.kind === 'browser_hand_off' ||
-      current.kind === 'document_hand_off'
+      current.kind === 'document_hand_off' ||
+      current.kind === 'settings_write'
     ) {
       return current.request.id;
     }

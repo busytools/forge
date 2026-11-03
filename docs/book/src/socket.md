@@ -87,7 +87,7 @@ for anything:
 ```json
 {
   "kind": "greeting",
-  "version": 25,
+  "version": 26,
   "forge_version": "1.1.25 · abc1234",
   "forge_version_short": "1.1.25+abc1234",
   "settings": {
@@ -280,6 +280,15 @@ file's comments and order, replaces the file by rename in the
 destination's own mode and through a symlink, and the guards live on the
 server so a hand-rolled client cannot force them.
 
+**The same writer backs the settings MCP tools.** A `settings__set` or
+`settings__unset` call from a session parks as `settings_write_pending` on
+that seat, carrying the key and the current and proposed value, and the
+blocked tool call waits for `respond_settings_write { key, id, approved }`.
+Approving applies the one edit through the save path above and the
+watcher's reload push follows; declining writes nothing. A
+`settings_write_resolved` names the ending, so a view that did not answer
+it can close the dock.
+
 ## Subjects
 
 Everything a client reads is addressed by a subject, and there are six:
@@ -311,14 +320,14 @@ variant's own name rather than on `kind`:
 }
 ```
 
-A command's variant is its name around its field bag - `Command` has 61
-variants, 55 of them struct variants; the six unit variants,
+A command's variant is its name around its field bag - `Command` has 62
+variants, 56 of them struct variants; the six unit variants,
 `dictate_catalogue_check`, `dictate_bench_stop`, `voice_bench_start`,
 `voice_bench_stop`, `plugin_update_all` and `plugin_check_updates`, cross as
 the name alone. An update is the same
 shape one level in,
 `{"kind": "update", "update": {"chat_appended": {"key": ..., "msg": ...}}}`,
-and 69 of `SessionUpdate`'s 72 variants are struct variants too. The other
+and 71 of `SessionUpdate`'s 74 variants are struct variants too. The other
 three are why the payload is not one shape: they are unit variants and cross
 as the name alone - `"catalog_loaded"`, `"cli_version_changed"` and
 `"dictate_availability"`.
@@ -1050,7 +1059,7 @@ conversation, and what the composer is doing.
 | `processes`                   | The last walk of the session's process tree, or `null` for a seat nothing has walked - a seat a client holds is walked once a second and its movement is pushed as a `processes_changed` update, a seat nobody holds is not walked at all, and a session ending clears it.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | `background_tasks`            | The seat's live tasks: the CLI's background registry plus the long foreground calls it announces on `task_started` and ends with a `task_notification`, a terminal `task_updated`, or the turn the call ran in, each entry saying whether the CLI backgrounded it (`is_backgrounded`), with the line the row leads with, the command its own call carried and the call that began it. The processes feed leads its rows with these, because a backgrounded bash is detached from claude's tree and the OS walk cannot see it for itself.                                                                                                                                                                                                                                                                                                                                                                                      |
 | `monitors`                    | The watches the session has running.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| `pending_asks`                | Every prompt the seat is holding, oldest first, the held kinds leading (a Slack draft, a browser hand-off, a document hand-off). Two questions of one batch or two calls that ran in parallel park several at once, so this is what a client that attached mid-batch reads.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `pending_asks`                | Every prompt the seat is holding, oldest first, the held kinds leading (a Slack draft, a browser hand-off, a document hand-off, a held configuration write). Two questions of one batch or two calls that ran in parallel park several at once, so this is what a client that attached mid-batch reads.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | `pending_ask`                 | The front of `pending_asks` - the prompt a client that draws a single ask waits on, `null` when there is none. Kept beside the list so a client reading only this one still draws the oldest ask.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | `reviews`                     | The review threads and the submitted reviews, each read separately so an unreadable one is not reported as empty.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | `slash_commands`, `subagents` | What the CLI last advertised: its commands and its agent-type catalogue, pushed as `slash_commands_changed` / `subagents_changed` when a turn's init (or a plugin reload, for the commands) moves them.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |

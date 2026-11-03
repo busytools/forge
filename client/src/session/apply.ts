@@ -320,6 +320,19 @@ export const HANDLERS: Record<string, Apply> = {
 
   slack_post_pending: (held, payload) => parked(held, 'slack_draft', payload['draft']),
 
+  settings_write_pending: (held, payload) => parked(held, 'settings_write', payload['ask']),
+
+  settings_write_resolved: (held, payload) => {
+    // The write left the core's registry - answered in another view, or its
+    // session gone. A write is answered by its own id, so this is the only
+    // thing on the stream that clears a parked one this view never sent.
+    const id = text(payload['id']);
+    if (id === null) return held;
+    const pending_asks = held.pending_asks.filter((ask) => askKey(ask) !== `settings:${id}`);
+    if (pending_asks.length === held.pending_asks.length) return held;
+    return { ...held, pending_asks };
+  },
+
   slack_draft_resolved: (held, payload) => {
     // The draft left the core's registry - answered in another view, or its
     // session gone. A draft is answered by its own id, so this is the only
@@ -598,7 +611,10 @@ function parked(held: SessionRecord, kind: string, request: unknown): SessionRec
   // The kinds held in the core's own registries rather than in the session's
   // pending set lead, the way the core's read orders them.
   const leads = (name: unknown): boolean =>
-    name === 'slack_draft' || name === 'browser_hand_off' || name === 'document_hand_off';
+    name === 'slack_draft' ||
+    name === 'browser_hand_off' ||
+    name === 'document_hand_off' ||
+    name === 'settings_write';
   if (!leads(kind)) {
     return { ...held, pending_asks: [...held.pending_asks, ask] };
   }
@@ -632,6 +648,10 @@ function askKey(ask: unknown): string | null {
   if (kind === 'document_hand_off') {
     const id = text(request['id']);
     return id === null ? null : `doc:${id}`;
+  }
+  if (kind === 'settings_write') {
+    const id = text(request['id']);
+    return id === null ? null : `settings:${id}`;
   }
   const id = text(record(request['tool_call'])['tool_call_id']);
   if (id === null) return null;

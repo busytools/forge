@@ -1427,6 +1427,284 @@ pub(crate) fn document(config: &LoadedConfig, version: &str, source: &Path) -> S
     .with_totals()
 }
 
+/// One key a settings tool can address: the document row the writer would
+/// locate, with everything an edit needs to be built and validated.
+pub(crate) struct SettingsTarget {
+    pub path: String,
+    pub pattern: String,
+    pub area: String,
+    pub class: EffectClass,
+    pub edit: SettingsEdit,
+    pub current: serde_json::Value,
+}
+
+/// The document row a concrete path names, or `None` when the path is no
+/// key this load resolves. `settings__get` and `settings__set` take a path
+/// exactly as the row states it - never a catalogue pattern, which has no
+/// value and no instance to write.
+pub(crate) fn target(document: &SettingsDocument, path: &str) -> Option<SettingsTarget> {
+    for area in &document.areas {
+        if let Some(key) = area.keys.iter().find(|key| key.path == path) {
+            return Some(SettingsTarget {
+                path: key.path.clone(),
+                pattern: key.pattern.clone(),
+                area: area.id.clone(),
+                class: key.class,
+                edit: key.edit.clone(),
+                current: key.value.clone(),
+            });
+        }
+    }
+    None
+}
+
+/// One catalogue pattern's own metadata, for a key the config does not set
+/// and therefore emits no row for.
+pub(crate) struct CatalogueKeyTarget {
+    pub class: EffectClass,
+    pub edit: SettingsEdit,
+}
+
+/// The catalogue entry a pattern names, or `None` when it is not a key the
+/// loader accepts.
+pub(crate) fn catalogue_target(pattern: &str) -> Option<CatalogueKeyTarget> {
+    all_keys()
+        .find(|key| key.path == pattern)
+        .map(|key| CatalogueKeyTarget { class: key.class, edit: edit_wire(edit_spec(key.path)) })
+}
+
+/// The row a writer locates for a key the document does not carry: its
+/// pattern and path are the edit's own, and only the fields `set_key` reads
+/// are populated.
+pub(crate) fn synthetic_key(path: &str, pattern: &str) -> Option<SettingsKey> {
+    let catalogue = catalogue_target(pattern)?;
+    Some(SettingsKey {
+        path: path.to_owned(),
+        leaf: path.rsplit('.').next().unwrap_or(path).to_owned(),
+        group: Vec::new(),
+        pattern: pattern.to_owned(),
+        // `set_key` validates and locates from `edit`, `pattern` and `path`;
+        // these describe a document row it does not have.
+        kind: SettingKind::String,
+        value: serde_json::Value::Null,
+        class: catalogue.class,
+        edit: catalogue.edit,
+    })
+}
+
+/// The target a caller's path names for a read or a write.
+///
+/// A configured key is the document's own row. **A catalogue key the config
+/// does not set emits no row at all** - an optional `browser_profile`, an
+/// `env_file`, a handoff policy - so the path is matched back to its
+/// catalogue pattern here: the key is addressable with `current` null, and
+/// the writer creates it on the write. The instances a pattern takes must
+/// still exist, so a mistyped account, org, project or workspace resolves to
+/// nothing rather than to a key nothing owns.
+pub(crate) fn resolve_target(
+    config: &LoadedConfig,
+    document: &SettingsDocument,
+    path: &str,
+) -> Option<SettingsTarget> {
+    if let Some(row) = target(document, path) {
+        return Some(row);
+    }
+    let mut best: Option<(usize, SettingsTarget)> = None;
+    for key in all_keys() {
+        let Some(names) = crate::settings_write::match_pattern(key.path, path) else { continue };
+        if !instances_exist(config, key.path, &names) {
+            continue;
+        }
+        // A dotted instance name can let a broader pattern match the same
+        // path; the pattern with more literal segments is the specific one.
+        let literals = key
+            .path
+            .split('.')
+            .filter(|segment| *segment != "*" && !segment.ends_with("[]"))
+            .count();
+        let found = SettingsTarget {
+            path: path.to_owned(),
+            pattern: key.path.to_owned(),
+            area: key.area.to_owned(),
+            class: key.class,
+            edit: edit_wire(edit_spec(key.path)),
+            current: serde_json::Value::Null,
+        };
+        if best.as_ref().is_none_or(|(best_literals, _)| literals > *best_literals) {
+            best = Some((literals, found));
+        }
+    }
+    best.map(|(_, found)| found)
+}
+
+/// Whether the instance names a pattern took all exist in `config`.
+fn instances_exist(config: &LoadedConfig, pattern: &str, names: &[String]) -> bool {
+    if pattern.starts_with("orgs[].projects[].") {
+        let (Some(org), Some(project)) = (names.first(), names.get(1)) else { return false };
+        return config.projects.iter().any(|held| &held.org == org && &held.name == project);
+    }
+    if pattern.starts_with("orgs[].") {
+        let Some(org) = names.first() else { return false };
+        return config.projects.iter().any(|held| &held.org == org);
+    }
+    if pattern.starts_with("accounts[].") {
+        let Some(account) = names.first() else { return false };
+        return config.accounts.iter().any(|held| &held.display_name == account);
+    }
+    if pattern.starts_with("slack[].") {
+        let Some(workspace) = names.first() else { return false };
+        return config.slack.iter().any(|held| &held.workspace == workspace);
+    }
+    // `models.*` and the global tables have no entry list to check against:
+    // setting a model's key creates its table, which the loader accepts.
+    true
+}
+
+/// The project a concrete path belongs to, when the path is one of a
+/// project's keys. The config's own names are matched, longest first, so a
+/// project name containing a dot stays one name.
+///
+/// Org-level keys are [`owning_org`]'s, and global keys belong to neither.
+pub(crate) fn owning_project<'a>(
+    config: &'a LoadedConfig,
+    path: &str,
+) -> Option<&'a LoadedProject> {
+    config
+        .projects
+        .iter()
+        .filter(|project| {
+            path.starts_with(&format!("orgs.{}.projects.{}.", project.org, project.name))
+        })
+        .max_by_key(|project| project.org.len() + project.name.len())
+}
+
+/// The org a concrete path belongs to, when it is one of the org's own keys
+/// (`orgs.<org>.browser_profile`, the org's Slack binding) rather than a
+/// project's. A read from another org is refused by name like another
+/// project's key is: the org's settings shape every project in it, and the
+/// org segment is ownership even though the plan's sentence names projects.
+pub(crate) fn owning_org<'a>(config: &'a LoadedConfig, path: &str) -> Option<&'a str> {
+    org_names(config)
+        .into_iter()
+        .filter(|org| path.starts_with(&format!("orgs.{org}.")))
+        .max_by_key(|org| org.len())
+        .filter(|org| {
+            let rest = &path[format!("orgs.{org}.").len()..];
+            !rest.starts_with("projects.")
+        })
+}
+
+/// The name of a value's edit control, as the index states its type.
+fn edit_kind_name(kind: forge_primitives::EditKind) -> &'static str {
+    match kind {
+        forge_primitives::EditKind::String => "string",
+        forge_primitives::EditKind::Number => "number",
+        forge_primitives::EditKind::Bool => "bool",
+        forge_primitives::EditKind::Enum => "enum",
+        forge_primitives::EditKind::List => "list",
+    }
+}
+
+/// The instance names a repeated catalogue key takes, for the caller's own
+/// reach: its project's keys list its project alone, and the global
+/// accounts, workspaces and models list every one this config declares.
+fn index_instances(config: &LoadedConfig, pattern: &str, org: &str, project: &str) -> Vec<String> {
+    if pattern.starts_with("accounts[]") {
+        return config.accounts.iter().map(|account| account.display_name.clone()).collect();
+    }
+    if pattern.starts_with("orgs[].projects[]") {
+        return config
+            .projects
+            .iter()
+            .filter(|held| held.org == org && held.name == project)
+            .map(|held| format!("{}/{}", held.org, held.name))
+            .collect();
+    }
+    if pattern.starts_with("orgs[]") {
+        if config.projects.iter().any(|held| held.org == org) {
+            return vec![org.to_owned()];
+        }
+        return Vec::new();
+    }
+    if pattern.starts_with("slack[]") {
+        return config.slack.iter().map(|workspace| workspace.workspace.clone()).collect();
+    }
+    if pattern.starts_with("models.*") {
+        let mut names: Vec<String> = config.models.keys().cloned().collect();
+        names.sort_unstable();
+        return names;
+    }
+    Vec::new()
+}
+
+/// Whether a row's value is one the reader would act on. The resolvers draw
+/// "not set" for an unset optional that has no row of its own (a model's
+/// window), so that placeholder is not a setting either.
+fn index_value_set(value: &serde_json::Value) -> bool {
+    !value.is_null() && value.as_str() != Some("not set")
+}
+
+/// Whether a row is one the caller's reach covers: its own project's rows
+/// and its own org's, so another project's set key does not mark the
+/// caller's index as set.
+fn index_row_in_reach(row: &SettingsKey, pattern: &str, org: &str, project: &str) -> bool {
+    if pattern.starts_with("orgs[].projects[]") {
+        row.group.first().is_some_and(|held| held == org)
+            && row.group.get(1).is_some_and(|held| held == project)
+    } else if pattern.starts_with("orgs[]") {
+        row.group.first().is_some_and(|held| held == org)
+    } else {
+        true
+    }
+}
+
+/// The compact catalogue an agent reads: sections and keys with type, whether
+/// the config sets one, and when an edit lands. No value crosses, so this is
+/// the shape of the file without its contents.
+pub(crate) fn index_text(
+    config: &LoadedConfig,
+    document: &SettingsDocument,
+    org: &str,
+    project: &str,
+) -> String {
+    use std::fmt::Write as _;
+
+    let rows: Vec<&SettingsKey> = document.areas.iter().flat_map(|area| &area.keys).collect();
+    let mut out = String::from(
+        "forge's configuration, one line per catalogue key:\n\
+         key  type  state  effect  [instances]\n\
+         `unset` means this config resolves no value for it; a key with a built-in shows set.\n",
+    );
+    let _ = writeln!(out, "your project: {org}/{project}");
+    for area in AREAS {
+        out.push('\n');
+        out.push_str(area.id);
+        out.push('\n');
+        for key in all_keys().filter(|key| key.area == area.id) {
+            let set = rows.iter().any(|row| {
+                row.pattern == key.path
+                    && index_value_set(&row.value)
+                    && index_row_in_reach(row, key.path, org, project)
+            });
+            let instances = index_instances(config, key.path, org, project);
+            let pattern = key.path;
+            let _ = write!(
+                out,
+                "  {}  {}  {}  {}",
+                pattern,
+                edit_kind_name(edit_spec(pattern).kind),
+                if set { "set" } else { "unset" },
+                key.class.as_str(),
+            );
+            if !instances.is_empty() {
+                let _ = write!(out, "  [{}]", instances.join(", "));
+            }
+            out.push('\n');
+        }
+    }
+    out
+}
+
 /// The reload summary, derived from the same rows the page draws: a key
 /// reported as moved and the class the page chips it with are one table's.
 pub(crate) fn diff(previous: &LoadedConfig, next: &LoadedConfig) -> ConfigReload {
@@ -1484,7 +1762,7 @@ GLOBAL_FLAG = "1"
 display_name = "Primary"
 provider = "openrouter"
 base_url = "https://openrouter.ai/api"
-token = "t"
+token = "sk-settings-index-sentinel"
 models = ["glm-5.3-flash"]
 model_slugs = { "glm-5.3-flash" = "z-ai/glm-5.3-flash" }
 model_aliases = { "glm-5.3-flash" = ["glm-flash"] }
@@ -2251,5 +2529,152 @@ models = ["m"]
         let source = PathBuf::from("/tmp/forge.toml");
         let document = document(&config, "v", &source);
         assert_eq!(document.source, source.display().to_string());
+    }
+
+    const TWO_PROJECTS: &str = r#"
+[[accounts]]
+display_name = "Primary"
+provider = "anthropic"
+token = "t"
+models = ["claude-sonnet-5"]
+
+[[orgs]]
+name = "Acme"
+accounts = ["Primary"]
+
+[[orgs.projects]]
+name = "one"
+path = "/tmp/one"
+
+[[orgs.projects]]
+name = "two"
+path = "/tmp/two"
+env_file = "/tmp/two.env"
+
+[models."claude-sonnet-5"]
+"#;
+
+    /// The index is the catalogue, not the document: one line per accepted
+    /// key, and no value anywhere.
+    #[test]
+    fn the_index_carries_the_catalogue_and_no_value() {
+        let config = load(EVERY_KEY);
+        let document = document(&config, "v", Path::new("/tmp/forge.toml"));
+
+        let text = index_text(&config, &document, "TestOrg", "proj");
+
+        let entries = text.lines().filter(|line| line.starts_with("  ")).count();
+        assert_eq!(
+            entries,
+            all_keys().count(),
+            "the index's key set is the catalogue's, not a hand-written list: {text}",
+        );
+        for key in all_keys() {
+            assert!(text.contains(key.path), "`{}` is missing from the index", key.path);
+        }
+        assert!(
+            !text.contains("https://openrouter.ai/api"),
+            "a value leaked into the index: {text}",
+        );
+        assert!(!text.contains("PROVIDER_FLAG"), "an env value leaked: {text}");
+        assert!(
+            !text.contains("sk-settings-index-sentinel"),
+            "an account token leaked into the index: {text}",
+        );
+    }
+
+    /// The index teaches the caller the keys it can address, so another
+    /// project's instance is not listed - its pattern still is.
+    #[test]
+    fn the_index_lists_the_callers_own_project_and_not_another() {
+        let config = load(TWO_PROJECTS);
+        let document = document(&config, "v", Path::new("/tmp/forge.toml"));
+
+        let text = index_text(&config, &document, "Acme", "one");
+
+        assert!(text.contains("Acme/one"), "the caller's project is named: {text}");
+        assert!(!text.contains("Acme/two"), "another project's instance is not listed: {text}");
+        assert!(text.contains("orgs[].projects[].model"), "the shape is still the catalogue's");
+
+        let line = |pattern: &str| {
+            text.lines()
+                .find(|line| line.trim_start().starts_with(&format!("{pattern}  ")))
+                .unwrap_or_else(|| panic!("`{pattern}` is missing: {text}"))
+        };
+        assert!(
+            line("orgs[].projects[].env_file").contains("unset"),
+            "another project's env file does not mark the caller's index as set",
+        );
+        assert!(
+            line("models.*.auto_compact_window").contains("unset"),
+            "the resolver's `not set` placeholder is not a setting: {}",
+            line("models.*.auto_compact_window"),
+        );
+
+        let other = index_text(&config, &document, "Acme", "two");
+        let line = other
+            .lines()
+            .find(|line| line.trim_start().starts_with("orgs[].projects[].env_file  "))
+            .expect("the pattern is listed");
+        assert!(line.contains("set"), "the caller's own env file reads as set: {line}");
+    }
+
+    /// A tool's key resolves to the row the writer locates by, and an
+    /// unknown key resolves to nothing rather than to a guess.
+    #[test]
+    fn a_target_is_the_documents_own_row() {
+        let config = load(EVERY_KEY);
+        let document = document(&config, "v", Path::new("/tmp/forge.toml"));
+
+        let resolved = target(&document, "accounts.Primary.token").expect("the row exists");
+        assert_eq!(resolved.pattern, "accounts[].token");
+        assert_eq!(resolved.area, "accounts");
+        assert_eq!(resolved.current, json!("sk-settings-index-sentinel"));
+        assert!(target(&document, "accounts.Nobody.token").is_none());
+    }
+
+    /// A catalogue key the config does not set emits no row, and still
+    /// resolves: the index lists it as unset, so `settings__get` and
+    /// `settings__set` must be able to address it.
+    #[test]
+    fn an_optional_key_the_config_does_not_set_still_resolves() {
+        let config = load(TWO_PROJECTS);
+        let document = document(&config, "v", Path::new("/tmp/forge.toml"));
+
+        let project_key = resolve_target(&config, &document, "orgs.Acme.projects.one.env_file")
+            .expect("an unset project optional resolves");
+        assert_eq!(project_key.pattern, "orgs[].projects[].env_file");
+        assert_eq!(project_key.current, serde_json::Value::Null);
+
+        let org_key = resolve_target(&config, &document, "orgs.Acme.slack.workspace")
+            .expect("an unset org optional resolves");
+        assert_eq!(org_key.pattern, "orgs[].slack.workspace");
+        assert_eq!(org_key.current, serde_json::Value::Null);
+
+        let handoff = resolve_target(&config, &document, "orgs.Acme.projects.one.handoff.enabled")
+            .expect("an unset handoff key resolves");
+        assert_eq!(handoff.pattern, "orgs[].projects[].handoff.enabled");
+
+        assert!(
+            resolve_target(&config, &document, "orgs.Acme.projects.nope.env_file").is_none(),
+            "a project the config does not declare resolves to nothing",
+        );
+        assert!(
+            resolve_target(&config, &document, "orgs.Nope.browser_profile").is_none(),
+            "an org the config does not declare resolves to nothing",
+        );
+    }
+
+    /// The project a path belongs to is read off the config's own names, so
+    /// a dotted project name stays one name.
+    #[test]
+    fn the_owning_project_is_read_off_the_path() {
+        let config = load(TWO_PROJECTS);
+        assert_eq!(
+            owning_project(&config, "orgs.Acme.projects.two.max_workers")
+                .map(|project| project.name.as_str()),
+            Some("two"),
+        );
+        assert!(owning_project(&config, "server.port").is_none());
     }
 }

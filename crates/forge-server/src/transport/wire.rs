@@ -579,6 +579,7 @@ pub enum PendingAskWire {
     SlackDraft(Value),
     BrowserHandOff(Value),
     DocumentHandOff(Value),
+    SettingsWrite(Value),
 }
 
 impl From<&PendingAsk> for PendingAskWire {
@@ -599,6 +600,9 @@ impl From<&PendingAsk> for PendingAskWire {
             }
             PendingAsk::DocumentHandOff(ask) => {
                 Self::DocumentHandOff(encode(serde_json::to_value(ask.as_ref())))
+            }
+            PendingAsk::SettingsWrite(ask) => {
+                Self::SettingsWrite(encode(serde_json::to_value(ask.as_ref())))
             }
         }
     }
