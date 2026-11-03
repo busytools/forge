@@ -172,13 +172,18 @@ fn parse_session_messages<R: std::io::Read>(reader: R) -> SessionHistory {
 
 /// Whether a transcript line is the attachment the CLI writes for a prompt
 /// queued mid-turn.
+///
+/// **The harness's own completion notices are not these.** A background
+/// task's notice is pressed into the turn that was already running - it was
+/// never waiting in the queue - so its attachment row is its row, where the
+/// run ended. Only a prompt the CLI starts later moves to its remove row.
 fn is_queued_attachment_row(value: &Value) -> bool {
-    value.get("type").and_then(Value::as_str) == Some("attachment")
-        && value
-            .get("attachment")
-            .and_then(|attachment| attachment.get("type"))
-            .and_then(Value::as_str)
-            == Some("queued_command")
+    if value.get("type").and_then(Value::as_str) != Some("attachment") {
+        return false;
+    }
+    let Some(attachment) = value.get("attachment") else { return false };
+    attachment.get("type").and_then(Value::as_str) == Some("queued_command")
+        && attachment.get("commandMode").and_then(Value::as_str) != Some("task-notification")
 }
 
 /// The `queue-operation remove` line as the queued prompt's row, or `None`
@@ -194,6 +199,12 @@ fn queue_remove_row(value: &Value) -> Option<SessionMessage> {
         return None;
     }
     let content = value.get("content").and_then(Value::as_str)?;
+    // A background task's notice was absorbed into the running turn, so its
+    // attachment already drew the row where the task ended; the removal is
+    // not a prompt start and draws nothing.
+    if content.trim_start().starts_with("<task-notification>") {
+        return None;
+    }
     let attachment = serde_json::json!({ "prompt": content });
     Some(SessionMessage {
         kind: SessionMessageKind::User,

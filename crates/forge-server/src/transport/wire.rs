@@ -3535,6 +3535,7 @@ mod tests {
         let (messages, rendered) = a_conversation(&[
             r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"hi"}]},"uuid":"u1","sessionId":"s","timestamp":"2026-10-15T05:18:05.217Z"}"#,
             r#"{"type":"attachment","attachment":{"type":"queued_command","prompt":"queued words","commandMode":"prompt"},"uuid":"q1","sessionId":"s","timestamp":"2026-10-15T05:19:00.100Z"}"#,
+            r#"{"type":"queue-operation","operation":"remove","timestamp":"2026-10-15T05:19:03.000Z","sessionId":"s","content":"queued words"}"#,
             r#"{"type":"assistant","message":{"id":"m1","role":"assistant","model":"claude-opus-5","content":[{"type":"text","text":"working"}]},"uuid":"a1","sessionId":"s","timestamp":"2026-10-15T05:19:05.544Z"}"#,
             r#"{"type":"system","subtype":"stop_hook_summary","hookCount":1,"hookInfos":[],"hookErrors":[],"hasOutput":false,"level":"suggestion","preventedContinuation":false,"stopReason":"","toolUseID":"tu1","uuid":"h1","sessionId":"s","timestamp":"2026-10-15T05:19:40.632Z"}"#,
             r#"{"type":"system","subtype":"compact_boundary","uuid":"b1","sessionId":"s","compactMetadata":{"trigger":"auto","preTokens":1018466,"postTokens":19526},"timestamp":"2026-10-15T05:20:11.004Z"}"#,
@@ -3572,7 +3573,7 @@ mod tests {
             stamps,
             vec![
                 Some("2026-10-15T05:18:05.217Z"),
-                Some("2026-10-15T05:19:00.100Z"),
+                Some("2026-10-15T05:19:03.000Z"),
                 Some("2026-10-15T05:19:05.544Z"),
                 Some("2026-10-15T05:19:40.632Z"),
                 Some("2026-10-15T05:20:11.004Z"),
