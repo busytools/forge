@@ -199,7 +199,6 @@ impl Workspace {
     /// receiver is dropped on purpose: the tool call is the test's to
     /// simulate, and the note's own path is covered where a handler awaits
     /// it. Test-only.
-    #[cfg(any(test, feature = "testing"))]
     pub fn park_slack_draft_for_test(
         &self,
         key: &SessionSlot,
