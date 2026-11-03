@@ -222,10 +222,10 @@ the load instead of quietly applying nothing.
 ## `[handoff]`
 
 When a session's context is nearly full, forge replaces it with a fresh
-session that continues from a brief: the work carries on, and only a
-handoff row marks the swap. The trigger runs on by default, at the end of
-a turn, so a long session stops before its first compaction rather than
-after it.
+session that continues from a brief: the work carries on, and the
+successor's transcript opens with that brief, drawn as the handoff
+procedure. The trigger runs on by default, at the end of a turn, so a long
+session stops before its first compaction rather than after it.
 
 | Key                 | Type    | Default | Notes                                                                                     |
 | ------------------- | ------- | ------- | ----------------------------------------------------------------------------------------- |
