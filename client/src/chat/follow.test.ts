@@ -3032,6 +3032,37 @@ describe('a return to the seat the reader left', () => {
   });
 
   /**
+   * **The follow flag can be on while the reader is parked** (#1673's own
+   * gate): an arrival re-arms the follow, and the pin's condition holds the
+   * reader where they are rather than carrying them down. That reader still
+   * holds a place, and a document return owes it back - the arrival is not the
+   * reader moving, and a return is not a seat switch.
+   */
+  it('puts a parked reader back when an arrival armed the follow', async () => {
+    const server = stub();
+    await parked(server);
+
+    // The follow is armed while the reader stays parked: the flag goes on, the
+    // column holds position, and the anchor is still the reader's place.
+    const chat = conversationsFor(server.connection).live.get(subjectKey({ session: LEAD }))?.chat;
+    expect(chat, 'precondition: the column holds the seat conversation').toBeDefined();
+    chat?.following(true);
+    await settle();
+    clear();
+
+    await ontoDocument();
+    returned(server);
+    await settle();
+    await settle();
+
+    expect(element.offset, 'the return dropped the reader to the foot').toBe(PLACE);
+    expect(
+      pinned().filter((pin) => pin.landed === Math.floor(TOTAL) - VIEWPORT),
+      'a return is not a seat switch: no foot pin',
+    ).toEqual([]);
+  });
+
+  /**
    * The guard on the other side: a seat SWITCH still lands at the latest,
    * whatever a seat was left holding (#1673). The switch is the same mounted
    * column taking a different slot, which is what the app does.

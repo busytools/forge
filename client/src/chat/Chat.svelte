@@ -1279,22 +1279,31 @@
    * The reader's place, kept per seat for a mount that outlives the column.
    *
    * **Written from the column's own state rather than from a scroll**: the
-   * anchor is where a parked reader is, and the follow being off is what says
-   * they are parked. A seat the reader is following has no place - coming back
-   * to it should land at the latest - so its record goes as the entry does.
+   * anchor is where a parked reader is. A reader at the foot has no anchor to
+   * hold, so a seat left at its foot has no place - coming back to it should
+   * land at the latest. **The follow flag is not the test**: since #1673's
+   * gate, an arrival can arm the follow while the pin's condition holds a
+   * parked reader where they are, and that reader still holds the place a
+   * document return owes back.
    */
   $effect(() => {
     // The place being restored is already recorded; the placer writes it back
     // when it lands, and a dropped one goes with the record it no longer has.
     if (restoring !== null) return;
     const here = anchor;
-    const follows = held.following;
     const which = seat;
     const places = conversations().places;
-    if (follows || here === null) {
+    // **The seat's own value is read so this runs when it changes.** The
+    // anchor is a plain field rather than state, and a reader parks by moving
+    // the follow - so the write lands on the publish that settles it, not on
+    // the scroll event. A row of a conversation this seat no longer holds is
+    // not this seat's place, so it is not written over one.
+    const seatValue = held;
+    if (here === null) {
       places.delete(which);
       return;
     }
+    if (!seatValue.turns.some((turn) => here.key.startsWith(`${turn.key}:`))) return;
     places.set(which, here);
   });
 
