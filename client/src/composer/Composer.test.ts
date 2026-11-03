@@ -3471,6 +3471,39 @@ describe('the seat the box belongs to', () => {
    * send takes the seat's one echo, so the older press may hold none - and
    * that older reason must not be read against the live send (#1583).
    */
+  /**
+   * **A core-answered command draws its refusal where the press stood.**
+   * `/new` and its family never reach a model, so the send posts no echo - and
+   * a refusal that matched no echo used to be dropped, with the draft already
+   * cleared: the press did nothing and said nothing.
+   */
+  it('draws the refusal of a core-answered command', () => {
+    const shared = wire();
+    const harness = open({}, shared);
+    const sent = harness.sent;
+    type('/new');
+    // The list a slash name opens takes Enter for its own pick; Escape closes
+    // it so the press below is the reader's send.
+    press('Escape');
+    press('Enter');
+    flushSync();
+    const dispatched = sent[0]?.command['prompt_under'] as Record<string, unknown>;
+    expect(dispatched?.['text'], 'precondition: the press went out').toBe('/new');
+    expect(echoAt(SLOT), 'the core answers it, so no echo stands in for a row').toBeUndefined();
+
+    harness.say({
+      kind: 'error',
+      what: 'dispatch',
+      why: 'the session is closed',
+      dispatch_id: dispatched['dispatch_id'] as number,
+    });
+    flushSync();
+
+    expect(drawn(), 'the press draws its reason where it stood').toContain(
+      'the session is closed',
+    );
+  });
+
   it('drops a numbered refusal whose own press the seat has replaced', () => {
     const shared = wire();
     const harness = open({}, shared);

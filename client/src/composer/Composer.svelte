@@ -1002,7 +1002,17 @@
       // press's reason would be a stranger's failure (#1583). Only a server
       // that predates the field names none, and that is the fallback below.
       if (typeof message.dispatch_id === 'number') {
-        echoes.refuseDispatch(message.dispatch_id, message.why);
+        // **A press with no echo is still a press this client made.** A
+        // core-answered command posts no echo, because no turn will carry its
+        // words - so the refusal has no row to mark and is drawn where the
+        // press stood. The dispatch id is minted per client, so the id is a
+        // press this page made even when no echo stands for it.
+        if (!echoes.refuseDispatch(message.dispatch_id, message.why)) {
+          // The refused command never started a turn, so the blocked line it
+          // raised has nothing to wait for; the box comes back with the reason.
+          box.sent = null;
+          box.ended = { tone: 'warn', text: message.why };
+        }
         return;
       }
       // **A take's own refusal is not an answer's.** This composer knows it
