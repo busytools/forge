@@ -231,7 +231,7 @@ fn omission(dropped: usize) -> Message {
             "severity": "info",
             "text": format!(
                 "[cut; {dropped} earlier messages of this turn are in the previous session - \
-                 resume it from the handoff row]"
+                 resume it by its id]"
             ),
         }),
     }

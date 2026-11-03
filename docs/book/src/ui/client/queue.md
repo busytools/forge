@@ -60,7 +60,7 @@ captures:
 - `started` lands at the turn boundary that delivers it, 2-3ms after, and
   the card drains into the chat as the row it becomes, carrying its wait
   under it (`queued 0:0n · sent`). While it waited, the card was the only
-  drawing of the words: the row is held until this frame;
+  drawing of the words: the row is drawn at this frame;
 - `completed` says the turn that carried it ended.
 
 A cancel dispatches the client's own `cancel_queued_prompt`, which the

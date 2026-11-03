@@ -2874,6 +2874,7 @@ mod tests {
 {"type":"widget_state","widget":{"name":"counter"},"uuid":"w1","sessionId":"s1","timestamp":"2026-10-26T10:00:04.000Z"}
 {"type":"worktree-state","worktree":{},"uuid":"ws1"}
 {"type":"mode","mode":"default","uuid":"m1"}
+{"type":"queue-operation","operation":"enqueue","timestamp":"2026-11-03T12:00:58.593Z","sessionId":"s1","content":"a prompt the reader cancelled"}
 {"type":"system","subtype":"turn_duration","durationMs":10,"uuid":"t1","sessionId":"s1"}
 "#;
         let history = parse_session_messages(jsonl.as_bytes());
@@ -2883,6 +2884,13 @@ mod tests {
             // it provisionally, so the read keeps it too.
             ["p1", "e1", "i1", "n1", "w1", "t1"],
             "the live rows are kept, and no bookkeeping row is",
+        );
+        assert!(
+            !history.messages.iter().any(|row| {
+                row.message.get("type").and_then(serde_json::Value::as_str)
+                    == Some("queue-operation")
+            }),
+            "an enqueue-only queue-operation row is bookkeeping, so a cold read never serves it",
         );
 
         let messages = messages_from_rows(history.messages, "s1");

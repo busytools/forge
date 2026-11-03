@@ -225,7 +225,8 @@ about a turn the reader caused.
 the band is the single place every narrative state speaks. It is the one
 narrative line that does not take the field with it: the seat is up and takes
 a prompt while the page is out, and a send made before it landed is drawn as
-the reader's own row in the column above, so its words are never lost.
+the reader's own row in the column above, so its words are never lost. A
+command the core answers itself draws no row: its answer is the feedback.
 
 **Every narrative hold is one draw.** Waking, reading, a command in flight, a
 compaction and a handoff all replace the body with one line and the same sweep

@@ -662,6 +662,17 @@ impl DomainSession {
         self.prompt_queue.iter().find(|prompt| prompt.uuid == uuid)
     }
 
+    /// Take every entry still waiting, leaving the pile empty.
+    ///
+    /// **The capability arrives after the first prompt.** `msg_lifecycle_v1`
+    /// is read from the CLI's init frame, and its first user message lands
+    /// before that - so a prompt recorded while the flag was `None` can never
+    /// be settled by a lifecycle frame. The task takes the entries and draws
+    /// them itself, the only carrier they will get.
+    pub(crate) fn take_queued_prompts(&mut self) -> Vec<crate::protocol::QueuedPrompt> {
+        std::mem::take(&mut self.prompt_queue)
+    }
+
     /// Advance a prompt's state from one of the CLI's lifecycle frames.
     ///
     /// Returns whether the id was known. A state the CLI has SETTLED drops the

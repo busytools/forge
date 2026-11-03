@@ -3600,9 +3600,8 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
 .sess .mfacts .tk { display: inline-block; width: 60px; height: 5px; border-radius: 99px;
   background: var(--s3); overflow: hidden; vertical-align: middle; margin-right: 6px; }
 .sess .mfacts .fl { display: block; height: 100%; background: var(--accent); }
-/* The copy control is shared: the header's id row and the handoff row's
-   session ids both draw it, so the look lives on the control rather than on
-   one page's container. */
+/* The copy control is the header's id row's, so its look lives on the
+   control rather than on the page's container. */
 .cp { color: var(--dim); background: none; border: 1px solid var(--ctl);
   border-radius: 5px; padding: 2px 5px; cursor: pointer;
   display: inline-flex; align-items: center; }

@@ -563,9 +563,9 @@ impl SessionTask {
                             // it - a new id here would orphan the row's
                             // schedule (#1815).
                             //
-                            // `route`, not `dispatch`: the prompt was already
-                            // drawn when it was held, and the dispatch entry
-                            // would stamp an origin that draws it a second time.
+                            // `route`, not `dispatch`: this is a re-delivery of
+                            // words already recorded, not a new press, so it
+                            // takes no dispatch entry's command handling.
                             let uuid = prompt.uuid;
                             if let Err(error) = workspace.route(Command::PromptUnder {
                                 key: key.clone(),
@@ -1090,13 +1090,39 @@ impl SessionTask {
                         first
                     };
                     if first_sight && !advertised {
+                        // **The first prompt can already be waiting.** The
+                        // capability is only known from this frame, and the
+                        // CLI's first user message lands before it - so a
+                        // prompt recorded while the flag was `None` would
+                        // never be settled by a frame. Draw every person's
+                        // row now, the only carrier it will get, and settle
+                        // the pile.
+                        let held = { self.domain.lock().take_queued_prompts() };
+                        for prompt in held {
+                            if prompt.source == PromptSource::You {
+                                self.emit_prompt_row(
+                                    &prompt.text,
+                                    &prompt.attachments,
+                                    &prompt.uuid,
+                                    prompt.source,
+                                );
+                            }
+                            // The state only drains the card and releases the
+                            // held row; no CLI frame follows on this seat.
+                            self.emit(SessionUpdate::PromptLifecycle {
+                                key: self.key.clone(),
+                                uuid: prompt.uuid,
+                                state: "started".to_owned(),
+                            });
+                        }
                         tracing::warn!(
                             target: "forge_workspace::session_task",
                             slot = %self.key.display(),
                             event_name = "lifecycle_frames_absent",
                             outcome = "pile_disabled",
                             "this session's CLI does not advertise msg_lifecycle_v1, so queued \
-                             prompts cannot be followed here; the pile is not drawn for this seat",
+                             prompts cannot be followed here; the pile is not drawn for this seat \
+                             and its prompts draw at dispatch",
                         );
                     }
                 }
@@ -1186,7 +1212,7 @@ impl SessionTask {
                     }
                     let msg = self.attribute_dispatch(msg);
                     // `None` either way: a frame off the wire is the CLI's
-                    // own, and carries neither a prompt origin nor a sender.
+                    // own, and carries no sender.
                     self.emit(SessionUpdate::ChatAppended {
                         key: self.key.clone(),
                         msg,
@@ -1501,6 +1527,19 @@ impl SessionTask {
                 // where the prompt actually reaches the agent.
                 let counts_for_successor =
                     matches!(&other, Command::PromptUnder { source: PromptSource::You, .. });
+                // **A prompt that never reaches the CLI leaves the queue.**
+                // Its card would otherwise wait on a frame no CLI will send,
+                // and its words would have no row. Kept before the move.
+                let failed = match &other {
+                    Command::PromptUnder {
+                        text,
+                        attachments,
+                        uuid,
+                        source: PromptSource::You,
+                        ..
+                    } => Some((text.clone(), attachments.clone(), uuid.clone())),
+                    _ => None,
+                };
                 if let Err(err) = execute_command_via_handle(
                     &self.handle,
                     &self.key,
@@ -1508,6 +1547,22 @@ impl SessionTask {
                     fresh,
                     other,
                 ) {
+                    if let Some((text, attachments, uuid)) = failed {
+                        let held = {
+                            let mut guard = self.domain.lock();
+                            let held = guard.queued_prompt(&uuid).is_some();
+                            guard.drop_queued_prompt(&uuid);
+                            held
+                        };
+                        if held {
+                            self.emit_prompt_row(&text, &attachments, &uuid, PromptSource::You);
+                            self.emit(SessionUpdate::PromptLifecycle {
+                                key: self.key.clone(),
+                                uuid,
+                                state: "started".to_owned(),
+                            });
+                        }
+                    }
                     tracing::warn!(
                         target: "forge_workspace::session_task",
                         slot = %self.key.display(),
@@ -2122,9 +2177,9 @@ impl SessionTask {
             let sender = prompt.sender.clone();
             let first = prompt.text.lines().next().unwrap_or_default().to_owned();
             let uuid = forge_sdk::request_id::next_forged_prompt_id();
-            // `route`, not `dispatch`: the prompt was already drawn when it
-            // was held, and the dispatch entry would stamp an origin that
-            // draws it a second time.
+            // `route`, not `dispatch`: this is a re-delivery of words already
+            // recorded, not a new press, so it takes no dispatch entry's
+            // command handling.
             if let Err(error) = workspace.route(Command::PromptUnder {
                 key: key.clone(),
                 text: prompt.text,
@@ -4578,8 +4633,8 @@ mod tests {
                 command,
                 Command::PromptUnder { text, .. } if text == "sent during the swap"
             )),
-            "the held prompt goes back to the session that continues, drawn once already - a \
-             stamped origin would draw it a second time: {dispatched:?}",
+            "the held prompt goes back to the session that continues, under the id it was held \
+             with: {dispatched:?}",
         );
     }
 
@@ -4708,8 +4763,8 @@ mod tests {
                 command,
                 Command::PromptUnder { text, .. } if text == "sent during the swap"
             )),
-            "the held prompt goes back to the session that continues, drawn once already - a \
-             stamped origin would draw it a second time: {dispatched:?}",
+            "the held prompt goes back to the session that continues, under the id it was held \
+             with: {dispatched:?}",
         );
     }
 
@@ -5162,10 +5217,22 @@ mod tests {
         task.execute_command(Command::PromptUnder {
             key: slot.clone(),
             text: "sent mid turn".to_owned(),
-            attachments: vec![forge_primitives::ImageAttachment {
-                data: "iVBORw0KGgo=".to_owned(),
-                mime_type: "image/png".to_owned(),
-            }],
+            // Two the sender drops before the model sees them: the live row
+            // must draw only what a reload would carry.
+            attachments: vec![
+                forge_primitives::ImageAttachment {
+                    data: "iVBORw0KGgo=".to_owned(),
+                    mime_type: "image/png".to_owned(),
+                },
+                forge_primitives::ImageAttachment {
+                    data: "iVBORw0KGgo=".to_owned(),
+                    mime_type: "text/plain".to_owned(),
+                },
+                forge_primitives::ImageAttachment {
+                    data: "not base64!".to_owned(),
+                    mime_type: "image/png".to_owned(),
+                },
+            ],
             uuid: "send-row-uuid".to_owned(),
             source: crate::protocol::PromptSource::You,
             dispatch_id: None,
@@ -5199,15 +5266,40 @@ mod tests {
             },
         });
 
-        let mut drawn = Vec::new();
-        while let Ok(frame) = update_rx.try_recv() {
-            if let SessionUpdate::ChatAppended { msg, source, .. } = &*frame.update {
-                drawn.push((msg.clone(), *source));
-            }
-        }
+        let announced: Vec<SessionUpdate> = std::iter::from_fn(|| update_rx.try_recv().ok())
+            .map(|frame| std::sync::Arc::unwrap_or_clone(frame.update))
+            .collect();
+        let drawn: Vec<(&forge_primitives::Message, Option<crate::protocol::PromptSource>)> =
+            announced
+                .iter()
+                .filter_map(|update| match update {
+                    SessionUpdate::ChatAppended { msg, source, .. } => Some((msg, *source)),
+                    _ => None,
+                })
+                .collect();
         let [(msg, source)] = drawn.as_slice() else {
             panic!("the start draws one row: {drawn:?}");
         };
+        // **The row lands before the state that drains it.** A view holds the
+        // row on the frame and draws it when the state arrives; the other
+        // order draws the announcement's bare words and loses the attachment.
+        let row_at = announced
+            .iter()
+            .position(|update| matches!(update, SessionUpdate::ChatAppended { .. }))
+            .expect("the row is announced");
+        let lifecycle_at = announced
+            .iter()
+            .position(|update| {
+                matches!(
+                    update,
+                    SessionUpdate::PromptLifecycle { state, .. } if state == "started"
+                )
+            })
+            .expect("the state is announced");
+        assert!(
+            row_at < lifecycle_at,
+            "the row is emitted before the lifecycle frame that drains it: {announced:?}",
+        );
         assert_eq!(*source, Some(crate::protocol::PromptSource::You), "the reader's own send");
         let forge_primitives::Message::User { message, uuid, .. } = msg else {
             panic!("the row is the user turn it draws: {msg:?}");
@@ -5236,6 +5328,11 @@ mod tests {
             extras.get("forge_bytes").and_then(serde_json::Value::as_u64),
             Some(8),
             "and the eight bytes the payload weighed, never the payload",
+        );
+        assert_eq!(
+            message.content.len(),
+            2,
+            "only the attachment the sender kept draws, beside the words: {message:?}",
         );
     }
 
@@ -11994,7 +12091,7 @@ provider = "anthropic"
     /// drain is worse than no card - that session draws its prompt the way it
     /// did before the pile existed.
     #[tokio::test]
-    async fn a_cli_without_lifecycle_frames_records_nothing() {
+    async fn a_cli_without_lifecycle_frames_draws_its_prompts_and_drains_the_pile() {
         let (workspace, mut updates) = crate::Workspace::testing_stub();
         workspace.seed_test_project("nf", "/tmp/nf");
         let key = SessionSlot::from_str_for_test("nf-lead");
@@ -12016,8 +12113,37 @@ provider = "anthropic"
             teardown_done: None,
         };
 
-        // An init frame from a CLI that does not advertise the capability - the
-        // one thing that turns the pile off for this seat.
+        // **The first prompt lands before the init frame**, which is the only
+        // frame that can say the capability is absent - so it is recorded and
+        // announced while the flag is still unknown.
+        task.execute_command(Command::Prompt {
+            key: key.clone(),
+            text: "the first prompt".to_owned(),
+            attachments: Vec::new(),
+        });
+        assert_eq!(
+            domain.lock().prompt_queue.len(),
+            1,
+            "premise: recorded while the capability was unknown",
+        );
+        let announced: Vec<crate::protocol::SessionUpdate> =
+            std::iter::from_fn(|| updates.try_recv().ok())
+                .map(|frame| std::sync::Arc::unwrap_or_clone(frame.update))
+                .collect();
+        let first = announced
+            .iter()
+            .find_map(|update| match update {
+                crate::protocol::SessionUpdate::PromptQueued { uuid, text, .. }
+                    if text == "the first prompt" =>
+                {
+                    Some(uuid.clone())
+                }
+                _ => None,
+            })
+            .expect("the first prompt is announced while its capability is unknown");
+
+        // The init frame from a CLI that does not advertise the capability is
+        // what draws the waiting prompt and drains the pile.
         let init: forge_primitives::Message = serde_json::from_value(serde_json::json!({
             "type": "system",
             "subtype": "init",
@@ -12029,35 +12155,74 @@ provider = "anthropic"
             session_id: "nf-session".to_owned(),
             msg: init,
         });
-
-        task.execute_command(Command::Prompt {
-            key: key.clone(),
-            text: "this one is not recorded".to_owned(),
-            attachments: Vec::new(),
-        });
-
         assert!(
             domain.lock().prompt_queue.is_empty(),
-            "a prompt is recorded only where the CLI can settle it",
+            "the init frame drains the pile it can no longer settle",
         );
         assert!(
             agent_rx.try_recv().is_ok(),
             "the prompt itself still reaches the agent: the pile is a view, not the send",
         );
-        let announced: Vec<crate::protocol::SessionUpdate> =
+        let drained: Vec<crate::protocol::SessionUpdate> =
+            std::iter::from_fn(|| updates.try_recv().ok())
+                .map(|frame| std::sync::Arc::unwrap_or_clone(frame.update))
+                .collect();
+        let row = drained.iter().find_map(|update| match update {
+            crate::protocol::SessionUpdate::ChatAppended { msg, source, .. }
+                if matches!(msg, forge_primitives::Message::User { .. }) =>
+            {
+                Some((msg, source))
+            }
+            _ => None,
+        });
+        let Some((msg, source)) = row else {
+            panic!("the init frame draws the waiting prompt: {drained:?}");
+        };
+        assert_eq!(*source, Some(crate::protocol::PromptSource::You), "the reader's own send");
+        let forge_primitives::Message::User { message, uuid, .. } = msg else {
+            panic!("the flushed row is the user turn it draws: {msg:?}");
+        };
+        assert_eq!(uuid.as_deref(), Some(first.as_str()), "under the announcement's own id");
+        assert!(
+            message.content.iter().any(|block| matches!(
+                block,
+                forge_primitives::ContentBlock::Text { text, .. } if text == "the first prompt"
+            )),
+            "carrying the words the dispatch held: {message:?}",
+        );
+        assert!(
+            drained.iter().any(|update| matches!(
+                update,
+                crate::protocol::SessionUpdate::PromptLifecycle { uuid, state, .. }
+                    if uuid == &first && state == "started"
+            )),
+            "and settles the card it was waiting in: {drained:?}",
+        );
+
+        // **Every later prompt takes the dispatch fallback.** The flag is
+        // known now, so the prompt is not recorded and the dispatch draws it.
+        task.execute_command(Command::Prompt {
+            key: key.clone(),
+            text: "the second prompt".to_owned(),
+            attachments: Vec::new(),
+        });
+        assert!(
+            domain.lock().prompt_queue.is_empty(),
+            "a prompt is recorded only where the CLI can settle it",
+        );
+        assert!(agent_rx.try_recv().is_ok(), "and it still reaches the agent");
+        let later: Vec<crate::protocol::SessionUpdate> =
             std::iter::from_fn(|| updates.try_recv().ok())
                 .map(|frame| std::sync::Arc::unwrap_or_clone(frame.update))
                 .collect();
         assert!(
-            !announced.iter().any(|update| matches!(
+            !later.iter().any(|update| matches!(
                 update,
                 crate::protocol::SessionUpdate::PromptQueued { .. }
             )),
-            "nothing is announced for a row that is not kept: {announced:?}",
+            "nothing is announced for a row that is not kept: {later:?}",
         );
-        // **No `started` is coming**, so the dispatch draws the row instead:
-        // the one case where the dispatch is still its only carrier.
-        let drawn = announced.iter().find_map(|update| match update {
+        let drawn = later.iter().find_map(|update| match update {
             crate::protocol::SessionUpdate::ChatAppended { msg, source, .. }
                 if matches!(msg, forge_primitives::Message::User { .. }) =>
             {
@@ -12066,7 +12231,7 @@ provider = "anthropic"
             _ => None,
         });
         let Some((msg, source)) = drawn else {
-            panic!("a seat that cannot follow a queue draws its row at dispatch: {announced:?}");
+            panic!("a seat that cannot follow a queue draws its row at dispatch: {later:?}");
         };
         assert_eq!(*source, Some(crate::protocol::PromptSource::You), "the reader's own send");
         let forge_primitives::Message::User { message, .. } = msg else {
@@ -12076,9 +12241,179 @@ provider = "anthropic"
             message.content.iter().any(|block| matches!(
                 block,
                 forge_primitives::ContentBlock::Text { text, .. }
-                    if text == "this one is not recorded"
+                    if text == "the second prompt"
             )),
             "carrying the words the dispatch held: {message:?}",
+        );
+    }
+
+    /// **The started row reaches every fanout subscriber, for each send.** The
+    /// task emits it once; the transport's mirror and a view both get the same
+    /// frame, and a second queued send draws its own row after the first.
+    #[tokio::test]
+    async fn a_started_row_reaches_every_fanout_subscriber_for_each_send() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (workspace, _rx) =
+            crate::Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
+        let slot = SessionSlot::worker("TestOrg", "forge", "fanout-row");
+        let (mut task, mut view_rx, _agent_rx) = nudge_task_for(&workspace, &slot);
+        task.domain.lock().session_id = Some(forge_primitives::SessionId::new("fanout-session"));
+        let mut mirror_rx = task.update_tx.subscribe(SubscriberRole::Observing);
+
+        for (uuid, text) in [("fanout-1", "first send"), ("fanout-2", "second send")] {
+            task.execute_command(Command::PromptUnder {
+                key: slot.clone(),
+                text: text.to_owned(),
+                attachments: vec![forge_primitives::ImageAttachment {
+                    data: "iVBORw0KGgo=".to_owned(),
+                    mime_type: "image/png".to_owned(),
+                }],
+                uuid: uuid.to_owned(),
+                source: crate::protocol::PromptSource::You,
+                dispatch_id: None,
+            });
+        }
+        for uuid in ["fanout-1", "fanout-2"] {
+            task.translate_event(AgentEvent::SdkMessage {
+                session_id: "fanout-session".to_owned(),
+                msg: forge_primitives::Message::CommandLifecycle {
+                    command_uuid: uuid.to_owned(),
+                    state: "started".to_owned(),
+                    uuid: format!("lifecycle-{uuid}"),
+                    session_id: "fanout-session".to_owned(),
+                    extras: forge_primitives::messages::Extras::new(),
+                },
+            });
+        }
+
+        for (name, rx) in [("a view", &mut view_rx), ("the transport's mirror", &mut mirror_rx)] {
+            let mut drawn = Vec::new();
+            while let Ok(frame) = rx.try_recv() {
+                if let SessionUpdate::ChatAppended { msg, source, .. } = &*frame.update
+                    && let forge_primitives::Message::User { uuid: Some(uuid), message, .. } = msg
+                    && message
+                        .content
+                        .iter()
+                        .any(|block| matches!(block, forge_primitives::ContentBlock::Image { .. }))
+                {
+                    drawn.push((uuid.clone(), *source));
+                }
+            }
+            assert_eq!(
+                drawn,
+                vec![
+                    ("fanout-1".to_owned(), Some(crate::protocol::PromptSource::You)),
+                    ("fanout-2".to_owned(), Some(crate::protocol::PromptSource::You)),
+                ],
+                "{name} hears each send's row once, in order",
+            );
+        }
+    }
+
+    /// **A refused or discarded prompt draws no row.** The CLI settles it
+    /// without running: the queue entry leaves and no chat frame follows, so
+    /// the pile's own ending line is the only place the words exist.
+    #[tokio::test]
+    async fn a_refused_or_discarded_prompt_draws_no_row() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (workspace, _rx) =
+            crate::Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
+        let slot = SessionSlot::worker("TestOrg", "forge", "dropped-row");
+        let (mut task, mut update_rx, _agent_rx) = nudge_task_for(&workspace, &slot);
+        task.domain.lock().session_id = Some(forge_primitives::SessionId::new("dropped-session"));
+
+        for (uuid, state) in [("refused-1", "refused"), ("discarded-1", "discarded")] {
+            task.execute_command(Command::PromptUnder {
+                key: slot.clone(),
+                text: format!("{state} words"),
+                attachments: Vec::new(),
+                uuid: uuid.to_owned(),
+                source: crate::protocol::PromptSource::You,
+                dispatch_id: None,
+            });
+            assert_eq!(task.domain.lock().prompt_queue.len(), 1, "premise: the prompt waits");
+            task.translate_event(AgentEvent::SdkMessage {
+                session_id: "dropped-session".to_owned(),
+                msg: forge_primitives::Message::CommandLifecycle {
+                    command_uuid: uuid.to_owned(),
+                    state: state.to_owned(),
+                    uuid: format!("lifecycle-{uuid}"),
+                    session_id: "dropped-session".to_owned(),
+                    extras: forge_primitives::messages::Extras::new(),
+                },
+            });
+            assert!(
+                task.domain.lock().prompt_queue.is_empty(),
+                "the settled prompt leaves the pile",
+            );
+            let announced: Vec<SessionUpdate> = std::iter::from_fn(|| update_rx.try_recv().ok())
+                .map(|frame| std::sync::Arc::unwrap_or_clone(frame.update))
+                .collect();
+            assert!(
+                !announced.iter().any(|update| matches!(
+                    update,
+                    SessionUpdate::ChatAppended { msg: forge_primitives::Message::User { uuid: Some(id), .. }, .. } if id.as_str() == uuid
+                )),
+                "a {state} prompt draws no row: {announced:?}",
+            );
+        }
+    }
+
+    /// **A dispatch that fails after recording draws the row and drains the
+    /// card.** The prompt never reached the CLI, so no lifecycle frame is
+    /// coming - the words draw over the failure, and the pile settles.
+    #[tokio::test]
+    async fn a_failed_dispatch_draws_the_row_and_drains_the_card() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (workspace, _rx) =
+            crate::Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
+        let slot = SessionSlot::worker("TestOrg", "forge", "failed-dispatch");
+        let (mut task, mut update_rx, agent_rx) = nudge_task_for(&workspace, &slot);
+        task.domain.lock().session_id = Some(forge_primitives::SessionId::new("failed-session"));
+        // The bridge's receiver is gone, so the prompt cannot reach the CLI.
+        drop(agent_rx);
+
+        task.execute_command(Command::PromptUnder {
+            key: slot.clone(),
+            text: "doomed words".to_owned(),
+            attachments: Vec::new(),
+            uuid: "failed-1".to_owned(),
+            source: crate::protocol::PromptSource::You,
+            dispatch_id: None,
+        });
+
+        assert!(
+            task.domain.lock().prompt_queue.is_empty(),
+            "the entry a failed dispatch leaves behind is dropped",
+        );
+        let announced: Vec<SessionUpdate> = std::iter::from_fn(|| update_rx.try_recv().ok())
+            .map(|frame| std::sync::Arc::unwrap_or_clone(frame.update))
+            .collect();
+        let row_at = announced
+            .iter()
+            .position(|update| {
+                matches!(
+                    update,
+                    SessionUpdate::ChatAppended {
+                        msg: forge_primitives::Message::User { uuid: Some(id), .. },
+                        source: Some(crate::protocol::PromptSource::You),
+                        ..
+                    } if id == "failed-1"
+                )
+            })
+            .expect("the failed prompt's words draw");
+        let error_at = announced
+            .iter()
+            .position(|update| matches!(update, SessionUpdate::TurnError { .. }))
+            .expect("the failure draws");
+        assert!(row_at < error_at, "the words draw above the failure: {announced:?}");
+        assert!(
+            announced.iter().any(|update| matches!(
+                update,
+                SessionUpdate::PromptLifecycle { uuid, state, .. }
+                    if uuid == "failed-1" && state == "started"
+            )),
+            "and the card settles: {announced:?}",
         );
     }
 

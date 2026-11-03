@@ -1457,8 +1457,9 @@ pub enum SessionUpdate {
     },
     /// The seat's occupant was replaced by a handoff rather than by a person
     /// asking for one, and this is the record of it - emitted before any
-    /// frame from the new occupant, so a view draws the row between the two
-    /// conversations rather than after the new one has started.
+    /// frame from the new occupant, so the seat learns the swap before the
+    /// successor's transcript starts. No view draws a row from it: the
+    /// successor's own procedure row carries the handoff.
     Handoff {
         key: SessionSlot,
         handoff: forge_primitives::HandoffRecord,

@@ -159,6 +159,10 @@ describe('the queue pile', () => {
     const style = dom.window.getComputedStyle(held);
     expect(Number.parseFloat(style.marginTop), 'no seam above the pile').toBe(0);
     expect(Number.parseFloat(style.marginBottom), 'the gap below it to the box stays').toBe(8);
+    expect(
+      ['', 'static'],
+      'the pile stays in flow, so it cannot paint over the row above',
+    ).toContain(style.position);
   });
 
   it('walks from the newest to the oldest and back into the box', () => {

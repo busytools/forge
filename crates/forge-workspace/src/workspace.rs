@@ -26049,12 +26049,11 @@ provider = "anthropic"
 }
 
 #[cfg(test)]
-mod prompt_frame_origin_tests {
-    //! A prompt's frame says where its words came from, and the answer is the
-    //! entry the caller took rather than a value off the wire. Views draw on
-    //! that answer - the UI's own words are drawn at submit, a socket
-    //! client's are not - so a wrong origin is a reader shown their own line
-    //! twice, or a send nobody draws at all.
+mod prompt_dispatch_tests {
+    //! A prompt's dispatch wiring, at the layer that answers for it: the
+    //! command carries the id its row is drawn from and the source a reader's
+    //! follow arms on, and no frame is forged here - the session task draws
+    //! the row when the CLI starts the prompt.
     use super::*;
 
     fn a_prompt(key: &SessionSlot) -> Command {
@@ -26075,9 +26074,6 @@ mod prompt_frame_origin_tests {
         (ws, rx, seat)
     }
 
-    /// The UI's own entry. The origin is stamped on the COMMAND: the frame
-    /// itself is drawn by the session task, so the command is what this layer
-    /// answers for.
     /// **The routed command carries the id its row is drawn from.** The
     /// session task announces this id and the CLI's lifecycle frames name it,
     /// so one id here is one id on the queue's row and the CLI's own copy of
