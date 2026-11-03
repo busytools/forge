@@ -120,7 +120,7 @@ STAGED_BIN="$STAGING_ROOT/bin/forge"
 FORGE_TARGET_DIR="$FORGE_REPO/target${CARGO_BUILD_TARGET:+/$CARGO_BUILD_TARGET}"
 FORGE_TRANSCRIBE_LIBS="$FORGE_TARGET_DIR/$BUILD_LABEL/transcribe-libs"
 [ -d "$FORGE_TRANSCRIBE_LIBS" ] \
-    || die "transcribe's shared libraries were not staged at $FORGE_TRANSCRIBE_LIBS - a target-triple build stages under target/<triple>/$BUILD_LABEL, so set CARGO_BUILD_TARGET to the triple you build for"
+    || die "transcribe's shared libraries are not at $FORGE_TRANSCRIBE_LIBS: a target-triple build stages under target/<triple>/$BUILD_LABEL (CARGO_BUILD_TARGET selects it), and a static transcribe or a failed staging step leaves nothing there"
 cp -R "$FORGE_TRANSCRIBE_LIBS/." "$STAGING_ROOT/bin/"
 
 # The installed binary gets no library path, so neither does the check: the
