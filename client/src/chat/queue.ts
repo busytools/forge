@@ -10,9 +10,12 @@ import { joinedLine } from './text';
  * turn, so this line is the only place its words exist after the card leaves;
  * naming the ending alone lost them.
  */
-export function endingLine(ended: QueueEnding | null): string | null {
+export function endingLine(
+  ended: QueueEnding | null,
+  wordsOf: (text: string) => string = (text) => joinedLine(text),
+): string | null {
   if (ended === null) return null;
-  const words = joinedLine(ended.text);
+  const words = wordsOf(ended.text);
   const ending =
     ended.state === 'discarded'
       ? 'discarded, never sent'

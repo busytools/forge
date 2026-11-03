@@ -16,7 +16,7 @@ it left, so a prompt the CLI has already taken cannot be drawn as dropped.
 | Head | `queued` and the count, then the key hints: `↑↓ walk`, and `⌫ cancel` once the walk is on a row | the queue's length |
 | Face | the walked row's words and meta: the source chip, `next` on the oldest, `#i / n` while walking | `queue[].text`, `queue[].source`, the walk's cursor |
 | Arcs | every other queued prompt as one 16px strip of its own card behind the face | the rows behind the face |
-| Ended | one dim line where the last card was, for a row that left without being delivered | `queue_ended` |
+| Ended | one dim line where the last card was, with the prompt's words, for a row that left without being delivered | `queue_ended` |
 
 **One mechanism makes the depth.** Every row sits at the pile's foot,
 lifted one step per queued prompt, so the rows behind the face show as
@@ -37,10 +37,10 @@ plumbing and the sender is the chip's own word. Forge's own machinery - a
 worker kick, an auto-continue - carries `forge`, which is neither the
 reader's nor a connector's.
 
-**A row that left without being delivered says so.** `discarded, never
-sent` and `refused by a hook` are the two endings the core reports with
-words; a row that was taken, or one the reader cancelled, has said what it
-had to say by leaving.
+**A row that left without being delivered says so, in its own words.**
+`discarded, never sent: <words>` and `refused by a hook: <words>` are the
+two endings the core reports; a row that was taken, or one the reader
+cancelled, has said what it had to say by leaving.
 
 ## The walk
 
@@ -57,10 +57,13 @@ captures:
 
 - a prompt written under a uuid answers `command_lifecycle` `queued` 1-5ms
   after the write - the card enters the pile;
-- `started` lands at the turn boundary that delivers it, 2-3ms after, and
-  the card drains into the chat as the row it becomes, carrying its wait
+- `started` (the same `command_lifecycle` frame) lands where the CLI takes
+  the prompt out of its queue: at the turn boundary that delivers it, or
+  absorbed into the running turn (the removal's reason `absorbed_mid_turn`).
+  The card drains into the chat as the row it becomes, carrying its wait
   under it (`queued 0:0n · sent`). While it waited, the card was the only
-  drawing of the words: the row is drawn at this frame;
+  drawing of the words: the row is drawn at this frame, which for an
+  absorbed prompt is inside the turn the press interrupted;
 - `completed` says the turn that carried it ended.
 
 A cancel dispatches the client's own `cancel_queued_prompt`, which the

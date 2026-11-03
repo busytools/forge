@@ -355,6 +355,28 @@ describe('the queue pile', () => {
     ).toBe('discarded, never sent: the lost one');
   });
 
+  it('draws a peer ending with its body, not the envelope head', () => {
+    const { connection } = recording();
+    mount(Queue, {
+      target: host,
+      props: {
+        rows: [],
+        ended: {
+          text: "[Message id=m-1 from agent 'forge' (org 'Busytools')]\n\nthe lost body",
+          state: 'discarded',
+        },
+        slot: SLOT,
+        connection,
+      },
+    });
+    flushSync();
+
+    expect(
+      host.querySelector('.ended')?.textContent,
+      'the envelope head is plumbing; the body is what the reader lost',
+    ).toBe('discarded, never sent: the lost body');
+  });
+
   it('says a refused ending and the words it carried', () => {
     const { connection } = recording();
     mount(Queue, {

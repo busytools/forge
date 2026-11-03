@@ -39,7 +39,19 @@
   } = $props();
 
   /** The one line an ending leaves, where the last card was. */
-  const line = $derived(endingLine(ended));
+  const line = $derived(endingLine(ended, endingWords));
+
+  /**
+   * The words an ending carries, as plain text.
+   *
+   * **A peer envelope draws its body alone**, the same rule the card uses -
+   * the `[Message id=...]` head is plumbing - and the line is rendered as
+   * text rather than markup, so it takes the body's prose unrendered.
+   */
+  function endingWords(text: string): string {
+    const envelope = inbound(text, null);
+    return joinedLine(envelope?.kind === 'peer' ? firstLine(envelope.card.body) : text);
+  }
 
   /** The step between one arc and the next. */
   const STEP = 16;
@@ -276,6 +288,10 @@
     font-family: var(--mono);
     font-size: var(--fs-label);
     color: var(--dim);
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   /* The header's pieces sit together: a right-pinned hint is a step in the
      mock's tile and a canyon in the real column (#1705). */
