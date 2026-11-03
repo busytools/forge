@@ -628,6 +628,40 @@ describe('the reviewable document', () => {
     expect(rows[0]?.textContent, 'and it carries the drafted mark').toContain('drafted');
   });
 
+  /**
+   * **A draft past this version's last line is the store's row to draw.**
+   * The draft row only draws inside the document's rows, so a comment
+   * written at line 5 of a document now three lines long has no shelf row;
+   * the store re-found its content at line 2, and dropping that echo would
+   * leave the comment with no row at all while the finish still files it.
+   */
+  it('draws the stored thread when a draft line is past the document', () => {
+    addDraft(docScope(PATH), {
+      id: 't-2',
+      line: 5,
+      text: 'the moved words',
+      context: ['line five'],
+    });
+    const echo = {
+      ...placedThread('t-2', 5, { state: 'placed', line: 2, moved_from: 5 }, ['line five']),
+      comments: [{ author: 'User', text: 'the moved words', at: 'x', review_id: null }],
+    };
+    drawReviewable({
+      kind: 'landed',
+      document_kind: 'markdown',
+      bytes: enc('# hi\nline two\nline three'),
+      reviewable: true,
+      content_hash: '42',
+      threads: [echo],
+    });
+
+    const rows = [...document.querySelectorAll('.doc-note')].filter((row) =>
+      row.textContent?.includes('the moved words'),
+    );
+    expect(rows.length, 'the stored thread is the only row').toBe(1);
+    expect(rows[0]?.classList.contains('doc-draft'), 'the shelf has no row to draw').toBe(false);
+  });
+
   /** **The nudge the view this client replaced sent on its own drop.** The
    *  finish pushes the review-ready line into the session, so the chat shows
    *  the review to the reader and reaches the agent - with the document's

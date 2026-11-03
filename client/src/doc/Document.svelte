@@ -161,9 +161,16 @@
    * has no place at all.
    */
   const placements = $derived(placeThreads(held.threads, lines.length));
-  /** The store echoes a draft back as a thread with the same id; while the
-   *  comment is unfiled, the shelf row is the one that draws. */
-  const draftIds = $derived(new Set(drafts.map((draft) => draft.id)));
+  /** The store echoes a draft back as a thread with the same id. The shelf
+   *  row is the one that draws only while its line is still in this version;
+   *  past the last line the echo is the only row left. */
+  const draftIds = $derived(
+    new Set(
+      drafts
+        .filter((draft) => draft.line >= 1 && draft.line <= lines.length)
+        .map((draft) => draft.id),
+    ),
+  );
   const placed = $derived(
     placements.filter((held) => held.line !== null && !draftIds.has(held.thread.id)),
   );
