@@ -209,11 +209,7 @@ fn queue_remove_row(value: &Value) -> Option<SessionMessage> {
     Some(SessionMessage {
         kind: SessionMessageKind::User,
         uuid: queue_row_id(value),
-        session_id: value
-            .get("sessionId")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_owned(),
+        session_id: value.get("sessionId").and_then(Value::as_str).unwrap_or_default().to_owned(),
         message: synthesize_queued_command_message(&attachment),
         parent_tool_use_id: None,
         timestamp: value.get("timestamp").and_then(Value::as_str).map(str::to_owned),
@@ -234,15 +230,11 @@ fn queue_row_id(value: &Value) -> String {
 
 /// The prompt words an attachment row's synthesised message carries.
 fn queued_prompt_text(row: &SessionMessage) -> Option<&str> {
-    row.message
-        .get("content")
-        .and_then(Value::as_array)?
-        .iter()
-        .find_map(|block| {
-            (block.get("type")?.as_str()? == "queued_command")
-                .then(|| block.get("prompt")?.as_str())
-                .flatten()
-        })
+    row.message.get("content").and_then(Value::as_array)?.iter().find_map(|block| {
+        (block.get("type")?.as_str()? == "queued_command")
+            .then(|| block.get("prompt")?.as_str())
+            .flatten()
+    })
 }
 
 /// The row a remove line draws, taking the attachment that named the press if

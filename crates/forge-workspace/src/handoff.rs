@@ -143,11 +143,7 @@ pub(crate) fn assemble(
     sections.push(board_section(seat.slot, board));
     sections.extend(live);
     sections.push(record_section(seat));
-    GroundTruth {
-        sections,
-        cycle: cycle(messages, turns),
-        reads: read_set(messages, memory_roots),
-    }
+    GroundTruth { sections, cycle: cycle(messages, turns), reads: read_set(messages, memory_roots) }
 }
 
 /// The directories the handoff's own memory writes land in: the project's

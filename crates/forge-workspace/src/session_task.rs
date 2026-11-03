@@ -12573,18 +12573,17 @@ provider = "anthropic"
             };
             task.translate_event(event);
 
-            let announced: Vec<SessionUpdate> =
-                std::iter::from_fn(|| update_rx.try_recv().ok())
-                    .map(|frame| std::sync::Arc::unwrap_or_clone(frame.update))
-                    .collect();
+            let announced: Vec<SessionUpdate> = std::iter::from_fn(|| update_rx.try_recv().ok())
+                .map(|frame| std::sync::Arc::unwrap_or_clone(frame.update))
+                .collect();
             let anchor = if replaced {
-                announced.iter().position(|update| {
-                    matches!(update, SessionUpdate::SessionReplaced { .. })
-                })
+                announced
+                    .iter()
+                    .position(|update| matches!(update, SessionUpdate::SessionReplaced { .. }))
             } else {
-                announced.iter().position(|update| {
-                    matches!(update, SessionUpdate::ConnectionFailed { .. })
-                })
+                announced
+                    .iter()
+                    .position(|update| matches!(update, SessionUpdate::ConnectionFailed { .. }))
             }
             .unwrap_or_else(|| panic!("{label}: the occupant's own frame is missing"));
             for (uuid, text) in [("lost-1", "first lost"), ("lost-2", "second lost")] {
