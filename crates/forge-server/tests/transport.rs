@@ -8588,34 +8588,13 @@ fn user_text(msg: &forge_primitives::Message) -> Option<String> {
     })
 }
 
-/// The media type of the image a user turn carries, when the frame is one.
-fn user_image_mime(msg: &forge_primitives::Message) -> Option<String> {
-    let forge_primitives::Message::User { message, .. } = msg else {
-        return None;
-    };
-    message.content.iter().find_map(|block| match block {
-        forge_primitives::ContentBlock::Image { source, .. } => {
-            source.get("media_type")?.as_str().map(str::to_owned)
-        }
-        _ => None,
-    })
-}
-
-/// A prompt one client sends draws for every other client on that seat, and
-/// for the one that sent it.
+/// A prompt one client sends draws no row for any client at dispatch.
 ///
-/// The CLI queues a prompt a client hands it and never echoes it on
-/// stream-json, so nothing on the wire carries the words the reader said: a
-/// second viewer watches the assistant answer something nobody saw, and the
-/// sender itself draws nothing of its own. The send is the one place the words
-/// are known, so the frame is forged from it.
-///
-/// The sender is included on purpose. A view draws the user's own bubble
-/// from that same frame for exactly this reason, so withholding the
-/// frame from the sender would be the client inventing a rule the wire
-/// does not have.
+/// The queue carries the words and the row lands when the CLI starts the
+/// prompt (#2816): a frame forged here drew above the assistant text the
+/// running turn was still writing, for every viewer at once.
 #[tokio::test]
-async fn a_prompt_a_client_sends_draws_for_every_client_on_that_seat() {
+async fn a_prompt_a_client_sends_draws_no_row_at_dispatch() {
     let (url, fleet) = a_server().await;
     fleet.install_agent("TestOrg", "proj", "lead");
     fleet.intercept_dispatch();
@@ -8634,120 +8613,61 @@ async fn a_prompt_a_client_sends_draws_for_every_client_on_that_seat() {
             },
         )
         .await;
-        let ServerMessage::Snapshot { .. } = next_server(socket).await else {
-            panic!("a seat that exists is answered with its snapshot")
-        };
+        let (subject, _, _) = snapshot_answering(socket).await;
+        assert_eq!(subject, Subject::Session(lead_seat()), "the seat's own snapshot answers");
     }
 
-    // **The attachment the prompt carries rides the frame too.** The read
-    // path draws it from the transcript's queued copy, so a live row without
-    // it shows words alone until the page re-reads - and this frame is the
-    // live path's only carrier.
-    let image =
-        ImageAttachment { data: "iVBORw0KGgo=".to_owned(), mime_type: "image/png".to_owned() };
-    // Malformed attachments are sent too, one per arm `validate_image`
-    // refuses: the sender drops them before the model sees them, so the live
-    // row must not draw one that disappears on reload.
-    let wrong_mime =
-        ImageAttachment { data: "iVBORw0KGgo=".to_owned(), mime_type: "text/plain".to_owned() };
-    let bad_base64 =
-        ImageAttachment { data: "not base64!".to_owned(), mime_type: "image/png".to_owned() };
     send(
         &mut sender,
         ClientMessage::Command {
             command: Box::new(Command::Prompt {
                 key: lead_seat(),
                 text: "hello there".to_owned(),
-                attachments: vec![image.clone(), wrong_mime, bad_base64],
+                attachments: vec![ImageAttachment {
+                    data: "iVBORw0KGgo=".to_owned(),
+                    mime_type: "image/png".to_owned(),
+                }],
             }),
             reply_to: None,
         },
     )
     .await;
-
-    let drawn = |update: &SessionUpdate| {
-        matches!(update, SessionUpdate::ChatAppended {
-            msg,
-            origin: Some(forge_workspace::PromptOrigin::View),
-            // **And the source survives the socket**: a client arms its follow
-            // off this field, so a frame that lost it in transit would draw
-            // the reader's own words without bringing the foot under them
-            // (#2198).
-            source: Some(forge_workspace::PromptSource::You),
-            ..
-        } if user_text(msg).as_deref() == Some("hello there")
-            && user_image_mime(msg).as_deref() == Some(image.mime_type.as_str()))
+    // The connection handles its own messages in order, so its pong proves
+    // the prompt was dispatched before the barrier below.
+    send(&mut sender, ClientMessage::Ping).await;
+    let ServerMessage::Pong = next_server(&mut sender).await else {
+        panic!("a ping is answered with a pong")
     };
-    let first = update_until(
-        &mut watcher,
-        "the prompt a client sent, drawn for another client with the attachment it carried",
-        drawn,
-    )
-    .await;
-    let SessionUpdate::ChatAppended { msg, .. } = &first else {
-        panic!("a prompt draws as a chat frame: {first:?}")
-    };
-    let forge_primitives::Message::User { message, .. } = msg else {
-        panic!("a prompt draws as the user turn it was: {msg:?}")
-    };
-    let Some(forge_primitives::ContentBlock::Image { source, extras }) = message
-        .content
-        .iter()
-        .find(|block| matches!(block, forge_primitives::ContentBlock::Image { .. }))
-    else {
-        panic!("the live frame carries the attachment the prompt was sent with: {message:?}")
-    };
-    // **The payload never rides the live frame.** The frame is kept and
-    // re-served by every read of the row, so an image block here carries what
-    // a row prints - the mime and the measured size - exactly as the read
-    // path's stripped copy does.
-    assert_eq!(source.get("data"), None, "the live frame carries no base64 payload: {source}");
-    // The literal, not the helper the implementation calls: "iVBORw0KGgo=" is
-    // twelve base64 characters, eight bytes once the padding is out.
-    assert_eq!(
-        extras.get("forge_bytes").and_then(serde_json::Value::as_u64),
-        Some(8),
-        "the row prints the eight bytes the payload weighed",
-    );
-    assert_eq!(
-        message.content.len(),
-        2,
-        "only the attachment the sender kept draws, beside the words: {message:?}",
-    );
-    // **The order the echo documents**: the images first and the words last,
-    // the array the prompt was sent as - a text-first echo draws the same row
-    // but stops matching the transcript's own copy of the message.
     assert!(
-        matches!(message.content.first(), Some(forge_primitives::ContentBlock::Image { .. })),
-        "the attachment leads the echo: {message:?}",
+        fleet
+            .dispatched()
+            .iter()
+            .any(|command| matches!(command, Command::PromptUnder { text, .. } if text == "hello there")),
+        "the prompt reaches the seat",
     );
-    assert!(
-        matches!(message.content.last(), Some(forge_primitives::ContentBlock::Text { .. })),
-        "the words close it: {message:?}",
-    );
-    update_until(
-        &mut sender,
-        "the prompt a client sent, drawn for the client that sent it with the attachment it carried",
-        drawn,
-    )
-    .await;
-    update_until(
-        &mut onlooker,
-        "a third view's send, drawn for this one with the attachment it carried",
-        drawn,
-    )
-    .await;
 
-    // And exactly once: the evidence is ORDER, never a timeout,a nd a second
-    // forged frame would have to arrive ahead of an update every subscriber
-    // hears. Two connections on one seat both forging is the shape this
-    // catches.
+    // One update every subscriber hears is the barrier: anything the prompt
+    // drew is ahead of it on each socket's own stream.
     fleet.emit(SessionUpdate::TurnCancelled { key: lead_seat() });
-    let msg = next_server(&mut onlooker).await;
-    assert!(
-        matches!(&msg, ServerMessage::Update { update, .. } if matches!(**update, SessionUpdate::TurnCancelled { .. })),
-        "one send draws one frame per view: {msg:?}",
-    );
+    for socket in [&mut sender, &mut watcher, &mut onlooker] {
+        loop {
+            match next_server(socket).await {
+                ServerMessage::Update { update, .. } => match *update {
+                    SessionUpdate::TurnCancelled { .. } => break,
+                    SessionUpdate::ChatAppended { msg, .. } => assert_ne!(
+                        user_text(&msg).as_deref(),
+                        Some("hello there"),
+                        "a prompt that has not started draws no row",
+                    ),
+                    _ => {}
+                },
+                // The effective config is server-wide and arrives on its own
+                // schedule, like any queued update.
+                ServerMessage::Settings { .. } => {}
+                other => panic!("a subscribed socket hears updates, not {other:?}"),
+            }
+        }
+    }
 }
 
 /// The frame name a view reads a seat's stream by: its type, and for a

@@ -5887,19 +5887,16 @@ impl Workspace {
         self.dispatch_with_origin(cmd, PromptOrigin::View)
     }
 
-    /// Route a command, framing the user turn for the prompts answered here.
+    /// Route a command, answering the prompts forge handles itself.
     ///
-    /// A prompt is the reader's own words, and nothing else carries them: the
-    /// CLI queues a prompt handed to it and never echoes it back, so a view
-    /// drawing only frames shows the assistant answering something nobody saw.
-    /// The routed prompt's frame is the SESSION TASK's, so it is ordered
-    /// against everything the task does with the same prompt; only a forge
-    /// command, a misuse and an unrunnable slash name - which the task never
-    /// sees - are framed from here.
+    /// **A prompt draws its turn in the session task, never here** (#2816):
+    /// the queue carries its words from dispatch and the page takes the row
+    /// when the CLI starts it. Only the answer a forge command, a misuse or an
+    /// unrunnable slash name owes is emitted from this path, because the task
+    /// never sees those prompts.
     ///
     /// NOT from `dispatch_workspace_prompt`, which is the delivery path: a
-    /// delivery already draws as an envelope turn of its own, so a bare user
-    /// turn beside it would draw the same words twice.
+    /// delivery already draws as an envelope turn of its own.
     fn dispatch_with_origin(
         self: &Arc<Self>,
         cmd: Command,
@@ -5937,15 +5934,8 @@ impl Workspace {
             }
             other => other,
         };
-        // The prose is taken before the move. The source rides along the
-        // words, because the frame is the same one forge's machinery forges
-        // prose on and a view arms its follow off what it says (#2198):
-        // taking it from the command keeps the frame and the queued row's
-        // label one fact.
-        let prompt = match &cmd {
-            Command::PromptUnder { key, text, uuid, source, .. } => {
-                Some((key.clone(), text.clone(), uuid.clone(), *source))
-            }
+        let key = match &cmd {
+            Command::PromptUnder { key, .. } => Some(key.clone()),
             _ => None,
         };
         // A composer's text that names a forge command is FORGE'S, not the
@@ -5956,16 +5946,9 @@ impl Workspace {
         // `/clear`, which rotates a conversation forge never records.
         //
         // A forge command's answer comes back with the outcome rather than
-        // being emitted where it is decided: it has to land after the echo
-        // below, because a client draws this stream in arrival order and one
-        // sent first drew the answer above the prompt it answers.
-        //
-        // **Who draws the prompt's turn.** A prompt the session task
-        // receives draws it there, ordered against everything the task does
-        // with the same prompt; only the prompts answered HERE - a forge
-        // command, a misuse, a slash name with no door - are framed from the
-        // dispatcher, because the task never sees them.
-        let (outcome, answer, framed_here) = match &cmd {
+        // being emitted where it is decided, so it lands after the command has
+        // run and never before a refusal that wrote nothing.
+        let (outcome, answer, answered_here) = match &cmd {
             Command::PromptUnder { key, text, .. } => match crate::prompt::forge_invocation(text) {
                 Some(crate::prompt::Invocation::Command(prompt)) => {
                     let (outcome, answer) = self.run_forge_prompt(key, &prompt);
@@ -5984,30 +5967,15 @@ impl Workspace {
             },
             _ => (self.route(cmd), None, false),
         };
-        // A refused prompt never reached a model, so no view draws it as a
-        // turn - and the frame for one would open a live turn in every view
-        // but the sender, with nothing left to close it: the refusal is
-        // written to the asking socket alone. The task draws its own only
-        // once it has the prompt, so a route refusal never reaches it.
-        if framed_here
+        // A refused prompt never reached a model, so the refusal is written to
+        // the asking socket alone. The task draws the prompt's row once it has
+        // it, so a route refusal never draws one.
+        if answered_here
             && outcome.is_ok()
-            && let Some((key, text, uuid, source)) = prompt
+            && let Some(key) = key
+            && let Some((severity, answer)) = answer
         {
-            // Stamped at the forge, like the machinery's own: the CLI never
-            // echoes a prompt, so this row is the one that opens every turn a
-            // person starts, and a page attaching mid-turn reads its clock
-            // from the first row that carries a stamp.
-            let mut framed = Message::display_only_user_with_blocks(text, Vec::new(), uuid);
-            framed.stamp_if_absent(&crate::install::rfc3339_now());
-            let _ = self.update_sender().send(SessionUpdate::ChatAppended {
-                key: key.clone(),
-                msg: framed,
-                origin: Some(origin),
-                source: Some(source),
-            });
-            if let Some((severity, answer)) = answer {
-                self.notice(&key, severity, &answer);
-            }
+            self.notice(&key, severity, &answer);
         }
         outcome
     }
@@ -6019,7 +5987,7 @@ impl Workspace {
     /// snapshot happened to hold, and a client has no snapshot to supply.
     ///
     /// The answer is returned rather than emitted, so the dispatcher can land
-    /// it after the echo of the reader's own words.
+    /// it after the command has run.
     fn run_forge_prompt(
         self: &Arc<Self>,
         key: &SessionSlot,
@@ -6384,12 +6352,6 @@ impl Workspace {
         {
             let mut intercept = self.command_intercept.lock();
             if let Some(buffer) = intercept.as_mut() {
-                // **The intercept stands in for the session task's receipt**,
-                // so a prompt that draws its own turn still draws it: the
-                // frame comes from the same function the task runs.
-                if let Some(key) = cmd.key() {
-                    crate::session_task::emit_prompt_frame(&self.update_tx, key, &cmd);
-                }
                 buffer.push(cmd);
                 return Ok(());
             }
@@ -26110,13 +26072,13 @@ mod prompt_frame_origin_tests {
         );
     }
 
-    /// **The routed command carries the id its frame is drawn from.** The
-    /// session task builds the frame from this command, so one id here is one
-    /// id on the frame, its lifecycle frames and the CLI's own copy of the
-    /// message - a second id minted on the way would hold a row nothing can
-    /// settle.
+    /// **The routed command carries the id its row is drawn from.** The
+    /// session task announces this id and the CLI's lifecycle frames name it,
+    /// so one id here is one id on the queue's row and the CLI's own copy of
+    /// the message - a second id minted on the way would hold a row nothing
+    /// can settle.
     #[test]
-    fn a_routed_prompt_carries_the_id_its_frame_draws_from() {
+    fn a_routed_prompt_carries_the_id_its_lifecycle_frames_name() {
         let (ws, _rx, seat) = a_fleet();
 
         let dispatched = ws.dispatch_from_view(a_prompt(&seat));
@@ -26130,7 +26092,7 @@ mod prompt_frame_origin_tests {
         assert_eq!(
             *origin,
             Some(PromptOrigin::View),
-            "and the socket's entry, not the UI's - the frame is drawn from that same command",
+            "and the socket's entry, not the UI's - the queue's row is drawn from that same id",
         );
     }
 
@@ -26264,22 +26226,18 @@ mod prompt_frame_origin_tests {
         assert!(ws.drain_test_dispatch_buffer().is_empty(), "and nothing is dispatched");
     }
 
-    /// A forge command's answer draws under the words that asked for it.
+    /// A forge command answers without drawing its prompt.
     ///
-    /// The echo and the answer are two updates on one stream, and a client
-    /// draws them in arrival order: an answer emitted where the command was
-    /// handled arrived before the reader's own words, so every socket client
-    /// drew "Unknown mode: sideways" ABOVE the prompt it answers.
+    /// The prompt never reaches a model, so no turn of the transcript holds
+    /// it and no row is drawn for it (#2816). The answer is the whole of what
+    /// the reader sees.
     #[test]
-    fn a_forge_commands_answer_follows_the_words_it_answers() {
+    fn a_forge_command_answers_without_drawing_its_prompt() {
         let (ws, mut rx, seat) = a_fleet();
 
         ws.dispatch_from_view(Command::Prompt {
             key: seat.clone(),
             text: "/mode sideways".to_owned(),
-            // An attachment beside a forge command never reaches a model: the
-            // command answers instead of routing the prompt, so the echo must
-            // draw the words alone.
             attachments: vec![forge_primitives::ImageAttachment {
                 data: "iVBORw0KGgo=".to_owned(),
                 mime_type: "image/png".to_owned(),
@@ -26287,30 +26245,20 @@ mod prompt_frame_origin_tests {
         })
         .expect("the core takes it");
 
-        let first = rx.try_recv().expect("the echo is the first update on the stream");
-        let SessionUpdate::ChatAppended { key, msg, .. } = &*first.update else {
-            panic!("the reader's own words are echoed before the answer: {first:?}")
-        };
-        assert_eq!(key, &seat, "the echo is for the seat that asked");
-        let Message::User { message, .. } = msg else {
-            panic!("the echo draws as the user turn it was: {msg:?}")
-        };
+        let updates: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
         assert!(
-            !message
-                .content
+            !updates
                 .iter()
-                .any(|block| { matches!(block, forge_primitives::ContentBlock::Image { .. }) }),
-            "an attachment beside a forge command never reached a model, so the echo draws \
-             the words alone: {message:?}",
+                .any(|frame| matches!(&*frame.update, SessionUpdate::ChatAppended { .. })),
+            "a prompt no model received draws no row: {updates:?}",
         );
-        let second = rx.try_recv().expect("the answer follows the echo");
         assert!(
-            matches!(
-                &*second.update,
+            updates.iter().any(|frame| matches!(
+                &*frame.update,
                 SessionUpdate::Notice { severity: NoticeSeverity::Error, text, .. }
                     if text == "Unknown mode: sideways"
-            ),
-            "and the answer lands under them, where a client draws it: {second:?}",
+            )),
+            "and the answer lands, where a client draws it: {updates:?}",
         );
     }
 
@@ -26383,20 +26331,11 @@ mod prompt_frame_origin_tests {
 
         assert!(dispatched.is_ok(), "the core takes it: {dispatched:?}");
         let updates: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
-        let echoed = updates.iter().find_map(|frame| match &*frame.update {
-            SessionUpdate::ChatAppended { msg, .. } => Some(msg),
-            _ => None,
-        });
-        let Some(Message::User { message, .. }) = echoed else {
-            panic!("the words the reader typed are echoed before the answer: {updates:?}")
-        };
         assert!(
-            !message
-                .content
+            !updates
                 .iter()
-                .any(|block| matches!(block, forge_primitives::ContentBlock::Image { .. })),
-            "an attachment beside a wrongly invoked command never reached a model, so the \
-             echo draws the words alone: {message:?}",
+                .any(|frame| matches!(&*frame.update, SessionUpdate::ChatAppended { .. })),
+            "a prompt no model received draws no row: {updates:?}",
         );
         let notices: Vec<(SessionSlot, NoticeSeverity, String)> = updates
             .into_iter()
@@ -26522,8 +26461,6 @@ mod prompt_frame_origin_tests {
         let dispatched = ws.dispatch_from_view(Command::Prompt {
             key: seat.clone(),
             text: "/spinner now".to_owned(),
-            // An attachment beside a refused slash name never reaches a model,
-            // so the echo draws the words alone.
             attachments: vec![forge_primitives::ImageAttachment {
                 data: "iVBORw0KGgo=".to_owned(),
                 mime_type: "image/png".to_owned(),
@@ -26531,23 +26468,12 @@ mod prompt_frame_origin_tests {
         });
 
         assert!(dispatched.is_ok(), "the core takes it: {dispatched:?}");
-        // The refusal is answered after the echo of the words, so the two are
-        // read off the stream together (the order is the case above).
         let updates: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
-        let echoed = updates.iter().find_map(|frame| match &*frame.update {
-            SessionUpdate::ChatAppended { msg, .. } => Some(msg),
-            _ => None,
-        });
-        let Some(Message::User { message, .. }) = echoed else {
-            panic!("the words the reader typed are echoed before the answer: {updates:?}")
-        };
         assert!(
-            !message
-                .content
+            !updates
                 .iter()
-                .any(|block| matches!(block, forge_primitives::ContentBlock::Image { .. })),
-            "an attachment beside a refused slash name never reached a model, so the echo \
-             draws the words alone: {message:?}",
+                .any(|frame| matches!(&*frame.update, SessionUpdate::ChatAppended { .. })),
+            "a prompt no model received draws no row: {updates:?}",
         );
         let notices: Vec<(NoticeSeverity, String)> = updates
             .into_iter()
@@ -26797,27 +26723,27 @@ mod prompt_frame_origin_tests {
         );
     }
 
-    /// **A routed prompt draws once.** The dispatcher frames only the prompts
-    /// it answers itself; a routed one is framed by the session task (or by
-    /// the intercept standing in for its receipt). Framing on both draws
-    /// every send twice.
+    /// **A routed prompt draws no row at dispatch.** The queue carries its
+    /// words and the row lands when the CLI starts it (#2816); a frame forged
+    /// here would sit above the answer the running turn was still writing.
     #[test]
-    fn a_routed_prompt_draws_exactly_once() {
+    fn a_routed_prompt_draws_no_row_from_the_dispatcher() {
         let (ws, mut rx, seat) = a_fleet();
 
         ws.dispatch_from_view(a_prompt(&seat)).expect("the core took the prompt");
 
-        let mut drawn = 0;
+        let mut drawn = Vec::new();
         while let Ok(frame) = rx.try_recv() {
-            if matches!(&*frame.update, SessionUpdate::ChatAppended { .. }) {
-                drawn += 1;
+            if let SessionUpdate::ChatAppended { msg, .. } = &*frame.update {
+                drawn.push(msg.clone());
             }
         }
-        assert_eq!(
-            drawn, 1,
-            "a routed prompt draws its turn once: the task, or the intercept standing in for it, \
-             is the one emitter",
+        assert!(
+            drawn.is_empty(),
+            "the queue carries the words and the CLI's start draws the row, so dispatch forges \
+             none: {drawn:?}",
         );
+        assert!(!ws.drain_test_dispatch_buffer().is_empty(), "the prompt itself is wired");
     }
 
     /// The socket's entry, which is what `ViewSurface::dispatch` takes.
