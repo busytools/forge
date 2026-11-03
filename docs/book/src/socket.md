@@ -87,7 +87,7 @@ for anything:
 ```json
 {
   "kind": "greeting",
-  "version": 23,
+  "version": 24,
   "forge_version": "1.1.25 · abc1234",
   "forge_version_short": "1.1.25+abc1234",
   "settings": {
@@ -645,6 +645,19 @@ over the ceiling, a PDF handed reviewable, or a markdown or text kind that
 is not UTF-8 - and that sentence is what a viewer draws as its own line. The
 answer is a `document_read` message or that error; those are its only two.
 
+**`answer_document_hand_off {key, id, answer}`** - answer the parked
+document hand-off `id` for the seat `key` names. **The answer is the
+reader's decision, never a bare done**: `answer` is
+`{"approve": {"review_id": ..., "note": ...}}` or
+`{"feedback": {"review_id": ..., "note": ...}}`, and `"not_now"` declines
+the ask before anything opens. `review_id` is the review the viewer's
+finish filed under the document's scope, `null` when nothing was
+commented; `note` is the reader's own words, `null` when they wrote none.
+Approval is the one signal an agent may proceed on; feedback means the
+document is revised and handed off again. A call stays parked until one
+of the two is chosen, and a client that answers an ask no longer waiting
+is refused by name.
+
 **`file_content {session, path, sha}`** - one file's whole content at a
 revision, for a review page's between-hunk expansion. The record's diff
 carries bounded hunks, so the lines between them are what only this read
@@ -908,7 +921,11 @@ content_hash, threads, reviews}`** - in answer to `document_read`: the
   unrecognised kind are not, so the viewer's door does not depend on how the
   page was reached - the document's own hash as DECIMAL DIGITS (the same convention an
   anchor's `content_hash` crosses under), and the document's scope read:
-  its comment threads and the reviews they were filed into. `session` is
+  its comment threads - each carrying a `resolution` naming where its
+  anchor sits in THIS document now, re-found by its first captured line,
+  or `outdated` when the revision left it nowhere; a read whose bytes are
+  not text carries no landing at all, so `resolution` is `null` for every
+  thread - and the reviews they were filed into. `session` is
   named back so a client holding two seats routes each answer to its own
   viewer; a refused read comes back as an `error` naming `document_read`,
   under the seat that asked - and so does one whose review store could not

@@ -214,10 +214,19 @@ pub mod wire;
 /// client older than them draws the role it always drew. `baselines/socket/22/`
 /// is the record a v22 server emitted.
 ///
+/// **v24 answers a document hand-off explicitly and lands its threads.** A
+/// hand-off ends on `approve` or `feedback` with a note rather than a bare
+/// `done`, and a document read's threads carry the `resolution` that places
+/// each one in the document as it reads now. A v23 client already ignores a
+/// field it does not know, so the landing rides along; the ENDING is the
+/// break - it reads `approve` as a command answer no page can attribute -
+/// and the two halves move together. `baselines/socket/23/` is the record a
+/// v23 server emitted.
+///
 /// **Additive fields do not bump.** `diff.base_error` is one, carried on the
 /// v16-era record: a client older than the field draws the vaguer line it
 /// always drew, and nothing it sends changes.
-pub const PROTOCOL_VERSION: u32 = 23;
+pub const PROTOCOL_VERSION: u32 = 24;
 
 /// The socket's keepalive: how often a connection is asked to prove it is
 /// still there, and how long it may stay silent before it is reaped.

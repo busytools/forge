@@ -858,8 +858,9 @@ mod tests {
             let documents = MockDocumentFacade::new();
             *documents.answer.lock() = Ok((
                 "/proj/docs/plan.md".to_owned(),
-                forge_primitives::document::DocumentHandOffEnding::Done {
+                forge_primitives::document::DocumentHandOffEnding::Approve {
                     review_id: Some("r-9".to_owned()),
+                    note: None,
                 },
             ));
             let server = build_forge_server(

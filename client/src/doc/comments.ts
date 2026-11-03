@@ -2,14 +2,13 @@
  * The viewer's comment path, pure: where the document's lines are, what a
  * draft carries, and the two spellings the store takes.
  *
- * **A thread is placed by the document's own hash.** A doc-scoped anchor's
- * `content_hash` is the whole document's - the crate's FNV-1a over its
- * bytes, crossing as decimal digits - so a comment written against this
- * exact content sits at its line, and one written against another version
- * is outdated AT ONCE, with its captured lines kept. Nothing re-anchors a
- * document automatically: that is the code review's rule read the other
- * way, where a moved line is re-found by content, and a document has no
- * diff to move within.
+ * **A thread is placed by its first captured line's content**, the way a
+ * code thread is placed by its anchored line: the server re-anchors each
+ * document thread against the document it is read with, and this file
+ * turns that landing into where the viewer draws it. A landing that moved
+ * draws at its new line; one with no landing draws at its captured line,
+ * marked stale; and one whose captured line is past the document has
+ * nowhere to draw at all, with the reason said in words.
  *
  * **Drafts outlive the viewer.** They are held per scope, module-wide, so
  * a second hand-off that raises another document does not take unsent
@@ -17,6 +16,7 @@
  */
 
 import { renderProseBlocks } from '../chat/prose';
+import { anchorHash } from '../review/write';
 import type { ReviewThreadRecord } from '../session/wire';
 import type { ThreadPayload } from '../review/write';
 
@@ -52,8 +52,9 @@ const CONTEXT_CAP = 12;
  *
  * **A markdown document's rows are its rendered blocks**, because that is
  * what a reader points at: each block carries the source lines it came from,
- * and a comment anchors to the block's first. A plain-text document has no
- * blocks, so its rows are its own lines, drawn as the text they are.
+ * the blank lines it owns, and a comment can anchor to its first line or to
+ * any line its gutter names. A plain-text document has no blocks, so its
+ * rows are its own lines.
  */
 export function rowsOf(text: string, kind: 'markdown' | 'text'): DocRow[] {
   const lines = linesOf(text);
@@ -66,15 +67,53 @@ export function rowsOf(text: string, kind: 'markdown' | 'text'): DocRow[] {
       text: line.text,
     }));
   }
-  return renderProseBlocks(text).map((block) => ({
-    line: block.line,
-    end: block.end,
-    context: lines
-      .slice(block.line - 1, Math.min(block.end, block.line - 1 + CONTEXT_CAP))
-      .map((held) => held.text),
-    html: block.html,
-    text: '',
-  }));
+  const blocks = renderProseBlocks(text);
+  const rows: DocRow[] = [];
+  const first = blocks[0];
+  // A document of blank lines has no rendered block at all; its lines are
+  // still targets, so it draws as one raw row.
+  if (first === undefined) {
+    rows.push({
+      line: 1,
+      end: lines.length,
+      context: lines.slice(0, CONTEXT_CAP).map((held) => held.text),
+      html: null,
+      text: lines.map((held) => held.text).join('\n'),
+    });
+    return rows;
+  }
+  // **The lines before the first block are a row of their own**, so a
+  // comment placed there has somewhere to draw and the gutter starts at
+  // line 1. They have no rendered mark; they draw as the blank lines they
+  // are.
+  if (first.line > 1) {
+    const lead = lines.slice(0, first.line - 1);
+    rows.push({
+      line: 1,
+      end: first.line - 1,
+      context: lead.slice(0, CONTEXT_CAP).map((held) => held.text),
+      html: null,
+      text: lead.map((held) => held.text).join('\n'),
+    });
+  }
+  for (const [at, block] of blocks.entries()) {
+    const next = blocks[at + 1];
+    rows.push({
+      line: block.line,
+      // **Every source line is a target, so a block owns the blank lines
+      // between it and the next one.** Without them the gutter skips the
+      // gaps, and a document with a blank line between every paragraph
+      // carries no target for half its lines. The rendered span stays in
+      // `context`.
+      end: next === undefined ? lines.length : Math.max(block.end, next.line - 1),
+      context: lines
+        .slice(block.line - 1, Math.min(block.end, block.line - 1 + CONTEXT_CAP))
+        .map((held) => held.text),
+      html: block.html,
+      text: '',
+    });
+  }
+  return rows;
 }
 
 /** The scope the store keys a document's threads under - the crate's
@@ -92,20 +131,76 @@ export function linesOf(text: string): DocLine[] {
   return parts.map((line, at) => ({ number: at + 1, text: line }));
 }
 
-/** The threads still written against this exact document. */
-export function placedThreads(
-  threads: ReviewThreadRecord[],
-  contentHash: string,
-): ReviewThreadRecord[] {
-  return threads.filter((thread) => thread.anchor.content_hash === contentHash);
+/**
+ * A line comment's captured lines, the anchored line FIRST.
+ *
+ * The first captured line is the thread's identity across a revision - the
+ * server re-finds it by that line's content - so it is the line the reader
+ * pressed, never a neighbour. The lines after it are the reader's context
+ * when the comment is read again.
+ */
+export function lineContext(lines: DocLine[], line: number): string[] {
+  const at = line - 1;
+  const captured: string[] = [];
+  const first = lines[at];
+  if (first === undefined) return captured;
+  captured.push(first.text);
+  for (let next = at + 1; next < lines.length && captured.length < CONTEXT_CAP; next += 1) {
+    captured.push(lines[next]?.text ?? '');
+  }
+  return captured;
 }
 
-/** The threads the document changed under: drawn outdated, at once. */
-export function threadsAgainstAnotherVersion(
+/** One thread as the viewer draws it: where, and whether it is stale. */
+export interface DocThreadPlacement {
+  thread: ReviewThreadRecord;
+  /** The line it draws under now, or null when it has nowhere to draw. */
+  line: number | null;
+  /** The line it was written at, when the landing moved it. */
+  movedFrom: number | null;
+  /** Its captured line is gone or ambiguous in this version. */
+  stale: boolean;
+  /** Why it has nowhere to draw, when `line` is null. */
+  why: string | null;
+}
+
+/**
+ * Every thread of the document, where this version lets it draw.
+ *
+ * **The server's landing decides, never the rendered row.** A `placed`
+ * landing draws at the line it names; anything else is stale at its
+ * captured line, because a thread the revision could not re-find is still
+ * the reader's, and collecting it at the bottom would hide what it was
+ * about. Only a captured line the document no longer reaches has nowhere
+ * to draw, and that one carries the sentence saying so.
+ */
+export function placeThreads(
   threads: ReviewThreadRecord[],
-  contentHash: string,
-): ReviewThreadRecord[] {
-  return threads.filter((thread) => thread.anchor.content_hash !== contentHash);
+  lineCount: number,
+): DocThreadPlacement[] {
+  return threads.map((thread) => {
+    const resolution = thread.resolution;
+    if (resolution?.state === 'placed' && resolution.line >= 1 && resolution.line <= lineCount) {
+      return {
+        thread,
+        line: resolution.line,
+        movedFrom: resolution.moved_from,
+        stale: false,
+        why: null,
+      };
+    }
+    const captured = thread.anchor.line;
+    if (captured >= 1 && captured <= lineCount) {
+      return { thread, line: captured, movedFrom: null, stale: true, why: null };
+    }
+    return {
+      thread,
+      line: null,
+      movedFrom: null,
+      stale: true,
+      why: `line ${captured} is past this version's ${lineCount} lines`,
+    };
+  });
 }
 
 /** One unsent comment, as the viewer holds it before the finish files it. */
@@ -155,15 +250,18 @@ export function clearDrafts(scope: string, ids: string[]): void {
   );
 }
 
-/** One draft as the store's own thread shape, anchored to the document. */
-export function docThread(draft: DocDraft, path: string, contentHash: string): ThreadPayload {
+/** One draft as the store's own thread shape, anchored to the document.
+ *
+ *  The hash is the FIRST captured line's, the way a code anchor hashes its
+ *  anchored line: that line is what a revision re-finds the thread by. */
+export function docThread(draft: DocDraft, path: string): ThreadPayload {
   return {
     id: draft.id,
     anchor: {
       path,
       side: 'New',
       line: draft.line,
-      content_hash: contentHash,
+      content_hash: anchorHash(draft.context[0] ?? '').toString(),
       context: draft.context,
       base_ref: docScope(path),
     },
