@@ -73,7 +73,7 @@ review goes here with `reviewable: true`, never as a path or link in \
 chat. `path` is relative to the working directory, or absolute under \
 one of the project's `vault_roots` in `forge.toml`. Set `reviewable` \
 when you want review comments back: the reader opens it, comments on \
-lines and finishes, and their review then arrives filed under the \
+lines and answers, and their review then arrives filed under the \
 document's own scope. A PDF always opens read-only. **The answer is \
 approve or something is off**: feedback means revise the document and \
 hand it off again, approval is the one signal to proceed, and neither \
@@ -94,7 +94,7 @@ review goes here with `reviewable: true`, never as a path or link in \
 chat. `path` is relative to the working directory, or absolute under \
 one of the project's `vault_roots` in `forge.toml`. Set `reviewable` \
 to ask the reader for a review of it: they open it, comment on lines \
-and finish, and their review is filed under the document's own scope. \
+and answer, and their review is filed under the document's own scope. \
 This session was spawned without the `review` MCP family, so you cannot \
 read it back; the answer names the review's id and scope, which your lead \
 reads with review__get. A PDF always opens read-only. **The answer is \
@@ -516,6 +516,35 @@ mod tests {
                 "the description carries the delivery rule (review_available: {review_available}): \
                  {}",
                 tool.description(),
+            );
+        }
+    }
+
+    /// **The loop is stated before the call, in both descriptions.** A
+    /// session reads the paragraph at the moment it reaches for the tool:
+    /// the two outcomes, feedback's next step and approval's exclusivity,
+    /// and the note that rides them. The conduct block pins the same
+    /// contract for a session that never opens the tool.
+    #[test]
+    fn both_descriptions_state_the_hand_offs_loop() {
+        for review_available in [true, false] {
+            let tool = tool_with_review(MockDocumentFacade::new().into_arc(), review_available);
+            let description = tool.description();
+            assert!(
+                description.contains("The answer is approve or something is off"),
+                "the two outcomes are named (review_available: {review_available}): {description}",
+            );
+            assert!(
+                description.contains(
+                    "feedback means revise the document and hand it off again, approval is the \
+                     one signal to proceed, and neither may be read as the other"
+                ),
+                "feedback's next step and approval's exclusivity are stated \
+                 (review_available: {review_available}): {description}",
+            );
+            assert!(
+                description.contains("both carry an optional note that reaches you"),
+                "the note's delivery is stated (review_available: {review_available}): {description}",
             );
         }
     }

@@ -720,6 +720,8 @@
         "text"
       ],
       "/threads[]/resolution": [
+        "line",
+        "moved_from",
         "reason",
         "state"
       ]

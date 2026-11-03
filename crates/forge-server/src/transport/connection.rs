@@ -4046,8 +4046,15 @@ fn document_answer(
     // gone carries an outdated landing rather than no landing at all. A
     // read whose bytes are not text has no lines to place against, and its
     // threads ride unplaced.
-    let lines: Option<Vec<String>> =
-        std::str::from_utf8(&read.bytes).ok().map(|text| text.lines().map(str::to_owned).collect());
+    let lines: Option<Vec<String>> = if threads.is_empty() {
+        None
+    } else {
+        std::str::from_utf8(&read.bytes).ok().map(|text| {
+            // A client's TextDecoder drops a UTF-8 BOM; strip the same prefix
+            // so its captured first line is the line this side sees.
+            text.trim_start_matches('\u{feff}').lines().map(str::to_owned).collect()
+        })
+    };
     let threads: Vec<ReviewedThreadWire> = surface
         .place_document_threads(threads, lines.as_deref())
         .into_iter()
@@ -5797,6 +5804,34 @@ mod tests {
                 }),
             ),
             "and the revision is reported, not guessed: {:?}",
+            threads[0].resolution,
+        );
+
+        // **A leading BOM is not part of the first line.** The client decodes
+        // the bytes with TextDecoder, which strips a UTF-8 BOM, so the line
+        // it captures and hashes is `# hi`; the server must strip the same
+        // prefix or the comment reads outdated on the very read that filed
+        // it, and the viewer then writes that false state into the store.
+        let bommed = Ok(DocumentRead {
+            path: std::path::PathBuf::from("/proj/docs/readme.md"),
+            kind: DocumentKind::Markdown,
+            bytes: b"\xef\xbb\xbf# hi\n".to_vec(),
+            reviewable: true,
+            content_hash: 44,
+        });
+        let ServerMessage::DocumentRead { threads, .. } = document_answer(&surface, &seat, bommed)
+        else {
+            panic!("a read that landed is its own answer")
+        };
+        assert!(
+            matches!(
+                threads[0].resolution,
+                Some(crate::transport::wire::ThreadResolutionWire::Placed {
+                    line: 1,
+                    moved_from: None,
+                }),
+            ),
+            "a BOM does not move the first line the client captured: {:?}",
             threads[0].resolution,
         );
 

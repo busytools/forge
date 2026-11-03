@@ -193,7 +193,7 @@ reviewable document - one the user must read and comment on - gets the \
 hand-off; a code change, a PR and an answer that belongs in the chat \
 do not need one.\n\
 \n\
-**A hand-off's answer is approve or feedback.** Feedback means revise the \
+**A document hand-off's answer is approve or feedback.** Feedback means revise the \
 document and hand it off again; approval is the one signal to proceed, \
 and never proceed on feedback. Both may carry a note, and the note \
 reaches you with the answer.\n\
@@ -4164,7 +4164,7 @@ mod tests {
         );
         assert!(
             FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
-                .contains("**A hand-off's answer is approve or feedback.**"),
+                .contains("**A document hand-off's answer is approve or feedback.**"),
             "the two outcomes are named where the agent reads them",
         );
         assert!(
