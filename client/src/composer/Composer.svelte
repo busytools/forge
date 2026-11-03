@@ -1324,7 +1324,7 @@
   function sendingBack(): void {
     box.ended = {
       tone: 'q',
-      text: 'Sending your feedback to the agent. Nothing was posted.',
+      text: 'Sending your feedback to the agent. Nothing was sent.',
     };
   }
 

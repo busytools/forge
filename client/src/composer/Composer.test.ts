@@ -6543,8 +6543,8 @@ describe('the dock', () => {
     writeFeedback('say staging, not prod');
     press('Enter');
 
-    expect(drawn(), 'the press registered').toContain(
-      'Sending your feedback to the agent. Nothing was posted.',
+    expect(drawn(), 'the press registered, and "sent" reads for every operation').toContain(
+      'Sending your feedback to the agent. Nothing was sent.',
     );
 
     harness.say({
