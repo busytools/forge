@@ -9,12 +9,12 @@ use std::sync::{Arc, Weak};
 use std::time::SystemTime;
 
 use forge_connectors::slack::{
-    AuthTest, MENTION_CURSOR, SlackApi, SlackError, SlackHistoryMessage, read_thread,
-    shared_messages,
+    AuthTest, MENTION_CURSOR, SlackApi, SlackError, SlackHistoryMessage, mention_ids,
+    one_line_excerpt, read_thread, shared_messages, thread_parent, user_display_name,
 };
 use forge_primitives::slack::{
-    SlackBookmark, SlackConversation, SlackDraft, SlackPin, SlackSearchMatch, SlackSubscription,
-    SlackSubscriptionTarget, SlackUser, SlackWatchMode,
+    SlackBookmark, SlackConversation, SlackDraft, SlackPerson, SlackPin, SlackSearchMatch,
+    SlackSubscription, SlackSubscriptionTarget, SlackThreadName, SlackUser, SlackWatchMode,
 };
 use uuid::Uuid;
 
@@ -547,6 +547,73 @@ impl ProdSlackFacade {
         }
     }
 
+    /// How much of a thread's parent the card's line quotes.
+    const THREAD_EXCERPT_CHARS: usize = 80;
+
+    /// Name the draft's thread and the people its text tags, at the moment
+    /// it is parked. Never fails the park: whatever resolves rides the
+    /// draft, and what does not is drawn as its raw ts or id.
+    async fn name_draft(
+        ws: &Arc<Workspace>,
+        api: &dyn SlackApi,
+        label: &str,
+        draft: &mut SlackDraft,
+    ) {
+        let host = crate::slack::SlackSubsystemHost::new(ws);
+        if let Some(ts) = draft.thread_ts.clone() {
+            draft.thread =
+                match thread_parent(api, &draft.conversation, &ts).await {
+                    // A read anchored at a message inside a thread answers the
+                    // thread's parent instead. Naming it would label an edit or
+                    // a delete with the wrong message, so only an exact ts is
+                    // the message the card is about; anything else draws the ts.
+                    Ok(Some(parent)) if parent.ts == ts => {
+                        Self::thread_name(&host, api, label, &parent).await
+                    }
+                    Ok(_) => None,
+                    Err(error) => {
+                        tracing::debug!(
+                            target: "forge_workspace::slack",
+                            event_name = "slack_draft_thread_unreadable",
+                            workspace = label,
+                            conversation = %draft.conversation,
+                            parent = %ts,
+                            %error,
+                            "reading a held draft's thread parent failed; the card draws the ts",
+                        );
+                        None
+                    }
+                };
+        }
+        let mut tagged = Vec::new();
+        for id in mention_ids(&draft.text) {
+            let name = user_display_name(&host, api, label, &id).await;
+            tagged.push(SlackPerson { id, name });
+        }
+        draft.tagged = tagged;
+    }
+
+    /// The thread name drawn for `parent`: its author and one line of its
+    /// text. `None` when the parent names no author at all, which leaves the
+    /// raw ts as the honest thing to draw.
+    async fn thread_name(
+        host: &crate::slack::SlackSubsystemHost,
+        api: &dyn SlackApi,
+        label: &str,
+        parent: &SlackHistoryMessage,
+    ) -> Option<SlackThreadName> {
+        let author = match parent.user.as_deref().filter(|user| !user.is_empty()) {
+            Some(user) => user_display_name(host, api, label, user)
+                .await
+                .unwrap_or_else(|| user.to_owned()),
+            None => parent.bot_name.clone().filter(|name| !name.is_empty())?,
+        };
+        Some(SlackThreadName {
+            author,
+            excerpt: one_line_excerpt(&parent.text, Self::THREAD_EXCERPT_CHARS),
+        })
+    }
+
     /// Register a draft for the user's decision and wait for it. The one
     /// place "did the user approve this" is decided, so the fail-closed
     /// path exists once rather than at each gated operation - posting,
@@ -607,7 +674,7 @@ impl SlackFacade for ProdSlackFacade {
         let (label, api) = resolve_in(&ws, caller).map_err(SlackPostError::Workspace)?;
         let (conversation, conversation_label) =
             Self::resolve_conversation(&api, &label, &request.conversation).await;
-        let draft = SlackDraft {
+        let mut draft = SlackDraft {
             id: Uuid::new_v4(),
             workspace: label,
             conversation: request.conversation,
@@ -615,7 +682,11 @@ impl SlackFacade for ProdSlackFacade {
             thread_ts: request.thread_ts,
             text: request.text,
             operation: forge_primitives::slack::SlackDraftOperation::Post,
+            thread: None,
+            tagged: Vec::new(),
         };
+        let workspace = draft.workspace.clone();
+        Self::name_draft(&ws, api.as_ref(), &workspace, &mut draft).await;
         match Self::await_approval(&ws, caller, draft.clone()).await {
             GateDecision::Approved => {}
             GateDecision::Rejected => return Err(SlackPostError::Rejected),
@@ -693,7 +764,7 @@ impl SlackFacade for ProdSlackFacade {
         // go through the same gate a post does.
         let (conversation, conversation_label) =
             Self::resolve_conversation(&api, &label, &request.conversation).await;
-        let draft = SlackDraft {
+        let mut draft = SlackDraft {
             id: Uuid::new_v4(),
             workspace: label.clone(),
             conversation: request.conversation.clone(),
@@ -707,7 +778,11 @@ impl SlackFacade for ProdSlackFacade {
                 Some(_) => forge_primitives::slack::SlackDraftOperation::Edit,
                 None => forge_primitives::slack::SlackDraftOperation::Delete,
             },
+            thread: None,
+            tagged: Vec::new(),
         };
+        let workspace = draft.workspace.clone();
+        Self::name_draft(&ws, api.as_ref(), &workspace, &mut draft).await;
         match Self::await_approval(&ws, caller, draft).await {
             GateDecision::Approved => {}
             GateDecision::Rejected => return Err(SlackEditError::Rejected),
@@ -755,7 +830,7 @@ impl SlackFacade for ProdSlackFacade {
         let verb = if request.add { "react" } else { "unreact" };
         let (_, conversation_label) =
             Self::resolve_conversation(&api, &label, &request.conversation).await;
-        let draft = SlackDraft {
+        let mut draft = SlackDraft {
             id: Uuid::new_v4(),
             workspace: label,
             conversation: request.conversation.clone(),
@@ -767,7 +842,11 @@ impl SlackFacade for ProdSlackFacade {
             } else {
                 forge_primitives::slack::SlackDraftOperation::Unreact
             },
+            thread: None,
+            tagged: Vec::new(),
         };
+        let workspace = draft.workspace.clone();
+        Self::name_draft(&ws, api.as_ref(), &workspace, &mut draft).await;
         match Self::await_approval(&ws, caller, draft).await {
             GateDecision::Approved => {}
             GateDecision::Rejected => return Err(SlackReactError::Rejected),
@@ -995,7 +1074,7 @@ impl SlackFacade for ProdSlackFacade {
         // approving something the user has not seen.
         let (conversation, conversation_label) =
             Self::resolve_conversation(&api, &label, &request.conversation).await;
-        let draft = SlackDraft {
+        let mut draft = SlackDraft {
             id: Uuid::new_v4(),
             workspace: label.clone(),
             conversation: request.conversation.clone(),
@@ -1003,7 +1082,11 @@ impl SlackFacade for ProdSlackFacade {
             thread_ts: request.thread_ts.clone(),
             text: format!("[file] {name}\nfrom {}", request.path.display()),
             operation: forge_primitives::slack::SlackDraftOperation::Upload,
+            thread: None,
+            tagged: Vec::new(),
         };
+        let workspace = draft.workspace.clone();
+        Self::name_draft(&ws, api.as_ref(), &workspace, &mut draft).await;
         match Self::await_approval(&ws, caller, draft).await {
             GateDecision::Approved => {}
             GateDecision::Rejected => return Err(SlackAttachmentError::Rejected),
@@ -1530,6 +1613,10 @@ mod tests {
         /// Seeded conversation and thread reads.
         history_rows: parking_lot::Mutex<HashMap<String, Vec<SlackHistoryMessage>>>,
         reply_rows: parking_lot::Mutex<HashMap<String, Vec<SlackHistoryMessage>>>,
+        /// Thread reads that fail, keyed `channel/ts`.
+        reply_failures: parking_lot::Mutex<std::collections::HashSet<String>>,
+        /// User ids whose lookup fails, so a tag stays unnamed.
+        user_failures: parking_lot::Mutex<std::collections::HashSet<String>>,
         history_reads: parking_lot::Mutex<Vec<HistoryRead>>,
         reply_reads: parking_lot::Mutex<Vec<(String, String)>>,
         /// Search answers page by page; the queries are recorded so a test
@@ -1584,6 +1671,12 @@ mod tests {
         }
         fn seed_replies(&self, channel: &str, ts: &str, rows: Vec<SlackHistoryMessage>) {
             self.reply_rows.lock().insert(format!("{channel}/{ts}"), rows);
+        }
+        fn fail_replies(&self, channel: &str, ts: &str) {
+            self.reply_failures.lock().insert(format!("{channel}/{ts}"));
+        }
+        fn fail_user_info(&self, user: &str) {
+            self.user_failures.lock().insert(user.to_owned());
         }
         fn seed_search(&self, rows: Vec<SlackSearchMatch>) {
             self.search_pages.lock().push(rows);
@@ -1755,6 +1848,12 @@ mod tests {
             _cursor: Option<&str>,
         ) -> Result<MessagePage, SlackError> {
             self.reply_reads.lock().push((channel.to_owned(), ts.to_owned()));
+            if self.reply_failures.lock().contains(&format!("{channel}/{ts}")) {
+                return Err(SlackError::RateLimited {
+                    method: "conversations.replies".to_owned(),
+                    retry_after: std::time::Duration::from_secs(5),
+                });
+            }
             Ok(MessagePage {
                 messages: self
                     .reply_rows
@@ -1928,6 +2027,12 @@ mod tests {
         }
 
         async fn user_info(&self, user: &str) -> Result<SlackUser, SlackError> {
+            if self.user_failures.lock().contains(user) {
+                return Err(SlackError::RateLimited {
+                    method: "users.info".to_owned(),
+                    retry_after: std::time::Duration::from_secs(5),
+                });
+            }
             Ok(SlackUser {
                 id: user.to_owned(),
                 name: "tester".to_owned(),
@@ -2335,6 +2440,181 @@ token = "y"
             seen.expect("the draft reaches the prompt"),
             "ops",
             "the prompt names the channel the message goes to",
+        );
+
+        let id = wait_for_draft(&ws).await;
+        ws.resolve_slack_draft(id, &caller(), answered(false));
+        let _ = task.await;
+    }
+
+    /// The draft the facade has parked, which is the copy the pending update
+    /// carries.
+    async fn parked_draft(ws: &Arc<Workspace>) -> forge_primitives::slack::SlackDraft {
+        for _ in 0..200 {
+            let draft = ws.slack_drafts.lock().values().next().map(|(_, draft, _)| draft.clone());
+            if let Some(draft) = draft {
+                return draft;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        panic!("no draft was registered");
+    }
+
+    /// A thread read that answers one parent message.
+    fn parent_message(ts: &str, user: &str, text: &str) -> SlackHistoryMessage {
+        SlackHistoryMessage {
+            ts: ts.to_owned(),
+            user: Some(user.to_owned()),
+            text: text.to_owned(),
+            thread_ts: Some(ts.to_owned()),
+            reply_count: 0,
+            bot_name: None,
+            parent_user_id: None,
+            latest_reply: None,
+            edited: None,
+            files: Vec::new(),
+        }
+    }
+
+    fn threaded_post(conversation: &str, ts: &str, text: &str) -> SlackPostRequest {
+        SlackPostRequest {
+            conversation: conversation.to_owned(),
+            thread_ts: Some(ts.to_owned()),
+            text: text.to_owned(),
+        }
+    }
+
+    /// The card names the thread it replies into and the people it tags, so
+    /// the reader is not shown a ts and raw ids.
+    #[tokio::test]
+    async fn a_held_draft_names_its_thread_and_the_people_it_tags() {
+        let (facade, ws, api, _rx) = facade_with_recording_slack();
+        api.seed_conversation("C1", "ops");
+        api.seed_replies("C1", "100.0", vec![parent_message("100.0", "U2", "the deploy\nis green")]);
+
+        let task = tokio::spawn({
+            let facade = facade.clone();
+            async move {
+                facade.post(&caller(), threaded_post("C1", "100.0", "confirmed <@U9>")).await
+            }
+        });
+
+        let draft = parked_draft(&ws).await;
+        assert_eq!(
+            draft.thread,
+            Some(forge_primitives::slack::SlackThreadName {
+                author: "tester".to_owned(),
+                excerpt: "the deploy is green".to_owned(),
+            }),
+            "the thread is named by its author and one flattened line",
+        );
+        assert_eq!(
+            draft.tagged,
+            vec![forge_primitives::slack::SlackPerson {
+                id: "U9".to_owned(),
+                name: Some("tester".to_owned()),
+            }],
+            "the tagged person is named, not left as an id",
+        );
+
+        let id = wait_for_draft(&ws).await;
+        ws.resolve_slack_draft(id, &caller(), answered(false));
+        let _ = task.await;
+    }
+
+    /// A root post has no thread to name, and its tags still resolve.
+    #[tokio::test]
+    async fn a_root_post_names_no_thread_but_still_names_its_tags() {
+        let (facade, ws, api, _rx) = facade_with_recording_slack();
+        api.seed_conversation("C1", "ops");
+
+        let task = tokio::spawn({
+            let facade = facade.clone();
+            async move { facade.post(&caller(), post_request("C1", "ping <@U9>")).await }
+        });
+
+        let draft = parked_draft(&ws).await;
+        assert_eq!(draft.thread, None, "a root message has no thread segment");
+        assert_eq!(
+            draft.tagged,
+            vec![forge_primitives::slack::SlackPerson {
+                id: "U9".to_owned(),
+                name: Some("tester".to_owned()),
+            }],
+            "the tags resolve whether or not the message replies into a thread",
+        );
+
+        let id = wait_for_draft(&ws).await;
+        ws.resolve_slack_draft(id, &caller(), answered(false));
+        let _ = task.await;
+    }
+
+    /// A parent Slack no longer returns leaves the thread unnamed, and the
+    /// draft still parks: the card draws the raw ts rather than nothing.
+    #[tokio::test]
+    async fn a_parent_slack_no_longer_returns_leaves_the_thread_unnamed() {
+        let (facade, ws, api, _rx) = facade_with_recording_slack();
+        api.seed_conversation("C1", "ops");
+
+        let task = tokio::spawn({
+            let facade = facade.clone();
+            async move { facade.post(&caller(), threaded_post("C1", "100.0", "hello")).await }
+        });
+
+        assert_eq!(parked_draft(&ws).await.thread, None, "no parent means no name to draw");
+        let id = wait_for_draft(&ws).await;
+        ws.resolve_slack_draft(id, &caller(), answered(false));
+        let _ = task.await;
+    }
+
+    /// A read anchored at a reply answers the thread's parent. Naming that
+    /// would label an edit with a different message, so a ts that is not the
+    /// one asked for leaves the card drawing the raw stamp.
+    #[tokio::test]
+    async fn a_message_inside_a_thread_is_not_named_as_the_thread_parent() {
+        let (facade, ws, api, _rx) = facade_with_recording_slack();
+        api.seed_conversation("C1", "ops");
+        api.seed_replies("C1", "200.0", vec![parent_message("100.0", "U2", "the thread parent")]);
+
+        let task = tokio::spawn({
+            let facade = facade.clone();
+            async move {
+                facade.edit(&caller(), edit_request("C1", "200.0", Some("rewritten"))).await
+            }
+        });
+
+        assert_eq!(
+            parked_draft(&ws).await.thread,
+            None,
+            "the thread parent is not the message a reply's edit acts on",
+        );
+        let id = wait_for_draft(&ws).await;
+        ws.resolve_slack_draft(id, &caller(), answered(false));
+        let _ = task.await;
+    }
+
+    /// When both lookups fail the draft is still held and drawable: no
+    /// thread name, and the tag keeps its id instead of being dropped.
+    #[tokio::test]
+    async fn a_draft_still_parks_when_the_parent_and_a_tag_lookup_fail() {
+        let (facade, ws, api, _rx) = facade_with_recording_slack();
+        api.seed_conversation("C1", "ops");
+        api.fail_replies("C1", "100.0");
+        api.fail_user_info("U9");
+
+        let task = tokio::spawn({
+            let facade = facade.clone();
+            async move {
+                facade.post(&caller(), threaded_post("C1", "100.0", "confirmed <@U9>")).await
+            }
+        });
+
+        let draft = parked_draft(&ws).await;
+        assert_eq!(draft.thread, None, "a failed parent read is not invented over");
+        assert_eq!(
+            draft.tagged,
+            vec![forge_primitives::slack::SlackPerson { id: "U9".to_owned(), name: None }],
+            "an unresolved tag keeps its id, never dropped",
         );
 
         let id = wait_for_draft(&ws).await;

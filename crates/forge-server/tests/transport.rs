@@ -3784,6 +3784,8 @@ async fn an_empty_send_back_is_refused_by_name_and_leaves_the_draft_waiting() {
         thread_ts: None,
         text: "hello".to_owned(),
         operation: forge_primitives::slack::SlackDraftOperation::Post,
+        thread: None,
+        tagged: Vec::new(),
     };
     let id = draft.id;
     fleet.park_slack_draft(&lead_seat(), draft);

@@ -1419,6 +1419,8 @@ mod tests {
                     thread_ts: None,
                     text: "hello".to_owned(),
                     operation: forge_primitives::slack::SlackDraftOperation::Post,
+                    thread: None,
+                    tagged: Vec::new(),
                 },
             },
             SessionUpdate::SlackDraftResolved {

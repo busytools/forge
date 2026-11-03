@@ -18048,6 +18048,8 @@ mod worker_activity_tests {
             thread_ts: None,
             text: "hello".to_owned(),
             operation: forge_primitives::slack::SlackDraftOperation::Post,
+            thread: None,
+            tagged: Vec::new(),
         };
         let (_id, _decision) = ws.register_slack_draft(&seat, draft);
 
@@ -18307,6 +18309,8 @@ mod worker_activity_tests {
             thread_ts: None,
             text: "hello".to_owned(),
             operation: forge_primitives::slack::SlackDraftOperation::Post,
+            thread: None,
+            tagged: Vec::new(),
         };
         let (_id, _decision) = ws.register_slack_draft(&seat, draft);
 

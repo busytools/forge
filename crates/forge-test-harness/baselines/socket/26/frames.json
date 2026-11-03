@@ -1018,9 +1018,19 @@
         "conversation_label",
         "id",
         "operation",
+        "tagged",
         "text",
+        "thread",
         "thread_ts",
         "workspace"
+      ],
+      "/update/slack_post_pending/draft/tagged[]": [
+        "id",
+        "name"
+      ],
+      "/update/slack_post_pending/draft/thread": [
+        "author",
+        "excerpt"
       ],
       "/update/slack_post_pending/key": [
         "label",

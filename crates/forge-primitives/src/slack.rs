@@ -355,6 +355,27 @@ pub struct SlackFollowedThread {
     pub participating: bool,
 }
 
+/// The thread a held draft replies into, named for the card: the parent's
+/// author and one flattened line of its text, so the reader is not asked to
+/// read a ts.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SlackThreadName {
+    /// The parent's author: the resolved display name, else the raw user id.
+    /// Never invented.
+    pub author: String,
+    /// The parent's text flattened to one line and truncated at a word
+    /// boundary. Empty when the parent carried no text.
+    pub excerpt: String,
+}
+
+/// One person a held draft tags. `name` is the resolved display name; `None`
+/// when the lookup failed, and the card draws the id rather than a guess.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SlackPerson {
+    pub id: String,
+    pub name: Option<String>,
+}
+
 /// A composed but unsent Slack message. The workspace holds it until the
 /// user approves it in the dock prompt; nothing reaches Slack otherwise.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -372,6 +393,14 @@ pub struct SlackDraft {
     /// the MCP tool alone cannot tell an edit from a delete, and the card
     /// must not say "post" for either.
     pub operation: SlackDraftOperation,
+    /// The thread named for the card. `None` on a root message, and `None`
+    /// when the parent could not be read: the card then draws `thread_ts`.
+    #[serde(default)]
+    pub thread: Option<SlackThreadName>,
+    /// Every person the draft's text tags, in order of first appearance. A
+    /// mention the lookup could not name keeps its id, so no tag is dropped.
+    #[serde(default)]
+    pub tagged: Vec<SlackPerson>,
 }
 
 /// What a held draft would do in Slack.
@@ -523,6 +552,69 @@ mod tests {
                 "this is the name the card reads the operation from",
             );
         }
+    }
+
+    /// The card names the thread it replies into and the people it tags
+    /// instead of drawing a ts and raw ids. A draft recorded before those
+    /// fields existed still decodes - the frame is additive, and a client
+    /// older than it draws the line it always drew.
+    #[test]
+    fn a_draft_carries_its_thread_and_tags_and_an_older_draft_still_decodes() {
+        let draft = SlackDraft {
+            id: Uuid::nil(),
+            workspace: "acme".to_owned(),
+            conversation: "C1".to_owned(),
+            conversation_label: "staging".to_owned(),
+            thread_ts: Some("1758901234.482910".to_owned()),
+            text: "confirmed <@U2>".to_owned(),
+            operation: SlackDraftOperation::Post,
+            thread: Some(SlackThreadName {
+                author: "alice".to_owned(),
+                excerpt: "the staging deploy is green...".to_owned(),
+            }),
+            tagged: vec![
+                SlackPerson { id: "U2".to_owned(), name: Some("bob".to_owned()) },
+                SlackPerson { id: "U3".to_owned(), name: None },
+            ],
+        };
+        let encoded = serde_json::to_value(&draft).expect("a draft serialises");
+        assert_eq!(
+            encoded["thread"],
+            serde_json::json!({
+                "author": "alice",
+                "excerpt": "the staging deploy is green...",
+            }),
+            "the thread crosses as its author and one line of the parent",
+        );
+        assert_eq!(
+            encoded["tagged"],
+            serde_json::json!([
+                {"id": "U2", "name": "bob"},
+                {"id": "U3", "name": null},
+            ]),
+            "an unresolved mention crosses with no name rather than being dropped",
+        );
+        assert_eq!(
+            serde_json::from_value::<SlackDraft>(encoded).expect("and decodes back"),
+            draft,
+        );
+
+        let older = serde_json::json!({
+            "id": Uuid::nil(),
+            "workspace": "acme",
+            "conversation": "C1",
+            "conversation_label": "staging",
+            "thread_ts": null,
+            "text": "hello",
+            "operation": "post",
+        });
+        let decoded: SlackDraft =
+            serde_json::from_value(older).expect("a draft recorded before the fields decodes");
+        assert_eq!(
+            (decoded.thread, decoded.tagged),
+            (None, Vec::new()),
+            "the absent fields read as no thread and no tags",
+        );
     }
 
     /// A view that did not answer still hears how the draft ended, and a

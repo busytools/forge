@@ -1503,9 +1503,23 @@ fn frames_record() -> Value {
                 workspace: "acme".to_owned(),
                 conversation: "C1".to_owned(),
                 conversation_label: "acme".to_owned(),
-                thread_ts: None,
-                text: "hello".to_owned(),
+                thread_ts: Some("1758901234.482910".to_owned()),
+                text: "hello <@U2> <@U3>".to_owned(),
                 operation: forge_primitives::slack::SlackDraftOperation::Delete,
+                // Both new fields ride the sample: the card words this line
+                // from them, so a rename here would draw an unnamed thread
+                // and a raw id with nothing red.
+                thread: Some(forge_primitives::slack::SlackThreadName {
+                    author: "alice".to_owned(),
+                    excerpt: "the staging deploy is green...".to_owned(),
+                }),
+                tagged: vec![
+                    forge_primitives::slack::SlackPerson {
+                        id: "U2".to_owned(),
+                        name: Some("bob".to_owned()),
+                    },
+                    forge_primitives::slack::SlackPerson { id: "U3".to_owned(), name: None },
+                ],
             },
         })),
     );
