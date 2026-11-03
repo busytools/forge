@@ -6544,6 +6544,27 @@ describe('the dock', () => {
     expect(sendBackAction().disabled, 'and the action is still available').toBe(false);
   });
 
+  it('closes the send-back field on Escape from its own verb rather than declining the draft', () => {
+    const harness = open({ record: record({ pending_asks: [slackDraftAsk()] }) });
+
+    action('Send back with feedback').click();
+    flushSync();
+    writeFeedback('half a thought');
+    // One Tab from the field lands on the row's verb. Escape there must not
+    // take the reader's words and the whole draft with it.
+    sendBackAction().focus();
+    flushSync();
+    press('Escape');
+
+    expect(commands(harness), 'Escape on a verb closes the field, not the draft').toEqual([]);
+    expect(document.querySelector('.dock .sendback'), 'the field closes').toBeNull();
+    expect(document.querySelector('.dock'), 'the card stays').not.toBeNull();
+
+    action('Send back with feedback').click();
+    flushSync();
+    expect(feedbackBox().value, 'and the words are still there').toBe('half a thought');
+  });
+
   it('draws the send-back as it leaves, then names a refusal in its place', () => {
     const harness = open({ record: record({ pending_asks: [slackDraftAsk()] }) });
 

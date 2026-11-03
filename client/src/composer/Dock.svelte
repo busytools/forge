@@ -973,6 +973,13 @@
     }
     if (event.key === 'Escape') {
       event.preventDefault();
+      // **The open field owns Escape before the card does.** One Tab from the
+      // field lands on a verb, and a decline from there would take the words
+      // and the whole draft; closing the field is the reader's way back.
+      if (feedbackOpen) {
+        closeFeedback();
+        return;
+      }
       reject();
     }
   }
