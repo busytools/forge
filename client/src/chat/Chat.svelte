@@ -2013,7 +2013,11 @@
   $effect(() => {
     const park = held;
     const moving = compensating;
-    if (anchor === null || park.following || !park.loaded || moving) {
+    // **A follow that cannot pin is a parked reader here too.** The gate can
+    // refuse a follow that is on (the third state the way-back and the
+    // observer's restore already serve), and skipping the pass on the flag
+    // alone would leave that reader with neither the pin nor the anchor.
+    if (anchor === null || (park.following && pinning()) || !park.loaded || moving) {
       // No anchor parked, nothing owed: the next parked run schedules against
       // a clean slate rather than against an order from before the episode.
       owed = null;

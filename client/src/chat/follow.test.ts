@@ -2013,6 +2013,35 @@ describe('whether the column follows the newest end', () => {
     expect(element.offset, "the reader's row is still their place").toBe(250);
   });
 
+  it('holds the anchor of a following reader who is not at the foot', async () => {
+    // **The third state through the pass no observer reports.** An equal-height
+    // reorder above the reader is the anchor effect's own trigger, and it used
+    // to skip on the follow flag alone - so a following reader whose pin the
+    // gate refuses (a handoff after an unpaid send is one wire path there) had
+    // neither the pin nor the restore, and the column moved under them.
+    const server = stub();
+    await draw(server);
+    server.page([spoken('a'), spoken('b'), spoken('c'), spoken('d')]);
+    await settle();
+    layOut(40);
+    readerAt(50);
+    await settle();
+    const chat = conversationsFor(server.connection).live.get(subjectKey({ session: LEAD }))?.chat;
+    expect(chat, 'precondition: the column holds the seat conversation').toBeDefined();
+    chat?.following(true);
+    await settle();
+    clear();
+
+    // Every row the same height, and the anchor's turn and its neighbour
+    // swap: no size report, so only the anchor pass can hold the reader.
+    server.page([spoken('a'), spoken('c'), spoken('b'), spoken('d')]);
+    flushSync();
+    layOut(40);
+    await settle();
+
+    expect(element.offset, "the reader's row carried them through the reorder").toBe(90);
+  });
+
   /**
    * **The move no observer event reports** (#1734): an equal-height reorder
    * puts the anchor row somewhere else with every size unchanged - the
