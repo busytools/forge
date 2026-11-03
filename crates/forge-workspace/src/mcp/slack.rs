@@ -773,7 +773,9 @@ impl Tool for React {
         "Add a reaction to a Slack message, or remove one with `remove: true`. `name` is Slack's \
          shortcode without colons, e.g. `white_check_mark`. Removing requires being the original \
          reaction's author. HELD FOR APPROVAL like slack__post: a reaction is authored content \
-         in the user's name. Any session in the project may call this."
+         in the user's name. The user may instead send the draft back with feedback: the call \
+         fails with their words and nothing is added or removed, so revise the reaction and \
+         call again. Any session in the project may call this."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -863,7 +865,9 @@ impl Tool for Attachment {
          cannot escape the directory); the returned path is where it landed. Pass `path` with \
          `conversation` to upload a local file into that conversation, optionally into a thread \
          with `thread_ts`. An upload is HELD FOR APPROVAL like slack__post, because it posts new \
-         content; fetching is not. Any session in the project may call this."
+         content; fetching is not. The user may instead send the draft back with feedback: the \
+         call fails with their words and nothing is uploaded, so revise the file or the message \
+         and call again. Any session in the project may call this."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -1955,14 +1959,22 @@ mod tests {
     }
 
     /// An agent reads the description before it acts. A send-back is part of
-    /// what the gated call can return, and the agent's correct response to it
-    /// is to revise and call again - so both gated tools say so up front.
+    /// what every gated call can return, and the agent's correct response to
+    /// it is to revise and call again - so all four gated tools say so up
+    /// front.
     #[test]
     fn the_gated_slack_descriptions_state_that_a_send_back_expects_a_revision() {
         let facade: Arc<dyn SlackFacade> = Arc::new(MockSlackFacade::new());
         let post = Post { facade: facade.clone(), slot: caller_slot() }.description();
-        let edit = Edit { facade, slot: caller_slot() }.description();
-        for (name, description) in [("slack__post", post), ("slack__edit", edit)] {
+        let edit = Edit { facade: facade.clone(), slot: caller_slot() }.description();
+        let react = React { facade: facade.clone(), slot: caller_slot() }.description();
+        let attachment = Attachment { facade, slot: caller_slot() }.description();
+        for (name, description) in [
+            ("slack__post", post),
+            ("slack__edit", edit),
+            ("slack__react", react),
+            ("slack__attachment", attachment),
+        ] {
             assert!(
                 description.contains("send the draft back with feedback"),
                 "{name} must say the user can send it back: {description}",
