@@ -6261,7 +6261,7 @@ describe('the dock', () => {
     );
   });
 
-  it('names a root post’s tags with no thread segment to leave behind', () => {
+  it("names a root post's tags with no thread segment to leave behind", () => {
     open({
       record: record({
         pending_asks: [slackDraftAsk({ tagged: [{ id: 'U2', name: 'bob' }] })],
