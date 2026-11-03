@@ -42,10 +42,13 @@ without a stamp the CLI emits none.
 
 While a prompt holds the body it replaces the field with its own card. A held Slack draft shows
 where it would go and the words that would go out, verbatim, and its verbs follow what it would
-do: one wording for a post, an edit, a delete, a reaction and an upload would ask the reader to
-approve the wrong act. A post draws `Post` and `Do not post`; an edit draws `Apply edit` and
-`Do not apply`, or `Delete` and `Keep it`; a reaction draws `React` and `Do not react`; an upload
-draws `Upload` and `Do not upload`.
+do: one wording for a post, an edit, a delete, a reaction, a reaction's removal and an upload
+would ask the reader to approve the wrong act. A post draws `Post` and `Do not post`; an edit
+draws `Apply edit` and `Do not apply`; a delete draws `Delete` and `Keep it`; adding a reaction
+draws `React` and `Do not react`, and removing one draws `Unreact` and `Do not unreact`; an
+upload draws `Upload` and `Do not upload`. The destination's stamp follows the same rule: a post
+or an upload names the thread it replies into, and every other operation names the message it
+acts on.
 
 A third answer, send back with feedback, opens a field on the card. Enter sends, Shift+Enter is
 a newline, and Escape closes the field without sending. The words reach the agent as the blocked
