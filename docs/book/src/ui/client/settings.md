@@ -53,7 +53,7 @@ comes from the settings document above.
 | Restart banner | After a save lands, exactly the restart-class keys it carried, with no restart button. |
 | A new entry | A dashed card headed by its name and `new <group>`, its fields empty and required-marked, discarded or saved with the batch. |
 | A pending removal | The card head reads `removed on save`, with Undo; its lines are not drawn. |
-| The speaking card | The voice area's own block above its key cards: the speaking model row with its one control - install, activate or use the default, except when `[tts] speaking_model` pins the model, where the row draws none - the directory the files live in, and the voices the installed model carries, each with a `preview` and a `use` except the chosen one. |
+| The speaking card | The voice area's own block above its key cards: the speaking model row with its one control - install, activate or use the default - except that a `[tts] speaking_model` pin on an installed model draws no control, while a pinned model this machine does not have still offers `install`; the directory the files live in, and the voices the installed model carries, each with a `preview` and a `use` except the chosen one. |
 
 ## The rules
 
@@ -169,8 +169,15 @@ comes from the settings document above.
 - **Speech off** - `[tts] enabled` is unset: the card says every reply
   renders silently and withholds the model and preview controls until the
   key is on.
+- **A `[tts] enabled` change waiting on a restart** - the saved file and the
+  running role disagree: the card says which is on and that a restart applies
+  the edit, the model controls follow the saved value (what the core's
+  install and switch gates read), and previews follow the running role.
 - **A speaking model not installed** - the card draws the model row with its
   install control, and the voices section says they arrive with the model.
+- **A pinned speaking model this machine does not have** - the row offers
+  `install <quant>`; `[tts] speaking_model` names the model to run rather
+  than a reason to withhold the download.
 - **A speaking install or switch in flight** - the speaking model's controls
   are disabled until the core's own state settles.
 - **An unknown speaking state** - a speaking read this client cannot parse

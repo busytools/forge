@@ -16,6 +16,7 @@
    */
   let {
     speaking,
+    savedEnabled,
     install,
     activate,
     busy,
@@ -30,6 +31,10 @@
   }: {
     /** The speaking read, or `null` before the models snapshot lands. */
     speaking: SpeakingWire | null;
+    /** `[tts] enabled` as the saved file has it: the core's install and switch
+     * gates read the file, while the running role answers `speaking.enabled`
+     * until a restart takes the edit. */
+    savedEnabled: boolean;
     install: InstallState;
     activate: ActivateState;
     busy: boolean;
@@ -48,7 +53,9 @@
 
   const chosen = $derived(voice ?? 'af_heart');
   const active = $derived(speaking?.active ?? null);
-  const enabled = $derived(speaking?.enabled ?? true);
+  /** Whether the role is on now, which the preview needs; the model controls
+   * follow `savedEnabled`, which the core's gates read. */
+  const running = $derived(speaking?.enabled ?? true);
   const downloading = $derived(installLine(install));
   const activating = $derived(activateLine(activate));
 </script>
@@ -61,7 +68,14 @@
   {:else if speaking.from === 'unknown'}
     <p class="note">this forge sent a speaking model state this client cannot read</p>
   {:else}
-    {#if !enabled}
+    {#if savedEnabled !== running}
+      <p class="note">
+        speech is saved {savedEnabled ? 'on' : 'off'} and the running role is {running
+          ? 'on'
+          : 'off'}
+        &middot; <code>[tts] enabled</code> applies after a restart
+      </p>
+    {:else if !savedEnabled}
       <p class="note">
         speech is off: <code>[tts] enabled</code> is unset, so every reply renders silently. Turn it on
         below and save.
@@ -85,7 +99,7 @@
         {#if active.installed}
           <span class="chip"><span class="dot ok"></span>active</span>
         {/if}
-        {#if enabled}
+        {#if savedEnabled}
           {#if !active.installed}
             <button
               class="chip"
@@ -153,7 +167,7 @@
                 <button class="chip" type="button" onclick={() => onchoose(id)}>use</button>
               {/if}
               <span class="spacer"></span>
-              {#if enabled}
+              {#if running}
                 <button
                   class="chip"
                   type="button"
@@ -166,7 +180,7 @@
           {/each}
         </ul>
       </GroupFold>
-      {#if enabled && seat === null}
+      {#if running && seat === null}
         <p class="note">
           a preview plays on the seat you were last on, with its speaker switch on &middot; open a
           session and turn the speaker on, then come back

@@ -8,6 +8,7 @@ import { lastSeat } from '../routes';
 import type { Connection } from '../socket';
 import { resetVoices } from '../voice/registry';
 import type { DictateModelsWire, SpeakingFrom } from '../wire/models';
+import type { SettingsDocument, SettingsValue } from '../wire/settings';
 import Settings from './Settings.svelte';
 import { settingsFrame } from './frame';
 
@@ -71,8 +72,20 @@ function speakingWire(installed: boolean, from: SpeakingFrom): DictateModelsWire
   };
 }
 
-function draw(open: Connection): void {
-  settingsFrame.set({ status: 'ready', document: settingsWire });
+/** The settings document with one key's value replaced, so a test can put the
+ * saved file and the running role in disagreement. */
+function settingsWith(path: string, value: SettingsValue): SettingsDocument {
+  return {
+    ...settingsWire,
+    areas: settingsWire.areas.map((area) => ({
+      ...area,
+      keys: area.keys.map((entry) => (entry.path === path ? { ...entry, value } : entry)),
+    })),
+  };
+}
+
+function draw(open: Connection, sheet: SettingsDocument = settingsWire): void {
+  settingsFrame.set({ status: 'ready', document: sheet });
   app = mount(Settings, {
     target: document.body,
     props: { connection: open, home: emptyHome, mark: null },
@@ -154,7 +167,10 @@ describe("the settings page's speaking card", () => {
    * withholds both controls rather than offering a press that always errors. */
   it('says speech is off and withholds the model and preview controls', () => {
     const wire = { ...modelsWire, speaking: { ...modelsWire.speaking, enabled: false } };
-    draw(connection({ dispatched: [], edits: [] }, wire));
+    draw(
+      connection({ dispatched: [], edits: [] }, wire),
+      settingsWith('tts.enabled', { kind: 'bool', text: 'false' }),
+    );
 
     expect(bodyText()).toContain('speech is off');
     const labels = [
@@ -162,6 +178,34 @@ describe("the settings page's speaking card", () => {
     ].map((button) => button.textContent?.trim());
     expect(labels).not.toContain('use the default');
     expect(labels).not.toContain('preview');
+  });
+
+  /** `[tts] enabled` is restart-class: the file and the running role can
+   * disagree until a restart, and each control follows the half that answers
+   * it - install and switch read the file, a preview needs the running role. */
+  it('names the restart when the saved switch and the running role disagree', () => {
+    const runningOff = { ...modelsWire, speaking: { ...modelsWire.speaking, enabled: false } };
+    draw(connection({ dispatched: [], edits: [] }, runningOff));
+    expect(bodyText()).toContain('speech is saved on and the running role is off');
+    expect(bodyText()).toContain('applies after a restart');
+    const labelsOff = [
+      ...document.querySelectorAll<HTMLButtonElement>('.settings-speaking button'),
+    ].map((button) => button.textContent?.trim());
+    expect(labelsOff, 'the file gates the switch').toContain('use the default');
+    expect(labelsOff, 'the running role gates the preview').not.toContain('preview');
+  });
+
+  it('draws a saved-off switch that still runs as the restart state', () => {
+    draw(
+      connection({ dispatched: [], edits: [] }),
+      settingsWith('tts.enabled', { kind: 'bool', text: 'false' }),
+    );
+    expect(bodyText()).toContain('speech is saved off and the running role is on');
+    const labelsOn = [
+      ...document.querySelectorAll<HTMLButtonElement>('.settings-speaking button'),
+    ].map((button) => button.textContent?.trim());
+    expect(labelsOn, 'the file refuses the switch').not.toContain('use the default');
+    expect(labelsOn, 'the running role still previews').toContain('preview');
   });
 
   /** A render that fails after the command was accepted is the core's

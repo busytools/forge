@@ -118,6 +118,16 @@
   const speakingVoice = $derived(
     typeof draft.values['tts.voice'] === 'string' ? draft.values['tts.voice'] : savedVoice,
   );
+  /** The saved `[tts] enabled`: the core's install and switch gates read the
+   * file, so the card follows the file while the running role may differ
+   * until a restart takes the edit. */
+  const savedSpeakingEnabled = $derived.by(() => {
+    if (frame.status !== 'ready') return models.speaking?.enabled ?? false;
+    const key = findKey(frame.document, 'tts.enabled');
+    return key?.value.kind === 'bool'
+      ? key.value.text === 'true'
+      : (models.speaking?.enabled ?? false);
+  });
 
   // The speaking card is the only reader of the models subject here, so the
   // subscription lives only while its area is open - a page left on accounts
@@ -582,6 +592,7 @@
       errorPath={refusal?.keyPath ?? null}
       onBack={goHome}
       {speaking}
+      savedEnabled={savedSpeakingEnabled}
       speakingInstall={models.install}
       speakingActivate={models.activate}
       speakingBusy={models.busy}

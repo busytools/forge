@@ -40,6 +40,7 @@
     errorPath = null,
     onBack = () => {},
     speaking = null,
+    savedEnabled = true,
     speakingInstall = { state: 'idle' },
     speakingActivate = { state: 'idle' },
     speakingBusy = false,
@@ -82,6 +83,8 @@
     onBack?: (event: MouseEvent) => void;
     /** The speaking role's read, for the voice area's own card. */
     speaking?: SpeakingWire | null;
+    /** `[tts] enabled` as the saved file has it, which the core's gates read. */
+    savedEnabled?: boolean;
     speakingInstall?: InstallState;
     speakingActivate?: ActivateState;
     speakingBusy?: boolean;
@@ -259,6 +262,7 @@
         {#if area.id === 'voice'}
           <SpeakingCard
             {speaking}
+            {savedEnabled}
             install={speakingInstall}
             activate={speakingActivate}
             busy={speakingBusy}
