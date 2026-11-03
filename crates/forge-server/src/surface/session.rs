@@ -63,7 +63,24 @@ impl SessionState {
     pub(super) fn collect(workspace: &Workspace, slot: &SessionSlot, cwd_raw: &Path) -> Self {
         let queue = workspace
             .domain_session_for(slot)
-            .map(|domain| domain.lock().prompt_queue.clone())
+            .map(|domain| {
+                let guard = domain.lock();
+                // **The wire fields only.** The held entry carries the
+                // prompt's image payloads for the row a start will draw, and
+                // a seat read has no use for them: cloning the whole entry
+                // per read copies every base64 payload only for serde to
+                // skip it.
+                guard
+                    .prompt_queue
+                    .iter()
+                    .map(|prompt| forge_workspace::protocol::QueuedPrompt {
+                        uuid: prompt.uuid.clone(),
+                        source: prompt.source,
+                        text: prompt.text.clone(),
+                        attachments: Vec::new(),
+                    })
+                    .collect()
+            })
             .unwrap_or_default();
         Self {
             slot: slot.clone(),
@@ -102,6 +119,35 @@ mod tests {
         }))
         .expect("a status frame");
         crate::SessionUpdate::ChatAppended { key: slot.clone(), msg, source: None }
+    }
+
+    /// **A seat read's queue carries no attachment payloads.** The held entry
+    /// keeps the images for the row a start draws; cloning it whole per read
+    /// copies base64 only for serde to skip it.
+    #[test]
+    fn the_read_queue_carries_no_attachment_payloads() {
+        let (workspace, _dir) = crate::surface::testing::workspace();
+        let seat = SessionSlot::lead("TestOrg", "forge");
+        workspace.register_domain_session(seat.clone(), None);
+        workspace.domain_session_for(&seat).expect("the domain").lock().prompt_queue.push(
+            forge_workspace::protocol::QueuedPrompt {
+                uuid: "p1".to_owned(),
+                source: forge_workspace::protocol::PromptSource::You,
+                text: "queued words".to_owned(),
+                attachments: vec![forge_primitives::ImageAttachment {
+                    data: "iVBORw0KGgo=".to_owned(),
+                    mime_type: "image/png".to_owned(),
+                }],
+            },
+        );
+
+        let state = super::SessionState::collect(&workspace, &seat, Path::new("/tmp"));
+
+        assert_eq!(state.queue.len(), 1, "the waiting prompt is still served");
+        assert!(
+            state.queue[0].attachments.is_empty(),
+            "and its payloads stay core-side",
+        );
     }
 
     /// **A handoff owns the seat until the swap replaces it, and a
