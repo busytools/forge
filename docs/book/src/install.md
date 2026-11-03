@@ -59,10 +59,13 @@ feature. The published rustdoc is the one exception: it needs
 ## Development is macOS-first
 
 forge is developed and run on macOS. Other platforms compile, and CI
-builds and tests on Linux - with one job on macOS that compiles the two
-macOS-only halves no Linux runner sees, the server's browser host and the
-shell's native overlay, and runs the host's own tests - but one thing
-behaves differently:
+builds and tests on Linux - with two jobs on macOS. One runs the
+workspace clippy there, so the `cfg(target_os = "macos")` arms the Linux
+clippy job compiles out are still linted; `just check` runs that same
+clippy on whatever platform you run it on, so a macOS checkout lints them
+locally too. The other compiles the two macOS-only halves no Linux runner
+sees, the server's browser host and the shell's native overlay, and runs
+the host's own tests - but one thing behaves differently:
 
 - **App-level chords use Cmd on macOS, Ctrl elsewhere.** The pane
   toggles (`Cmd+Left`/`Cmd+Right` vs `Ctrl+Left`/`Ctrl+Right`) and
@@ -133,7 +136,9 @@ line.
 
 CI runs each build and test job in `ci.yml` only for the paths it serves,
 so a docs-only pull request does not wait for the Rust or client jobs. The
-client's CEF job serves every crate in `forge-server`'s dependency graph -
+macOS clippy job serves the same paths as the Linux one, because it lints
+the same source on the second platform. The client's CEF job serves every
+crate in `forge-server`'s dependency graph -
 `forge-browser`, `forge-server`, `forge-workspace`, `forge-agent`,
 `forge-gateway`, `forge-connectors`, `forge-dictate`, `forge-tts`,
 `forge-capture`, `forge-system-one`, `forge-sdk` and `forge-primitives` -

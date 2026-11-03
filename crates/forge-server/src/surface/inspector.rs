@@ -135,8 +135,8 @@ impl ViewSurface {
         &self,
         slot: &SessionSlot,
         cwd: &std::path::Path,
-        // Whether this is the review page's own read, which fetches the base
-        // itself a moment later.
+        // Whether this is the review page's own read, which kicks the base
+        // refresh itself a moment later.
         review: bool,
     ) -> WorkSnapshot {
         // **The record's read never waits on the PR lookup.** A
@@ -151,30 +151,39 @@ impl ViewSurface {
         // A seat with no session has no store to hold a read, and its record
         // still answers the tree it stands in - so there is nothing cached to
         // serve and no loop to refresh it either: this read fetches. **The
-        // review read fetches the base itself**, so its scan takes none of the
-        // background kick: one read, one fetch, and nothing of forge's queued
-        // ahead of that fetch on the shared repository gate.
+        // review read kicks the base refresh itself**, so its scan takes none
+        // of the background kick: one read, one refresh, and nothing of
+        // forge's queued ahead of it on the shared repository gate.
         if review {
             return self.workspace.scan_work_at_without_base_fetch(slot, cwd).await;
         }
         self.workspace.scan_work_at(slot, cwd, PrRefresh::Fetch).await
     }
 
-    /// Refresh the base the seat's drawn branch diff is measured against,
-    /// waiting for the fetch with no cap.
+    /// Answer the base the seat's drawn branch diff is measured against, and
+    /// keep it fresh off the read.
     ///
     /// `None` when no branch layer is drawn: the default branch, a detached
     /// HEAD, or no resolved default. Only the read that draws the diff calls
-    /// this, so a state it reports belongs to the moment that diff was read
-    /// rather than to an earlier scan.
+    /// this, so the check it reports is the one that read drew.
+    ///
+    /// **A seat with no session waits for its own check.** No watch runs for
+    /// one, so a kicked refresh would land in a store nothing pushes to the
+    /// page: this read is the only path that can carry the answer.
     pub async fn refresh_diff_base(
         &self,
+        slot: &SessionSlot,
         held: &WorkSnapshot,
     ) -> Option<forge_workspace::env::git_diff::BaseRefresh> {
         if !held.diff.branch_ahead.is_populated() {
             return None;
         }
         let default = held.diff.default_branch.as_deref()?;
+        if self.workspace.domain_session_for(slot).is_none() {
+            return Some(
+                forge_workspace::env::git_diff::refresh_base_now(&held.cwd, default).await,
+            );
+        }
         Some(forge_workspace::env::git_diff::refresh_base_for_display(&held.cwd, default).await)
     }
 

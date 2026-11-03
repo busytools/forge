@@ -449,8 +449,8 @@ describe('the connection', () => {
 
   /**
    * **The review page's own read carries its flag to the server.** It is the
-   * one subscribe that may wait on the network, so the flag has to ride the
-   * ask rather than be inferred from the subject.
+   * subscribe whose read checks the base, so the flag has to ride the ask
+   * rather than be inferred from the subject.
    */
   it('asks a review-scoped read when the page says so', async () => {
     const { server, conn } = await connected();
@@ -1431,31 +1431,32 @@ describe('the connection', () => {
   });
 
   /**
-   * **A review ask clears the timer an ordinary read of the subject left.**
-   * Skipping the arm instead of arming none would let the ordinary read's
-   * timer fire mid-review, and its refresh re-asks with the review scope - the
-   * second whole review read that the review read's wait exists to prevent.
+   * **A review subscribe is bounded like any other.** Nothing at this
+   * transport exempts it: its server-side wait is bounded, so an unanswered
+   * review read is presumed lost at the pass and asked again with its scope.
    */
-  it('clears a standing read timer when a review ask supersedes it', async () => {
+  it('re-asks a review subscribe that goes unanswered', async () => {
     const server = await stubServer();
     servers.push(server);
     const conn = connect(server.url, SHORT_READ_BOUND_MS);
     opened.push(conn);
     const seat: Subject = { session: LEAD };
-    conn.subscribe(seat);
-    await until(() => server.received.length === 1, 'the ordinary subscribe');
     conn.subscribe(seat, { review: true });
-    await until(() => server.received.length === 2, 'the review subscribe');
+    await until(() => server.received.length === 1, 'the review subscribe');
 
-    await quiet(SHORT_READ_BOUND_MS * 6);
-    expect(server.received.length, 'the cleared timer never asks again').toBe(2);
+    await until(() => server.received.length >= 3, "the bound's re-ask pair");
+    expect(server.received[2], 'and the re-ask keeps the review scope').toEqual({
+      kind: 'subscribe',
+      what: seat,
+      answering: false,
+      review: true,
+    });
   });
 
   /**
    * **A re-ask that states no scope keeps the review read's.** The refresh
-   * falls back to the scope the seat was last asked with, and a review read
-   * has no deadline - so a fallback that dropped it would arm an ordinary
-   * five-second pass and ask a second whole review read mid-wait.
+   * falls back to the scope the seat was last asked with, so a fallback that
+   * dropped it would turn a review read's retry into an ordinary record.
    */
   it('keeps the held review scope on a re-ask that states none', async () => {
     const server = await stubServer();
@@ -1468,10 +1469,12 @@ describe('the connection', () => {
 
     expect(conn.refresh(seat), 'the re-ask went').toBe(true);
     await until(() => server.received.length >= 3, 'the refresh pair');
-    const sent = server.received.length;
-
-    await quiet(SHORT_READ_BOUND_MS * 6);
-    expect(server.received.length, 'a review re-ask armed an ordinary bound').toBe(sent);
+    expect(server.received[2], 'the re-ask kept the held review scope').toEqual({
+      kind: 'subscribe',
+      what: seat,
+      answering: false,
+      review: true,
+    });
   });
 
   it('asks nothing again for a read that was answered', async () => {

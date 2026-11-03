@@ -272,6 +272,7 @@
       conversation_label: '#granite-staging-alerts',
       thread_ts: null,
       text: 'The staging deploy is green. Rolling to production once the 14:30 window closes.',
+      operation: 'post',
     },
   };
 
@@ -282,6 +283,18 @@
       id: 'draft-2',
       thread_ts: '1790956000.969469',
       text: 'Confirmed - the replica caught the bad statement, so production is clear to take the same set.',
+    },
+  };
+
+  /** A held draft whose verbs are not a post's: one wording for every
+   *  operation is the defect the copy exists to avoid. */
+  const slackDelete = {
+    kind: 'slack_draft',
+    request: {
+      ...slackDraft.request,
+      id: 'draft-3',
+      text: '[delete] message 1790956000.969469',
+      operation: 'delete',
     },
   };
 
@@ -601,6 +614,16 @@
     },
     { label: 'dock · slack draft', props: { record: { ...blank(), pending_asks: [slackDraft] } } },
     { label: 'dock · slack reply', props: { record: { ...blank(), pending_asks: [slackReply] } } },
+    {
+      label: 'dock · slack delete',
+      props: { record: { ...blank(), pending_asks: [slackDelete] } },
+    },
+    {
+      label: 'dock · slack send-back, open',
+      props: { record: { ...blank(), pending_asks: [slackDraft] } },
+      // The second verb is the send-back's own door; the first is Post.
+      click: '.dock .acts .btn:nth-child(2)',
+    },
     {
       label: 'dock · question · one answer',
       props: { record: { ...blank(), pending_asks: [questionSingle] } },

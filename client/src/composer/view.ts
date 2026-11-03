@@ -365,6 +365,12 @@ export function draftEndingLine(ending: unknown): { tone: string; text: string }
   if (ending === 'abandoned') {
     return { tone: 'q', text: "The Slack draft's asking session went away." };
   }
+  if (ending === 'sent_back') {
+    return {
+      tone: 'q',
+      text: 'The Slack draft was sent back with feedback in another view.',
+    };
+  }
   const answered = enumField(ending, 'answered');
   if (answered !== undefined) {
     return {

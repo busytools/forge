@@ -165,7 +165,7 @@ export function slackDraftAsk(over: Record<string, unknown> = {}): unknown {
       conversation_label: 'granite-staging-alerts',
       thread_ts: null,
       text: 'Deploy finished on staging.',
-      tool: 'slack__post',
+      operation: 'post',
       ...over,
     },
   };

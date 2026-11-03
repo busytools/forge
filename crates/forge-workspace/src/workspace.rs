@@ -516,13 +516,16 @@ pub(crate) type SlackDeliveryKey = (String, Option<String>, String, String, Opti
 /// Multi-session orchestrator. Owns the project catalog snapshot
 /// loaded from `<config_dir>/forge.toml` and the pool of currently
 /// One composed Slack message held for a decision: the session that asked,
-/// the draft itself, and the sender the blocked `slack__post` handler awaits.
+/// the draft itself, and the sender the blocked Slack handler awaits.
 ///
 /// The draft rides beside the sender for the same reason the permission and
 /// question requests do - the stream carries it once, so a view that attached
 /// after it landed has nothing else to draw the dock from.
-pub(crate) type ParkedSlackDraft =
-    (SessionSlot, forge_primitives::slack::SlackDraft, tokio::sync::oneshot::Sender<bool>);
+pub(crate) type ParkedSlackDraft = (
+    SessionSlot,
+    forge_primitives::slack::SlackDraft,
+    tokio::sync::oneshot::Sender<forge_primitives::slack::SlackDraftAnswer>,
+);
 
 /// One parked browser hand-off: the session that asked, the hand-off itself,
 /// and the sender the blocked `browser_hand_off` handler awaits.
@@ -6907,14 +6910,22 @@ impl Workspace {
                         notification,
                     );
                 }
-                Command::RespondSlackPost { key, id, approved } => {
+                Command::RespondSlackPost { key, id, answer } => {
+                    // A send-back with no words is not an answer: it would
+                    // drop the reader's card and hand the agent nothing. The
+                    // draft stays waiting so the field can be sent again.
+                    if let forge_primitives::slack::SlackDraftAnswer::SendBack { note } = &answer
+                        && note.trim().is_empty()
+                    {
+                        return Err(DispatchError::EmptySlackFeedback { key: key.clone(), id });
+                    }
                     // The guard above already refused a draft this one is not
                     // waiting for, so a `false` here is a resolve that landed
                     // between the two: the same refusal, not a silent drop.
                     let answered = self.resolve_slack_draft(
                         id,
                         &key,
-                        forge_primitives::slack::SlackDraftEnding::Answered { approved },
+                        crate::slack::DraftResolution::Answered(answer),
                     );
                     if !answered {
                         return Err(DispatchError::NoDraftWaiting { key: key.clone(), id });
@@ -18036,7 +18047,7 @@ mod worker_activity_tests {
             conversation_label: "acme".to_owned(),
             thread_ts: None,
             text: "hello".to_owned(),
-            tool: "slack__post".to_owned(),
+            operation: forge_primitives::slack::SlackDraftOperation::Post,
         };
         let (_id, _decision) = ws.register_slack_draft(&seat, draft);
 
@@ -18295,7 +18306,7 @@ mod worker_activity_tests {
             conversation_label: "acme".to_owned(),
             thread_ts: None,
             text: "hello".to_owned(),
-            tool: "slack__post".to_owned(),
+            operation: forge_primitives::slack::SlackDraftOperation::Post,
         };
         let (_id, _decision) = ws.register_slack_draft(&seat, draft);
 
@@ -18391,7 +18402,10 @@ mod worker_activity_tests {
         assert!(ws.resolve_document_hand_off(
             id,
             &seat,
-            forge_primitives::document::DocumentHandOffEnding::Done { review_id: None },
+            forge_primitives::document::DocumentHandOffEnding::Approve {
+                review_id: None,
+                note: None,
+            },
         ));
         assert_eq!(ws.session_activity(&seat), L::Running, "answered, the turn runs again");
         assert_eq!(ws.pending_interaction(&seat), None, "and the row stands down");
@@ -23754,12 +23768,15 @@ mod git_scan_cwd_tests {
         assert!(ws.resolve_document_hand_off(
             ask.0,
             &session_key,
-            DocumentHandOffEnding::Done { review_id: Some("r-1".to_owned()) },
+            DocumentHandOffEnding::Approve { review_id: Some("r-1".to_owned()), note: None },
         ));
 
         let (resolved, ending) = handed.await.expect("the task joins").expect("the hand-off lands");
         assert_eq!(resolved, expected.to_string_lossy(), "answered with the resolved path");
-        assert_eq!(ending, DocumentHandOffEnding::Done { review_id: Some("r-1".to_owned()) });
+        assert_eq!(
+            ending,
+            DocumentHandOffEnding::Approve { review_id: Some("r-1".to_owned()), note: None }
+        );
         assert!(
             std::iter::from_fn(|| updates.try_recv().ok()).any(|frame| matches!(
                 &*frame.update,
@@ -23862,7 +23879,7 @@ mod git_scan_cwd_tests {
         ws.resolve_document_hand_off(
             ask,
             &session_key,
-            DocumentHandOffEnding::Done { review_id: None },
+            DocumentHandOffEnding::Approve { review_id: None, note: None },
         );
         handed.await.expect("the task joins").expect("and the park releases");
 

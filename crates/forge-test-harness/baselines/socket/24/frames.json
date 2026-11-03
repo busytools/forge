@@ -79,8 +79,6 @@
     "SessionReplaced": "session_replaced",
     "SetModeFailed": "set_mode_failed",
     "SetModelFailed": "set_model_failed",
-    "SettingsWritePending": "settings_write_pending",
-    "SettingsWriteResolved": "settings_write_resolved",
     "SlackDraftResolved": "slack_draft_resolved",
     "SlackMessageAppended": "slack_message_appended",
     "SlackPostPending": "slack_post_pending",
@@ -145,7 +143,6 @@
     "RespondBrowserHandOff": "respond_browser_hand_off",
     "RespondPermission": "respond_permission",
     "RespondQuestion": "respond_question",
-    "RespondSettingsWrite": "respond_settings_write",
     "RespondSlackPost": "respond_slack_post",
     "ResumeSession": "resume_session",
     "SetDictateOverride": "set_dictate_override",
@@ -663,9 +660,10 @@
         "key"
       ],
       "/update/document_hand_off_resolved/ending": [
-        "done"
+        "approve"
       ],
-      "/update/document_hand_off_resolved/ending/done": [
+      "/update/document_hand_off_resolved/ending/approve": [
+        "note",
         "review_id"
       ],
       "/update/document_hand_off_resolved/key": [
@@ -703,6 +701,7 @@
         "commit",
         "created_at",
         "id",
+        "resolution",
         "status",
         "updated_at"
       ],
@@ -719,6 +718,18 @@
         "author",
         "review_id",
         "text"
+      ],
+      "/threads[]/resolution": [
+        "line",
+        "moved_from",
+        "reason",
+        "state"
+      ],
+      "/threads[]/resolution/reason": [
+        "ambiguous"
+      ],
+      "/threads[]/resolution/reason/ambiguous": [
+        "matches"
       ]
     },
     "Error": {
@@ -935,33 +946,6 @@
       "": [
         "id",
         "kind"
-      ]
-    },
-    "SettingsWritePending": {
-      "": [
-        "kind",
-        "seq",
-        "span",
-        "update"
-      ],
-      "/update": [
-        "settings_write_pending"
-      ],
-      "/update/settings_write_pending": [
-        "ask",
-        "key"
-      ],
-      "/update/settings_write_pending/ask": [
-        "current",
-        "id",
-        "key",
-        "proposed",
-        "unset"
-      ],
-      "/update/settings_write_pending/key": [
-        "label",
-        "org",
-        "project"
       ]
     },
     "SnapshotBoard": {

@@ -25,7 +25,7 @@ import type { ClientSettings, SessionSlot } from './wire/types';
  * rail footer carries both halves' build and socket numbers, and a mismatch
  * raises the notice beside it. Nothing refuses a connection over it.
  */
-export const PROTOCOL_VERSION = 24;
+export const PROTOCOL_VERSION = 26;
 
 /**
  * The release this client was built from, baked in by the build.
@@ -304,9 +304,10 @@ export type ClientMessage =
        */
       answering: boolean;
       /**
-       * The review page's own read: the server refreshes the branch diff's
-       * base before it encodes the record. Every other read serves the stores
-       * and never waits on the network.
+       * The review page's own read: the server answers the base it last
+       * checked and refreshes it off the read, waiting only on a seat that
+       * has no session to deliver the check. Every other read serves the
+       * stores and never checks the base.
        */
       review: boolean;
     }

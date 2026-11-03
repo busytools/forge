@@ -25,7 +25,10 @@ minus its `cargo check --release` job and the client build's
 `scripts/check_client_wasm.py` step (`just check` builds no frontend), and
 plus the android warnings check CI cannot run yet
 (`client-android-warnings`; its vendoring refuses non-macOS hosts - #1959,
-closed as an enhancement and tracked in #2258).
+closed as an enhancement and tracked in #2258). CI also runs the workspace
+clippy on a macOS runner, which lints the `cfg(target_os = "macos")` arms
+a Linux run compiles out; `just check` covers them only when it runs on
+macOS.
 
 The gate is two commands: `just check`, and `just check-feature-configs`,
 which compiles the configuration `install.sh` builds. Both green before

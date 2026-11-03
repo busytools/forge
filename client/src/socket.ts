@@ -901,12 +901,9 @@ export function connect(
     awaiting.push(key);
     subscribed.set(key, (subscribed.get(key) ?? 0) + 1);
     // The read this ask owes is bounded from here: nothing else would ask
-    // again for a snapshot that simply never came. A review read is armed with
-    // no bound at all, which also clears any timer an ordinary read of the
-    // same subject left standing: the server waits for its base fetch with no
-    // cap, so a timer would ask a second whole record under one still
-    // legitimately running.
-    bounds.arm(what, review ? null : undefined);
+    // again for a snapshot that simply never came. The review page's own read
+    // gets the same pass: its server-side read no longer waits on the network.
+    bounds.arm(what);
   }
 
   /** A subject the server has answered, which is no longer outstanding. */

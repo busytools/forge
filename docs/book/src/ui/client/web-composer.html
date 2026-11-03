@@ -286,6 +286,10 @@
   .dock .btn.p { border-color: rgba(244,118,0,.5); color: var(--hot);
     background: rgba(244,118,0,.1); }
   .dock .btn.d { border-color: rgba(224,104,62,.45); color: var(--bad); }
+  /* The send-back's words, in the row the card opens under its verbs. */
+  .dock .sendback { display: flex; align-items: flex-start; gap: 8px; }
+  .dock .sendback .fld { flex: 1; min-width: 0; color: var(--text);
+    font-size: var(--fs-base); line-height: 1.45; padding: 2px 0; }
   .dock .refusal { border: 1px solid rgba(224,104,62,.45); border-radius: 10px;
     padding: 7px 10px; color: var(--bad); font-size: var(--fs-base); }
   .dock .sent { font-size: var(--fs-base); color: var(--text); white-space: pre-wrap;
@@ -772,11 +776,57 @@ on the folded bar.</p>
             <span class="chevb"><svg class="ic"><use href="#i-down"/></svg></span></div>
           <div class="sent">Confirmed - the replica caught the bad statement, so production is
             clear to take the same set.</div>
-          <div class="acts"><span class="btn p">Post</span><span class="btn d">Don't send</span></div>
+          <div class="acts"><span class="btn p">Post</span><span class="btn">Send back with feedback</span><span class="btn d">Do not post</span></div>
         </div></div></div>
       </div></div>
       <p class="note" style="margin:8px 0 0">The text that would go out, verbatim; the approving
-      verb leads.</p>
+      verb leads, the send-back sits between it and the refusal.</p>
+    </div>
+    <div class="col">
+      <div class="lab">the send-back's words <span class="h">241px</span></div>
+      <div class="comp"><div class="surf">
+        <div class="live-row">
+          <span class="live-door att"><svg class="ic"><use href="#i-plane"/></svg>post waiting</span>
+          <span class="live-fig"><span class="ring"></span><span>0:42</span>
+            <span class="sep">&middot;</span><span>thinking 1.2k</span></span>
+          <span class="div"></span>
+          <span class="live-more">+9</span>
+        </div>
+        <div class="slot"><div class="ask-body"><div class="dock">
+          <div class="d-head"><span class="dest">Trust Machines &middot; #granite-staging-alerts</span>
+            <span class="q">Reply in Slack</span>
+            <span class="chevb"><svg class="ic"><use href="#i-down"/></svg></span></div>
+          <div class="sent">Confirmed - the replica caught the bad statement, so production is
+            clear to take the same set.</div>
+          <div class="acts"><span class="btn p">Post</span><span class="btn">Send back with feedback</span><span class="btn d">Do not post</span></div>
+          <div class="sendback"><span class="fld">say staging, not prod</span><span class="btn">Send back</span></div>
+        </div></div></div>
+      </div></div>
+      <p class="note" style="margin:8px 0 0">Enter sends, Shift+Enter is a newline, Escape closes;
+      the verb is unavailable until the field has words.</p>
+    </div>
+  </div>
+  <div class="row">
+    <div class="col">
+      <div class="lab">a delete held for approval <span class="h">198px</span></div>
+      <div class="comp"><div class="surf">
+        <div class="live-row">
+          <span class="live-door att"><svg class="ic"><use href="#i-plane"/></svg>delete waiting</span>
+          <span class="live-fig"><span class="ring"></span><span>0:42</span>
+            <span class="sep">&middot;</span><span>thinking 1.2k</span></span>
+          <span class="div"></span>
+          <span class="live-more">+9</span>
+        </div>
+        <div class="slot"><div class="ask-body"><div class="dock">
+          <div class="d-head"><span class="dest">Trust Machines &middot; #granite-staging-alerts</span>
+            <span class="q">Delete in Slack</span>
+            <span class="chevb"><svg class="ic"><use href="#i-down"/></svg></span></div>
+          <div class="sent">[delete] message 1758901234.482910</div>
+          <div class="acts"><span class="btn p">Delete</span><span class="btn">Send back with feedback</span><span class="btn d">Keep it</span></div>
+        </div></div></div>
+      </div></div>
+      <p class="note" style="margin:8px 0 0">The same held-draft card, worded for what it would
+      do: a delete asks to delete, and its refusal is "keep it".</p>
     </div>
   </div>
   <div class="row">

@@ -357,15 +357,16 @@ pub enum Command {
         tool_id: String,
         outcome: PermissionOutcome,
     },
-    /// Answer a held Slack draft. The blocked `slack__post` handler is
-    /// awaiting this decision; `approved: false` means nothing posts.
+    /// Answer a held Slack draft. The blocked Slack handler is awaiting
+    /// this answer: approving sends it, declining sends nothing, and a
+    /// send-back carries the reader's words to the agent instead.
     /// App-level command (`key()` returns `None`): the registry is
     /// workspace state, and `key` names the owner the answer is
     /// checked against, not a SessionTask route.
     RespondSlackPost {
         key: SessionSlot,
         id: uuid::Uuid,
-        approved: bool,
+        answer: forge_primitives::slack::SlackDraftAnswer,
     },
     /// Answer a parked browser hand-off. The blocked `browser_hand_off`
     /// handler is awaiting this answer: what it means, the door in the client
@@ -377,10 +378,10 @@ pub enum Command {
         id: uuid::Uuid,
         answer: forge_primitives::browser::HandOffAnswer,
     },
-    /// Answer a parked document hand-off: `NotNow` declines it, `Done`
-    /// releases it with what the viewer's finish filed. The blocked
-    /// `hand_off_document` call is awaiting this; `key` names the owner the
-    /// answer is checked against.
+    /// Answer a parked document hand-off: `NotNow` declines it, `Approve`
+    /// and `Feedback` release it with the reader's decision, note and the
+    /// review the finish filed. The blocked `hand_off_document` call is
+    /// awaiting this; `key` names the owner the answer is checked against.
     AnswerDocumentHandOff {
         key: SessionSlot,
         id: uuid::Uuid,
@@ -1029,11 +1030,11 @@ impl std::fmt::Debug for Command {
                 .field("key", key)
                 .field("tool_id", tool_id)
                 .finish_non_exhaustive(),
-            Self::RespondSlackPost { key, id, approved } => f
+            Self::RespondSlackPost { key, id, answer } => f
                 .debug_struct("RespondSlackPost")
                 .field("key", key)
                 .field("id", id)
-                .field("approved", approved)
+                .field("answer", answer)
                 .finish_non_exhaustive(),
             Self::RespondBrowserHandOff { key, id, answer } => f
                 .debug_struct("RespondBrowserHandOff")
@@ -2154,7 +2155,8 @@ pub enum SessionUpdate {
     ///
     /// **The call parks on this**, like the browser hand-off: `id` names the
     /// parked call, and the reader's answer releases it - `NotNow` here, or
-    /// `Done` when the viewer's finish files the reading. `path` is the
+    /// `Approve` / `Feedback` when the viewer's finish files the reading.
+    /// `path` is the
     /// resolved absolute path, the viewer's stable address; `reviewable` is
     /// what the hand-off asked for - the ask's own fact rather than the
     /// document's, because a readable document offers its review either way.
@@ -2638,13 +2640,19 @@ pub enum DispatchError {
     /// A Slack answer named a draft the registry does not hold. Its own
     /// word rather than [`Self::NoPromptWaiting`]'s: a draft is answered by
     /// its own id and names no tool call, and this line is drawn where the
-    /// dock stood. The two endings are the whole set a draft can have -
-    /// answered, or its asking session gone - so the line names them rather
-    /// than guessing which one.
+    /// dock stood. Answering and the asking session going away are the
+    /// endings that leave nothing waiting, which is the condition this line
+    /// names - a send-back is an answer too, and resolves the draft just the
+    /// same.
     #[error(
         "that Slack draft is no longer waiting: it has been answered, or its asking session went away"
     )]
     NoDraftWaiting { key: SessionSlot, id: Uuid },
+    /// A send-back carried no words. There is nothing to hand the agent,
+    /// and resolving the draft would drop the reader's card for nothing -
+    /// so the draft stays waiting and the field can be sent again.
+    #[error("the feedback was empty, so the draft is still waiting")]
+    EmptySlackFeedback { key: SessionSlot, id: Uuid },
     /// A browser hand-off answer named a hand-off the registry does not hold:
     /// answered in another view, or its asking session went away. Its own
     /// word for the same reason [`Self::NoDraftWaiting`] has one.
@@ -2841,6 +2849,7 @@ mod session_update_variants {
         };
 
         assert_eq!(ending(SlackDraftEnding::Abandoned), serde_json::json!("abandoned"));
+        assert_eq!(ending(SlackDraftEnding::SentBack), serde_json::json!("sent_back"));
         assert_eq!(
             ending(SlackDraftEnding::Answered { approved: true }),
             serde_json::json!({ "answered": { "approved": true } }),
