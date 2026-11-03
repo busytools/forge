@@ -622,8 +622,8 @@ impl Tool for Post {
          separate message. Returns {workspace, ts, conversation_name, parts}: `workspace` is \
          the resolved `[[slack]]` label it posted into, and `ts` names every message it posted, \
          in the order they went out; slack__edit, slack__react and a reply each take one. Any \
-         session in the project may call this. If this call fails, report the exact error and \
-         stop - never fall back to Slack's web API with the configured token."
+         session in the project may call this. If this call fails for any other reason, report \
+         the exact error and stop - never fall back to Slack's web API with the configured token."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -1960,11 +1960,9 @@ mod tests {
     #[test]
     fn the_gated_slack_descriptions_state_that_a_send_back_expects_a_revision() {
         let facade: Arc<dyn SlackFacade> = Arc::new(MockSlackFacade::new());
-        let descriptions = [
-            ("slack__post", Post { facade: facade.clone(), slot: caller_slot() }.description()),
-            ("slack__edit", Edit { facade, slot: caller_slot() }.description()),
-        ];
-        for (name, description) in descriptions {
+        let post = Post { facade: facade.clone(), slot: caller_slot() }.description();
+        let edit = Edit { facade, slot: caller_slot() }.description();
+        for (name, description) in [("slack__post", post), ("slack__edit", edit)] {
             assert!(
                 description.contains("send the draft back with feedback"),
                 "{name} must say the user can send it back: {description}",
@@ -1974,6 +1972,13 @@ mod tests {
                 "{name} must say what the agent should do with the feedback: {description}",
             );
         }
+        // The stop-and-report tail is the other failures' rule. Left
+        // unqualified it contradicts the sentence above it: a send-back IS a
+        // failure of the call, and the agent must call again.
+        assert!(
+            post.contains("any other reason"),
+            "the post's stop-and-report tail is qualified for a send-back: {post}",
+        );
     }
 
     /// The headline of the cut: no Slack tool advertises a `workspace`
