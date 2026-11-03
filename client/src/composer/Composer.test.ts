@@ -4924,7 +4924,7 @@ describe('the dock', () => {
     expect(
       drawn(),
       'the key line leads with the Tab that reaches the region, where the arrows scroll',
-    ).toContain('Tab into the post, then ↑↓ scroll it');
+    ).toContain('Tab into the card, then ↑↓ scroll it');
     expect(drawn(), 'and names the second Tab for the actions').toContain(
       "Tab again for the card's actions",
     );
@@ -6441,6 +6441,8 @@ describe('the dock', () => {
     ['unreact', STAMP, 'Unreact in Slack', 'Unreact', 'Do not unreact', `message ${STAMP}`],
     ['upload', null, 'Upload to Slack', 'Upload', 'Do not upload', null],
     ['upload', STAMP, 'Upload to Slack', 'Upload', 'Do not upload', `thread ${STAMP}`],
+    // A value from a newer server draws neutral words, never a post's.
+    ['unknown', STAMP, 'Slack draft', 'Approve', 'Do not send', `message ${STAMP}`],
   ];
 
   it.each(OPERATION_CARDS)(
@@ -6610,7 +6612,7 @@ describe('the dock', () => {
     expect(drawn(), 'and the sending line goes with it').not.toContain('Sending your feedback');
   });
 
-  it('brings the card back when the core refuses an empty send-back', () => {
+  it('brings the card back when the core keeps the draft after a refused answer', () => {
     const harness = open({ record: record({ pending_asks: [slackDraftAsk()] }) });
 
     action('Post').click();
@@ -6650,6 +6652,36 @@ describe('the dock', () => {
 
     expect(drawn(), 'a refresh does not erase the press').toContain(
       'Sending your feedback to the agent. Nothing was sent.',
+    );
+  });
+
+  it("clears a send-back's sending line when the reader's own answer resolves", () => {
+    const harness = open({ record: record({ pending_asks: [slackDraftAsk()] }) });
+
+    action('Send back with feedback').click();
+    flushSync();
+    writeFeedback('say staging, not prod');
+    press('Enter');
+    expect(drawn(), 'the press registered').toContain('Sending your feedback');
+
+    harness.say({
+      kind: 'update',
+      update: {
+        slack_draft_resolved: {
+          key: SLOT,
+          id: '0192e1c0-0000-7000-8000-000000000000',
+          ending: 'sent_back',
+        },
+      },
+    });
+    harness.page.record = record();
+    flushSync();
+
+    expect(drawn(), 'the line goes with the draft it was drawn for').not.toContain(
+      'Sending your feedback',
+    );
+    expect(drawn(), "and the reader's own answer is not reported as another view's").not.toContain(
+      'another view',
     );
   });
 

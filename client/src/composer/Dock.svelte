@@ -159,6 +159,9 @@
     react: { head: 'React in Slack', approve: 'React', decline: 'Do not react' },
     unreact: { head: 'Unreact in Slack', approve: 'Unreact', decline: 'Do not unreact' },
     upload: { head: 'Upload to Slack', approve: 'Upload', decline: 'Do not upload' },
+    // A value from a newer server: say the least that is true rather than
+    // claiming a post, which could approve an act nobody named.
+    unknown: { head: 'Slack draft', approve: 'Approve', decline: 'Do not send' },
   };
 
   const slackVerbs = $derived.by(() => {
@@ -367,7 +370,7 @@
     if (collapsed) return;
     if (inFieldNow()) return;
     // The options where there are any, and the dock itself where there are not
-    // (a permission, a held post) - NOT the words row: the options are what
+    // (a permission, a held draft) - NOT the words row: the options are what
     // the arrival is for, and the row is entered by the reader's own doing.
     const wanted = listbox ?? root;
     if (wanted !== null) wanted.focus({ preventScroll: true });
@@ -574,7 +577,7 @@
       declineDocument();
       return;
     }
-    // A held post refuses with its own decline, which is the answer the
+    // A held draft refuses with its own decline, which is the answer the
     // core reads as the draft going nowhere.
     post('decline');
   }
@@ -1100,7 +1103,7 @@
     <div class="preview" tabindex="0" role="region" aria-label={label} data-preview>
       <!-- **An option's preview is line-structured ASCII**, so it is drawn as
            its own source: a line beginning `+`, `-` or `#` is that line and
-           not a list item or a heading (#1634). A held post is markdown and
+           not a list item or a heading (#1634). A held draft is markdown and
            renders as markdown. -->
       {#if source}
         <pre class="src">{text}</pre>
@@ -1358,7 +1361,7 @@
         </div>
       {/if}
       {#if take !== null}
-        <!-- A take still running behind a held post: this branch draws no words
+        <!-- A take still running behind a held draft: this branch draws no words
            row, so without this line a prompt would swallow a recording that is
            still going. -->
         <div class="blip">
@@ -1414,12 +1417,12 @@
             <span><kbd>Enter</kbd> {submitLabel}</span>
           {/if}
         {:else if ask.kind === 'slack_draft'}
-          <!-- **The order is the order that works.** A held post arrives with
+          <!-- **The order is the order that works.** A held draft arrives with
              the keyboard on the dock root, where the arrows are the dock's own
              and move nothing; they scroll only once the keyboard is in the
              region, so the Tab leads. -->
           <span
-            ><kbd>Tab</kbd> into the post, then <kbd>&uarr;</kbd><kbd>&darr;</kbd> scroll it</span
+            ><kbd>Tab</kbd> into the card, then <kbd>&uarr;</kbd><kbd>&darr;</kbd> scroll it</span
           >
           <span><kbd>Tab</kbd> again for the card's actions</span>
           <span><kbd>Enter</kbd> activates</span>

@@ -100,6 +100,24 @@ describe('the ask as the composer reads it', () => {
       'the operation is what the card words its verbs from, so dropping it here silently draws post copy',
     ).toBe('delete');
   });
+
+  it('narrows an operation this client is older than to neutral, not a post', () => {
+    const held = askFrom({
+      kind: 'slack_draft',
+      request: {
+        id: '0192e1c0-0000-7000-8000-000000000000',
+        workspace: 'Trust Machines',
+        conversation: 'C0123',
+        conversation_label: 'granite-staging-alerts',
+        thread_ts: null,
+        text: 'Deploy finished on staging.',
+        operation: 'archive',
+      },
+    });
+    if (held?.kind !== 'slack_draft') throw new Error('the held post did not narrow');
+
+    expect(held.request.operation, 'an unknown value must not borrow a post verb').toBe('unknown');
+  });
 });
 
 describe('the browser hand-off read', () => {

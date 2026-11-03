@@ -152,7 +152,12 @@ export interface QuestionRequest {
  * alone cannot tell an edit from a delete.
  */
 const SLACK_OPERATIONS = ['post', 'edit', 'delete', 'react', 'unreact', 'upload'] as const;
-export type SlackOperation = (typeof SLACK_OPERATIONS)[number];
+/**
+ * A held draft's operation as the card reads it. `unknown` is this client's
+ * own: a value from a newer server draws neutral verbs rather than borrowing a
+ * post's, which could approve an act the value does not name.
+ */
+export type SlackOperation = (typeof SLACK_OPERATIONS)[number] | 'unknown';
 
 /** A held Slack draft: what is waiting, and what it would send. */
 export interface SlackDraft {
@@ -376,7 +381,7 @@ function slackFrom(value: unknown): Ask {
       conversationLabel: text(held['conversation_label']) ?? '',
       threadTs: text(held['thread_ts']),
       text: text(held['text']) ?? '',
-      operation: narrow(held['operation'], SLACK_OPERATIONS, 'post'),
+      operation: narrow(held['operation'], SLACK_OPERATIONS, 'unknown'),
     },
   };
 }
