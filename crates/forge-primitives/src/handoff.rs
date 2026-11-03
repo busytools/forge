@@ -81,7 +81,8 @@ pub struct HandoffGitState {
     pub diff: Vec<String>,
 }
 
-/// One handoff, as the row draws it and as the store keeps it for tuning.
+/// One handoff, as the swap signal carries it and as the store keeps it for
+/// tuning.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HandoffRecord {
     pub slot: SessionSlot,
@@ -104,11 +105,10 @@ pub struct HandoffRecord {
     /// The turn the handing-over session ran the procedure in: the prompt
     /// forge wrote, the calls it made and the exit call.
     ///
-    /// **Carried because the transcript that holds it belongs to a session a
-    /// view has left.** A client attaching after the swap reads the
-    /// successor's history and would draw only the row; the turn's own frames
-    /// come from here. Empty when the predecessor's transcript could not be
-    /// read, or when no procedure prompt is in it.
+    /// **Carried as data for the record and the store.** Nothing draws it:
+    /// the successor's transcript opens with its own procedure row. Empty
+    /// when the predecessor's transcript could not be read, or when no
+    /// procedure prompt is in it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub judgment_turn: Vec<Message>,
     /// The handover's transcript, which holds everything the brief does not.

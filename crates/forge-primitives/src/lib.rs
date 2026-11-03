@@ -42,8 +42,8 @@
 //! - [`session_meta`] - `PromptChunk`.
 //! - [`project_key`] - `ProjectKey`, the canonical on-disk project
 //!   identity.
-//! - [`handoff`] - one session swap: the record a row draws, the brief a
-//!   successor is given, and the numbers kept for tuning the trigger.
+//! - [`handoff`] - one session swap: the record the swap signal carries, the
+//!   brief a successor is given, and the numbers kept for tuning the trigger.
 //! - [`settings`] - the effective-config document a server pushes: the
 //!   areas, every key's value, and when an edit to it takes effect.
 //! - [`wire`] - the socket's binary frame tags shared by the server and the

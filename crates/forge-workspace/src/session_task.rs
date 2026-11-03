@@ -1678,13 +1678,14 @@ impl SessionTask {
                 "the handoff brief could not be delivered to its successor",
             );
             // **The successor is told.** A seat that connected and got no
-            // brief looks like a session that started empty; the row above it
-            // says otherwise, so the failure is stated rather than inferred.
+            // brief looks like a session that started empty; the handoff
+            // record names the session that handed over, so the failure is
+            // stated rather than inferred.
             self.emit(SessionUpdate::Notice {
                 key: key.clone(),
                 severity: NoticeSeverity::Error,
-                text: "the handoff brief could not be delivered to this session; the row above \
-                       names the session that handed over, and /resume reaches it"
+                text: "the handoff brief could not be delivered to this session; the handoff \
+                       record names the session that handed over"
                     .to_owned(),
             });
         }
@@ -5255,6 +5256,7 @@ mod tests {
 
         // The CLI takes it: the row lands now, with the words the queue
         // carried and the attachment the dispatch held.
+        let before = time::OffsetDateTime::now_utc();
         task.translate_event(AgentEvent::SdkMessage {
             session_id: "send-row-session".to_owned(),
             msg: forge_primitives::Message::CommandLifecycle {
@@ -5265,6 +5267,7 @@ mod tests {
                 extras: forge_primitives::messages::Extras::new(),
             },
         });
+        let after = time::OffsetDateTime::now_utc();
 
         let announced: Vec<SessionUpdate> = std::iter::from_fn(|| update_rx.try_recv().ok())
             .map(|frame| std::sync::Arc::unwrap_or_clone(frame.update))
@@ -5333,6 +5336,19 @@ mod tests {
             message.content.len(),
             2,
             "only the attachment the sender kept draws, beside the words: {message:?}",
+        );
+        // **The row carries the clock a mid-turn page reads.** Stamped where
+        // the CLI's start is handled, not at dispatch.
+        let stamp =
+            serde_json::to_value(msg).expect("encode")["timestamp"].as_str().map(str::to_owned);
+        let stamp = stamp.expect("the row carries a stamp");
+        let at =
+            time::OffsetDateTime::parse(&stamp, &time::format_description::well_known::Rfc3339)
+                .unwrap_or_else(|error| panic!("a client cannot read the stamp {stamp}: {error}"));
+        assert!(
+            at >= before - time::Duration::seconds(5) && at <= after + time::Duration::seconds(5),
+            "the row carries the task's own clock, not a constant: {stamp} sits outside \
+             {before}..{after}",
         );
     }
 
@@ -12308,6 +12324,61 @@ provider = "anthropic"
                 "{name} hears each send's row once, in order",
             );
         }
+    }
+
+    /// **Only a person's prompt draws the started row.** A machinery prompt's
+    /// words ride its own forged row, and a cron fire's ride the delivery
+    /// echo; a second row here would draw every delivery and the handoff
+    /// brief twice.
+    #[tokio::test]
+    async fn a_machinery_prompt_draws_no_started_row() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (workspace, _rx) =
+            crate::Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
+        let slot = SessionSlot::worker("TestOrg", "forge", "machinery-row");
+        let (mut task, mut update_rx, _agent_rx) = nudge_task_for(&workspace, &slot);
+        task.domain.lock().session_id = Some(forge_primitives::SessionId::new("machinery-session"));
+
+        task.execute_command(Command::PromptUnder {
+            key: slot.clone(),
+            text: "machinery words".to_owned(),
+            attachments: Vec::new(),
+            uuid: "forge-1".to_owned(),
+            source: crate::protocol::PromptSource::Forge,
+            dispatch_id: None,
+        });
+        task.translate_event(AgentEvent::SdkMessage {
+            session_id: "machinery-session".to_owned(),
+            msg: forge_primitives::Message::CommandLifecycle {
+                command_uuid: "forge-1".to_owned(),
+                state: "started".to_owned(),
+                uuid: "lifecycle-forge-1".to_owned(),
+                session_id: "machinery-session".to_owned(),
+                extras: forge_primitives::messages::Extras::new(),
+            },
+        });
+
+        let announced: Vec<SessionUpdate> = std::iter::from_fn(|| update_rx.try_recv().ok())
+            .map(|frame| std::sync::Arc::unwrap_or_clone(frame.update))
+            .collect();
+        assert!(
+            !announced.iter().any(|update| matches!(
+                update,
+                SessionUpdate::ChatAppended {
+                    msg: forge_primitives::Message::User { uuid: Some(id), .. },
+                    ..
+                } if id.as_str() == "forge-1"
+            )),
+            "a machinery prompt draws no row from the task: {announced:?}",
+        );
+        assert!(
+            announced.iter().any(|update| matches!(
+                update,
+                SessionUpdate::PromptLifecycle { uuid, state, .. }
+                    if uuid == "forge-1" && state == "started"
+            )),
+            "the lifecycle still advances: {announced:?}",
+        );
     }
 
     /// **A refused or discarded prompt draws no row.** The CLI settles it

@@ -1421,13 +1421,12 @@ impl crate::Workspace {
         });
     }
 
-    /// Run a handoff: build the ground truth, draw the row, and start the new
-    /// session on the same order `/new` uses.
+    /// Run a handoff: build the ground truth, announce the swap, and start the
+    /// new session on the same order `/new` uses.
     ///
     /// The build reads the transcript and probes git, so it runs off the
-    /// actor that decided it. The row goes out before the spawn, which is
-    /// what puts it between the two conversations rather than below the new
-    /// one's first turn.
+    /// actor that decided it. The swap signal goes out before the spawn, so
+    /// the seat knows the join before the successor's transcript starts.
     pub(crate) fn start_handoff(self: &Arc<Self>, request: SwapRequest) {
         let workspace = Arc::clone(self);
         tokio::spawn(async move {
@@ -1515,8 +1514,8 @@ impl crate::Workspace {
             return;
         }
         self.record_handoff(&record, &reads);
-        // The brief is held before the row and the spawn, so a successor
-        // that connects immediately cannot outrun it.
+        // The brief is held before the swap signal and the spawn, so a
+        // successor that connects immediately cannot outrun it.
         self.set_pending_brief(&request.slot, PendingBrief { to: request.to.clone(), text });
         let _ = self
             .update_tx

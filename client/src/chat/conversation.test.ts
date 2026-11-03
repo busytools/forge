@@ -6644,11 +6644,12 @@ describe('the chat holds a queued prompt until the CLI takes it', () => {
     expect(words(chat).split(chase).length - 1, 'one row, once').toBe(1);
   });
 
-  it('retracts a row the announcement follows, which is the real wire order', () => {
-    // The dispatcher emits the user turn as it routes; the task's announcement
-    // comes a beat behind, so the frame usually arrives first. The hold has to
-    // come from that side of the race too, or a live send is drawn by the chat
-    // and the pile at once.
+  it('retracts a machinery row the announcement follows, which is its wire order', () => {
+    // A machinery prompt's forged row goes out as it is dispatched; the task's
+    // announcement comes a beat behind, so the frame usually arrives first.
+    // The hold has to come from that side of the race too, or the machinery's
+    // words are drawn by the chat and the pile at once. A person's send has no
+    // forged row before `started` any more.
     const server = fakeConnection();
     const chat = new Chat(server.connection, LEAD);
     chat.start();
@@ -6657,7 +6658,9 @@ describe('the chat holds a queued prompt until the CLI takes it', () => {
     server.update({ chat_appended: { key: LEAD, msg: forgedUnder('raced words', 'p1') } });
     expect(words(chat), 'the frame lands first and is drawn').toContain('raced words');
 
-    server.update({ prompt_queued: { key: LEAD, uuid: 'p1', source: 'you', text: 'raced words' } });
+    server.update({
+      prompt_queued: { key: LEAD, uuid: 'p1', source: 'forge', text: 'raced words' },
+    });
     expect(words(chat), 'the announcement pulls it back into the hold').not.toContain(
       'raced words',
     );
@@ -7256,6 +7259,29 @@ describe('the chat holds a queued prompt until the CLI takes it', () => {
       server.update({ prompt_lifecycle: { key: LEAD, uuid, state } });
       expect(words(chat), `a ${state} prompt draws nothing`).not.toContain(text);
     }
+  });
+
+  it('draws the row when completed is the first settled state', () => {
+    // **A reattached client can miss `started`.** The snapshot's queue arms
+    // the hold, and `completed` is the drain that saves it - the row draws
+    // once, with the wait it spent in the pile.
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([turn('t1', 'first')], null));
+    server.send({
+      kind: 'snapshot',
+      subject: { session: LEAD },
+      data: {
+        header: { turn_in_flight: true },
+        state: { queue: [{ uuid: 'p1', source: 'you', text: 'completed words' }] },
+      },
+    });
+    expect(words(chat), 'the snapshot arms the hold').not.toContain('completed words');
+
+    server.update({ prompt_lifecycle: { key: LEAD, uuid: 'p1', state: 'completed' } });
+    expect(words(chat), 'completed drains the hold').toContain('completed words');
+    expect(words(chat).split('completed words').length - 1, 'one row, once').toBe(1);
   });
 
   it('releases a held row when the process that would start it fails', () => {

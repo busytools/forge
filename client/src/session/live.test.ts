@@ -983,9 +983,7 @@ describe('the session page over a socket', () => {
     await until(() => document.querySelector('.conv') === null, 'the home route');
     // A row lands while the reader is away: the seat is still subscribed, so
     // the client folds it into the conversation it holds.
-    server.push(
-      updateOf({ chat_appended: { key: W1, msg: say('landed while away'), origin: null } }),
-    );
+    server.push(updateOf({ chat_appended: { key: W1, msg: say('landed while away') } }));
     await quiet();
 
     const subscribes = seatSubscribesOf(W1);
@@ -1060,9 +1058,7 @@ describe('the session page over a socket', () => {
 
     route.set({ name: 'home' });
     await until(() => document.querySelector('.conv') === null, 'the home route');
-    server.push(
-      updateOf({ chat_appended: { key: W1, msg: say('landed while away'), origin: null } }),
-    );
+    server.push(updateOf({ chat_appended: { key: W1, msg: say('landed while away') } }));
     await quiet();
 
     setMeasured(...window);
@@ -2683,9 +2679,7 @@ describe('the record a page holds over an update stream', () => {
     const published = first.publishes();
 
     releaseSeat(connection, LEAD);
-    connection.land(
-      updateOf({ chat_appended: { key: LEAD, msg: spoke("a successor's row"), origin: null } }),
-    );
+    connection.land(updateOf({ chat_appended: { key: LEAD, msg: spoke("a successor's row") } }));
     paint();
 
     expect(first.publishes(), 'a released seat kept folding frames').toBe(published);
@@ -2704,9 +2698,7 @@ describe('the record a page holds over an update stream', () => {
     away.land(snapshotOf(LEAD));
     away.stop();
 
-    connection.land(
-      updateOf({ chat_appended: { key: LEAD, msg: spoke('landed while away'), origin: null } }),
-    );
+    connection.land(updateOf({ chat_appended: { key: LEAD, msg: spoke('landed while away') } }));
 
     const back = watch(connection);
     paint();
@@ -2775,9 +2767,7 @@ describe('the record a page holds over an update stream', () => {
     vi.useFakeTimers({
       toFake: ['requestAnimationFrame', 'cancelAnimationFrame', 'setTimeout', 'clearTimeout'],
     });
-    connection.land(
-      updateOf({ chat_appended: { key: LEAD, msg: say('arrived while hidden'), origin: null } }),
-    );
+    connection.land(updateOf({ chat_appended: { key: LEAD, msg: say('arrived while hidden') } }));
 
     expect(page.publishes(), 'the frame waited for a paint that cannot come').toBe(published + 1);
 
@@ -2809,15 +2799,11 @@ describe('the record a page holds over an update stream', () => {
     vi.useFakeTimers({
       toFake: ['requestAnimationFrame', 'cancelAnimationFrame', 'setTimeout', 'clearTimeout'],
     });
-    connection.land(
-      updateOf({ chat_appended: { key: LEAD, msg: say('armed while visible'), origin: null } }),
-    );
+    connection.land(updateOf({ chat_appended: { key: LEAD, msg: say('armed while visible') } }));
     expect(page.publishes(), 'precondition: the visible frame waited for a paint').toBe(published);
 
     hidePage();
-    connection.land(
-      updateOf({ chat_appended: { key: LEAD, msg: say('arrived while hidden'), origin: null } }),
-    );
+    connection.land(updateOf({ chat_appended: { key: LEAD, msg: say('arrived while hidden') } }));
 
     expect(
       page.publishes(),

@@ -24,10 +24,13 @@ import Composed from './testing/Composed.svelte';
 
 const SLOT: SessionSlot = { org: 'Busytools', project: 'forge', label: 'lead' };
 
-/** The component's own style block: its rule is not in the app sheet, and the
- * test environment does not inject it beside the mount. */
+/** The component's own style block: the test environment does not inject it
+ * beside the mount, so the cascade is read against the source. */
 const QUEUE_STYLE =
   /<style>([\s\S]*?)<\/style>/.exec(readFileSync('src/chat/Queue.svelte', 'utf8'))?.[1] ?? '';
+
+/** The app's sheet, in case the rule moves out of the component. */
+const SHEET = readFileSync('src/assets/web.css', 'utf8');
 
 const row = (uuid: string): QueuedPromptRow => ({ uuid, source: 'you', text: uuid });
 
@@ -146,12 +149,17 @@ describe('the queue pile', () => {
     const { connection } = recording();
     draw(rows('one'), connection);
 
-    // The rule lives in the component's own style block, which this
-    // environment does not inject; the cascade is read against the source
-    // block beside the markup the component drew.
+    // The rule is read from the component's own style block and the app's
+    // sheet, so a move between them still resolves; the presence check below
+    // fails loudly rather than letting an absent rule read as NaN. Only the
+    // rule is fed to the parser: the app sheet carries syntax this jsdom
+    // cannot read, and a whole-sheet parse would drop it.
     const markup = host.innerHTML;
+    const css = `${SHEET}\n${QUEUE_STYLE}`;
+    const rule = /\.pile\s*\{[^}]*\}/.exec(css)?.[0] ?? '';
+    expect(rule, 'the pile rule is in one of the sheets').toContain('margin-top: 0');
     const dom = new JSDOM(
-      `<!doctype html><html><head><style>${QUEUE_STYLE}</style></head><body><div class="conv">${markup}</div></body></html>`,
+      `<!doctype html><html><head><style>${rule}</style></head><body><div class="conv">${markup}</div></body></html>`,
       { pretendToBeVisual: true },
     );
     const held = dom.window.document.querySelector('.pile');

@@ -259,7 +259,7 @@ seat owns and their links, the transcript the record names, and what was
 still running when the seat changed: the live agents, background tasks,
 monitors and the session's process tree, so the successor knows what to
 resume - then the note the handing-over session wrote, or its closing text
-under a `source` row when the exit call carried none: where things stand,
+under a `source` label when the exit call carried none: where things stand,
 what is in flight with the id that names it, what failed, and the exact next
 action with the file, command or row it starts at, so the successor opens
 what the note names rather than reading a retelling of it.
@@ -267,7 +267,7 @@ what the note names rather than reading a retelling of it.
 **The previous conversation goes with the seat that left.** The chat clears
 on the swap rather than carrying the old turns above a seam: the successor
 is a new session with its own transcript, and what it draws is its own. The
-handoff record keeps the old session's id, so `/resume` can still reach it.
+handoff record keeps the old session's id.
 
 **A row is drawn before the list has measured it.** The virtualised list
 places a row on an estimate-derived offset and corrects it the moment the
