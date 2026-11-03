@@ -53,7 +53,7 @@ comes from the settings document above.
 | Restart banner | After a save lands, exactly the restart-class keys it carried, with no restart button. |
 | A new entry | A dashed card headed by its name and `new <group>`, its fields empty and required-marked, discarded or saved with the batch. |
 | A pending removal | The card head reads `removed on save`, with Undo; its lines are not drawn. |
-| The speaking card | The voice area's own block above its key cards: the speaking model row with its one control - install, activate or use the default - except that a `[tts] speaking_model` pin on an installed model draws no control, while a pinned model this machine does not have still offers `install`; the directory the files live in, and the voices the installed model carries, each with a `preview` and a `use` except the chosen one. |
+| The speaking card | The voice area's own block above its key cards: the speaking model row with its one control - install, activate or use the default - except that a `[tts] speaking_model` pin on an installed model draws no control, while a pinned model this machine does not have still offers `install`; the directory the files live in; and a voices fold that starts shut, its count and a chevron on the header whatever its state, holding the installed voices grouped by the language their prefix names, inside a region that scrolls inside the card. Each voice row is its id, its chosen state or a `use` chip, and a `preview` chip. |
 
 ## The rules
 
@@ -124,6 +124,13 @@ comes from the settings document above.
   seat's own voice stream. It needs the seat's speaker switch on, and the
   card says so rather than opening a second playback path; a core refusal is
   drawn in its own words under the card.
+- **A preview is one at a time.** A press stops the clip sounding now and
+  drops what queued behind it, so the pressed voice starts as its first
+  chunk arrives rather than after the clip already playing.
+- **The voices are a fold that starts shut.** Its header carries the count
+  and a chevron in both states, and opening it lists the voices grouped by
+  the language their prefix names, inside a region that scrolls so
+  fifty-four rows never run the page off the screen.
 
 ## The states the page can be in
 

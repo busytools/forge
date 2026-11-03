@@ -73,6 +73,15 @@ export class Voice {
   }
 
   /**
+   * Stop the clip sounding now and drop what queued behind it. A preview press
+   * takes this first, so the pressed voice is heard as its first chunk arrives
+   * rather than behind the clip already playing.
+   */
+  stop(): void {
+    this.playback.drop();
+  }
+
+  /**
    * The connection this voice spoke through is gone for good: stop its audio
    * and forget the server ever counted it. **Nothing is sent** - that server
    * dropped this client from its listener sets when the socket closed, and a

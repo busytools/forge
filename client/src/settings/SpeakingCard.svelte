@@ -51,6 +51,20 @@
     onpreview: (voice: string) => void;
   } = $props();
 
+  /** The languages the Kokoro voices cover, named by the prefix each voice id
+   * starts with. A voice outside every set still draws, under its own voice id
+   * prefix, rather than disappearing from the list. */
+  const VOICE_LANGUAGES: { heading: string; prefixes: string[] }[] = [
+    { heading: 'English', prefixes: ['af_', 'am_', 'bf_', 'bm_'] },
+    { heading: 'Spanish', prefixes: ['ef_', 'em_'] },
+    { heading: 'French', prefixes: ['ff_'] },
+    { heading: 'Hindi', prefixes: ['hf_', 'hm_'] },
+    { heading: 'Italian', prefixes: ['if_', 'im_'] },
+    { heading: 'Japanese', prefixes: ['jf_', 'jm_'] },
+    { heading: 'Portuguese', prefixes: ['pf_', 'pm_'] },
+    { heading: 'Chinese', prefixes: ['zf_', 'zm_'] },
+  ];
+
   const chosen = $derived(voice ?? 'af_heart');
   const active = $derived(speaking?.active ?? null);
   /** Whether the role is on now, which the preview needs; the model controls
@@ -58,6 +72,23 @@
   const running = $derived(speaking?.enabled ?? true);
   const downloading = $derived(installLine(install));
   const activating = $derived(activateLine(activate));
+  /** The voice ids by the language their prefix names, in the catalogue's
+   * order, so fifty-four rows read as a short list of short lists. */
+  const groups = $derived.by(() => {
+    const found = VOICE_LANGUAGES.map((language) => ({
+      heading: language.heading,
+      voices: [] as string[],
+    }));
+    const other = { heading: 'Other', voices: [] as string[] };
+    for (const id of speaking?.voices ?? []) {
+      const at = VOICE_LANGUAGES.findIndex((language) =>
+        language.prefixes.some((prefix) => id.startsWith(prefix)),
+      );
+      const bucket = at === -1 ? other : found[at];
+      bucket?.voices.push(id);
+    }
+    return [...found, other].filter((group) => group.voices.length > 0);
+  });
 </script>
 
 <section class="settings-speaking" aria-labelledby="speaking-title">
@@ -156,29 +187,33 @@
           .length}
         voices, and the choice is saved with the page's other edits
       </p>
-      <GroupFold heading="voices" count={speaking.voices.length} startOpen>
-        <ul class="list" aria-label="Voices">
-          {#each speaking.voices as id (id)}
-            <li>
-              <span class="nm">{id}</span>
-              {#if id === chosen}
-                <span class="chip">chosen</span>
-              {:else}
-                <button class="chip" type="button" onclick={() => onchoose(id)}>use</button>
-              {/if}
-              <span class="spacer"></span>
-              {#if running}
-                <button
-                  class="chip"
-                  type="button"
-                  disabled={seat === null}
-                  title={seat === null ? 'open a session and turn its speaker on' : undefined}
-                  onclick={() => onpreview(id)}>preview</button
-                >
-              {/if}
-            </li>
+      <GroupFold heading="voices" count={speaking.voices.length}>
+        <div class="voices">
+          {#each groups as group (group.heading)}
+            <h4 class="group">{group.heading}</h4>
+            <ul class="list" aria-label="Voices, {group.heading}">
+              {#each group.voices as id (id)}
+                <li>
+                  <span class="nm">{id}</span>
+                  {#if id === chosen}
+                    <span class="chip">chosen</span>
+                  {:else}
+                    <button class="chip" type="button" onclick={() => onchoose(id)}>use</button>
+                  {/if}
+                  {#if running}
+                    <button
+                      class="chip"
+                      type="button"
+                      disabled={seat === null}
+                      title={seat === null ? 'open a session and turn its speaker on' : undefined}
+                      onclick={() => onpreview(id)}>preview</button
+                    >
+                  {/if}
+                </li>
+              {/each}
+            </ul>
           {/each}
-        </ul>
+        </div>
       </GroupFold>
       {#if running && seat === null}
         <p class="note">

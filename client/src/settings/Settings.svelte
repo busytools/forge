@@ -604,9 +604,14 @@
         speakingAct({ dictate_activate: { role: 'speaking', file } })}
       onSpeakingDeactivate={() => speakingAct({ dictate_deactivate: { role: 'speaking' } })}
       onSpeakingVoice={chooseVoice}
-      onSpeakingPreview={(voice: string) => {
+      onSpeakingPreview={(id: string) => {
         const at = seat;
-        if (at !== null) speakingAct({ voice_preview: { key: at, voice } });
+        if (at === null) return;
+        // One preview at a time: the clip sounding now stops and its queued
+        // buffers go, so the pressed voice is heard as its first chunk arrives
+        // rather than behind the clip already playing.
+        voiceFor(boxKey(at), connectionPort(connection, at)).stop();
+        speakingAct({ voice_preview: { key: at, voice: id } });
       }}
     />
 

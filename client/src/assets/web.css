@@ -1578,7 +1578,10 @@ details.gfold > summary .gh { font-size: var(--fs-label); font-weight: 500;
 details.gfold > summary:hover .gh { color: var(--muted); }
 details.gfold > summary .cn { margin-left: auto; font-family: var(--mono);
   font-size: var(--fs-data); letter-spacing: 0; color: var(--dim); }
-details.gfold > summary .arw { color: var(--dim); font-size: var(--fs-data); }
+/* The fold IS a door: its chevron shows at rest in both states, because a
+   collapsed section whose only affordance is hover is a section nobody
+   opens. */
+details.gfold > summary .arw { opacity: 1; color: var(--dim); font-size: var(--fs-data); }
 details.gfold[open] > summary .arw { color: var(--accent); }
 .pj { border-radius: 10px; margin: 1px 0; }
 .pj:hover { background: rgba(27,33,48,.5); }
@@ -3917,24 +3920,33 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
 .models-page .side { display: flex; align-items: center; gap: 8px; flex: none; }
 
 /* the chip: the dictation panel's own chip, at this page's scale - a state
-   when it is a span, an action when it is a button */
-.models-page .chip { display: inline-flex; align-items: center; gap: 7px;
+   when it is a span, an action when it is a button. The settings page's
+   speaking card draws the same chip, so the two surfaces' controls are one
+   vocabulary rather than two looks. */
+.models-page .chip,
+.settings-speaking .chip { display: inline-flex; align-items: center; gap: 7px;
   font-family: var(--mono); font-size: var(--fs-label); padding: 4px 10px;
   border: 1px solid var(--line); border-radius: 9px; color: var(--muted);
   background: none; white-space: nowrap; }
-.models-page button.chip { cursor: pointer; }
+.models-page button.chip,
+.settings-speaking button.chip { cursor: pointer; }
 /* A chip that is a BUTTON is an action: its pill boundary is the only mark,
    so it takes the control mark. A chip that is a span is a state and keeps
    the hairline. */
 .models-page button.chip,
 .extensions-page button.chip { border-color: var(--ctl); }
+/* The speaking card's chips are this same action vocabulary. */
+.settings-speaking button.chip { border-color: var(--ctl); }
 .models-page button.chip:hover,
 .extensions-page button.chip:hover { border-color: var(--text); color: var(--text); }
+.settings-speaking button.chip:hover { border-color: var(--text); color: var(--text); }
 /* One download and one activation run at a time, so a second control is
    disabled rather than offered and then refused; a disabled one still says
    what it would do. */
 .models-page button.chip:disabled { opacity: .5; cursor: default; }
+.settings-speaking button.chip:disabled { opacity: .5; cursor: default; }
 .models-page button.chip:disabled:hover { border-color: var(--line); color: var(--muted); }
+.settings-speaking button.chip:disabled:hover { border-color: var(--line); color: var(--muted); }
 
 /* the check line and an update line: one shape, toned by what it says */
 .models-page .status,
@@ -3966,15 +3978,25 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
 .models-page .status .detail.passage { max-width: 84ch; }
 
 /* The settings page's speaking section draws the models page's own row and
-   list vocabulary: one status line per variant, one list for the voices. */
+   list vocabulary: one status line per variant, and the voices grouped by
+   the language their prefix names. */
 .settings-speaking { margin-top: 24px; }
 .settings-speaking > .t { font-size: 15px; font-weight: 500; margin: 0 0 8px;
   color: var(--text); }
-.settings-speaking .list li { padding: 9px 12px; }
+/* The list is fifty-four rows: it scrolls inside the card rather than growing
+   the page by the whole catalogue. */
+.settings-speaking .voices { max-height: 320px; overflow-y: auto; padding-right: 4px; }
+.settings-speaking .voices .list { margin-top: 4px; }
+.settings-speaking .group { margin: 14px 2px 4px; font-size: var(--fs-label);
+  font-weight: 500; color: var(--dim); }
+.settings-speaking .voices > .group:first-child { margin-top: 4px; }
+.settings-speaking .list li { padding: 6px 10px; }
+.settings-speaking .list li > .nm { flex: 1 1 auto; min-width: 0; }
 .settings-speaking .list li > .chip { flex: none; }
 .settings-speaking .note.bad { color: var(--bad); }
 @media (pointer: coarse) {
   /* A finger-driven page gets the standard's target on the card's controls. */
+  .settings-speaking .list li { min-height: 44px; }
   .settings-speaking button.chip { min-height: 44px; padding: 0 12px; }
 }
 

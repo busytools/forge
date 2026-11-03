@@ -1,12 +1,13 @@
 // @vitest-environment jsdom
 import { flushSync, mount, unmount } from 'svelte';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { emptyHome, settingsWire } from '../dev/settings.fixture';
 import { modelsWire } from '../models/testing';
 import { lastSeat } from '../routes';
 import type { Connection } from '../socket';
 import { resetVoices } from '../voice/registry';
+import { Voice } from '../voice/voice.svelte';
 import type { DictateModelsWire, SpeakingFrom } from '../wire/models';
 import type { SettingsDocument, SettingsValue } from '../wire/settings';
 import Settings from './Settings.svelte';
@@ -22,6 +23,7 @@ let app: Record<string, unknown> | null = null;
 afterEach(async () => {
   if (app !== null) await unmount(app);
   app = null;
+  vi.restoreAllMocks();
   settingsFrame.set({ status: 'waiting' });
   lastSeat.set(null);
   resetVoices();
@@ -98,6 +100,25 @@ function draw(open: Connection, sheet: SettingsDocument = settingsWire): void {
   flushSync();
 }
 
+/** The voices fold starts shut, so a test that reaches a voice opens it. The
+ * summary's own click is the browser's toggle; jsdom leaves that to the test,
+ * which moves `open` and fires what the platform fires. */
+function setVoicesOpen(open: boolean): HTMLDetailsElement {
+  const fold = document.querySelector<HTMLDetailsElement>('.settings-speaking details.gfold');
+  expect(fold, 'the voices fold draws').not.toBeNull();
+  const at = fold as HTMLDetailsElement;
+  if (at.open !== open) {
+    at.open = open;
+    at.dispatchEvent(new Event('toggle'));
+    flushSync();
+  }
+  return at;
+}
+
+function openVoices(): HTMLDetailsElement {
+  return setVoicesOpen(true);
+}
+
 function voiceRow(id: string): HTMLLIElement {
   const row = [...document.querySelectorAll<HTMLLIElement>('.settings-speaking li')].find((item) =>
     item.textContent?.includes(id),
@@ -124,6 +145,7 @@ function press(where: HTMLElement, label: string): void {
 describe("the settings page's speaking card", () => {
   it('draws the model row and the voices the model carries', () => {
     draw(connection({ dispatched: [], edits: [] }));
+    openVoices();
 
     expect(bodyText()).toContain('hexgrad/Kokoro-82M');
     expect(bodyText()).toContain('kokoro-82m-int8');
@@ -133,10 +155,59 @@ describe("the settings page's speaking card", () => {
     expect(voiceRow('bf_emma')).not.toBeNull();
   });
 
+  /** Fifty-four rows are most of a screen: the section arrives shut, and its
+   * summary is the door - a chevron at rest, so the collapsed state reads as
+   * something to open rather than as nothing. */
+  it('starts the voices folded, with a visible chevron, and opens on the toggle', () => {
+    draw(connection({ dispatched: [], edits: [] }));
+
+    const fold = setVoicesOpen(false);
+    expect(fold.open).toBe(false);
+    expect(fold.querySelector('summary .gh')?.textContent?.trim()).toBe('voices');
+    expect(fold.querySelector('summary .cn')?.textContent?.trim()).toBe('2');
+    expect(fold.querySelector('summary .arw'), 'the chevron draws shut too').not.toBeNull();
+
+    setVoicesOpen(true);
+    expect(fold.open).toBe(true);
+    setVoicesOpen(false);
+    expect(fold.open).toBe(false);
+  });
+
+  /** The list is grouped by the language each voice prefix belongs to, and
+   * every voice the model installed is still drawn exactly once. */
+  it('groups the voices by language and draws every one', () => {
+    const voices = [
+      'af_heart',
+      'am_adam',
+      'bf_emma',
+      'ef_dora',
+      'ff_siwis',
+      'hf_alpha',
+      'if_sara',
+      'jf_alpha',
+      'pf_dora',
+      'zf_xiaobei',
+    ];
+    const wire = { ...modelsWire, speaking: { ...modelsWire.speaking, voices } };
+    draw(connection({ dispatched: [], edits: [] }, wire));
+    openVoices();
+
+    for (const id of voices) expect(voiceRow(id)).not.toBeNull();
+    expect(bodyText()).toContain('English');
+    expect(bodyText()).toContain('Spanish');
+    expect(bodyText()).toContain('French');
+    expect(bodyText()).toContain('Hindi');
+    expect(bodyText()).toContain('Italian');
+    expect(bodyText()).toContain('Japanese');
+    expect(bodyText()).toContain('Portuguese');
+    expect(bodyText()).toContain('Chinese');
+  });
+
   it('previews a voice on the seat the reader was last on', () => {
     const seen = { dispatched: [] as unknown[], edits: [] as { key_path: string }[] };
     lastSeat.set({ org: 'Busytools', project: 'forge', label: 'lead' });
     draw(connection(seen));
+    openVoices();
 
     press(voiceRow('af_heart'), 'preview');
 
@@ -150,10 +221,29 @@ describe("the settings page's speaking card", () => {
     ]);
   });
 
+  /** One preview at a time: a press stops the clip sounding now before it
+   * asks for the next voice, so the new one is heard as its first chunk
+   * arrives rather than queued behind the old clip. */
+  it('stops the sounding preview before asking for the next voice', () => {
+    const stop = vi.spyOn(Voice.prototype, 'stop');
+    const seen = { dispatched: [] as unknown[], edits: [] as { key_path: string }[] };
+    lastSeat.set({ org: 'Busytools', project: 'forge', label: 'lead' });
+    draw(connection(seen));
+    openVoices();
+
+    press(voiceRow('af_heart'), 'preview');
+    press(voiceRow('bf_emma'), 'preview');
+
+    expect(stop).toHaveBeenCalledTimes(2);
+    expect(seen.dispatched).toHaveLength(2);
+    stop.mockRestore();
+  });
+
   /** A preview outside a session has nowhere to play, so the card says so
    * rather than offering a control the core would refuse. */
   it('disables the preview, and says why, before a seat was opened', () => {
     draw(connection({ dispatched: [], edits: [] }));
+    openVoices();
 
     const button = [...voiceRow('af_heart').querySelectorAll<HTMLButtonElement>('button')].find(
       (candidate) => candidate.textContent?.trim() === 'preview',
@@ -226,6 +316,7 @@ describe("the settings page's speaking card", () => {
   it('stages the chosen voice and sends it through the page save', () => {
     const seen = { dispatched: [] as unknown[], edits: [] as { key_path: string }[] };
     draw(connection(seen));
+    openVoices();
 
     press(voiceRow('af_heart'), 'use');
     expect(document.querySelector('.settings-dock'), 'the edit bar opens').not.toBeNull();
