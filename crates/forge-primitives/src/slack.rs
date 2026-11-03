@@ -382,6 +382,7 @@ pub enum SlackDraftOperation {
     Edit,
     Delete,
     React,
+    Unreact,
     Upload,
 }
 
@@ -515,6 +516,12 @@ mod tests {
         assert_eq!(
             serde_json::to_value(SlackDraftOperation::Upload).expect("an operation serialises"),
             serde_json::json!("upload"),
+        );
+        // Removing a reaction is not adding one: the card must not ask the
+        // reader to approve "React" for an act that takes one away.
+        assert_eq!(
+            serde_json::to_value(SlackDraftOperation::Unreact).expect("an operation serialises"),
+            serde_json::json!("unreact"),
         );
     }
 

@@ -762,7 +762,11 @@ impl SlackFacade for ProdSlackFacade {
             conversation_label,
             thread_ts: Some(request.ts.clone()),
             text: format!("[{verb}: {}]", request.name),
-            operation: forge_primitives::slack::SlackDraftOperation::React,
+            operation: if request.add {
+                forge_primitives::slack::SlackDraftOperation::React
+            } else {
+                forge_primitives::slack::SlackDraftOperation::Unreact
+            },
         };
         match Self::await_approval(&ws, caller, draft).await {
             GateDecision::Approved => {}
@@ -1490,8 +1494,8 @@ mod tests {
         AuthTest, MessagePage, PostedMessage, SearchPage, SlackApi, SlackError,
     };
     use forge_primitives::slack::{
-        SlackBookmark, SlackConfig, SlackDraftAnswer, SlackDraftEnding, SlackFile, SlackFileShare,
-        SlackFileShares, SlackPin, SlackPinMessage, SlackUserProfile,
+        SlackBookmark, SlackConfig, SlackDraftAnswer, SlackDraftEnding, SlackDraftOperation,
+        SlackFile, SlackFileShare, SlackFileShares, SlackPin, SlackPinMessage, SlackUserProfile,
     };
     use forge_sdk::mcp::tool::{Tool as _, ToolInput};
     use std::collections::{BTreeMap, HashMap};
@@ -3211,6 +3215,43 @@ token = "y"
 
         assert_eq!(task.await.expect("no panic"), Err(SlackReactError::Rejected));
         assert!(api.reactions.lock().is_empty(), "a rejected reaction is never applied");
+    }
+
+    /// Adding and removing a reaction are different acts, so the held draft
+    /// names which one it is: the card words its verbs from this field, and
+    /// a removal drawn as "React" asks the reader to approve the wrong act.
+    #[tokio::test]
+    async fn a_reaction_draft_names_whether_it_adds_or_removes() {
+        let (facade, ws, _api, mut rx) = facade_with_recording_slack();
+
+        for (add, expected) in
+            [(false, SlackDraftOperation::Unreact), (true, SlackDraftOperation::React)]
+        {
+            let task = tokio::spawn({
+                let facade = facade.clone();
+                async move {
+                    facade.react(&caller(), react_request("C1", "100.0", "thumbsup", add)).await
+                }
+            });
+            let mut seen = None;
+            for _ in 0..200 {
+                while let Ok(frame) = rx.try_recv() {
+                    if let crate::protocol::SessionUpdate::SlackPostPending { draft, .. } =
+                        std::sync::Arc::unwrap_or_clone(frame.update)
+                    {
+                        seen = Some(draft.operation);
+                    }
+                }
+                if seen.is_some() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            assert_eq!(seen, Some(expected), "the draft names the act it would do");
+            let id = wait_for_draft(&ws).await;
+            ws.resolve_slack_draft(id, &caller(), answered(false));
+            let _ = task.await;
+        }
     }
 
     fn cfg(label: &str) -> SlackConfig {

@@ -157,6 +157,7 @@
     edit: { head: 'Edit in Slack', approve: 'Apply edit', decline: 'Do not apply' },
     delete: { head: 'Delete in Slack', approve: 'Delete', decline: 'Keep it' },
     react: { head: 'React in Slack', approve: 'React', decline: 'Do not react' },
+    unreact: { head: 'Unreact in Slack', approve: 'Unreact', decline: 'Do not unreact' },
     upload: { head: 'Upload to Slack', approve: 'Upload', decline: 'Do not upload' },
   };
 

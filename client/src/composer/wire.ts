@@ -151,7 +151,7 @@ export interface QuestionRequest {
  * What a held Slack draft would do, which its card's verbs follow. The tool
  * alone cannot tell an edit from a delete.
  */
-const SLACK_OPERATIONS = ['post', 'edit', 'delete', 'react', 'upload'] as const;
+const SLACK_OPERATIONS = ['post', 'edit', 'delete', 'react', 'unreact', 'upload'] as const;
 export type SlackOperation = (typeof SLACK_OPERATIONS)[number];
 
 /** A held Slack draft: what is waiting, and what it would send. */

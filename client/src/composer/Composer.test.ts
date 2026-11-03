@@ -6434,6 +6434,7 @@ describe('the dock', () => {
     ['edit', null, 'Edit in Slack', 'Apply edit', 'Do not apply'],
     ['delete', null, 'Delete in Slack', 'Delete', 'Keep it'],
     ['react', null, 'React in Slack', 'React', 'Do not react'],
+    ['unreact', null, 'Unreact in Slack', 'Unreact', 'Do not unreact'],
     ['upload', null, 'Upload to Slack', 'Upload', 'Do not upload'],
   ];
 
