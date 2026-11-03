@@ -800,6 +800,49 @@ describe('whether the column follows the newest end', () => {
     expect(element.offset, 'the reader stays where they were reading').toBe(parked);
   });
 
+  it('does not carry an outgoing send arm across a handoff', async () => {
+    // **The arm belonged to the session that left.** A send arms the follow so
+    // the foot goes under the reader's eyes wherever they were; the prompt it
+    // was armed for is the outgoing session's, and the successor owes it no
+    // jump. A reserved row can hold that pin back across the swap, which is
+    // how an armed follow meets a parked reader on the successor's first pass.
+    const server = stub();
+    await draw(server);
+    readerAt(0);
+    await settle();
+    clear();
+
+    const reserved = [
+      { top: 0, height: TOTAL / 2 },
+      { top: TOTAL / 2, height: TOTAL / 2 },
+    ];
+    // The third slot is the handoff row's, reserved for both halves of the
+    // swap: the outgoing turns end at index one, the successor's row at two.
+    measured(TOTAL + 300, [...reserved, { top: TOTAL, height: 0 }]);
+    element.height = TOTAL + 300;
+
+    // The reader's own send, with the pin held back by the reservation.
+    server.queued('you');
+    await settle();
+    expect(pinned(), 'the reserved row holds the send jump back').toEqual([]);
+
+    server.handoff('old', 'new');
+    server.replaced('new');
+    await settle();
+    clear();
+
+    // The reservation clears, so a pin the column still thought it owed would
+    // write here.
+    setModel(TOTAL);
+    measured(TOTAL, [...reserved, { top: TOTAL, height: 0 }]);
+    element.height = TOTAL;
+    resized();
+    await settle();
+
+    expect(pinned(), 'the successor owes the outgoing send no jump').toEqual([]);
+    expect(element.offset, 'and the reader stays where they were reading').toBe(0);
+  });
+
   it('does not move a parked reader for a follow an arrival armed', async () => {
     // **The pin's own rule, apart from the arm that broke it.** The handoff's
     // re-arm is fixed at the fold, but the column cannot depend on every arm

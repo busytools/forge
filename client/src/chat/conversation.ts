@@ -3277,10 +3277,12 @@ export class Chat {
     // stays above it - and the successor is fresh, so there is no page above
     // the carried turns to fetch.
     //
-    // **And a handoff keeps the reader's place in it.** The rows stay mounted
-    // where they were read, so a follow re-armed here would carry a parked
-    // reader to the foot on the successor's first frame. Only a plain `/new`
-    // opens following, because only it unmounts the list.
+    // **And a handoff keeps the reader's place in it, but not the arm.** The
+    // rows stay mounted where they were read, so a follow re-armed here would
+    // carry a parked reader to the foot on the successor's first frame. A
+    // send's arm is the OLD session's: the prompt it was armed for is gone, so
+    // the successor owes no jump for it. Only a plain `/new` opens following,
+    // because only it unmounts the list.
     this.held =
       carried === null
         ? NOTHING
@@ -3289,7 +3291,7 @@ export class Chat {
             turns: carried,
             loaded: true,
             following: this.held.following,
-            send_armed: this.held.send_armed,
+            send_armed: false,
           };
     this.flush();
     // **The swap forgot an ask too, and it has to say so.** The reset above
