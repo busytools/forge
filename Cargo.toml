@@ -96,7 +96,7 @@ tokio-tungstenite = { version = "0.30", features = ["rustls-tls-native-roots"] }
 # 0.4's static ggml duplicates llama-cpp-sys-2's symbols when both reach one
 # Linux binary (`duplicate symbol: ggml_backend_register`), so the workspace
 # stays on the 0.2 line until the two ggml builds stop colliding.
-transcribe-cpp = "0.2.2"
+transcribe-cpp = "0.4.1"
 cpal = "0.18"
 
 # Workspace-internal crates
