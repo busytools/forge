@@ -4363,6 +4363,24 @@ describe('the one body slot', () => {
     expect(harness.sent, 'the key begins nothing under the read wait').toEqual([]);
   });
 
+  it('still begins a take under a non-read hold while the page is out', async () => {
+    // The gate keys on the read hold, not on `reading`: a Failed seat draws
+    // its own hold and may still begin a take while the page is still out.
+    const harness = open({
+      dictation: true,
+      reading: true,
+      seat: seatRead({ lifecycle: 'Failed', reason: 'the CLI exited' }),
+    });
+
+    key('ControlRight', 'keydown');
+    await opened();
+
+    expect(
+      harness.sent,
+      'a hold that is not the read hold refused the take',
+    ).toHaveLength(1);
+  });
+
   it('inserts the live region when the read wait takes over from a waking hold', () => {
     // The announced node must be a fresh insert, not a role added to the
     // waking hold's node: screen readers reliably announce the former.
