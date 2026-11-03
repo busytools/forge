@@ -622,7 +622,11 @@ impl DomainSession {
     /// Let go of the registry and everything that resolves a command in it: a
     /// new occupant's calls are its own, and the CLI re-sends the set only
     /// when it changes.
-    pub(crate) fn drop_background_tasks(&mut self) {
+    ///
+    /// The queued prompts are handed back rather than dropped: they died with
+    /// the process that held them, so the caller owns the row each one still
+    /// deserves.
+    pub(crate) fn drop_background_tasks(&mut self) -> Vec<crate::protocol::QueuedPrompt> {
         self.background_work = false;
         self.background_tasks.clear();
         self.live_tasks.clear();
@@ -634,8 +638,8 @@ impl DomainSession {
         // new occupant's own init, which the CLI re-fires every turn. Left
         // latched, a `/resume` onto an advertising CLI would keep the pile
         // silently off, or latch true beside rows nothing can settle.
-        self.prompt_queue.clear();
         self.lifecycle_frames = None;
+        std::mem::take(&mut self.prompt_queue)
     }
 
     /// Record a prompt as waiting, at the dispatch site.

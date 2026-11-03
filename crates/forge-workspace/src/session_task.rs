@@ -210,6 +210,7 @@ impl SessionTask {
         let turn_completed;
         let turn_cancelled;
         let repo_nudge;
+        let lost_prompts;
         {
             let mut guard = self.domain.lock();
             let moved = apply_event_to_domain(&mut guard, &event);
@@ -217,6 +218,7 @@ impl SessionTask {
             repo_nudge = moved.repo_nudge;
             turn_completed = matches!(moved.turn_ended, Some(MovedTurnEnd::Complete { .. }));
             turn_cancelled = matches!(moved.turn_ended, Some(MovedTurnEnd::Cancelled));
+            lost_prompts = moved.lost_prompts;
             // The two sets that move whole are announced from the scope the
             // fold wrote in, so what goes out is what the core now holds -
             // and only when the fold moved it.
@@ -710,6 +712,10 @@ impl SessionTask {
                         minted_row,
                     );
                 }
+                // **After the occupant's own frame**: a replacement resets the
+                // page's conversation, so a row drawn before it would be
+                // wiped before the reader saw it.
+                self.draw_lost_queued(lost_prompts);
             }
             AgentEvent::ConnectionFailed { message, kind } => {
                 let key = self.key.clone();
@@ -776,6 +782,14 @@ impl SessionTask {
                             continue;
                         }
                         let first = prompt.text.lines().next().unwrap_or_default();
+                        // The composer's mark for this press has no row coming
+                        // either, so it is settled here rather than left
+                        // saying "sending" for a prompt that never ran.
+                        self.emit(SessionUpdate::PromptLifecycle {
+                            key: self.key.clone(),
+                            uuid: prompt.uuid,
+                            state: "cancelled".to_owned(),
+                        });
                         self.emit(SessionUpdate::Notice {
                             key: self.key.clone(),
                             severity: NoticeSeverity::Error,
@@ -796,6 +810,10 @@ impl SessionTask {
                     // - this branch is a no-op for them.
                     workspace.handle_async_worker_spawn_failure(&key, &message, kind);
                 }
+                // Before the failure frame, while the page's pile is still
+                // standing: the row draws over the pile's own card, and the
+                // card settles with it.
+                self.draw_lost_queued(lost_prompts);
                 self.emit(SessionUpdate::ConnectionFailed {
                     key: key.clone(),
                     message,
@@ -1310,6 +1328,28 @@ impl SessionTask {
             msg: framed,
             source: Some(source),
         });
+    }
+
+    /// Draw the row a prompt still in the queue will never get: its process
+    /// died, or a new occupant took the seat, and no CLI frame is coming.
+    ///
+    /// **Only a person's prompt.** A delivery's envelope or the machinery's
+    /// forged row is already its own carrier; a person's words have only the
+    /// row this draws.
+    fn draw_lost_queued(&self, prompts: Vec<crate::protocol::QueuedPrompt>) {
+        for prompt in prompts {
+            if prompt.source != PromptSource::You {
+                continue;
+            }
+            self.emit_prompt_row(&prompt.text, &prompt.attachments, &prompt.uuid, prompt.source);
+            // The same settle the failed-dispatch path emits: the prompt never
+            // reached a model, and the card has nothing left to wait on.
+            self.emit(SessionUpdate::PromptLifecycle {
+                key: self.key.clone(),
+                uuid: prompt.uuid,
+                state: "started".to_owned(),
+            });
+        }
     }
 
     fn execute_command(&mut self, cmd: Command) {
@@ -3076,6 +3116,9 @@ pub(crate) struct Moved {
     pub commands: bool,
     pub agents: bool,
     pub cards: bool,
+    /// The prompts still queued when the occupant went. They died with its
+    /// process, so the caller draws the row each one will never get.
+    pub lost_prompts: Vec<crate::protocol::QueuedPrompt>,
     /// A failed turn armed the continuation, which the caller fires the
     /// moment this fold returns.
     pub nudge: bool,
@@ -3119,6 +3162,7 @@ pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEve
     let held_cards = domain.cards_snapshot.clone();
     let mut nudge = false;
     let mut turn_ended = None;
+    let mut lost_prompts = Vec::new();
     // **The CLI's own report of a repository mutation is the one signal the
     // file watch cannot produce**: a commit or a stage touches only `.git`,
     // which the watch filters out, so the tree is re-read on the frame rather
@@ -3150,7 +3194,7 @@ pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEve
         // No terminal `background_tasks_changed` follows a dead session,
         // so the last snapshot would stand forever - and the registry with
         // it, spinning rows over tasks a dead process never finished.
-        domain.drop_background_tasks();
+        lost_prompts = domain.drop_background_tasks();
         // The walk describes the subprocess's tree, so it goes with the
         // process: left standing it draws rows for processes that are not
         // there, and nothing follows a dead session that would replace it.
@@ -3345,7 +3389,7 @@ pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEve
         // CLI re-sends the whole background set only when it changes: a
         // registry left standing would spin a row over a task that went
         // with the identity it belonged to.
-        domain.drop_background_tasks();
+        lost_prompts = domain.drop_background_tasks();
         // A new occupant has advertised nothing yet: the CLI sends
         // `system/init` at the head of a turn only, so the last one's
         // catalogues would stand until this one's first message - and
@@ -3522,6 +3566,7 @@ pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEve
         nudge,
         repo_nudge,
         turn_ended,
+        lost_prompts,
     }
 }
 
@@ -12485,6 +12530,139 @@ provider = "anthropic"
                     if uuid == "failed-1" && state == "started"
             )),
             "and the card settles: {announced:?}",
+        );
+    }
+
+    /// **A prompt queued into an occupant that dies or is replaced draws its
+    /// row.** The queue goes with the CLI process, and the client drops the
+    /// pile on the same event - so without the row the reader's words exist
+    /// nowhere, and a prompt behind it survives only as the ending line.
+    #[tokio::test]
+    async fn a_lost_queue_draws_each_person_prompt_before_the_occupant_goes() {
+        for replaced in [false, true] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let (workspace, _rx) =
+                crate::Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
+            let label = if replaced { "lost-replaced" } else { "lost-failed" };
+            let slot = SessionSlot::worker("TestOrg", "forge", label);
+            let (mut task, mut update_rx, _agent_rx) = nudge_task_for(&workspace, &slot);
+            task.domain.lock().session_id = Some(forge_primitives::SessionId::new("old-occupant"));
+            task.connected_once = replaced;
+            for (uuid, text) in [("lost-1", "first lost"), ("lost-2", "second lost")] {
+                task.execute_command(Command::PromptUnder {
+                    key: slot.clone(),
+                    text: text.to_owned(),
+                    attachments: Vec::new(),
+                    uuid: uuid.to_owned(),
+                    source: crate::protocol::PromptSource::You,
+                    dispatch_id: None,
+                });
+            }
+            while update_rx.try_recv().is_ok() {}
+
+            let event = if replaced {
+                connected_event("new-occupant", "/proj")
+            } else {
+                AgentEvent::ConnectionFailed {
+                    message: "the child exited".to_owned(),
+                    kind: forge_agent::client::SpawnFailureKind::Unclassified,
+                }
+            };
+            task.translate_event(event);
+
+            let announced: Vec<SessionUpdate> =
+                std::iter::from_fn(|| update_rx.try_recv().ok())
+                    .map(|frame| std::sync::Arc::unwrap_or_clone(frame.update))
+                    .collect();
+            let anchor = if replaced {
+                announced.iter().position(|update| {
+                    matches!(update, SessionUpdate::SessionReplaced { .. })
+                })
+            } else {
+                announced.iter().position(|update| {
+                    matches!(update, SessionUpdate::ConnectionFailed { .. })
+                })
+            }
+            .unwrap_or_else(|| panic!("{label}: the occupant's own frame is missing"));
+            for (uuid, text) in [("lost-1", "first lost"), ("lost-2", "second lost")] {
+                let row = announced
+                    .iter()
+                    .position(|update| {
+                        matches!(
+                            update,
+                            SessionUpdate::ChatAppended {
+                                msg: forge_primitives::Message::User { uuid: Some(id), message, .. },
+                                source: Some(crate::protocol::PromptSource::You),
+                                ..
+                            } if id == uuid
+                                && message.content.iter().any(|block| matches!(
+                                    block,
+                                    forge_primitives::ContentBlock::Text { text: said, .. }
+                                        if said == text
+                                ))
+                        )
+                    })
+                    .unwrap_or_else(|| {
+                        panic!("{label}: {uuid}'s words draw: {announced:?}")
+                    });
+                let drained = announced
+                    .iter()
+                    .position(|update| {
+                        matches!(
+                            update,
+                            SessionUpdate::PromptLifecycle { uuid: id, state, .. }
+                                if id == uuid && state == "started"
+                        )
+                    })
+                    .unwrap_or_else(|| panic!("{label}: {uuid}'s card settles"));
+                // A replacement resets the page's conversation, so its row
+                // must follow it; a death is the other way round, with the
+                // row drawn while the pile is still standing.
+                let ordered = if replaced {
+                    row > anchor && drained > anchor
+                } else {
+                    row < anchor && drained < anchor
+                };
+                assert!(ordered, "{label}: the row and its settle sit with the occupant's frame");
+            }
+        }
+    }
+
+    /// **A prompt held for a successor that never comes settles its mark.**
+    /// The press never reached a model, so no lifecycle frame is coming: the
+    /// composer would say "sending" for the life of the seat.
+    #[tokio::test]
+    async fn a_swap_that_fails_settles_the_held_prompt() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (workspace, _rx) =
+            crate::Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
+        let slot = SessionSlot::worker("TestOrg", "forge", "held-settles");
+        let (mut task, mut update_rx, _agent_rx) = nudge_task_for(&workspace, &slot);
+        workspace.begin_swap(&slot);
+        task.execute_command(Command::PromptUnder {
+            key: slot.clone(),
+            text: "held words".to_owned(),
+            attachments: Vec::new(),
+            uuid: "held-1".to_owned(),
+            source: crate::protocol::PromptSource::You,
+            dispatch_id: None,
+        });
+
+        task.translate_event(AgentEvent::ConnectionFailed {
+            message: "the child never came up".to_owned(),
+            kind: forge_agent::client::SpawnFailureKind::Unclassified,
+        });
+
+        let announced: Vec<SessionUpdate> = std::iter::from_fn(|| update_rx.try_recv().ok())
+            .map(|frame| std::sync::Arc::unwrap_or_clone(frame.update))
+            .collect();
+        assert!(
+            announced.iter().any(|update| matches!(
+                update,
+                SessionUpdate::PromptLifecycle { uuid, state, .. }
+                    if uuid == "held-1" && state == "cancelled"
+            )),
+            "the held press is settled: {announced:?}",
         );
     }
 
