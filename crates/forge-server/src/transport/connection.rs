@@ -4050,9 +4050,15 @@ fn document_answer(
         None
     } else {
         std::str::from_utf8(&read.bytes).ok().map(|text| {
-            // A client's TextDecoder drops a UTF-8 BOM; strip the same prefix
-            // so its captured first line is the line this side sees.
-            text.trim_start_matches('\u{feff}').lines().map(str::to_owned).collect()
+            // A client's TextDecoder drops exactly one leading UTF-8 BOM;
+            // strip the same one so its first captured line is this side's.
+            // An empty text has one empty line, as the client's split does.
+            let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+            if text.is_empty() {
+                vec![String::new()]
+            } else {
+                text.lines().map(str::to_owned).collect()
+            }
         })
     };
     let threads: Vec<ReviewedThreadWire> = surface
@@ -4085,6 +4091,7 @@ fn refusal_tag(refusal: &DispatchError) -> &'static str {
     match refusal {
         DispatchError::NoDraftWaiting { .. } => "respond_slack_post",
         DispatchError::NoBrowserHandOffWaiting { .. } => "respond_browser_hand_off",
+        DispatchError::NoDocumentHandOffWaiting { .. } => "respond_document_hand_off",
         _ => "dispatch",
     }
 }
@@ -5832,6 +5839,48 @@ mod tests {
                 }),
             ),
             "a BOM does not move the first line the client captured: {:?}",
+            threads[0].resolution,
+        );
+
+        // **A read whose bytes are not text carries no landing.** The PDF's
+        // bytes fail UTF-8, so there are no source lines to place against and
+        // every thread answers `resolution: null` - what socket.md promises.
+        // A lossy decode would keep every test above green while placing a
+        // thread against replacement characters.
+        let pdf_path = "/proj/docs/scan.pdf";
+        let pdf_scope = forge_primitives::review::doc_scope_ref(pdf_path);
+        let pdf_thread = ReviewThread {
+            id: "p1".to_owned(),
+            anchor: ReviewAnchor {
+                path: pdf_path.to_owned(),
+                side: ReviewSide::New,
+                line: 1,
+                content_hash: 9,
+                context: vec!["a page".to_owned()],
+                base_ref: pdf_scope.clone(),
+            },
+            comments: Vec::new(),
+            status: ReviewStatus::Open,
+            created_at: String::new(),
+            updated_at: String::new(),
+            commit: None,
+        };
+        assert!(workspace.upsert_review_thread("forge", &pdf_scope, pdf_thread));
+        let pdf = Ok(DocumentRead {
+            path: std::path::PathBuf::from(pdf_path),
+            kind: DocumentKind::Pdf,
+            bytes: b"%PDF-1.4\n\xff\xfe".to_vec(),
+            reviewable: false,
+            content_hash: 45,
+        });
+        let ServerMessage::DocumentRead { threads, .. } = document_answer(&surface, &seat, pdf)
+        else {
+            panic!("a read that landed is its own answer")
+        };
+        assert_eq!(threads.len(), 1, "the PDF scope's thread rides the answer");
+        assert!(
+            threads[0].resolution.is_none(),
+            "a non-text read has no lines, so it carries no landing: {:?}",
             threads[0].resolution,
         );
 

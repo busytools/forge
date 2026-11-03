@@ -51,6 +51,7 @@ use std::path::PathBuf;
 use forge_dictate::ModelFacts;
 use forge_dictate::bench::{CorpusId, Metrics, StageTotals, Tier};
 use forge_dictate::catalogue::EntryKind;
+use forge_primitives::document::DocumentHandOffEnding;
 use forge_primitives::plugins::{
     InstalledPluginEntry, MarketplaceEntry, MarketplaceHealth, MarketplaceSourceEntry,
     PluginCapability, PluginComponents, PluginRunRowStatus, PluginUpdateRun, PluginUpdateRunRow,
@@ -195,8 +196,10 @@ fn assert_no_split_renames() {
     ];
     for (name, source) in [
         ("envelope.rs", include_str!("../../forge-server/src/transport/envelope.rs")),
+        ("wire.rs", include_str!("../../forge-server/src/transport/wire.rs")),
         ("protocol.rs", include_str!("../../forge-workspace/src/protocol.rs")),
         ("messages.rs", include_str!("../../forge-primitives/src/messages.rs")),
+        ("document.rs", include_str!("../../forge-primitives/src/document.rs")),
     ] {
         let flat: String = source.chars().filter(|ch| !ch.is_whitespace()).collect();
         for pattern in SPLIT {
@@ -270,6 +273,12 @@ census!(ServerMessage,
         DocumentRead struct,
     ],
     server_message_census, SERVER_MESSAGE_VARIANTS);
+
+census!(DocumentHandOffEnding,
+    [
+        Approve struct, Feedback struct, NotNow unit, Abandoned unit,
+    ],
+    document_hand_off_ending_census, DOCUMENT_HAND_OFF_ENDING_VARIANTS);
 
 census!(ThreadResolutionWire,
     [
@@ -822,6 +831,12 @@ fn frames_record() -> Value {
         THREAD_RESOLUTION_VARIANTS
     );
     assert_serde_names!(r#""__forge_probe__""#, OutdatedReasonWire, OUTDATED_REASON_VARIANTS);
+    assert_serde_names!(
+        r#""__forge_probe__""#,
+        DocumentHandOffEnding,
+        DOCUMENT_HAND_OFF_ENDING_VARIANTS
+    );
+    assert_eq!(document_hand_off_ending_census(&DocumentHandOffEnding::NotNow), "NotNow",);
     // The census functions are the compiler-checked half: a variant added or
     // removed from either enum fails here before the record can state it.
     assert_eq!(
@@ -1313,6 +1328,32 @@ fn frames_record() -> Value {
                     },
                     resolution: Some(ThreadResolutionWire::Outdated {
                         reason: OutdatedReasonWire::Gone,
+                    }),
+                },
+                // The AMBIGUOUS reason's own `matches`: the client reads it
+                // with a silent `?? 0`, so a rename would draw zero matches
+                // everywhere and nothing would say so.
+                ReviewedThreadWire {
+                    thread: forge_primitives::review::ReviewThread {
+                        id: "d3".to_owned(),
+                        anchor: forge_primitives::review::ReviewAnchor {
+                            path: "/proj/docs/readme.md".to_owned(),
+                            side: forge_primitives::review::ReviewSide::New,
+                            line: 9,
+                            content_hash: 9,
+                            context: vec!["^ twice".to_owned()],
+                            base_ref: forge_primitives::review::doc_scope_ref(
+                                "/proj/docs/readme.md",
+                            ),
+                        },
+                        comments: Vec::new(),
+                        status: forge_primitives::review::ReviewStatus::Open,
+                        created_at: "2026-10-12T00:00:00Z".to_owned(),
+                        updated_at: "2026-10-12T00:00:00Z".to_owned(),
+                        commit: None,
+                    },
+                    resolution: Some(ThreadResolutionWire::Outdated {
+                        reason: OutdatedReasonWire::Ambiguous { matches: 2 },
                     }),
                 },
             ],

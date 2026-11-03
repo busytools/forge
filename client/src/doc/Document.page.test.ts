@@ -1219,6 +1219,29 @@ describe('the hand-off answers', () => {
     expect(answers, 'both presses name the review the first one filed').toEqual(['r9', 'r9']);
   });
 
+  /** **A stale answer is refused where it was pressed.** The answer command
+   *  is fire-and-forget, so the socket's own error frame is what says the
+   *  call was gone; the page must draw it and stay rather than leave as
+   *  though the answer had landed. */
+  it('draws a socket-refused answer and stays on the viewer', async () => {
+    // The route is the harness's marker: the page only ever moves it on a
+    // successful answer, so a stale 'session' left by an earlier test is not
+    // this page's doing.
+    currentRoute.set({ name: 'doc', slot: SLOT, path: PATH, reviewable: true });
+    const page = drawReviewable();
+    page.answerRefusal = 'that document hand-off is no longer waiting';
+
+    buttonByText('approve').click();
+    await vi.waitFor(() => {
+      expect(document.querySelector('.doc-said')?.textContent).toContain('no longer waiting');
+    });
+    await new Promise((resolve) => setTimeout(resolve, 1400));
+
+    expect(get(currentRoute), 'the viewer stays where the refusal was drawn').toMatchObject({
+      name: 'doc',
+    });
+  });
+
   /** **No outcome chosen is no answer**: writing a comment files nothing
    *  and releases nothing, and the two answers stay the only doors out. */
   it('leaves the parked call held when no answer is chosen', () => {

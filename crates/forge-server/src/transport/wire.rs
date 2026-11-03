@@ -745,6 +745,9 @@ pub enum FileContentWire {
 pub struct ReviewedThreadWire {
     #[serde(flatten)]
     pub thread: ReviewThread,
+    /// Where the anchor sits in the content this answer carries, or `None`
+    /// when the read has no lines to place against - a document whose bytes
+    /// are not text.
     pub resolution: Option<ThreadResolutionWire>,
 }
 

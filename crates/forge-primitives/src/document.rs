@@ -35,7 +35,7 @@ pub struct DocumentHandOffAsk {
 pub enum DocumentHandOffEnding {
     /// The reader approved the document and the agent may proceed.
     /// `review_id` names the review the finish filed under the document's
-    /// scope, absent when nothing was commented; `note` is the reader's
+    /// scope, null when nothing was commented; `note` is the reader's
     /// own words, carried verbatim.
     Approve { review_id: Option<String>, note: Option<String> },
     /// The reader says something is off. The document is to be revised and

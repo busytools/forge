@@ -33,7 +33,7 @@
   import { mintPromptId } from '../wire/ids';
   import { goTo } from '../routes';
   import Prose from '../chat/Prose.svelte';
-  import type { DocumentKind } from '../protocol';
+  import { subjectKey, type DocumentKind, type ServerMessage } from '../protocol';
   import { boxKey } from '../composer/box.svelte';
   import {
     bindPushToTalk,
@@ -597,6 +597,28 @@
    *  still names it. */
   let filedReview = $state<{ reviewId: string | null; number: number | null } | null>(null);
 
+  /**
+   * **A refused answer is drawn where the answers are.** The answer command
+   * is fire-and-forget, so the socket's own error frame - tagged with the
+   * operation - is what says a call no longer waiting refused the press; a
+   * page that read only the dispatch's promise would leave as though the
+   * answer had landed.
+   */
+  $effect(() => {
+    const seat = subjectKey({ session: slot });
+    return connection.onMessage((message: ServerMessage) => {
+      if (message.kind !== 'error' || message.what !== 'respond_document_hand_off') return;
+      if (
+        message.seat !== null &&
+        message.seat !== undefined &&
+        subjectKey({ session: message.seat }) !== seat
+      )
+        return;
+      if (finishState.kind !== 'sending' || finishState.answer === 'done') return;
+      finishState = { kind: 'refused', answer: finishState.answer, why: message.why };
+    });
+  });
+
   /** Whether this page has been destroyed, which a pending return checks
    *  before it moves the app out from under whatever the reader is on. */
   let left = false;
@@ -843,6 +865,10 @@
         finishState = { kind: 'refused', answer: outcome, why: reasonOf(why) };
         return;
       }
+      // The error frame can land before the dispatch's promise resolves: a
+      // refusal drawn while it was in flight is the page's answer, not a
+      // confirmation the return path overwrites.
+      if (answerRefused()) return;
     }
     filedReview = null;
     returnTo(outcome, filed.number, 1200);
@@ -863,12 +889,24 @@
     returnTo('done', filed.number, 1200);
   }
 
+  /** Whether the socket refused the answer while it was in flight. A
+   *  function because the listener writes the state from outside this
+   *  function, which the compiler's flow narrowing cannot see. */
+  function answerRefused(): boolean {
+    return finishState.kind === 'refused';
+  }
+
   /** Leave the viewer for the session it came from, drawing the one-line
    *  confirmation first when `after` gives it a beat to be read. */
   function returnTo(outcome: Finish, number: number | null, after: number): void {
     finishState = { kind: 'done', answer: outcome, number };
     setTimeout(() => {
-      if (!left) goTo({ name: 'session', slot });
+      if (left) return;
+      // A refusal that arrived during the beat overrides the confirmation:
+      // the page stays and draws it rather than leaving as though the call
+      // had landed.
+      if (answerRefused()) return;
+      goTo({ name: 'session', slot });
     }, after);
   }
 
