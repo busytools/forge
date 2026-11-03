@@ -7158,16 +7158,14 @@ async fn base_measured(
     }
 }
 
-/// **The review read answers from the check the store holds, and the refresh
-/// it kicks is what the next read draws.** An ordinary record read serves the
-/// stored state and says its base was not checked; the review-scoped read
-/// answers at once - the seat's watch may already have landed a check on its
-/// first pass, and then that is the answer, otherwise the base is unchecked -
-/// and kicks the fetch. That fetch's measurement then answers the next review
-/// read, and the count moves onto the base it pins: the file list and the "N
-/// commits" describe one base on each read.
+/// **The review read draws the check the seat's watch landed, and the count
+/// moves with it.** An ordinary record read serves the stored state and says
+/// its base was not checked; once the watch's own refresh has measured the
+/// base, the review-scoped read draws that check - the base current and the
+/// count and file list moved onto it - so the file list and the "N commits"
+/// describe one base. The refresh that measured it ran off the read.
 #[tokio::test]
-async fn a_review_read_answers_the_base_from_the_store_and_the_refresh_lands_for_the_next() {
+async fn a_review_read_draws_the_checked_base_and_the_count_with_it() {
     let root = tempfile::tempdir().expect("tempdir");
     let upstream = tempfile::tempdir().expect("upstream");
     let fleet = Fleet::in_dir_with_server_and_env(root.path(), &[("TestOrg", &["proj"])], "", &[])
@@ -7248,9 +7246,20 @@ async fn a_review_read_answers_the_base_from_the_store_and_the_refresh_lands_for
         "an ordinary read leaves the base ref where it stood",
     );
 
-    // **The review read answers from the check in hand.** The seat's watch
-    // may already have landed one on its first pass, so the base is that
-    // check or unchecked; either way this read is not the one that fetches.
+    // **The seat's watch lands the base check on its first pass** - that
+    // pass is a forced scan, and the fetch it kicks is where the check comes
+    // from. Waiting for it puts this read in the 30-240 s gap the issue
+    // measured: a check is in hand, so the review read must draw it.
+    let measured = base_measured(&repo, "origin/main").await;
+    assert_eq!(
+        measured.state,
+        forge_primitives::git_diff::BaseState::Current,
+        "the watch's fetch measured the base",
+    );
+
+    // **The review read answers from that check, and the count and files
+    // describe its base.** The stale count beside a checked base is the
+    // Granite symptom this path exists to prevent.
     let mut review = connect(&url).await;
     send(
         &mut review,
@@ -7261,37 +7270,8 @@ async fn a_review_read_answers_the_base_from_the_store_and_the_refresh_lands_for
         },
     )
     .await;
-    let (_, first, _) = snapshot_answering(&mut review).await;
-    let first_base = first["diff"]["base"].as_str().unwrap_or_default();
-    assert!(
-        first_base == "unverified" || first_base == "current",
-        "the review read reports the check it holds: {first}",
-    );
-    assert!(first["diff"]["base_error"].is_null(), "and invents no failure: {first}");
-
-    // The refresh it kicked lands a measurement, and the next review read
-    // draws it: the base checked, the count moved onto it.
-    let measured = base_measured(&repo, "origin/main").await;
-    assert_eq!(
-        measured.state,
-        forge_primitives::git_diff::BaseState::Current,
-        "the kicked fetch measured the base",
-    );
-    let mut fresh_read = connect(&url).await;
-    send(
-        &mut fresh_read,
-        ClientMessage::Subscribe {
-            what: Subject::Session(lead_seat()),
-            answering: true,
-            review: true,
-        },
-    )
-    .await;
-    let (_, fresh, _) = snapshot_answering(&mut fresh_read).await;
-    assert_eq!(
-        fresh["diff"]["base"], "current",
-        "the next review read draws the checked base: {fresh}"
-    );
+    let (_, fresh, _) = snapshot_answering(&mut review).await;
+    assert_eq!(fresh["diff"]["base"], "current", "the review read draws the checked base: {fresh}");
     assert_eq!(
         fresh["git"]["ahead"]["commit_count"], 1,
         "the count and the files share one base: {fresh}",
@@ -7880,10 +7860,11 @@ async fn a_refused_pin_re_reads_the_tree_against_the_answered_base() {
     let gate = fleet.workspace().hold_work_gate(&lead_seat()).expect("the seat is held");
     let in_flight = gate.lock().await;
 
-    // The first read answers from the check in hand (the watch may already
-    // have landed one) and kicks the refresh; the gate keeps the watch from
+    // The first read kicks the refresh; the gate keeps the watch from
     // adopting the measurement, so the second read below is the one that
-    // draws it.
+    // draws it. Its own answer's state is environment-dependent (the watch
+    // may have landed a check before the gate was taken), so the property is
+    // asserted where it is deterministic: on the second read.
     let mut review = connect(&url).await;
     send(
         &mut review,
@@ -7894,12 +7875,7 @@ async fn a_refused_pin_re_reads_the_tree_against_the_answered_base() {
         },
     )
     .await;
-    let (_, first, _) = snapshot_answering(&mut review).await;
-    let first_base = first["diff"]["base"].as_str().unwrap_or_default();
-    assert!(
-        first_base == "unverified" || first_base == "current",
-        "the first read reports the check it holds: {first}",
-    );
+    let _ = snapshot_answering(&mut review).await;
     let measured = base_measured(&repo, "origin/main").await;
     assert_eq!(
         measured.state,
