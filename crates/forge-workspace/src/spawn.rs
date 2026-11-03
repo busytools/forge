@@ -10278,14 +10278,15 @@ mod lead_charter_tests {
     }
 
     /// #2831: the charter is where dispatch is decided, and pending is the
-    /// board's Backlog. A ready row is a candidate, not a queued start, so
-    /// work set aside is work not left ready - the distinction the old text
+    /// board's Backlog. A ready row is a candidate, not a queued start, and
+    /// the row is kept out of the sweep by ownership - the door the old text
     /// left out, and what made "backlog these rows" read as dispatched.
     #[test]
     fn lead_charter_carries_the_backlog_rule() {
         for clause in [
             "a ready row is a dispatch candidate, not work already queued to start",
-            "Dispatch is your act, and setting work aside means not leaving the row ready",
+            "Dispatch is your act: keep the row owned (the sweep dispatches only unowned rows) \
+             to set it aside",
         ] {
             assert!(
                 DEFAULT_LEAD_CHARTER.contains(clause),

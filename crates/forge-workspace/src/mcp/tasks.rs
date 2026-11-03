@@ -212,7 +212,10 @@ impl Tool for Create {
                 "status": {
                     "type": "string",
                     "enum": ["pending", "in_progress", "waiting", "completed", "failed", "canceled"],
-                    "description": "Where the task starts. Defaults to pending.",
+                    "description": "Where the task starts. Defaults to pending, the board's \
+                                    Backlog: work kept to look at later, not by itself an \
+                                    assignment. The sweep dispatches only unowned ready rows, \
+                                    so take ownership to set one aside.",
                 },
                 "owner": {
                     "type": "string",
@@ -310,8 +313,9 @@ impl Tool for Update {
         "Change a task in YOUR project by id, stating only the fields to move - everything else \
          is left alone. `status` is the usual one (pending / in_progress / waiting / completed / \
          failed / canceled), and `owner` takes a session label (\"lead\" for the lead) or the \
-         label of a worker. Pending is the board's Backlog: work kept to look at later, not an \
-         assignment and not a promise to start; a pending row that reads ready is dispatchable. \
+         label of a worker. Pending is the board's Backlog: work kept to look at later, not by \
+         itself an assignment and not a promise to start. A pending row that reads ready and \
+         unowned is dispatchable; take ownership to set it aside. \
          The board is for running work: a landed row with no children and \
          no epic above it is DELETED in the same pass (tasks__delete), never left completed; \
          a landed row under an epic - open or already terminal - is completed and left \
@@ -1622,21 +1626,41 @@ mod tests {
     }
 
     /// The board's Backlog is the `pending` status (#2831): the update is
-    /// where that state is chosen, so it says what pending means and that a
-    /// ready row is dispatchable. Without it, pending reads as a parking
-    /// space and the sweep then dispatches it.
+    /// where an existing row is moved and the create's status property is
+    /// where a new one is filed, so both say what pending means and name
+    /// ownership as the way to set a row aside. Without it, pending reads as
+    /// a parking space and the sweep then dispatches it.
     #[test]
-    fn the_update_description_says_pending_is_the_backlog() {
-        let update = Update { facade: MockTasksFacade::new().into_arc(), slot: lead_slot() };
+    fn the_task_text_says_pending_is_the_backlog() {
+        let facade = MockTasksFacade::new().into_arc();
+        let slot = lead_slot();
+        let update = Update { facade: facade.clone(), slot: slot.clone() };
+        let create = Create { facade, slot };
         let description = update.description();
         for clause in [
-            "Pending is the board's Backlog: work kept to look at later, not an assignment \
-             and not a promise to start",
-            "a pending row that reads ready is dispatchable",
+            "Pending is the board's Backlog: work kept to look at later, not by itself an \
+             assignment and not a promise to start",
+            "A pending row that reads ready and unowned is dispatchable; take ownership to set \
+             it aside",
         ] {
             assert!(
                 description.contains(clause),
                 "tasks__update does not state what pending means ({clause}): {description}",
+            );
+        }
+        let status = create.input_schema()["properties"]["status"]["description"]
+            .as_str()
+            .expect("the status property carries a description")
+            .to_owned();
+        for clause in [
+            "Defaults to pending, the board's Backlog: work kept to look at later, not by \
+             itself an assignment",
+            "The sweep dispatches only unowned ready rows, so take ownership to set one aside",
+        ] {
+            assert!(
+                status.contains(clause),
+                "tasks__create's status property owes the backlog where a row is filed \
+                 ({clause}): {status}",
             );
         }
     }

@@ -39,11 +39,11 @@ Six lanes, always drawn in this order, because a missing lane would read as
 a missing state: **Backlog** (pending), **Waiting**, **In progress**,
 **Completed**, **Failed**, **Canceled**. The pool of everything not yet
 started leads, then the lane that wants the reader, then the work. Backlog is
-the `pending` status: work kept to look at later, not an assignment and not a
-promise to start. A pending row that reads ready is dispatchable, so the lane
-is the dispatch queue, not a promise to run. A lane is a name, its count and
-a rule, with its cards under it - no box around the column - and the lanes
-wrap to a second row rather than scroll sideways.
+the `pending` status: work kept to look at later, not by itself an assignment
+and not a promise to start. Its ready, unowned cards are the dispatch queue,
+not a promise to run. A lane is a name, its count and a rule, with its cards
+under it - no box around the column - and the lanes wrap to a second row
+rather than scroll sideways.
 
 **The grown groups fold.** A finished row accumulates for the life of the
 project and a queue accumulates for the life of the work, so Completed,
