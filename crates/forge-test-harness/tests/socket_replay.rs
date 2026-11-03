@@ -1796,6 +1796,20 @@ fn command_sampled(seat: &SessionSlot) -> BTreeMap<String, BTreeMap<String, Valu
             reserved: true,
         }),
     );
+    // **The held Slack draft's answer**, which the dock writes by hand: a
+    // rename of `answer` or of the send-back's own `note` would leave the
+    // client's literal writing a key nothing reads, with both sides' suites
+    // green.
+    sampled.insert(
+        "RespondSlackPost".to_owned(),
+        sample(Command::RespondSlackPost {
+            key: seat.clone(),
+            id: uuid::Uuid::new_v4(),
+            answer: forge_primitives::slack::SlackDraftAnswer::SendBack {
+                note: "say staging".to_owned(),
+            },
+        }),
+    );
     // **The prompt's own press id, and the review write's seat and words**
     // (#1583, #2283): the page writes all three by hand, so a rename here
     // would leave its literal writing a key nothing reads, with both sides'

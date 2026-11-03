@@ -1451,6 +1451,27 @@
         "project"
       ]
     },
+    "RespondSlackPost": {
+      "": [
+        "respond_slack_post"
+      ],
+      "/respond_slack_post": [
+        "answer",
+        "id",
+        "key"
+      ],
+      "/respond_slack_post/answer": [
+        "send_back"
+      ],
+      "/respond_slack_post/answer/send_back": [
+        "note"
+      ],
+      "/respond_slack_post/key": [
+        "label",
+        "org",
+        "project"
+      ]
+    },
     "TaskReopen": {
       "": [
         "task_reopen"
