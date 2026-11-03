@@ -12,6 +12,11 @@ fn main() {
     // forge's binary needs; a static build has nothing to ship.
     println!("cargo:rerun-if-env-changed=DEP_TRANSCRIBE_CPP_RUNTIME_DIR");
     let Some(runtime_dir) = env::var_os("DEP_TRANSCRIBE_CPP_RUNTIME_DIR") else {
+        // forge links the shared posture; absence means the sys crate changed
+        // its metadata or a static transcribe was forced.
+        println!(
+            "cargo:warning=transcribe-cpp reported no runtime library directory; nothing is staged for the install"
+        );
         return;
     };
     let Some(profile_dir) = profile_dir() else {
