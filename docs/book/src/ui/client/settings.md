@@ -53,7 +53,7 @@ comes from the settings document above.
 | Restart banner | After a save lands, exactly the restart-class keys it carried, with no restart button. |
 | A new entry | A dashed card headed by its name and `new <group>`, its fields empty and required-marked, discarded or saved with the batch. |
 | A pending removal | The card head reads `removed on save`, with Undo; its lines are not drawn. |
-| The speaking card | The voice area's own block above its key cards: the speaking model row with its one control - install, activate or use the default - except that a `[tts] speaking_model` pin on an installed model draws no control, while a pinned model this machine does not have still offers `install`; the directory the files live in; and a voices fold that starts shut, its count and a chevron on the header whatever its state, holding the installed voices grouped by the language their prefix names, inside a region that scrolls inside the card. Each voice row is its id, its chosen state or a `use` chip, and a `preview` chip. |
+| The speaking card | The voice area's own block above its key cards: the speaking model row with its one control - install, activate or use the default - except that a `[tts] speaking_model` pin on an installed model draws no control, while a pinned model this machine does not have still offers `install`; the directory the files live in; and a voices fold that starts shut, its count and a chevron on the header whatever its state, holding the installed voices grouped by the language their prefix names, inside a region that scrolls inside the card. Each voice row is its id, its chosen state or a `use` chip, and a `preview` chip that becomes a disabled `preparing` while the render runs, then a `playing` state and a `stop`, with a failure drawn on that row. |
 
 ## The rules
 
@@ -124,9 +124,16 @@ comes from the settings document above.
   seat's own voice stream. It needs the seat's speaker switch on, and the
   card says so rather than opening a second playback path; a core refusal is
   drawn in its own words under the card.
-- **A preview is one at a time.** A press stops the clip sounding now and
-  drops what queued behind it, so the pressed voice starts as its first
-  chunk arrives rather than after the clip already playing.
+- **A preview is one at a time, and it shows.** The control is disabled until
+  this client's switch for the seat is on, because the core plays only for a
+  listener. A press wakes the audio device inside that same gesture - a
+  context a browser holds suspended plays the clip silently - stops the clip
+  sounding now and drops what queued behind it, so the pressed voice starts
+  as its first chunk arrives. The row draws the press: `preparing` while the
+  render runs, then a `playing` state beside a `stop`, with the row's name
+  taking the same weight a chosen row's does so the voice being heard is
+  identifiable at a glance; a failure lands on that row in the core's own
+  words.
 - **The voices are a fold that starts shut.** Its header carries the count
   and a chevron in both states, and opening it lists the voices grouped by
   the language their prefix names, inside a region that scrolls so
@@ -168,9 +175,16 @@ comes from the settings document above.
   discarded or saved with the rest.
 - **A pending removal** - the card reads as removed on save, with Undo,
   until the save lands.
-- **No seat for a preview** - the reader has not opened a session since
-  this client started, so every preview control is disabled and the card
-  says to open one and turn its speaker on.
+- **No seat, or the switch is off, for a preview** - the reader has not
+  opened a session since this client started, or this client's speaker
+  switch for that seat is off. Every preview control is disabled and the
+  card says to open a session and turn the speaker on; another client
+  listening for that seat is not this client's preview.
+- **A preview in flight** - the pressed row's control is a disabled
+  `preparing` until its first chunk sounds, then a `playing` state with a
+  `stop`; the row returns to `preview` when the clip ends.
+- **A refused or failed preview** - the words draw on the row that was
+  pressed, with its preview control back so the press can be tried again.
 - **Reading** - the models subscription has not answered; the card says it
   is reading the speaking model's state.
 - **Speech off** - `[tts] enabled` is unset: the card says every reply

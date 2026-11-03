@@ -28,6 +28,10 @@
     ondeactivate,
     onchoose,
     onpreview,
+    preview = null,
+    previewFailure = null,
+    listening = false,
+    onstoppreview = () => {},
   }: {
     /** The speaking read, or `null` before the models snapshot lands. */
     speaking: SpeakingWire | null;
@@ -49,6 +53,14 @@
     ondeactivate: () => void;
     onchoose: (voice: string) => void;
     onpreview: (voice: string) => void;
+    /** The preview this page asked for: its voice and where it is. */
+    preview?: { voice: string; phase: 'working' | 'playing' | 'failed' } | null;
+    /** The words the previewed row draws when that preview failed. */
+    previewFailure?: string | null;
+    /** This client's voice switch for the seat; a preview needs it on, or the
+     * core has no listener to play for. */
+    listening?: boolean;
+    onstoppreview?: () => void;
   } = $props();
 
   /** The languages the Kokoro voices cover, named by the prefix each voice id
@@ -89,6 +101,14 @@
     }
     return [...found, other].filter((group) => group.voices.length > 0);
   });
+  /** Why a preview cannot play yet, or nothing when it can. */
+  const previewHint = $derived(
+    seat !== null && listening
+      ? undefined
+      : seat === null
+        ? 'open a session and turn its speaker on'
+        : "turn this seat's speaker on to hear a preview",
+  );
 </script>
 
 <section class="settings-speaking" aria-labelledby="speaking-title">
@@ -193,7 +213,10 @@
             <h4 class="group">{group.heading}</h4>
             <ul class="list" aria-label="Voices, {group.heading}">
               {#each group.voices as id (id)}
-                <li>
+                <li
+                  class:chosen={id === chosen}
+                  class:playing={preview?.voice === id && preview.phase === 'playing'}
+                >
                   <span class="nm">{id}</span>
                   {#if id === chosen}
                     <span class="chip">chosen</span>
@@ -201,13 +224,33 @@
                     <button class="chip" type="button" onclick={() => onchoose(id)}>use</button>
                   {/if}
                   {#if running}
-                    <button
-                      class="chip"
-                      type="button"
-                      disabled={seat === null}
-                      title={seat === null ? 'open a session and turn its speaker on' : undefined}
-                      onclick={() => onpreview(id)}>preview</button
-                    >
+                    {#if preview?.voice === id}
+                      {#if preview.phase === 'playing'}
+                        <span class="chip"><span class="dot ok"></span>playing</span>
+                        <button class="chip" type="button" onclick={onstoppreview}>stop</button>
+                      {:else if preview.phase === 'working'}
+                        <button class="chip" type="button" disabled>preparing</button>
+                      {:else}
+                        <button
+                          class="chip"
+                          type="button"
+                          disabled={previewHint !== undefined}
+                          title={previewHint}
+                          onclick={() => onpreview(id)}>preview</button
+                        >
+                      {/if}
+                    {:else}
+                      <button
+                        class="chip"
+                        type="button"
+                        disabled={previewHint !== undefined}
+                        title={previewHint}
+                        onclick={() => onpreview(id)}>preview</button
+                      >
+                    {/if}
+                  {/if}
+                  {#if previewFailure !== null && preview?.voice === id}
+                    <span class="bad row-failure">{previewFailure}</span>
                   {/if}
                 </li>
               {/each}
@@ -215,7 +258,7 @@
           {/each}
         </div>
       </GroupFold>
-      {#if running && seat === null}
+      {#if running && (seat === null || !listening)}
         <p class="note">
           a preview plays on the seat you were last on, with its speaker switch on &middot; open a
           session and turn the speaker on, then come back

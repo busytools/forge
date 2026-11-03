@@ -3990,9 +3990,16 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
 .settings-speaking .group { margin: 14px 2px 4px; font-size: var(--fs-label);
   font-weight: 500; color: var(--dim); }
 .settings-speaking .voices > .group:first-child { margin-top: 4px; }
-.settings-speaking .list li { padding: 6px 10px; }
+.settings-speaking .list li { flex-wrap: wrap; padding: 6px 10px; }
 .settings-speaking .list li > .nm { flex: 1 1 auto; min-width: 0; }
 .settings-speaking .list li > .chip { flex: none; }
+/* The chosen and the sounding rows are marked the same way: the name takes
+   the weight, so the row the reader hears is identifiable at a glance. */
+.settings-speaking .list li.chosen > .nm,
+.settings-speaking .list li.playing > .nm { font-weight: 500; color: var(--text); }
+/* A preview's failure lands on the row the press belongs to, under it. */
+.settings-speaking .list li > .bad { flex: 1 1 100%; font-size: var(--fs-label);
+  color: var(--bad); }
 .settings-speaking .note.bad { color: var(--bad); }
 @media (pointer: coarse) {
   /* A finger-driven page gets the standard's target on the card's controls. */

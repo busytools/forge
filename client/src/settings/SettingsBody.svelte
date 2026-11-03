@@ -41,6 +41,9 @@
     onBack = () => {},
     speaking = null,
     savedEnabled = true,
+    speakingPreview = null,
+    speakingPreviewFailure = null,
+    speakingListening = false,
     speakingInstall = { state: 'idle' },
     speakingActivate = { state: 'idle' },
     speakingBusy = false,
@@ -51,6 +54,7 @@
     onSpeakingActivate = () => {},
     onSpeakingDeactivate = () => {},
     onSpeakingVoice = () => {},
+    onSpeakingStopPreview = () => {},
     onSpeakingPreview = () => {},
   }: {
     document: SettingsDocument;
@@ -85,6 +89,12 @@
     speaking?: SpeakingWire | null;
     /** `[tts] enabled` as the saved file has it, which the core's gates read. */
     savedEnabled?: boolean;
+    /** The preview this page asked for: its voice and where it is. */
+    speakingPreview?: { voice: string; phase: 'working' | 'playing' | 'failed' } | null;
+    /** The words the previewed row draws when the preview failed. */
+    speakingPreviewFailure?: string | null;
+    /** This client's voice switch for the seat a preview would play on. */
+    speakingListening?: boolean;
     speakingInstall?: InstallState;
     speakingActivate?: ActivateState;
     speakingBusy?: boolean;
@@ -98,6 +108,7 @@
     onSpeakingDeactivate?: () => void;
     onSpeakingVoice?: (voice: string) => void;
     onSpeakingPreview?: (voice: string) => void;
+    onSpeakingStopPreview?: () => void;
   } = $props();
 
   const shown = $derived(selectedArea(document, selected));
@@ -268,12 +279,16 @@
             busy={speakingBusy}
             voice={speakingVoice}
             seat={previewSeat}
+            preview={speakingPreview}
+            previewFailure={speakingPreviewFailure}
+            listening={speakingListening}
             refusal={speakingRefusal}
             oninstall={onSpeakingInstall}
             onactivate={onSpeakingActivate}
             ondeactivate={onSpeakingDeactivate}
             onchoose={onSpeakingVoice}
             onpreview={onSpeakingPreview}
+            onstoppreview={onSpeakingStopPreview}
           />
         {/if}
         {#each groups as group, index (group.label)}

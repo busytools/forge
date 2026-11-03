@@ -4,15 +4,17 @@ import { readFileSync } from 'node:fs';
 import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { boxKey } from '../composer/box.svelte';
 import { emptyHome, settingsWire } from '../dev/settings.fixture';
 import { modelsWire } from '../models/testing';
 import { lastSeat } from '../routes';
 import type { Connection } from '../socket';
-import { resetVoices } from '../voice/registry';
-import { Voice } from '../voice/voice.svelte';
+import { resetVoices, voiceFor } from '../voice/registry';
+import { Voice, connectionPort } from '../voice/voice.svelte';
 import type { DictateModelsWire, SpeakingFrom } from '../wire/models';
 import type { SettingsDocument, SettingsValue } from '../wire/settings';
 import Settings from './Settings.svelte';
+import SpeakingCard from './SpeakingCard.svelte';
 import { settingsFrame } from './frame';
 
 /**
@@ -121,6 +123,15 @@ function openVoices(): HTMLDetailsElement {
   return setVoicesOpen(true);
 }
 
+const SEAT = { org: 'Busytools', project: 'forge', label: 'lead' };
+
+/** This client's speaker switch on for the seat a preview would play on: the
+ * card withholds a preview until it is, because the core has no listener. */
+function listen(open: Connection): void {
+  voiceFor(boxKey(SEAT), connectionPort(open, SEAT)).turnOn();
+  flushSync();
+}
+
 const SHEET = readFileSync('src/assets/web.css', 'utf8');
 
 /** The rule body the sheet writes for this exact selector, comments gone. */
@@ -152,6 +163,38 @@ function press(where: HTMLElement, label: string): void {
   expect(button, `the ${label} control draws`).not.toBeUndefined();
   button?.click();
   flushSync();
+}
+
+/** The card on its own, for the states the page's audio cannot reach in
+ * jsdom (there is no AudioContext to play a clip through). */
+function drawCard(
+  preview: { voice: string; phase: 'working' | 'playing' | 'failed' } | null,
+  previewFailure: string | null = null,
+  onstoppreview: () => void = () => {},
+): void {
+  app = mount(SpeakingCard, {
+    target: document.body,
+    props: {
+      speaking: modelsWire.speaking,
+      savedEnabled: true,
+      install: { state: 'idle' },
+      activate: { state: 'idle' },
+      busy: false,
+      voice: 'bf_emma',
+      seat: SEAT,
+      listening: true,
+      preview,
+      previewFailure,
+      oninstall: () => {},
+      onactivate: () => {},
+      ondeactivate: () => {},
+      onchoose: () => {},
+      onpreview: () => {},
+      onstoppreview,
+    },
+  });
+  flushSync();
+  openVoices();
 }
 
 describe("the settings page's speaking card", () => {
@@ -230,9 +273,12 @@ describe("the settings page's speaking card", () => {
 
   it('previews a voice on the seat the reader was last on', () => {
     const seen = { dispatched: [] as unknown[], edits: [] as { key_path: string }[] };
-    lastSeat.set({ org: 'Busytools', project: 'forge', label: 'lead' });
-    draw(connection(seen));
+    lastSeat.set(SEAT);
+    const open = connection(seen);
+    draw(open);
     openVoices();
+    listen(open);
+    seen.dispatched.length = 0;
 
     press(voiceRow('af_heart'), 'preview');
 
@@ -249,8 +295,11 @@ describe("the settings page's speaking card", () => {
   /** One preview at a time: a press stops the clip sounding now before it
    * asks for the next voice, so the new one is heard as its first chunk
    * arrives rather than queued behind the old clip. */
-  it('stops the sounding preview before asking for the next voice', () => {
+  it('wakes the device, stops the sounding preview, then asks for the next voice', () => {
     const order: string[] = [];
+    vi.spyOn(Voice.prototype, 'unlock').mockImplementation(() => {
+      order.push('unlock');
+    });
     vi.spyOn(Voice.prototype, 'stop').mockImplementation(() => {
       order.push('stop');
     });
@@ -264,14 +313,105 @@ describe("the settings page's speaking card", () => {
     };
     draw(open);
     openVoices();
+    listen(open);
+    seen.dispatched.length = 0;
+    order.length = 0;
 
     press(voiceRow('af_heart'), 'preview');
-    expect(order, 'the stop comes before the next voice is asked for').toEqual([
+    expect(order, 'the wake and stop come before the next voice is asked for').toEqual([
+      'unlock',
       'stop',
       'dispatch',
     ]);
     press(voiceRow('bf_emma'), 'preview');
-    expect(order).toEqual(['stop', 'dispatch', 'stop', 'dispatch']);
+    expect(order).toEqual(['unlock', 'stop', 'dispatch', 'unlock', 'stop', 'dispatch']);
+  });
+
+  /** The playing state lasts the clip's own duration: a state and a way to
+   * stop it, in the row's own chip vocabulary. */
+  it('draws a playing preview with its stop on the row', () => {
+    let stopped = 0;
+    drawCard({ voice: 'af_heart', phase: 'playing' }, null, () => {
+      stopped += 1;
+    });
+
+    const row = voiceRow('af_heart');
+    expect(row.textContent).toContain('playing');
+    expect(row.classList.contains('playing'), 'the sounding row is marked').toBe(true);
+    press(row, 'stop');
+    expect(stopped).toBe(1);
+  });
+
+  /** A failed preview names its failure on the row, with the preview door
+   * back so the press can be tried again. */
+  it('draws a failed preview in place on the row', () => {
+    drawCard({ voice: 'af_heart', phase: 'failed' }, 'the render died');
+
+    const row = voiceRow('af_heart');
+    expect(row.textContent).toContain('the render died');
+    expect(
+      [...row.querySelectorAll('button')].map((button) => button.textContent?.trim()),
+    ).toContain('preview');
+  });
+
+  /** A seat this client's switch is off on has nowhere to play either: the
+   * core counts listeners, and another client listening is not this one. */
+  it('disables the preview until this client turns the seat speaker on', () => {
+    lastSeat.set(SEAT);
+    draw(connection({ dispatched: [], edits: [] }));
+    openVoices();
+
+    const button = [...voiceRow('af_heart').querySelectorAll<HTMLButtonElement>('button')].find(
+      (candidate) => candidate.textContent?.trim() === 'preview',
+    );
+    expect(button?.disabled).toBe(true);
+    expect(bodyText()).toContain('turn the speaker on');
+  });
+
+  /** A press shows on the row at once: the control becomes a disabled
+   * preparing label until the clip's first chunk sounds. */
+  it('draws the pressed row as preparing while the render runs', () => {
+    const seen = { dispatched: [] as unknown[], edits: [] as { key_path: string }[] };
+    lastSeat.set(SEAT);
+    const open = connection(seen);
+    draw(open);
+    openVoices();
+    listen(open);
+    seen.dispatched.length = 0;
+
+    press(voiceRow('af_heart'), 'preview');
+
+    const labels = [...voiceRow('af_heart').querySelectorAll<HTMLButtonElement>('button')].map(
+      (button) => ({ label: button.textContent?.trim(), disabled: button.disabled }),
+    );
+    expect(labels).toContainEqual({ label: 'preparing', disabled: true });
+    expect(labels.map((button) => button.label)).not.toContain('preview');
+  });
+
+  /** A second press moves the row state in one step: the old row is no
+   * longer preparing or playing, the new one is. */
+  it('moves the pressed state to the new row in one step', () => {
+    const seen = { dispatched: [] as unknown[], edits: [] as { key_path: string }[] };
+    lastSeat.set(SEAT);
+    const open = connection(seen);
+    draw(open);
+    openVoices();
+    listen(open);
+    seen.dispatched.length = 0;
+
+    press(voiceRow('af_heart'), 'preview');
+    expect(voiceRow('af_heart').textContent).toContain('preparing');
+
+    press(voiceRow('bf_emma'), 'preview');
+
+    expect(voiceRow('bf_emma').textContent).toContain('preparing');
+    expect(voiceRow('af_heart').textContent, 'the old row is cleared').not.toContain('preparing');
+    expect(
+      [...voiceRow('af_heart').querySelectorAll('button')].map((button) =>
+        button.textContent?.trim(),
+      ),
+      'and offers its preview again',
+    ).toContain('preview');
   });
 
   /** A preview outside a session has nowhere to play, so the card says so

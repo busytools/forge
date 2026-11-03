@@ -36,9 +36,15 @@ class FakePort implements VoicePort {
 
 class FakeSpeaker implements Speaker {
   played: { pcm: number[]; rate: number }[] = [];
+  unlocked = 0;
   stopped = 0;
   closed = false;
   private readonly endings: (() => void)[] = [];
+
+  unlock(): Promise<void> {
+    this.unlocked += 1;
+    return Promise.resolve();
+  }
 
   play(pcm: Int16Array, rate: number): Promise<void> {
     this.played.push({ pcm: Array.from(pcm), rate });
@@ -81,6 +87,17 @@ describe("one seat's voice", () => {
     expect(at.voice.on).toBe(false);
     expect(at.voice.listeners).toBe(0);
     expect(at.speaker.closed).toBe(true);
+  });
+
+  /** Both gestures that ask for speech wake the device: the switch, whose
+   * replies arrive much later, and the preview press. */
+  it('wakes the audio device on the switch and on a preview press', () => {
+    const at = voice();
+    at.voice.turnOn();
+    expect(at.speaker.unlocked).toBe(1);
+
+    at.voice.unlock();
+    expect(at.speaker.unlocked).toBe(2);
   });
 
   it("plays the seat's audio only while this client's voice is on", () => {

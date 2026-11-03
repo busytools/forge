@@ -279,7 +279,7 @@
     border-bottom: 1px solid var(--line); }
   .voice:last-child { border-bottom: 0; }
   .voice code { flex: 1; font-family: var(--mono); font-size: 11.5px; }
-  .voice.on code { font-weight: 500; }
+  .voice.on code, .voice.playing code { font-weight: 500; }
   .voice .state { font-size: 11px; color: var(--dim); }
   .voice .chip { border: 1px solid var(--line); border-radius: 99px;
     padding: 1px 7px; font-family: var(--mono); font-size: 10.5px; color: var(--muted); }
@@ -462,7 +462,7 @@
                 <ul class="gfold-list">
                   <li class="voice on"><code>bf_emma</code><span class="chip">chosen</span><button class="settings-btn">preview</button></li>
                   <li class="voice"><code>af_heart</code><button class="settings-btn">use</button><button class="settings-btn">preview</button></li>
-                  <li class="voice"><code>af_alloy</code><button class="settings-btn">use</button><button class="settings-btn">preview</button></li>
+                  <li class="voice playing"><code>af_alloy</code><span class="chip">playing</span><button class="settings-btn">stop</button></li>
                   <li class="voice"><code>am_adam</code><button class="settings-btn">use</button><button class="settings-btn">preview</button></li>
                 </ul>
                 <h4 class="voice-group">Spanish</h4>

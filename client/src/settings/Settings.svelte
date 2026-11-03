@@ -12,6 +12,7 @@
   import ConfirmDialog from '../components/ConfirmDialog.svelte';
   import SettingsBody from './SettingsBody.svelte';
   import { settingsFrame } from './frame';
+  import { previewNext } from './preview';
   import {
     addEntry,
     dirtyCount,
@@ -94,7 +95,22 @@
   }>({ speaking: null, install: { state: 'idle' }, activate: { state: 'idle' }, busy: false });
   /** The core's own words for a refused speaking action. */
   let speakingRefusal = $state<string | null>(null);
+  /** The preview this page asked for: its row and where it is - working until
+   * the first chunk sounds, playing while it does, failed when the core names
+   * a failure. `ignored` is the failure already on screen when the press
+   * landed, so a stale one does not flash the fresh press as failed. */
+  let speakingPreview = $state<{
+    voice: string;
+    phase: 'working' | 'playing' | 'failed';
+  } | null>(null);
+  let ignoredPreviewFailure = $state<string | null>(null);
+  /** The clips that had started when the press landed: the stopped clip is
+   * still `playing` for a moment, and must not mark the new press. */
+  let previewStarted = $state(0);
   const seat = $derived($lastSeat);
+  const seatVoice = $derived(
+    seat === null ? null : voiceFor(boxKey(seat), connectionPort(connection, seat)),
+  );
 
   // The settings route holds no composer, so the seat's cached voice is
   // pumped here while the page is open: a preview's frames play now rather
@@ -157,6 +173,27 @@
     return stop;
   });
 
+  /** The preview's phases follow the two things that answer them: the
+   * playback's own `playing`, and a failure the core or the socket named.
+   * The transitions live in `previewNext` where the tests can drive them. */
+  $effect(() => {
+    const held = speakingPreview;
+    if (held === null) return;
+    const failure = speaking?.preview_error ?? speakingRefusal;
+    if (failure === null) ignoredPreviewFailure = null;
+    // A clip the press stopped can still read as playing for a moment; only
+    // a clip that began after the press is the pressed voice sounding.
+    const playing = (seatVoice?.started ?? 0) > previewStarted && seatVoice?.state === 'speaking';
+    const next = previewNext(held, playing, failure, ignoredPreviewFailure);
+    if (next !== held) speakingPreview = next;
+  });
+
+  /** The failure the previewed row draws: the same words the card would,
+   * in place on the row the press belongs to. */
+  const previewFailure = $derived(
+    speakingPreview?.phase === 'failed' ? (speaking?.preview_error ?? speakingRefusal) : null,
+  );
+
   function speakingAct(command: Command): void {
     speakingRefusal = null;
     try {
@@ -166,6 +203,25 @@
       // belongs on the card beside a refusal, not in the console.
       speakingRefusal = why instanceof Error ? why.message : String(why);
     }
+  }
+
+  /** One preview at a time: the clip sounding now stops and its queued
+   * buffers go, so the pressed voice is heard as its first chunk arrives
+   * rather than behind the clip already playing. The audio device is woken in
+   * this same gesture, so the platform cannot leave it suspended. */
+  function startPreview(id: string): void {
+    if (seat === null) return;
+    seatVoice?.unlock();
+    seatVoice?.stop();
+    previewStarted = seatVoice?.started ?? 0;
+    ignoredPreviewFailure = speaking?.preview_error ?? speakingRefusal;
+    speakingPreview = { voice: id, phase: 'working' };
+    speakingAct({ voice_preview: { key: seat, voice: id } });
+  }
+
+  function stopPreview(): void {
+    seatVoice?.stop();
+    speakingPreview = null;
   }
 
   /** Stage the voice choice as this page's own edit, written by its Save. */
@@ -597,22 +653,20 @@
       speakingActivate={models.activate}
       speakingBusy={models.busy}
       {speakingVoice}
-      speakingRefusal={speakingRefusal ?? speaking?.preview_error ?? null}
+      speakingRefusal={speakingPreview?.phase === 'failed'
+        ? null
+        : (speakingRefusal ?? speaking?.preview_error ?? null)}
+      {speakingPreview}
+      speakingPreviewFailure={previewFailure}
+      speakingListening={seatVoice?.on ?? false}
+      onSpeakingStopPreview={stopPreview}
       previewSeat={seat}
       onSpeakingInstall={(variant: string) => speakingAct({ dictate_install: { variant } })}
       onSpeakingActivate={(file: string) =>
         speakingAct({ dictate_activate: { role: 'speaking', file } })}
       onSpeakingDeactivate={() => speakingAct({ dictate_deactivate: { role: 'speaking' } })}
       onSpeakingVoice={chooseVoice}
-      onSpeakingPreview={(id: string) => {
-        const at = seat;
-        if (at === null) return;
-        // One preview at a time: the clip sounding now stops and its queued
-        // buffers go, so the pressed voice is heard as its first chunk arrives
-        // rather than behind the clip already playing.
-        voiceFor(boxKey(at), connectionPort(connection, at)).stop();
-        speakingAct({ voice_preview: { key: at, voice: id } });
-      }}
+      onSpeakingPreview={startPreview}
     />
 
     {#if editing && (dirty > 0 || saving || refusal !== null || saved || conflict !== null || restart.length > 0)}

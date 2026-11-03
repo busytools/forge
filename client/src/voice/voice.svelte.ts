@@ -53,11 +53,20 @@ export class Voice {
     return this.on ? 'listening' : 'off';
   }
 
+  /** Clips this seat has begun sounding, ever. A preview press records it;
+   * only a later start marks the new press as playing. */
+  get started(): number {
+    return this.playback.started;
+  }
+
   turnOn(): void {
     if (this.on) return;
     this.#wanted = true;
     this.on = true;
     this.line = null;
+    // The switch is a gesture too, and the replies it asks for arrive long
+    // after it: the device has to be awake before they do.
+    this.unlock();
     if (!this.send({ on: true, explicit: false })) {
       this.on = false;
       this.#wanted = false;
@@ -70,6 +79,15 @@ export class Voice {
     if (!this.on) return;
     this.on = false;
     this.send({ on: false, explicit: true });
+  }
+
+  /**
+   * Create or resume the audio device inside the press's own gesture, so the
+   * clip it asks for is audible: a context a browser holds suspended starts
+   * its sources silently.
+   */
+  unlock(): void {
+    void this.playback.unlock();
   }
 
   /**
