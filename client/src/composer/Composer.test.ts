@@ -6459,6 +6459,16 @@ describe('the dock', () => {
     },
   );
 
+  it('names the preview and the row chip for the act the draft would do', () => {
+    open({ record: record({ pending_asks: [slackDraftAsk({ operation: 'delete' })] }) });
+
+    expect(
+      document.querySelector('.dock .preview')?.getAttribute('aria-label'),
+      'the region is named for the act, not for a post',
+    ).toBe('the delete held for approval');
+    expect(drawn(), 'and the live row says which act is waiting').toContain('delete waiting');
+  });
+
   it('opens the send-back field with the keyboard in it', () => {
     open({ record: record({ pending_asks: [slackDraftAsk()] }) });
 

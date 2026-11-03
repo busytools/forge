@@ -216,10 +216,13 @@ pub mod wire;
 ///
 /// **v24 is a bump for the Slack draft's answer.** `respond_slack_post`
 /// carries an answer now rather than a boolean: the reader can send a held
-/// draft back with words for the agent. A v23 server reads the new payload
-/// as a command it cannot decode, and a v23 client sends the old one this
-/// server refuses, so the numbers move. `baselines/socket/23/` is the record
-/// a v23 server emitted.
+/// draft back with words for the agent, and `slack_draft_resolved` gains the
+/// `sent_back` ending. The draft's payload replaces `tool` with `operation`,
+/// because one `slack__edit` is a replacement or a deletion and one
+/// `slack__react` adds or removes - a card words its verbs from what will
+/// happen. A v23 server reads the new payload as a command it cannot decode,
+/// and a v23 client sends the old one this server refuses, so the numbers
+/// move. `baselines/socket/23/` is the record a v23 server emitted.
 ///
 /// **Additive fields do not bump.** `diff.base_error` is one, carried on the
 /// v16-era record: a client older than the field draws the vaguer line it

@@ -516,7 +516,7 @@ pub(crate) type SlackDeliveryKey = (String, Option<String>, String, String, Opti
 /// Multi-session orchestrator. Owns the project catalog snapshot
 /// loaded from `<config_dir>/forge.toml` and the pool of currently
 /// One composed Slack message held for a decision: the session that asked,
-/// the draft itself, and the sender the blocked `slack__post` handler awaits.
+/// the draft itself, and the sender the blocked Slack handler awaits.
 ///
 /// The draft rides beside the sender for the same reason the permission and
 /// question requests do - the stream carries it once, so a view that attached

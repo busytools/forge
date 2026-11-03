@@ -366,7 +366,11 @@
       return { mark: 'warning', label: 'approval', tone: 'att' as const };
     }
     if (held.kind === 'slack_draft') {
-      return { mark: 'plane', label: 'post waiting', tone: 'att' as const };
+      return {
+        mark: 'plane',
+        label: `${held.request.operation} waiting`,
+        tone: 'att' as const,
+      };
     }
     if (held.kind === 'document_hand_off') {
       return { mark: 'file', label: 'document waiting', tone: 'att' as const };

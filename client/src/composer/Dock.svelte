@@ -239,8 +239,8 @@
       return [];
     }
     if (prompt.kind === 'slack_draft') {
-      // A held post draws no rows either: the draft goes out or it does not,
-      // and those two verbs are buttons under the body they would send.
+      // A held draft draws no rows either: it is approved, sent back, or
+      // declined, and those verbs are buttons under the body they act on.
       return [];
     }
     if (prompt.kind === 'question') {
@@ -1196,7 +1196,11 @@
          markdown renderer and the same panel: Slack text IS markdown, the
          question kinds are already in hand, and one kind of block for both
          keeps the dock one system rather than two. -->
-      {@render previewRegion('the post held for approval', ask.request.text, false)}
+      {@render previewRegion(
+        `the ${ask.request.operation} held for approval`,
+        ask.request.text,
+        false,
+      )}
     {:else if ask.kind === 'document_hand_off'}
       <div class="d-head">
         <span class="tag warn">&#9888; needs you</span>
