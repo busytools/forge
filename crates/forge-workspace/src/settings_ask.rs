@@ -224,6 +224,80 @@ mod tests {
         assert!(held.await.is_err(), "a dead receiver reads as not-approved");
     }
 
+    /// Through `Workspace::dispatch`, the route a view's dock answer takes -
+    /// the direct `resolve_settings_write` tests above never exercise the
+    /// guard or the arm, so deleting either would leave an approved write
+    /// from the dock hanging with every test still green.
+    #[tokio::test]
+    async fn the_dock_answer_reaches_the_registry_through_dispatch() {
+        let (ws, _rx) = stub();
+        let mut ask = an_ask("server.port");
+        ask.id = Uuid::new_v4();
+        let (id, decision, _) = ws.register_settings_write(&caller(), ask);
+
+        ws.dispatch(crate::protocol::Command::RespondSettingsWrite {
+            key: caller(),
+            id,
+            approved: true,
+        })
+        .expect("the dock answer routes to the workspace");
+
+        assert!(
+            decision.await.expect("the held write answers"),
+            "the answer the dock gave reaches the awaiting caller",
+        );
+    }
+
+    /// A click on a dock the core has already resolved is refused with the
+    /// reason rather than dropped.
+    #[tokio::test]
+    async fn a_stale_dock_answer_is_refused_with_the_reason() {
+        let (ws, _rx) = stub();
+        let mut ask = an_ask("server.port");
+        ask.id = Uuid::new_v4();
+        let (id, _decision, _) = ws.register_settings_write(&caller(), ask);
+        assert!(ws.resolve_settings_write(
+            id,
+            &caller(),
+            SettingsWriteEnding::Answered { approved: true },
+        ));
+
+        let refused = ws.dispatch(crate::protocol::Command::RespondSettingsWrite {
+            key: caller(),
+            id,
+            approved: true,
+        });
+
+        assert!(
+            matches!(refused, Err(crate::protocol::DispatchError::NoSettingsWriteWaiting { .. })),
+            "a stale dock must report why the answer did not land: {refused:?}",
+        );
+    }
+
+    /// The guard's owner half: another session's dispatch is refused, and
+    /// the write stays waiting for the session that asked.
+    #[tokio::test]
+    async fn another_session_answering_through_dispatch_is_refused() {
+        let (ws, _rx) = stub();
+        let asker = SessionSlot::worker("Default", "forge", "settings-worker");
+        let other = SessionSlot::worker("Default", "forge", "another-worker");
+        let mut ask = an_ask("server.port");
+        ask.id = Uuid::new_v4();
+        let (id, _decision, _) = ws.register_settings_write(&asker, ask);
+
+        let refused = ws.dispatch(crate::protocol::Command::RespondSettingsWrite {
+            key: other,
+            id,
+            approved: true,
+        });
+
+        assert!(
+            matches!(refused, Err(crate::protocol::DispatchError::NoSettingsWriteWaiting { .. })),
+            "{refused:?}",
+        );
+        assert!(ws.settings_write_waiting(id, &asker), "the write is still the asker's");
+    }
+
     /// A waiter whose session went away is abandoned rather than approved:
     /// the registry clears it, the blocked caller reads false, and the
     /// resolved update says which ending took it.

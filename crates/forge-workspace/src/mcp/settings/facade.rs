@@ -152,8 +152,9 @@ impl ProdSettingsFacade {
         value: Option<Value>,
     ) -> Result<SettingsWriteOutcome, SettingsError> {
         let ws = self.workspace()?;
+        let config = ws.config_arc();
         let document = ws.settings_snapshot();
-        let target = crate::settings::target(&document, key)
+        let target = crate::settings::resolve_target(&config, &document, key)
             .ok_or_else(|| SettingsError::UnknownKey(key.to_owned()))?;
         let unset = value.is_none();
         let proposed = value.clone().unwrap_or(Value::Null);
@@ -239,7 +240,7 @@ impl SettingsFacade for ProdSettingsFacade {
             });
         }
         let document = ws.settings_snapshot();
-        let target = crate::settings::target(&document, key)
+        let target = crate::settings::resolve_target(&config, &document, key)
             .ok_or_else(|| SettingsError::UnknownKey(key.to_owned()))?;
         Ok(SettingsValue {
             key: target.path,
@@ -358,6 +359,14 @@ max_workers = 2
 [[orgs.projects]]
 name = "web"
 path = "/tmp/web"
+
+[[orgs]]
+name = "Other"
+accounts = ["Stargate"]
+
+[[orgs.projects]]
+name = "elsewhere"
+path = "/tmp/elsewhere"
 
 [[accounts]]
 display_name = "Stargate"
@@ -498,6 +507,113 @@ provider = "anthropic"
         let outcome = task.await.expect("no panic").expect("a decline is an outcome");
         assert_eq!(outcome, SettingsWriteOutcome::Declined);
         assert!(read_config(&ws).contains("max_workers = 4"), "a decline writes nothing");
+    }
+
+    /// An optional key the config does not set reads as unset and can be
+    /// enabled through the same held write, which is what the index promises
+    /// by listing it.
+    #[tokio::test]
+    async fn an_unset_optional_key_reads_null_and_can_be_set() {
+        let (ws, _dir) = fixture();
+        let _answerer = ws.subscribe_answerer();
+        let facade = facade(&ws);
+        let key = "orgs.Default.projects.forge.handoff.enabled";
+
+        let read = facade.get(&caller(), key).await.expect("an unset optional key reads");
+        assert_eq!(read.value, json!(null), "the key is addressable before it is set");
+        assert_eq!(read.pattern, "orgs[].projects[].handoff.enabled");
+
+        // The real watcher, not a hand-called reload: the save is one the
+        // server's watch has to see and apply, exactly as the page's save is.
+        let (changed, mut edits) = tokio::sync::mpsc::unbounded_channel();
+        let _watch = crate::env::config_watch::watch(ws.config_path(), changed).expect("the watch");
+        let watching = tokio::spawn({
+            let ws = Arc::clone(&ws);
+            async move {
+                let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+                loop {
+                    tokio::select! {
+                        Some(()) = edits.recv() => {
+                            let _ = ws.reload_config();
+                        }
+                        () = tokio::time::sleep_until(deadline) => return false,
+                    }
+                    if ws.config_arc().projects[0].handoff.as_ref().and_then(|h| h.enabled)
+                        == Some(true)
+                    {
+                        return true;
+                    }
+                }
+            }
+        });
+
+        let task = tokio::spawn({
+            let facade = Arc::clone(&facade);
+            async move { facade.set(&caller(), key, json!(true)).await }
+        });
+        let id = wait_for_write(&ws).await;
+        assert!(ws.resolve_settings_write(
+            id,
+            &caller(),
+            SettingsWriteEnding::Answered { approved: true },
+        ));
+        let outcome = task.await.expect("no panic").expect("the write lands");
+        assert!(matches!(outcome, SettingsWriteOutcome::Applied { .. }));
+        assert!(read_config(&ws).contains("enabled = true"), "the key was created");
+        assert!(watching.await.expect("no panic"), "the watcher applied the written config");
+    }
+
+    /// **Every write is held, another project's included.** Reads refuse a
+    /// foreign project's key, but a write is not the read: it parks with the
+    /// key the reader sees, and only their approval lands it.
+    #[tokio::test]
+    async fn a_write_to_another_projects_key_is_held_too() {
+        let (ws, _dir) = fixture();
+        let _answerer = ws.subscribe_answerer();
+        let facade = facade(&ws);
+        let key = "orgs.Default.projects.web.max_workers";
+
+        let task = tokio::spawn({
+            let facade = Arc::clone(&facade);
+            async move { facade.set(&caller(), key, json!(5)).await }
+        });
+        let id = wait_for_write(&ws).await;
+        let held = ws.pending_asks(&caller());
+        assert!(
+            held.iter().any(|ask| matches!(
+                ask,
+                crate::protocol::PendingAsk::SettingsWrite(held)
+                    if held.id == id && held.key == key && held.proposed == json!(5)
+            )),
+            "the write parks with the foreign key the reader has to see",
+        );
+
+        assert!(ws.resolve_settings_write(
+            id,
+            &caller(),
+            SettingsWriteEnding::Answered { approved: true },
+        ));
+        let outcome = task.await.expect("no panic").expect("the write lands");
+        assert!(matches!(outcome, SettingsWriteOutcome::Applied { .. }));
+        assert!(read_config(&ws).contains("max_workers = 5"));
+    }
+
+    /// An org's own keys are not a project's, so another org's read like a
+    /// global key: the read policy scopes `orgs.<org>.projects.<project>`.
+    #[tokio::test]
+    async fn another_orgs_org_level_key_reads_like_a_global_key() {
+        let (ws, _dir) = fixture();
+
+        let read = facade(&ws)
+            .get(&caller(), "orgs.Other.browser_profile")
+            .await
+            .expect("org-level keys are global for reads");
+
+        assert_eq!(
+            read.value,
+            json!("default"),
+            "the org's effective profile reads, not a foreign-project refusal",
+        );
     }
 
     /// An unknown key and a wrong type are refused naming the key before any

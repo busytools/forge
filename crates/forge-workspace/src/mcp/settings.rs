@@ -409,12 +409,12 @@ mod tests {
 
     #[tokio::test]
     async fn set_passes_the_key_and_value_and_says_which_happened() {
-        let facade = MockSettingsFacade::new();
-        *facade.write_result.lock() = Some(Ok(SettingsWriteOutcome::Applied {
+        let mock = Arc::new(MockSettingsFacade::new());
+        *mock.write_result.lock() = Some(Ok(SettingsWriteOutcome::Applied {
             effect: forge_primitives::EffectClass::NextSession,
         }));
-        let facade = facade.into_arc();
-        let server = server(Arc::clone(&facade));
+        let facade: Arc<dyn SettingsFacade> = mock.clone();
+        let server = server(facade);
 
         let (text, is_error) = call(
             &server,
@@ -426,12 +426,19 @@ mod tests {
         assert!(!is_error, "{text}");
         assert!(text.contains("the reader approved"), "{text}");
         assert!(text.contains("next session"), "the effect is stated: {text}");
+        let calls = mock.set_calls.lock();
+        assert_eq!(calls.len(), 1, "the tool handed the write through once");
+        let (caller, key, value) = &calls[0];
+        assert_eq!(caller, &slot(), "the write is the caller's");
+        assert_eq!(key, "orgs.Default.projects.forge.max_workers");
+        assert_eq!(value, &serde_json::json!(4));
     }
 
     #[tokio::test]
     async fn a_declined_write_says_nothing_was_written() {
-        let facade = MockSettingsFacade::new();
-        let server = server(facade.into_arc());
+        let mock = Arc::new(MockSettingsFacade::new());
+        let facade: Arc<dyn SettingsFacade> = mock.clone();
+        let server = server(facade);
 
         let (text, is_error) =
             call(&server, "settings__unset", serde_json::json!({ "key": "client.theme" })).await;
@@ -439,5 +446,8 @@ mod tests {
         assert!(!is_error, "{text}");
         assert!(text.contains("the reader declined"), "{text}");
         assert!(text.contains("nothing was written"), "{text}");
+        let calls = mock.unset_calls.lock();
+        assert_eq!(calls.len(), 1, "the tool handed the clear through once");
+        assert_eq!(calls[0].1, "client.theme");
     }
 }
