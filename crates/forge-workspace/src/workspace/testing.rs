@@ -195,6 +195,19 @@ impl Workspace {
         let _ = self.update_tx.send(update);
     }
 
+    /// Park a Slack draft on `key` as a blocked Slack tool call would. The
+    /// receiver is dropped on purpose: the tool call is the test's to
+    /// simulate, and the note's own path is covered where a handler awaits
+    /// it. Test-only.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn park_slack_draft_for_test(
+        &self,
+        key: &SessionSlot,
+        draft: forge_primitives::slack::SlackDraft,
+    ) {
+        let _ = self.register_slack_draft(key, draft);
+    }
+
     /// [`Self::emit_for_test`], reporting whether a subscriber was there to
     /// take it.
     ///

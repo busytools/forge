@@ -919,6 +919,16 @@
   $effect(() => {
     return connection.onMessage((message) => {
       if (message.kind !== 'error') return;
+      // An answer the core refused but did NOT resolve: the draft is still
+      // waiting, so the card comes back with the reason rather than standing
+      // down for good.
+      if (message.what === 'empty_slack_feedback') {
+        box.answered = null;
+        box.answeredKey = null;
+        box.ended = null;
+        box.refusal = message.why;
+        return;
+      }
       // The answer to a draft the core no longer holds, refused by its own
       // operation's name: the dock is gone by then, so the reason is drawn
       // where it stood. A generic `dispatch` refusal cannot say which command

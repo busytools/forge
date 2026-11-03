@@ -6588,6 +6588,27 @@ describe('the dock', () => {
     expect(drawn(), 'and the sending line goes with it').not.toContain('Sending your feedback');
   });
 
+  it('brings the card back when the core refuses an empty send-back', () => {
+    const harness = open({ record: record({ pending_asks: [slackDraftAsk()] }) });
+
+    action('Post').click();
+    flushSync();
+    expect(document.querySelector('.dock'), 'the card stands down with the press').toBeNull();
+
+    // The core kept the draft, so this refusal is not an ending: the reader
+    // must get the card back to fix the answer rather than be left with a
+    // line where it stood.
+    harness.say({
+      kind: 'error',
+      what: 'empty_slack_feedback',
+      why: 'the feedback was empty, so the draft is still waiting',
+    });
+    flushSync();
+
+    expect(document.querySelector('.dock'), 'the card comes back').not.toBeNull();
+    expect(drawn(), 'with the reason in it').toContain('the feedback was empty');
+  });
+
   it('keeps the sending line while a record refresh re-hands the same draft', () => {
     const harness = open({ record: record({ pending_asks: [slackDraftAsk()] }) });
 
