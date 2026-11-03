@@ -6533,6 +6533,14 @@ describe('the dock', () => {
     expect(document.activeElement, 'the keyboard goes back to the door it came through').toBe(
       opener,
     );
+
+    // **Closing hides the field, it does not discard what was written.** The
+    // words are the reader's and a reopen returns them; a cleanup that reset
+    // the state here would lose them with nothing on screen to say so.
+    opener.click();
+    flushSync();
+    expect(feedbackBox().value, 'the words survive the close').toBe('half a thought');
+    expect(sendBackAction().disabled, 'and the action is still available').toBe(false);
   });
 
   it('draws the send-back as it leaves, then names a refusal in its place', () => {
