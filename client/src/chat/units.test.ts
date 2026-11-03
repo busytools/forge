@@ -2986,6 +2986,20 @@ describe('one turn folded into the units a view draws', () => {
     expect(proceduresOf(nudge[0]), 'and is not the procedure').toEqual([]);
   });
 
+  it('opens the successor brief and leaves the judgment prompt folded', () => {
+    // **The brief is the successor's first row and the only carrier of the
+    // handoff**; it opens on arrival rather than asking the reader to unfold
+    // the one row the new chat exists to show. The judgment prompt in the
+    // session handing over stays folded like any other procedure.
+    const brief = 'HANDOFF - a -> b\n\nPART 1: GROUND TRUTH\nseat: TestOrg/send-row/lead';
+    const live = fold([heard([text(brief)], { uuid: 'forge_nudge_5_1a2b3c4d' })]);
+    expect(proceduresOf(live[0]).map((row) => row.open), 'the brief opens itself').toEqual([true]);
+
+    const judgment = 'A handoff is starting for this session: run the skill.';
+    const before = fold([heard([text(judgment)], { uuid: 'forge_nudge_handoff_7_feedface' })]);
+    expect(proceduresOf(before[0])[0]?.open, 'the judgment prompt stays folded').not.toBe(true);
+  });
+
   it('draws no line for a task the wire did not say outlives its turn', () => {
     // A foreground call's own result is already on the row, and a dispatched
     // agent's report is the row's own body: the harness's summary under either

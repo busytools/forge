@@ -309,6 +309,8 @@ export interface ProcedureLeaf {
   /** The frame and block it came from, which is what the row is keyed by. */
   key: string;
   text: string;
+  /** The successor's brief opens itself; the judgment prompt stays folded. */
+  open?: boolean;
 }
 
 /**
@@ -2373,8 +2375,8 @@ export function fold(
    * interrupted** - a bracket-led envelope opens no turn - so the drawn row is
    * what says one landed, and the reader's own words ride the same carrier. A
    * delivery is the same: a cron fire, a Slack message or a Gotify push
-   * carries its own prompt in, and one queued at a turn's end belongs to the
-   * next.
+   * carries its own prompt in; one taken at a turn's end belongs to the next,
+   * and one absorbed mid-turn belongs to the turn it interrupted.
    */
   const arrivedAfterOutput = (unit: Unit): boolean => {
     // **The interrupt marker is the user row that is not a message**: the CLI
@@ -3087,7 +3089,12 @@ export function fold(
           // because a reader may type the same words and their own prompt
           // must draw.
           if (stripped.startsWith('HANDOFF - ') && isNudgeId(promptIdOf(frame, block))) {
-            pending.push({ tag: 'procedure', key: keyOf(at, frame, blockAt), text: stripped });
+            pending.push({
+              tag: 'procedure',
+              key: keyOf(at, frame, blockAt),
+              text: stripped,
+              open: true,
+            });
             continue;
           }
           // **The handoff's procedure prompt opens its turn.** It is forge's
@@ -3337,10 +3344,12 @@ export function fold(
         // the same words draw two ways depending on which carrier brought
         // them.
         if (isProcedureId(promptIdOf(frame, block))) {
+          const procedure = stripEscapes(words);
           pending.push({
             tag: 'procedure',
             key: keyOf(at, frame, blockAt),
-            text: stripEscapes(words),
+            text: procedure,
+            open: procedure.startsWith('HANDOFF - '),
           });
           continue;
         }

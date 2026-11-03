@@ -64,7 +64,7 @@
     {:else if row.tag === 'nudge'}
       <Nudge text={row.text} />
     {:else if row.tag === 'procedure'}
-      <Procedure text={row.text} />
+      <Procedure text={row.text} open={row.open === true} />
     {:else if row.tag === 'card'}
       <PeerRow card={row.card} />
     {/if}

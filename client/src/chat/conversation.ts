@@ -2438,9 +2438,9 @@ export class Chat {
           continue;
         }
         // **A page row is a turn of its own.** The scanner serves a queued
-        // prompt at the CLI's start, after the turn it was typed into, which
-        // is where the live path draws it - so no row here belongs to the
-        // turn above.
+        // prompt at the CLI's start - after the turn it was typed into, or
+        // absorbed into it - which is where the live path draws it, so no row
+        // here belongs to the turn above.
         const key = nameIn(row, taken);
         taken.add(key);
         const fresh: Turn = { key, messages: messagesOf(row), live: false };
