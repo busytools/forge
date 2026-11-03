@@ -25,7 +25,6 @@ minus its `cargo check --release` job, the client build's
 `scripts/check_client_wasm.py` step (`just check` builds no frontend), and
 its install-and-boot proof (`scripts/install.sh`, then a boot of the
 installed binary with no library path, which neither local command runs),
-and
 plus the android warnings check CI cannot run yet
 (`client-android-warnings`; its vendoring refuses non-macOS hosts - #1959,
 closed as an enhancement and tracked in #2258). CI also runs the workspace

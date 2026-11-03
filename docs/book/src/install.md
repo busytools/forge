@@ -231,9 +231,9 @@ sees.
 builds: the one `just install` produces - release, the test-only features
 off, the server binary plus the host executable `install.sh` builds
 separately - and `testing` on its own. CI goes one step further and
-installs that configuration, booting the binary with no library path to
-prove the shared transcribe/ggml libraries resolve beside it; the local
-recipe stops at compiling.
+installs the server binary of that configuration, booting it with no
+library path to prove the shared transcribe/ggml libraries resolve beside
+it; the local recipe stops at compiling.
 `--all-features` cannot stand in for either, because it turns every
 feature on regardless and so never exercises which configuration
 enables what: the install build leaving `test-helpers` off, or
@@ -262,8 +262,8 @@ environment variable is involved. A hand-rolled `cargo install` copies only
 the binary and leaves one that cannot start.
 
 The install builds into a staging root and replaces the installed binary
-only once the new one starts with those libraries; a failed install leaves
-the previous binary in place.
+only once the staged copy starts with its libraries beside it; a failure
+before the replacement leaves the previous binary untouched.
 
 One side effect worth knowing about: it regenerates the zsh completion
 at `~/.zsh/completions/_forge` (override the directory with
