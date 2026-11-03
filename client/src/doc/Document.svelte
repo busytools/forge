@@ -161,7 +161,12 @@
    * has no place at all.
    */
   const placements = $derived(placeThreads(held.threads, lines.length));
-  const placed = $derived(placements.filter((held) => held.line !== null));
+  /** The store echoes a draft back as a thread with the same id; while the
+   *  comment is unfiled, the shelf row is the one that draws. */
+  const draftIds = $derived(new Set(drafts.map((draft) => draft.id)));
+  const placed = $derived(
+    placements.filter((held) => held.line !== null && !draftIds.has(held.thread.id)),
+  );
   const unplaceable = $derived(placements.filter((held) => held.line === null));
 
   /** The comment targets: rendered blocks for markdown, lines for text. */

@@ -594,6 +594,40 @@ describe('the reviewable document', () => {
     expect(cut?.delete_review_thread.thread_id, 'and the store heard about it').toBeTruthy();
   });
 
+  /**
+   * **A written comment draws once.** The store echoes the draft back on the
+   * next read, so the thread it answers with carries the draft's own id; the
+   * shelf is the truth while the comment is unfiled, and the echo must not
+   * draw a second row beside it.
+   */
+  it('draws a written comment once when the store echoes it back', () => {
+    addDraft(docScope(PATH), {
+      id: 't-1',
+      line: 2,
+      text: 'the words',
+      context: ['line two'],
+    });
+    const echo = {
+      ...placedThread('t-1', 2, { state: 'placed', line: 2, moved_from: null }, ['line two']),
+      comments: [{ author: 'User', text: 'the words', at: 'x', review_id: null }],
+    };
+    drawReviewable({
+      kind: 'landed',
+      document_kind: 'markdown',
+      bytes: enc('# hi\nline two\nline three'),
+      reviewable: true,
+      content_hash: '42',
+      threads: [echo],
+    });
+
+    const rows = [...document.querySelectorAll('.doc-note')].filter((row) =>
+      row.textContent?.includes('the words'),
+    );
+    expect(rows.length, 'the store echo does not draw beside the draft').toBe(1);
+    expect(rows[0]?.classList.contains('doc-draft'), 'the shelf row is the one drawn').toBe(true);
+    expect(rows[0]?.textContent, 'and it carries the drafted mark').toContain('drafted');
+  });
+
   /** **The nudge the view this client replaced sent on its own drop.** The
    *  finish pushes the review-ready line into the session, so the chat shows
    *  the review to the reader and reaches the agent - with the document's
