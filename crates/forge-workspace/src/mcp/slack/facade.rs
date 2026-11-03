@@ -141,7 +141,9 @@ pub(crate) enum SlackEditError {
     Rejected,
     /// The user sent it back with words to revise from. The message is
     /// untouched.
-    SentBack { note: String },
+    SentBack {
+        note: String,
+    },
     Workspace(SlackWorkspaceError),
     Fetch(String),
 }
@@ -162,7 +164,9 @@ pub(crate) enum SlackReactError {
     Rejected,
     /// The user sent it back with words to revise from. Nothing was added or
     /// removed.
-    SentBack { note: String },
+    SentBack {
+        note: String,
+    },
     Workspace(SlackWorkspaceError),
     Fetch(String),
 }
@@ -203,7 +207,9 @@ pub(crate) enum SlackAttachmentError {
     /// The user rejected the upload. Nothing was sent.
     Rejected,
     /// The user sent it back with words to revise from. Nothing was sent.
-    SentBack { note: String },
+    SentBack {
+        note: String,
+    },
     Workspace(SlackWorkspaceError),
     /// The Web API or the transfer failed.
     Fetch(String),
@@ -459,7 +465,9 @@ pub(crate) enum GateDecision {
     Rejected,
     /// The reader did not send it, and wrote words for the agent to revise
     /// from.
-    SentBack { note: String },
+    SentBack {
+        note: String,
+    },
 }
 
 /// Resolves the draft if the awaiting future is dropped before the reader
@@ -2910,9 +2918,7 @@ token = "y"
         let (facade, ws, api, _rx) = facade_with_recording_slack();
         let task = tokio::spawn({
             let facade = facade.clone();
-            async move {
-                facade.react(&caller(), react_request("C1", "100.0", "thumbsup", true)).await
-            }
+            async move { facade.react(&caller(), react_request("C1", "100.0", "thumbsup", true)).await }
         });
         let id = wait_for_draft(&ws).await;
         ws.resolve_slack_draft(id, &caller(), sent_back("that reads as sarcasm here"));
