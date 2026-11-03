@@ -455,9 +455,7 @@ fn list_output(
         // scope (the seat's own) or a document's would read as something
         // to check out; the tree's reviews already ride the list above,
         // and a document's are addressed through its hand-off.
-        .filter(|branch| {
-            *branch != scope.branch && !is_tree_scope(branch) && !is_doc_scope(branch)
-        })
+        .filter(|branch| *branch != scope.branch && !is_tree_scope(branch) && !is_doc_scope(branch))
         .collect();
     if others.is_empty() {
         return json_or_error(&rows);
