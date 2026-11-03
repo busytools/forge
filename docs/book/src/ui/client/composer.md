@@ -209,7 +209,7 @@ catch at either layer can reach it.
 | A command in flight | `Running <name>` for the slash command the turn is still working on, the sweep |
 | Waking | `Waking up agent...` while the lead's seat comes up, the sweep |
 | Not running | `not running` and the seat's own reason: a worker's seat has no spawn coming, and says so |
-| Reading | `Reading the conversation...` above the field while the seat's first page is still out, with the sweep; the field stays live |
+| Reading | `Reading the conversation...` while the seat's first page is still out, with the sweep, no field |
 | A take that does not come up | the body stays, with the line above it: the microphone did not come up, or the device layer's own named failure |
 | Voice on | the voice switch beside the mic in the accent: a plain speaker, with a mark beside it while a reply is sounding |
 | Voice off | the same switch, a struck-through speaker and dim, meaning this client is not listening to this seat |
@@ -221,11 +221,15 @@ seat first, then a seat nothing has started, then the more specific truth
 about a turn the reader caused.
 
 **The read wait is one of them.** A seat whose first page is still out says
-`Reading the conversation...` on the band above the field, with the sweep -
-the band is the single place every narrative state speaks. It is the one
-narrative line that does not take the field with it: the seat is up and takes
-a prompt while the page is out, and a send made before it landed is drawn as
-the reader's own row in the column above, so its words are never lost.
+`Reading the conversation...` and holds the body like every other narrative
+state: there is nothing to type into until the page lands, so the line takes
+the box rather than sitting above a live field - a row above the field grew
+the composer and shrank it again before the chat appeared. A take in flight or
+a parked ask takes the body ahead of it, because both are the reader's own
+surface; while the read wait holds the box the push-to-talk key begins
+nothing, since the field is not on screen to receive the words. A row the column already
+holds - a send carried across a reload, or one the takeover bar sent - still
+draws above as the reader's own, so those words are never lost.
 
 **Every narrative hold is one draw.** Waking, reading, a command in flight, a
 compaction and a handoff all replace the body with one line and the same sweep
