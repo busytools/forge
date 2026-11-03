@@ -464,8 +464,8 @@ export const IGNORED: readonly string[] = [
   'fatal_error',
   'forge_account_identity',
   'gotify_notification_appended',
-  // The row belongs to the conversation, which `chat/conversation.ts` draws
-  // from the same frame; the seat record has no field for it.
+  // The swap signal: the successor's own `session_replaced` is what a view
+  // acts on, and no row is drawn from this frame.
   'handoff',
   'peer_envelope_appended',
   'plugins_cli_action_failed',

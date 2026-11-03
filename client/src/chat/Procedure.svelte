@@ -6,14 +6,15 @@
   import Prose from './Prose.svelte';
 
   /**
-   * The handoff's procedure prompt: forge's own text that opens the judgment
-   * turn, asking the handing-over session to run the handoff skill.
+   * The handoff's own prompt, as the transcript carries it: the procedure that
+   * opens the judgment turn in the session handing over, or the brief that
+   * opens the successor's.
    *
    * **It is the turn's opening row, not a nudge inside one.** It carries the
-   * handoff's own mark and names itself, because it says why the seat is
-   * about to be replaced; opened, it reads as the whole procedure the
-   * handing-over session was given. The calls that follow it are the work it
-   * set going, drawn as any turn's calls are.
+   * handoff's own mark and names itself, because it says why the seat was
+   * replaced; opened, it reads as the whole procedure the session was given.
+   * The calls that follow it are the work it set going, drawn as any turn's
+   * calls are.
    */
   let { text, open = false }: { text: string; open?: boolean } = $props();
 

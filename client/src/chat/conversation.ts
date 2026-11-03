@@ -30,7 +30,6 @@ import { inFlightOf } from '../session/apply';
 import { takeReturn } from '../session/returns';
 import type { Connection } from '../socket';
 import type { SessionSlot } from '../wire/types';
-import { handoffFrame, handoffKey, handoffOf, type HandoffRecord } from '../wire/handoff';
 import { cronNames } from './cron-names.svelte';
 import { echoes } from './echoes.svelte';
 import { outputs } from './outputs.svelte';
@@ -110,17 +109,6 @@ export interface Turn {
    * trim only ever drops from the oldest end, where the page's own turns sit.
    */
   before?: string | null;
-  /**
-   * A turn that came from a record rather than from this conversation's
-   * transcript: the handoff's judgment turn, which ran in the session that
-   * left.
-   *
-   * **No page of THIS transcript can ever carry it**, so a walk toward it
-   * would fetch every page above the successor's head and never arrive - the
-   * same reason a forged notice is not a walk target. It draws where it was
-   * seeded and is never asked for again.
-   */
-  record?: boolean;
 }
 
 /**
@@ -423,27 +411,6 @@ function liveName(message: unknown, at: number): string {
 /** The messages of one frame, which is what a turn's own content is. */
 function messagesOf(turn: PageTurn): unknown[] {
   return Array.isArray(turn.messages) ? turn.messages : [];
-}
-
-/**
- * The judgment turn a handoff record carries, as a turn the chat can hold.
- *
- * **Keyed the way the live frames named it** (`live:<the prompt's uuid>`), so
- * a client that watched the swap keeps the row it already drew rather than a
- * second copy of the same turn from the record. A turn whose prompt row lost
- * its id falls back to a name of its own rather than to an empty one, which
- * would make every such turn one row.
- */
-function judgmentTurnOf(handoff: HandoffRecord): Turn | null {
-  const messages = handoff.judgment_turn;
-  if (messages.length === 0) return null;
-  const id = uuidOf(messages[0]);
-  return {
-    key: id !== null ? `live:${id}` : `live:judgment-${handoff.from}`,
-    messages: [...messages],
-    live: false,
-    record: true,
-  };
 }
 
 /**
@@ -1237,14 +1204,11 @@ interface FailedLine {
 }
 
 /** Whether a frame is a row forge itself minted, which no transcript read
- * carries: the core's own line, or the handoff row. A turn of nothing but
- * these is no walk's target, because no page ever answers with one. */
+ * carries: the core's own line. A turn of nothing but these is no walk's
+ * target, because no page ever answers with one. */
 function isForgeNotice(message: unknown): boolean {
   const frame = message as { type?: unknown; subtype?: unknown } | null;
-  return (
-    frame?.type === 'forge_handoff' ||
-    (frame?.type === 'system' && frame.subtype === 'forge_notice')
-  );
+  return frame?.type === 'system' && frame.subtype === 'forge_notice';
 }
 
 /** The update's variant name, for the ones the chat acts on. */
@@ -1346,16 +1310,6 @@ export class Chat {
    * for the same reason (`session/live.ts`).
    */
   private held: Conversation = NOTHING;
-  /**
-   * The turns a handoff keeps across the swap that follows it.
-   *
-   * **A `/new` clears the seat's conversation; a handoff does not.** The row
-   * says two conversations met, so the one above it stays - the reader's own
-   * work does not vanish because the session did. Held here between the
-   * `handoff` frame and the `session_replaced` that lands the successor, and
-   * taken by [`Self::replaced`].
-   */
-  private carried: { turns: Turn[]; to: string } | null = null;
   /** The frame a publish is waiting for, or `null`. */
   private queued: number | null = null;
   /** The paint's own deadline, armed while `queued` is: see [`PAINT_WATCHDOG_MS`]. */
@@ -1779,12 +1733,9 @@ export class Chat {
     const conversation = (data.conversation ?? {}) as {
       turns?: unknown;
       cursor?: unknown;
-      handoff?: unknown;
       cron_names?: unknown;
     };
     cronNames.seed(conversation.cron_names);
-    const record = handoffOf(conversation.handoff);
-    if (record !== null) this.seedHandoffJoin(record, 'ahead');
     const rows = pageTurns(conversation.turns);
     if (rows.length === 0) return;
     const cursor = typeof conversation.cursor === 'string' ? conversation.cursor : null;
@@ -2297,15 +2248,9 @@ export class Chat {
           const conversation = (data.conversation ?? {}) as {
             turns?: unknown;
             cursor?: unknown;
-            handoff?: unknown;
             cron_names?: unknown;
           };
           cronNames.seed(conversation.cron_names);
-          // **A client attaching after the swap draws the row the record
-          // carries**, because the successor's transcript never holds it and
-          // the live frame it arrived on is long gone.
-          const record = handoffOf(conversation.handoff);
-          if (record !== null) this.seedHandoffJoin(record, 'ahead');
           if (fresh) {
             const rows = pageTurns(conversation.turns);
             if (rows.length > 0) {
@@ -2874,15 +2819,10 @@ export class Chat {
       // is written here and nowhere else - no read restores it - so a tail of
       // nothing but notices has nothing to walk for, and targeting one would
       // fetch the whole history one page per landing for a turn no page will
-      // ever carry. **A record turn is the same fact from the other
-      // transcript**: the handoff's judgment turn ran in the session that
-      // left, so no page of the successor's history names it, and walking to
-      // it would read that history to its top on every load. The walk's own
-      // reach is the transcript-carried turns.
+      // ever carry. The walk's own reach is the transcript-carried turns.
       if (direction === 'newest' && !reachesHeld) {
-        const carriable = rest.filter(
-          (turn) =>
-            turn.record !== true && turn.messages.some((message) => !isForgeNotice(message)),
+        const carriable = rest.filter((turn) =>
+          turn.messages.some((message) => !isForgeNotice(message)),
         );
         walk.key = carriable.length > 0 ? (carriable[carriable.length - 1]?.key ?? null) : null;
         walk.below = walk.key === null ? null : new Set(rest.map((turn) => turn.key));
@@ -2954,10 +2894,9 @@ export class Chat {
        *
        * **A page that stamps nothing has no `overtaken` routing.** Its rows
        * cannot say what they ran past, and `loose` draws after every held row
-       * - which flipped a watched handoff, whose in-play judgment turn then
-       * drew BELOW the row it ends at (#2643). With no page rows to draw
-       * between them, the held order is the only order such a landing leaves
-       * standing, so the seam keeps it.
+       * - which put an in-play turn below rows held after it (#2643). With no
+       * page rows to draw between them, the held order is the only order such
+       * a landing leaves standing, so the seam keeps it.
        *
        * **Only the empty page.** A landing with rows is drawn in the page's
        * own order, and putting a held row above it would file the reader's
@@ -3114,110 +3053,10 @@ export class Chat {
    * The turns go rather than being replaced in place, because a page that
    * answered before the swap is the OLD occupant's and nothing in a page says
    * which occupant it came from - so what is held has to be nothing, and the
-   * ask has to go out after the swap rather than before it.
+   * ask has to go out after the swap rather than before it. A handoff opens a
+   * new chat the same way: the successor's transcript is its own.
    */
-  /**
-   * Draw the row a live swap announced, and hold the conversation above it
-   * for the `session_replaced` that follows.
-   *
-   * A swap is two frames: the row, then the new occupant. The row is added
-   * before the clear so the turns it joins are the ones whose work it
-   * describes.
-   */
-  private holdHandoff(handoff: HandoffRecord): void {
-    this.seedHandoffJoin(handoff, 'after');
-    // **The successor's id rides with the turns.** A swap that never lands
-    // (a failed spawn, a dropped socket) leaves this set, and the next
-    // `session_replaced` from anything else - a plain `/new` - must not read
-    // it as its own continuation.
-    this.carried = { turns: this.held.turns, to: handoff.to };
-  }
-
-  /** Put the join in the conversation once, wherever it is missing: the
-   * judgment turn the record carries, and the row it ended at.
-   *
-   * **The turn rather than the row alone.** The procedure prompt and the
-   * calls that ran it lived in the session that left, so a client that did
-   * not watch the swap has no frames for them - the record is their only
-   * carrier. Both are keyed, so a live client that already drew the turn
-   * from its own frames lands on that row instead of a second copy. */
-  private seedHandoffJoin(handoff: HandoffRecord, where: 'ahead' | 'after'): void {
-    const row = handoffKey(handoff);
-    const judgment = judgmentTurnOf(handoff);
-    this.fold((held) => {
-      let turns = held.turns;
-      const added: Turn[] = [];
-      if (judgment !== null) {
-        // **The same turn can already be here under another name, and not
-        // necessarily as its opening row.** A client that attached while the
-        // judgment turn ran got it from a page keyed by the server's own name;
-        // worse, a procedure prompt that was QUEUED behind a running turn is
-        // folded into the turn above it, so that row opens on the interrupted
-        // work and carries the prompt somewhere inside. The prompt's id is the
-        // one fact both carriers keep, so it is what pairs them - searched
-        // through every message, not only the first.
-        const opening = uuidOf(judgment.messages[0]);
-        const at =
-          opening === null
-            ? turns.findIndex((turn) => turn.key === judgment.key)
-            : turns.findIndex((turn) =>
-                turn.messages.some((message) => uuidOf(message) === opening),
-              );
-        if (at === -1) {
-          added.push(judgment);
-        } else {
-          // **Only what the row lacks.** The held row may be the interrupted
-          // turn itself, opening on frames of its own; replacing its messages
-          // wholesale would drop them. The record's copy appends where it
-          // continues.
-          //
-          // **And the record settles the row.** The turn ended before the
-          // record was written, so nothing about it is still being written -
-          // a watching client that had it live would otherwise draw the
-          // running mark until a full reload, which is the class this cut
-          // exists to close. `record` is set for the same reason it is on a
-          // freshly seeded turn: no page of the successor's transcript can
-          // ever carry it, so it is no target for the walk.
-          const same = turns[at];
-          if (same !== undefined) {
-            const carried = new Frames(same.messages);
-            const grown = judgment.messages.filter((message) => !carried.carries(message));
-            const settled: Turn = {
-              ...same,
-              messages: grown.length > 0 ? [...same.messages, ...grown] : same.messages,
-              live: false,
-              running: false,
-              record: true,
-            };
-            if (grown.length > 0 || same.live || same.running === true || same.record !== true) {
-              turns = [...turns.slice(0, at), settled, ...turns.slice(at + 1)];
-            }
-          }
-        }
-      }
-      if (!turns.some((turn) => turn.key === row)) {
-        added.push({ key: row, messages: [handoffFrame(handoff)], live: false });
-      }
-      if (added.length === 0 && turns === held.turns) return held;
-      // **A live swap puts the join after the outgoing conversation**; a seed
-      // from a seat record puts it before the successor turns that are already
-      // held - the successor's transcript never carries either, so they are
-      // the head of what is drawn, not its tail.
-      return {
-        ...held,
-        turns: where === 'ahead' ? [...added, ...turns] : [...turns, ...added],
-      };
-    });
-  }
-
-  private replaced(occupant: string | null): void {
-    // Only the session the handoff named continues the conversation above
-    // the row; any other replacement is a plain occupant change and clears.
-    const carried =
-      this.carried !== null && occupant !== null && this.carried.to === occupant
-        ? this.carried.turns
-        : null;
-    this.carried = null;
+  private replaced(): void {
     const held = this.inFlight !== null;
     if (held) this.abandoned += 1;
     this.inFlight = null;
@@ -3251,11 +3090,9 @@ export class Chat {
     this.pageFloor = null;
     this.pageCursor = null;
     this.seedFloor = null;
-    // **A handoff keeps the conversation; a plain `/new` clears it.** The row
-    // between them says two sessions met, so what the reader was reading
-    // stays above it - and the successor is fresh, so there is no page above
-    // the carried turns to fetch.
-    this.held = carried === null ? NOTHING : { ...NOTHING, turns: carried, loaded: true };
+    // **A swap opens a new chat.** The successor's transcript is its own, so
+    // nothing the previous occupant drew is carried across.
+    this.held = NOTHING;
     this.flush();
     // **The swap forgot an ask too, and it has to say so.** The reset above
     // zeroes the count the column drains against, so a column that was holding
@@ -3278,12 +3115,7 @@ export class Chat {
     // and nothing re-subscribes it, so no snapshot follows to seed the new
     // occupant - this ask is the only way its page arrives. It is therefore
     // `ask` rather than the guarded `refresh`.
-    //
-    // **A handoff's successor needs no page**: it is a fresh session whose
-    // history is empty, and the row the reader keeps above it would be
-    // replaced by whatever a read answered about a conversation it did not
-    // join.
-    if (carried === null) this.ask(null);
+    this.ask(null);
   }
 
   /**
@@ -3401,19 +3233,10 @@ export class Chat {
       this.append(message, !repaired && textIn(update, 'chat_appended', 'source') === 'you');
       return;
     }
-    // The seat changed occupant by a handoff. The row is drawn here, and the
-    // conversation above it is remembered: the `session_replaced` that lands
-    // the successor must not clear the work the reader was reading.
-    if (variant === 'handoff') {
-      const record = (update as { handoff?: { handoff?: unknown } }).handoff?.handoff;
-      const handoff = handoffOf(record);
-      if (handoff !== null) this.holdHandoff(handoff);
-      return;
-    }
     // The seat changed occupant under this column - a `/new`, a `/resume`, a
     // login or a logout - so what is drawn is another session's conversation.
     if (variant === 'session_replaced') {
-      this.replaced(textIn(update, 'session_replaced', 'session_id'));
+      this.replaced();
       return;
     }
     // A process that is gone takes its queue with it: no lifecycle frame is
@@ -3429,8 +3252,6 @@ export class Chat {
       this.drained.clear();
       this.emptied.clear();
       this.plainDrawn.clear();
-      // A fresh connect is its own occupant, not a handoff's successor.
-      this.carried = null;
       return;
     }
     // The answer to the row's own ask, kept where the row reads it: by the
@@ -3455,9 +3276,6 @@ export class Chat {
       this.drained.clear();
       this.emptied.clear();
       this.plainDrawn.clear();
-      // A handoff whose spawn failed has no successor: the conversation is
-      // not carried by whatever replacement comes next.
-      this.carried = null;
       const failed = (update as { connection_failed?: { message?: unknown } }).connection_failed;
       const why = failed?.message;
       if (typeof why === 'string' && why !== '') {
