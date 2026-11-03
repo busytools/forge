@@ -582,7 +582,7 @@ fn remember_measurement(cwd: &Path, default_branch: &str, refresh: &BaseRefresh)
 }
 
 /// This checkout's last completed refresh of `default_branch`. `None` until
-/// one has completed; a reader applies [`measurement_in_window`] itself, since
+/// one has completed; a reader applies `measurement_in_window` itself, since
 /// the store only prunes on write.
 pub fn last_base_measurement(cwd: &Path, default_branch: &str) -> Option<BaseMeasurement> {
     LAST_MEASURED
