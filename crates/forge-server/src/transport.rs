@@ -245,7 +245,8 @@ pub mod wire;
 /// drew the block from; the block is gone, so the field goes with it - a v26
 /// client reading a v27 record draws no block from it, and one that watches
 /// the swap still receives the `handoff` update and draws its own block from
-/// that, because it is the old client. `ChatAppended.origin` and
+/// that, because it is the old client - though the record no longer carries
+/// the judgment turn, which only that block read. `ChatAppended.origin` and
 /// `PromptUnder.origin` were the dispatch-time row's bookkeeping; the row is
 /// drawn when the CLI starts the prompt, so nothing carries an origin. A v26
 /// client reads both fields as absent; what it draws for a dispatch is that
