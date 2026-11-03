@@ -540,6 +540,18 @@
   let lastSeen = { content: 0, room: 0 };
   /** The offset the last pin wrote, so the event it comes back as is not read as the reader's. */
   let pinEcho: { at: number; foot: boolean } | null = null;
+  /**
+   * Whether the reader's own place was the foot when the column last heard
+   * from them.
+   *
+   * **The pin's one condition, besides the reader's own send.** The follow
+   * flag says the reader wants the newest end; this says they are standing at
+   * it, so an arrival may carry them with it. It goes false on the reader's
+   * own move away and comes back only where a pin or a scroll leaves them at
+   * the end - so a follow re-armed by a handoff or any other arrival holds a
+   * parked reader where they are instead of yanking them down.
+   */
+  let footHeld = true;
   /** How many layout passes the observer has already put a parked reader back for. */
   let restored = 0;
   /**
@@ -683,6 +695,9 @@
     padTop = Number.parseFloat(getComputedStyle(node).paddingTop) || 0;
     // A token armed against a previous viewport must not eat this one's first event.
     pinEcho = null;
+    // A list mounts at its start and opens following, so its first pin is the
+    // column putting the reader at the foot rather than an arrival moving one.
+    footHeld = true;
     // The sizes and the last event belong to the element a previous conversation scrolled.
     lastSeen = { content: 0, room: 0 };
     movedFrom = 0;
@@ -763,6 +778,9 @@
     const content = node.firstElementChild;
     const watcher = new ResizeObserver(() => {
       if (holdsEverything()) {
+        // Nothing is left to scroll, so the end is where the reader is
+        // sitting, whether or not an event came to say so.
+        footHeld = true;
         working?.following(true);
         anchor = null;
       }
@@ -1063,6 +1081,9 @@
       // And so were the sizes and the last event, which read that element.
       lastSeen = { content: 0, room: 0 };
       movedFrom = 0;
+      // Every entry lands at the latest, so the reader is at the foot before
+      // the first pin rather than an arrival moving them to one.
+      footHeld = true;
       // **And so is the follow, which is why the entry re-arms it** (#1673):
       // a seat's conversation is kept, and its follow flag was kept with it -
       // so a seat left scrolled up came back with the pass returning early
@@ -1508,8 +1529,13 @@
    * The view this client replaced pinned the same way: while `auto_scroll`
    * was on, every render set its scroll target to its own max.
    */
-  function land(): number {
+  function land(force = false): number {
     if (viewport === null) return 0;
+    // **The pin may move the reader only where they stand at the foot, or
+    // where their own send armed the follow.** Every other arm of the follow -
+    // a handoff's successor, a turn landing, a new row - is an arrival, and an
+    // arrival holds the position the reader chose.
+    if (!force && !footHeld && !held.send_armed) return 0;
     const foot = viewport.scrollHeight;
     // **Except where that number counts a row the list has not drawn yet.**
     // An appended turn is reserved a slot at the list's estimate and drawn a
@@ -1551,6 +1577,8 @@
     } else {
       repinTries = 0;
     }
+    // The furthest end this pin may reach, in the element's own offsets.
+    const reachable = model !== null && max > model ? model : max;
     // **The write is unconditional, and the token comes from the read-back.**
     // `scrollTop` clamps to `scrollHeight - clientHeight`, so what the write
     // lands on is not what it asked for, and only the read-back knows whether
@@ -1569,6 +1597,10 @@
     // Where the column last left the reader, which is the foot the browser
     // clamped the pin to.
     placed = viewport.scrollTop;
+    // **The pin leaves the reader at the end it could reach**: the browser's,
+    // or the list's own while the browser counts a row it has not drawn. Both
+    // are the foot for the next arrival's decision.
+    footHeld = viewport.scrollTop >= reachable;
     return foot;
   }
 
@@ -2006,6 +2038,11 @@
     const rose = height - room < lastSeen.content - lastSeen.room;
     lastSeen = { content: height, room };
     const foot = atFoot();
+    // **Where the reader is now, for the pin's next decision.** Only a move
+    // moves it: a size change moves the foot under a reader standing still,
+    // and the follow is what absorbs that. A few pixels above the end is the
+    // notch a row's measurement leaves, not a place of their own.
+    if (offset !== was) footHeld = height - offset - room <= DISARM_SLACK;
     const byReader = readerMoved();
     const aimed = aimedAtFoot();
     // **Every move is written, flagged.** A machine move has no other record -
@@ -2252,7 +2289,8 @@
         working?.following(true);
         settleWindow();
         anchor = null;
-        land();
+        // The reader asked for the foot, so this pass is theirs to make.
+        land(true);
       }}
     >
       <Icon name="down" />

@@ -31,6 +31,8 @@ vi.mock('./conversation', async (importOriginal) => {
 
 const { clear, element, layout, list, measured, pinned, setElement, setMeasured, setModel } =
   await import('./testing/records');
+const { conversationsFor } = await import('./conversations');
+const { subjectKey } = await import('../protocol');
 const { default: Chat } = await import('./Chat.svelte');
 const { default: Seats } = await import('./testing/Seats.svelte');
 
@@ -195,10 +197,34 @@ function stub() {
       send({ kind: 'page', conversation: seat, turns, cursor });
     },
     /** The seat changes occupant under the column, the way `/new` lands. */
-    replaced(): void {
+    replaced(to = 'new-occupant'): void {
       send({
         kind: 'update',
-        update: { session_replaced: { key: LEAD, session_id: 'new-occupant' } },
+        update: { session_replaced: { key: LEAD, session_id: to } },
+      });
+    },
+    /**
+     * A handoff on this seat, as the live swap announces it: the row that says
+     * two sessions met, and the successor the replacement below lands.
+     */
+    handoff(from = 'old', to = 'new'): void {
+      send({
+        kind: 'update',
+        update: {
+          handoff: {
+            key: LEAD,
+            handoff: {
+              from,
+              to,
+              reason: 'fill',
+              fill_percent: 85,
+              total_tokens: 850_000,
+              max_tokens: 1_000_000,
+              at_percent: 85,
+              brief: { ground_truth: [], judgment: [] },
+            },
+          },
+        },
       });
     },
     /**
@@ -701,6 +727,59 @@ describe('whether the column follows the newest end', () => {
     await settle();
 
     expect(pinned(), 'nothing that lands below them moves the column').toEqual([]);
+  });
+
+  it('holds a parked reader through a handoff to its successor', async () => {
+    // **The handoff is an arrival, not the reader moving.** The successor
+    // keeps the conversation above its row, so the rows stay mounted where
+    // the reader left them - and a follow re-armed by the swap carries a
+    // reader who scrolled away down to the foot on the successor's first
+    // frame (Ved, 2026-11-03: "after a document hand-off the scroll moved
+    // although I had not touched it").
+    const server = stub();
+    await draw(server);
+    readerAt(0);
+    await settle();
+    clear();
+    const parked = element.offset;
+
+    server.handoff('old', 'new');
+    server.replaced('new');
+    await settle();
+    clear();
+
+    server.frame();
+    await settle();
+
+    expect(pinned(), 'the successor arriving is not the reader moving').toEqual([]);
+    expect(element.offset, 'the reader stays where they were reading').toBe(parked);
+  });
+
+  it('does not move a parked reader for a follow an arrival armed', async () => {
+    // **The pin's own rule, apart from the arm that broke it.** The handoff's
+    // re-arm is fixed at the fold, but the column cannot depend on every arm
+    // being right: a follow turned on while the reader is parked is not
+    // theirs to travel on unless their own send armed it. This is the change
+    // that catches a NEW arrival path arming the follow - the class this fix
+    // is about.
+    const server = stub();
+    await draw(server);
+    readerAt(0);
+    await settle();
+    clear();
+    const parked = element.offset;
+
+    const chat = conversationsFor(server.connection).live.get(subjectKey({ session: LEAD }))?.chat;
+    expect(chat, 'precondition: the column holds the seat conversation').toBeDefined();
+    chat?.following(true);
+    await settle();
+    clear();
+
+    server.frame();
+    await settle();
+
+    expect(pinned(), 'a follow nobody at the foot armed may not move the reader').toEqual([]);
+    expect(element.offset, 'the reader stays where they put themselves').toBe(parked);
   });
 
   it('follows again once the reader is back at the very end', async () => {

@@ -310,6 +310,17 @@ export interface Conversation {
    */
   following: boolean;
   /**
+   * Whether the reader's OWN send is what armed the follow.
+   *
+   * **The one arm that may move a reader who is not at the foot**: a send puts
+   * the foot under their eyes wherever they were, and every other arm - the
+   * entry, a return to the foot, the fit - happens with the reader already
+   * there. The fold is where a frame is known to be the reader's own, so the
+   * mark lives on the record and the column reads it as the pin's exception.
+   * Any other arm, and every scroll away, clears it.
+   */
+  send_armed: boolean;
+  /**
    * How many pages of OLDER turns have landed.
    *
    * A count rather than a flag because one landing has to be told from the
@@ -346,6 +357,7 @@ export const NOTHING: Conversation = {
   pages: 0,
   refused: null,
   following: true,
+  send_armed: false,
   prepends: 0,
   dropped: 0,
 };
@@ -2041,9 +2053,18 @@ export class Chat {
    * max_scroll`, and disengaged by any scroll up - so a reader parked a few
    * pixels short of the end is reading, not following, and the column may not
    * move under them. A threshold here would pull them down mid-sentence.
+   *
+   * `bySend` marks the one arm that may move a reader who is not at the foot:
+   * the frame carries their own words, so the foot goes under their eyes
+   * wherever they were.
    */
-  following(follows: boolean): void {
-    this.fold((held) => (held.following === follows ? held : { ...held, following: follows }));
+  following(follows: boolean, bySend = false): void {
+    const armed = follows && bySend;
+    this.fold((held) =>
+      held.following === follows && held.send_armed === armed
+        ? held
+        : { ...held, following: follows, send_armed: armed },
+    );
   }
 
   /**
@@ -3255,7 +3276,21 @@ export class Chat {
     // between them says two sessions met, so what the reader was reading
     // stays above it - and the successor is fresh, so there is no page above
     // the carried turns to fetch.
-    this.held = carried === null ? NOTHING : { ...NOTHING, turns: carried, loaded: true };
+    //
+    // **And a handoff keeps the reader's place in it.** The rows stay mounted
+    // where they were read, so a follow re-armed here would carry a parked
+    // reader to the foot on the successor's first frame. Only a plain `/new`
+    // opens following, because only it unmounts the list.
+    this.held =
+      carried === null
+        ? NOTHING
+        : {
+            ...NOTHING,
+            turns: carried,
+            loaded: true,
+            following: this.held.following,
+            send_armed: this.held.send_armed,
+          };
     this.flush();
     // **The swap forgot an ask too, and it has to say so.** The reset above
     // zeroes the count the column drains against, so a column that was holding
@@ -3356,7 +3391,7 @@ export class Chat {
         // on one carries them to the bottom on the next pass (#1614). Only a
         // person's own send may - `source` says who sent it, and the wire
         // carries it on every queued row.
-        if (from === 'you') this.following(true);
+        if (from === 'you') this.following(true, true);
         this.retract(uuid);
       }
       return;
@@ -3990,7 +4025,9 @@ export class Chat {
       // kick, a board notice - so a follow armed off the folded shape alone
       // carries a parked reader to the foot for words that are nobody's
       // (#1614, #2198). Only the sender's own frame may arm it.
-      const follow = held.following || (own && units.some((unit) => unit.kind === 'user'));
+      const ownSend = own && units.some((unit) => unit.kind === 'user');
+      const follow = held.following || ownSend;
+      const armed = held.send_armed || ownSend;
       // **The drain returns to the row it was pulled from**, wherever that row
       // sits: a row the READ built carries neither `live` nor `running`, so the
       // settled-turn test below would open a second row under it and leave the
@@ -4010,6 +4047,7 @@ export class Chat {
           return this.answered({
             ...held,
             following: follow,
+            send_armed: armed,
             bytes: held.bytes + messageBytes(message),
             turns: [...held.turns.slice(0, at), grown, ...held.turns.slice(at + 1)],
           });
@@ -4147,6 +4185,7 @@ export class Chat {
         return this.answered({
           ...held,
           following: follow,
+          send_armed: armed,
           bytes: held.bytes + messageBytes(message),
           turns: [...held.turns.slice(0, at), grown, ...held.turns.slice(at + 1)],
         });
@@ -4172,6 +4211,7 @@ export class Chat {
       return this.answered({
         ...held,
         following: follow,
+        send_armed: armed,
         // The riding frames are already in `bytes`: they were counted when
         // they were held back for this row.
         bytes: held.bytes + messageBytes(message),
