@@ -310,7 +310,9 @@ impl Tool for Update {
         "Change a task in YOUR project by id, stating only the fields to move - everything else \
          is left alone. `status` is the usual one (pending / in_progress / waiting / completed / \
          failed / canceled), and `owner` takes a session label (\"lead\" for the lead) or the \
-         label of a worker. The board is for running work: a landed row with no children and \
+         label of a worker. Pending is the board's Backlog: work kept to look at later, not an \
+         assignment and not a promise to start; a pending row that reads ready is dispatchable. \
+         The board is for running work: a landed row with no children and \
          no epic above it is DELETED in the same pass (tasks__delete), never left completed; \
          a landed row under an epic - open or already terminal - is completed and left \
          terminal, because the epic reads `to close` only once every child is terminal (a \
@@ -1616,6 +1618,26 @@ mod tests {
                     "{name} does not state the door ({clause}): {description}",
                 );
             }
+        }
+    }
+
+    /// The board's Backlog is the `pending` status (#2831): the update is
+    /// where that state is chosen, so it says what pending means and that a
+    /// ready row is dispatchable. Without it, pending reads as a parking
+    /// space and the sweep then dispatches it.
+    #[test]
+    fn the_update_description_says_pending_is_the_backlog() {
+        let update = Update { facade: MockTasksFacade::new().into_arc(), slot: lead_slot() };
+        let description = update.description();
+        for clause in [
+            "Pending is the board's Backlog: work kept to look at later, not an assignment \
+             and not a promise to start",
+            "a pending row that reads ready is dispatchable",
+        ] {
+            assert!(
+                description.contains(clause),
+                "tasks__update does not state what pending means ({clause}): {description}",
+            );
         }
     }
 

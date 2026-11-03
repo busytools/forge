@@ -10277,6 +10277,23 @@ mod lead_charter_tests {
         }
     }
 
+    /// #2831: the charter is where dispatch is decided, and pending is the
+    /// board's Backlog. A ready row is a candidate, not a queued start, so
+    /// work set aside is work not left ready - the distinction the old text
+    /// left out, and what made "backlog these rows" read as dispatched.
+    #[test]
+    fn lead_charter_carries_the_backlog_rule() {
+        for clause in [
+            "a ready row is a dispatch candidate, not work already queued to start",
+            "Dispatch is your act, and setting work aside means not leaving the row ready",
+        ] {
+            assert!(
+                DEFAULT_LEAD_CHARTER.contains(clause),
+                "the charter owes the backlog rule ({clause}): {DEFAULT_LEAD_CHARTER}",
+            );
+        }
+    }
+
     /// #1494: the parallelism rule reads the project's own `max_workers`
     /// rather than a figure in the prose, and a slot held below the cap
     /// is held by a guardrail the lead names.
