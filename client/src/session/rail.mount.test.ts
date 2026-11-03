@@ -213,6 +213,31 @@ describe('the rail on a project holding decision waits', () => {
     ).toEqual(['/board/TestOrg/proj', '/board/TestOrg/proj', '/board/TestOrg/proj']);
   });
 
+  /// **A wait behind the asleep fold opens it.** The rail's asleep half folds,
+  /// and the mark on a row inside a closed fold is a signal the reader cannot
+  /// see; the fold opens itself the way it already does for the seat the page
+  /// is showing.
+  it('opens the asleep fold that hides a decision wait', () => {
+    const home = waiting(WAITS);
+    const sleeping: HomeWire = {
+      ...home,
+      agents: home.agents.map((agent) => ({ ...agent, lifecycle: 'Sleeping' })),
+    };
+    // A page on another project, so nothing but the wait can open the fold:
+    // the seat the page shows opens it by the rail's other rule.
+    const elsewhere: SessionSlot = { org: 'Other', project: 'other', label: 'lead' };
+    app = mount(Rail, {
+      target: document.body,
+      props: { home: sleeping, current: elsewhere, now: 0, connection: recording() },
+    });
+    flushSync();
+
+    const fold = document.querySelector<HTMLDetailsElement>('details.gfold');
+    expect(fold, 'the asleep section drew no fold').not.toBeNull();
+    expect(fold?.open, 'the fold stayed shut over the only signal').toBe(true);
+    expect(mark(3), 'the mark hides inside the closed fold').not.toBeNull();
+  });
+
   /// **A wait ends when its row leaves waiting** (review focus 2): the mark
   /// is a read of the pushed rows, so the live row without the wait drops it -
   /// with the rail still mounted, nobody having opened the seat.

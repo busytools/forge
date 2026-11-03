@@ -304,6 +304,39 @@ describe('the rail', () => {
     expect(asleep?.projects[0]?.waits, 'and the mark still lists the wait').toHaveLength(1);
   });
 
+  /// **A wait behind the asleep fold is visible without expanding it.** The
+  /// fold opens itself when it hides a decision wait, the way it already does
+  /// for the seat the page is showing: a mark inside a closed fold is a
+  /// signal the reader cannot see.
+  it('opens the asleep fold when it hides a decision wait', () => {
+    const elsewhere: SessionSlot = { org: 'Other', project: 'other', label: 'lead' };
+    const home = withHome({
+      agents: [{ ...lead(), lifecycle: 'Sleeping', pending: null }],
+      fleet: [
+        {
+          project: 'proj',
+          live_workers: 1,
+          slots: 2,
+          queue: 0,
+          waiting_on_user: 1,
+          attention: [
+            {
+              task: 't1',
+              owner: 'lead',
+              subject: 'the parser',
+              words: 'sign this off',
+              at: { secs_since_epoch: 5, nanos_since_epoch: 0 },
+            },
+          ],
+          rows: 0,
+          misses: [],
+        },
+      ],
+    });
+    const asleep = railGroups(home, elsewhere, 0).find((group) => group.heading === 'asleep');
+    expect(asleep?.holds, 'the fold stayed shut over the only signal').toBe(true);
+  });
+
   /** **A parked hand-off is a third ask, and the row names it as itself**
    *  rather than borrowing the permission line. */
   it('names a held hand-off on the row', () => {
@@ -1231,10 +1264,11 @@ describe("the palette's rows", () => {
       sections[1]?.rows.map((row) => row.label),
       'the wait lifted its seat out of its own group',
     ).toEqual(['runner', 'waiting']);
-    expect(
-      sections[1]?.rows.find((row) => row.label === 'waiting')?.detail,
-      'and the line says the state its lifecycle names',
-    ).toContain('idle');
+    const waiting = sections[1]?.rows.find((row) => row.label === 'waiting')?.detail ?? '';
+    expect(waiting, 'the line says the state its lifecycle names').toContain('idle');
+    expect(waiting, 'the palette has no mark, so the count must be in the line').toContain(
+      '1 wait',
+    );
   });
 
   /**

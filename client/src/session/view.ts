@@ -97,9 +97,9 @@ export interface RailGroup {
    */
   mark: string | null;
   /**
-   * Whether the seat the page is showing is one of the rows behind this
-   * heading, which is what a fold opens itself on: arriving on a sleeping seat
-   * would otherwise draw the marked row inside a closed fold.
+   * Whether the fold must open itself: the seat the page is showing is behind
+   * it, or a decision wait is, either of which would otherwise draw behind a
+   * closed fold - a marked row the reader cannot see.
    */
   holds: boolean;
   projects: RailProject[];
@@ -229,19 +229,39 @@ export function paletteRows(wire: HomeWire, slot: SessionSlot): PaletteSection[]
   const rank = (row: AgentRow): number => rankOf(stateOf(row, unseen), row.pending);
   const wants = (row: AgentRow): boolean => rank(row) === 0;
   const working = (row: AgentRow): boolean => rank(row) === 1;
-  const seat = (row: AgentRow): PaletteRow => ({
-    id: `${row.slot.org}/${row.slot.project}/${row.label}`,
-    kind: 'seat',
-    label: row.slot.label,
-    detail: `${row.slot.project} \u{b7} ${paletteWord(row, unseen)}`,
-    href: hrefForSlot(row.slot),
-    // A project's identity is (org, name): two orgs sharing a project name
-    // would otherwise both wear the chip, and Enter would land in the wrong
-    // one.
-    lead:
-      row.slot.org === slot.org && row.slot.project === slot.project && row.slot.label === 'lead',
-    mark: railMark(stateOf(row, unseen)),
-  });
+  /**
+   * **The palette draws no wait mark**, so the count rides the seat's own
+   * line: otherwise a seat holding a wait and an idle seat beside it read
+   * alike, and the wait the rail and the home mark is lost here.
+   */
+  const waitCount = (row: AgentRow): number => {
+    const fleet = wire.fleet.find((entry) => {
+      if (entry.project !== row.slot.project) return false;
+      const project = wire.projects.find((held) => held.project.name === entry.project);
+      return project === undefined || project.project.org === row.slot.org;
+    });
+    return fleet === undefined
+      ? 0
+      : fleet.attention.filter((wait) => wait.owner === row.label).length;
+  };
+  const seat = (row: AgentRow): PaletteRow => {
+    const waits = waitCount(row);
+    return {
+      id: `${row.slot.org}/${row.slot.project}/${row.label}`,
+      kind: 'seat',
+      label: row.slot.label,
+      detail: `${row.slot.project} \u{b7} ${paletteWord(row, unseen)}${
+        waits > 0 ? ` \u{b7} ${waits} wait${waits === 1 ? '' : 's'}` : ''
+      }`,
+      href: hrefForSlot(row.slot),
+      // A project's identity is (org, name): two orgs sharing a project name
+      // would otherwise both wear the chip, and Enter would land in the wrong
+      // one.
+      lead:
+        row.slot.org === slot.org && row.slot.project === slot.project && row.slot.label === 'lead',
+      mark: railMark(stateOf(row, unseen)),
+    };
+  };
   const seats = wire.agents;
   const sections: PaletteSection[] = [
     { title: 'needs you', rows: seats.filter(wants).map(seat) },
@@ -854,6 +874,9 @@ export function railGroups(
     if (group.hidden !== null) {
       group.hidden += 1 + workers.length;
       group.mark = foldMark([lead, ...workers].map((row) => rowMark(row, closing))) ?? group.mark;
+      // A wait behind a fold is a mark the reader cannot see, so the fold
+      // opens itself - the rule the seat the page is showing already keeps.
+      if (waits.length > 0) group.holds = true;
     }
   }
   return groups.filter((group) => group.projects.length > 0);

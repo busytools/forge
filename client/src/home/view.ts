@@ -1025,11 +1025,10 @@ function dormantRow(wire: ProjectWire, lastRan: WireTime | null, waits: Attentio
 /**
  * One project's rows: its lead, and its workers under it.
  *
- * Exported because the session page's rail draws the same rows. It groups
- * projects by their own decision waits and the strongest state among their
- * rows, and keeps them in `forge.toml`'s order, which is the roster's order
- * rather than the org grouping the home sorts into - so the rail cannot read
- * them off `homeView`.
+ * Exported because the session page's rail draws the same rows. The rail
+ * groups the projects by the strongest state among their rows and keeps them
+ * in `forge.toml`'s order, which is the roster's order rather than the org
+ * grouping the home sorts into - so the rail cannot read them off `homeView`.
  *
  * `board` is the project's own rows, from the board's subject (#2517): the
  * home no longer carries them, and a rail that passes `null` (a landing that
