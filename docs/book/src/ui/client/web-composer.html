@@ -224,6 +224,12 @@
     border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px; }
   .dock .reason { color: var(--warn); font-size: var(--fs-base); }
   .dock .desc { color: var(--dim); font-size: var(--fs-base); }
+  /* A held write's value: monospace, bordered and scrollable, as the client
+     draws it. */
+  .dock .wv { padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px;
+    background: var(--s1); color: var(--text); font-family: var(--mono);
+    font-size: var(--fs-data); white-space: pre-wrap; overflow-wrap: anywhere;
+    max-height: 180px; overflow-y: auto; }
   .dock .opts { display: flex; flex-direction: column; gap: 1px; }
   .opt { display: flex; align-items: flex-start; gap: 10px; padding: 6px 9px;
     border-radius: 9px; font-size: var(--fs-base); }
@@ -679,9 +685,9 @@ on the folded bar.</p>
             <span class="chevb"><svg class="ic"><use href="#i-down"/></svg></span></div>
           <div class="d-q mono">orgs.Default.projects.forge.max_workers</div>
           <div class="desc">currently</div>
-          <div class="d-q mono">2</div>
+          <div class="wv mono">2</div>
           <div class="desc">would become</div>
-          <div class="d-q mono">4</div>
+          <div class="wv mono">4</div>
           <div class="acts"><span class="btn p">Write it</span><span class="btn d">Don't write</span></div>
           <div class="keys"><span><span class="k">tab</span> between Write it and Don't write</span>
             <span><span class="k">&#9166;</span> activates</span>

@@ -1005,6 +1005,14 @@
     </button>
   {/snippet}
 
+  {#snippet valueBlock(label: string, value: unknown)}
+    <!-- The value can be taller than the card: a tab stop and a region label
+         make it reachable and scrollable from the keyboard, the same contract
+         an option's preview keeps. -->
+    <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+    <pre class="wv" tabindex="0" role="region" aria-label={label}>{showValue(value)}</pre>
+  {/snippet}
+
   {#snippet previewRegion(label: string, text: string, source: boolean)}
     <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
     <div class="preview" tabindex="0" role="region" aria-label={label} data-preview>
@@ -1147,10 +1155,18 @@
       <!-- The key and both values verbatim: approving a summary of an edit
          nobody drew would be approving something the reader never saw. -->
       <div class="d-q mono">{ask.request.key}</div>
-      <div class="desc">currently</div>
-      <pre class="wv">{showValue(ask.request.current)}</pre>
-      <div class="desc">{ask.request.unset ? 'cleared to its default' : 'would become'}</div>
-      <pre class="wv">{showValue(ask.request.proposed)}</pre>
+      {#if ask.request.current === null}
+        <div class="desc">currently unset</div>
+      {:else}
+        <div class="desc">currently</div>
+        {@render valueBlock('the value this key holds now', ask.request.current)}
+      {/if}
+      {#if ask.request.unset}
+        <div class="desc">cleared to its default</div>
+      {:else}
+        <div class="desc">would become</div>
+        {@render valueBlock('the value this write would leave', ask.request.proposed)}
+      {/if}
     {:else}
       <div class="d-head">
         <span class="tag warn">&#9888; needs you</span>
@@ -1333,7 +1349,7 @@
           <span><kbd>Tab</kbd> again for Post and Don't send</span>
           <span><kbd>Enter</kbd> activates</span>
         {:else if ask.kind === 'settings_write'}
-          <span><kbd>Tab</kbd> between Write it and Don't write</span>
+          <span><kbd>Tab</kbd> between the fold, Write it and Don't write</span>
           <span><kbd>Enter</kbd> activates</span>
         {:else}
           <span><kbd>Tab</kbd> between the actions</span>

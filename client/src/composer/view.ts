@@ -387,17 +387,26 @@ export function draftEndingLine(ending: unknown): { tone: string; text: string }
  * write rather than a Slack draft, which shares the ending's wire shape.
  */
 export function settingsWriteEndingLine(ending: unknown): { tone: string; text: string } {
+  if (ending === 'applied') {
+    return { tone: 'q', text: 'The config write was applied from another view.' };
+  }
+  if (ending === 'declined') {
+    return { tone: 'q', text: 'The config write was declined in another view.' };
+  }
   if (ending === 'abandoned') {
     return { tone: 'q', text: "The config write's asking session went away." };
   }
-  const answered = enumField(ending, 'answered');
-  if (answered !== undefined) {
+  const refused = enumField(ending, 'refused');
+  if (refused !== undefined) {
+    // `applied` is emitted only after the writer landed the edit, so an
+    // approval that failed reads here with the writer's own words.
+    const message = enumField(refused, 'message');
     return {
-      tone: 'q',
+      tone: 'warn',
       text:
-        enumField(answered, 'approved') === true
-          ? 'The config write was applied from another view.'
-          : 'The config write was declined in another view.',
+        typeof message === 'string' && message !== ''
+          ? `The config write was approved but did not land: ${message}`
+          : 'The config write was approved but did not land.',
     };
   }
   // An ending this client is older than still means the write is gone, and

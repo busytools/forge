@@ -389,6 +389,28 @@
     },
   };
 
+  const settingsWrite = {
+    kind: 'settings_write',
+    request: {
+      id: '0192e1c0-0000-7000-8000-0000000000bb',
+      key: 'orgs.Busytools.projects.forge.max_workers',
+      current: 2,
+      proposed: 4,
+      unset: false,
+    },
+  };
+
+  const settingsUnset = {
+    kind: 'settings_write',
+    request: {
+      id: '0192e1c0-0000-7000-8000-0000000000cc',
+      key: 'orgs.Busytools.projects.forge.env_file',
+      current: '/tmp/forge.env',
+      proposed: null,
+      unset: true,
+    },
+  };
+
   /**
    * One specimen: what it is called, the composer it draws, and - for a state
    * only the reader can produce - the text to type, the send that follows it,
@@ -610,6 +632,14 @@
       label: 'dock · document hand-off · folded',
       props: { record: { ...blank(), pending_asks: [documentHandOff] } },
       click: '.dock .chevb',
+    },
+    {
+      label: 'dock · held config write',
+      props: { record: { ...blank(), pending_asks: [settingsWrite] } },
+    },
+    {
+      label: 'dock · held config write · clearing a key',
+      props: { record: { ...blank(), pending_asks: [settingsUnset] } },
     },
     {
       label: 'dock · browser hand-off',

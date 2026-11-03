@@ -6130,6 +6130,32 @@ describe('the dock', () => {
     expect(drawn()).toContain("Don't write");
   });
 
+  it('draws an unset write as a removal, not as a null value', () => {
+    open({
+      record: record({
+        pending_asks: [settingsWriteAsk({ unset: true, proposed: null })],
+      }),
+    });
+
+    expect(drawn()).toContain('cleared to its default');
+    expect(drawn(), 'the cleared value is not drawn as `null`').not.toContain('null');
+    expect(drawn(), 'the value it holds now is shown').toContain('2');
+  });
+
+  it('draws a key with no value as currently unset', () => {
+    open({
+      record: record({
+        pending_asks: [
+          settingsWriteAsk({ key: 'gotify.url', current: null, proposed: 'https://x' }),
+        ],
+      }),
+    });
+
+    expect(drawn()).toContain('currently unset');
+    expect(drawn(), 'no placeholder null is drawn').not.toContain('null');
+    expect(drawn()).toContain('would become');
+  });
+
   it('answers a held config write from the verb the reader picks, by its own id', () => {
     const harness = open({ record: record({ pending_asks: [settingsWriteAsk()] }) });
 
@@ -6285,7 +6311,7 @@ describe('the dock', () => {
         settings_write_resolved: {
           key: SLOT,
           id: '0192e1c0-0000-7000-8000-0000000000bb',
-          ending: { answered: { approved: true } },
+          ending: 'applied',
         },
       },
     });

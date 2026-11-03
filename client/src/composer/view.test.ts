@@ -104,13 +104,13 @@ describe('the line a resolved draft leaves', () => {
 describe('the line a resolved config write leaves', () => {
   it('names the write and the ending', () => {
     expect(settingsWriteEndingLine('abandoned').text).toContain("config write's asking session");
-    expect(settingsWriteEndingLine({ answered: { approved: true } }).text).toContain(
-      'applied from another view',
-    );
-    expect(settingsWriteEndingLine({ answered: { approved: false } }).text).toContain(
-      'declined in another view',
-    );
-    for (const ending of ['abandoned', { answered: { approved: true } }, undefined]) {
+    expect(settingsWriteEndingLine('applied').text).toContain('applied from another view');
+    expect(settingsWriteEndingLine('declined').text).toContain('declined in another view');
+    const refused = settingsWriteEndingLine({ refused: { message: 'the file moved' } });
+    expect(refused.text).toContain('approved but did not land');
+    expect(refused.text).toContain('the file moved');
+    expect(refused.tone, 'a failed write is not quiet news').toBe('warn');
+    for (const ending of ['abandoned', 'applied', undefined]) {
       expect(settingsWriteEndingLine(ending).text, 'never the Slack line').not.toContain('Slack');
     }
   });
