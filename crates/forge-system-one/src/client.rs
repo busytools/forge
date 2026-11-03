@@ -473,8 +473,36 @@ mod tests {
             tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("test listener binds");
         let addr = listener.local_addr().expect("bound address");
         let hold = tokio::spawn(async move {
-            use tokio::io::AsyncWriteExt;
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
             let (mut stream, _) = listener.accept().await.expect("accept");
+            // **A real server reads the request before it answers.**
+            // Writing first let the response overtake the client's own
+            // write, and hyper then reported a transport error instead of
+            // the body stall this test is about.
+            let mut request = Vec::new();
+            let mut chunk = [0_u8; 1024];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                let read = stream.read(&mut chunk).await.expect("read the request head");
+                assert!(read > 0, "the client's request ended before its head");
+                request.extend_from_slice(&chunk[..read]);
+            }
+            let head_end =
+                request.windows(4).position(|window| window == b"\r\n\r\n").expect("the head ends")
+                    + 4;
+            let body_len = String::from_utf8_lossy(&request[..head_end])
+                .lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse::<usize>().ok())
+                        .flatten()
+                })
+                .unwrap_or(0);
+            while request.len() < head_end + body_len {
+                let read = stream.read(&mut chunk).await.expect("read the request body");
+                assert!(read > 0, "the client's request ended before its body");
+                request.extend_from_slice(&chunk[..read]);
+            }
             stream
                 .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 1000\r\n\r\n{\"model\":")
                 .await

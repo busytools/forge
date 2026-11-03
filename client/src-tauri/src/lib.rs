@@ -590,8 +590,7 @@ pub fn run() -> u8 {
                 browser::remeasure_soon(window.app_handle());
             }
         })
-        .invoke_handler(
-        tauri::generate_handler![
+        .invoke_handler(tauri::generate_handler![
             browser::viewer::browser_surface_rect,
             browser::viewer::browser_surface_focus,
             browser::browser_takeover,
@@ -634,8 +633,7 @@ pub fn run() -> u8 {
             commands::client_heartbeat,
             commands::client_close,
             perf::client_perf
-        ],
-    );
+        ]);
     // iOS lands here too, and it registers nothing: the update commands are
     // the Kotlin plugin's, which is Android's own. Android passes through
     // this arm and then REPLACES the handler below.

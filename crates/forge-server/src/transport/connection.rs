@@ -3191,7 +3191,7 @@ fn forwards(update: &SessionUpdate, watched: &[Subject], me: u64) -> bool {
 fn for_a_client(mut update: SessionUpdate, cap: usize) -> SessionUpdate {
     match &mut update {
         SessionUpdate::Connected { history, .. }
-        | SessionUpdate::SessionReplaced { history, .. } => *history = Vec::new(),
+        | SessionUpdate::SessionReplaced { history, .. } => history.clear(),
         // **A live frame draws what a reload draws** (#2374): a record is
         // bounded on its way to a client wherever it comes from, or an
         // over-cap edit draws its hunks live and the marker after a switch.
@@ -4987,7 +4987,7 @@ mod tests {
         let ready = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let mut sink = HeldSink { ready: std::sync::Arc::clone(&ready) };
         let keepalive = Keepalive::default();
-        let mut sending = Box::pin(keepalive.ping(&mut sink));
+        let mut sending = std::pin::pin!(keepalive.ping(&mut sink));
 
         assert!(
             futures_util::poll!(sending.as_mut()).is_pending(),

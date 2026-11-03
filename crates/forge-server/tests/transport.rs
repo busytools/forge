@@ -5791,7 +5791,7 @@ async fn a_mismatched_copy_is_answered_by_the_reseed_that_lands_in_time() {
     fleet.seed_view_facts(&seat, ViewFacts { session_id: Some(new.clone()), ..Default::default() });
 
     let mut timings = OpenTimings::default();
-    let mut read = Box::pin(wire::conversation_for(&state, &seat, &mut timings));
+    let mut read = std::pin::pin!(wire::conversation_for(&state, &seat, &mut timings));
     assert!(
         futures_util::poll!(read.as_mut()).is_pending(),
         "a copy of another occupant is waited for, not answered with",

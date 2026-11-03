@@ -819,13 +819,14 @@ mod tests {
             Some(MockSystemOneFacade::new().into_arc()),
         ));
         worker.sort();
-        let mut expected: Vec<String> = ["agents__handoff", "agents__list", "agents__send_message", "agents__whoami"]
-            .into_iter()
-            .map(str::to_owned)
-            .chain(crate::mcp::browser::specs::specs().iter().map(|spec| spec.name.to_owned()))
-            // The document hand-off is always-on beside the browser.
-            .chain(["documents__hand_off"].into_iter().map(str::to_owned))
-            .collect();
+        let mut expected: Vec<String> =
+            ["agents__handoff", "agents__list", "agents__send_message", "agents__whoami"]
+                .into_iter()
+                .map(str::to_owned)
+                .chain(crate::mcp::browser::specs::specs().iter().map(|spec| spec.name.to_owned()))
+                // The document hand-off is always-on beside the browser.
+                .chain(["documents__hand_off"].into_iter().map(str::to_owned))
+                .collect();
         expected.sort();
         assert_eq!(
             worker, expected,
