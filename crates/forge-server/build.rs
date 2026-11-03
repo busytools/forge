@@ -55,6 +55,19 @@ fn main() {
     let provenance = std::env::var("FORGE_BUILD_PROVENANCE").unwrap_or_default();
     println!("cargo:rustc-env=FORGE_BUILD_PROVENANCE={provenance}");
 
+    // The install ships transcribe's shared libraries beside the binary (0.4's
+    // static ggml duplicates llama-cpp-sys-2's symbols on Linux), and the
+    // loader does not search the executable's own directory. The second entry
+    // is where a build stages the same files, for a binary run out of target/.
+    let rpaths: &[&str] = match std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default().as_str() {
+        "linux" => &["$ORIGIN", "$ORIGIN/transcribe-libs"],
+        "macos" => &["@loader_path", "@loader_path/transcribe-libs"],
+        _ => &[],
+    };
+    for rpath in rpaths {
+        println!("cargo:rustc-link-arg-bin=forge=-Wl,-rpath,{rpath}");
+    }
+
     // Digest of the Cargo.lock this build saw, which is a different
     // signal from provenance: it catches a guarded build that honoured a
     // locally-modified Cargo.lock. Empty when there is none to read,

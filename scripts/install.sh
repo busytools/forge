@@ -18,6 +18,7 @@
 #
 # Env overrides:
 #   FORGE_ZSH_COMPLETION_DIR    zsh completion dir   (default: ~/.zsh/completions)
+#   FORGE_INSTALL_BROWSER       0 skips the macOS browser stage (default: 1)
 
 set -euo pipefail
 
@@ -75,11 +76,22 @@ if [ -d "$LEGACY_FORGE_ROOT" ]; then
 fi
 
 log_info "Building forge ($BUILD_LABEL - this can take a few minutes)"
+# Install into a staging root first: the live binary is replaced only after
+# the new one has started with its libraries beside it.
+STAGING_ROOT="$FORGE_REPO/target/install-root"
+rm -rf "$STAGING_ROOT"
+mkdir -p "$STAGING_ROOT"
 CARGO_ARGS=(
     --path "$FORGE_REPO/crates/forge-server"
     --bin forge
     --locked
     --force
+    --root "$STAGING_ROOT"
+    # The build must land in the repo's own target dir: the transcribe
+    # libraries forge-dictate stages beside the profile are what gets
+    # installed next to the binary, and `cargo install` otherwise builds in a
+    # temporary dir it deletes.
+    --target-dir "$FORGE_REPO/target"
 )
 # cd into FORGE_REPO so rustup picks up its rust-toolchain.toml - without
 # this, cargo uses the global default toolchain which may be older than
@@ -98,14 +110,72 @@ CARGO_ARGS=(
 # default, falling back to `$CARGO_HOME/bin` (`~/.cargo/bin`).
 FORGE_BIN_DIR="${CARGO_INSTALL_ROOT:-${CARGO_HOME:-$HOME/.cargo}}/bin"
 FORGE_BIN="$FORGE_BIN_DIR/forge"
+STAGED_BIN="$STAGING_ROOT/bin/forge"
+
+# transcribe's ggml is built shared, and the binary's rpath names its own
+# directory, so the libraries ship beside it. The build staged them next to
+# the release profile; without them the binary does not start. Cargo puts a
+# target-triple build under target/<triple>/, and CARGO_BUILD_TARGET is how
+# the triple is selected.
+FORGE_TARGET_DIR="$FORGE_REPO/target${CARGO_BUILD_TARGET:+/$CARGO_BUILD_TARGET}"
+FORGE_TRANSCRIBE_LIBS="$FORGE_TARGET_DIR/$BUILD_LABEL/transcribe-libs"
+[ -d "$FORGE_TRANSCRIBE_LIBS" ] \
+    || die "transcribe's shared libraries are not at $FORGE_TRANSCRIBE_LIBS: a target-triple build stages under target/<triple>/$BUILD_LABEL (CARGO_BUILD_TARGET selects it), and a static transcribe or a failed staging step leaves nothing there"
+cp -R "$FORGE_TRANSCRIBE_LIBS/." "$STAGING_ROOT/bin/"
+
+# The installed binary gets no library path, so neither does the check: the
+# caller's environment must not be able to mask a missing library.
+run_binary() {
+    env -u LD_LIBRARY_PATH -u DYLD_LIBRARY_PATH -u DYLD_FALLBACK_LIBRARY_PATH "$@"
+}
+run_binary "$STAGED_BIN" --version > /dev/null \
+    || die "the staged binary does not start - run $STAGED_BIN directly for the loader's error"
+
+# The live install is replaced only now. Real files get a fresh inode through
+# a temp name and a rename, so a forge already running keeps its mapped copy;
+# the SONAME and link names are repointed after them; the binary follows by
+# the same rename.
+mkdir -p "$FORGE_BIN_DIR"
+trap 'rm -f "$FORGE_BIN_DIR"/.*.new' EXIT
+for staged in "$FORGE_TRANSCRIBE_LIBS"/*; do
+    [ -e "$staged" ] || continue
+    if [ -L "$staged" ]; then
+        continue
+    fi
+    name="${staged##*/}"
+    cp "$staged" "$FORGE_BIN_DIR/.$name.new"
+    mv -f "$FORGE_BIN_DIR/.$name.new" "$FORGE_BIN_DIR/$name"
+done
+for staged in "$FORGE_TRANSCRIBE_LIBS"/*; do
+    [ -L "$staged" ] || continue
+    ln -sfn "$(readlink "$staged")" "$FORGE_BIN_DIR/${staged##*/}"
+done
+cp "$STAGED_BIN" "$FORGE_BIN_DIR/.forge.new"
+mv -f "$FORGE_BIN_DIR/.forge.new" "$FORGE_BIN"
+run_binary "$FORGE_BIN" --version > /dev/null \
+    || die "the installed binary does not start - run $FORGE_BIN directly for the loader's error"
+# Drop a library this build no longer ships, dangling links included. The
+# sweep runs only now: before the binary replace it could remove an old
+# SONAME and then fail the copy, leaving a binary that cannot start. The two
+# prefixes are the runtime libraries forge ships.
+for installed in "$FORGE_BIN_DIR"/libtranscribe* "$FORGE_BIN_DIR"/libggml*; do
+    [ -e "$installed" ] || [ -L "$installed" ] || continue
+    staged="$FORGE_TRANSCRIBE_LIBS/${installed##*/}"
+    [ -e "$staged" ] || [ -L "$staged" ] || rm -f "$installed"
+done
+trap - EXIT
+rm -rf "$STAGING_ROOT"
 
 log_success "forge installed at $FORGE_BIN"
+log_success "  transcribe/ggml libraries shipped beside it"
 log_success "  forge @ $CURRENT_SHA (branch: $CURRENT_BRANCH, build: $BUILD_LABEL)"
 
 # The browser host: its own signed bundle beside forge's machine-local state.
 # `cargo install` builds only the server binary, so the host executable is
 # built here and handed to the script that owns the bundle's layout.
-if [ "$(uname -s)" = "Darwin" ]; then
+# FORGE_INSTALL_BROWSER=0 skips it: the bundle and its driver cost a release
+# build and a 140 MB download, which a server-only install does not need.
+if [ "$(uname -s)" = "Darwin" ] && [ "${FORGE_INSTALL_BROWSER:-1}" != "0" ]; then
     log_info "Building and staging the browser host bundle"
     (
         cd "$FORGE_REPO"

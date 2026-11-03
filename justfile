@@ -1163,7 +1163,7 @@ ci-watch run_id="":
     line="[OK] run $run_id: success at $head_sha"
     record "$line"; echo "$line"
 
-# Build the forge binary from this checkout into ~/.cargo/bin/forge (release, then zsh completions).
+# Build forge from this checkout into ~/.cargo/bin/forge with its shared libraries beside it (release, then zsh completions).
 install:
     ./scripts/install.sh
 
