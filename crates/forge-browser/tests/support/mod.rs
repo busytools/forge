@@ -2,8 +2,8 @@
 //! and starting a host from it.
 //!
 //! **A fixture page uses `about:blank` frames, never an `srcdoc` iframe
-//! inside a `data:` document**: CEF 154.5.0 wedges on that pair and stops
-//! answering CDP.
+//! inside a `data:` document**: CEF wedges on that pair and stops answering
+//! CDP (measured on 154.5.0, kept through the 156.2 move).
 //!
 //! Each test file is its own crate, so this module is compiled per file and
 //! a helper only one of them uses is not dead code worth chasing.
@@ -22,59 +22,11 @@ pub fn repo_root() -> PathBuf {
 
 /// The CEF distribution this workspace's build unpacked.
 ///
-/// **Found by walking, not by a fixed layout**: a test binary's own path has
-/// moved between cargo and nextest, and the distribution is whichever
-/// `cef-dll-sys` build output sits under an ancestor's `build` directory.
+/// **Asked of `cef-dll-sys`, not found by walking**: the crate embeds the
+/// `OUT_DIR` it unpacked into, so this is the framework the binary was linked
+/// against even when the target tree still holds an older version's output.
 pub fn cef_distribution() -> PathBuf {
-    let exe = std::env::current_exe().expect("the test binary's path");
-    for ancestor in exe.ancestors() {
-        let build = ancestor.join("build");
-        if !build.is_dir() {
-            continue;
-        }
-        let Ok(entries) = std::fs::read_dir(&build) else { continue };
-        for entry in entries.flatten() {
-            if !entry.file_name().to_string_lossy().starts_with("cef-dll-sys") {
-                continue;
-            }
-            let Ok(hashes) = std::fs::read_dir(entry.path()) else { continue };
-            for hash in hashes.flatten() {
-                let out = hash.path().join("out/cef_macos_aarch64");
-                if out.join("Chromium Embedded Framework.framework").is_dir() {
-                    return out;
-                }
-            }
-        }
-    }
-    // **CI unpacks the distribution into its download cache**, outside the
-    // target tree the walk above covers: cef-dll-sys puts it under
-    // `CEF_PATH/<version>` when that variable is set.
-    if let Ok(cache) = std::env::var("CEF_PATH")
-        && let Some(found) = find_distribution(std::path::Path::new(&cache))
-    {
-        return found;
-    }
-    panic!("the CEF distribution is not under any ancestor of {}", exe.display());
-}
-
-/// The first `cef_macos_aarch64` directory with a framework under `root`.
-fn find_distribution(root: &std::path::Path) -> Option<PathBuf> {
-    let mut queue = vec![root.to_path_buf()];
-    while let Some(dir) = queue.pop() {
-        if dir.file_name().is_some_and(|name| name == "cef_macos_aarch64")
-            && dir.join("Chromium Embedded Framework.framework").is_dir()
-        {
-            return Some(dir);
-        }
-        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
-        queue.extend(
-            entries
-                .flatten()
-                .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
-                .map(|entry| entry.path()),
-        );
-    }
-    None
+    cef::sys::get_cef_dir().expect("the CEF distribution is not unpacked")
 }
 
 /// The app's executable: an installed bundle when one is named, otherwise a

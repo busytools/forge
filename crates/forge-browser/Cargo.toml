@@ -63,12 +63,12 @@ tracing = { workspace = true }
 # its own process: this crate ships the executable that does.
 [target.'cfg(target_os = "macos")'.dependencies]
 base64 = { workspace = true }
-cef = { version = "=154.5.0", features = ["build-util"] }
+cef = { version = "=156.2.0", features = ["build-util"] }
 chrono = { workspace = true }
 futures-util = { workspace = true }
 libc = "0.2"
 # The driver is an MCP client of the vendored Playwright package.
-rmcp = { version = "=3.5.0", features = ["client", "transport-child-process"] }
+rmcp = { version = "=3.8.0", features = ["client", "transport-child-process"] }
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", features = ["NSProcessInfo", "NSString", "NSValue", "NSDictionary", "NSURL"] }
 objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSEvent"] }
