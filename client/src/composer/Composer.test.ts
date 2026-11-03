@@ -125,6 +125,7 @@ import {
   questionAsk,
   record,
   seatRead,
+  settingsWriteAsk,
   SLOT,
   slackDraftAsk,
   take,
@@ -6118,6 +6119,52 @@ describe('the dock', () => {
     );
   });
 
+  it('draws a held config write with its key and both values', () => {
+    open({ record: record({ pending_asks: [settingsWriteAsk()] }) });
+
+    expect(drawn()).toContain('config write');
+    expect(drawn()).toContain('orgs.Default.projects.forge.max_workers');
+    expect(drawn(), 'the value it holds now is shown').toContain('2');
+    expect(drawn(), 'the value it would leave is shown').toContain('4');
+    expect(drawn()).toContain('Write it');
+    expect(drawn()).toContain("Don't write");
+  });
+
+  it('answers a held config write from the verb the reader picks, by its own id', () => {
+    const harness = open({ record: record({ pending_asks: [settingsWriteAsk()] }) });
+
+    action('Write it').click();
+    flushSync();
+
+    expect(commands(harness)).toEqual([
+      {
+        respond_settings_write: {
+          key: { org: 'Busytools', project: 'forge', label: 'lead' },
+          id: '0192e1c0-0000-7000-8000-0000000000bb',
+          approved: true,
+        },
+      },
+    ]);
+    expect(document.querySelector('.dock'), 'the dock goes with the answer').toBeNull();
+  });
+
+  it('never writes on a decline', () => {
+    const harness = open({ record: record({ pending_asks: [settingsWriteAsk()] }) });
+
+    action("Don't write").click();
+    flushSync();
+
+    expect(commands(harness)).toEqual([
+      {
+        respond_settings_write: {
+          key: { org: 'Busytools', project: 'forge', label: 'lead' },
+          id: '0192e1c0-0000-7000-8000-0000000000bb',
+          approved: false,
+        },
+      },
+    ]);
+  });
+
   it('posts the held draft from the verb the reader picks, addressed by its own id', () => {
     const harness = open({ record: record({ pending_asks: [slackDraftAsk()] }) });
 
@@ -9793,6 +9840,7 @@ describe("the dock's settled shape", () => {
       ['slack_draft', slackDraftAsk(), 'Trust Machines'],
       ['document_hand_off', documentHandOffAsk(), '/proj/docs/plan.md'],
       ['browser_hand_off', browserHandOffAsk(), 'browser hand-off'],
+      ['settings_write', settingsWriteAsk(), 'orgs.Default.projects.forge.max_workers'],
     ] as const;
     for (const [kind, ask, subject] of cases) {
       open({ record: record({ pending_asks: [ask] }) });

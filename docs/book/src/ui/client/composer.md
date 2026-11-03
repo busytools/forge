@@ -28,7 +28,8 @@ or scrolling sideways. A segment with something waiting - the review answer, a f
 takes its tone: the accent for attention, red for a failure.
 
 **The row carries the ask too.** While an ask holds the body, a chip at the row's front names it
-(the question's position, an approval, a held post, a document or a browser hand-off) in the
+(the question's position, an approval, a held post, a document, a browser hand-off or a held
+configuration write) in the
 attention tone. When the reader has words in their draft, a `draft N lines · show` chip sits on
 the row: one click swaps the field into the body, the ask stays mounted and hidden behind it, and
 the ask's chip brings it back. Nothing the reader had chosen in the ask - a toggled set, the
@@ -37,6 +38,11 @@ marked row - is lost to the swap.
 **Every send is stamped.** The composer mints a uuid for the prompt and sends the words under
 it, which is what makes the CLI emit the lifecycle frames [the queue page](./queue.md) reads;
 without a stamp the CLI emits none.
+
+**A held configuration write draws like a held post, with both values.** A `settings__set` or
+`settings__unset` call parks its key, what the key holds now and what the write would leave;
+the two verbs are `Write it` and `Don't write`, and the dock stands down on the answer the way
+a post's does. Every write is held, whether the key belongs to this project or another.
 
 ## The five lists
 

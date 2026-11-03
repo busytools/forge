@@ -530,6 +530,12 @@
       declineDocument();
       return;
     }
+    if (ask.kind === 'settings_write') {
+      // A held write refuses with its own decline, which is the answer the
+      // core reads as nothing being written.
+      write(false);
+      return;
+    }
     // A held post refuses with its own "don't send", which is the answer the
     // core reads as the draft going nowhere.
     post(false);
@@ -583,6 +589,20 @@
     answer({ respond_slack_post: { key: slot, id, approved } });
   }
 
+  /** A held configuration write's two verbs, on the post's own terms. */
+  function write(approved: boolean): void {
+    if (answered || ask.kind !== 'settings_write') return;
+    const id = ask.request.id;
+    onanswer(id);
+    answer({ respond_settings_write: { key: slot, id, approved } });
+  }
+
+  /** A value as the write's two blocks draw it: text bare, everything JSON. */
+  function showValue(value: unknown): string {
+    if (typeof value === 'string') return value;
+    return JSON.stringify(value, null, 2) ?? String(value);
+  }
+
   /**
    * The hand-off's own header line, built here rather than in the markup: a
    * `{' · '}` interpolation beside an `{#if}` keeps its spacing - Svelte
@@ -604,6 +624,7 @@
     if (ask.kind === 'permission') return 'warning';
     if (ask.kind === 'slack_draft') return 'plane';
     if (ask.kind === 'document_hand_off') return 'file';
+    if (ask.kind === 'settings_write') return 'settings';
     return 'bell';
   });
   const barText = $derived.by(() => {
@@ -617,6 +638,7 @@
       return `${ask.request.workspace} · ${ask.request.conversationLabel}`;
     }
     if (ask.kind === 'document_hand_off') return ask.request.path;
+    if (ask.kind === 'settings_write') return ask.request.key;
     return handOffTitle;
   });
   /** Which hand-off's view Open was asked for and did not open, by its id. */
@@ -1116,6 +1138,19 @@
           ? ', where the session asked for comments'
           : ''}; the session waits until you finish. Not now tells it you are not reading this one.
       </div>
+    {:else if ask.kind === 'settings_write'}
+      <div class="d-head">
+        <span class="tag warn">&#9888; needs you</span>
+        <span class="q mono">config write</span>
+        {@render foldButton()}
+      </div>
+      <!-- The key and both values verbatim: approving a summary of an edit
+         nobody drew would be approving something the reader never saw. -->
+      <div class="d-q mono">{ask.request.key}</div>
+      <div class="desc">currently</div>
+      <pre class="wv">{showValue(ask.request.current)}</pre>
+      <div class="desc">{ask.request.unset ? 'cleared to its default' : 'would become'}</div>
+      <pre class="wv">{showValue(ask.request.proposed)}</pre>
     {:else}
       <div class="d-head">
         <span class="tag warn">&#9888; needs you</span>
@@ -1264,6 +1299,15 @@
       </div>
     {/if}
 
+    {#if ask.kind === 'settings_write'}
+      <div class="acts">
+        <!-- The write goes out or it does not: those two verbs are buttons
+           under the values they would change. -->
+        <button class="btn p" onclick={() => write(true)}>Write it</button>
+        <button class="btn d" onclick={() => write(false)}>Don't write</button>
+      </div>
+    {/if}
+
     {#if !answered}
       <div class="keys">
         {#if question}
@@ -1287,6 +1331,9 @@
             ><kbd>Tab</kbd> into the post, then <kbd>&uarr;</kbd><kbd>&darr;</kbd> scroll it</span
           >
           <span><kbd>Tab</kbd> again for Post and Don't send</span>
+          <span><kbd>Enter</kbd> activates</span>
+        {:else if ask.kind === 'settings_write'}
+          <span><kbd>Tab</kbd> between Write it and Don't write</span>
           <span><kbd>Enter</kbd> activates</span>
         {:else}
           <span><kbd>Tab</kbd> between the actions</span>
