@@ -4405,12 +4405,12 @@ describe('the conversation the chat draws', () => {
   });
 
   /**
-   * **A queued prompt's page row is its own turn after the interrupted one.**
-   * The CLI queues a prompt while a turn runs and starts it when that turn
-   * ends, and the scanner places the row at that start - so the page opens a
-   * turn there, after the frames the interrupted turn wrote once the press
-   * happened. Folding the row back into the turn above put the reader's words
-   * before work written after they pressed (#2816).
+   * **A queued prompt's page row is its own turn at the CLI's start.** The
+   * CLI takes a prompt sent while a turn runs at that start - at the turn's
+   * end, or absorbed into the running turn - and the scanner places the row
+   * there, so the page opens a turn at that point rather than folding the
+   * words back into the turn above. Folding them back put the reader's words
+   * before work the same turn wrote after the press (#2816).
    */
   it("keeps a queued prompt's page row as its own turn after the interrupted one", () => {
     const server = fakeConnection();
