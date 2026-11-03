@@ -663,6 +663,51 @@ describe('whether the column follows the newest end', () => {
     ]);
   });
 
+  it('lands the reader who takes the way back while a row is still reserved', async () => {
+    // **The click is the arm, and the reservation can outlast it.** The
+    // way-back control unmounts the moment the follow is on, and a reserved
+    // row holds the pin back before it writes - so a click that does not
+    // leave the column armed makes the next pass read a reader who never
+    // reached the foot, refuse, and strand them with the control gone.
+    const server = stub();
+    await draw(server);
+    readerAt(0);
+    await settle();
+    clear();
+
+    // A third turn opens without arming the follow, its slot reserved and not
+    // drawn - the row a send lands just before it draws.
+    server.forged('forge');
+    await settle();
+    const reserved = [
+      { top: 0, height: TOTAL / 2 },
+      { top: TOTAL / 2, height: TOTAL / 2 },
+    ];
+    clear();
+    measured(TOTAL + 300, [...reserved, { top: TOTAL, height: 60 }]);
+    element.height = TOTAL + 300;
+
+    const back = document.querySelector('button.follow');
+    expect(back, 'precondition: the way back is drawn').not.toBeNull();
+    back?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await settle();
+    expect(pinned(), 'the reserved row holds the pin back').toEqual([]);
+
+    // The row draws, and the pass that can write lands the reader the click
+    // asked for.
+    setModel(TOTAL + 60);
+    measured(TOTAL + 60, [...reserved, { top: TOTAL, height: 60 }]);
+    element.height = TOTAL + 60;
+    resized();
+    await settle();
+
+    const drawn = Math.floor(TOTAL + 60);
+    expect(pinned(), 'the click lands once the row it waited for is drawn').toEqual([
+      { asked: drawn, landed: drawn - VIEWPORT },
+    ]);
+    expect(element.offset, 'and the reader is at the foot').toBe(drawn - VIEWPORT);
+  });
+
   /**
    * **A repaired stretch fills in underneath, and moves nobody.**
    *

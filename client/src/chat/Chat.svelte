@@ -1536,6 +1536,11 @@
     // a handoff's successor, a turn landing, a new row - is an arrival, and an
     // arrival holds the position the reader chose.
     if (!force && !footHeld && !held.send_armed) return 0;
+    // **The reader's own ask is the arm, and it outlives a held-back pass.**
+    // A forced pass can still be stopped below by a reserved row with nothing
+    // written; the next pass is unforced, so unless the ask counts as standing
+    // at the foot here, the click that hid its own control is never paid.
+    if (force) footHeld = true;
     const foot = viewport.scrollHeight;
     // **Except where that number counts a row the list has not drawn yet.**
     // An appended turn is reserved a slot at the list's estimate and drawn a
