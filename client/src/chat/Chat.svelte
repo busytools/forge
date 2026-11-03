@@ -737,8 +737,10 @@
     padTop = Number.parseFloat(getComputedStyle(node).paddingTop) || 0;
     // A token armed against a previous viewport must not eat this one's first event.
     pinEcho = null;
-    // A list mounts at its start and opens following, so its first pin is the
-    // column putting the reader at the foot rather than an arrival moving one.
+    // A fresh list mounts at its start and opens following, so its first pin
+    // is the column putting the reader at the foot rather than an arrival
+    // moving one. A return's list is placed by its restore before any pin can
+    // move it.
     footHeld = true;
     // The sizes and the last event belong to the element a previous conversation scrolled.
     lastSeen = { content: 0, room: 0 };
@@ -819,7 +821,12 @@
     window.addEventListener('blur', onRelease);
     const content = node.firstElementChild;
     const watcher = new ResizeObserver(() => {
-      if (holdsEverything()) {
+      // **A returning list has not measured when this first arrives**: the
+      // delivery can report an estimate that fits while the drawn rows
+      // overflow, and a re-arm here would carry the reader to the foot under
+      // the restore's own scroll. The restore's placer owns the entry until it
+      // lands, and a list with no viewport has no fit to read (#2825).
+      if (restoring === null && list !== null && list.getViewportSize() > 0 && holdsEverything()) {
         // Nothing is left to scroll, so the end is where the reader is
         // sitting, whether or not an event came to say so.
         footHeld = true;
@@ -1190,19 +1197,21 @@
         restoring = place;
         working?.following(false);
       } else {
-        // Every entry lands at the latest, so the reader is at the foot before
-        // the first pin rather than an arrival moving them to one. **And so is
-        // the follow, which is why the entry re-arms it** (#1673): a seat's
-        // conversation is kept, and its follow flag was kept with it - so a
-        // seat left scrolled up came back with the pass returning early and
-        // the reader landing wherever the old offset fell. A place belongs to
-        // the visit; every entry lands at the latest. The window is settled by
-        // the follow effect below, which runs on the arriving conversation's
-        // own publish - this call would hand the outgoing seat's row key to
-        // the incoming chat's trim.
+        // **Every other entry lands at the latest** - a seat switch, a fresh
+        // open, and a `/new` whose conversation no longer holds the row - so
+        // the reader is at the foot before the first pin rather than an
+        // arrival moving them to one. **And so is the follow, which is why the
+        // entry re-arms it** (#1673): a seat's conversation is kept, and its
+        // follow flag was kept with it - so a seat left scrolled up came back
+        // with the pass returning early and the reader landing wherever the
+        // old offset fell. **A place belongs to the visit that recorded it**,
+        // so only a return to that visit takes it back. The window is settled
+        // by the follow effect below, which runs on the arriving
+        // conversation's own publish - this call would hand the outgoing
+        // seat's row key to the incoming chat's trim.
         footHeld = true;
         working?.following(true);
-        // An entry lands at the latest, so a place a previous visit left is
+        // The entry lands at the latest, so a place a previous visit left is
         // done - and a `/new` emptied the row it named.
         places.delete(which);
       }
@@ -1883,9 +1892,10 @@
     // or the list's own while the browser counts a row it has not drawn. Both
     // are the foot for the next arrival's decision - give or take the fraction
     // the browser rounds the offset to.
-    // **The value is read here rather than back out of `footHeld`**: the
-    // effect that ran this pass watches that state, and reading it would make
-    // the write below a reason to run again, pinning twice for one landing.
+    // **The value is read here rather than back out of `footHeld`**: `land()`
+    // runs from the follow's own effect, and a read of that state would make
+    // the write below a dependency - the effect re-runs and pins twice for one
+    // landing.
     const landedAtFoot = viewport.scrollTop >= reachable - FOOT_QUANTUM;
     footHeld = landedAtFoot;
     // **A pin that lands at the foot is the reader leaving their place.** The

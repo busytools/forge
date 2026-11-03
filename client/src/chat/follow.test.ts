@@ -38,6 +38,7 @@ const {
   moved,
   pinned,
   quantised,
+  reported,
   setElement,
   setMeasured,
   setModel,
@@ -3224,14 +3225,126 @@ describe('a return to the seat the reader left', () => {
 
     expect(element.offset, 'the dropped restore left the reader at the turn start').toBe(FOOT);
 
-    // And the return is finished with: the next one takes a fresh place.
-    readerAt(PLACE);
+    // And the return is finished with: the next one takes a fresh place, at an
+    // offset the pre-fallback one does not hold.
+    readerAt(30);
     await settle();
     await ontoDocument();
     returned(server);
     await settle();
     await settle();
-    expect(element.offset, 'the dropped restore outlived its return').toBe(PLACE);
+    expect(element.offset, 'the dropped restore outlived its return').toBe(30);
+  });
+
+  /**
+   * **A returning list has not measured when its first observer delivery
+   * arrives.** Its estimate can fit the column while the drawn conversation
+   * overflows, and a fit branch reading that estimate would re-arm the foot
+   * and drop the recorded place under the restore - a short session with a few
+   * long turns, exactly where a reader scrolls up, would land at the foot.
+   */
+  it('leaves a returning list to its restore until it has measured', async () => {
+    const server = stub();
+    await parked(server);
+
+    await ontoDocument();
+    // The return's list has not reported its viewport yet, and the element's
+    // own box fits while the drawn rows overflow it.
+    reported.viewport = 0;
+    setElement(VIEWPORT, VIEWPORT);
+    returned(server);
+    // The observer's first delivery lands before the restore's own frame.
+    resized();
+    flushSync();
+    // The real measure arrives, and the restore finishes.
+    setMeasured(TOTAL, VIEWPORT);
+    await settle();
+    await settle();
+
+    expect(element.offset, 'the unmeasured fit carried the return to the foot').toBe(PLACE);
+  });
+
+  /**
+   * **And the same fit is refused on a list that HAS measured.** The restore's
+   * placer owns the entry until it lands, whatever the list reports: a fit
+   * that arrives between the mount and the placer's frame would otherwise
+   * re-arm the foot over a reader the return is putting back.
+   */
+  it('does not re-arm the foot from a fit delivered under the restore', async () => {
+    const server = stub();
+    await parked(server);
+
+    await ontoDocument();
+    setElement(VIEWPORT, VIEWPORT);
+    returned(server);
+    resized();
+    flushSync();
+    setMeasured(TOTAL, VIEWPORT);
+    await settle();
+    await settle();
+
+    expect(element.offset, 'the fit under the restore carried the reader to the foot').toBe(PLACE);
+  });
+
+  /**
+   * **And a fit is no fit on a list that has not reported its viewport**,
+   * after a return has landed: the estimate is not the drawn column, and
+   * re-arming on it would carry a restored reader to the foot.
+   */
+  it('does not re-arm the foot from an unmeasured fit after the return', async () => {
+    const server = stub();
+    await parked(server);
+
+    await ontoDocument();
+    returned(server);
+    await settle();
+    await settle();
+    expect(element.offset, 'precondition: the return put the reader back').toBe(PLACE);
+
+    // The list stops reporting a viewport, and its element briefly fits.
+    reported.viewport = 0;
+    setElement(VIEWPORT, VIEWPORT);
+    resized();
+    flushSync();
+    setMeasured(TOTAL, VIEWPORT);
+    resized();
+    await settle();
+
+    expect(element.offset, 'the unmeasured fit reopened the foot').toBe(PLACE);
+  });
+
+  /**
+   * **The restore's ladder is walked to its last rung.** A place whose turn is
+   * still held but whose row is gone cannot be put back: the placer moves the
+   * list to the turn once, waits its retries for the row, then gives up to the
+   * foot. (The half where the row lands on a later frame needs a live list:
+   * the stub draws every row it holds.)
+   */
+  it('gives up a place whose row is gone while its turn survives', async () => {
+    const server = stub();
+    await parked(server);
+
+    // The place keeps a turn this conversation still holds, but names a row it
+    // no longer draws - the re-key a fold can make in place.
+    const store = conversationsFor(server.connection);
+    const which = subjectKey({ session: LEAD });
+    const place = store.places.get(which);
+    expect(place, 'precondition: the column recorded a place').toBeDefined();
+    if (place !== undefined) {
+      const turn = place.key.slice(0, place.key.indexOf(':'));
+      store.places.set(which, { key: `${turn}:gone`, into: place.into });
+    }
+
+    await ontoDocument();
+    returned(server);
+    await settle();
+    await settle();
+    await settle();
+
+    expect(moved(), 'the placer moved the list to the surviving turn once').toEqual([
+      { at: 1, align: 'start' },
+    ]);
+    expect(element.offset, 'the missing row ended the restore at the foot').toBe(FOOT);
   });
 
   /**
