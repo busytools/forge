@@ -1732,9 +1732,11 @@
         <div class="why">connection to claude subprocess failed</div>
       </div>
 
-      <!-- A project holding a decision wait ranks needs-you by its waits,
-           whatever its seats are doing: this row's seat is live, and the two
-           marks are what lift it here. -->
+      <div class="state">working</div>
+      <!-- A project holding decision waits keeps the marks and their counts
+           on its row and on the seat that raised them, and stays in the group
+           its own seats put it in: a task wait is often future work, and its
+           seat can be asleep. -->
       <div class="pj">
         <div class="pr"><span class="dot-slot"><span class="dot live"></span></span><span class="nm">forge</span>
           <span class="org">Busytools</span>
@@ -1761,7 +1763,6 @@
         </details>
       </div>
 
-      <div class="state">working</div>
       <!-- An idle lead: the 7px orange dot, the smallest mark the rail draws,
            in the one-size slot - its name reads at the same x as the rings
            and triangles above it. -->

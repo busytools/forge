@@ -188,6 +188,12 @@ describe('the rail on a project holding decision waits', () => {
     const project = mark(3);
     expect(project, 'the project row carries all three waits').not.toBeNull();
     expect(mark(1), "and the worker's own row carries its one").not.toBeNull();
+    // The wait is a mark, not a lift (Ved, 2026-11-03): two idle seats keep
+    // the project in working, and the marks above are the whole of it.
+    expect(
+      document.querySelector('.state.needs'),
+      'the wait lifted the project out of working',
+    ).toBeNull();
 
     project?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     flushSync();

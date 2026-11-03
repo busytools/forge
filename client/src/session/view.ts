@@ -178,10 +178,8 @@ interface PaletteSection {
 }
 
 /** A seat's state in the palette's two or three words. */
-function paletteWord(row: AgentRow, unseen: SessionSlot[], attention: number): string {
+function paletteWord(row: AgentRow, unseen: SessionSlot[]): string {
   if (row.pending !== null) return 'needs you';
-  // A decision wait is the person's too, and the rail ranks it with the ask.
-  if (attention > 0) return 'needs you';
   const state = stateOf(row, unseen);
   switch (state.kind) {
     case 'failed-turn':
@@ -226,25 +224,16 @@ export function paletteRows(wire: HomeWire, slot: SessionSlot): PaletteSection[]
   // **One rule with the rail's own ranker**: the palette and the rail draw
   // the same seat two layers apart, so a seat that reads working on the rail
   // cannot read asleep here. rankOf's 0/1/2 is needs-person / working /
-  // asleep, and a seat's own decision waits rank with its asks.
-  const attentionOf = (row: AgentRow): number => {
-    const fleet = wire.fleet.find((entry) => {
-      if (entry.project !== row.slot.project) return false;
-      const project = wire.projects.find((held) => held.project.name === entry.project);
-      return project === undefined || project.project.org === row.slot.org;
-    });
-    if (fleet === undefined) return 0;
-    return fleet.attention.filter((wait) => wait.owner === row.label).length;
-  };
-  const rank = (row: AgentRow): number =>
-    rankOf(stateOf(row, unseen), row.pending, attentionOf(row));
+  // asleep, and a decision wait is a mark on the rail and the home rather
+  // than a rank, so it moves neither surface.
+  const rank = (row: AgentRow): number => rankOf(stateOf(row, unseen), row.pending);
   const wants = (row: AgentRow): boolean => rank(row) === 0;
   const working = (row: AgentRow): boolean => rank(row) === 1;
   const seat = (row: AgentRow): PaletteRow => ({
     id: `${row.slot.org}/${row.slot.project}/${row.label}`,
     kind: 'seat',
     label: row.slot.label,
-    detail: `${row.slot.project} \u{b7} ${paletteWord(row, unseen, attentionOf(row))}`,
+    detail: `${row.slot.project} \u{b7} ${paletteWord(row, unseen)}`,
     href: hrefForSlot(row.slot),
     // A project's identity is (org, name): two orgs sharing a project name
     // would otherwise both wear the chip, and Enter would land in the wrong
@@ -786,8 +775,9 @@ function whyOf(lead: Row, workers: Row[]): { line: string; bad: boolean } | null
 }
 
 /**
- * The rail, grouped by each project's own decision waits and the strongest
- * state among its rows.
+ * The rail, grouped by the strongest state among each project's rows. A
+ * project's decision waits stay on its row as a mark and never move its
+ * group (Ved, 2026-11-03).
  *
  * The projects keep the roster's order inside a group, because that is
  * `forge.toml`'s order and the rail is how a person reads the fleet - which is
@@ -826,11 +816,12 @@ export function railGroups(
     const { lead, workers, waits } = projectRows(home, entry, board);
     const all = [lead, ...workers];
     const rankOfRow = (row: Row): number =>
-      closing(row.slot) ? 2 : rankOf(row.state, row.pending, row.attention);
-    // The project's own waits seed the rank: a wait whose seat has no row (a
-    // sleeping worker) has no row to lift it, and must not sit in Working.
-    const base = waits.length > 0 ? 0 : 2;
-    const rank = all.reduce((best, row) => Math.min(best, rankOfRow(row)), base);
+      closing(row.slot) ? 2 : rankOf(row.state, row.pending);
+    // A decision wait is a mark on the row, never a rank (Ved, 2026-11-03):
+    // a task wait is often future work and its seat can be asleep, so a
+    // project with nothing running stays in its own group and still draws the
+    // marks its waits carry.
+    const rank = all.reduce((best, row) => Math.min(best, rankOfRow(row)), 2);
     const group = groups[rank];
     if (group === undefined) continue;
     const sleeping = workers.filter((row) => rankOfRow(row) === 2);
