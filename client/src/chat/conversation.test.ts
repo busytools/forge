@@ -4412,7 +4412,7 @@ describe('the conversation the chat draws', () => {
    * happened. Folding the row back into the turn above put the reader's words
    * before work written after they pressed (#2816).
    */
-  it('keeps a queued prompt\'s page row as its own turn after the interrupted one', () => {
+  it("keeps a queued prompt's page row as its own turn after the interrupted one", () => {
     const server = fakeConnection();
     const chat = new Chat(server.connection, LEAD);
     const stop = chat.start();

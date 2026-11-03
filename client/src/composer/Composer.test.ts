@@ -3499,9 +3499,7 @@ describe('the seat the box belongs to', () => {
     });
     flushSync();
 
-    expect(drawn(), 'the press draws its reason where it stood').toContain(
-      'the session is closed',
-    );
+    expect(drawn(), 'the press draws its reason where it stood').toContain('the session is closed');
   });
 
   it('drops a numbered refusal whose own press the seat has replaced', () => {
