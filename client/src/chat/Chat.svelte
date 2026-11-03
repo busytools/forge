@@ -159,6 +159,19 @@
    * element; finding an arbitrary past row needs the list's index math.
    */
   let list: VListHandle | null = $state(null);
+  /**
+   * The list mount a forced re-measure replaces (#2825).
+   *
+   * **`virtua` has no measure call.** Its range stays empty until its own
+   * ResizeObserver reports the viewport, so a delivery that never lands is a
+   * mounted list drawing zero rows; a fresh mount re-registers that observer,
+   * which is what leaving the seat and coming back did by hand.
+   */
+  let listEpoch = $state(0);
+  /** Whether this open already forced one; a second would be the loop. */
+  let remeasured = false;
+  /** The frame a measurement check is waiting on, held so one schedule is outstanding. */
+  let checkFrame: number | null = null;
   /** Where the column last left the reader, which its own pin's echo cannot disarm. */
   let placed: number | null = null;
   /** The seat `placed` was recorded on, so a re-run for the same seat keeps it. */
@@ -816,6 +829,10 @@
         restored += 1;
         restoreAnchor();
       }
+      // **A size change is also the retry** (#2825): a pane that had no room,
+      // or a list whose measure landed after the last check, is asked again
+      // now that the element has one.
+      scheduleMeasureCheck();
     });
     watcher.observe(node);
     if (content !== null) watcher.observe(content);
@@ -1104,6 +1121,15 @@
       // The painted mark belongs to the open that just started, not the one
       // that is going, so the column takes it again with the seat.
       paintNoted = false;
+      // And so does the one forced re-measure (#2825): the list this open
+      // mounts is its own, and a black one is its own to fix. A check still
+      // waiting belongs to the seat that is going, so it is cancelled rather
+      // than left to read the arriving seat's first frames as its failure.
+      remeasured = false;
+      if (checkFrame !== null) {
+        cancelAnimationFrame(checkFrame);
+        checkFrame = null;
+      }
       // The place a reader held was a row of the conversation that is going.
       anchor = null;
       // And so were the sizes and the last event, which read that element.
@@ -1284,6 +1310,62 @@
     if (state !== null) {
       noteDrawn(state, state === 'conversation' ? drawnGeometry : undefined);
     }
+  });
+
+  /**
+   * Force the measure when a list mounted over turns never reported one
+   * (#2825): no viewport, no rows, room to draw them. One mount per open, so a
+   * list still empty after it is not re-mounted on a loop.
+   */
+  function checkMeasured(): void {
+    checkFrame = null;
+    if (remeasured || held.turns.length === 0 || viewport === null || list === null) return;
+    if (list.getViewportSize() > 0) return;
+    // **No room is no answer.** A hidden or collapsed pane has nothing to draw
+    // yet, and the size that gives it room re-arms this check through the
+    // watcher below.
+    if (viewport.clientHeight <= 0) return;
+    if (viewport.querySelectorAll('[data-t]').length > 0) return;
+    remeasured = true;
+    listEpoch += 1;
+  }
+
+  /**
+   * Check two frames out: ResizeObserver notifications are delivered after a
+   * frame's rAF callbacks, so the first frame would read a healthy list as
+   * unmeasured in the same update that measures it.
+   */
+  function scheduleMeasureCheck(): void {
+    if (remeasured || checkFrame !== null) return;
+    checkFrame = requestAnimationFrame(() => {
+      checkFrame = requestAnimationFrame(checkMeasured);
+    });
+  }
+
+  /**
+   * **Every list mount is checked for its own measure** (#2825): the effect is
+   * keyed on the viewport the list binds, which changes exactly when a mount
+   * does - not on the conversation, which a live seat replaces every frame.
+   */
+  $effect(() => {
+    if (viewport === null) return;
+    if (untrack(() => !held.loaded || held.turns.length === 0)) return;
+    scheduleMeasureCheck();
+  });
+
+  /**
+   * **An open that empties re-arms the one forced mount** (#2825) - an
+   * occupant swap, a refusal, the seat going - so the next conversation this
+   * column draws gets its own if the gate closes on it.
+   */
+  $effect(() => {
+    if (!held.loaded || held.turns.length === 0) remeasured = false;
+  });
+
+  // A check still waiting must not land on a column that is going.
+  $effect(() => () => {
+    if (checkFrame !== null) cancelAnimationFrame(checkFrame);
+    checkFrame = null;
   });
 
   // The first page is drawn at the end rather than the start, and that is not
@@ -2258,54 +2340,59 @@
        `display:block` inline (composed before this one, so this wins), and a
        class cannot beat it - without the flex column the foot anchor's auto
        margin resolves to zero on every real conversation. -->
-  <VList
-    class="conv"
-    style="display:flex;flex-direction:column"
-    data={held.turns}
-    getKey={(turn: HeldTurn) => turn.key}
-    itemProps={() => ({
-      // **A row the list has not measured is drawn, not hidden.** virtua
-      // paints the slot and sets `visibility: hidden` until a row reports its
-      // height, which is the black a fast scroll meets (#2398). The style
-      // rides after virtua's own, so the row is drawn at its natural height
-      // on the offset the list's estimate placed it at, and the measurement
-      // corrects the offsets. The foot's pin and the parked anchor both
-      // absorb that correction.
-      style: { visibility: 'visible' },
-    })}
-    {shift}
-    itemSize={ROW_ESTIMATE_PX}
-    onscroll={scrolled}
-    {@attach scrollViewport}
-    bind:this={list}
-  >
-    {#snippet children(turn: HeldTurn)}
-      <!-- `data-t` names the wrapper for the turn it draws, which is how the
-           foot's reservation check finds the newest row's box - the row's own
-           keys ride its units, and a held turn has none. -->
-      <div
-        class="turn"
-        data-t={turn.key}
-        style:min-height={turn.held ? heldReserve(rowSizes.sizeOf(turn.key)) : undefined}
-        {@attach (node: HTMLElement) => measureTurn(node, turn)}
-      >
-        <Turn
-          {turn}
-          {slot}
-          turns={held.turns}
-          {stops}
-          carried={turn.key === newest ? (pinned?.key ?? null) : null}
-          onreadoutput={readOutput}
-        />
-        <!-- The echo rides the newest row, which is where the words will land:
-             the row it is drawn in is the one the core's own copy opens or
-             joins, so nothing moves when the send is taken. -->
-        {#if echo !== undefined && turn.key === newest}
-          <Echo {echo} onretry={retry} />
-        {/if}
-      </div>
-    {/snippet}
-  </VList>
+  <!-- A key a forced re-measure moves (#2825): the list has no measure call,
+       so a fresh mount is the measurement, and the mount is what re-registers
+       the ResizeObserver that failed to report. -->
+  {#key listEpoch}
+    <VList
+      class="conv"
+      style="display:flex;flex-direction:column"
+      data={held.turns}
+      getKey={(turn: HeldTurn) => turn.key}
+      itemProps={() => ({
+        // **A row the list has not measured is drawn, not hidden.** virtua
+        // paints the slot and sets `visibility: hidden` until a row reports its
+        // height, which is the black a fast scroll meets (#2398). The style
+        // rides after virtua's own, so the row is drawn at its natural height
+        // on the offset the list's estimate placed it at, and the measurement
+        // corrects the offsets. The foot's pin and the parked anchor both
+        // absorb that correction.
+        style: { visibility: 'visible' },
+      })}
+      {shift}
+      itemSize={ROW_ESTIMATE_PX}
+      onscroll={scrolled}
+      {@attach scrollViewport}
+      bind:this={list}
+    >
+      {#snippet children(turn: HeldTurn)}
+        <!-- `data-t` names the wrapper for the turn it draws, which is how the
+             foot's reservation check finds the newest row's box - the row's own
+             keys ride its units, and a held turn has none. -->
+        <div
+          class="turn"
+          data-t={turn.key}
+          style:min-height={turn.held ? heldReserve(rowSizes.sizeOf(turn.key)) : undefined}
+          {@attach (node: HTMLElement) => measureTurn(node, turn)}
+        >
+          <Turn
+            {turn}
+            {slot}
+            turns={held.turns}
+            {stops}
+            carried={turn.key === newest ? (pinned?.key ?? null) : null}
+            onreadoutput={readOutput}
+          />
+          <!-- The echo rides the newest row, which is where the words will land:
+               the row it is drawn in is the one the core's own copy opens or
+               joins, so nothing moves when the send is taken. -->
+          {#if echo !== undefined && turn.key === newest}
+            <Echo {echo} onretry={retry} />
+          {/if}
+        </div>
+      {/snippet}
+    </VList>
+  {/key}
   <!-- An older page in flight, said at the column's top edge: the wheel is
        clamped at the top for as long as the ask takes, and with nothing drawn
        the column reads as a dead scroll rather than as one waiting on a

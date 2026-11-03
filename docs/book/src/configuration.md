@@ -524,40 +524,57 @@ Optional. Absent means the speaking role is off, which is also what an
 explicit `enabled = false` means. It is the other direction of the voice
 area `[dictate]` opens: a take becomes text, and a reply becomes speech.
 
-| Key                     | Type    | Default            | Notes                                                                                                                                                                                                                          |
-| ----------------------- | ------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `enabled`               | boolean | `false`            | Off unless asked for. Turning it on needs the two model files placed under `models_dir` by hand, about 2.29 GB together.                                                                                                        |
-| `models_dir`            | string  | platform cache dir | Where the model files live. `~` is expanded.                                                                                                                                                                                     |
-| `language`              | string  | english            | Spoken language hint for the rendered voice. Unset leaves the pipeline's own default, English.                                                                                                                                   |
-| `max_utterance_seconds` | integer | `120`              | Upper bound on one `voice__say`'s text, not on one sentence.                                                                                                                                                                     |
-
-The model's default voice is used. There is no speaker selection in this
-cut.
+| Key                     | Type    | Default            | Notes                                                                                                                                                                                                                                                |
+| ----------------------- | ------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `enabled`               | boolean | `false`            | Off unless asked for. Turning it on makes the speaking role available; the model installs from the models page or the settings card.                                                                                                               |
+| `models_dir`            | string  | platform cache dir | Where the installed files live. `~` is expanded.                                                                                                                                                                                                       |
+| `speaking_model`        | string  | `hexgrad/Kokoro-82M` | The model the role runs, or one of its ONNX variants (`kokoro-82m-fp32`, `kokoro-82m-fp16`, `kokoro-82m-int8`). An unknown name fails the load: `[tts] speaking_model names <name>, which is not a known model`.                                        |
+| `voice`                 | string  | `af_heart`         | The voice every reply renders in. An id that is not installed is refused by name: `voice <id> is not installed`.                                                                                                                                      |
+| `max_utterance_seconds` | integer | `120`              | Upper bound on one `voice__say`'s text, not on one sentence.                                                                                                                                                                                           |
 
 An unrecognised key here fails the load, as one in `[dictate]` does: a
 mistyped `models_dir` would otherwise leave the engine looking in a
 directory that has no model, and the failure would surface at the boot
-prewarm rather than when the key is saved.
+prewarm rather than when the key is saved. `language` is the one exception -
+a declared ghost: the voice id is the language choice, and the model's 54
+voices cover eight languages, so there is nothing for the key to set. It is
+warned about and ignored rather than obeyed, and a config still setting it
+keeps loading.
 
-The speaking model is Qwen3-TTS 12Hz 1.7B Base, Q8_0, with the `mmproj`
-projector that carries its audio codec: two files, about 2.29 GB together,
-both published by ggml-org with a per-file SHA-256. The weights and
-tokenizer are Apache-2.0 and llama.cpp is MIT. ggml-org publishes no 0.6B
-GGUF, which is why the pinned build is the 1.7B Base.
+The speaking model is Kokoro-82M, published by hexgrad as
+`hexgrad/Kokoro-82M`. forge installs the ONNX export that
+`onnx-community/Kokoro-82M-v1.0-ONNX` publishes, pinned to the revision the
+install reads: one ONNX file plus the style files for the model's 54 named
+voices. The weights are Apache-2.0. The compiled default is the int8
+export (`kokoro-82m-int8`). The local benchmark scores a model over the
+bundled public corpus for round-trip word error, first audio, real time
+factor and the peak resident set above its own baseline; the models page
+draws the figures a run leaves.
 
-Rendering is in process: forge links the published llama.cpp through
-`llama-cpp-sys-2` the way dictation links its recognizer, and splits a
-`say` into sentences so the first audio starts while later sentences render
-behind it. A sentence's audio arrives when it finishes rendering; nothing
-streams inside one sentence.
+Rendering is in process: forge runs the ONNX session through `ort` and the
+G2P pipeline through Misaki with its bundled espeak-ng. Kokoro renders a
+whole clip rather than streaming inside one, so a `say` is split into
+sentences and each sentence's audio arrives when it finishes rendering. The
+output is 24 kHz mono 16-bit, Kokoro's own rate, and a model whose rate
+differed would be resampled once in the engine.
 
-**forge does not fetch these two files.** They are placed under
-`models_dir` by hand. The engine is loaded once at boot when `[tts]` is on
-and stays resident for the process's life; a failed load is retried by the
-first `say`, and a missing file is reported by its own path. The engine
-checks both files against the SHA-256 their entries declare before it loads
-them, so a truncated or substituted file is refused by name rather than
-loaded.
+**The model installs from the models page or the settings page's speaking
+card.** Every file is fetched at one
+pinned revision and checked against the LFS sha256 the Hub publishes; a
+digest that disagrees leaves nothing behind. The engine checks the whole
+set again before it loads it, so a truncated or substituted file is refused
+by name. The engine loads once at boot when `[tts]` is on and stays resident
+for the process's life; a failed load is retried by the first `say`.
+
+## `[huggingface]`
+
+Optional. The token a gated repository needs.
+
+| Key     | Type   | Required | Notes                                                                                                                                                                                                                          |
+| ------- | ------ | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `token` | string | no       | Sent as a bearer token on every Hub read the speaking model's install makes. The speaking model's own repository is open, so an unset token changes nothing; the key exists for a gated repository.                            |
+
+An unrecognised key here fails the load, as one in `[tts]` does.
 
 ## `[gotify]`
 
@@ -842,12 +859,13 @@ a misspelled `fallback_accounts` would otherwise read as "no
 fallbacks". That covers the top level, `[[orgs]]`, `[[orgs.projects]]`,
 `[[accounts]]`, `[models."<name>"]`, `[handoff]` and
 `[orgs.projects.handoff]`, `[[slack]]`, `[gotify]`, `[systemone]`,
-`[gateway]`, `[dictate]`, `[plugins]`, `[server]`, `[browser]` and `[client]`.
+`[gateway]`, `[dictate]`, `[tts]`, `[huggingface]`, `[plugins]`, `[server]`,
+`[browser]` and `[client]`.
 
 A key forge itself retired is a declared ghost rather than an unknown
 key, so a stale `forge.toml` still boots and warns instead of failing:
-`[workers]`, `[projects.<name>]`, `[selection]`, `[ui]` and `[dictate]
-device`. In the tables above a stray key is a typo and is refused; a
+`[workers]`, `[projects.<name>]`, `[selection]`, `[ui]`, `[dictate] device`
+and `[tts] language`. In the tables above a stray key is a typo and is refused; a
 ghost is the exception,
 because its whole job is to accept what a live config still carries - so
 what a retired section holds is unconstrained and only the section
@@ -1023,6 +1041,8 @@ accepts has no class.
 | `[dictate]` `bind`, `mode` | Live. The server reads them on every key decision; a client's key handler holds the composer record it last read, so a new occupant or reconnect refreshes what it starts from. |
 | `[dictate]` `styling`, `structure`, `context` | Next session: applies to the next connection, which is when a client takes its capture axes. |
 | `[dictate]` `enabled`, `models_dir`, `language`, `normalizer`, `max_capture_minutes`, `transcribe_model`, `cleanup_model` | Restart-only. The preflight and the engine's own configuration are built once at boot; the log names it. |
+| `[tts]` `enabled`, `models_dir`, `speaking_model`, `voice`, `max_utterance_seconds` | Restart-only. The voice service and the settings it renders with are built once at boot; the log names it. |
+| `[huggingface]` `token` | Live. Read at each install, so a save applies on the next press. |
 | `[[slack]]` `workspace`, `token`, `poll_seconds`, `dm_poll_seconds` | Restart-only. The client and its pump captured these when the subsystem started; the log names them. |
 | `[[slack]]` `thread_idle_days`, `stale_after_hours` | Live. `thread_idle_days` is read by each sweep and `stale_after_hours` when a block is drawn. |
 | `[gotify]` `url`, `client_token` | Restart-only. The `gotify__*` tools read the section on every call, so a new url or token reaches the tools at once; the stream pump captured its connection when it started and keeps it until a restart. A change is stored and the log names it. |

@@ -33,6 +33,12 @@ with the loader's or the guard's own words. The watcher's reload push
 carries the new document to every client. A save with no answer is a
 timeout the bar reports.
 
+The speaking card is the page's one other read: while the voice area is
+selected it watches the `dictate_models` subject through the models read, and
+lets the subscription go when another area is selected. The speaking model,
+its install state and the voice list come from that read; the chosen voice
+comes from the settings document above.
+
 ## What it draws
 
 | Piece | What it is |
@@ -47,6 +53,7 @@ timeout the bar reports.
 | Restart banner | After a save lands, exactly the restart-class keys it carried, with no restart button. |
 | A new entry | A dashed card headed by its name and `new <group>`, its fields empty and required-marked, discarded or saved with the batch. |
 | A pending removal | The card head reads `removed on save`, with Undo; its lines are not drawn. |
+| The speaking card | The voice area's own block above its key cards: the speaking model row with its one control - install, activate or use the default - except that a `[tts] speaking_model` pin on an installed model draws no control, while a pinned model this machine does not have still offers `install`; the directory the files live in; and a voices card drawn like the key cards, its head band the disclosure (the name, the count, the chosen voice and a chevron, shut at rest). Inside it the voices are setting lines grouped under language sub-headings, scrolling inside the card. Each voice line is its id and the chips: its chosen state or `use`, and a `preview` that becomes a disabled `preparing` while the render runs, then a `playing` state and a `stop`, with a failure drawn on that line. |
 
 ## The rules
 
@@ -108,6 +115,34 @@ timeout the bar reports.
 - **Values are ordinary.** A token is drawn and edited as its value, like
   every other string; there is no redaction here, and the file remains the
   one source.
+- **The speaking card writes once, through the page.** A voice is chosen
+  into the draft like any other key and written by the one Save, so `[tts]
+  voice` has no second writer. Its model controls are the core's own
+  commands: an install and a switch land as model pushes, not as config
+  edits, and every one of them is disabled while one is in flight.
+- **A preview plays on the seat the reader was last on**, through that
+  seat's own voice stream. It needs the seat's speaker switch on, and the
+  card says so rather than opening a second playback path; a core refusal is
+  drawn in its own words under the card.
+- **A preview is one at a time, and it shows.** The control is disabled until
+  this client's switch for the seat is on, because the core plays only for a
+  listener. A press wakes the audio device inside that same gesture - a
+  context a browser holds suspended plays the clip silently - stops the clip
+  sounding now and drops what queued behind it, so the pressed voice starts
+  as its first chunk arrives. The row draws the press: `preparing` while the
+  render runs, then a `playing` state beside a `stop`, with the row's name
+  taking the same weight a chosen row's does so the voice being heard is
+  identifiable at a glance; a failure lands on that row in the core's own
+  words.
+- **The voices are a card that starts shut.** It draws the key cards' own
+  card, its head band the disclosure: the name, the count and the chosen
+  voice, and a chevron at rest in both states - the pick stays visible with
+  the card shut. Opening it lists the voices as setting lines under language
+  sub-headings, inside the card's own scroll so fifty-four rows never run the
+  page off the screen.
+- **A voice id is the model's own name.** `af_heart` is what Kokoro's API
+  takes; the published files carry no display-name table, so the ids are
+  drawn as published rather than translated.
 
 ## The states the page can be in
 
@@ -145,6 +180,34 @@ timeout the bar reports.
   discarded or saved with the rest.
 - **A pending removal** - the card reads as removed on save, with Undo,
   until the save lands.
+- **No seat, or the switch is off, for a preview** - the reader has not
+  opened a session since this client started, or this client's speaker
+  switch for that seat is off. Every preview control is disabled and the
+  card says to open a session and turn the speaker on; another client
+  listening for that seat is not this client's preview.
+- **A preview in flight** - the pressed row's control is a disabled
+  `preparing` until its first chunk sounds, then a `playing` state with a
+  `stop`; the row returns to `preview` when the clip ends.
+- **A refused or failed preview** - the words draw on the row that was
+  pressed, with its preview control back so the press can be tried again.
+- **Reading** - the models subscription has not answered; the card says it
+  is reading the speaking model's state.
+- **Speech off** - `[tts] enabled` is unset: the card says every reply
+  renders silently and withholds the model and preview controls until the
+  key is on.
+- **A `[tts] enabled` change waiting on a restart** - the saved file and the
+  running role disagree: the card says which is on and that a restart applies
+  the edit, the model controls follow the saved value (what the core's
+  install and switch gates read), and previews follow the running role.
+- **A speaking model not installed** - the card draws the model row with its
+  install control, and the voices section says they arrive with the model.
+- **A pinned speaking model this machine does not have** - the row offers
+  `install <quant>`; `[tts] speaking_model` names the model to run rather
+  than a reason to withhold the download.
+- **A speaking install or switch in flight** - the speaking model's controls
+  are disabled until the core's own state settles.
+- **An unknown speaking state** - a speaking read this client cannot parse
+  draws as itself rather than as an installable model.
 
 ## The pieces it takes from the pages beside it
 
@@ -153,7 +216,9 @@ the palette tokens, and the `.wrap` root. The rail, the cards and the
 setting lines are its own, scoped under `.settings-page`, because `.row`,
 `.rail` and `.chip` are names other surfaces already use; the class badge
 is the shared `components/ClassMark.svelte` and its rules are not scoped,
-so a second surface can wear it.
+so a second surface can wear it. The speaking card takes the shared
+`GroupFold` for its voice list and the shared `.chip` for its controls,
+because both are vocabulary the pages beside it already draw.
 
 ## The two widths
 

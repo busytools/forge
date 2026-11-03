@@ -26,10 +26,11 @@
   NDK and a JDK 17 or newer; the recipe is in `client/README.md`.
 - **A C and C++ toolchain, `cmake`, and `libclang`.** `forge-workspace`
   depends on `forge-dictate`, which builds two native model runtimes
-  (`transcribe-cpp-sys`, `llama-cpp-sys-2`) - so these are needed to
-  build the binary at all, not only to run `--workspace`. `cmake` and a
-  C compiler were already required before that, through `aws-lc-sys`;
-  the C++ compiler and `libclang` (for `bindgen`) are what the dictation
+  (`transcribe-cpp-sys`, `llama-cpp-sys-2`), and on `forge-tts`, whose
+  Kokoro engine compiles bundled espeak-ng through CMake - so these are
+  needed to build the binary at all, not only to run `--workspace`. `cmake`
+  and a C compiler were already required before that, through `aws-lc-sys`;
+  the C++ compiler and `libclang` (for `bindgen`) are what the speech
   runtimes add.
 
   On macOS: Xcode Command Line Tools cover the compilers and

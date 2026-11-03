@@ -34,10 +34,10 @@ forge-test-harness ─→ primitives + sdk + workspace + server
   so it must not grow one, and a doc comment mentioning a keypress, a
   composer or a session is a bug.
 - **`forge-tts`** - the speech primitive: text in, audio chunks out. Owns
-  the Qwen3-TTS engine (llama.cpp in process, through `llama-cpp-sys-2`),
-  the model files a speaking model is made of, sentence
-  splitting and the utterance bound. A leaf: no forge-* dependency, and no
-  knowledge of a seat, a tool or a wire, so a host pushes text in and
+  the Kokoro-82M engine (ONNX Runtime in process, with Misaki and its
+  bundled espeak-ng for G2P), the model files a speaking model is made of,
+  sentence splitting and the utterance bound. A leaf: no forge-* dependency,
+  and no knowledge of a seat, a tool or a wire, so a host pushes text in and
   reads chunks off a channel.
 - **`forge-system-one`** - the System One decision-model client: the
   `[systemone]` config shape, the wire question/answer types with their

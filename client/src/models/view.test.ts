@@ -133,7 +133,6 @@ describe('the marks and words the page draws', () => {
    */
   it('draws a model state as a word and a shape', () => {
     expect(modelChip('ready')).toEqual({ mark: 'ok', text: 'loaded' });
-    expect(modelChip('ready', 'speaking')).toEqual({ mark: 'ok', text: 'placed' });
     expect(modelChip('pending')).toEqual({ mark: 'off', text: 'waiting' });
     expect(modelChip('loading')).toEqual({ mark: 'live', text: 'loading' });
     expect(modelChip({ failed: { other: { message: 'x' } } }).mark).toBe('failed');
@@ -550,26 +549,23 @@ describe("where a role's model came from", () => {
     expect(activeSource({ from: 'unknown' })).toBe('set by a newer forge');
   });
 
-  /** **The speaking model says it is placed by hand.** The catalogue's
-   * install path fetches one file per variant from the speech feed, and the
-   * speaking model is a two-file family that feed does not carry, so the row
-   * states where its files belong instead of leaving a waiting chip with no
-   * door under it. */
-  it('says the speaking model is placed by hand', () => {
+  /** **A pinned speaking model names `[tts]`, not `[dictate]`.** Both roles
+   * read their pin off the same source shape, so the section word comes from
+   * the key rather than from a second field the wire would have to carry. */
+  it('names the table a speaking model is pinned in', () => {
     const speaking: InUseModel = {
       role: 'speaking',
-      file: 'Qwen3-TTS-12Hz-1.7B-Base-Q8_0.gguf',
-      size: 1_847_874_400,
-      sha256: 'ac7931ae',
-      state: 'pending',
-      facts: { quant: 'Q8_0', params: null, license: 'Apache-2.0', runtime: 'llama.cpp' },
+      file: 'model_quantized.onnx',
+      size: 92_361_116,
+      sha256: 'fbae9257',
+      state: 'ready',
+      facts: { quant: 'int8', params: 82_000_000, license: 'Apache-2.0', runtime: 'onnx' },
       catalogue: null,
-      from: { from: 'pin' },
+      from: { from: 'config', key: 'speaking_model', variant: 'kokoro-82m-int8' },
       at: null,
     };
-    expect(sourceLine(speaking)).toContain('placed by hand');
-    expect(sourceLine(speaking)).toContain('[tts] models_dir');
-    expect(sourceLine({ ...speaking, role: 'transcribing' })).toBe('compiled default');
+    expect(sourceLine(speaking)).toBe('pinned by [tts] speaking_model');
+    expect(sourceLine({ ...speaking, from: { from: 'pin' } })).toBe('compiled default');
   });
 });
 
@@ -685,7 +681,7 @@ describe('the operation lines', () => {
    */
   it('draws the unnamed window before the file is known', () => {
     const reading = installLine({ state: 'downloading', file: '', got: 0, total: 0 });
-    expect(reading?.title).toBe('reading the catalogue entry');
+    expect(reading?.title).toBe("reading the model's entry");
     expect(reading?.detail).toBeNull();
     expect(reading?.percent).toBeNull();
 
@@ -694,8 +690,21 @@ describe('the operation lines', () => {
     expect(named?.detail).toBeNull();
   });
 
+  /** A speaking activation names the speaking model that keeps serving, not
+   * dictation's. */
+  it('names the speaking model on an activation line', () => {
+    const line = activateLine({
+      state: 'activating',
+      role: 'speaking',
+      file: 'model_quantized.onnx',
+    });
+
+    expect(line?.detail).toContain('the speaking model keeps serving');
+    expect(line?.detail).not.toContain('dictation');
+  });
+
   /** A failed activation says the current model is still running. */
-  it('draws a failed activation with the model that keeps running', () => {
+  it('draws a failed activation with the current model still running', () => {
     const line = activateLine({
       state: 'failed',
       role: 'transcribing',
@@ -727,19 +736,45 @@ describe('the speaking bench', () => {
     expect(speakingBenchLine({ state: 'unknown' })?.mark).toBe('off');
   });
 
-  it("draws a result's round trip, first audio and pace", () => {
+  it("draws a result's round trip, first audio, pace and peak", () => {
     const result: SpeakingBenchResult = {
-      file: 'Qwen3-TTS-12Hz-1.7B-Base-Q8_0.gguf',
-      metrics: { clips: 12, round_trip_wer: 0.041, first_audio_ms: 3_400, realtime_factor: 0.31 },
+      file: 'model_quantized.onnx',
+      metrics: {
+        clips: 12,
+        round_trip_wer: 0.041,
+        first_audio_ms: 318,
+        realtime_factor: 8.84,
+        peak_rss_bytes: 437_256_192,
+      },
       at: '2026-11-01T19:00:00Z',
       corpus: { clips: 12, audio_seconds: 320, sha256: 'a414db2a' },
     };
     const facts = speakingResultFacts(result).map((part) => part.text);
     expect(facts).toContain('round-trip WER 4.1%');
-    expect(facts).toContain('first audio 3.4s');
-    expect(facts).toContain('0.31\u{d7} realtime');
+    expect(facts).toContain('first audio 0.3s');
+    expect(facts).toContain('8.84\u{d7} realtime');
+    expect(facts).toContain('437 MB peak');
     expect(facts.some((text) => text.includes('12 clips'))).toBe(true);
     expect(speakingWhen(result)).toMatch(/^measured \d\d:\d\d$/);
+  });
+
+  /** A run saved before the resident set was measured claims no memory rather
+   * than drawing a zero. */
+  it('omits the peak from a result that never measured one', () => {
+    const result: SpeakingBenchResult = {
+      file: 'model_quantized.onnx',
+      metrics: {
+        clips: 1,
+        round_trip_wer: 0,
+        first_audio_ms: 300,
+        realtime_factor: 1,
+        peak_rss_bytes: 0,
+      },
+      at: '2026-11-01T19:00:00Z',
+      corpus: { clips: 1, audio_seconds: 2, sha256: 'a414db2a' },
+    };
+    const facts = speakingResultFacts(result).map((part) => part.text);
+    expect(facts.some((text) => text.includes('peak'))).toBe(false);
   });
 });
 
@@ -783,7 +818,7 @@ describe("the panel's model choices", () => {
   /** A TTS model must never be offered as a transcriber: it has its own
    * bench, and the words bench would load it into the wrong slot. */
   it('never offers the speaking model to the words bench', () => {
-    const speaking = inUse({ role: 'speaking', file: 'Qwen3-TTS.gguf', catalogue: null });
+    const speaking = inUse({ role: 'speaking', file: 'model_quantized.onnx', catalogue: null });
     expect(benchTargets([speaking], [], [], []).map((row) => row.target)).toEqual([]);
   });
 });

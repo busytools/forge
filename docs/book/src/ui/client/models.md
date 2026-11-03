@@ -5,16 +5,17 @@ catalogue publishes, which models this machine has downloaded, and how to
 bring a candidate onto the machine and make it the one a role runs. It is
 drawn from one snapshot of the `dictate_models` subject - the models in
 use, the catalogue check, the proposals, every row of the feed, the installed
-set and the download/activation state - and redrawn from the update stream
-after it. The drawing it is held against is
+set, the download/activation state, and the speaking role's own variants and
+voices - and redrawn from the update stream after it. The drawing it is held against is
 [web-models.html](./web-models.html), beside this page.
 
 **Three roles, one page.** The transcribing and cleanup roles are the
-dictation engine's; the speaking role is speech out, the compiled Qwen3-TTS
-model and its codec projector. Every role's row is drawn the same way - the
-spec's facts, the feed's measurement when it has one, the state chip, where
-the choice came from. The speaking model is placed by hand: there is no key
-that selects another, and no activation for the role.
+dictation engine's; the speaking role is speech out, Kokoro-82M and the
+style files for its named voices. Every role's row is drawn the same way -
+the spec's facts, the feed's measurement when it has one, the state chip,
+where the choice came from. The speaking model is installed from the
+Hugging Face Hub rather than the speech feed, so its role view carries its
+own install and switch controls, and `[tts] speaking_model` pins it.
 The name is the page's, not a crate's: `forge-dictate` and `forge-tts` stay
 what they are.
 
@@ -39,7 +40,7 @@ read and the actions are the server's (`Subject::DictateModels`,
 | Header | the brand mark, `forge`, the page's name, and the way back to the home | `ClientSettings.mark` from the greeting; the route |
 | The page's state | a refused action in the core's own words, and whichever download or activation is in flight with its progress | `refusal` (an `error` frame); `install`, `activate` |
 | In use | one row per model forge runs: its role - **the selector for the updates below** - its file, the facts the spec declares (size, quant, parameters, digest, licence), the feed's own measurement when it has one, the live state as a chip, and a line saying where the model came from | `in_use` |
-| Updates | what a check reads, the check's own line - up to date, an update, checking, unreachable, or a state this client cannot read - with both dictation roles' news under it, then the selected role's recommendation with the one control that takes it, then the comparison table behind a door; the cleanup role's own view instead, where no feed measures a normalizer: its candidates with each one's own runs under it; and the speaking role's own view, which says the model is placed by hand and no feed proposes one | `check`, `updates`, `rows`, `installed`, `results` |
+| Updates | what a check reads, the check's own line - up to date, an update, checking, unreachable, or a state this client cannot read - with both dictation roles' news under it, then the selected role's recommendation with the one control that takes it, then the comparison table behind a door; the cleanup role's own view instead, where no feed measures a normalizer: its candidates with each one's own runs under it; and the speaking role's own view, which lists the Hub's ONNX variants with their install and switch controls and counts the voices the model in use carries | `check`, `updates`, `rows`, `installed`, `results`, `speaking` |
 | Find a model | a box that filters the feed's rows as it is typed, with the feed's families and its fastest rows offered before a name is known: the variant, the quant a machine would run, the measured speed and error, the licence, what it transcribes, and the row's control. Each row links to the entry's own document | `rows` |
 | Benchmark | the fixtures first - the read-aloud set's own state with the record control and the count line - then the one press that scores the picks on this machine and leaves a verdict, then the speaking loop's own card, then two doors: every run scored here, and every model a bench can run, with the control that removes a downloaded model nothing runs | `bench`, `read_aloud`, `results`, `speaking_bench`, `speaking_results` |
 
@@ -49,14 +50,13 @@ and never off the feed, so a model the feed does not carry still draws
 whole. The second line is the feed's: its runtime
 measurement and its languages. A model with no join draws the runtime its
 spec declares beside `not in the feed` rather than borrowing a measurement -
-the speaking row's runtime is `llama.cpp`. The third line says where the model
+the speaking row's runtime is `onnx`. The third line says where the model
 came from: `compiled default`, `installed here`, or `pinned by [dictate]
 <key>` - naming the key, because that key is what has to go for the runtime
-to move the role. **The speaking row says its files are placed by hand**:
-the catalogue's install path fetches one file per variant from the speech
-feed, and the speaking model is a two-file family that feed does not carry,
-so the row names the `[tts]` models_dir rather than leaving a waiting chip
-with no control under it.
+to move the role. **The speaking row names `[tts] speaking_model`** when
+that key pins it; the key accepts the model's own name or one of its ONNX
+variants, and an unknown name refuses the boot the way an unknown
+`[dictate]` key does.
 
 **The check's line is the feed's freshness and its proposal at once.** A
 fresh check with nothing to propose reads `up to date`; the same check with
@@ -178,7 +178,10 @@ corpus, and a delete.
 
 **The other direction has its own card.** The speaking model says each
 public transcript, the transcribing pair hears the audio back, and the words
-are scored again: round-trip word error, first audio and the loop's pace.
+are scored again: round-trip word error, first audio, the loop's pace and
+the process's peak resident set above what it held before the run - a run
+saved before that figure was measured draws without it rather than as a
+zero.
 It sits beside the words bench and never mixes into its results, because the
 two measure different things - one scores a model on audio that exists, the
 other scores the loop from words to audio and back. One press scores it, a
@@ -270,8 +273,9 @@ entry matches" and chips pointing at nothing.
 - **Dictation off**: `[dictate] enabled` is unset, so no dictation model is
   in use, none is proposed, and the feed has not been read at all - the
   server loads the catalogue only for an enabled section, so the read
-  answers no rows and no check. The speaking row still draws when `[tts]`
-  is on. It is its own state, naming the key that would switch it on, and
+  answers no rows and no check. The speaking role's own view still draws
+  when `[tts]` is on, because its model comes from the Hub rather than the
+  feed. It is its own state, naming the key that would switch it on, and
   the search draws a note saying the same rather than a box that would
   answer every query with `no entry matches`.
 - **Reading**: connected, and the subject's snapshot has not landed. The
@@ -332,9 +336,9 @@ entry matches" and chips pointing at nothing.
   `error` frame the connection answered the dispatch with - a second
   download while one runs, an activation on a role `forge.toml` pins, or an
   uninstall on a file a role is running.
-- **A pinned role**: its row's source line names the `[dictate]` key, no
-  row offers an activation for it, and the download controls stay. The
-  speaking role has no pin: its row says the files are placed by hand.
+- **A pinned role**: its row's source line names the config key - `[dictate]`
+  for a dictation role, `[tts] speaking_model` for the speaking one - no row
+  offers an activation for it, and the download controls stay.
 - **A role running an installed model**: its row carries `use the default`
   beside the state chip - the swap back to the compiled pin, which is what
   undoes a runtime pick.
