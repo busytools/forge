@@ -224,6 +224,12 @@
     border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px; }
   .dock .reason { color: var(--warn); font-size: var(--fs-base); }
   .dock .desc { color: var(--dim); font-size: var(--fs-base); }
+  /* A held write's value: monospace, bordered and scrollable, as the client
+     draws it. */
+  .dock .wv { padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px;
+    background: var(--s1); color: var(--text); font-family: var(--mono);
+    font-size: var(--fs-data); white-space: pre-wrap; overflow-wrap: anywhere;
+    max-height: 180px; overflow-y: auto; }
   .dock .opts { display: flex; flex-direction: column; gap: 1px; }
   .opt { display: flex; align-items: flex-start; gap: 10px; padding: 6px 9px;
     border-radius: 9px; font-size: var(--fs-base); }
@@ -280,6 +286,10 @@
   .dock .btn.p { border-color: rgba(244,118,0,.5); color: var(--hot);
     background: rgba(244,118,0,.1); }
   .dock .btn.d { border-color: rgba(224,104,62,.45); color: var(--bad); }
+  /* The send-back's words, in the row the card opens under its verbs. */
+  .dock .sendback { display: flex; align-items: flex-start; gap: 8px; }
+  .dock .sendback .fld { flex: 1; min-width: 0; color: var(--text);
+    font-size: var(--fs-base); line-height: 1.45; padding: 2px 0; }
   .dock .refusal { border: 1px solid rgba(224,104,62,.45); border-radius: 10px;
     padding: 7px 10px; color: var(--bad); font-size: var(--fs-base); }
   .dock .sent { font-size: var(--fs-base); color: var(--text); white-space: pre-wrap;
@@ -652,10 +662,46 @@ on the folded bar.</p>
             <span class="t">browser hand-off &middot; tab 3</span>
             <svg class="chevc" width="13" height="13" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M7.823 1.677 4.927 4.573A.25.25 0 0 0 5.104 5H7.25v3.236a.75.75 0 1 0 1.5 0V5h2.146a.25.25 0 0 0 .177-.427L8.177 1.677a.25.25 0 0 0-.354 0Z"/></svg></div>
         </div></div></div></div>
+        <div class="surf" style="margin-top:8px"><div class="slot"><div class="ask-body"><div class="dock">
+          <div class="qbar"><span class="qm"><svg class="ic"><use href="#i-settings"/></svg></span>
+            <span class="t">orgs.Default.projects.forge.max_workers</span>
+            <svg class="chevc" width="13" height="13" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M7.823 1.677 4.927 4.573A.25.25 0 0 0 5.104 5H7.25v3.236a.75.75 0 1 0 1.5 0V5h2.146a.25.25 0 0 0 .177-.427L8.177 1.677a.25.25 0 0 0-.354 0Z"/></svg></div>
+        </div></div></div></div>
       </div>
-      <p class="note" style="margin:8px 0 0">Question, permission, held post, document hand-off
-      and browser hand-off: one line each, the kind's mark leading.</p>
+      <p class="note" style="margin:8px 0 0">Question, permission, held post, document hand-off,
+      browser hand-off and a held configuration write: one line each, the kind's mark leading.</p>
     </div>
+  </div>
+  <div class="row">
+    <div class="col">
+      <div class="lab">held config write <span class="h">268px</span></div>
+      <div class="comp"><div class="surf">
+        <div class="live-row">
+          <span class="live-door att"><svg class="ic"><use href="#i-settings"/></svg>config write waiting</span>
+          <span class="live-fig"><span class="ring"></span><span>0:42</span>
+            <span class="sep">&middot;</span><span>thinking 1.2k</span></span>
+          <span class="div"></span>
+          <span class="live-more">+8</span>
+        </div>
+        <div class="slot"><div class="ask-body"><div class="dock">
+          <div class="d-head"><span class="tag warn">&#9888; needs you</span>
+            <span class="q mono">config write</span>
+            <span class="chevb"><svg class="ic"><use href="#i-down"/></svg></span></div>
+          <div class="d-q mono">orgs.Default.projects.forge.max_workers</div>
+          <div class="desc">currently</div>
+          <div class="wv mono">2</div>
+          <div class="desc">would become</div>
+          <div class="wv mono">4</div>
+          <div class="acts"><span class="btn p">Write it</span><span class="btn d">Don't write</span></div>
+          <div class="keys"><span><span class="k">tab</span> between Write it and Don't write</span>
+            <span><span class="k">&#9166;</span> activates</span>
+            <span><span class="k">esc</span> reject</span></div>
+        </div></div></div>
+      </div></div>
+      <p class="note" style="margin:8px 0 0">A held write shows the key and both values verbatim,
+      because the reader approves the edit itself rather than a summary of it.</p>
+    </div>
+    <div class="col"></div>
   </div>
   <div class="row">
     <div class="col">
@@ -730,11 +776,57 @@ on the folded bar.</p>
             <span class="chevb"><svg class="ic"><use href="#i-down"/></svg></span></div>
           <div class="sent">Confirmed - the replica caught the bad statement, so production is
             clear to take the same set.</div>
-          <div class="acts"><span class="btn p">Post</span><span class="btn d">Don't send</span></div>
+          <div class="acts"><span class="btn p">Post</span><span class="btn">Send back with feedback</span><span class="btn d">Do not post</span></div>
         </div></div></div>
       </div></div>
       <p class="note" style="margin:8px 0 0">The text that would go out, verbatim; the approving
-      verb leads.</p>
+      verb leads, the send-back sits between it and the refusal.</p>
+    </div>
+    <div class="col">
+      <div class="lab">the send-back's words <span class="h">241px</span></div>
+      <div class="comp"><div class="surf">
+        <div class="live-row">
+          <span class="live-door att"><svg class="ic"><use href="#i-plane"/></svg>post waiting</span>
+          <span class="live-fig"><span class="ring"></span><span>0:42</span>
+            <span class="sep">&middot;</span><span>thinking 1.2k</span></span>
+          <span class="div"></span>
+          <span class="live-more">+9</span>
+        </div>
+        <div class="slot"><div class="ask-body"><div class="dock">
+          <div class="d-head"><span class="dest">Trust Machines &middot; #granite-staging-alerts</span>
+            <span class="q">Reply in Slack</span>
+            <span class="chevb"><svg class="ic"><use href="#i-down"/></svg></span></div>
+          <div class="sent">Confirmed - the replica caught the bad statement, so production is
+            clear to take the same set.</div>
+          <div class="acts"><span class="btn p">Post</span><span class="btn">Send back with feedback</span><span class="btn d">Do not post</span></div>
+          <div class="sendback"><span class="fld">say staging, not prod</span><span class="btn">Send back</span></div>
+        </div></div></div>
+      </div></div>
+      <p class="note" style="margin:8px 0 0">Enter sends, Shift+Enter is a newline, Escape closes;
+      the verb is unavailable until the field has words.</p>
+    </div>
+  </div>
+  <div class="row">
+    <div class="col">
+      <div class="lab">a delete held for approval <span class="h">198px</span></div>
+      <div class="comp"><div class="surf">
+        <div class="live-row">
+          <span class="live-door att"><svg class="ic"><use href="#i-plane"/></svg>delete waiting</span>
+          <span class="live-fig"><span class="ring"></span><span>0:42</span>
+            <span class="sep">&middot;</span><span>thinking 1.2k</span></span>
+          <span class="div"></span>
+          <span class="live-more">+9</span>
+        </div>
+        <div class="slot"><div class="ask-body"><div class="dock">
+          <div class="d-head"><span class="dest">Trust Machines &middot; #granite-staging-alerts</span>
+            <span class="q">Delete in Slack</span>
+            <span class="chevb"><svg class="ic"><use href="#i-down"/></svg></span></div>
+          <div class="sent">[delete] message 1758901234.482910</div>
+          <div class="acts"><span class="btn p">Delete</span><span class="btn">Send back with feedback</span><span class="btn d">Keep it</span></div>
+        </div></div></div>
+      </div></div>
+      <p class="note" style="margin:8px 0 0">The same held-draft card, worded for what it would
+      do: a delete asks to delete, and its refusal is "keep it".</p>
     </div>
   </div>
   <div class="row">

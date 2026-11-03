@@ -31,6 +31,12 @@ interface FakeDoc {
   sent: unknown[];
   /** How the next submit (a reply-carrying command) answers. */
   submitAnswer: { body: unknown } | { reject: string };
+  /** Why the next answer command is refused, consumed once. */
+  answerReject: string | null;
+  /** Why the next answer command is refused by the SOCKET, consumed once -
+   *  the fire-and-forget path, which answers with an error frame rather
+   *  than a rejected dispatch. */
+  answerRefusal: string | null;
   /** Say something to the page, as the server would. */
   emit(message: ServerMessage): void;
 }
@@ -105,6 +111,8 @@ export function fakeDoc(answer: DocAnswer): FakeDoc {
     sent,
     emit,
     submitAnswer: { body: { id: 'r1', number: 1, summary: null, created_at: 'x' } },
+    answerReject: null,
+    answerRefusal: null,
   };
   const connection = {
     readDocument(slot: SessionSlot, asked: string, reviewable: boolean): boolean {
@@ -142,6 +150,24 @@ export function fakeDoc(answer: DocAnswer): FakeDoc {
     dispatch(command: unknown): Promise<unknown> {
       sent.push(command);
       const variant = Object.keys(command as Record<string, unknown>)[0];
+      if (variant === 'answer_document_hand_off' && held.answerReject !== null) {
+        const why = held.answerReject;
+        held.answerReject = null;
+        return Promise.reject(new Error(why));
+      }
+      if (variant === 'answer_document_hand_off' && held.answerRefusal !== null) {
+        const why = held.answerRefusal;
+        held.answerRefusal = null;
+        const answered = (command as { answer_document_hand_off?: { key?: SessionSlot } })
+          .answer_document_hand_off;
+        emit({
+          kind: 'error',
+          what: 'respond_document_hand_off',
+          why,
+          seat: answered?.key ?? SLOT,
+        });
+        return Promise.resolve(null);
+      }
       if (variant !== 'submit_review') return Promise.resolve(null);
       if ('reject' in held.submitAnswer) {
         return Promise.reject(new Error(held.submitAnswer.reject));

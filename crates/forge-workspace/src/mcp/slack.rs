@@ -540,9 +540,22 @@ impl Tool for Unsubscribe {
     }
 }
 
+/// What a blocked call reads when the reader sends its draft back. The note
+/// is the reader's own words and stays whole; the fixed halves say what did
+/// not happen and what the agent is expected to do next.
+fn sent_back_refusal(outcome: &str, tool: &str, note: &str) -> String {
+    format!(
+        "{outcome}: the reader sent it back with this feedback and expects a revision.\n\n\
+         {note}\n\nRevise it and call {tool} again."
+    )
+}
+
 fn format_post_error(err: &SlackPostError) -> String {
     match err {
         SlackPostError::Rejected => "the post was not approved, so nothing was sent".to_owned(),
+        SlackPostError::SentBack { note } => {
+            sent_back_refusal("the post was not sent", "slack__post", note)
+        }
         SlackPostError::Workspace(err) => format_workspace_error(err),
         SlackPostError::Partial { posted, total, source } => {
             format!("posted part {posted} of {total}; the rest were NOT sent ({source})")
@@ -559,6 +572,9 @@ fn format_edit_error(err: &SlackEditError) -> String {
         SlackEditError::Rejected => {
             "the replacement was not approved, so the message is untouched".to_owned()
         }
+        SlackEditError::SentBack { note } => {
+            sent_back_refusal("the change was not made", "slack__edit", note)
+        }
         SlackEditError::Workspace(err) => format_workspace_error(err),
         SlackEditError::Fetch(message) => format!("Slack request failed: {message}"),
     }
@@ -568,6 +584,9 @@ fn format_react_error(err: &SlackReactError) -> String {
     match err {
         SlackReactError::Rejected => {
             "the reaction was not approved, so nothing was added or removed".to_owned()
+        }
+        SlackReactError::SentBack { note } => {
+            sent_back_refusal("the reaction was not applied", "slack__react", note)
         }
         SlackReactError::Workspace(err) => format_workspace_error(err),
         SlackReactError::Fetch(message) => format!("Slack request failed: {message}"),
@@ -597,12 +616,14 @@ impl Tool for Post {
         "Post a message to Slack as the user - a root message, or a reply into an existing \
          thread when `thread_ts` is passed. This is HELD FOR APPROVAL: the call does not return \
          until the user decides in the dock prompt, with no timeout of its own, and a rejected \
-         draft posts nothing. Text past 4000 characters is split into numbered parts automatically, each a \
+         draft posts nothing. The user may instead send the draft back with feedback: the call \
+         fails with their words and nothing is posted, so revise the draft and call again. Text \
+         past 4000 characters is split into numbered parts automatically, each a \
          separate message. Returns {workspace, ts, conversation_name, parts}: `workspace` is \
          the resolved `[[slack]]` label it posted into, and `ts` names every message it posted, \
          in the order they went out; slack__edit, slack__react and a reply each take one. Any \
-         session in the project may call this. If this call fails, report the exact error and \
-         stop - never fall back to Slack's web API with the configured token."
+         session in the project may call this. If this call fails for any other reason, report \
+         the exact error and stop - never fall back to Slack's web API with the configured token."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -678,7 +699,9 @@ impl Tool for Edit {
          replacement puts new words in front of people as you, and a deletion changes what they \
          see on a message attributed to you and cannot be undone by editing again. The call does \
          not return until the user decides, with no timeout of its own, and a rejected draft \
-         leaves the message untouched. Slack refuses a message you did not post - including an edit of \
+         leaves the message untouched. The user may instead send the draft back with feedback: \
+         the call fails with their words and the message is untouched, so revise the change and \
+         call again. Slack refuses a message you did not post - including an edit of \
          your own thread reply, which a channel-history lookup cannot see. Any session in \
          the project may call this."
     }
@@ -750,7 +773,9 @@ impl Tool for React {
         "Add a reaction to a Slack message, or remove one with `remove: true`. `name` is Slack's \
          shortcode without colons, e.g. `white_check_mark`. Removing requires being the original \
          reaction's author. HELD FOR APPROVAL like slack__post: a reaction is authored content \
-         in the user's name. Any session in the project may call this."
+         in the user's name. The user may instead send the draft back with feedback: the call \
+         fails with their words and nothing is added or removed, so revise the reaction and \
+         call again. Any session in the project may call this."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -798,6 +823,9 @@ fn format_attachment_error(err: &SlackAttachmentError) -> String {
         SlackAttachmentError::Rejected => {
             "the upload was not approved, so nothing was sent".to_owned()
         }
+        SlackAttachmentError::SentBack { note } => {
+            sent_back_refusal("the upload was not sent", "slack__attachment", note)
+        }
         SlackAttachmentError::Workspace(err) => format_workspace_error(err),
         SlackAttachmentError::Fetch(message) => format!("Slack request failed: {message}"),
         SlackAttachmentError::NotADirectory(path) => {
@@ -837,7 +865,9 @@ impl Tool for Attachment {
          cannot escape the directory); the returned path is where it landed. Pass `path` with \
          `conversation` to upload a local file into that conversation, optionally into a thread \
          with `thread_ts`. An upload is HELD FOR APPROVAL like slack__post, because it posts new \
-         content; fetching is not. Any session in the project may call this."
+         content; fetching is not. The user may instead send the draft back with feedback: the \
+         call fails with their words and nothing is uploaded, so revise the file or the message \
+         and call again. Any session in the project may call this."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -1900,6 +1930,67 @@ mod tests {
         for answer in answers {
             assert_eq!(answer, expected, "every tool shares the one wording");
         }
+    }
+
+    /// The reader's words are what the agent revises from, so the refusal
+    /// has to carry them whole and say what is expected next: a bare "not
+    /// approved" leaves it guessing at the change, which is the loop this
+    /// answer exists to close.
+    #[test]
+    fn a_sent_back_refusal_carries_the_note_and_the_next_step() {
+        let note = "say staging, not prod";
+        let answers = [
+            (format_post_error(&SlackPostError::SentBack { note: note.to_owned() }), "slack__post"),
+            (format_edit_error(&SlackEditError::SentBack { note: note.to_owned() }), "slack__edit"),
+            (
+                format_react_error(&SlackReactError::SentBack { note: note.to_owned() }),
+                "slack__react",
+            ),
+            (
+                format_attachment_error(&SlackAttachmentError::SentBack { note: note.to_owned() }),
+                "slack__attachment",
+            ),
+        ];
+        for (answer, tool) in answers {
+            assert!(answer.contains(note), "the note stays verbatim in {tool}'s refusal: {answer}");
+            assert!(answer.contains("expects a revision"), "and says what is expected: {answer}");
+            assert!(answer.contains(tool), "and names the call to repeat: {answer}");
+        }
+    }
+
+    /// An agent reads the description before it acts. A send-back is part of
+    /// what every gated call can return, and the agent's correct response to
+    /// it is to revise and call again - so all four gated tools say so up
+    /// front.
+    #[test]
+    fn the_gated_slack_descriptions_state_that_a_send_back_expects_a_revision() {
+        let facade: Arc<dyn SlackFacade> = Arc::new(MockSlackFacade::new());
+        let post = Post { facade: facade.clone(), slot: caller_slot() }.description();
+        let edit = Edit { facade: facade.clone(), slot: caller_slot() }.description();
+        let react = React { facade: facade.clone(), slot: caller_slot() }.description();
+        let attachment = Attachment { facade, slot: caller_slot() }.description();
+        for (name, description) in [
+            ("slack__post", post),
+            ("slack__edit", edit),
+            ("slack__react", react),
+            ("slack__attachment", attachment),
+        ] {
+            assert!(
+                description.contains("send the draft back with feedback"),
+                "{name} must say the user can send it back: {description}",
+            );
+            assert!(
+                description.contains("revise"),
+                "{name} must say what the agent should do with the feedback: {description}",
+            );
+        }
+        // The stop-and-report tail is the other failures' rule. Left
+        // unqualified it contradicts the sentence above it: a send-back IS a
+        // failure of the call, and the agent must call again.
+        assert!(
+            post.contains("any other reason"),
+            "the post's stop-and-report tail is qualified for a send-back: {post}",
+        );
     }
 
     /// The headline of the cut: no Slack tool advertises a `workspace`

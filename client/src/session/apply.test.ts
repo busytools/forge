@@ -845,6 +845,40 @@ describe('applyUpdate', () => {
         'a resolution naming another hand-off leaves this one parked',
       ).toBe(parked);
     });
+
+    it('parks a held config write ahead of the asks already waiting, and clears it by its own id', () => {
+      const kinds = (held: SessionRecord): unknown[] =>
+        held.pending_asks.map((ask) => (ask as Record<string, unknown>)['kind']);
+
+      const asked = applyUpdate(empty(), {
+        question_request: {
+          key: SLOT,
+          tool_id: 'toolu_q',
+          request: { tool_call: { tool_call_id: 'toolu_q' }, prompt: { question: 'which?' } },
+        },
+      });
+      const ask = {
+        id: 'w1',
+        key: 'orgs.Default.projects.forge.max_workers',
+        current: 2,
+        proposed: 4,
+        unset: false,
+      };
+      const parked = applyUpdate(asked, { settings_write_pending: { key: SLOT, ask } });
+
+      expect(kinds(parked), 'the write leads the question that was already waiting').toEqual([
+        'settings_write',
+        'question',
+      ]);
+      expect(
+        kinds(applyUpdate(parked, { settings_write_resolved: { key: SLOT, id: 'w1' } })),
+        'and its resolution falls back to the question',
+      ).toEqual(['question']);
+      expect(
+        applyUpdate(parked, { settings_write_resolved: { key: SLOT, id: 'w2' } }),
+        'a resolution naming another write leaves this one parked',
+      ).toBe(parked);
+    });
   });
 
   describe('the composer', () => {
@@ -1357,6 +1391,8 @@ const EVERY_VARIANT = [
   'dictate_models_changed',
   'document_hand_off_pending',
   'document_hand_off_resolved',
+  'settings_write_pending',
+  'settings_write_resolved',
   'voice_audio',
   'voice_mode_state',
 ] as const;
@@ -1419,9 +1455,9 @@ describe('the variant list', () => {
     // raise it in the same edit that adds a variant, as the plan says.
     expect(
       EVERY_VARIANT.length,
-      'the census no longer carries every variant the enum declares (72 of them): a truncated ' +
+      'the census no longer carries every variant the enum declares (74 of them): a truncated ' +
         'census leaves the assertions below checking only the names it still has',
-    ).toBe(72);
+    ).toBe(74);
   });
 
   it('classifies every variant the core can send', () => {

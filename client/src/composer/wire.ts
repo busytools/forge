@@ -147,15 +147,32 @@ export interface QuestionRequest {
   total: number;
 }
 
-/** A held Slack post: what is waiting, and what it would send. */
+/**
+ * What a held Slack draft would do, which its card's verbs follow. The tool
+ * alone cannot tell an edit from a delete.
+ */
+const SLACK_OPERATIONS = ['post', 'edit', 'delete', 'react', 'unreact', 'upload'] as const;
+/**
+ * A held draft's operation as the card reads it. `unknown` is this client's
+ * own: a value from a newer server draws neutral verbs rather than borrowing a
+ * post's, which could approve an act the value does not name.
+ */
+export type SlackOperation = (typeof SLACK_OPERATIONS)[number] | 'unknown';
+
+/** A held Slack draft: what is waiting, and what it would send. */
 export interface SlackDraft {
   /** The draft's own id, which is what an answer is addressed by. */
   id: string;
   workspace: string;
   conversationLabel: string;
-  /** `null` posts a root message; a timestamp replies into that thread. */
+  /**
+   * What the timestamp is depends on the operation: for a post or an
+   * upload it is the thread it replies into (absent on a root), and for an
+   * edit, delete, react or unreact it is the target MESSAGE's own ts.
+   */
   threadTs: string | null;
   text: string;
+  operation: SlackOperation;
 }
 
 /** A browser hand-off: a session asking the person to act in a browser tab. */
@@ -176,6 +193,20 @@ export interface BrowserHandOff {
   target: string | null;
 }
 
+/** A held configuration write: what it would change, and what the key holds now. */
+export interface SettingsWriteAsk {
+  /** The write's own id, which is what an answer is addressed by. */
+  id: string;
+  /** The concrete catalogue path the write names. */
+  key: string;
+  /** The value the key stands at now; `null` when it is unset. */
+  current: unknown;
+  /** The value the write would leave; `null` when it clears the key. */
+  proposed: unknown;
+  /** Whether the write clears the key rather than setting it. */
+  unset: boolean;
+}
+
 /** A document hand-off: a session offering the person a document to open. */
 export interface DocumentHandOff {
   /** The hand-off's own id, which is what an answer is addressed by. */
@@ -193,7 +224,8 @@ export type Ask =
   /** A held Slack post, which this composer draws no dock for. */
   | { kind: 'slack_draft'; request: SlackDraft }
   | { kind: 'browser_hand_off'; request: BrowserHandOff }
-  | { kind: 'document_hand_off'; request: DocumentHandOff };
+  | { kind: 'document_hand_off'; request: DocumentHandOff }
+  | { kind: 'settings_write'; request: SettingsWriteAsk };
 
 const OPTION_KINDS: PermissionOption['kind'][] = ['allow', 'deny', 'edit', 'notes'];
 const PHASES: TakePhase[] = ['recording', 'transcribing'];
@@ -216,8 +248,10 @@ function number(value: unknown): number | null {
 }
 
 /** One of `known`, or the least-alarming member when the value is one this client is older than. */
-function narrow<T extends string>(value: unknown, known: T[], fallback: T): T {
-  return typeof value === 'string' && (known as string[]).includes(value) ? (value as T) : fallback;
+function narrow<T extends string>(value: unknown, known: readonly T[], fallback: T): T {
+  return typeof value === 'string' && (known as readonly string[]).includes(value)
+    ? (value as T)
+    : fallback;
 }
 
 /** The composer's state as the record carries it. */
@@ -293,6 +327,8 @@ export function askFrom(value: unknown): Ask | null {
       return browserHandOffFrom(request);
     case 'document_hand_off':
       return documentHandOffFrom(request);
+    case 'settings_write':
+      return settingsWriteFrom(request);
     default:
       return null;
   }
@@ -362,6 +398,7 @@ function slackFrom(value: unknown): Ask {
       conversationLabel: text(held['conversation_label']) ?? '',
       threadTs: text(held['thread_ts']),
       text: text(held['text']) ?? '',
+      operation: narrow(held['operation'], SLACK_OPERATIONS, 'unknown'),
     },
   };
 }
@@ -376,6 +413,22 @@ function browserHandOffFrom(value: unknown): Ask {
       reason: text(held['reason']) ?? '',
       tab: number(held['tab']) ?? null,
       target: text(held['target']),
+    },
+  };
+}
+
+/** A held configuration write: the id is what an answer names, the key and
+ *  both values are what the reader decides on. */
+function settingsWriteFrom(value: unknown): Ask {
+  const held = record(value);
+  return {
+    kind: 'settings_write',
+    request: {
+      id: text(held['id']) ?? '',
+      key: text(held['key']) ?? '',
+      current: held['current'],
+      proposed: held['proposed'],
+      unset: held['unset'] === true,
     },
   };
 }

@@ -518,6 +518,7 @@ const FAMILY_NOUN: Record<ForgeFamily, string> = {
   gotify: 'notifications',
   slack: 'conversations',
   review: 'reviews',
+  settings: 'settings',
   agents: 'workers',
   handoff: 'handoff',
   voice: 'speech',

@@ -99,6 +99,11 @@ export const REDRAWS = new Set([
   'slack_draft_resolved',
   'browser_hand_off_pending',
   'browser_hand_off_resolved',
+  // A held configuration write moves its seat's row exactly as the asks
+  // above do: into the needs-you group while the dock waits, and back out
+  // when the reader answers.
+  'settings_write_pending',
+  'settings_write_resolved',
   'worker_status_changed',
   // The project's task set, its schedules and its connector subscriptions
   // moved. Since #2517 the schedules and connector sets ride the board's

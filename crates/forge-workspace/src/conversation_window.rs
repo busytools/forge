@@ -117,6 +117,22 @@ const WINDOW: Budget = Budget {
     byte_slack: CONVERSATION_SLACK_BYTES,
 };
 
+/// What a window's cut shed: the frames it dropped, and the thinking growth
+/// the drop took out of the newest turn.
+///
+/// **The second number is a reader's debt.** A cut inside a running turn takes
+/// its counter frames, and a page of what survives sums to less than the turn
+/// spent - so the share the cut took is carried to the page that serves the
+/// turn, which folds it back into the first counter it carries.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Shed {
+    /// The frames the cut dropped.
+    pub frames: usize,
+    /// The `estimated_tokens_delta` of the dropped counters belonging to the
+    /// turn open at the window's end.
+    pub thinking: i64,
+}
+
 /// One conversation's newest window, and what each frame in it weighs.
 ///
 /// **The weights are taken once, where a frame enters.** A copy's byte ceiling
@@ -133,6 +149,16 @@ pub struct Window {
     sizes: Vec<usize>,
     /// The running total of `sizes`, so a push never walks the window.
     bytes: usize,
+    /// Where the newest turn's opening frame sits in `messages`, `None` when
+    /// the window holds no opening frame for it - either a cut dropped it or
+    /// the scan named none.
+    ///
+    /// **It is how a drop tells the newest turn's counters from older ones**:
+    /// a cut at a turn's first frame takes settled turns, whose counters no
+    /// page owes, while a cut inside the newest turn owes every counter after
+    /// its opening. **No opening frame means the whole window is one turn**,
+    /// so every dropped counter from its front belongs to that turn.
+    newest_open: Option<usize>,
 }
 
 impl Window {
@@ -153,13 +179,14 @@ impl Window {
         self.messages.is_empty()
     }
 
-    /// One frame the session emitted, and how many the ceilings shed for it.
+    /// One frame the session emitted, and what the ceilings shed for it.
     ///
     /// **Before the push, so the drop pays for the room it makes.** After it,
     /// this one frame is what tips the store into a doubling the drop is about
-    /// to throw away.
-    pub fn push(&mut self, message: Message) -> usize {
-        self.push_with(message, WINDOW)
+    /// to throw away. `opened` says the frame starts a turn, which is what
+    /// tells the cut where the newest turn begins.
+    pub fn push(&mut self, message: Message, opened: bool) -> Shed {
+        self.push_with(message, opened, WINDOW)
     }
 
     /// Take everything `other` holds onto this window's end.
@@ -169,14 +196,46 @@ impl Window {
     /// slack by whatever the fold's run carried - the split the fold has always
     /// had, and the push that follows it is what brings the ceilings back.
     pub fn append(&mut self, other: &mut Window) {
+        let base = self.messages.len();
         self.bytes = self.bytes.saturating_add(other.bytes);
         self.messages.append(&mut other.messages);
         self.sizes.append(&mut other.sizes);
         other.bytes = 0;
+        // The tail's openings were read off the stream, so its own answer is
+        // exact; it is only its position that moves.
+        if let Some(at) = other.newest_open {
+            self.newest_open = Some(base + at);
+        }
+        // The donor is left empty, so its own answer must be too.
+        other.newest_open = None;
     }
 
-    /// The newest window of `history`, as a copy to keep or hand over, and how
-    /// many frames it left behind.
+    /// Fold a cut's thinking debt into the first counter the newest turn still
+    /// carries.
+    ///
+    /// **A handover has no page to fold into.** A resume hands the window to
+    /// the update stream, so the debt rides the frames rather than a serve:
+    /// the first counter the newest turn carries absorbs it, and every reader
+    /// of the handover sums the whole turn.
+    pub fn carry_thinking(&mut self, shed: Shed) {
+        if shed.thinking == 0 {
+            return;
+        }
+        let from = self.newest_open.unwrap_or(0);
+        let Some(at) =
+            self.messages[from..].iter().position(|message| turn_counter(message).is_some())
+        else {
+            return;
+        };
+        if let Message::ThinkingTokens { estimated_tokens_delta, .. } =
+            &mut self.messages[from + at]
+        {
+            *estimated_tokens_delta = estimated_tokens_delta.saturating_add(shed.thinking);
+        }
+    }
+
+    /// The newest window of `history`, as a copy to keep or hand over, and what
+    /// the cut shed.
     ///
     /// **Taken from the slice rather than cloned whole and cut**, which is the
     /// difference between a window-sized allocation and a transcript-sized
@@ -185,39 +244,52 @@ impl Window {
     /// ever weighed**: the walk starts at the newest frame and stops once
     /// either ceiling's slack is spent, so a 2.8 GB read pays a window's worth
     /// of measuring rather than a transcript's.
-    pub fn tail_of(history: &[Message]) -> (Window, usize) {
+    ///
+    /// The openings are the exception to the measure's stop: a scan from the
+    /// history's own start is the only exact answer, and it weighs nothing.
+    pub fn tail_of(history: &[Message]) -> (Window, Shed) {
         Self::tail_of_with(history, WINDOW)
     }
 
     /// A frame on the end, weighed once, dropping first when a ceiling is
     /// already passed - the whole cut, drivable at a smaller ceiling.
-    fn push_with(&mut self, message: Message, budget: Budget) -> usize {
-        let dropped = if self.messages.len() >= budget.count + budget.count_slack
+    fn push_with(&mut self, message: Message, opened: bool, budget: Budget) -> Shed {
+        let shed = if self.messages.len() >= budget.count + budget.count_slack
             || self.bytes >= budget.bytes + budget.byte_slack
         {
             self.drop_with(budget)
         } else {
-            0
+            Shed::default()
         };
         let size = wire_bytes(&message);
         self.bytes = self.bytes.saturating_add(size);
         self.sizes.push(size);
         self.messages.push(message);
-        dropped
+        if opened {
+            self.newest_open = Some(self.messages.len() - 1);
+        }
+        shed
     }
 
     /// Drop the oldest messages until the window is back inside the ceilings,
-    /// and report how many went.
+    /// and report what went.
     ///
     /// **A fresh allocation rather than a `drain`**, because a `Vec` keeps the
     /// store it grew to: the point of the cap is that a copy stops holding the
     /// backing store of a conversation it no longer has, and a drain would
     /// leave it holding all of it with a window's worth of messages in front.
-    fn drop_with(&mut self, budget: Budget) -> usize {
+    fn drop_with(&mut self, budget: Budget) -> Shed {
         let front = front_of(&self.messages, &self.sizes, 0, budget);
         if front == 0 {
-            return 0;
+            return Shed::default();
         }
+        // The debt is only the newest turn's: a cut at or before its opening
+        // takes settled turns, whose counters no page owes.
+        let thinking = match self.newest_open {
+            Some(at) if front <= at => 0,
+            Some(at) => thinking_in(&self.messages[at..front]),
+            None => thinking_in(&self.messages[..front]),
+        };
         let taken = std::mem::take(&mut self.messages);
         let taken_sizes = std::mem::take(&mut self.sizes);
         // Sized for the slack as well, so the frames that refill it do not
@@ -229,14 +301,15 @@ impl Window {
         self.bytes = kept_sizes.iter().sum();
         self.messages = kept;
         self.sizes = kept_sizes;
-        front
+        self.newest_open = self.newest_open.and_then(|at| at.checked_sub(front));
+        Shed { frames: front, thinking }
     }
 
     /// [`Self::tail_of`]'s body, at a ceiling a caller names.
     ///
     /// `sizes` covers `history[measured_from..]`: what the walk weighed, which
     /// is the newest frames up to whichever ceiling stopped it.
-    fn tail_of_with(history: &[Message], budget: Budget) -> (Window, usize) {
+    fn tail_of_with(history: &[Message], budget: Budget) -> (Window, Shed) {
         let mut sizes_newest_first: Vec<usize> = Vec::new();
         let mut bytes = 0usize;
         for message in history.iter().rev() {
@@ -255,13 +328,50 @@ impl Window {
         sizes.reverse();
         let front = front_of(history, &sizes, measured_from, budget);
         let kept_sizes = sizes[(front - measured_from)..].to_vec();
+        let mut scan = crate::conversation_turns::TurnScan::default();
+        let mut newest_open = None;
+        for (at, message) in history.iter().enumerate() {
+            if crate::conversation_turns::opens_for_debt(&mut scan, message) {
+                newest_open = Some(at);
+            }
+        }
+        let thinking = match newest_open {
+            Some(at) if front <= at => 0,
+            Some(at) => thinking_in(&history[at..front]),
+            None => thinking_in(&history[..front]),
+        };
+        let kept_open = newest_open.and_then(|at| at.checked_sub(front));
         let window = Window {
             bytes: kept_sizes.iter().sum(),
             sizes: kept_sizes,
             messages: history[front..].to_vec(),
+            newest_open: kept_open,
         };
-        (window, front)
+        (window, Shed { frames: front, thinking })
     }
+}
+
+/// The thinking growth a run of frames stands for: the sum of the deltas on
+/// the turn's own counters among them.
+fn thinking_in(messages: &[Message]) -> i64 {
+    messages.iter().filter_map(turn_counter).sum()
+}
+
+/// The growth a frame stands for when it is the turn's own thinking counter,
+/// not a dispatched sub-agent's.
+///
+/// **The same guard `compact_counters` keeps**: a sub-agent's counters belong
+/// to the subagents surface, and adding them to the turn's debt would put
+/// them on the parent's figure.
+fn turn_counter(message: &Message) -> Option<i64> {
+    let Message::ThinkingTokens { estimated_tokens_delta, extras, .. } = message else {
+        return None;
+    };
+    let dispatched = extras
+        .get("parent_tool_use_id")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|id| !id.trim().is_empty());
+    (!dispatched).then_some(*estimated_tokens_delta)
 }
 
 /// What a frame weighs on the wire: its JSON, which is what a page carries.
@@ -440,6 +550,36 @@ mod tests {
         .expect("a user frame")
     }
 
+    /// One thinking-token counter, with a cumulative absolute that is not its
+    /// delta - so summing the wrong field fails.
+    fn a_counter(at: usize, delta: i64) -> Message {
+        let absolute = at.saturating_add(1) * usize::try_from(delta).expect("a positive delta");
+        serde_json::from_value(serde_json::json!({
+            "type": "system",
+            "subtype": "thinking_tokens",
+            "estimated_tokens": absolute,
+            "estimated_tokens_delta": delta,
+            "uuid": format!("t-{at}"),
+            "session_id": "5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45",
+        }))
+        .expect("a counter frame")
+    }
+
+    /// The frame that ends a turn.
+    fn a_result() -> Message {
+        serde_json::from_value(serde_json::json!({
+            "type": "result",
+            "subtype": "success",
+            "uuid": "r-1",
+            "session_id": "5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45",
+            "is_error": false,
+            "num_turns": 1,
+            "duration_ms": 12,
+            "duration_api_ms": 9,
+        }))
+        .expect("a result frame")
+    }
+
     /// `turns` turns of `frames_each` frames: the user row that opens one,
     /// then frames that belong to it and open none of their own.
     fn a_history_of(turns: usize, frames_each: usize) -> Vec<Message> {
@@ -479,7 +619,7 @@ mod tests {
         let (window, dropped) = Window::tail_of(&messages);
 
         assert_eq!(
-            dropped, 1_002,
+            dropped.frames, 1_002,
             "the drop passes the count it had to shed to land on a turn's first frame",
         );
         assert_eq!(
@@ -510,7 +650,7 @@ mod tests {
 
         let (window, dropped) = Window::tail_of(&messages);
 
-        assert_eq!(dropped, 500, "the crossing turn is kept whole");
+        assert_eq!(dropped.frames, 500, "the crossing turn is kept whole");
         assert_eq!(
             window.len(),
             4_501,
@@ -532,12 +672,62 @@ mod tests {
 
         let (window, dropped) = Window::tail_of(&messages);
 
-        assert_eq!(dropped, 2_000, "the cut is the count the cap holds");
+        assert_eq!(dropped.frames, 2_000, "the cut is the count the cap holds");
         assert_eq!(window.len(), CONVERSATION_CAP, "and the window comes out at the cap");
         assert!(
             !opens_a_turn(&window.messages()[0]),
             "inside the turn, which is the only option when a single turn alone exceeds the slack",
         );
+    }
+
+    /// **A cut inside a turn reports the counters it took.** The debt is the
+    /// newest turn's own counters, not the settled turn's before it, and a
+    /// cut at a turn's first frame owes nothing.
+    #[test]
+    fn a_cut_inside_a_turn_reports_the_thinking_it_took() {
+        let mut history = vec![a_said("settled"), a_counter(1, 5), a_result(), a_said("running")];
+        for at in 0..10 {
+            history.push(a_counter(at + 10, 3));
+        }
+
+        let inside = Budget { count: 5, count_slack: 0, bytes: usize::MAX, byte_slack: 0 };
+        let (_, shed) = Window::tail_of_with(&history, inside);
+        assert_eq!(shed.frames, 9, "the cut passes the settled turn and the running head");
+        assert_eq!(shed.thinking, 15, "only the running turn's dropped counters count");
+
+        let boundary = Budget { count: 11, count_slack: 0, bytes: usize::MAX, byte_slack: 0 };
+        let (_, shed) = Window::tail_of_with(&history, boundary);
+        assert_eq!(shed.frames, 3, "the cut lands on the running turn's first frame");
+        assert_eq!(shed.thinking, 0, "a cut at a turn's first frame owes nothing");
+    }
+
+    /// **An append carries the tail's newest opening onto the head.** The fold
+    /// hands over the frames that arrived while it ran, and a turn opened in
+    /// them is the newest turn the drop must attribute to.
+    #[test]
+    fn an_append_carries_the_tails_newest_opening() {
+        let ceiling = Budget { count: 8, count_slack: 2, bytes: usize::MAX, byte_slack: 0 };
+        let mut head = Window::empty();
+        let opening = a_said("head");
+        let opened = opens_a_turn(&opening);
+        head.push_with(opening, opened, ceiling);
+        assert_eq!(head.newest_open, Some(0), "precondition: the head's own opening");
+
+        let mut tail = Window::empty();
+        let frame = a_work_frame(1, 1);
+        let opened = opens_a_turn(&frame);
+        tail.push_with(frame, opened, ceiling);
+        head.append(&mut tail);
+        assert_eq!(head.newest_open, Some(0), "a tail with no opening leaves the head's answer");
+        assert_eq!(tail.newest_open, None, "and the donor is left empty");
+
+        let mut tail = Window::empty();
+        let opening = a_said("tail");
+        let opened = opens_a_turn(&opening);
+        tail.push_with(opening, opened, ceiling);
+        let at = head.len();
+        head.append(&mut tail);
+        assert_eq!(head.newest_open, Some(at), "a tail's opening becomes the newest turn's");
     }
 
     /// **A head the scan cannot read leaves the count's own cut, deliberately.**
@@ -559,7 +749,10 @@ mod tests {
 
         let (window, dropped) = Window::tail_of(&messages);
 
-        assert_eq!(dropped, 1_001, "the cut is the count the cap holds, not a turn's first frame");
+        assert_eq!(
+            dropped.frames, 1_001,
+            "the cut is the count the cap holds, not a turn's first frame"
+        );
         assert_eq!(window.len(), CONVERSATION_CAP, "and the window comes out at the cap");
         assert!(
             !opens_a_turn(&window.messages()[0]),
@@ -599,7 +792,7 @@ mod tests {
 
         let (window, dropped) = Window::tail_of(&messages);
 
-        assert_eq!(dropped, 1_004, "the cut passes every frame that opens no turn");
+        assert_eq!(dropped.frames, 1_004, "the cut passes every frame that opens no turn");
         assert!(
             opens_a_turn(&window.messages()[0]),
             "and the window starts on a turn's own first frame"
@@ -610,13 +803,16 @@ mod tests {
     #[test]
     fn a_copy_past_the_cap_drops_its_oldest_messages() {
         let at_cap: Vec<Message> = (0..CONVERSATION_CAP).map(a_frame).collect();
-        assert_eq!(Window::tail_of(&at_cap).1, 0, "a copy at the cap is left alone");
+        assert_eq!(Window::tail_of(&at_cap).1.frames, 0, "a copy at the cap is left alone");
 
         let messages: Vec<Message> =
             (0..CONVERSATION_CAP + CONVERSATION_SLACK).map(a_frame).collect();
         let (window, dropped) = Window::tail_of(&messages);
 
-        assert_eq!(dropped, CONVERSATION_SLACK, "the drop keeps the cap and reports the rest");
+        assert_eq!(
+            dropped.frames, CONVERSATION_SLACK,
+            "the drop keeps the cap and reports the rest"
+        );
         assert_eq!(
             window.len(),
             CONVERSATION_CAP,
@@ -663,7 +859,7 @@ mod tests {
         let long: Vec<Message> = (0..CONVERSATION_CAP * 2).map(a_frame).collect();
         let (window, dropped) = Window::tail_of(&long);
         assert_eq!(window.len(), CONVERSATION_CAP, "an over-long history is taken as a window");
-        assert_eq!(dropped, CONVERSATION_CAP, "and the front it left is reported");
+        assert_eq!(dropped.frames, CONVERSATION_CAP, "and the front it left is reported");
         assert_eq!(
             said(&window.messages()[0]),
             format!("frame {CONVERSATION_CAP}"),
@@ -807,7 +1003,9 @@ mod tests {
         let ceiling = Budget { count: 1_000, count_slack: 100, bytes: 2_000, byte_slack: 500 };
         let mut window = Window::empty();
         for _ in 0..40 {
-            window.push_with(a_said(&"x".repeat(200)), ceiling);
+            let frame = a_said(&"x".repeat(200));
+            let opened = opens_a_turn(&frame);
+            window.push_with(frame, opened, ceiling);
         }
 
         let held: usize = window.messages().iter().map(wire_bytes).sum();
@@ -838,7 +1036,7 @@ mod tests {
         let (window, dropped) = Window::tail_of_with(&messages, ceiling);
 
         assert_eq!(window.len(), 8, "the count cap is what the window keeps");
-        assert_eq!(dropped, 92, "and everything below the measure's stop is reported gone");
+        assert_eq!(dropped.frames, 92, "and everything below the measure's stop is reported gone");
         assert_eq!(
             said(&window.messages()[0]),
             "turn 92",
@@ -857,13 +1055,18 @@ mod tests {
         let ceiling = Budget { count: 6, count_slack: 2, bytes: usize::MAX, byte_slack: 0 };
         let mut window = Window::empty();
         for at in 0..20 {
-            window.push_with(a_frame(at), ceiling);
+            let frame = a_frame(at);
+            let opened = opens_a_turn(&frame);
+            window.push_with(frame, opened, ceiling);
         }
         assert!(window.len() <= 8, "precondition: the count ceiling bound the window");
 
         let mut arrivals = Window::empty();
-        arrivals.push_with(a_frame(100), ceiling);
-        arrivals.push_with(a_frame(101), ceiling);
+        for at in [100, 101] {
+            let frame = a_frame(at);
+            let opened = opens_a_turn(&frame);
+            arrivals.push_with(frame, opened, ceiling);
+        }
         window.append(&mut arrivals);
 
         assert_eq!(window.sizes.len(), window.messages().len(), "one weight per message");

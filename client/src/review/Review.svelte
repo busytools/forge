@@ -96,7 +96,7 @@
    * The floor between two of this page's own reads.
    *
    * A branch under a rebase or a burst of commits can move a chain faster than
-   * a read answers, and each read is a whole record plus a base fetch: the
+   * a read answers, and each read is a whole record: the
    * debounce alone has no ceiling, so this is the one that bounds the rate.
    */
   const REASK_FLOOR_MS = 10_000;
@@ -157,7 +157,8 @@
    * **The page's read is its own, for as long as it holds the seat.** The
    * record it opens on may have been read for whichever page asked last, and
    * its base may be hours old; the all-changes diff is drawn from a read that
-   * refreshes that base first. The intent lives on the seat, so the open
+   * answers the last base it checked and refreshes it off the read. The
+   * intent lives on the seat, so the open
    * itself carries it and every later read after it does too - a reconnect, a
    * replacement frame. The cleanup takes it back, so a page mounting the seat
    * afterwards asks an ordinary read.
@@ -208,9 +209,9 @@
 
   /**
    * What the page says about the base the All changes diff was taken against,
-   * or null when it is current. The server fetches the base before the diff;
-   * when that fetch could not run it says so, and a stale base must never
-   * read as the branch's own change.
+   * or null when it is current. The server answers the last base it checked
+   * and refreshes it off the read; when that check could not run it says so,
+   * and a stale base must never read as the branch's own change.
    */
   const baseNote = $derived.by(() => {
     // **Only a record this page's own read produced may say what the read
@@ -1589,9 +1590,8 @@
     color: var(--bad);
     padding: 2px 2px 8px;
   }
-  /* The one wait this page explains: its own read fetches the base before it
-     answers, with no cap, and the work spinner is the mark every surface uses
-     for work in flight. */
+  /* The one wait this page explains: its own record read, and the work
+     spinner is the mark every surface uses for work in flight. */
   .pending .ring {
     margin-right: 7px;
     vertical-align: -1px;

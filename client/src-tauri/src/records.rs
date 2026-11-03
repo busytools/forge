@@ -346,6 +346,7 @@ fn seat_update(record: &mut Value, name: &str, payload: &Value) -> bool {
         "question_request" => parked(record, "question", payload.get("request")),
         "slack_post_pending" => parked(record, "slack_draft", payload.get("draft")),
         "browser_hand_off_pending" => parked(record, "browser_hand_off", payload.get("handoff")),
+        "settings_write_pending" => parked(record, "settings_write", payload.get("ask")),
         "prompt_queued" => {
             let (Some(uuid), Some(words)) = (
                 payload.get("uuid").and_then(Value::as_str),
@@ -442,6 +443,7 @@ fn seat_update(record: &mut Value, name: &str, payload: &Value) -> bool {
         }
         "slack_draft_resolved" => clear_ask(record, payload.get("id"), "slack"),
         "browser_hand_off_resolved" => clear_ask(record, payload.get("id"), "handoff"),
+        "settings_write_resolved" => clear_ask(record, payload.get("id"), "settings"),
         // **A take is never folded here.** It belongs to the connection that
         // started it - the wire's own composer says so ("no take and no
         // notice") - so a record has no place for one and the page's own
@@ -704,7 +706,7 @@ fn parked(record: &mut Map<String, Value>, kind: &str, request: Option<&Value>) 
     {
         return false;
     }
-    let leads = kind == "slack_draft" || kind == "browser_hand_off";
+    let leads = kind == "slack_draft" || kind == "browser_hand_off" || kind == "settings_write";
     let mut asks = asks;
     if leads {
         // Behind the leaders already there, ahead of everything else.
@@ -712,7 +714,7 @@ fn parked(record: &mut Map<String, Value>, kind: &str, request: Option<&Value>) 
             .iter()
             .position(|waiting| {
                 let name = waiting.get("kind").and_then(Value::as_str).unwrap_or_default();
-                name != "slack_draft" && name != "browser_hand_off"
+                name != "slack_draft" && name != "browser_hand_off" && name != "settings_write"
             })
             .unwrap_or(asks.len());
         asks.insert(first_other, ask);
@@ -733,6 +735,9 @@ fn ask_key(ask: &Value) -> Option<String> {
     }
     if kind == "browser_hand_off" {
         return request.get("id").and_then(Value::as_str).map(|id| format!("handoff:{id}"));
+    }
+    if kind == "settings_write" {
+        return request.get("id").and_then(Value::as_str).map(|id| format!("settings:{id}"));
     }
     let id = ask_tool_id(ask)?;
     Some(if kind == "question" {

@@ -185,8 +185,14 @@
       set: (asked: number) => {
         const before = element.offset;
         const landed = Math.max(0, Math.min(asked, elementHeight() - elementViewport()));
-        pins.push({ asked, landed });
-        element.offset = landed;
+        // **A real browser quantises the offset it lands on**, so a write at a
+        // fractional target can read back short of it. Off unless a test opts
+        // in with `quantised`, because the exact double is easier to reason
+        // with everywhere else.
+        const placed =
+          element.quantise > 0 ? Math.round(landed / element.quantise) * element.quantise : landed;
+        pins.push({ asked, landed: placed });
+        element.offset = placed;
         // **A write that moved comes back as the event a browser fires, a
         // moment later** - never synchronously, or the column would read the
         // echo before the token it arms from the write's own read-back.
@@ -195,8 +201,8 @@
         // into one event carrying the final value: benign for everything here,
         // and a later test that writes twice in a task wants the coalescing
         // before it can trust the token against the second write.
-        if (landed !== before) {
-          queueMicrotask(() => onscroll?.(landed));
+        if (placed !== before) {
+          queueMicrotask(() => onscroll?.(placed));
         }
       },
     });

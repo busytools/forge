@@ -63,6 +63,7 @@
    again while dragged. `scrollbar-gutter: stable` stays each scroller's own
    concern. */
 html::-webkit-scrollbar,
+.doc-page::-webkit-scrollbar,
 .rail .scroll::-webkit-scrollbar,
 .conv::-webkit-scrollbar,
 .ac .rows::-webkit-scrollbar,
@@ -77,6 +78,7 @@ html::-webkit-scrollbar,
   cursor: pointer;
 }
 html::-webkit-scrollbar-track,
+.doc-page::-webkit-scrollbar-track,
 .rail .scroll::-webkit-scrollbar-track,
 .conv::-webkit-scrollbar-track,
 .ac .rows::-webkit-scrollbar-track,
@@ -91,6 +93,7 @@ html::-webkit-scrollbar-track,
   cursor: pointer;
 }
 html::-webkit-scrollbar-corner,
+.doc-page::-webkit-scrollbar-corner,
 .rail .scroll::-webkit-scrollbar-corner,
 .conv::-webkit-scrollbar-corner,
 .ac .rows::-webkit-scrollbar-corner,
@@ -105,6 +108,7 @@ html::-webkit-scrollbar-corner,
   cursor: pointer;
 }
 html::-webkit-scrollbar-thumb,
+.doc-page::-webkit-scrollbar-thumb,
 .rail .scroll::-webkit-scrollbar-thumb,
 .conv::-webkit-scrollbar-thumb,
 .ac .rows::-webkit-scrollbar-thumb,
@@ -120,6 +124,7 @@ html::-webkit-scrollbar-thumb,
   cursor: pointer;
 }
 html::-webkit-scrollbar-thumb:hover,
+.doc-page::-webkit-scrollbar-thumb:hover,
 .rail .scroll::-webkit-scrollbar-thumb:hover,
 .conv::-webkit-scrollbar-thumb:hover,
 .ac .rows::-webkit-scrollbar-thumb:hover,
@@ -133,6 +138,7 @@ html::-webkit-scrollbar-thumb:hover,
   background: var(--line);
 }
 html::-webkit-scrollbar-thumb:active,
+.doc-page::-webkit-scrollbar-thumb:active,
 .rail .scroll::-webkit-scrollbar-thumb:active,
 .conv::-webkit-scrollbar-thumb:active,
 .ac .rows::-webkit-scrollbar-thumb:active,
@@ -3055,8 +3061,11 @@ kbd { font-family: inherit; font-size: inherit; color: inherit;
 
 /* The take's card: one pill inside the box, at its top left, with the draft
    below it. It is a row rather than a floating reading, so the height it takes
-   is the height it uses. */
+   is the height it uses. **The card is its own container**, because the
+   readings' ladder below measures the room the readings have - the card's, not
+   the box's, since the row's controls take their share first (#2842). */
 .tc { align-self: flex-start; display: flex; max-width: 100%;
+  container-type: inline-size;
   align-items: center; gap: 10px; padding: 5px 10px; margin-bottom: 8px;
   border-radius: 999px;
   font-family: var(--mono); font-size: var(--fs-label); white-space: nowrap;
@@ -3169,7 +3178,7 @@ kbd { font-family: inherit; font-size: inherit; color: inherit;
    clock, graph, ready tally, frames, bytes, pace - and the dot, the way out
    and the state's colour are what remain. Items are removed, never reordered.
    Each step is one below the measured fit point in the real engine, against
-   the container's own measure (the box's content width), with the widest digits
+   the container's own measure (the card's content width), with the widest digits
    a take can be holding (90000 fr, 57.7 MB, 999 KB/s): the card is 506px with
    every reading, 457 without the clock, 331 without the graph, 267 without the
    tally, 196 without the frames, 124 without the bytes, and alone with the
@@ -3418,6 +3427,14 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
   border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px; }
 .dock .reason { color: var(--warn); font-size: var(--fs-base); }
 .dock .desc { color: var(--dim); font-size: var(--fs-base); }
+/* A held write's values, verbatim: a config value can be a number, a list or
+   an object, so both blocks are monospace and wrap rather than a form this
+   dock would have to invent a control for. */
+.dock .wv { margin: 0; padding: 8px 10px; border: 1px solid var(--line);
+  border-radius: 8px; background: var(--s1); color: var(--text);
+  font-family: var(--mono); font-size: var(--fs-data);
+  white-space: pre-wrap; overflow-wrap: anywhere;
+  max-height: 180px; overflow-y: auto; }
 /* A long option list scrolls in place rather than pushing the foot off a
    phone: the prompt lane is a lane, not a page, and the words row below it
    must stay reachable however many options the wire sent. */
@@ -3492,6 +3509,12 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
 .dock .btn.p { border-color: color-mix(in srgb, var(--accent) 50%, transparent);
   color: var(--hot); background: color-mix(in srgb, var(--accent) 10%, transparent); }
 .dock .btn.d { border-color: color-mix(in srgb, var(--bad) 45%, transparent); color: var(--bad); }
+/* The send-back's words, on the card the draft is drawn on. The field
+   takes the width and the verb sits at its end, the way the words row's
+   send glyph does. */
+.dock .sendback { display: flex; align-items: flex-start; gap: 8px; }
+.dock .sendback .notes { flex: 1; min-width: 0; width: auto; }
+.dock .btn:disabled { opacity: .5; cursor: default; }
 /* The words row, which is the prompt's LAST row and its input: it draws like
    any option, and the field inside it is the answer. Arriving on it puts the
    caret in it - no tint for that, the caret is the signal - and the mic rides
@@ -3530,6 +3553,8 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
   .dock .chevb { min-width: 44px; min-height: 44px; }
   .micb { min-height: 44px; min-width: 44px; }
   .sendb { min-height: 44px; min-width: 44px; }
+  /* The send-back field is a finger target like every other control. */
+  .dock .sendback .notes { min-height: 44px; }
 }
 /* The phase or the batch, for a screen reader only: the marks say nothing. */
 .dock .sr { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
@@ -5270,19 +5295,30 @@ details[open] > summary .arw { opacity: 1; }
 }
 
 /* ---------- the document viewer ---------- */
-.doc-page { max-width: none; margin: 0; }
-/* **The sheet** (Ved, the look, chosen over the full-bleed page): the
-   document rests on the app like a page on a desk - one panel at a
-   comfortable measure, and the space around it is the desk rather than
+/* **The route fills the surface, and the route is the scroller.** A
+   document is read at whatever width the reader's window gives it: prose
+   keeps a readable measure of its own and code, tables and long lines take
+   the width. The scroller wears the sheet's one scrollbar skin (the group
+   at the top), corner included - the platform's unstyled corner is the
+   white block this page used to show at its bottom-right. */
+.doc-page { max-width: none; margin: 0; height: 100dvh; overflow-y: auto;
+  overflow-x: hidden; scrollbar-gutter: stable; }
+/* **The sheet** (Ved, the look): the document rests on the app like a page
+   on a desk - one panel, and the space around it is the desk rather than
    emptiness. The typography inside is the chat's own rules under the
    doc scope, carrying the reading scale the drawing settled on: a hairline
    over every section, tighter leading, one type scale for both the
    rendered prose and the reviewable blocks (whose HTML is bare elements,
    so the same rules reach them). */
-.doc-page .doc-body { max-width: 940px; margin: 0 auto; background: var(--s1);
+.doc-page .doc-body { max-width: none; margin: 0; background: var(--s1);
   /* The document's own column, which its stacked tables guard on. */
   container-type: inline-size;
   border: 1px solid var(--line); border-radius: 10px; padding: 52px 60px 44px; }
+/* A person reads prose line by line, so it keeps a measure; a heading rides
+   the same one. Code, tables and unbroken tokens are read by their columns
+   and take the whole sheet. */
+.doc-page .doc-body :is(h1, h2, h3, p, li, blockquote) { max-width: 76ch; }
+.doc-page .doc-body :is(pre, table, .code) { max-width: none; }
 .doc-page .doc-body h1 { font-size: 30px; line-height: 1.25; font-weight: 500;
   letter-spacing: -0.01em; margin: 0 0 18px; }
 .doc-page .doc-body h2 { font-size: 19px; font-weight: 500; letter-spacing: -0.005em;
@@ -5320,60 +5356,90 @@ details[open] > summary .arw { opacity: 1; }
   border-radius: var(--r); background: #fff; }
 
 /* ---------- a reviewable document: its rendered blocks ---------- */
-/* The document rendered, every top-level block a comment target: the block
-   under the pointer (or the focus) is marked, and a press opens the composer
-   under it. The anchor is the block's own source lines, which is what keeps
-   a comment's captured lines and its outdated marking exact when the
-   document changes. A plain-text document has no blocks, so its rows are
-   its own lines, drawn as the text they are. */
+/* The document rendered, every top-level block a comment target and every
+   source line in its gutter one too: the block or number under the pointer
+   (or the focus) is marked, and a press opens the composer under it. A
+   block anchor captures the block's span; a line anchor captures from the
+   pressed line, its first line being what a revision re-finds the thread
+   by. A plain-text document has no blocks, so its rows are its own lines,
+   drawn as the text they are. */
 .doc-page .doc-blocks { font-size: var(--fs-base); }
-/* **A block is a prose root**: its rendered marks read the chat's own rules
-   through `.prose`, the way the non-reviewable page reads them. No vertical
-   padding, so each block's first and last child margins collapse through the
-   box - the block boxes then space themselves by the sheet's own rhythm
-   instead of stacking flush. */
-.doc-page .doc-block { position: relative; border-radius: 6px; padding: 0 10px;
-  margin: 0 -10px; cursor: pointer; }
+/* **A block is a prose root with a source-line gutter.** Its rendered marks
+   read the chat's own rules through `.prose`; the gutter is one numbered
+   target per source line the block spans, so a comment can land on a line
+   as well as on the whole section. No vertical padding, so each block's
+   first and last child margins collapse through the box - the block boxes
+   then space themselves by the sheet's own rhythm instead of stacking
+   flush. */
+.doc-page .doc-block { position: relative; border-radius: 6px; cursor: pointer;
+  display: grid; grid-template-columns: 3.4rem minmax(0, 1fr);
+  column-gap: 10px; padding: 0 10px 0 0; margin: 0 -10px 0 0; }
 .doc-page .doc-block:hover, .doc-page .doc-block.target, .doc-page .doc-block:focus-visible {
   background: var(--s1); box-shadow: inset 2px 0 0 var(--accent); outline: none; }
+/* The gutter fills its block's height, one cell per source line, so a
+   number sits beside the part of the block its source line produced. */
+.doc-page .doc-lines { display: flex; flex-direction: column; align-items: stretch;
+  border-right: 1px solid var(--line); padding-right: 4px; }
+.doc-page .doc-lnum { font-family: var(--mono); font-size: var(--fs-label);
+  color: var(--dim); background: none; border: 0; border-radius: 4px;
+  padding: 0 4px; cursor: pointer; text-align: right; flex: 1 1 0;
+  min-height: 1.5em; line-height: 1.5; }
+.doc-page .doc-lnum:hover, .doc-page .doc-lnum:focus-visible, .doc-page .doc-lnum.target {
+  color: var(--text); background: var(--s2);
+  box-shadow: inset 2px 0 0 var(--accent); outline: none; }
+.doc-page .doc-block-body { min-width: 0; }
 /* The gutter between two blocks is the sheet's air, not a block's target: a
    press on a paragraph's gap opens nothing, because the block's own box is
    where its comment starts. A rule's band is the one target that reaches
    into the gap it sits in. */
 /* `p + p` cannot see across two block boxes, so the block path states the one
    gap the collapsed margins do not already carry. */
-.doc-page .doc-block:has(> p) + .doc-block:has(> p) > p { margin-top: 20px; }
+.doc-page .doc-block:has(> .doc-block-body > p) + .doc-block:has(> .doc-block-body > p)
+  > .doc-block-body > p { margin-top: 20px; }
 /* A comment card sits between two blocks; the block after it keeps the
    sheet's 20px gap rather than the card's own tail. */
 .doc-page .doc-blocks > :is(.doc-note, .doc-compose, .rv-marker):has(+ .doc-block) {
   margin-bottom: 20px; }
 /* A plain-text row's child carries no margins, so the row keeps the block's
    own vertical padding: its pitch is the line box plus 4px, as it was. */
-.doc-page .doc-block:has(> .doc-raw) { padding: 2px 10px; }
+.doc-page .doc-block:has(> .doc-block-body > .doc-raw) { padding-top: 2px; padding-bottom: 2px; }
 /* An `hr` block is a hairline, so its pointer target and hover band are a
    band drawn around the line rather than laid out: an hr's own margins keep
    the row's rhythm where it was. The band takes half the 20px gap either
    side, so two rules in a row do not overlap, and it carries no ground of
    its own - the sheet's ground painted over the line it marks. */
-.doc-page .doc-block:has(> hr)::before { content: ''; position: absolute;
+.doc-page .doc-block:has(> .doc-block-body > hr)::before { content: ''; position: absolute;
   inset: -10px 0; border-radius: 6px; }
-.doc-page .doc-block:has(> hr):hover::before,
-.doc-page .doc-block:has(> hr).target::before,
-.doc-page .doc-block:has(> hr):focus-visible::before {
+.doc-page .doc-block:has(> .doc-block-body > hr):hover::before,
+.doc-page .doc-block:has(> .doc-block-body > hr).target::before,
+.doc-page .doc-block:has(> .doc-block-body > hr):focus-visible::before {
   box-shadow: inset 2px 0 0 var(--accent); }
 /* The sheet's edges keep the trims the block used to apply to every child:
    only the first and last blocks give up their outer margin. */
-.doc-page .doc-blocks > .doc-block:first-child > :first-child { margin-top: 0; }
-.doc-page .doc-blocks > .doc-block:not(:has(~ .doc-block)) > :last-child { margin-bottom: 0; }
+.doc-page .doc-blocks > .doc-block:first-child > .doc-block-body > :first-child {
+  margin-top: 0; }
+.doc-page .doc-blocks > .doc-block:not(:has(~ .doc-block)) > .doc-block-body > :last-child {
+  margin-bottom: 0; }
 .doc-page .doc-raw { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text);
   font-family: var(--mono); font-size: var(--fs-data); line-height: 1.6; }
-/* A comment under the block it is about: who wrote it, the words, and the
-   drafted mark until the done files it. */
-.doc-page .doc-note { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline;
+/* A comment under the block it is about: every turn the thread carries -
+   the reader's comment and the agent's reply beside it - with its acts on
+   a line of their own, and the drafted mark until the answer files it. */
+.doc-page .doc-note { display: flex; flex-direction: column; gap: 6px;
   margin: 4px 0 8px 2.2rem; padding: 6px 10px; background: var(--s1);
   border-left: 2px solid var(--line); border-radius: 0 var(--r) var(--r) 0;
   font-family: var(--ui); font-size: var(--fs-base); }
+/* A thread whose captured line the revision left behind: the warn tone
+   marks it, and the word `outdated` rides beside it so colour is not the
+   only carrier. */
+.doc-page .doc-note.doc-outdated { border-left-color: var(--warn); }
+.doc-page .doc-notehead { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; }
+.doc-page .doc-movedfrom { font-family: var(--mono); font-size: var(--fs-label); color: var(--warn); }
+.doc-page .doc-why { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
 .doc-page .doc-who { color: var(--muted); font-size: var(--fs-label); }
+/* A draft's source line, so a line comment's card says which line it is on. */
+.doc-page .doc-where { color: var(--dim); font-family: var(--mono);
+  font-size: var(--fs-label); }
 /* The words are the chat's own prose - the renderer, the marks and the
    author's lines are `Prose`'s rules; this carries the note's tone, the way
    the review page's `.rv-turn .prose` carries its turn's. */
@@ -5394,15 +5460,20 @@ details[open] > summary .arw { opacity: 1; }
 .doc-page .doc-dictateline { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
 .doc-page .doc-dictateline.bad { color: var(--bad); }
 .doc-page .doc-dictateline.warn { color: var(--warn); }
-.doc-page .doc-comment-btn, .doc-page .doc-cancel-btn, .doc-page .doc-finish-btn {
+.doc-page .doc-comment-btn, .doc-page .doc-cancel-btn, .doc-page .doc-finish-btn,
+.doc-page .doc-answer-btn {
   font-family: var(--mono); font-size: var(--fs-label); border-radius: 9px;
   padding: 6px 12px; cursor: pointer; border: 1px solid var(--ctl);
   background: var(--s1); color: var(--muted); }
-.doc-page .doc-comment-btn:not(:disabled):hover, .doc-page .doc-finish-btn:not(:disabled):hover {
+.doc-page .doc-comment-btn:not(:disabled):hover, .doc-page .doc-finish-btn:not(:disabled):hover,
+.doc-page .doc-answer-btn:not(:disabled):hover {
   color: var(--text); border-color: var(--text); }
-.doc-page .doc-comment-btn:disabled, .doc-page .doc-finish-btn:disabled { color: var(--dim); cursor: default; }
-/* Comments written against an earlier version: their captured lines kept,
-   the same shape the code review's parked section draws. */
+.doc-page .doc-comment-btn:disabled, .doc-page .doc-finish-btn:disabled,
+.doc-page .doc-answer-btn:disabled { color: var(--dim); cursor: default; }
+/* **Only a thread with nowhere to draw collects here.** One the revision
+   could not re-find still draws inline at its captured line, marked; this
+   section is for the anchor whose line is past this version, its captured
+   lines kept and the sentence saying why. */
 .doc-page .doc-stale { margin: 24px 0 8px; border-top: 1px solid var(--line); padding-top: 14px; }
 .doc-page .doc-stale h2 { font-size: var(--fs-label); font-weight: 400; color: var(--dim);
   font-family: var(--mono); margin-bottom: 10px; }
@@ -5411,28 +5482,35 @@ details[open] > summary .arw { opacity: 1; }
   color: var(--muted); background: var(--bg); border: 1px solid var(--line);
   border-radius: 8px; padding: 6px 8px; white-space: pre-wrap;
   overflow-wrap: anywhere; }
-/* The exit, at the document's end - **in every state**: the one control
-   that files the round and answers the parked hand-off (a PDF or a
-   read-only document included), and the way back to the session when
-   there is nothing to release. */
+/* The exit, at the document's end - **in every state**. A parked hand-off
+   draws two answers, approve or something is off, each above the note the
+   reader may carry to the agent; a deep link has no call to answer and
+   draws the one done that files the round and returns. */
 .doc-page .doc-exit { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px;
   margin-top: 26px; padding-top: 14px; border-top: 1px solid var(--line); }
 .doc-page .doc-left { color: var(--ok); font-family: var(--ui); font-size: var(--fs-base); }
 
 @media (pointer: coarse) {
-  /* **A finger's target is the row.** Child margins do not collapse in a flex
-     box, so the coarse layout states its own spacing rather than inheriting
-     the sheet's: every block is a row of at least 44px with its content
-     centred, and rows stack at the sheet's own 20px gap, a one-line row
-     adding the centring slack the 44px target gives it. The collapsed rhythm
-     above is the fine-pointer layout. */
+  /* **A finger's target is the row and every line number.** The block stays
+     the grid the fine layout draws it as; its gutter cells and the answer
+     buttons join the 44px floor, so each source line is a target a finger
+     can hit rather than a 12px sliver. The collapsed rhythm above is the
+     fine-pointer layout; the coarse one states its own gaps. */
   .doc-page .doc-block, .doc-page .doc-comment-btn, .doc-page .doc-cancel-btn,
-  .doc-page .doc-finish-btn { min-height: 44px; }
-  .doc-page .doc-block { display: flex; flex-direction: column; justify-content: center;
-    margin-bottom: 20px; }
-  .doc-page .doc-block > :first-child { margin-top: 0; }
-  .doc-page .doc-block > :last-child { margin-bottom: 0; }
-  .doc-page .doc-block:has(> p) + .doc-block:has(> p) > p { margin-top: 0; }
+  .doc-page .doc-finish-btn, .doc-page .doc-answer-btn,
+  .doc-page .doc-lnum { min-height: 44px; }
+  .doc-page .doc-block { margin-bottom: 20px; }
+  .doc-page .doc-block-body > :first-child { margin-top: 0; }
+  .doc-page .doc-block-body > :last-child { margin-bottom: 0; }
+  .doc-page .doc-block:has(> .doc-block-body > p)
+    + .doc-block:has(> .doc-block-body > p) > .doc-block-body > p { margin-top: 0; }
   .doc-page .doc-blocks > .doc-block:not(:has(~ .doc-block)) { margin-bottom: 0; }
   .doc-page .doc-note, .doc-page .doc-compose { margin-left: 1.8rem; }
+}
+
+/* The phone's page: the sheet keeps its padding, but it cannot keep the
+   desk's 60px either side of a 430 window - the document would read in a
+   sliver. */
+@media (max-width: 760px) {
+  .doc-page .doc-body { padding: 28px 20px 30px; }
 }

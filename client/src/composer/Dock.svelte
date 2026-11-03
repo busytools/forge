@@ -8,7 +8,7 @@
   import { goTo } from '../routes';
   import { report, type Connection } from '../socket';
   import type { SessionSlot } from '../wire/types';
-  import type { Ask, PermissionOption, Take } from './wire';
+  import type { Ask, PermissionOption, SlackOperation, Take } from './wire';
 
   let {
     ask,
@@ -24,6 +24,7 @@
     land = null,
     onanswer = () => {},
     onabandon = () => {},
+    onsending = () => {},
     onmic = () => {},
     dictation = false,
     silent = null,
@@ -106,6 +107,11 @@
     onanswer?: (toolId: string | null) => void;
     onabandon?: () => void;
     /**
+     * A send-back has left the reader and is on its way: the card stands
+     * down, so the line saying what is happening is drawn where it stood.
+     */
+    onsending?: () => void;
+    /**
      * Whether this is the prompt the reader has answered and the core has not
      * taken yet.
      *
@@ -140,6 +146,47 @@
    * once, Deny), then edit, and the refusal last.
    */
   const RANK: Record<PermissionOption['kind'], number> = { allow: 0, edit: 1, notes: 2, deny: 3 };
+
+  /**
+   * A held draft's own verbs, by what it would do. One wording for all of
+   * them is the defect this replaces: a delete card that says "post" is
+   * asking the reader to approve the wrong act.
+   */
+  const SLACK_VERBS: Record<SlackOperation, { head: string; approve: string; decline: string }> = {
+    post: { head: 'Post to Slack', approve: 'Post', decline: 'Do not post' },
+    edit: { head: 'Edit in Slack', approve: 'Apply edit', decline: 'Do not apply' },
+    delete: { head: 'Delete in Slack', approve: 'Delete', decline: 'Keep it' },
+    react: { head: 'React in Slack', approve: 'React', decline: 'Do not react' },
+    unreact: { head: 'Unreact in Slack', approve: 'Unreact', decline: 'Do not unreact' },
+    upload: { head: 'Upload to Slack', approve: 'Upload', decline: 'Do not upload' },
+    // A value from a newer server: say the least that is true rather than
+    // claiming a post, which could approve an act nobody named.
+    unknown: { head: 'Slack draft', approve: 'Approve', decline: 'Do not send' },
+  };
+
+  const slackVerbs = $derived.by(() => {
+    if (ask.kind !== 'slack_draft') return { head: '', approve: '', decline: '' };
+    const verbs = SLACK_VERBS[ask.request.operation];
+    // Only a post leads with "Reply": an upload's thread is the destination's
+    // stamp, not the card's verb.
+    const reply = ask.request.operation === 'post' && ask.request.threadTs !== null;
+    return { ...verbs, head: reply ? 'Reply in Slack' : verbs.head };
+  });
+
+  /**
+   * The card's destination line: where it goes, and what its timestamp means.
+   * A post's or an upload's stamp names the thread it replies into; every
+   * other operation carries the target MESSAGE's ts in the same field, and a
+   * destructive card must not call that a thread.
+   */
+  const slackDest = $derived.by(() => {
+    if (ask.kind !== 'slack_draft') return '';
+    const { workspace, conversationLabel, threadTs, operation } = ask.request;
+    const line = `${workspace} · ${conversationLabel}`;
+    if (threadTs === null) return line;
+    const noun = operation === 'post' || operation === 'upload' ? 'thread' : 'message';
+    return `${line} · ${noun} ${threadTs}`;
+  });
 
   /** One of a question's options, as its row draws it. */
   interface Row {
@@ -210,8 +257,8 @@
       return [];
     }
     if (prompt.kind === 'slack_draft') {
-      // A held post draws no rows either: the draft goes out or it does not,
-      // and those two verbs are buttons under the body they would send.
+      // A held draft draws no rows either: it is approved, sent back, or
+      // declined, and those verbs are buttons under the body they act on.
       return [];
     }
     if (prompt.kind === 'question') {
@@ -323,7 +370,7 @@
     if (collapsed) return;
     if (inFieldNow()) return;
     // The options where there are any, and the dock itself where there are not
-    // (a permission, a held post) - NOT the words row: the options are what
+    // (a permission, a held draft) - NOT the words row: the options are what
     // the arrival is for, and the row is entered by the reader's own doing.
     const wanted = listbox ?? root;
     if (wanted !== null) wanted.focus({ preventScroll: true });
@@ -530,9 +577,15 @@
       declineDocument();
       return;
     }
-    // A held post refuses with its own "don't send", which is the answer the
+    if (ask.kind === 'settings_write') {
+      // A held write refuses with its own decline, which is the answer the
+      // core reads as nothing being written.
+      write(false);
+      return;
+    }
+    // A held draft refuses with its own decline, which is the answer the
     // core reads as the draft going nowhere.
-    post(false);
+    post('decline');
   }
 
   /** A permission's own deny, which its words ride when the field has any. */
@@ -575,12 +628,87 @@
     });
   }
 
-  /** A held post's two verbs, which are buttons rather than rows. */
-  function post(approved: boolean): void {
+  /** A held draft's verbs, which are buttons rather than rows. */
+  function post(decision: 'approve' | 'decline'): void {
     if (answered || ask.kind !== 'slack_draft') return;
     const id = ask.request.id;
     onanswer(id);
-    answer({ respond_slack_post: { key: slot, id, approved } });
+    answer({ respond_slack_post: { key: slot, id, answer: decision } });
+  }
+
+  /** Whether the send-back field is open, and the words it holds. */
+  let feedbackOpen = $state(false);
+  let feedback = $state('');
+  let feedbackEl = $state<HTMLElement | null>(null);
+  let sendBackButton = $state<HTMLButtonElement | null>(null);
+
+  // **The field arrives with the keyboard**, the same rule the words row
+  // follows: opening it is the reader's press, so writing needs no second one.
+  $effect(() => {
+    if (feedbackOpen) feedbackEl?.focus();
+  });
+
+  function openFeedback(): void {
+    if (answered || ask.kind !== 'slack_draft') return;
+    feedbackOpen = true;
+  }
+
+  /** Escape closes the field without sending, and the button that opened it
+   *  takes the keyboard back so the card is not left with nowhere to land. */
+  function closeFeedback(): void {
+    feedbackOpen = false;
+    sendBackButton?.focus();
+  }
+
+  /**
+   * Hand the draft back with the reader's words. Nothing is sent to Slack:
+   * the blocked call reads the note and the agent is expected to revise.
+   */
+  function sendBack(): void {
+    if (answered || ask.kind !== 'slack_draft') return;
+    // Whitespace is not feedback: the action stays unavailable until the
+    // field carries words, and this is the same guard for a key that
+    // reaches here anyway.
+    if (feedback.trim() === '') return;
+    const id = ask.request.id;
+    onanswer(id);
+    onsending();
+    answer({
+      respond_slack_post: {
+        key: slot,
+        id,
+        answer: { send_back: { note: feedback } },
+      },
+    });
+  }
+
+  /** The send-back field's own keys: Enter sends, Shift+Enter is the editor's
+   *  newline, Escape closes without sending. */
+  function onFeedbackKey(event: KeyboardEvent): void {
+    event.stopPropagation();
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault();
+      sendBack();
+      return;
+    }
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      closeFeedback();
+    }
+  }
+
+  /** A held configuration write's two verbs, on the post's own terms. */
+  function write(approved: boolean): void {
+    if (answered || ask.kind !== 'settings_write') return;
+    const id = ask.request.id;
+    onanswer(id);
+    answer({ respond_settings_write: { key: slot, id, approved } });
+  }
+
+  /** A value as the write's two blocks draw it: text bare, everything JSON. */
+  function showValue(value: unknown): string {
+    if (typeof value === 'string') return value;
+    return JSON.stringify(value, null, 2) ?? String(value);
   }
 
   /**
@@ -604,6 +732,7 @@
     if (ask.kind === 'permission') return 'warning';
     if (ask.kind === 'slack_draft') return 'plane';
     if (ask.kind === 'document_hand_off') return 'file';
+    if (ask.kind === 'settings_write') return 'settings';
     return 'bell';
   });
   const barText = $derived.by(() => {
@@ -617,6 +746,7 @@
       return `${ask.request.workspace} · ${ask.request.conversationLabel}`;
     }
     if (ask.kind === 'document_hand_off') return ask.request.path;
+    if (ask.kind === 'settings_write') return ask.request.key;
     return handOffTitle;
   });
   /** Which hand-off's view Open was asked for and did not open, by its id. */
@@ -883,6 +1013,13 @@
     }
     if (event.key === 'Escape') {
       event.preventDefault();
+      // **The open field owns Escape before the card does.** One Tab from the
+      // field lands on a verb, and a decline from there would take the words
+      // and the whole draft; closing the field is the reader's way back.
+      if (feedbackOpen) {
+        closeFeedback();
+        return;
+      }
       reject();
     }
   }
@@ -983,12 +1120,20 @@
     </button>
   {/snippet}
 
+  {#snippet valueBlock(label: string, value: unknown)}
+    <!-- The value can be taller than the card: a tab stop and a region label
+         make it reachable and scrollable from the keyboard, the same contract
+         an option's preview keeps. -->
+    <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+    <pre class="wv" tabindex="0" role="region" aria-label={label}>{showValue(value)}</pre>
+  {/snippet}
+
   {#snippet previewRegion(label: string, text: string, source: boolean)}
     <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
     <div class="preview" tabindex="0" role="region" aria-label={label} data-preview>
       <!-- **An option's preview is line-structured ASCII**, so it is drawn as
            its own source: a line beginning `+`, `-` or `#` is that line and
-           not a list item or a heading (#1634). A held post is markdown and
+           not a list item or a heading (#1634). A held draft is markdown and
            renders as markdown. -->
       {#if source}
         <pre class="src">{text}</pre>
@@ -1085,14 +1230,8 @@
       <div class="desc">{ask.request.header}</div>
     {:else if ask.kind === 'slack_draft'}
       <div class="d-head">
-        <span class="dest">
-          {ask.request.workspace} · {ask.request
-            .conversationLabel}{#if ask.request.threadTs !== null}
-            · thread {ask.request.threadTs}{/if}
-        </span>
-        <span class="q mono">
-          {ask.request.threadTs === null ? 'Post to Slack' : 'Reply in Slack'}
-        </span>
+        <span class="dest">{slackDest}</span>
+        <span class="q mono">{slackVerbs.head}</span>
         {@render foldButton()}
       </div>
       <!-- The body verbatim: this is what would go out, so the reader approves
@@ -1101,7 +1240,11 @@
          markdown renderer and the same panel: Slack text IS markdown, the
          question kinds are already in hand, and one kind of block for both
          keeps the dock one system rather than two. -->
-      {@render previewRegion('the post held for approval', ask.request.text, false)}
+      {@render previewRegion(
+        `the ${ask.request.operation} held for approval`,
+        ask.request.text,
+        false,
+      )}
     {:else if ask.kind === 'document_hand_off'}
       <div class="d-head">
         <span class="tag warn">&#9888; needs you</span>
@@ -1116,6 +1259,27 @@
           ? ', where the session asked for comments'
           : ''}; the session waits until you finish. Not now tells it you are not reading this one.
       </div>
+    {:else if ask.kind === 'settings_write'}
+      <div class="d-head">
+        <span class="tag warn">&#9888; needs you</span>
+        <span class="q mono">config write</span>
+        {@render foldButton()}
+      </div>
+      <!-- The key and both values verbatim: approving a summary of an edit
+         nobody drew would be approving something the reader never saw. -->
+      <div class="d-q mono">{ask.request.key}</div>
+      {#if ask.request.current === null}
+        <div class="desc">currently unset</div>
+      {:else}
+        <div class="desc">currently</div>
+        {@render valueBlock('the value this key holds now', ask.request.current)}
+      {/if}
+      {#if ask.request.unset}
+        <div class="desc">cleared to its default</div>
+      {:else}
+        <div class="desc">would become</div>
+        {@render valueBlock('the value this write would leave', ask.request.proposed)}
+      {/if}
     {:else}
       <div class="d-head">
         <span class="tag warn">&#9888; needs you</span>
@@ -1219,11 +1383,36 @@
 
     {#if ask.kind === 'slack_draft'}
       <div class="acts">
-        <button class="btn p" onclick={() => post(true)}>Post</button>
-        <button class="btn d" onclick={() => post(false)}>Don't send</button>
+        <button class="btn p" onclick={() => post('approve')}>{slackVerbs.approve}</button>
+        <button class="btn" bind:this={sendBackButton} onclick={openFeedback}
+          >Send back with feedback</button
+        >
+        <button class="btn d" onclick={() => post('decline')}>{slackVerbs.decline}</button>
       </div>
+      {#if feedbackOpen}
+        <!-- The send-back's words, on the card the draft is drawn on: the
+             reader says what is wrong where they read what would go out. -->
+        <div class="sendback">
+          <Field
+            editor="dock"
+            class="notes"
+            bind:value={feedback}
+            rows={2}
+            placeholder="What should change?"
+            aria={{ label: 'feedback for the agent' }}
+            onkeydown={(event: KeyboardEvent) => {
+              onFeedbackKey(event);
+            }}
+            field={(el: HTMLElement | null) => {
+              feedbackEl = el;
+            }}
+          />
+          <button class="btn" disabled={feedback.trim() === ''} onclick={sendBack}>Send back</button
+          >
+        </div>
+      {/if}
       {#if take !== null}
-        <!-- A take still running behind a held post: this branch draws no words
+        <!-- A take still running behind a held draft: this branch draws no words
            row, so without this line a prompt would swallow a recording that is
            still going. -->
         <div class="blip">
@@ -1264,6 +1453,15 @@
       </div>
     {/if}
 
+    {#if ask.kind === 'settings_write'}
+      <div class="acts">
+        <!-- The write goes out or it does not: those two verbs are buttons
+           under the values they would change. -->
+        <button class="btn p" onclick={() => write(true)}>Write it</button>
+        <button class="btn d" onclick={() => write(false)}>Don't write</button>
+      </div>
+    {/if}
+
     {#if !answered}
       <div class="keys">
         {#if question}
@@ -1279,14 +1477,17 @@
             <span><kbd>Enter</kbd> {submitLabel}</span>
           {/if}
         {:else if ask.kind === 'slack_draft'}
-          <!-- **The order is the order that works.** A held post arrives with
+          <!-- **The order is the order that works.** A held draft arrives with
              the keyboard on the dock root, where the arrows are the dock's own
              and move nothing; they scroll only once the keyboard is in the
              region, so the Tab leads. -->
           <span
-            ><kbd>Tab</kbd> into the post, then <kbd>&uarr;</kbd><kbd>&darr;</kbd> scroll it</span
+            ><kbd>Tab</kbd> into the card, then <kbd>&uarr;</kbd><kbd>&darr;</kbd> scroll it</span
           >
-          <span><kbd>Tab</kbd> again for Post and Don't send</span>
+          <span><kbd>Tab</kbd> again for the card's actions</span>
+          <span><kbd>Enter</kbd> activates</span>
+        {:else if ask.kind === 'settings_write'}
+          <span><kbd>Tab</kbd> between the fold, Write it and Don't write</span>
           <span><kbd>Enter</kbd> activates</span>
         {:else}
           <span><kbd>Tab</kbd> between the actions</span>

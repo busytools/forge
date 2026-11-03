@@ -272,6 +272,7 @@
       conversation_label: '#granite-staging-alerts',
       thread_ts: null,
       text: 'The staging deploy is green. Rolling to production once the 14:30 window closes.',
+      operation: 'post',
     },
   };
 
@@ -282,6 +283,18 @@
       id: 'draft-2',
       thread_ts: '1790956000.969469',
       text: 'Confirmed - the replica caught the bad statement, so production is clear to take the same set.',
+    },
+  };
+
+  /** A held draft whose verbs are not a post's: one wording for every
+   *  operation is the defect the copy exists to avoid. */
+  const slackDelete = {
+    kind: 'slack_draft',
+    request: {
+      ...slackDraft.request,
+      id: 'draft-3',
+      text: '[delete] message 1790956000.969469',
+      operation: 'delete',
     },
   };
 
@@ -386,6 +399,28 @@
       id: '0192e1c0-0000-7000-8000-0000000000aa',
       reason: 'confirm the staging deploy page shows the new rate-limit chip',
       tab: 3,
+    },
+  };
+
+  const settingsWrite = {
+    kind: 'settings_write',
+    request: {
+      id: '0192e1c0-0000-7000-8000-0000000000bb',
+      key: 'orgs.Busytools.projects.forge.max_workers',
+      current: 2,
+      proposed: 4,
+      unset: false,
+    },
+  };
+
+  const settingsUnset = {
+    kind: 'settings_write',
+    request: {
+      id: '0192e1c0-0000-7000-8000-0000000000cc',
+      key: 'orgs.Busytools.projects.forge.env_file',
+      current: '/tmp/forge.env',
+      proposed: null,
+      unset: true,
     },
   };
 
@@ -580,6 +615,16 @@
     { label: 'dock · slack draft', props: { record: { ...blank(), pending_asks: [slackDraft] } } },
     { label: 'dock · slack reply', props: { record: { ...blank(), pending_asks: [slackReply] } } },
     {
+      label: 'dock · slack delete',
+      props: { record: { ...blank(), pending_asks: [slackDelete] } },
+    },
+    {
+      label: 'dock · slack send-back, open',
+      props: { record: { ...blank(), pending_asks: [slackDraft] } },
+      // The second verb is the send-back's own door; the first is Post.
+      click: '.dock .acts .btn:nth-child(2)',
+    },
+    {
       label: 'dock · question · one answer',
       props: { record: { ...blank(), pending_asks: [questionSingle] } },
     },
@@ -610,6 +655,14 @@
       label: 'dock · document hand-off · folded',
       props: { record: { ...blank(), pending_asks: [documentHandOff] } },
       click: '.dock .chevb',
+    },
+    {
+      label: 'dock · held config write',
+      props: { record: { ...blank(), pending_asks: [settingsWrite] } },
+    },
+    {
+      label: 'dock · held config write · clearing a key',
+      props: { record: { ...blank(), pending_asks: [settingsUnset] } },
     },
     {
       label: 'dock · browser hand-off',
