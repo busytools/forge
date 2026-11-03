@@ -1,27 +1,32 @@
 import { describe, expect, it } from 'vitest';
 
-import type { ReviewThreadRecord } from '../session/wire';
+import { anchorHash } from '../review/write';
+import type { ReviewResolutionRecord, ReviewThreadRecord } from '../session/wire';
 import {
   addDraft,
   clearDrafts,
   docScope,
   docThread,
   draftsFor,
+  lineContext,
   linesOf,
-  placedThreads,
+  placeThreads,
   rowsOf,
-  threadsAgainstAnotherVersion,
   type DocDraft,
 } from './comments';
 
-function thread(id: string, hash: string, line = 2): ReviewThreadRecord {
+function thread(
+  id: string,
+  line = 2,
+  resolution: ReviewResolutionRecord | null = null,
+): ReviewThreadRecord {
   return {
     id,
     anchor: {
       path: '/proj/docs/plan.md',
       side: 'new',
       line,
-      content_hash: hash,
+      content_hash: '42',
       context: ['^ # hi'],
       base_ref: 'doc:/proj/docs/plan.md',
     },
@@ -30,7 +35,7 @@ function thread(id: string, hash: string, line = 2): ReviewThreadRecord {
     created_at: 'x',
     updated_at: 'x',
     commit: null,
-    resolution: null,
+    resolution,
   };
 }
 
@@ -49,11 +54,16 @@ describe('the document comment helpers', () => {
    * whole span is the comment's captured context - what keeps a comment's
    * lines exact when the document changes.
    */
-  it('renders markdown as blocks with their source spans', () => {
+  /**
+   * **A block owns the blank lines between it and the next block**, so every
+   * source line has a gutter target: without them a document with a blank
+   * line between every paragraph leaves half its lines uncommentable.
+   */
+  it('renders markdown as blocks with their source spans, gaps included', () => {
     const rows = rowsOf('# hi\n\nbody **bold**\n', 'markdown');
 
     expect(rows).toHaveLength(2);
-    expect(rows[0]).toMatchObject({ line: 1, end: 1, context: ['# hi'] });
+    expect(rows[0]).toMatchObject({ line: 1, end: 2, context: ['# hi'] });
     expect(rows[0]?.html, 'a heading renders as a heading').toContain('<h1>');
     expect(rows[1]).toMatchObject({ line: 3, end: 3, context: ['body **bold**'] });
     expect(rows[1]?.html).toContain('<strong>bold</strong>');
@@ -81,16 +91,51 @@ describe('the document comment helpers', () => {
   });
 
   /**
-   * **The document's own hash is the line's placement test.** A thread
-   * written against this exact content sits at its line; one written
-   * against another version is outdated AT ONCE - nothing re-anchors a
-   * document automatically - with its captured lines kept.
+   * **A line comment captures from its own line**, the anchor's line first:
+   * that first captured line is the content a revision re-finds the thread
+   * by, so it must be the line the reader pressed and not a neighbour.
    */
-  it('splits placed threads from ones written against another version', () => {
-    const threads = [thread('a', '42'), thread('b', '41'), thread('c', '42', 5)];
+  it('captures a line comment from its own line, the line first', () => {
+    const lines = linesOf('one\ntwo\nthree\nfour\n');
 
-    expect(placedThreads(threads, '42').map((t) => t.id)).toEqual(['a', 'c']);
-    expect(threadsAgainstAnotherVersion(threads, '42').map((t) => t.id)).toEqual(['b']);
+    expect(lineContext(lines, 2)).toEqual(['two', 'three', 'four']);
+    expect(lineContext(lines, 4), 'the last line captures itself').toEqual(['four']);
+  });
+
+  /**
+   * **Where the server's landing puts a thread is where it draws.** A moved
+   * thread draws at its new line with the old one named; a thread the
+   * revision left nowhere draws at its captured line, marked stale; and one
+   * whose captured line is past the document has nowhere to draw at all,
+   * with the reason said in words.
+   */
+  it('draws a thread where its landing places it, or stale at its captured line', () => {
+    const moved = thread('moved', 2, { state: 'placed', line: 5, moved_from: 2 });
+    const gone = thread('gone', 3, {
+      state: 'outdated',
+      reason: 'gone',
+    });
+    const past = thread('past', 42, {
+      state: 'outdated',
+      reason: 'gone',
+    });
+
+    const placements = placeThreads([moved, gone, past], 10);
+
+    expect(placements[0]).toMatchObject({
+      line: 5,
+      movedFrom: 2,
+      stale: false,
+    });
+    expect(placements[1]).toMatchObject({
+      line: 3,
+      movedFrom: null,
+      stale: true,
+      why: null,
+    });
+    expect(placements[2]).toMatchObject({ line: null, stale: true });
+    expect(placements[2]?.why).toContain('42');
+    expect(placements[2]?.why, 'the sentence names what it is past').toContain('10');
   });
 
   it('drafts survive the viewer leaving the document and coming back', () => {
@@ -108,13 +153,13 @@ describe('the document comment helpers', () => {
   it('builds the thread payload the store takes, anchored to the document', () => {
     const draft: DocDraft = { id: 'x', line: 2, text: 'hi', context: ['a', 'b'] };
 
-    const built = docThread(draft, '/proj/docs/plan.md', '42');
+    const built = docThread(draft, '/proj/docs/plan.md');
 
     expect(built.anchor).toEqual({
       path: '/proj/docs/plan.md',
       side: 'New',
       line: 2,
-      content_hash: '42',
+      content_hash: anchorHash('a').toString(),
       context: ['a', 'b'],
       base_ref: 'doc:/proj/docs/plan.md',
     });

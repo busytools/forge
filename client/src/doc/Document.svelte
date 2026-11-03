@@ -9,17 +9,23 @@
    * and a refusal in the server's own sentence.
    *
    * **A reviewable document draws as its rendered BLOCKS, each one a
-   * comment target**: hover (or focus) marks the block under the pointer,
-   * a press opens the composer, and the comment anchors to the block's own
-   * source lines - which is what keeps the captured lines and the
-   * outdated marking exact when the document changes. A plain-text document
-   * has no blocks, so its rows are its lines.
+   * comment target, with a source-line gutter beside it**: a press on the
+   * block comments on the whole section, a press on a line number comments
+   * on that exact line with the line first in its captured context. A
+   * plain-text document has no blocks, so its rows are its lines.
    *
-   * **The done is the hand-off's answer.** The reader comments, presses
-   * done, and the drafts are filed as one review through the same commands
-   * a code review rides - then the parked call is released with what was
-   * filed, so the agent hears the reading's result and not merely that the
-   * document opened.
+   * **Threads draw where this version lets them.** The server re-anchors
+   * each doc thread by its first captured line, the way a code thread is
+   * re-anchored; the viewer draws a moved thread at its new line, one the
+   * revision left behind at its captured line marked outdated, and only a
+   * thread whose line is past the document collects at the end with the
+   * reason.
+   *
+   * **The door is the hand-off's answer.** The drafts are filed as one
+   * review through the same commands a code review rides, and the parked
+   * call is released with **approve** or **something is off** - each with
+   * the optional note - so the agent hears the reading's result and never
+   * reads a bare done as approval.
    */
   import { SvelteSet } from 'svelte/reactivity';
 
@@ -46,10 +52,11 @@
   import TakeCard from '../composer/TakeCard.svelte';
   import { joined, noticeLine } from '../composer/view';
   import { composerFrom } from '../composer/wire';
-  import type { ReplyBox, Voice } from '../review/boxes';
+  import type { ReplyBox, TurnEditor, Voice } from '../review/boxes';
   import ResolvedMarker from '../review/ResolvedMarker.svelte';
   import ThreadDelete from '../review/ThreadDelete.svelte';
-  import { authorName, statusName } from '../review/view';
+  import ThreadTurn from '../review/ThreadTurn.svelte';
+  import { statusName } from '../review/view';
   import {
     deleteCommand,
     statusCommand,
@@ -68,11 +75,13 @@
     docThread,
     draftsFor,
     editDraftText,
+    lineContext,
+    linesOf,
+    placeThreads,
     rowsOf,
-    placedThreads,
-    threadsAgainstAnotherVersion,
     type DocDraft,
     type DocRow,
+    type DocThreadPlacement,
   } from './comments';
   import { watchDocument, type DocRead } from './live';
   import Pdf from './Pdf.svelte';
@@ -142,9 +151,18 @@
     return draftsFor(scope);
   });
 
-  const hashed = $derived(held.contentHash ?? '');
-  const placed = $derived(placedThreads(held.threads, hashed));
-  const outdated = $derived(threadsAgainstAnotherVersion(held.threads, hashed));
+  /** The document's own lines, the numbering a comment anchors by. */
+  const lines = $derived(linesOf(text));
+
+  /**
+   * Every thread where this version lets it draw: a landing the server
+   * re-found draws at its line, one the revision left nowhere draws stale
+   * at its captured line, and only a line the document no longer reaches
+   * has no place at all.
+   */
+  const placements = $derived(placeThreads(held.threads, lines.length));
+  const placed = $derived(placements.filter((held) => held.line !== null));
+  const unplaceable = $derived(placements.filter((held) => held.line === null));
 
   /** The comment targets: rendered blocks for markdown, lines for text. */
   const rows = $derived(held.kind === 'text' ? rowsOf(text, 'text') : rowsOf(text, 'markdown'));
@@ -153,11 +171,15 @@
    * The drift is written back where it is drawn: a diff's overlay ages a
    * drifted code thread as it re-anchors it, and this viewer is the
    * overlay's counterpart for a document, so the review record reads what
-   * the reader sees. Resolved and already-outdated comments are left alone.
+   * the reader sees. A thread the landing MOVED is not drift - it still
+   * sits at its line - so only a stale one ages. Resolved and
+   * already-outdated comments are left alone.
    */
   $effect(() => {
     if (!held.reviewable || held.path === null) return;
-    for (const thread of outdated) {
+    for (const held of placements) {
+      if (!held.stale) continue;
+      const thread = held.thread;
       if (thread.status !== 'open' && thread.status !== 'addressed') continue;
       void connection
         ?.dispatch(statusCommand(slot, scope, thread.id, 'Outdated'))
@@ -167,20 +189,35 @@
     }
   });
 
-  /** The block a composer is open on, and what is typed into it. */
-  let composing = $state<number | null>(null);
+  /**
+   * The comment target a composer is open on: the rendered block (today's
+   * whole-section comment) or one source line from the gutter. The line is
+   * the anchor; `target` is what decides which lines the comment captures.
+   */
+  let composing = $state<{ row: number; line: number; target: 'block' | 'line' } | null>(null);
   let commentText = $state('');
   /** The block whose box began the current take, stamped when the take starts:
    *  it is what says the take goes with that box and lands only there. */
-  let takeIn = $state<number | 'summary' | 'edit' | null>(null);
+  let takeIn = $state<number | 'summary' | 'note' | 'edit' | null>(null);
+  /** The exact line and target the open block composer was on, kept with the
+   *  take so words that land after the box closed reopen where the reader
+   *  was - a line comment must not come back as a section comment. */
+  let takeLine = $state<number | null>(null);
+  let takeTarget = $state<'block' | 'line'>('block');
   /** Whether the take being attempted began at the SUMMARY's mic - the box
    *  its words are owed to. */
   let pressedSummary = $state(false);
+  /** Whether the take being attempted began at the ANSWER's note box. */
+  let pressedNote = $state(false);
   /** Whether the take being attempted began at an EDIT box's mic. */
   let pressedEdit = $state(false);
   /** The review's own words, the round's description (Ved, 2026-10-17). */
   let summaryText = $state('');
   let summaryField = $state<HTMLElement | null>(null);
+  /** The answer's optional note: filed with whichever answer is chosen and
+   *  carried to the agent verbatim. */
+  let noteText = $state('');
+  let noteField = $state<HTMLElement | null>(null);
 
   /**
    * The box an EDIT opens, wherever a comment is drawn: the thread - or the
@@ -268,7 +305,15 @@
     onStart: () => {
       // The take belongs to the box the press came from, which is the open
       // one: the mic is drawn only inside a box.
-      takeIn = pressedEdit ? 'edit' : pressedSummary ? 'summary' : composing;
+      takeIn = pressedEdit
+        ? 'edit'
+        : pressedSummary
+          ? 'summary'
+          : pressedNote
+            ? 'note'
+            : (composing?.row ?? null);
+      takeLine = composing?.line ?? null;
+      takeTarget = composing?.target ?? 'block';
       dictateLine = null;
       // The arm this take's landing waits on, set at the press, on the seat
       // the take belongs to, with the notice the record was already showing -
@@ -319,6 +364,43 @@
     ondevice: setDevice,
   };
 
+  /**
+   * The thread cards' edit surface, over this page's one edit box: the
+   * review page's `ThreadTurn` draws the act and the box per turn, and the
+   * page keeps the state they share with the draft editor.
+   */
+  const turnEditor: TurnEditor = {
+    box: edit,
+    voice,
+    begin: (thread, index, text) => {
+      edit.thread = thread;
+      edit.index = index;
+      edit.draftId = null;
+      edit.draft = text;
+    },
+    send: (thread, index, text) => {
+      void editedThread(thread, index, text);
+    },
+    cancel: () => {
+      edit.thread = null;
+      edit.index = null;
+      edit.draft = '';
+    },
+    press: () => {
+      pressedEdit = true;
+    },
+    hold: () => {
+      pressedEdit = true;
+    },
+    field: (el: HTMLElement | null) => {
+      editField = el;
+      el?.focus();
+    },
+  };
+
+  /** The clock the thread turns' age chips read against. */
+  const now = Date.now();
+
   /** What the edit box reads off the page's state, the way every box does. */
   $effect(() => {
     edit.take = composer.take;
@@ -367,10 +449,17 @@
       summaryField?.focus();
       return;
     }
+    if (takeIn === 'note') {
+      noteText = joined(noteText, words);
+      noteField?.focus();
+      return;
+    }
     // The words were submitted: a box closed or moved between the release
     // and the landing is opened again at the row that began the take, where
     // the reader sees them, rather than the drop being silent.
-    if (composing !== takeIn) composing = takeIn;
+    if (composing?.row !== takeIn) {
+      composing = { row: takeIn, line: takeLine ?? takeIn, target: takeTarget };
+    }
     commentText = joined(commentText, words);
     field?.focus();
   });
@@ -382,7 +471,13 @@
    * another block, one press from being filed against the wrong part.
    */
   $effect(() => {
-    if (takeIn === null || takeIn === 'summary' || takeIn === 'edit' || composing === takeIn)
+    if (
+      takeIn === null ||
+      takeIn === 'summary' ||
+      takeIn === 'note' ||
+      takeIn === 'edit' ||
+      composing?.row === takeIn
+    )
       return;
     // A take already SUBMITTED is not this effect's to cancel: the server
     // would read the stop as an abandon and drop words the reader kept.
@@ -406,20 +501,28 @@
    * else the open block composer, else the round's summary - the box the
    * exit row draws once there is a review to describe.
    */
-  function pttBox(): 'composing' | 'summary' | 'edit' | null {
+  function pttBox(): 'composing' | 'summary' | 'note' | 'edit' | null {
     const active = document.activeElement;
     if (active !== null && active !== document.body) {
       if (active === field) return 'composing';
       if (active === summaryField) return 'summary';
+      if (active === noteField) return 'note';
       if (active === editField) return 'edit';
     }
     if (edit.thread !== null || edit.draftId !== null) return 'edit';
     if (composing !== null) return 'composing';
     // A take already running keeps its box, so the key's release can end it.
     if (takeIn !== null) {
-      return takeIn === 'summary' ? 'summary' : takeIn === 'edit' ? 'edit' : 'composing';
+      return takeIn === 'summary'
+        ? 'summary'
+        : takeIn === 'note'
+          ? 'note'
+          : takeIn === 'edit'
+            ? 'edit'
+            : 'composing';
     }
-    return held.path !== null && drafts.length > 0 ? 'summary' : null;
+    if (held.path !== null && drafts.length > 0) return 'summary';
+    return held.path !== null && handoff !== null ? 'note' : null;
   }
 
   // The push-to-talk key, once for the page: a hold begins a take in the box
@@ -437,8 +540,16 @@
       const at = pttBox();
       if (at === null) return;
       pressedSummary = at === 'summary';
+      pressedNote = at === 'note';
       pressedEdit = at === 'edit';
-      (at === 'summary' ? summaryField : at === 'edit' ? editField : field)?.focus();
+      (at === 'summary'
+        ? summaryField
+        : at === 'note'
+          ? noteField
+          : at === 'edit'
+            ? editField
+            : field
+      )?.focus();
     },
   });
 
@@ -462,17 +573,21 @@
         event.stopPropagation();
         dictate.panel = false;
         // Back to the box the panel was opened off, whichever mic it was.
-        (pressedSummary ? summaryField : field)?.focus();
+        (pressedSummary ? summaryField : pressedNote ? noteField : field)?.focus();
       }
     };
     window.addEventListener('keydown', onDown, true);
     return () => window.removeEventListener('keydown', onDown, true);
   });
 
+  /** The door's one verb: approve or feedback where a call is parked, and
+   *  plain done on a deep link, where there is nothing to answer. */
+  type Finish = 'approve' | 'feedback' | 'done';
   let finishState = $state<
-    | { kind: 'idle' | 'busy' }
-    | { kind: 'done'; number: number | null }
-    | { kind: 'refused'; why: string }
+    | { kind: 'idle' }
+    | { kind: 'sending'; answer: Finish }
+    | { kind: 'done'; answer: Finish; number: number | null }
+    | { kind: 'refused'; answer: Finish; why: string }
   >({ kind: 'idle' });
 
   /** Whether this page has been destroyed, which a pending return checks
@@ -484,31 +599,35 @@
     };
   });
 
-  function openComposer(row: DocRow): void {
-    composing = composing === row.line ? null : row.line;
+  /** Open the composer on a rendered block, or on one source line. A press
+   *  on the block is today's whole-section comment; a press on a gutter
+   *  number is a comment at that exact line. */
+  function openComposer(row: DocRow, line: number, target: 'block' | 'line'): void {
+    const same =
+      composing?.row === row.line && composing.line === line && composing.target === target;
+    composing = same ? null : { row: row.line, line, target };
     commentText = '';
     // The panel was opened off the box that is going; it goes with it.
     dictate.panel = false;
   }
 
   /** Write one comment: held as a draft here, upserted to the store the
-   *  moment it is written - the done is what files it into a review. */
+   *  moment it is written - the answer is what files it into a review. */
   function writeComment(row: DocRow): void {
     const written = commentText.trim();
-    if (written === '' || held.path === null || held.contentHash === null) return;
+    const at = composing;
+    if (written === '' || held.path === null || at === null) return;
     const draft: DocDraft = {
       id: mintPromptId(),
-      line: row.line,
+      line: at.line,
       text: written,
-      context: row.context,
+      context: at.target === 'block' ? row.context : lineContext(lines, at.line),
     };
     addDraft(scope, draft);
     draftsVersion += 1;
     try {
       void connection
-        ?.dispatch(
-          upsertCommand(slot, scope, docThread(draft, held.path, held.contentHash), written),
-        )
+        ?.dispatch(upsertCommand(slot, scope, docThread(draft, held.path), written))
         ?.catch((why: unknown) => {
           report('a comment could not be stored', why);
         });
@@ -569,7 +688,7 @@
     draftsVersion += 1;
     if (held.path !== null && held.contentHash !== null) {
       void connection
-        ?.dispatch(upsertCommand(slot, scope, docThread(next, held.path, held.contentHash), text))
+        ?.dispatch(upsertCommand(slot, scope, docThread(next, held.path), text))
         ?.catch((why: unknown) => {
           report('an edited comment could not be stored', why);
         });
@@ -607,46 +726,42 @@
   }
 
   /**
-   * The reader is done: file the drafts as one review (through the same
-   * command a code review rides), then release the parked hand-off with
-   * what was filed - a refusal keeps the drafts and says why, and nothing
-   * is answered until the review actually landed.
-   *
-   * **The door opens even when the document never did.** A refused read
-   * has no path and no drafts, so there is nothing to file - but the
-   * reader is still owed the way back, and a parked hand-off still needs
-   * its answer: the guard that skips the FILING must not skip the return.
+   * File the drafts as one review, through the same command a code review
+   * rides. A refusal keeps the drafts and says why, and `null` means the
+   * answer is not to be sent - nothing is answered until the review landed.
    */
-  async function done(): Promise<void> {
-    finishState = { kind: 'busy' };
+  async function fileDrafts(answer: Finish): Promise<{
+    reviewId: string | null;
+    number: number | null;
+  } | null> {
     let reviewId: string | null = null;
     let number: number | null = null;
     if (held.path !== null && drafts.length > 0) {
       const ids = drafts.map((draft) => draft.id);
-      let answer: unknown;
+      let filed: unknown;
       const summary = summaryText.trim();
       try {
-        answer = await connection.dispatch(
+        filed = await connection.dispatch(
           submitCommand(slot, scope, ids, summary === '' ? null : summary),
           slot,
         );
       } catch (why) {
-        finishState = { kind: 'refused', why: reasonOf(why) };
-        return;
+        finishState = { kind: 'refused', answer, why: reasonOf(why) };
+        return null;
       }
-      if (typeof answer === 'string') {
-        finishState = { kind: 'refused', why: answer };
-        return;
+      if (typeof filed === 'string') {
+        finishState = { kind: 'refused', answer, why: filed };
+        return null;
       }
-      if (answer === null || answer === undefined) {
-        finishState = { kind: 'refused', why: 'the review could not be filed' };
-        return;
+      if (filed === null || filed === undefined) {
+        finishState = { kind: 'refused', answer, why: 'the review could not be filed' };
+        return null;
       }
       clearDrafts(scope, ids);
       draftsVersion += 1;
-      const filed = answer as { id?: unknown; number?: unknown };
-      reviewId = typeof filed.id === 'string' ? filed.id : null;
-      number = typeof filed.number === 'number' ? filed.number : null;
+      const held = filed as { id?: unknown; number?: unknown };
+      reviewId = typeof held.id === 'string' ? held.id : null;
+      number = typeof held.number === 'number' ? held.number : null;
       // **The nudge the view this client replaced sent on its own drop**, so
       // the chat shows the review to the reader AND reaches the agent - one
       // line, not the comments - with the document's scope named. It stands
@@ -672,44 +787,80 @@
         }
       }
     }
+    return { reviewId, number };
+  }
+
+  /**
+   * Answer the parked hand-off: **approve** or **something is off**, each
+   * with the note as written and the review the finish filed. Done is not
+   * one of them - a reader who presses neither leaves the call parked, and
+   * the agent learns nothing it could read as approval.
+   */
+  async function answer(outcome: 'approve' | 'feedback'): Promise<void> {
+    finishState = { kind: 'sending', answer: outcome };
+    const filed = await fileDrafts(outcome);
+    if (filed === null) return;
     if (handoff !== null) {
+      const note = noteText.trim();
       try {
         await connection.dispatch(
           {
             answer_document_hand_off: {
               key: slot,
               id: handoff,
-              answer: { done: { review_id: reviewId } },
+              answer: {
+                [outcome]: {
+                  review_id: filed.reviewId,
+                  note: note === '' ? null : note,
+                },
+              },
             },
           },
           slot,
         );
       } catch (why) {
-        finishState = { kind: 'refused', why: reasonOf(why) };
+        finishState = { kind: 'refused', answer: outcome, why: reasonOf(why) };
         return;
       }
     }
-    // **The done is the way back.** The reader came here from the session's
-    // ask; the review and the nudge line are what they take with them, and
-    // the page returns where they were - the beat is so the confirmation
-    // above is read before it goes.
-    returnTo(number, 1200);
+    returnTo(outcome, filed.number, 1200);
+  }
+
+  /**
+   * File and leave without answering: the one verb a deep link has.
+   *
+   * **The door opens even when the document never did.** A refused read
+   * has no path and no drafts, so there is nothing to file - but the
+   * reader is still owed the way back.
+   */
+  async function done(): Promise<void> {
+    finishState = { kind: 'sending', answer: 'done' };
+    const filed = await fileDrafts('done');
+    if (filed === null) return;
+    returnTo('done', filed.number, 1200);
   }
 
   /** Leave the viewer for the session it came from, drawing the one-line
    *  confirmation first when `after` gives it a beat to be read. */
-  function returnTo(number: number | null, after: number): void {
-    finishState = { kind: 'done', number };
+  function returnTo(outcome: Finish, number: number | null, after: number): void {
+    finishState = { kind: 'done', answer: outcome, number };
     setTimeout(() => {
       if (!left) goTo({ name: 'session', slot });
     }, after);
   }
 
-  /** The threads a row is the home of: their anchor's line is inside it. */
-  function threadsUnder(row: DocRow) {
+  /** The threads a row is the home of: their placed line is inside it. */
+  function threadsUnder(row: DocRow): DocThreadPlacement[] {
     return placed.filter(
-      (thread) => thread.anchor.line >= row.line && thread.anchor.line <= row.end,
+      (held) => held.line !== null && held.line >= row.line && held.line <= row.end,
     );
+  }
+
+  /** The source lines a rendered block spans, the gutter's own targets. */
+  function rowLines(row: DocRow): number[] {
+    const numbers: number[] = [];
+    for (let line = row.line; line <= row.end; line += 1) numbers.push(line);
+    return numbers;
   }
 
   /**
@@ -744,7 +895,9 @@
     <article class="doc-body"><Pdf bytes={held.bytes ?? new Uint8Array()} /></article>
   {:else if held.kind === 'markdown' || held.kind === 'text'}
     <!-- A reviewable document: its rendered blocks, each one a comment
-         target, so a comment anchors to the block it was written on. -->
+         target, and a source-line gutter beside it so a comment can land on
+         one line. A press on the block is today's whole-section comment; a
+         press on a gutter number is a comment at that exact line. -->
     <article class="doc-body doc-blocks">
       {#each rows as row (row.line)}
         <!-- The row itself is the target (Ved's shape): a pointer press
@@ -756,100 +909,101 @@
         <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
         <div
           class="doc-block prose"
-          class:target={composing === row.line}
+          class:target={composing?.row === row.line}
           role="group"
           tabindex="0"
           aria-label="comment on this part of the document"
           onclick={(event) => {
-            // A link inside the block is the link's: the block is the comment
-            // target, and a click that meant the link must not also open the
-            // composer under the navigation.
-            if (event.target instanceof Element && event.target.closest('a') !== null) return;
-            openComposer(row);
+            // A link inside the block is the link's, and a gutter number is
+            // its own target: neither press also opens the block's composer.
+            if (event.target instanceof Element && event.target.closest('a, button') !== null)
+              return;
+            openComposer(row, row.line, 'block');
           }}
           onkeydown={(event) => {
             // The keyboard half of the link rule: a reader tabbed onto a
-            // link inside the block is on the link, and Enter/Space there
-            // must reach it - the block answers only its own.
-            if (event.target instanceof Element && event.target.closest('a') !== null) return;
+            // link or a gutter number is on that control, and Enter/Space
+            // there must reach it - the block answers only its own.
+            if (event.target instanceof Element && event.target.closest('a, button') !== null)
+              return;
             if (event.key === 'Enter' || event.key === ' ') {
               event.preventDefault();
-              openComposer(row);
+              openComposer(row, row.line, 'block');
             }
           }}
         >
-          {#if row.html !== null}
-            <!-- The rendered markdown, which `renderProseBlocks` produced
-                 from escaped input: the same renderer and the same rules
-                 the chat's own Prose draws with, raw HTML off. -->
-            <!-- eslint-disable-next-line svelte/no-at-html-tags -->
-            {@html row.html}
-          {:else}
-            <span class="doc-raw">{row.text === '' ? ' ' : row.text}</span>
-          {/if}
+          <!-- The gutter: one numbered target per source line the block
+               spans, so a comment lands on the line the reader points at. -->
+          <div class="doc-lines" role="group" aria-label="comment on a line">
+            {#each rowLines(row) as line (line)}
+              <button
+                class="doc-lnum"
+                class:target={composing?.row === row.line && composing.line === line}
+                type="button"
+                aria-label={`comment on line ${line}`}
+                onclick={(event) => {
+                  event.stopPropagation();
+                  openComposer(row, line, 'line');
+                }}>{line}</button
+              >
+            {/each}
+          </div>
+          <div class="doc-block-body">
+            {#if row.html !== null}
+              <!-- The rendered markdown, which `renderProseBlocks` produced
+                   from escaped input: the same renderer and the same rules
+                   the chat's own Prose draws with, raw HTML off. -->
+              <!-- eslint-disable-next-line svelte/no-at-html-tags -->
+              {@html row.html}
+            {:else}
+              <span class="doc-raw">{row.text === '' ? ' ' : row.text}</span>
+            {/if}
+          </div>
         </div>
-        {#each threadsUnder(row) as thread (thread.id)}
+        {#each threadsUnder(row) as heldThread (heldThread.thread.id)}
+          {@const thread = heldThread.thread}
           {#if statusName(thread.status) === 'resolved' && !opened.has(thread.id)}
             <ResolvedMarker
               first={thread.comments[0]?.text ?? ''}
-              where={`${thread.anchor.path.split('/').pop() ?? ''} · line ${thread.anchor.line}`}
+              where={`${thread.anchor.path.split('/').pop() ?? ''} · line ${heldThread.line}`}
               onopen={() => opened.add(thread.id)}
             />
           {:else}
-            <div class="doc-note">
-              <span class="doc-who"
-                >{authorName(thread.comments[0]?.author ?? { kind: 'unknown', raw: null })}</span
-              >
-              <!-- The words go through the chat's renderer, the same
-                 `Prose` the review page's turns draw with, so a comment's
-                 marks and its author's own lines read here as they read
-                 there. -->
-              <Prose text={thread.comments[0]?.text ?? ''} preserveLines />
-              <div class="rv-acts">
-                {#if statusName(thread.status) === 'resolved'}
-                  <button class="rv-a" type="button" onclick={() => void reopenedThread(thread.id)}
-                    >reopen</button
-                  >
-                  <button class="rv-a" type="button" onclick={() => opened.delete(thread.id)}
-                    >collapse</button
-                  >
+            <!-- Every turn the thread carries, so an agent's reply reads
+                 beside the comment it answered after a revision. -->
+            <div class="doc-note" class:doc-outdated={heldThread.stale}>
+              <div class="doc-notehead">
+                {#if heldThread.movedFrom !== null}
+                  <span class="doc-movedfrom">moved from {heldThread.movedFrom}</span>
                 {/if}
-                <button
-                  class="rv-a"
-                  type="button"
-                  onclick={() => {
-                    edit.thread = thread.id;
-                    edit.index = 0;
-                    edit.draftId = null;
-                    edit.draft = thread.comments[0]?.text ?? '';
-                  }}>edit</button
-                >
-                <ThreadDelete ondelete={() => void deletedThread(thread.id)} />
+                {#if heldThread.stale}
+                  <span class="doc-cc">outdated</span>
+                {/if}
+                <div class="rv-acts">
+                  {#if statusName(thread.status) === 'resolved'}
+                    <button
+                      class="rv-a"
+                      type="button"
+                      onclick={() => void reopenedThread(thread.id)}>reopen</button
+                    >
+                    <button class="rv-a" type="button" onclick={() => opened.delete(thread.id)}
+                      >collapse</button
+                    >
+                  {/if}
+                  <ThreadDelete ondelete={() => void deletedThread(thread.id)} />
+                </div>
               </div>
+              {#each thread.comments as turn, index (index)}
+                <ThreadTurn
+                  {turn}
+                  rounds={held.reviews}
+                  {index}
+                  {now}
+                  thread={thread.id}
+                  editor={turnEditor}
+                />
+              {/each}
             </div>
-          {/if}
-          {#if edit.thread === thread.id}
-            <WordsBox
-              class="doc-note doc-editbox"
-              rows={2}
-              placeholder="the comment's words..."
-              label="edit this comment"
-              sendLabel="save"
-              box={edit}
-              {voice}
-              onsend={sendEdit}
-              oncancel={() => {
-                edit.thread = null;
-                edit.index = null;
-                edit.draft = '';
-              }}
-              onpress={() => (pressedEdit = true)}
-              onhold={() => (pressedEdit = true)}
-              field={(el: HTMLElement | null) => {
-                editField = el;
-                el?.focus();
-              }}
-            />
           {/if}
         {/each}
         {#each drafts.filter((draft) => draft.line === row.line) as draft (draft.id)}
@@ -894,7 +1048,7 @@
             />
           {/if}
         {/each}
-        {#if composing === row.line}
+        {#if composing?.row === row.line}
           <div class="doc-compose">
             <!-- **The block's box takes a take the way the composer's does**:
                  the bar takes the field's own line while a take runs, so
@@ -916,7 +1070,12 @@
                 <Field
                   editor="nowhere"
                   placeholder="comment on this part..."
-                  aria={{ label: 'comment on this part of the document' }}
+                  aria={{
+                    label:
+                      composing?.target === 'line'
+                        ? `comment on line ${composing.line}`
+                        : 'comment on this part of the document',
+                  }}
                   bind:value={commentText}
                   onkeydown={(event: KeyboardEvent) => {
                     // **Enter comments**, as the button does, with the button's
@@ -938,16 +1097,20 @@
                 disabled={commentText.trim() === ''}
                 onclick={() => writeComment(row)}>comment</button
               >
-              <button class="doc-cancel-btn" onclick={() => openComposer(row)}>cancel</button>
+              <button class="doc-cancel-btn" onclick={() => openComposer(row, row.line, 'block')}
+                >cancel</button
+              >
               {#if dictation}
                 <DictateControl
                   {dictate}
                   onpress={() => {
                     pressedSummary = false;
+                    pressedNote = false;
                     pressedEdit = false;
                   }}
                   onhold={() => {
                     pressedSummary = false;
+                    pressedNote = false;
                     pressedEdit = false;
                   }}
                 />
@@ -978,55 +1141,39 @@
         {/if}
       {/each}
 
-      {#if outdated.length > 0}
+      <!-- **Only a thread with nowhere to draw collects here.** One the
+           revision could not re-find draws at its captured line inline,
+           marked; this section is for the anchor whose line the document
+           no longer reaches, and its sentence says why. -->
+      {#if unplaceable.length > 0}
         <section class="doc-stale">
-          <h2>written against an earlier version of this document</h2>
-          {#each outdated as thread (thread.id)}
+          <h2>cannot be placed in this version of the document</h2>
+          {#each unplaceable as heldThread (heldThread.thread.id)}
+            {@const thread = heldThread.thread}
             <div class="doc-note doc-quoted">
-              <div class="doc-quote">
-                {#each thread.anchor.context as captured, at (at)}<div>{captured}</div>{/each}
+              {#if thread.anchor.context.length > 0}
+                <div class="doc-quote">
+                  {#each thread.anchor.context as captured, at (at)}<div>{captured}</div>{/each}
+                </div>
+              {/if}
+              <p class="doc-why">{heldThread.why}</p>
+              <div class="doc-notehead">
+                <span class="doc-cc">outdated</span>
+                <div class="rv-acts">
+                  <ThreadDelete ondelete={() => void deletedThread(thread.id)} />
+                </div>
               </div>
-              <span class="doc-who"
-                >{authorName(thread.comments[0]?.author ?? { kind: 'unknown', raw: null })}</span
-              >
-              <Prose text={thread.comments[0]?.text ?? ''} preserveLines />
-              <div class="rv-acts">
-                <button
-                  class="rv-a"
-                  type="button"
-                  onclick={() => {
-                    edit.thread = thread.id;
-                    edit.index = 0;
-                    edit.draftId = null;
-                    edit.draft = thread.comments[0]?.text ?? '';
-                  }}>edit</button
-                >
-                <ThreadDelete ondelete={() => void deletedThread(thread.id)} />
-              </div>
+              {#each thread.comments as turn, index (index)}
+                <ThreadTurn
+                  {turn}
+                  rounds={held.reviews}
+                  {index}
+                  {now}
+                  thread={thread.id}
+                  editor={turnEditor}
+                />
+              {/each}
             </div>
-            {#if edit.thread === thread.id}
-              <WordsBox
-                class="doc-note doc-editbox"
-                rows={2}
-                placeholder="the comment's words..."
-                label="edit this comment"
-                sendLabel="save"
-                box={edit}
-                {voice}
-                onsend={sendEdit}
-                oncancel={() => {
-                  edit.thread = null;
-                  edit.index = null;
-                  edit.draft = '';
-                }}
-                onpress={() => (pressedEdit = true)}
-                onhold={() => (pressedEdit = true)}
-                field={(el: HTMLElement | null) => {
-                  editField = el;
-                  el?.focus();
-                }}
-              />
-            {/if}
           {/each}
         </section>
       {/if}
@@ -1039,18 +1186,21 @@
     <p class="doc-said">{said}</p>
   {/if}
 
-  <!-- **Every opened document carries ONE door**, drawn on the page itself
-       rather than left to the browser's chrome: `done`. It files the
-       comments and answers the parked hand-off when there is something to
-       release - a PDF or a read-only document included, which is what
-       gives those states an exit at all - and simply returns to the
-       session when there is nothing (a deep link). One verb a reader
-       learns once. -->
+  <!-- **The door is the hand-off's answer.** A parked call is answered by
+       exactly two outcomes - approve, or something is off - each with an
+       optional note, and pressing neither leaves the call parked. A deep
+       link has no call to answer, so it keeps the one `done` that files the
+       comments and returns. The door opens even when the document never
+       did: a refused read still has an answer to give. -->
   {#if held.state !== 'reading'}
     <div class="doc-exit">
       {#if finishState.kind === 'done'}
         <p class="doc-left">
-          done{finishState.number === null
+          {finishState.answer === 'approve'
+            ? 'approved'
+            : finishState.answer === 'feedback'
+              ? 'sent back'
+              : 'done'}{finishState.number === null
             ? ''
             : ` - review left (R${finishState.number})`}{handoff === null
             ? '.'
@@ -1090,44 +1240,131 @@
             {/if}
           </div>
         {/if}
-        <div class="rv-finishacts">
-          <button
-            class="doc-finish-btn"
-            disabled={finishState.kind === 'busy'}
-            onclick={() => void done()}>done{drafts.length > 0 ? ` (${drafts.length})` : ''}</button
-          >
-          <!-- The mic lives with the box, not with the door: it draws only
-               when there is a summary to dictate into. -->
-          {#if dictation && held.path !== null && drafts.length > 0}
-            <DictateControl
-              {dictate}
-              onpress={() => {
-                pressedSummary = true;
-                pressedEdit = false;
-              }}
-              onhold={() => {
-                pressedSummary = true;
-                pressedEdit = false;
-              }}
-            />
-          {/if}
-          {#if dictate.panel && pressedSummary}
-            <DictationPanel
-              {connection}
-              {axes}
-              {defaults}
-              bind={composer.bind}
-              mode={composer.mode}
-              {device}
-              onaxes={setAxes}
-              ondevice={setDevice}
-              onclose={() => {
-                dictate.panel = false;
-                summaryField?.focus();
-              }}
-            />
-          {/if}
-        </div>
+        {#if handoff !== null}
+          <!-- The answer's note: one optional box, shared by both answers,
+               carried to the agent verbatim with whichever is chosen. -->
+          {@const notePhase = takeIn === 'note' ? rowPhase : null}
+          <div class="doc-wordline line" class:takeline={notePhase !== null}>
+            {#if notePhase !== null}
+              <TakeCard
+                take={composer.take}
+                wire={rowWire}
+                phase={notePhase}
+                oncancel={() => {
+                  landing.drop();
+                  dictate.act('cancel');
+                }}
+                spread
+                silent={rowSilent}
+              />
+            {:else}
+              <Field
+                editor="nowhere"
+                class="rv-txarea"
+                rows={2}
+                placeholder="note (optional)"
+                aria={{ label: 'a note to carry with your answer' }}
+                bind:value={noteText}
+                field={(el: HTMLElement | null) => {
+                  noteField = el;
+                }}
+              />
+            {/if}
+          </div>
+          <div class="rv-finishacts">
+            <button
+              class="doc-answer-btn"
+              type="button"
+              disabled={finishState.kind === 'sending'}
+              onclick={() => void answer('approve')}
+              >{finishState.kind === 'sending' && finishState.answer === 'approve'
+                ? 'approving...'
+                : 'approve'}</button
+            >
+            <button
+              class="doc-answer-btn"
+              type="button"
+              disabled={finishState.kind === 'sending'}
+              onclick={() => void answer('feedback')}
+              >{finishState.kind === 'sending' && finishState.answer === 'feedback'
+                ? 'sending...'
+                : 'something is off'}</button
+            >
+            {#if dictation}
+              <DictateControl
+                {dictate}
+                onpress={() => {
+                  pressedSummary = false;
+                  pressedNote = true;
+                  pressedEdit = false;
+                }}
+                onhold={() => {
+                  pressedSummary = false;
+                  pressedNote = true;
+                  pressedEdit = false;
+                }}
+              />
+            {/if}
+            {#if dictate.panel && pressedNote}
+              <DictationPanel
+                {connection}
+                {axes}
+                {defaults}
+                bind={composer.bind}
+                mode={composer.mode}
+                {device}
+                onaxes={setAxes}
+                ondevice={setDevice}
+                onclose={() => {
+                  dictate.panel = false;
+                  noteField?.focus();
+                }}
+              />
+            {/if}
+          </div>
+        {:else}
+          <div class="rv-finishacts">
+            <button
+              class="doc-finish-btn"
+              disabled={finishState.kind === 'sending'}
+              onclick={() => void done()}
+              >done{drafts.length > 0 ? ` (${drafts.length})` : ''}</button
+            >
+            <!-- The mic lives with the box, not with the door: it draws only
+                 when there is a summary to dictate into. -->
+            {#if dictation && held.path !== null && drafts.length > 0}
+              <DictateControl
+                {dictate}
+                onpress={() => {
+                  pressedSummary = true;
+                  pressedNote = false;
+                  pressedEdit = false;
+                }}
+                onhold={() => {
+                  pressedSummary = true;
+                  pressedNote = false;
+                  pressedEdit = false;
+                }}
+              />
+            {/if}
+            {#if dictate.panel && pressedSummary}
+              <DictationPanel
+                {connection}
+                {axes}
+                {defaults}
+                bind={composer.bind}
+                mode={composer.mode}
+                {device}
+                onaxes={setAxes}
+                ondevice={setDevice}
+                onclose={() => {
+                  dictate.panel = false;
+                  summaryField?.focus();
+                }}
+              />
+            {/if}
+          </div>
+        {/if}
         {#if finishState.kind === 'refused'}
           <p class="doc-said">{finishState.why}</p>
         {/if}
