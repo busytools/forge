@@ -21,6 +21,8 @@ fn main() {
         return;
     };
     let dest = profile_dir.join("transcribe-libs");
+    // Warn rather than fail: a plain `cargo build` is not an install, and
+    // `scripts/install.sh` refuses an install whose binary cannot start.
     if let Err(err) = stage(Path::new(&runtime_dir), &dest) {
         println!(
             "cargo:warning=staging transcribe's shared libraries into {} failed: {err}",
