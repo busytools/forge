@@ -51,6 +51,31 @@ export function clear(): void {
   layout.reads = 0;
   boxes.container = 0;
   boxes.items = [];
+  gate.misses = 0;
+  gate.mounts = 0;
+}
+
+/**
+ * Whether a list mount measured its own viewport, which is the gate a mounted
+ * conversation can die on (#2825).
+ *
+ * `virtua` renders no item until its ResizeObserver reports the viewport, so a
+ * mount whose delivery never lands is a mounted list drawing zero rows while
+ * the store holds turns. `misses` is how many upcoming mounts miss it;
+ * `Infinity` makes every mount miss, which is what pins the column's bound.
+ */
+export const gate = { misses: 0, mounts: 0 };
+
+/** Make the next list mount miss its viewport measurement, as #2825's did. */
+export function stuckOnce(): void {
+  gate.misses = 1;
+  gate.mounts = 0;
+}
+
+/** Make every list mount miss it, so a re-measure that loops can be counted. */
+export function stuckEveryMount(): void {
+  gate.misses = Number.POSITIVE_INFINITY;
+  gate.mounts = 0;
 }
 
 /** The last pair the list was handed. */
