@@ -8,7 +8,7 @@
   import { goTo } from '../routes';
   import { report, type Connection } from '../socket';
   import type { SessionSlot } from '../wire/types';
-  import type { Ask, PermissionOption, Take } from './wire';
+  import type { Ask, PermissionOption, SlackOperation, Take } from './wire';
 
   let {
     ask,
@@ -24,6 +24,7 @@
     land = null,
     onanswer = () => {},
     onabandon = () => {},
+    onsending = () => {},
     onmic = () => {},
     dictation = false,
     silent = null,
@@ -106,6 +107,11 @@
     onanswer?: (toolId: string | null) => void;
     onabandon?: () => void;
     /**
+     * A send-back has left the reader and is on its way: the card stands
+     * down, so the line saying what is happening is drawn where it stood.
+     */
+    onsending?: () => void;
+    /**
      * Whether this is the prompt the reader has answered and the core has not
      * taken yet.
      *
@@ -140,6 +146,28 @@
    * once, Deny), then edit, and the refusal last.
    */
   const RANK: Record<PermissionOption['kind'], number> = { allow: 0, edit: 1, notes: 2, deny: 3 };
+
+  /**
+   * A held draft's own verbs, by what it would do. One wording for all of
+   * them is the defect this replaces: a delete card that says "post" is
+   * asking the reader to approve the wrong act.
+   */
+  const SLACK_VERBS: Record<SlackOperation, { head: string; approve: string; decline: string }> = {
+    post: { head: 'Post to Slack', approve: 'Post', decline: 'Do not post' },
+    edit: { head: 'Edit in Slack', approve: 'Apply edit', decline: 'Do not apply' },
+    delete: { head: 'Delete in Slack', approve: 'Delete', decline: 'Keep it' },
+    react: { head: 'React in Slack', approve: 'React', decline: 'Do not react' },
+    upload: { head: 'Upload to Slack', approve: 'Upload', decline: 'Do not upload' },
+  };
+
+  const slackVerbs = $derived.by(() => {
+    if (ask.kind !== 'slack_draft') return { head: '', approve: '', decline: '' };
+    const verbs = SLACK_VERBS[ask.request.operation];
+    // Only a post can reply: an edit's timestamp names the message it
+    // changes, not a thread.
+    const reply = ask.request.operation === 'post' && ask.request.threadTs !== null;
+    return { ...verbs, head: reply ? 'Reply in Slack' : verbs.head };
+  });
 
   /** One of a question's options, as its row draws it. */
   interface Row {
@@ -530,9 +558,9 @@
       declineDocument();
       return;
     }
-    // A held post refuses with its own "don't send", which is the answer the
+    // A held post refuses with its own decline, which is the answer the
     // core reads as the draft going nowhere.
-    post(false);
+    post('decline');
   }
 
   /** A permission's own deny, which its words ride when the field has any. */
@@ -576,11 +604,72 @@
   }
 
   /** A held post's two verbs, which are buttons rather than rows. */
-  function post(approved: boolean): void {
+  function post(answer_: 'approve' | 'decline'): void {
     if (answered || ask.kind !== 'slack_draft') return;
     const id = ask.request.id;
     onanswer(id);
-    answer({ respond_slack_post: { key: slot, id, approved } });
+    answer({ respond_slack_post: { key: slot, id, answer: answer_ } });
+  }
+
+  /** Whether the send-back field is open, and the words it holds. */
+  let feedbackOpen = $state(false);
+  let feedback = $state('');
+  let feedbackEl = $state<HTMLElement | null>(null);
+  let sendBackButton = $state<HTMLButtonElement | null>(null);
+
+  // **The field arrives with the keyboard**, the same rule the words row
+  // follows: opening it is the reader's press, so writing needs no second one.
+  $effect(() => {
+    if (feedbackOpen) feedbackEl?.focus();
+  });
+
+  function openFeedback(): void {
+    if (answered || ask.kind !== 'slack_draft') return;
+    feedbackOpen = true;
+  }
+
+  /** Escape closes the field without sending, and the button that opened it
+   *  takes the keyboard back so the card is not left with nowhere to land. */
+  function closeFeedback(): void {
+    feedbackOpen = false;
+    sendBackButton?.focus();
+  }
+
+  /**
+   * Hand the draft back with the reader's words. Nothing is sent to Slack:
+   * the blocked call reads the note and the agent is expected to revise.
+   */
+  function sendBack(): void {
+    if (answered || ask.kind !== 'slack_draft') return;
+    // Whitespace is not feedback: the action stays unavailable until the
+    // field carries words, and this is the same guard for a key that
+    // reaches here anyway.
+    if (feedback.trim() === '') return;
+    const id = ask.request.id;
+    onanswer(id);
+    onsending();
+    answer({
+      respond_slack_post: {
+        key: slot,
+        id,
+        answer: { send_back: { note: feedback } },
+      },
+    });
+  }
+
+  /** The send-back field's own keys: Enter sends, Shift+Enter is the editor's
+   *  newline, Escape closes without sending. */
+  function onFeedbackKey(event: KeyboardEvent): void {
+    event.stopPropagation();
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault();
+      sendBack();
+      return;
+    }
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      closeFeedback();
+    }
   }
 
   /**
@@ -1090,9 +1179,7 @@
             .conversationLabel}{#if ask.request.threadTs !== null}
             · thread {ask.request.threadTs}{/if}
         </span>
-        <span class="q mono">
-          {ask.request.threadTs === null ? 'Post to Slack' : 'Reply in Slack'}
-        </span>
+        <span class="q mono">{slackVerbs.head}</span>
         {@render foldButton()}
       </div>
       <!-- The body verbatim: this is what would go out, so the reader approves
@@ -1219,9 +1306,34 @@
 
     {#if ask.kind === 'slack_draft'}
       <div class="acts">
-        <button class="btn p" onclick={() => post(true)}>Post</button>
-        <button class="btn d" onclick={() => post(false)}>Don't send</button>
+        <button class="btn p" onclick={() => post('approve')}>{slackVerbs.approve}</button>
+        <button class="btn" bind:this={sendBackButton} onclick={openFeedback}
+          >Send back with feedback</button
+        >
+        <button class="btn d" onclick={() => post('decline')}>{slackVerbs.decline}</button>
       </div>
+      {#if feedbackOpen}
+        <!-- The send-back's words, on the card the draft is drawn on: the
+             reader says what is wrong where they read what would go out. -->
+        <div class="sendback">
+          <Field
+            editor="dock"
+            class="notes"
+            bind:value={feedback}
+            rows={2}
+            placeholder="What should change?"
+            aria={{ label: 'feedback for the agent' }}
+            onkeydown={(event: KeyboardEvent) => {
+              onFeedbackKey(event);
+            }}
+            field={(el: HTMLElement | null) => {
+              feedbackEl = el;
+            }}
+          />
+          <button class="btn" disabled={feedback.trim() === ''} onclick={sendBack}>Send back</button
+          >
+        </div>
+      {/if}
       {#if take !== null}
         <!-- A take still running behind a held post: this branch draws no words
            row, so without this line a prompt would swallow a recording that is
@@ -1286,7 +1398,7 @@
           <span
             ><kbd>Tab</kbd> into the post, then <kbd>&uarr;</kbd><kbd>&darr;</kbd> scroll it</span
           >
-          <span><kbd>Tab</kbd> again for Post and Don't send</span>
+          <span><kbd>Tab</kbd> again for the card's actions</span>
           <span><kbd>Enter</kbd> activates</span>
         {:else}
           <span><kbd>Tab</kbd> between the actions</span>

@@ -147,7 +147,14 @@ export interface QuestionRequest {
   total: number;
 }
 
-/** A held Slack post: what is waiting, and what it would send. */
+/**
+ * What a held Slack draft would do, which its card's verbs follow. The tool
+ * alone cannot tell an edit from a delete.
+ */
+const SLACK_OPERATIONS = ['post', 'edit', 'delete', 'react', 'upload'] as const;
+export type SlackOperation = (typeof SLACK_OPERATIONS)[number];
+
+/** A held Slack draft: what is waiting, and what it would send. */
 export interface SlackDraft {
   /** The draft's own id, which is what an answer is addressed by. */
   id: string;
@@ -156,6 +163,7 @@ export interface SlackDraft {
   /** `null` posts a root message; a timestamp replies into that thread. */
   threadTs: string | null;
   text: string;
+  operation: SlackOperation;
 }
 
 /** A browser hand-off: a session asking the person to act in a browser tab. */
@@ -216,8 +224,10 @@ function number(value: unknown): number | null {
 }
 
 /** One of `known`, or the least-alarming member when the value is one this client is older than. */
-function narrow<T extends string>(value: unknown, known: T[], fallback: T): T {
-  return typeof value === 'string' && (known as string[]).includes(value) ? (value as T) : fallback;
+function narrow<T extends string>(value: unknown, known: readonly T[], fallback: T): T {
+  return typeof value === 'string' && (known as readonly string[]).includes(value)
+    ? (value as T)
+    : fallback;
 }
 
 /** The composer's state as the record carries it. */
@@ -362,6 +372,7 @@ function slackFrom(value: unknown): Ask {
       conversationLabel: text(held['conversation_label']) ?? '',
       threadTs: text(held['thread_ts']),
       text: text(held['text']) ?? '',
+      operation: narrow(held['operation'], SLACK_OPERATIONS, 'post'),
     },
   };
 }

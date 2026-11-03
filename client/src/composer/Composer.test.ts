@@ -161,6 +161,47 @@ function field(): HTMLTextAreaElement {
   return found;
 }
 
+/** The held draft's send-back field, which the card draws under its verbs. */
+function feedbackBox(): HTMLTextAreaElement {
+  const found = document.querySelector('.dock .sendback textarea');
+  if (!(found instanceof HTMLTextAreaElement)) {
+    throw new Error('the dock drew no send-back field');
+  }
+  return found;
+}
+
+/** Type into the send-back field, as the browser delivers it. */
+function writeFeedback(text: string): void {
+  const box = feedbackBox();
+  box.value = text;
+  box.dispatchEvent(new Event('input', { bubbles: true }));
+  flushSync();
+}
+
+/** The verb inside the send-back row, which is not one of the card's acts. */
+function sendBackAction(): HTMLButtonElement {
+  const found = document.querySelector('.dock .sendback button');
+  if (!(found instanceof HTMLButtonElement)) {
+    throw new Error('the send-back row drew no verb');
+  }
+  return found;
+}
+
+/** Press a key with modifiers on whatever holds the keyboard. */
+function pressWith(key: string, init: KeyboardEventInit): KeyboardEvent {
+  const target = document.activeElement;
+  if (!(target instanceof HTMLElement)) throw new Error('nothing holds the keyboard');
+  const event = new KeyboardEvent('keydown', {
+    key,
+    bubbles: true,
+    cancelable: true,
+    ...init,
+  });
+  target.dispatchEvent(event);
+  flushSync();
+  return event;
+}
+
 /** Type into the box, as a reader does - the value is the browser's, the state is ours. */
 function type(text: string): void {
   const box = field();
@@ -4884,8 +4925,8 @@ describe('the dock', () => {
       drawn(),
       'the key line leads with the Tab that reaches the region, where the arrows scroll',
     ).toContain('Tab into the post, then ↑↓ scroll it');
-    expect(drawn(), 'and names the second Tab for the two actions').toContain(
-      "Tab again for Post and Don't send",
+    expect(drawn(), 'and names the second Tab for the actions').toContain(
+      "Tab again for the card's actions",
     );
   });
 
@@ -4915,7 +4956,7 @@ describe('the dock', () => {
         respond_slack_post: {
           key: SLOT,
           id: '0192e1c0-0000-7000-8000-000000000000',
-          approved: false,
+          answer: 'decline',
         },
       },
     ]);
@@ -6129,7 +6170,7 @@ describe('the dock', () => {
         respond_slack_post: {
           key: { org: 'Busytools', project: 'forge', label: 'lead' },
           id: '0192e1c0-0000-7000-8000-000000000000',
-          approved: true,
+          answer: 'approve',
         },
       },
     ]);
@@ -6357,7 +6398,7 @@ describe('the dock', () => {
   it('refuses the held draft from its own no-verb', () => {
     const harness = open({ record: record({ pending_asks: [slackDraftAsk()] }) });
 
-    action("Don't send").click();
+    action('Do not post').click();
     flushSync();
 
     expect(commands(harness)).toEqual([
@@ -6365,7 +6406,7 @@ describe('the dock', () => {
         respond_slack_post: {
           key: { org: 'Busytools', project: 'forge', label: 'lead' },
           id: '0192e1c0-0000-7000-8000-000000000000',
-          approved: false,
+          answer: 'decline',
         },
       },
     ]);
@@ -6381,10 +6422,167 @@ describe('the dock', () => {
         respond_slack_post: {
           key: { org: 'Busytools', project: 'forge', label: 'lead' },
           id: '0192e1c0-0000-7000-8000-000000000000',
-          approved: false,
+          answer: 'decline',
         },
       },
     ]);
+  });
+
+  const OPERATION_CARDS: [string, string | null, string, string, string][] = [
+    ['post', null, 'Post to Slack', 'Post', 'Do not post'],
+    ['post', '1758901234.482910', 'Reply in Slack', 'Post', 'Do not post'],
+    ['edit', null, 'Edit in Slack', 'Apply edit', 'Do not apply'],
+    ['delete', null, 'Delete in Slack', 'Delete', 'Keep it'],
+    ['react', null, 'React in Slack', 'React', 'Do not react'],
+    ['upload', null, 'Upload to Slack', 'Upload', 'Do not upload'],
+  ];
+
+  it.each(OPERATION_CARDS)(
+    'draws a %s draft with its own words',
+    (operation, thread, head, approve, decline) => {
+      open({
+        record: record({
+          pending_asks: [slackDraftAsk({ operation, thread_ts: thread })],
+        }),
+      });
+
+      expect(drawn(), 'the card leads with what it would do').toContain(head);
+      const labels = [...document.querySelectorAll('.dock .acts .btn')].map((button) =>
+        button.textContent?.trim(),
+      );
+      expect(labels, "and its verbs are the operation's, not post's").toEqual([
+        approve,
+        'Send back with feedback',
+        decline,
+      ]);
+    },
+  );
+
+  it('opens the send-back field with the keyboard in it', () => {
+    open({ record: record({ pending_asks: [slackDraftAsk()] }) });
+
+    action('Send back with feedback').click();
+    flushSync();
+
+    expect(document.activeElement, 'the reader pressed a door, not a form').toBe(feedbackBox());
+  });
+
+  it('keeps the send-back action unavailable until the field has words', () => {
+    const harness = open({ record: record({ pending_asks: [slackDraftAsk()] }) });
+
+    action('Send back with feedback').click();
+    flushSync();
+    expect(sendBackAction().hasAttribute('disabled'), 'no words, no answer').toBe(true);
+
+    writeFeedback('   \n ');
+    expect(
+      sendBackAction().hasAttribute('disabled'),
+      'whitespace is not feedback the agent can revise from',
+    ).toBe(true);
+    press('Enter');
+    expect(commands(harness), 'and Enter with nothing sends nothing').toEqual([]);
+
+    writeFeedback('say staging, not prod');
+    expect(sendBackAction().hasAttribute('disabled'), 'words make it available').toBe(false);
+  });
+
+  it('sends the note back verbatim on Enter, and posts nothing', () => {
+    const harness = open({ record: record({ pending_asks: [slackDraftAsk()] }) });
+
+    action('Send back with feedback').click();
+    flushSync();
+    writeFeedback('say staging, not prod');
+    press('Enter');
+
+    expect(commands(harness)).toEqual([
+      {
+        respond_slack_post: {
+          key: SLOT,
+          id: '0192e1c0-0000-7000-8000-000000000000',
+          answer: { send_back: { note: 'say staging, not prod' } },
+        },
+      },
+    ]);
+    expect(document.querySelector('.dock'), 'the card stands down with the answer').toBeNull();
+  });
+
+  it('leaves Shift+Enter to the editor instead of sending', () => {
+    const harness = open({ record: record({ pending_asks: [slackDraftAsk()] }) });
+
+    action('Send back with feedback').click();
+    flushSync();
+    writeFeedback('first line');
+    const event = pressWith('Enter', { shiftKey: true });
+
+    expect(commands(harness), 'a newline is not an answer').toEqual([]);
+    expect(event.defaultPrevented, 'the editor keeps the key so the newline survives').toBe(false);
+    expect(document.querySelector('.dock .sendback'), 'and the field stays open').not.toBeNull();
+  });
+
+  it('closes the send-back field on Escape without sending', () => {
+    const harness = open({ record: record({ pending_asks: [slackDraftAsk()] }) });
+    const opener = action('Send back with feedback');
+
+    opener.click();
+    flushSync();
+    writeFeedback('half a thought');
+    press('Escape');
+
+    expect(commands(harness), 'closing is not answering').toEqual([]);
+    expect(document.querySelector('.dock .sendback'), 'the field closes').toBeNull();
+    expect(document.activeElement, 'the keyboard goes back to the door it came through').toBe(
+      opener,
+    );
+  });
+
+  it('draws the send-back as it leaves, then names a refusal in its place', () => {
+    const harness = open({ record: record({ pending_asks: [slackDraftAsk()] }) });
+
+    action('Send back with feedback').click();
+    flushSync();
+    writeFeedback('say staging, not prod');
+    press('Enter');
+
+    expect(drawn(), 'the press registered').toContain(
+      'Sending your feedback to the agent. Nothing was posted.',
+    );
+
+    harness.say({
+      kind: 'error',
+      what: 'respond_slack_post',
+      why: 'that Slack draft is no longer waiting',
+    });
+    flushSync();
+
+    expect(drawn(), 'the failure is named where the card stood').toContain('no longer waiting');
+    expect(drawn(), 'and the sending line goes with it').not.toContain('Sending your feedback');
+  });
+
+  it('draws the revised draft after a send-back as its own card', () => {
+    const harness = open({ record: record({ pending_asks: [slackDraftAsk()] }) });
+
+    action('Send back with feedback').click();
+    flushSync();
+    writeFeedback('say staging, not prod');
+    press('Enter');
+
+    // The agent revises and calls again; the core parks a new hold under its
+    // own id, and nothing about the first answer approves it.
+    harness.page.record = record({
+      pending_asks: [
+        slackDraftAsk({
+          id: '0192e1c0-0000-7000-8000-000000000001',
+          text: 'staging is down',
+        }),
+      ],
+    });
+    flushSync();
+
+    expect(document.querySelector('.dock'), 'the revision parks its own card').not.toBeNull();
+    expect(drawn(), 'and draws the revised words').toContain('staging is down');
+    expect(drawn(), 'not the ones that were sent back').not.toContain(
+      'Deploy finished on staging.',
+    );
   });
 
   it('draws the hand-off as the session asked it, with the verbs that reach its answer', () => {
@@ -10141,13 +10339,17 @@ describe('the approving action leads', () => {
     ).toBe(true);
   });
 
-  it("orders a held post's verbs Post, then Don't send", () => {
+  it("orders a held post's verbs approve, send back, then do not post", () => {
     open({ record: record({ pending_asks: [slackDraftAsk()] }) });
 
     const labels = [...document.querySelectorAll('.dock .acts .btn')].map((button) =>
       button.textContent?.trim(),
     );
-    expect(labels, 'the approved action does not lead').toEqual(['Post', "Don't send"]);
+    expect(labels, 'the approved action leads and the refusal closes the row').toEqual([
+      'Post',
+      'Send back with feedback',
+      'Do not post',
+    ]);
   });
 
   it("lands the caret in a permission's words row on a typed character, riding the deny", () => {

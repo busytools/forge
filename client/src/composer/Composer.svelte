@@ -512,8 +512,13 @@
       const id = typeof payload['id'] === 'string' ? payload['id'] : null;
       if (id === null || id !== held.shownDraft) return;
       // The reader's own answer, taken or not: the refusal that follows says
-      // so when it is not, and the ending would only repeat the click.
-      if (held.answered === id) return;
+      // so when it is not, and the ending would only repeat the click. A
+      // send-back's sending line is not an ending, so it goes with the draft
+      // it was drawn for.
+      if (held.answered === id) {
+        held.ended = null;
+        return;
+      }
       held.ended = draftEndingLine(payload['ending']);
     });
   });
@@ -1312,6 +1317,18 @@
   }
 
   /**
+   * A send-back is on its way. The card stands down with the press, so the
+   * line where it stood is what tells the reader the press registered and
+   * that nothing went to Slack; a refusal replaces it with the reason.
+   */
+  function sendingBack(): void {
+    box.ended = {
+      tone: 'q',
+      text: 'Sending your feedback to the agent. Nothing was posted.',
+    };
+  }
+
+  /**
    * **The bar stays while the surface is up, even when the ask leaves**: a
    * hand-off the core resolved elsewhere takes the dock's card with it, and a
    * bare picture with no way back to the chat is a trap. With no ask the bar
@@ -1728,6 +1745,7 @@
               carried={box.carried}
               onanswer={remember}
               onabandon={abandon}
+              onsending={sendingBack}
               onmic={() => dictate.toggle()}
               {dictation}
               silent={silentLine}
