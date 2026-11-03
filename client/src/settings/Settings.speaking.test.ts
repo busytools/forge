@@ -108,8 +108,10 @@ function draw(open: Connection, sheet: SettingsDocument = settingsWire): void {
  * summary's own click is the browser's toggle; jsdom leaves that to the test,
  * which moves `open` and fires what the platform fires. */
 function setVoicesOpen(open: boolean): HTMLDetailsElement {
-  const fold = document.querySelector<HTMLDetailsElement>('.settings-speaking details.gfold');
-  expect(fold, 'the voices fold draws').not.toBeNull();
+  const fold = document.querySelector<HTMLDetailsElement>(
+    '.settings-speaking details.settings-card',
+  );
+  expect(fold, 'the voices card draws as a foldable card').not.toBeNull();
   const at = fold as HTMLDetailsElement;
   if (at.open !== open) {
     at.open = open;
@@ -142,12 +144,12 @@ function ruleFor(selector: string): string {
   return (match?.[1] ?? '').replace(/\s+/g, ' ').trim();
 }
 
-function voiceRow(id: string): HTMLLIElement {
-  const row = [...document.querySelectorAll<HTMLLIElement>('.settings-speaking li')].find((item) =>
-    item.textContent?.includes(id),
-  );
+function voiceRow(id: string): HTMLElement {
+  const row = [
+    ...document.querySelectorAll<HTMLElement>('.settings-speaking .settings-setting'),
+  ].find((item) => item.querySelector('.settings-setting-label code')?.textContent?.trim() === id);
   expect(row, `the ${id} row draws`).not.toBeUndefined();
-  return row as HTMLLIElement;
+  return row as HTMLElement;
 }
 
 /** The page's words with their source line breaks folded, so a phrase that
@@ -210,30 +212,31 @@ describe("the settings page's speaking card", () => {
     expect(voiceRow('bf_emma')).not.toBeNull();
   });
 
-  /** Fifty-four rows are most of a screen: the section arrives shut, and its
-   * summary is the door - a chevron at rest, so the collapsed state reads as
-   * something to open rather than as nothing. */
-  it('starts the voices folded, with a visible chevron, and opens on the toggle', () => {
+  /** Fifty-four rows are most of a screen: the section arrives shut, its
+   * head band is the page's card head, and that head carries the chevron. */
+  it('draws the voices as a card whose head is the disclosure', () => {
     draw(connection({ dispatched: [], edits: [] }));
 
-    const fold = document.querySelector<HTMLDetailsElement>('.settings-speaking details.gfold');
-    expect(fold, 'the voices fold draws').not.toBeNull();
+    const fold = document.querySelector<HTMLDetailsElement>(
+      '.settings-speaking details.settings-card',
+    );
+    expect(fold, 'the voices card draws').not.toBeNull();
     const at = fold as HTMLDetailsElement;
-    expect(at.open, 'the section starts shut').toBe(false);
-    expect(at.querySelector('summary .gh')?.textContent?.trim()).toBe('voices');
-    expect(at.querySelector('summary .cn')?.textContent?.trim()).toBe('2');
-    expect(at.querySelector('summary .arw'), 'the chevron draws shut too').not.toBeNull();
+    expect(at.open, 'the card starts shut').toBe(false);
+    const head = at.querySelector('summary.settings-card-head');
+    expect(head, 'the card head is the summary').not.toBeNull();
+    expect(head?.querySelector('h3')?.textContent?.trim()).toBe('voices');
+    expect(head?.querySelector('.settings-card-count')?.textContent?.trim()).toBe('2');
+    expect(head?.querySelector('.arw'), 'the chevron draws shut too').not.toBeNull();
     expect(
-      ruleFor('details.gfold > summary .arw'),
+      ruleFor('.settings-page details.settings-card > summary .arw'),
       'the chevron rests visible rather than behind a hover',
     ).toContain('opacity: 1');
 
-    const summary = at.querySelector('summary');
-    expect(summary, 'the summary is the door').not.toBeNull();
-    summary?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    head?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     flushSync();
-    expect(at.open, 'the summary opens it').toBe(true);
-    summary?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(at.open, 'the head opens it').toBe(true);
+    head?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     flushSync();
     expect(at.open, 'and closes it').toBe(false);
   });
@@ -258,15 +261,15 @@ describe("the settings page's speaking card", () => {
     openVoices();
 
     for (const [language, ids] of byLanguage) {
-      const list = document.querySelector(`ul[aria-label="Voices, ${language}"]`);
-      expect(list, `the ${language} group draws`).not.toBeNull();
-      const drawn = [...(list as HTMLElement).querySelectorAll('li .nm')].map((name) =>
-        name.textContent?.trim(),
-      );
+      const group = document.querySelector(`.voice-rows[aria-label="Voices, ${language}"]`);
+      expect(group, `the ${language} group draws`).not.toBeNull();
+      const drawn = [
+        ...(group as HTMLElement).querySelectorAll('.settings-setting-label code'),
+      ].map((name) => name.textContent?.trim());
       expect(drawn, `${language} holds exactly its own voices`).toEqual(ids);
     }
     expect(
-      document.querySelectorAll('.settings-speaking .voices li').length,
+      document.querySelectorAll('.settings-speaking .voice-rows > .settings-setting').length,
       'every voice draws exactly once',
     ).toBe(voices.length);
   });

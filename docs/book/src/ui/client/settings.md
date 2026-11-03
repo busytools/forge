@@ -53,7 +53,7 @@ comes from the settings document above.
 | Restart banner | After a save lands, exactly the restart-class keys it carried, with no restart button. |
 | A new entry | A dashed card headed by its name and `new <group>`, its fields empty and required-marked, discarded or saved with the batch. |
 | A pending removal | The card head reads `removed on save`, with Undo; its lines are not drawn. |
-| The speaking card | The voice area's own block above its key cards: the speaking model row with its one control - install, activate or use the default - except that a `[tts] speaking_model` pin on an installed model draws no control, while a pinned model this machine does not have still offers `install`; the directory the files live in; and a voices fold that starts shut, its count and a chevron on the header whatever its state, holding the installed voices grouped by the language their prefix names, inside a region that scrolls inside the card. Each voice row is its id, its chosen state or a `use` chip, and a `preview` chip that becomes a disabled `preparing` while the render runs, then a `playing` state and a `stop`, with a failure drawn on that row. |
+| The speaking card | The voice area's own block above its key cards: the speaking model row with its one control - install, activate or use the default - except that a `[tts] speaking_model` pin on an installed model draws no control, while a pinned model this machine does not have still offers `install`; the directory the files live in; and a voices card drawn like the key cards, its head band the disclosure (the name, the count and a chevron, shut at rest). Inside it the voices are setting lines grouped under language sub-headings, scrolling inside the card. Each voice line is its id and the chips: its chosen state or `use`, and a `preview` that becomes a disabled `preparing` while the render runs, then a `playing` state and a `stop`, with a failure drawn on that line. |
 
 ## The rules
 
@@ -134,9 +134,10 @@ comes from the settings document above.
   taking the same weight a chosen row's does so the voice being heard is
   identifiable at a glance; a failure lands on that row in the core's own
   words.
-- **The voices are a fold that starts shut.** Its header carries the count
-  and a chevron in both states, and opening it lists the voices grouped by
-  the language their prefix names, inside a region that scrolls so
+- **The voices are a card that starts shut.** It draws the key cards' own
+  card, its head band the disclosure: the name, the count and a chevron at
+  rest in both states. Opening it lists the voices as setting
+  lines under language sub-headings, inside the card's own scroll so
   fifty-four rows never run the page off the screen.
 
 ## The states the page can be in

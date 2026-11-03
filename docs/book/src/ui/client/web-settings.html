@@ -266,23 +266,16 @@
   .speaking-row .meta { font-family: var(--mono); font-size: 11px; color: var(--dim); }
   .speaking-row .state { font-size: 11px; color: var(--dim); }
   .speaking-row .state.on { color: var(--ok); }
-  .gfold summary { display: flex; align-items: center; gap: 8px;
-    cursor: pointer; font-family: var(--mono); font-size: 12px; padding: 6px 0; }
-  .gfold .cn { margin-left: auto; color: var(--dim); font-size: 11px; }
-  .gfold .arw { color: var(--accent); }
-  .voices { max-height: 210px; overflow-y: auto; padding-right: 4px; }
-  .voice-group { margin: 10px 2px 2px; font-size: 10.5px; font-weight: 500;
-    color: var(--dim); }
-  .voices .gfold-list { list-style: none; margin: 4px 0 0; padding: 0;
-    border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
-  .voice { display: flex; align-items: center; gap: 8px; padding: 4px 9px;
-    border-bottom: 1px solid var(--line); }
-  .voice:last-child { border-bottom: 0; }
-  .voice code { flex: 1; font-family: var(--mono); font-size: 11.5px; }
-  .voice.on code, .voice.playing code { font-weight: 500; }
-  .voice .state { font-size: 11px; color: var(--dim); }
-  .voice .chip { border: 1px solid var(--line); border-radius: 99px;
-    padding: 1px 7px; font-family: var(--mono); font-size: 10.5px; color: var(--muted); }
+  /* The voices card's head is its disclosure: the card head, with the chevron
+     shown at rest. The card scrolls its own rows. */
+  details.settings-card > summary.settings-card-head { list-style: none; cursor: pointer; }
+  details.settings-card > summary.settings-card-head::-webkit-details-marker { display: none; }
+  .settings-card-head .arw { color: var(--accent); }
+  details.settings-card { max-height: 240px; overflow-y: auto; }
+  .voice-group { margin: 12px 16px 2px; font-family: var(--mono); font-size: 10.5px;
+    font-weight: 500; color: var(--dim); }
+  .settings-setting.chosen .settings-setting-label code,
+  .settings-setting.playing .settings-setting-label code { font-weight: 500; }
   .speaking-card .settings-btn { border: 1px solid var(--ctl); background: none;
     color: var(--muted); font-size: 10.5px; padding: 3px 9px; }
 </style>
@@ -455,31 +448,26 @@
             <div class="speaking-row"><code class="nm">kokoro-82m-int8</code><span class="meta">int8 &middot; 92 MB</span><span class="state on">active</span><span class="settings-card-grow"></span><button class="settings-btn">use the default</button></div>
             <p class="settings-note">the files live in <code>~/Library/Caches/forge-tts</code></p>
             <p class="settings-note">the chosen voice is <code>bf_emma</code> &middot; this model carries 54 voices, and the choice is saved with the page's other edits</p>
-            <details class="gfold" open>
-              <summary><span class="gh">voices</span><span class="cn">54</span><span class="arw">&#8250;</span></summary>
-              <div class="voices">
-                <h4 class="voice-group">English</h4>
-                <ul class="gfold-list">
-                  <li class="voice on"><code>bf_emma</code><span class="chip">chosen</span><button class="settings-btn">preview</button></li>
-                  <li class="voice"><code>af_heart</code><button class="settings-btn">use</button><button class="settings-btn">preview</button></li>
-                  <li class="voice playing"><code>af_alloy</code><span class="chip">playing</span><button class="settings-btn">stop</button></li>
-                  <li class="voice"><code>am_adam</code><button class="settings-btn">use</button><button class="settings-btn">preview</button></li>
-                </ul>
-                <h4 class="voice-group">Spanish</h4>
-                <ul class="gfold-list">
-                  <li class="voice"><code>ef_dora</code><button class="settings-btn">use</button><button class="settings-btn">preview</button></li>
-                  <li class="voice"><code>em_alex</code><button class="settings-btn">use</button><button class="settings-btn">preview</button></li>
-                </ul>
-                <h4 class="voice-group">French</h4>
-                <ul class="gfold-list">
-                  <li class="voice"><code>ff_siwis</code><button class="settings-btn">use</button><button class="settings-btn">preview</button></li>
-                </ul>
-                <h4 class="voice-group">Hindi</h4>
-                <ul class="gfold-list">
-                  <li class="voice"><code>hf_alpha</code><button class="settings-btn">use</button><button class="settings-btn">preview</button></li>
-                  <li class="voice"><code>hm_omega</code><button class="settings-btn">use</button><button class="settings-btn">preview</button></li>
-                </ul>
-              </div>
+            <details class="settings-card" open>
+              <summary class="settings-card-head">
+                <h3>voices</h3>
+                <span class="settings-card-count">54</span>
+                <span class="settings-card-grow"></span>
+                <span class="arw">&#8250;</span>
+              </summary>
+              <div class="voice-group">English</div>
+              <div class="settings-setting playing"><span class="settings-setting-label"><code>af_alloy</code></span><span class="settings-setting-value"><span class="chip">playing</span> <button class="settings-btn">stop</button></span></div>
+              <div class="settings-setting chosen"><span class="settings-setting-label"><code>bf_emma</code></span><span class="settings-setting-value"><span class="chip">chosen</span> <button class="settings-btn">preview</button></span></div>
+              <div class="settings-setting"><span class="settings-setting-label"><code>af_heart</code></span><span class="settings-setting-value"><button class="settings-btn">use</button> <button class="settings-btn">preview</button></span></div>
+              <div class="settings-setting"><span class="settings-setting-label"><code>am_adam</code></span><span class="settings-setting-value"><button class="settings-btn">use</button> <button class="settings-btn">preview</button></span></div>
+              <div class="voice-group">Spanish</div>
+              <div class="settings-setting"><span class="settings-setting-label"><code>ef_dora</code></span><span class="settings-setting-value"><button class="settings-btn">use</button> <button class="settings-btn">preview</button></span></div>
+              <div class="settings-setting"><span class="settings-setting-label"><code>em_alex</code></span><span class="settings-setting-value"><button class="settings-btn">use</button> <button class="settings-btn">preview</button></span></div>
+              <div class="voice-group">French</div>
+              <div class="settings-setting"><span class="settings-setting-label"><code>ff_siwis</code></span><span class="settings-setting-value"><button class="settings-btn">use</button> <button class="settings-btn">preview</button></span></div>
+              <div class="voice-group">Hindi</div>
+              <div class="settings-setting"><span class="settings-setting-label"><code>hf_alpha</code></span><span class="settings-setting-value"><button class="settings-btn">use</button> <button class="settings-btn">preview</button></span></div>
+              <div class="settings-setting"><span class="settings-setting-label"><code>hm_omega</code></span><span class="settings-setting-value"><button class="settings-btn">use</button> <button class="settings-btn">preview</button></span></div>
             </details>
             <p class="settings-note">a preview plays on the seat you were last on, with its speaker switch on</p>
           </section>

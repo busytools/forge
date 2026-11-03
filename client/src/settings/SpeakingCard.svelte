@@ -1,5 +1,5 @@
 <script lang="ts">
-  import GroupFold from '../components/GroupFold.svelte';
+  import InstanceCard from './InstanceCard.svelte';
   import { activateLine, installLine, sizeLabel } from '../models/view';
   import type { ActivateState, InstallState, SpeakingWire } from '../wire/models';
   import type { SessionSlot } from '../wire/types';
@@ -203,33 +203,48 @@
       <p class="note">the voices arrive with the model; install it to choose one</p>
     {:else}
       <p class="note">
-        the chosen voice is <code>{chosen}</code> &middot; this model carries {speaking.voices
-          .length}
-        voices, and the choice is saved with the page's other edits
+        the chosen voice is <code>{chosen}</code> &middot; the choice is saved with the page's other edits
       </p>
-      <GroupFold heading="voices" count={speaking.voices.length}>
-        <div class="voices">
-          {#each groups as group (group.heading)}
-            <h4 class="group">{group.heading}</h4>
-            <ul class="list" aria-label="Voices, {group.heading}">
-              {#each group.voices as id (id)}
-                <li
-                  class:chosen={id === chosen}
-                  class:playing={preview?.voice === id && preview.phase === 'playing'}
-                >
-                  <span class="nm">{id}</span>
-                  {#if id === chosen}
-                    <span class="chip">chosen</span>
-                  {:else}
-                    <button class="chip" type="button" onclick={() => onchoose(id)}>use</button>
-                  {/if}
-                  {#if running}
-                    {#if preview?.voice === id}
-                      {#if preview.phase === 'playing'}
-                        <span class="chip"><span class="dot ok"></span>playing</span>
-                        <button class="chip" type="button" onclick={onstoppreview}>stop</button>
-                      {:else if preview.phase === 'working'}
-                        <button class="chip" type="button" disabled>preparing</button>
+      <InstanceCard
+        label="voices"
+        count={speaking.voices.length}
+        countNoun={null}
+        headingId="speaking-voices"
+        foldable
+      >
+        {#each groups as group (group.heading)}
+          <h4 class="voice-group">{group.heading}</h4>
+          <div class="voice-rows" role="group" aria-label="Voices, {group.heading}">
+            {#each group.voices as id (id)}
+              <div
+                class="settings-setting"
+                class:chosen={id === chosen}
+                class:playing={preview?.voice === id && preview.phase === 'playing'}
+              >
+                <span class="settings-setting-label"><code title={id}>{id}</code></span>
+                <span class="settings-setting-value">
+                  <span class="voice-actions">
+                    {#if id === chosen}
+                      <span class="chip">chosen</span>
+                    {:else}
+                      <button class="chip" type="button" onclick={() => onchoose(id)}>use</button>
+                    {/if}
+                    {#if running}
+                      {#if preview?.voice === id}
+                        {#if preview.phase === 'playing'}
+                          <span class="chip"><span class="dot ok"></span>playing</span>
+                          <button class="chip" type="button" onclick={onstoppreview}>stop</button>
+                        {:else if preview.phase === 'working'}
+                          <button class="chip" type="button" disabled>preparing</button>
+                        {:else}
+                          <button
+                            class="chip"
+                            type="button"
+                            disabled={previewHint !== undefined}
+                            title={previewHint}
+                            onclick={() => onpreview(id)}>preview</button
+                          >
+                        {/if}
                       {:else}
                         <button
                           class="chip"
@@ -239,25 +254,17 @@
                           onclick={() => onpreview(id)}>preview</button
                         >
                       {/if}
-                    {:else}
-                      <button
-                        class="chip"
-                        type="button"
-                        disabled={previewHint !== undefined}
-                        title={previewHint}
-                        onclick={() => onpreview(id)}>preview</button
-                      >
                     {/if}
-                  {/if}
-                  {#if previewFailure !== null && preview?.voice === id}
-                    <span class="bad row-failure">{previewFailure}</span>
-                  {/if}
-                </li>
-              {/each}
-            </ul>
-          {/each}
-        </div>
-      </GroupFold>
+                  </span>
+                </span>
+                {#if previewFailure !== null && preview?.voice === id}
+                  <span class="bad row-failure">{previewFailure}</span>
+                {/if}
+              </div>
+            {/each}
+          </div>
+        {/each}
+      </InstanceCard>
       {#if running && (seat === null || !listening)}
         <p class="note">
           a preview plays on the seat you were last on, with its speaker switch on &middot; open a
