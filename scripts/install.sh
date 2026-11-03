@@ -106,10 +106,13 @@ FORGE_BIN="$FORGE_BIN_DIR/forge"
 
 # transcribe's ggml is built shared, and the binary's rpath names its own
 # directory, so the libraries ship beside it. The build staged them next to
-# the release profile; without them the binary does not start.
-FORGE_TRANSCRIBE_LIBS="$FORGE_REPO/target/$BUILD_LABEL/transcribe-libs"
+# the release profile; without them the binary does not start. Cargo puts a
+# target-triple build under target/<triple>/, and CARGO_BUILD_TARGET is how
+# the triple is selected.
+FORGE_TARGET_DIR="$FORGE_REPO/target${CARGO_BUILD_TARGET:+/$CARGO_BUILD_TARGET}"
+FORGE_TRANSCRIBE_LIBS="$FORGE_TARGET_DIR/$BUILD_LABEL/transcribe-libs"
 [ -d "$FORGE_TRANSCRIBE_LIBS" ] \
-    || die "transcribe's shared libraries were not staged at $FORGE_TRANSCRIBE_LIBS - the release build did not produce them"
+    || die "transcribe's shared libraries were not staged at $FORGE_TRANSCRIBE_LIBS - a target-triple build stages under target/<triple>/$BUILD_LABEL, so set CARGO_BUILD_TARGET to the triple you build for"
 cp -R "$FORGE_TRANSCRIBE_LIBS/." "$FORGE_BIN_DIR/"
 
 # The install is only done if the binary starts: the loader names what it
