@@ -284,9 +284,11 @@ jobs:
   # and `testing` on its own. The job above covers neither - with every
   # feature on, it never exercises which configuration enables what: the
   # install build leaving `test-helpers` off, or `testing` having to
-  # forward it.
+  # forward it. It also runs the install: the installed binary is the
+  # artifact a user runs, and transcribe's shared ggml has to resolve from
+  # beside it with no LD_LIBRARY_PATH.
   feature-configs:
-    name: cargo check (install.sh + testing configs)
+    name: "install config: check and installed binary"
     needs: changes
     if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.gate == 'true'
     runs-on: ubuntu-latest
@@ -303,6 +305,51 @@ jobs:
           key: feature-configs
       - run: cargo check --locked --release -p forge-server --bin forge
       - run: cargo check --locked -p forge-server --features testing
+      # The install is the whole path a user gets, and these are the two
+      # things their machine does without: no library path, and the loader
+      # naming the copy installed beside the binary.
+      - name: The installed binary resolves its libraries
+        env:
+          CARGO_INSTALL_ROOT: ${{ runner.temp }}/forge-install
+          FORGE_ZSH_COMPLETION_DIR: ${{ runner.temp }}/forge-zsh
+        run: |
+          scripts/install.sh
+          bin="$CARGO_INSTALL_ROOT/bin/forge"
+          env -u LD_LIBRARY_PATH "$bin" --version
+          # ldd indents its lines, and a no-match grep must reach the emptiness
+          # check rather than abort the step under pipefail.
+          libs=$(env -u LD_LIBRARY_PATH ldd "$bin" | grep -E '^[[:space:]]*(libtranscribe|libggml)' || true)
+          if [ -z "$libs" ]; then
+            echo "the installed binary links no transcribe/ggml libraries" >&2
+            exit 1
+          fi
+          if echo "$libs" | grep -vFq -- "$CARGO_INSTALL_ROOT/bin/"; then
+            echo "$libs" | grep -vF -- "$CARGO_INSTALL_ROOT/bin/" >&2
+            echo "the libraries above do not resolve from beside the installed binary" >&2
+            exit 1
+          fi
+          # Control: the boot check must be sensitive to the installed copy.
+          resolved=$(echo "$libs" | awk '/^[[:space:]]*libtranscribe/ {print $3}')
+          mv "$resolved" "$resolved.aside"
+          if env -u LD_LIBRARY_PATH "$bin" --version > /dev/null 2>&1; then
+            echo "the binary booted with $resolved moved away" >&2
+            exit 1
+          fi
+          mv "$resolved.aside" "$resolved"
+          echo "installed binary boots with $(echo "$libs" | wc -l | tr -d ' ') transcribe/ggml libraries resolved from $CARGO_INSTALL_ROOT/bin"
+          # The build-tree rpath entry: the release binary finds the staged
+          # libraries one directory down.
+          env -u LD_LIBRARY_PATH target/release/forge --version
+          # A second install must land a new inode for the real library:
+          # copying over it would rewrite a running forge's mapping. The
+          # resolved path is the SONAME symlink, so dereference it.
+          before=$(stat -Lc %i "$resolved")
+          scripts/install.sh
+          [ "$before" != "$(stat -Lc %i "$resolved")" ] || {
+            echo "the installed library kept its inode across an install" >&2
+            exit 1
+          }
+          env -u LD_LIBRARY_PATH "$bin" --version
 
   docs:
     name: cargo doc
@@ -450,6 +497,34 @@ jobs:
       # The server's browser host and the server arm that installs it: a
       # compile error here passes every Ubuntu job.
       - run: cargo check -p forge-browser -p forge-server --all-targets
+      # The macOS half of the install proof: the same script into a temp
+      # root, then a boot with no DYLD_* library path. @loader_path and the
+      # copied dylibs are macOS-only, so the Ubuntu job cannot cover this.
+      # The browser stage is skipped: the bundle and driver it downloads are
+      # exercised by the steps around this one.
+      - name: The installed binary resolves its libraries (macOS)
+        env:
+          CARGO_INSTALL_ROOT: ${{ runner.temp }}/forge-install-macos
+          FORGE_ZSH_COMPLETION_DIR: ${{ runner.temp }}/forge-zsh-macos
+          FORGE_INSTALL_BROWSER: "0"
+        run: |
+          scripts/install.sh
+          bin="$CARGO_INSTALL_ROOT/bin/forge"
+          env -u DYLD_LIBRARY_PATH -u DYLD_FALLBACK_LIBRARY_PATH "$bin" --version
+          # A no-match grep reaches the emptiness check below, not an abort.
+          loaded=$(env -u DYLD_LIBRARY_PATH -u DYLD_FALLBACK_LIBRARY_PATH \
+            DYLD_PRINT_LIBRARIES=1 "$bin" --version 2>&1 \
+            | grep -E '/(libtranscribe|libggml)[^/]*\.dylib' || true)
+          if [ -z "$loaded" ]; then
+            echo "the installed binary loaded no transcribe/ggml libraries" >&2
+            exit 1
+          fi
+          if echo "$loaded" | grep -vFq -- "$CARGO_INSTALL_ROOT/bin/"; then
+            echo "$loaded" | grep -vF -- "$CARGO_INSTALL_ROOT/bin/" >&2
+            echo "the libraries above do not load from beside the installed binary" >&2
+            exit 1
+          fi
+          echo "installed binary boots with $(echo "$loaded" | wc -l | tr -d ' ') transcribe/ggml libraries from $CARGO_INSTALL_ROOT/bin"
       # **This is the only place the FSEvents watch runs.** The config watch
       # tests are macOS-ignored because the maintainer's loaded machine stalls
       # fsevents delivery; Ubuntu runs them on inotify, which is a different

@@ -35,7 +35,9 @@ flag covers the build each step drives, and rustdoc compiles a doctest on
 its own, so it does not deny warnings inside one. This is CI's set minus
 the jobs a checkout cannot carry - CI runs `cargo check --release`, the
 client build's `scripts/check_client_wasm.py` step (`just check` builds no
-frontend), and the image workflow, which builds and exercises
+frontend), its install-and-boot proof (`scripts/install.sh`, then a boot
+of the installed binary with no library path), and the image workflow,
+which builds and exercises
 the web image on the commits that touch it - and plus the android warnings
 check CI cannot run yet (`client-android-warnings`; it needs the Android
 NDK's target installed, so the CI side is #1959, closed as an enhancement
