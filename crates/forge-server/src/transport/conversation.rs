@@ -1148,17 +1148,31 @@ mod tests {
         })
     }
 
-    /// One thinking-token counter.
+    /// One thinking-token counter, with a cumulative absolute that is not its
+    /// delta - so summing the wrong field fails.
     fn a_counter(at: usize, delta: i64) -> Message {
         serde_json::from_value(serde_json::json!({
             "type": "system",
             "subtype": "thinking_tokens",
-            "estimated_tokens": delta as u64,
+            "estimated_tokens": ((at as i64 + 1) * delta) as u64,
             "estimated_tokens_delta": delta,
             "uuid": format!("t-{at}"),
             "session_id": "5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45",
         }))
         .expect("a counter frame")
+    }
+
+    /// The frame a compaction leaves, which the scan reads as a boundary.
+    fn a_compact_boundary() -> Message {
+        Message::CompactBoundary {
+            trigger: "auto".to_owned(),
+            pre_tokens: 100_000,
+            post_tokens: 21_000,
+            uuid: "b1c2d3e4-0000-4000-8000-000000000001".to_owned(),
+            session_id: "5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45".to_owned(),
+            metadata_extras: serde_json::Map::new(),
+            extras: serde_json::Map::new(),
+        }
     }
 
     /// The frame an error leaves, which ends a turn as a `Result` does.
@@ -1242,7 +1256,7 @@ mod tests {
     }
 
     /// **A turn that fits is served exactly as it was.** No cut means no debt,
-    /// and the page's own sum is the turn's.
+    /// and the page's frames are the input's own bytes.
     #[test]
     fn a_turn_that_fits_is_served_unchanged() {
         let mut conversation = Conversation::empty();
@@ -1252,20 +1266,75 @@ mod tests {
         }
         assert_eq!(conversation.dropped_thinking(), 0, "no cut, no debt");
 
+        let expected: Vec<serde_json::Value> = conversation
+            .messages()
+            .iter()
+            .map(|message| serde_json::to_value(message).expect("a frame encodes"))
+            .collect();
         let held = Held::new(conversation);
         let page = page_with_debt(&held, u32::MAX);
         assert_eq!(served_thinking(&page), 20, "the page is the turn's own sum");
-        let first = page.turns[0]
-            .messages
-            .iter()
-            .find(|frame| frame["subtype"] == "thinking_tokens")
-            .expect("a counter");
-        assert_eq!(first["estimated_tokens_delta"], 2, "no debt is added to a turn that fits",);
-        let plain = newest_page(&held, u32::MAX);
         assert_eq!(
-            serde_json::to_string(&page.turns).expect("the page encodes"),
-            serde_json::to_string(&plain.turns).expect("the page encodes"),
-            "and the bytes are the page with no debt, unchanged",
+            page.turns[0].messages, expected,
+            "a fitting turn's frames are its input, byte for byte",
+        );
+    }
+
+    /// **A second drop in one turn adds to the debt; it does not replace it.**
+    /// The live path drops a thousand frames at a time once the window passes
+    /// its slack, and the counters it sheds accumulate until a turn opens.
+    #[test]
+    fn a_second_live_drop_accumulates_the_debt() {
+        let counters = 6_100;
+        let mut conversation = Conversation::empty();
+        conversation.append(a_frame("a thought-heavy turn"));
+        for at in 0..counters {
+            conversation.append(a_counter(at, 1));
+        }
+        assert_eq!(conversation.dropped_thinking(), 2_000, "two drops of a thousand counters");
+
+        let held = Held::new(conversation);
+        let page = page_with_debt(&held, u32::MAX);
+        assert_eq!(served_thinking(&page), counters as i64, "the page carries the whole turn");
+    }
+
+    /// **A settled seed keeps the debt its own cut produced.** The newest turn
+    /// is settled, and its report still draws the figure.
+    #[test]
+    fn a_settled_seed_keeps_its_cut_debt() {
+        let counters = 5_100;
+        let mut history = a_thought_heavy_turn(counters);
+        history.push(a_result_frame());
+        let held = Held::new(Conversation::new(history, 0, 0));
+
+        assert!(held.read(|held| held.dropped_thinking()) > 0, "the seed's cut carries a debt");
+        let page = page_with_debt(&held, u32::MAX);
+        assert_eq!(
+            served_thinking(&page),
+            counters as i64,
+            "the settled page carries the whole turn",
+        );
+    }
+
+    /// **A seed primes the scan, and an append after it continues from that
+    /// state.** A compaction boundary in the seeded history is what makes the
+    /// continuation that follows open no turn; a fresh scan would open one and
+    /// clear the debt.
+    #[test]
+    fn a_seed_primes_the_scan_for_the_frames_after_it() {
+        let mut history = a_thought_heavy_turn(5_100);
+        history.push(a_compact_boundary());
+        let mut conversation = Conversation::new(history, 0, 0);
+        let carried = conversation.dropped_thinking();
+        assert!(carried > 0, "precondition: the seed's cut carries a debt");
+
+        conversation.append(a_frame(
+            "This session is being continued from a previous conversation that ran out of context.",
+        ));
+        assert_eq!(
+            conversation.dropped_thinking(),
+            carried,
+            "the continuation is not an opening, so the debt stays",
         );
     }
 

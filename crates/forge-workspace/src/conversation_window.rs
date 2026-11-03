@@ -550,12 +550,13 @@ mod tests {
         .expect("a user frame")
     }
 
-    /// One thinking-token counter.
+    /// One thinking-token counter, with a cumulative absolute that is not its
+    /// delta - so summing the wrong field fails.
     fn a_counter(at: usize, delta: i64) -> Message {
         serde_json::from_value(serde_json::json!({
             "type": "system",
             "subtype": "thinking_tokens",
-            "estimated_tokens": delta as u64,
+            "estimated_tokens": ((at as i64 + 1) * delta) as u64,
             "estimated_tokens_delta": delta,
             "uuid": format!("t-{at}"),
             "session_id": "5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45",
@@ -697,6 +698,35 @@ mod tests {
         let (_, shed) = Window::tail_of_with(&history, boundary);
         assert_eq!(shed.frames, 3, "the cut lands on the running turn's first frame");
         assert_eq!(shed.thinking, 0, "a cut at a turn's first frame owes nothing");
+    }
+
+    /// **An append carries the tail's newest opening onto the head.** The fold
+    /// hands over the frames that arrived while it ran, and a turn opened in
+    /// them is the newest turn the drop must attribute to.
+    #[test]
+    fn an_append_carries_the_tails_newest_opening() {
+        let ceiling = Budget { count: 8, count_slack: 2, bytes: usize::MAX, byte_slack: 0 };
+        let mut head = Window::empty();
+        let opening = a_said("head");
+        let opened = opens_a_turn(&opening);
+        head.push_with(opening, opened, ceiling);
+        assert_eq!(head.newest_open, Some(0), "precondition: the head's own opening");
+
+        let mut tail = Window::empty();
+        let frame = a_work_frame(1, 1);
+        let opened = opens_a_turn(&frame);
+        tail.push_with(frame, opened, ceiling);
+        head.append(&mut tail);
+        assert_eq!(head.newest_open, Some(0), "a tail with no opening leaves the head's answer");
+        assert_eq!(tail.newest_open, None, "and the donor is left empty");
+
+        let mut tail = Window::empty();
+        let opening = a_said("tail");
+        let opened = opens_a_turn(&opening);
+        tail.push_with(opening, opened, ceiling);
+        let at = head.len();
+        head.append(&mut tail);
+        assert_eq!(head.newest_open, Some(at), "a tail's opening becomes the newest turn's");
     }
 
     /// **A head the scan cannot read leaves the count's own cut, deliberately.**

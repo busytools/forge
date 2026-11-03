@@ -3288,7 +3288,8 @@ mod tests {
         let messages =
             vec![opens_turn_at(1), counter(2, 10), ends_turn(3), opens_turn_at(4), counter(5, 20)];
         let rendered = crate::transcript::render(&messages, false);
-        let newest = page(&messages, &rendered, 0, 0, None, 1);
+        let newest = page_within(&messages, &rendered, 0, 1_000, None, 1, usize::MAX, "test", None);
+        assert_eq!(counters_on(&newest), vec![(1_020, None)], "the newest page carries the debt");
         let cursor = newest.cursor.expect("a page above the newest turn");
         let above =
             page_within(&messages, &rendered, 0, 1_000, Some(&cursor), 2, usize::MAX, "test", None);
