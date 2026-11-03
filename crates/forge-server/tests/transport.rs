@@ -3736,7 +3736,7 @@ async fn a_refused_slack_answer_names_its_own_operation() {
             command: Box::new(Command::RespondSlackPost {
                 key: lead_seat(),
                 id: uuid::Uuid::new_v4(),
-                approved: true,
+                answer: forge_primitives::slack::SlackDraftAnswer::Approve,
             }),
             reply_to: None,
         },
@@ -3753,6 +3753,91 @@ async fn a_refused_slack_answer_names_its_own_operation() {
     assert!(
         why.contains("no longer waiting") && why.contains("asking session"),
         "and carries the draft's own sentence, endings included: {why}",
+    );
+}
+
+/// A send-back with no words is refused without resolving the draft: the card
+/// must come back to the reader, so the refusal has to name a condition a
+/// client can tell from the gone-draft one. This is the only place the
+/// empty-feedback arm is exercised over a socket, and the second answer below
+/// proves the draft really was still waiting.
+#[tokio::test]
+async fn an_empty_send_back_is_refused_by_name_and_leaves_the_draft_waiting() {
+    let (url, fleet) = a_server().await;
+    let mut socket = connect(&url).await;
+    send(
+        &mut socket,
+        ClientMessage::Subscribe {
+            what: Subject::Session(lead_seat()),
+            answering: true,
+            review: false,
+        },
+    )
+    .await;
+    let _ = next_server(&mut socket).await;
+
+    let draft = forge_primitives::slack::SlackDraft {
+        id: uuid::Uuid::new_v4(),
+        workspace: "acme".to_owned(),
+        conversation: "C1".to_owned(),
+        conversation_label: "acme".to_owned(),
+        thread_ts: None,
+        text: "hello".to_owned(),
+        operation: forge_primitives::slack::SlackDraftOperation::Post,
+    };
+    let id = draft.id;
+    fleet.park_slack_draft(&lead_seat(), draft);
+    let ServerMessage::Update { update, .. } = next_server(&mut socket).await else {
+        panic!("the parked draft reaches the answering client")
+    };
+    assert!(
+        matches!(*update, SessionUpdate::SlackPostPending { .. }),
+        "the draft is the update the card is drawn from: {update:?}",
+    );
+
+    send(
+        &mut socket,
+        ClientMessage::Command {
+            command: Box::new(Command::RespondSlackPost {
+                key: lead_seat(),
+                id,
+                answer: forge_primitives::slack::SlackDraftAnswer::SendBack {
+                    note: "  \n ".to_owned(),
+                },
+            }),
+            reply_to: None,
+        },
+    )
+    .await;
+
+    let ServerMessage::Error { what, why, .. } = next_server(&mut socket).await else {
+        panic!("silence here is the click that did nothing");
+    };
+    assert_eq!(
+        what, "empty_slack_feedback",
+        "the refusal names the condition, so the card can come back: {why}",
+    );
+    assert!(why.contains("still waiting"), "and says the draft is still the reader's: {why}");
+
+    // Still waiting in fact, not only in words: the next answer takes it.
+    send(
+        &mut socket,
+        ClientMessage::Command {
+            command: Box::new(Command::RespondSlackPost {
+                key: lead_seat(),
+                id,
+                answer: forge_primitives::slack::SlackDraftAnswer::Decline,
+            }),
+            reply_to: None,
+        },
+    )
+    .await;
+    let ServerMessage::Update { update, .. } = next_server(&mut socket).await else {
+        panic!("the second answer resolves the draft")
+    };
+    assert!(
+        matches!(*update, SessionUpdate::SlackDraftResolved { .. }),
+        "the draft was still registered: {update:?}",
     );
 }
 

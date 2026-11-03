@@ -4092,7 +4092,12 @@ fn document_answer(
 /// refuses a dispatch builds the tag here, so the two cannot drift.
 fn refusal_tag(refusal: &DispatchError) -> &'static str {
     match refusal {
+        // The draft is gone: the card stands down and the reason is drawn
+        // where it stood.
         DispatchError::NoDraftWaiting { .. } => "respond_slack_post",
+        // The draft is still waiting, so the card must come back: its own
+        // tag, because one tag cannot route two opposite outcomes.
+        DispatchError::EmptySlackFeedback { .. } => "empty_slack_feedback",
         DispatchError::NoBrowserHandOffWaiting { .. } => "respond_browser_hand_off",
         DispatchError::NoDocumentHandOffWaiting { .. } => "respond_document_hand_off",
         _ => "dispatch",

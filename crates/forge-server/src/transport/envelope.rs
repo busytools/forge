@@ -1418,7 +1418,7 @@ mod tests {
                     conversation_label: "acme".to_owned(),
                     thread_ts: None,
                     text: "hello".to_owned(),
-                    tool: "slack__post".to_owned(),
+                    operation: forge_primitives::slack::SlackDraftOperation::Post,
                 },
             },
             SessionUpdate::SlackDraftResolved {

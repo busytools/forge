@@ -223,10 +223,20 @@ pub mod wire;
 /// and the two halves move together. `baselines/socket/23/` is the record a
 /// v23 server emitted.
 ///
+/// **v25 is a bump for the Slack draft's answer.** `respond_slack_post`
+/// carries an answer now rather than a boolean: the reader can send a held
+/// draft back with words for the agent, and `slack_draft_resolved` gains the
+/// `sent_back` ending. The draft's payload replaces `tool` with `operation`,
+/// because one `slack__edit` is a replacement or a deletion and one
+/// `slack__react` adds or removes - a card words its verbs from what will
+/// happen. A v24 server reads the new payload as a command it cannot decode,
+/// and a v24 client sends the old one this server refuses, so the numbers
+/// move. `baselines/socket/24/` is the record a v24 server emitted.
+///
 /// **Additive fields do not bump.** `diff.base_error` is one, carried on the
 /// v16-era record: a client older than the field draws the vaguer line it
 /// always drew, and nothing it sends changes.
-pub const PROTOCOL_VERSION: u32 = 24;
+pub const PROTOCOL_VERSION: u32 = 25;
 
 /// The socket's keepalive: how often a connection is asked to prove it is
 /// still there, and how long it may stay silent before it is reaped.

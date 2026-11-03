@@ -14,14 +14,21 @@ use std::time::Duration;
 use forge_connectors::slack::{AuthTest, MENTION_CURSOR, SlackApi, SlackClient, SlackHost};
 use forge_primitives::slack::{
     DEFAULT_DM_POLL_SECONDS, DEFAULT_POLL_SECONDS, DEFAULT_STALE_AFTER_HOURS,
-    DEFAULT_THREAD_IDLE_DAYS, MIN_DM_POLL_SECONDS, SlackConfig, SlackDraft, SlackDraftEnding,
-    SlackFollowedThread, SlackMessage, SlackSubscription, SlackSubscriptionTarget,
-    SlackThreadOwner, SlackThreadRecord, SlackWatchMode,
+    DEFAULT_THREAD_IDLE_DAYS, MIN_DM_POLL_SECONDS, SlackConfig, SlackDraft, SlackDraftAnswer,
+    SlackDraftEnding, SlackFollowedThread, SlackMessage, SlackSubscription,
+    SlackSubscriptionTarget, SlackThreadOwner, SlackThreadRecord, SlackWatchMode,
 };
 use uuid::Uuid;
 
 use crate::SessionSlot;
 use crate::workspace::Workspace;
+
+/// What ended a held draft, as the registry resolves it: the reader's
+/// answer, or nothing at all when the asking session went away.
+pub(crate) enum DraftResolution {
+    Answered(SlackDraftAnswer),
+    Abandoned,
+}
 
 /// How long a delivered message stays remembered. Long enough to cover a
 /// sweep that re-runs after a 429 or a restart, short enough that the map
@@ -219,7 +226,7 @@ impl Workspace {
         &self,
         caller: &SessionSlot,
         draft: SlackDraft,
-    ) -> (Uuid, tokio::sync::oneshot::Receiver<bool>) {
+    ) -> (Uuid, tokio::sync::oneshot::Receiver<SlackDraftAnswer>) {
         let (sender, receiver) = tokio::sync::oneshot::channel();
         let id = draft.id;
         self.slack_drafts.lock().insert(id, (caller.clone(), draft.clone(), sender));
@@ -326,7 +333,7 @@ impl Workspace {
         &self,
         id: Uuid,
         caller: &SessionSlot,
-        ending: SlackDraftEnding,
+        resolution: DraftResolution,
     ) -> bool {
         let mut drafts = self.slack_drafts.lock();
         if !drafts.get(&id).is_some_and(|(owner, _, _)| owner == caller) {
@@ -334,7 +341,22 @@ impl Workspace {
         }
         let Some((owner, _, sender)) = drafts.remove(&id) else { return false };
         drop(drafts);
-        let _ = sender.send(matches!(ending, SlackDraftEnding::Answered { approved: true }));
+        let ending = match &resolution {
+            DraftResolution::Answered(SlackDraftAnswer::Approve) => {
+                SlackDraftEnding::Answered { approved: true }
+            }
+            DraftResolution::Answered(SlackDraftAnswer::Decline) => {
+                SlackDraftEnding::Answered { approved: false }
+            }
+            DraftResolution::Answered(SlackDraftAnswer::SendBack { .. }) => {
+                SlackDraftEnding::SentBack
+            }
+            DraftResolution::Abandoned => SlackDraftEnding::Abandoned,
+        };
+        // A dead waiter is the abandoned path, and it has nothing to receive.
+        if let DraftResolution::Answered(answer) = resolution {
+            let _ = sender.send(answer);
+        }
         let _ = self.update_sender().send(crate::protocol::SessionUpdate::SlackDraftResolved {
             key: owner,
             id,
@@ -1705,7 +1727,9 @@ impl SlackHost for SlackSubsystemHost {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use forge_primitives::slack::{SlackSubscription, SlackSubscriptionTarget, SlackWatchMode};
+    use forge_primitives::slack::{
+        SlackDraftAnswer, SlackSubscription, SlackSubscriptionTarget, SlackWatchMode,
+    };
     use uuid::Uuid;
 
     fn cfg(workspace: &str, token: &str) -> SlackConfig {
@@ -1747,8 +1771,16 @@ mod tests {
     /// An answer as the registry takes it. Every call site here is a view
     /// answering; the drop is reached through the paths under test rather
     /// than through this.
-    fn answered(approved: bool) -> SlackDraftEnding {
-        SlackDraftEnding::Answered { approved }
+    fn answered(approved: bool) -> DraftResolution {
+        DraftResolution::Answered(if approved {
+            SlackDraftAnswer::Approve
+        } else {
+            SlackDraftAnswer::Decline
+        })
+    }
+
+    fn sent_back(note: &str) -> DraftResolution {
+        DraftResolution::Answered(SlackDraftAnswer::SendBack { note: note.to_owned() })
     }
 
     fn draft(workspace: &str, conversation: &str) -> SlackDraft {
@@ -1759,7 +1791,7 @@ mod tests {
             conversation_label: conversation.to_owned(),
             thread_ts: None,
             text: "hello".to_owned(),
-            tool: "slack__post".to_owned(),
+            operation: forge_primitives::slack::SlackDraftOperation::Post,
         }
     }
 
@@ -1877,6 +1909,66 @@ mod tests {
         );
     }
 
+    /// A send-back is an answer the waiting call has to read: the note is
+    /// what it revises from, so the registry hands it through whole and
+    /// tells every view the draft went back rather than out.
+    #[tokio::test]
+    async fn a_sent_back_draft_hands_its_note_to_the_waiting_call() {
+        let (ws, _dir, mut rx) = workspace_with_one_slack_workspace("acme");
+        let caller = SessionSlot::from_str_for_test("caller-uuid");
+        let (id, decision) = ws.register_slack_draft(&caller, draft("acme", "C1"));
+        while rx.try_recv().is_ok() {}
+
+        assert!(
+            ws.resolve_slack_draft(id, &caller, sent_back("shorten the second line")),
+            "the draft was waiting",
+        );
+
+        assert_eq!(
+            decision.await.expect("the held draft answers"),
+            SlackDraftAnswer::SendBack { note: "shorten the second line".to_owned() },
+            "the reader's words reach the blocked call whole",
+        );
+        let mut resolved = Vec::new();
+        while let Ok(frame) = rx.try_recv() {
+            if let crate::protocol::SessionUpdate::SlackDraftResolved { ending, .. } =
+                std::sync::Arc::unwrap_or_clone(frame.update)
+            {
+                resolved.push(ending);
+            }
+        }
+        assert_eq!(
+            resolved,
+            vec![SlackDraftEnding::SentBack],
+            "and a view that did not answer hears the draft was sent back",
+        );
+    }
+
+    /// A send-back with nothing in it has no words to hand the agent, and
+    /// resolving it would drop the reader's card for an answer that says
+    /// nothing. The draft stays waiting so the field can be sent again.
+    #[tokio::test]
+    async fn an_empty_send_back_note_never_resolves_the_draft() {
+        let (ws, _dir, _rx) = workspace_with_one_slack_workspace("acme");
+        let caller = SessionSlot::from_str_for_test("caller-uuid");
+        let (id, _decision) = ws.register_slack_draft(&caller, draft("acme", "C1"));
+
+        let refused = ws.dispatch(crate::protocol::Command::RespondSlackPost {
+            key: caller.clone(),
+            id,
+            answer: SlackDraftAnswer::SendBack { note: "  \n ".to_owned() },
+        });
+
+        assert!(
+            matches!(refused, Err(crate::protocol::DispatchError::EmptySlackFeedback { .. })),
+            "an empty note is refused by name: {refused:?}",
+        );
+        assert!(
+            ws.resolve_slack_draft(id, &caller, answered(false)),
+            "and the draft is still waiting for a real answer",
+        );
+    }
+
     /// An answer is only applied by the session the draft was addressed
     /// to; another session naming the id is refused, and the draft stays
     /// waiting for its owner.
@@ -1909,12 +2001,13 @@ mod tests {
         ws.dispatch(crate::protocol::Command::RespondSlackPost {
             key: caller.clone(),
             id,
-            approved: true,
+            answer: SlackDraftAnswer::Approve,
         })
         .expect("the dock answer routes to the workspace");
 
-        assert!(
+        assert_eq!(
             decision.await.expect("the held draft answers"),
+            SlackDraftAnswer::Approve,
             "the answer the dock gave reaches the awaiting caller",
         );
     }
@@ -1933,7 +2026,7 @@ mod tests {
         let refused = ws.dispatch(crate::protocol::Command::RespondSlackPost {
             key: caller,
             id,
-            approved: true,
+            answer: SlackDraftAnswer::Approve,
         });
 
         assert!(
@@ -1956,7 +2049,7 @@ mod tests {
         let refused = ws.dispatch(crate::protocol::Command::RespondSlackPost {
             key: other,
             id,
-            approved: true,
+            answer: SlackDraftAnswer::Approve,
         });
 
         assert!(

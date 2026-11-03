@@ -3498,6 +3498,12 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
 .dock .btn.p { border-color: color-mix(in srgb, var(--accent) 50%, transparent);
   color: var(--hot); background: color-mix(in srgb, var(--accent) 10%, transparent); }
 .dock .btn.d { border-color: color-mix(in srgb, var(--bad) 45%, transparent); color: var(--bad); }
+/* The send-back's words, on the card the draft is drawn on. The field
+   takes the width and the verb sits at its end, the way the words row's
+   send glyph does. */
+.dock .sendback { display: flex; align-items: flex-start; gap: 8px; }
+.dock .sendback .notes { flex: 1; min-width: 0; width: auto; }
+.dock .btn:disabled { opacity: .5; cursor: default; }
 /* The words row, which is the prompt's LAST row and its input: it draws like
    any option, and the field inside it is the answer. Arriving on it puts the
    caret in it - no tint for that, the caret is the signal - and the mic rides
@@ -3536,6 +3542,8 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
   .dock .chevb { min-width: 44px; min-height: 44px; }
   .micb { min-height: 44px; min-width: 44px; }
   .sendb { min-height: 44px; min-width: 44px; }
+  /* The send-back field is a finger target like every other control. */
+  .dock .sendback .notes { min-height: 44px; }
 }
 /* The phase or the batch, for a screen reader only: the marks say nothing. */
 .dock .sr { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
