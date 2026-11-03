@@ -620,7 +620,9 @@ describe('the reviewable document', () => {
     drawReviewable({
       kind: 'landed',
       document_kind: 'markdown',
-      bytes: enc('# hi\nline two\nline three'),
+      // The last line's text now sits at line 2, so the echo's move is the
+      // placement the server's re-anchor would produce.
+      bytes: enc('# hi\nline three\nline two'),
       reviewable: true,
       content_hash: '42',
       threads: [first, last],
