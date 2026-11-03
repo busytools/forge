@@ -284,9 +284,11 @@ jobs:
   # and `testing` on its own. The job above covers neither - with every
   # feature on, it never exercises which configuration enables what: the
   # install build leaving `test-helpers` off, or `testing` having to
-  # forward it.
+  # forward it. It also runs the install: the shipped binary is the only
+  # artifact that runs outside the build tree, and transcribe's shared
+  # ggml has to resolve from beside it with no LD_LIBRARY_PATH.
   feature-configs:
-    name: cargo check (install.sh + testing configs)
+    name: "install config: check and installed binary"
     needs: changes
     if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.gate == 'true'
     runs-on: ubuntu-latest
@@ -303,6 +305,23 @@ jobs:
           key: feature-configs
       - run: cargo check --locked --release -p forge-server --bin forge
       - run: cargo check --locked -p forge-server --features testing
+      # The install is the whole path a user gets, and these are the two
+      # things their machine does without: no library path, and the loader
+      # naming the copy installed beside the binary.
+      - name: The installed binary resolves its libraries
+        env:
+          CARGO_INSTALL_ROOT: ${{ runner.temp }}/forge-install
+          FORGE_ZSH_COMPLETION_DIR: ${{ runner.temp }}/forge-zsh
+        run: |
+          scripts/install.sh
+          bin="$CARGO_INSTALL_ROOT/bin/forge"
+          env -u LD_LIBRARY_PATH "$bin" --version
+          resolved=$(env -u LD_LIBRARY_PATH ldd "$bin" | awk '/libtranscribe\.so/ {print $3}')
+          expected="$CARGO_INSTALL_ROOT/bin/$(basename "$resolved")"
+          if [ "$resolved" != "$expected" ]; then
+            echo "libtranscribe resolved from '$resolved', not from beside the installed binary" >&2
+            exit 1
+          fi
 
   docs:
     name: cargo doc
