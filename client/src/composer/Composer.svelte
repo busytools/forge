@@ -45,6 +45,7 @@
     joined,
     noticeLine,
     pendingAsk,
+    settingsWriteEndingLine,
     SIGN_IN_FALLBACK,
     type ComposerProps,
   } from './view';
@@ -523,7 +524,7 @@
       const id = typeof payload['id'] === 'string' ? payload['id'] : null;
       if (id === null || id !== held.shownWrite) return;
       if (held.answered === id) return;
-      held.ended = draftEndingLine(payload['ending']);
+      held.ended = settingsWriteEndingLine(payload['ending']);
     });
   });
 

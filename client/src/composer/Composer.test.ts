@@ -6273,6 +6273,32 @@ describe('the dock', () => {
     expect(drawn(), 'and the row says which ending took it').toContain('posted from another view');
   });
 
+  it('says what became of a config write that left without this reader answering', () => {
+    const harness = open({ record: record({ pending_asks: [settingsWriteAsk()] }) });
+    expect(document.querySelector('.dock'), 'the dock is up').not.toBeNull();
+
+    // Another view answered it: the stand-down carries the ending, and the
+    // record goes with it as the apply arm leaves it.
+    harness.say({
+      kind: 'update',
+      update: {
+        settings_write_resolved: {
+          key: SLOT,
+          id: '0192e1c0-0000-7000-8000-0000000000bb',
+          ending: { answered: { approved: true } },
+        },
+      },
+    });
+    harness.page.record = record();
+    flushSync();
+
+    expect(document.querySelector('.dock'), 'the dock stands down').toBeNull();
+    expect(drawn(), 'and the row says a write was applied').toContain(
+      'config write was applied from another view',
+    );
+    expect(drawn(), 'never the Slack draft line').not.toContain('Slack');
+  });
+
   it('says why an answer did not land when the draft left under the click', () => {
     const harness = open({ record: record({ pending_asks: [slackDraftAsk()] }) });
 

@@ -381,6 +381,31 @@ export function draftEndingLine(ending: unknown): { tone: string; text: string }
 }
 
 /**
+ * What one held configuration write's ending says, drawn where the dock
+ * stood - the draft line's own twin, and the same subject: this view did not
+ * answer it, or its dock would be gone by its own doing. The words name the
+ * write rather than a Slack draft, which shares the ending's wire shape.
+ */
+export function settingsWriteEndingLine(ending: unknown): { tone: string; text: string } {
+  if (ending === 'abandoned') {
+    return { tone: 'q', text: "The config write's asking session went away." };
+  }
+  const answered = enumField(ending, 'answered');
+  if (answered !== undefined) {
+    return {
+      tone: 'q',
+      text:
+        enumField(answered, 'approved') === true
+          ? 'The config write was applied from another view.'
+          : 'The config write was declined in another view.',
+    };
+  }
+  // An ending this client is older than still means the write is gone, and
+  // saying less than that would leave the dock's disappearance unexplained.
+  return { tone: 'q', text: 'The config write is no longer waiting.' };
+}
+
+/**
  * What one browser hand-off ending says, drawn where the dock stood - the
  * draft line's own twin, and the same subject: this view did not answer it,
  * or its dock would be gone by its own doing.
