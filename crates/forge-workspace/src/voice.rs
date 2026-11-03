@@ -96,6 +96,9 @@ struct PreviewSlot {
     /// The loop that owns `running`: a settle from an older loop must not
     /// clear a newer loop's flag or drop the voice it has yet to render.
     generation: u64,
+    /// Bumped on every accepted press, so a chunk from a render the reader has
+    /// already moved past is dropped rather than played.
+    presses: u64,
 }
 
 struct Seat {
@@ -116,6 +119,9 @@ struct Job {
     voice: Option<String>,
     engine: Arc<dyn Engine>,
     first: oneshot::Sender<Result<(), SayError>>,
+    /// The seat's press count when this preview was taken up. A chunk from an
+    /// older press is dropped rather than played: the reader has moved on.
+    preview: Option<u64>,
 }
 
 impl VoiceService {
@@ -154,7 +160,9 @@ impl VoiceService {
         let queue = self.listening_queue(seat)?;
         let (first, outcome) = oneshot::channel();
         let voice = self.settings.voice.clone();
-        queue.send(Job { text, voice, engine, first }).map_err(|_| SayError::NotReady)?;
+        queue
+            .send(Job { text, voice, engine, first, preview: None })
+            .map_err(|_| SayError::NotReady)?;
         outcome.await.map_err(|_| SayError::NotReady)?
     }
 
@@ -175,6 +183,7 @@ impl VoiceService {
             let mut previews = self.previews.lock().map_err(|_| SayError::NotReady)?;
             let slot = previews.entry(seat.clone()).or_default();
             slot.latest = Some(voice);
+            slot.presses += 1;
             if slot.running {
                 return Ok(());
             }
@@ -236,13 +245,13 @@ impl VoiceService {
                 let Some(slot) = previews.get_mut(seat) else {
                     return Ok(());
                 };
-                let voice = slot.latest.take();
-                if voice.is_none() {
+                let next = slot.latest.take().map(|voice| (voice, slot.presses));
+                if next.is_none() {
                     slot.running = false;
                 }
-                voice
+                next
             };
-            let Some(voice) = next else {
+            let Some((voice, presses)) = next else {
                 return Ok(());
             };
             let engine = self.engine().await?;
@@ -253,7 +262,13 @@ impl VoiceService {
             };
             let (first, outcome) = oneshot::channel();
             queue
-                .send(Job { text: PREVIEW_LINE.to_owned(), voice: Some(voice), engine, first })
+                .send(Job {
+                    text: PREVIEW_LINE.to_owned(),
+                    voice: Some(voice),
+                    engine,
+                    first,
+                    preview: Some(presses),
+                })
                 .map_err(|_| SayError::NotReady)?;
             outcome.await.map_err(|_| SayError::NotReady)??;
         }
@@ -434,6 +449,7 @@ impl VoiceService {
     ) -> mpsc::UnboundedSender<Job> {
         let (queue, mut jobs) = mpsc::unbounded_channel::<Job>();
         let sink = Arc::clone(&self.sink);
+        let previews = Arc::clone(&self.previews);
         let seat = seat.clone();
         tokio::spawn(async move {
             let mut seq = 0_u32;
@@ -444,7 +460,7 @@ impl VoiceService {
                 if live.load(Ordering::SeqCst) == 0 {
                     break;
                 }
-                seq = render(job, &seat, sink.as_ref(), &live, seq).await;
+                seq = render(job, &seat, sink.as_ref(), &live, seq, previews.as_ref()).await;
             }
         });
         queue
@@ -686,8 +702,9 @@ async fn render(
     sink: &dyn AudioSink,
     live: &AtomicUsize,
     mut seq: u32,
+    previews: &Mutex<HashMap<SessionSlot, PreviewSlot>>,
 ) -> u32 {
-    let Job { text, voice, engine, first } = job;
+    let Job { text, voice, engine, first, preview } = job;
     let mut first = Some(first);
     for sentence in forge_tts::sentences(&text) {
         if live.load(Ordering::SeqCst) == 0 {
@@ -700,10 +717,20 @@ async fn render(
             }
             match result {
                 Ok(chunk) => {
+                    // A preview the reader has already pressed past is not
+                    // played: the newest press is the one heard, and this
+                    // chunk is the abandoned voice still finishing.
+                    let stale = preview.is_some_and(|presses| {
+                        previews.lock().map_or(true, |map| {
+                            map.get(seat).is_none_or(|slot| slot.presses != presses)
+                        })
+                    });
                     if let Some(sender) = first.take() {
                         let _ = sender.send(Ok(()));
                     }
-                    sink.push(seat, Chunk { seq, ..chunk });
+                    if !stale {
+                        sink.push(seat, Chunk { seq, ..chunk });
+                    }
                     seq = seq.wrapping_add(1);
                 }
                 Err(error) => {
@@ -1021,6 +1048,86 @@ mod tests {
         let slot = previews.get(&seat).expect("the slot");
         assert!(slot.running, "a stale loop's settle cleared the newer loop's flag");
         assert_eq!(slot.latest.as_deref(), Some("bf_emma"), "the newer press's voice was dropped");
+    }
+
+    /// A press lands while the first voice is still rendering: the abandoned
+    /// render's chunk is dropped rather than played, so the reader hears only
+    /// the voice they pressed last.
+    #[tokio::test]
+    async fn a_chunk_from_a_press_the_reader_moved_past_is_not_played() {
+        struct Gated {
+            requests: Arc<Mutex<Vec<Option<String>>>>,
+            release: Arc<tokio::sync::Semaphore>,
+        }
+        impl Engine for Gated {
+            fn speak(&self, request: SpeakRequest) -> mpsc::Receiver<Result<Chunk, Error>> {
+                self.requests.lock().expect("unpoisoned").push(request.voice.clone());
+                let (sender, receiver) = mpsc::channel(2);
+                let release = Arc::clone(&self.release);
+                let voice = request.voice;
+                tokio::spawn(async move {
+                    if voice.as_deref() == Some("af_heart") {
+                        release.acquire().await.ok();
+                    }
+                    let pcm = if voice.as_deref() == Some("af_heart") { vec![1] } else { vec![2] };
+                    let _ = sender.send(Ok(Chunk { seq: 0, sample_rate: 24_000, pcm })).await;
+                });
+                receiver
+            }
+        }
+
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let release = Arc::new(tokio::sync::Semaphore::new(0));
+        let sink = Arc::new(RecordingSink { chunks: Mutex::new(Vec::new()) });
+        let loader: super::Loader = {
+            let requests = Arc::clone(&requests);
+            let release = Arc::clone(&release);
+            Arc::new(move || {
+                Ok(Arc::new(Gated {
+                    requests: Arc::clone(&requests),
+                    release: Arc::clone(&release),
+                }) as Arc<dyn Engine>)
+            })
+        };
+        let service = VoiceService::new(
+            loader,
+            VoiceSettings::default(),
+            Arc::clone(&sink) as Arc<dyn AudioSink>,
+            Arc::new(RecordingNotes { said: Mutex::new(Vec::new()) }) as Arc<dyn NoteDispatch>,
+        );
+        let seat = seat();
+        service.set_listening(&seat, 1, true, false);
+
+        let first = tokio::spawn({
+            let service = service.clone();
+            let seat = seat.clone();
+            async move { service.preview(&seat, "af_heart".to_owned()).await }
+        });
+        let mut started = false;
+        for _ in 0..200 {
+            if requests.lock().expect("unpoisoned").as_slice() == [Some("af_heart".to_owned())] {
+                started = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert!(started, "the first voice renders");
+        service.preview(&seat, "bf_emma".to_owned()).await.expect("the second press is accepted");
+        release.add_permits(1);
+        first.await.expect("the task joins").expect("the preview ends");
+
+        wait_for(&sink, 1).await;
+        assert_eq!(
+            sink.chunks
+                .lock()
+                .expect("unpoisoned")
+                .iter()
+                .map(|(_, chunk)| chunk.pcm.clone())
+                .collect::<Vec<_>>(),
+            vec![vec![2]],
+            "only the newest press is heard",
+        );
+        assert_eq!(requests.lock().expect("unpoisoned").len(), 2, "both voices rendered");
     }
 
     /// A press lands while the loop is loading an engine that then fails. The

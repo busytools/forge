@@ -52,8 +52,8 @@
   } = $props();
 
   /** The languages the Kokoro voices cover, named by the prefix each voice id
-   * starts with. A voice outside every set still draws, under its own voice id
-   * prefix, rather than disappearing from the list. */
+   * starts with. A voice outside every set still draws, under Other, rather
+   * than disappearing from the list. */
   const VOICE_LANGUAGES: { heading: string; prefixes: string[] }[] = [
     { heading: 'English', prefixes: ['af_', 'am_', 'bf_', 'bm_'] },
     { heading: 'Spanish', prefixes: ['ef_', 'em_'] },

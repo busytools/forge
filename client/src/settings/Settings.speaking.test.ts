@@ -1,4 +1,6 @@
 // @vitest-environment jsdom
+import { readFileSync } from 'node:fs';
+
 import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -119,6 +121,16 @@ function openVoices(): HTMLDetailsElement {
   return setVoicesOpen(true);
 }
 
+const SHEET = readFileSync('src/assets/web.css', 'utf8');
+
+/** The rule body the sheet writes for this exact selector, comments gone. */
+function ruleFor(selector: string): string {
+  const uncommented = SHEET.replace(/\/\*[\s\S]*?\*\//g, ' ');
+  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = new RegExp(`^\\s*${escaped}\\s*\\{([^}]*)\\}`, 'gm').exec(uncommented);
+  return (match?.[1] ?? '').replace(/\s+/g, ' ').trim();
+}
+
 function voiceRow(id: string): HTMLLIElement {
   const row = [...document.querySelectorAll<HTMLLIElement>('.settings-speaking li')].find((item) =>
     item.textContent?.includes(id),
@@ -161,46 +173,59 @@ describe("the settings page's speaking card", () => {
   it('starts the voices folded, with a visible chevron, and opens on the toggle', () => {
     draw(connection({ dispatched: [], edits: [] }));
 
-    const fold = setVoicesOpen(false);
-    expect(fold.open).toBe(false);
-    expect(fold.querySelector('summary .gh')?.textContent?.trim()).toBe('voices');
-    expect(fold.querySelector('summary .cn')?.textContent?.trim()).toBe('2');
-    expect(fold.querySelector('summary .arw'), 'the chevron draws shut too').not.toBeNull();
+    const fold = document.querySelector<HTMLDetailsElement>('.settings-speaking details.gfold');
+    expect(fold, 'the voices fold draws').not.toBeNull();
+    const at = fold as HTMLDetailsElement;
+    expect(at.open, 'the section starts shut').toBe(false);
+    expect(at.querySelector('summary .gh')?.textContent?.trim()).toBe('voices');
+    expect(at.querySelector('summary .cn')?.textContent?.trim()).toBe('2');
+    expect(at.querySelector('summary .arw'), 'the chevron draws shut too').not.toBeNull();
+    expect(
+      ruleFor('details.gfold > summary .arw'),
+      'the chevron rests visible rather than behind a hover',
+    ).toContain('opacity: 1');
 
-    setVoicesOpen(true);
-    expect(fold.open).toBe(true);
-    setVoicesOpen(false);
-    expect(fold.open).toBe(false);
+    const summary = at.querySelector('summary');
+    expect(summary, 'the summary is the door').not.toBeNull();
+    summary?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    flushSync();
+    expect(at.open, 'the summary opens it').toBe(true);
+    summary?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    flushSync();
+    expect(at.open, 'and closes it').toBe(false);
   });
 
-  /** The list is grouped by the language each voice prefix belongs to, and
-   * every voice the model installed is still drawn exactly once. */
-  it('groups the voices by language and draws every one', () => {
-    const voices = [
-      'af_heart',
-      'am_adam',
-      'bf_emma',
-      'ef_dora',
-      'ff_siwis',
-      'hf_alpha',
-      'if_sara',
-      'jf_alpha',
-      'pf_dora',
-      'zf_xiaobei',
+  /** The list is grouped by the language each voice prefix belongs to: one
+   * voice per prefix proves every language's prefix set, and the per-group
+   * query proves a voice is not sitting under the wrong heading. */
+  it('groups every voice under its language, exactly once', () => {
+    const byLanguage: [string, string[]][] = [
+      ['English', ['af_heart', 'am_adam', 'bf_emma', 'bm_daniel']],
+      ['Spanish', ['ef_dora', 'em_alex']],
+      ['French', ['ff_siwis']],
+      ['Hindi', ['hf_alpha', 'hm_omega']],
+      ['Italian', ['if_sara', 'im_nicola']],
+      ['Japanese', ['jf_alpha', 'jm_kumo']],
+      ['Portuguese', ['pf_dora', 'pm_alex']],
+      ['Chinese', ['zf_xiaobei', 'zm_yunjian']],
     ];
+    const voices = byLanguage.flatMap(([, ids]) => ids);
     const wire = { ...modelsWire, speaking: { ...modelsWire.speaking, voices } };
     draw(connection({ dispatched: [], edits: [] }, wire));
     openVoices();
 
-    for (const id of voices) expect(voiceRow(id)).not.toBeNull();
-    expect(bodyText()).toContain('English');
-    expect(bodyText()).toContain('Spanish');
-    expect(bodyText()).toContain('French');
-    expect(bodyText()).toContain('Hindi');
-    expect(bodyText()).toContain('Italian');
-    expect(bodyText()).toContain('Japanese');
-    expect(bodyText()).toContain('Portuguese');
-    expect(bodyText()).toContain('Chinese');
+    for (const [language, ids] of byLanguage) {
+      const list = document.querySelector(`ul[aria-label="Voices, ${language}"]`);
+      expect(list, `the ${language} group draws`).not.toBeNull();
+      const drawn = [...(list as HTMLElement).querySelectorAll('li .nm')].map((name) =>
+        name.textContent?.trim(),
+      );
+      expect(drawn, `${language} holds exactly its own voices`).toEqual(ids);
+    }
+    expect(
+      document.querySelectorAll('.settings-speaking .voices li').length,
+      'every voice draws exactly once',
+    ).toBe(voices.length);
   });
 
   it('previews a voice on the seat the reader was last on', () => {
@@ -225,18 +250,28 @@ describe("the settings page's speaking card", () => {
    * asks for the next voice, so the new one is heard as its first chunk
    * arrives rather than queued behind the old clip. */
   it('stops the sounding preview before asking for the next voice', () => {
-    const stop = vi.spyOn(Voice.prototype, 'stop');
+    const order: string[] = [];
+    vi.spyOn(Voice.prototype, 'stop').mockImplementation(() => {
+      order.push('stop');
+    });
     const seen = { dispatched: [] as unknown[], edits: [] as { key_path: string }[] };
     lastSeat.set({ org: 'Busytools', project: 'forge', label: 'lead' });
-    draw(connection(seen));
+    const open = connection(seen);
+    const dispatch = open.dispatch.bind(open);
+    open.dispatch = (command: Parameters<Connection['dispatch']>[0]) => {
+      order.push('dispatch');
+      return dispatch(command);
+    };
+    draw(open);
     openVoices();
 
     press(voiceRow('af_heart'), 'preview');
+    expect(order, 'the stop comes before the next voice is asked for').toEqual([
+      'stop',
+      'dispatch',
+    ]);
     press(voiceRow('bf_emma'), 'preview');
-
-    expect(stop).toHaveBeenCalledTimes(2);
-    expect(seen.dispatched).toHaveLength(2);
-    stop.mockRestore();
+    expect(order).toEqual(['stop', 'dispatch', 'stop', 'dispatch']);
   });
 
   /** A preview outside a session has nowhere to play, so the card says so
