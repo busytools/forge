@@ -84,7 +84,7 @@ describe('the ask as the composer reads it', () => {
         conversation_label: 'granite-staging-alerts',
         thread_ts: null,
         text: 'Deploy finished on staging.',
-        tool: 'slack__post',
+        operation: 'delete',
       },
     });
     if (held?.kind !== 'slack_draft') throw new Error('the held post did not narrow');
@@ -95,6 +95,10 @@ describe('the ask as the composer reads it', () => {
     expect(held.request.workspace).toBe('Trust Machines');
     expect(held.request.conversationLabel).toBe('granite-staging-alerts');
     expect(held.request.text).toBe('Deploy finished on staging.');
+    expect(
+      held.request.operation,
+      'the operation is what the card words its verbs from, so dropping it here silently draws post copy',
+    ).toBe('delete');
   });
 });
 
