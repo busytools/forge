@@ -31,38 +31,21 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-describe('the pass a read gets', () => {
+describe('a read armed again', () => {
   /**
-   * **A review read is not bounded at all.** Its server-side read waits for
-   * the base fetch with no cap, so any client deadline would land inside a
-   * wait that is still legitimately running and ask a second whole review
-   * read under the first. The page explains the wait, and leaving it is the
-   * escape; the transport's own reconnect recovers a lost answer.
+   * **A second arm replaces the first timer, never stacks.** Every ask a
+   * subject gets re-arms its read, and two timers would ask twice for one
+   * pass.
    */
-  it('leaves a review read unbounded, with no timer to ask again', () => {
-    vi.useFakeTimers();
-    const { stores, bounds, asked } = bounded();
-    stores.open(HOME);
-    bounds.arm(HOME, null);
-
-    vi.advanceTimersByTime(600_000);
-    expect(asked, 'a review read is never presumed lost').toEqual([]);
-  });
-
-  /**
-   * **A bounded read's timer does not survive the unbounded read that
-   * supersedes it**: the ordinary ask's pass is not the review read's to keep,
-   * and one left standing would fire mid-review.
-   */
-  it('clears the timer an earlier read of the subject left', () => {
+  it('asks once when the same subject is armed twice', () => {
     vi.useFakeTimers();
     const { stores, bounds, asked } = bounded();
     stores.open(HOME);
     bounds.arm(HOME);
-    bounds.arm(HOME, null);
+    bounds.arm(HOME);
 
-    vi.advanceTimersByTime(600_000);
-    expect(asked, 'the superseded timer never asks').toEqual([]);
+    vi.advanceTimersByTime(5_000);
+    expect(asked, 'one pass, not one per arm').toEqual([HOME]);
   });
 });
 

@@ -34,7 +34,6 @@ import {
   skewOf,
   slotOf,
   subjectFromKey,
-  subjectKey,
   type BrowserInputEvent,
   type Command,
   type ServerMessage,
@@ -239,16 +238,6 @@ class RustConnection implements Connection {
    */
   private readonly bounds: ReadBounds;
 
-  /**
-   * The scope each subject was last asked with, for the read bound's retry.
-   *
-   * **The retry says nothing on the invoke** - the shell keeps the held scope
-   * - but its deadline has to match the read it is retrying: an ordinary read
-   * is bounded, and a review read waits for its base fetch with no cap at all,
-   * so it carries no deadline.
-   */
-  private readonly scopes = new Map<string, boolean>();
-
   /** The ordinary pass this connection bounds its reads with. */
   private readonly boundMs: number;
 
@@ -258,16 +247,11 @@ class RustConnection implements Connection {
     void this.begin(url);
   }
 
-  /** The pass a subject's read gets, from the scope it was last asked with. */
-  private passFor(what: Subject): number | null {
-    return this.scopes.get(subjectKey(what)) === true ? null : this.boundMs;
-  }
-
-  /** One bound retry: no scope on the invoke, the held one's deadline. */
+  /** One bound retry: no scope on the invoke, the ordinary pass. */
   private refreshHeld(what: Subject): boolean {
     if (this.state !== 'open') return false;
     if (typeof what !== 'string') this.gate.askSent(what.session);
-    this.bounds.arm(what, this.passFor(what));
+    this.bounds.arm(what, this.boundMs);
     void invoke('client_refresh', { what }).catch((why: unknown) => {
       report('a refresh could not reach the shell', why);
     });
@@ -394,9 +378,8 @@ class RustConnection implements Connection {
     }
     // A connection that opens after a bound fired owes its loading subjects a
     // fresh deadline: the subscribe went out when the socket opened, and a
-    // lost first answer would otherwise leave them loading forever. Each
-    // keeps the pass its own read was asked with.
-    if (next === 'open') this.bounds.rearmLoading((what) => this.passFor(what));
+    // lost first answer would otherwise leave them loading forever.
+    if (next === 'open') this.bounds.rearmLoading();
     // **Listeners first, then `Showing`.** The page's own re-attach runs on
     // this status and issues its `relist`; the spec's order is re-subscribe,
     // then `Showing`, and the web's `onopen` keeps the same one.
@@ -504,7 +487,6 @@ class RustConnection implements Connection {
     }
     const store = this.stores.open(what);
     if (typeof what !== 'string') this.gate.askSent(what.session);
-    if (options?.review !== undefined) this.scopes.set(subjectKey(what), options.review);
     void invoke('client_subscribe', {
       what,
       answering: options?.answering ?? false,
@@ -513,16 +495,14 @@ class RustConnection implements Connection {
       report('a subscribe could not reach the shell', why);
     });
     // The read this ask owes is bounded from here: nothing else would ask
-    // again for a snapshot that simply never came. A review read is left
-    // unbounded, because the server waits for its base fetch with no cap.
-    this.bounds.arm(what, this.passFor(what));
+    // again for a snapshot that simply never came.
+    this.bounds.arm(what, this.boundMs);
     return store;
   }
 
   unsubscribe(what: Subject): void {
     if (this.stores.get(what) === undefined) return;
     const last = this.stores.close(what);
-    if (last) this.scopes.delete(subjectKey(what));
     void invoke('client_unsubscribe', { what }).catch((why: unknown) => {
       report('an unsubscribe could not reach the shell', why);
     });
@@ -561,7 +541,6 @@ class RustConnection implements Connection {
    */
   relist(what: Subject, options?: { answering?: boolean; review?: boolean }): void {
     if (typeof what !== 'string') this.gate.askSent(what.session);
-    if (options?.review !== undefined) this.scopes.set(subjectKey(what), options.review);
     void invoke('client_relist', {
       what,
       answering: options?.answering ?? false,
@@ -573,10 +552,6 @@ class RustConnection implements Connection {
 
   /** The held declaration only: nothing on the wire, no store, no reader. */
   declare(what: Subject, options: { review: boolean }): void {
-    // The bound's own retry reads this: a seat a page let go must not keep
-    // the review read's deadline for its next ordinary ask.
-    if (options.review) this.scopes.set(subjectKey(what), true);
-    else this.scopes.delete(subjectKey(what));
     void invoke('client_declare', { what, review: options.review }).catch((why: unknown) => {
       report('a declaration could not reach the shell', why);
     });
@@ -591,7 +566,6 @@ class RustConnection implements Connection {
    */
   release(what: Subject): void {
     while (this.stores.get(what) !== undefined) this.stores.close(what);
-    this.scopes.delete(subjectKey(what));
     void invoke('client_release', { what }).catch((why: unknown) => {
       report('a release could not reach the shell', why);
     });
@@ -619,14 +593,12 @@ class RustConnection implements Connection {
     // everything held, and that answer is fresher than this ask would be.
     if (this.state !== 'open') return false;
     if (typeof what !== 'string') this.gate.askSent(what.session);
-    // **A re-ask that states no scope keeps the shell's held one**, and its
-    // deadline follows that held scope: a review-scoped read has none at all,
-    // so this arms nothing for it rather than presuming a lost read at five
-    // seconds.
+    // **A re-ask that states no scope keeps the shell's held one.** The
+    // deadline is the ordinary pass either way: a sessionless review read's
+    // wait is bounded server-side, and the bound's slow-retry trade covers a
+    // pass that lands inside it.
     const stated = options?.review;
-    const key = subjectKey(what);
-    if (stated !== undefined) this.scopes.set(key, stated);
-    this.bounds.arm(what, this.passFor(what));
+    this.bounds.arm(what, this.boundMs);
     const payload = stated === undefined ? { what } : { what, review: stated };
     void invoke('client_refresh', payload).catch((why: unknown) => {
       report('a refresh could not reach the shell', why);

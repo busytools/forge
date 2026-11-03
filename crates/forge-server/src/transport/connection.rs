@@ -2001,12 +2001,14 @@ where
             // arrival would count it twice.
             let prelude_ms =
                 queued_at.saturating_duration_since(open_at).as_secs_f64() * 1000.0 - wait_ms;
-            // **The review read runs off this loop.** It waits for a base
-            // fetch with no cap, and awaiting that here would stop this
-            // connection reading updates, commands, or even the client going
-            // away, for as long as the remote takes. The record is built by a
-            // task and answered through the same channel the reply-carrying
-            // commands use, and the asks behind it wait in `waiting`.
+            // **The review read runs off this loop.** It can still wait - a
+            // seat with no session carries its own base check, and every
+            // review read's pinned scan waits on the seat's gate - and
+            // awaiting either here would stop this connection reading
+            // updates, commands, or even the client going away. The record is
+            // built by a task and answered through the same channel the
+            // reply-carrying commands use, and the asks behind it wait in
+            // `waiting`.
             if review {
                 let seat = match &what {
                     Subject::Session(slot) => Some(slot.clone()),

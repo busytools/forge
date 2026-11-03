@@ -2462,14 +2462,13 @@ async fn session(
     let at = std::time::Instant::now();
     let held = surface.work(slot, cwd, review).await;
     timings.work_ms = slice_ms(at);
-    // **Only the review page's own read refreshes the base.** An ordinary
-    // record read serves the stores as they stand - a seat page never waits on
-    // the network - and the review read is the one that may, for as long as
-    // the fetch takes, because it is the read that draws the diff. A refresh
-    // already in flight for this repository and base branch is joined, not
-    // fetched again.
+    // **Only the review page's own read checks the base.** An ordinary record
+    // read serves the stores as they stand - a seat page never waits on the
+    // network - and the review read answers the last completed check and kicks
+    // a background refresh. A seat with no session is the exception: no watch
+    // delivers a kicked check there, so that read waits for its own (#2818).
     let at = std::time::Instant::now();
-    let refresh = if review { surface.refresh_diff_base(&held).await } else { None };
+    let refresh = if review { surface.refresh_diff_base(slot, &held).await } else { None };
     timings.base_ms = slice_ms(at);
     // The refresh and the scan taken after it are one read of one base: the
     // count, the chain and the files cannot describe two refs.
