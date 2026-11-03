@@ -167,7 +167,7 @@ jobs:
       - uses: actions/checkout@v7
       # The vendor-patch test runs the patcher with node, at the version the
       # repo pins in scripts/vendor_browser_stack.sh.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "24"
       # The recipe is what runs the scripts, so the step's composition has one
@@ -196,6 +196,44 @@ jobs:
           key: clippy
       - run: cargo clippy --all-targets --workspace -- -D warnings
       - run: cargo clippy --all-targets --workspace --all-features -- -D warnings
+
+  # **The same lint on the platform the job above cannot see.** Ubuntu
+  # compiles out every `cfg(target_os = "macos")` arm, so a lint failure in
+  # one passes there unseen. This runs the workspace clippy with every feature
+  # on, on a macOS runner and on the same paths, because it guards the same
+  # source rather than a second set of files. The Linux job's second
+  # invocation is the same command.
+  clippy-macos:
+    name: cargo clippy (macOS)
+    needs: changes
+    if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.gate == 'true'
+    runs-on: macos-15
+    env:
+      # cef-dll-sys unpacks the distribution under CEF_PATH/<version> and
+      # downloads it only when that directory is missing.
+      CEF_PATH: ${{ github.workspace }}/.cef-cache
+    steps:
+      - uses: actions/checkout@v7
+      # Shared with the macOS job below: the workspace's lock carries the
+      # pinned CEF version, so an unrelated dependency move reuses this cache.
+      - name: Read the pinned CEF version
+        id: cef
+        run: |
+          version=$(awk '/^name = "cef-dll-sys"$/{getline; sub(/^version = "/, ""); sub(/"$/, ""); print}' Cargo.lock)
+          test -n "$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v6
+        with:
+          path: .cef-cache
+          key: cef-${{ runner.os }}-${{ runner.arch }}-${{ steps.cef.outputs.version }}-${{ github.workflow }}
+      - uses: ./.github/actions/rust
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: cargo-${{ runner.os }}
+          key: clippy
+      - run: cargo clippy --workspace --all-features --all-targets -- -D warnings
 
   test:
     name: cargo nextest
@@ -361,12 +399,13 @@ jobs:
       - run: just client-tauri-clippy
       - run: just client-tauri-test
 
-  # **The only jobs that compile the macOS-only halves.** The CEF code is
-  # macOS-gated on BOTH sides: the workspace's `forge-browser` (the host, its
-  # ring, the driver and the service) and the shell's native overlay. Ubuntu
-  # jobs prove the rest compiles and the stubs refuse by name, but no Linux
-  # runner can compile either half. This job does: the workspace's macOS-only
-  # crates in the server binary's configuration, then the shell's own steps.
+  # **The macOS-only halves, built and run.** The CEF code is macOS-gated on
+  # BOTH sides: the workspace's `forge-browser` (the host, its ring, the
+  # driver and the service) and the shell's native overlay. The clippy job
+  # above lints the workspace half, but Ubuntu jobs prove the rest compiles
+  # and the stubs refuse by name, and no Linux runner can build either half.
+  # This job does: the workspace's macOS-only crates in the server binary's
+  # configuration, then the shell's own steps.
   client-tauri-macos:
     name: client shell and browser host (macOS)
     needs: changes
@@ -436,7 +475,7 @@ jobs:
       # **The fleet end to end**: the server's live browser test drives the
       # staged host through the vendored driver. It needs the driver stack,
       # which `just install` also vendors, and the host bundle staged above.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "24"
       - run: scripts/vendor_browser_stack.sh
@@ -473,6 +512,7 @@ jobs:
       - ui-word-count
       - script-tests
       - clippy
+      - clippy-macos
       - test
       - release
       - feature-configs
@@ -501,6 +541,7 @@ jobs:
               "ui-word-count": (),
               "script-tests": ("scripts",),
               "clippy": ("rust",),
+              "clippy-macos": ("rust",),
               "test": ("rust",),
               "release": ("rust",),
               "feature-configs": ("rust",),

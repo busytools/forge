@@ -39,7 +39,10 @@ frontend), and the image workflow, which builds and exercises
 the web image on the commits that touch it - and plus the android warnings
 check CI cannot run yet (`client-android-warnings`; it needs the Android
 NDK's target installed, so the CI side is #1959, closed as an enhancement
-and tracked in #2258). The piecewise
+and tracked in #2258). CI also runs the workspace clippy on a macOS
+runner, which lints the `cfg(target_os = "macos")` arms a Linux run
+compiles out; `just check` covers them only when it runs on macOS. The
+piecewise
 client gates
 are `just client-tauri-check`, `just client-android-check` and `just
 web-image-check`.

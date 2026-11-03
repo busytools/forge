@@ -4,9 +4,9 @@
 //! Mirrors [`crate::browser`]'s relay shape rather than inventing a second
 //! parked one: [`Workspace::hand_off_document`] registers the call and
 //! awaits its ending; a client answers **not now** to decline, and the
-//! viewer's **done** - after the reader's comments were filed - releases it
-//! with what the finish filed. Nothing parks without a client attached to
-//! draw the ask.
+//! viewer's **approve** or **feedback** - after the reader's comments were
+//! filed - releases it with the decision and the note the reader gave.
+//! Nothing parks without a client attached to draw the ask.
 
 use forge_primitives::document::{DocumentHandOffAsk, DocumentHandOffEnding};
 use tokio::sync::oneshot;
@@ -107,11 +107,12 @@ impl Workspace {
     /// ask the clients drawing that seat to open it, and park until the
     /// reader answers.
     ///
-    /// **The answer is the finish, not the open.** The reader accepts, reads
-    /// and comments; the viewer's done releases the call with what the
-    /// finish filed, `NotNow` releases it with their decline, and the
-    /// waiter's own drop with [`DocumentHandOffEnding::Abandoned`]. A
-    /// refused read raises nothing and parks on nothing.
+    /// **The answer is a decision, not the open.** The reader accepts,
+    /// reads and comments; the viewer's approve or feedback releases the
+    /// call with the decision, note and filed review, `NotNow` releases it
+    /// with their decline, and the waiter's own drop with
+    /// [`DocumentHandOffEnding::Abandoned`]. A refused read raises nothing
+    /// and parks on nothing.
     pub async fn hand_off_document(
         &self,
         seat: &SessionSlot,

@@ -30,8 +30,9 @@ use super::envelope::{
 use super::frame::FrameTransport as _;
 use super::origin as origin_gate;
 use super::wire::{
-    FileContentWire, OpenTimings, cap_message_record, cap_tool_records, conversation_for,
-    encode_subject, encode_subject_timed, floor_cursor, page_within,
+    FileContentWire, OpenTimings, ReviewedThreadWire, cap_message_record, cap_tool_records,
+    conversation_for, encode_subject, encode_subject_timed, floor_cursor, page_within,
+    placement_wire,
 };
 use super::{PROTOCOL_VERSION, TransportState, WRITE_BOUND, WriteStalled, write_within};
 use crate::live::Live;
@@ -3191,7 +3192,7 @@ fn forwards(update: &SessionUpdate, watched: &[Subject], me: u64) -> bool {
 fn for_a_client(mut update: SessionUpdate, cap: usize) -> SessionUpdate {
     match &mut update {
         SessionUpdate::Connected { history, .. }
-        | SessionUpdate::SessionReplaced { history, .. } => *history = Vec::new(),
+        | SessionUpdate::SessionReplaced { history, .. } => history.clear(),
         // **A live frame draws what a reload draws** (#2374): a record is
         // bounded on its way to a client wherever it comes from, or an
         // over-cap edit draws its hunks live and the marker after a switch.
@@ -4039,6 +4040,35 @@ fn document_answer(
             };
         }
     };
+    // **Each thread is placed against this document as it reads now**, the
+    // code review's re-anchoring over the whole file: a revision that moved
+    // a thread's line carries the new line with it, and one whose line is
+    // gone carries an outdated landing rather than no landing at all. A
+    // read whose bytes are not text has no lines to place against, and its
+    // threads ride unplaced.
+    let lines: Option<Vec<String>> = if threads.is_empty() {
+        None
+    } else {
+        std::str::from_utf8(&read.bytes).ok().map(|text| {
+            // A client's TextDecoder drops exactly one leading UTF-8 BOM;
+            // strip the same one so its first captured line is this side's.
+            // An empty text has one empty line, as the client's split does.
+            let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+            if text.is_empty() {
+                vec![String::new()]
+            } else {
+                text.lines().map(str::to_owned).collect()
+            }
+        })
+    };
+    let threads: Vec<ReviewedThreadWire> = surface
+        .place_document_threads(threads, lines.as_deref())
+        .into_iter()
+        .map(|held| ReviewedThreadWire {
+            thread: held.thread,
+            resolution: held.placement.map(placement_wire),
+        })
+        .collect();
     ServerMessage::DocumentRead {
         session: seat.clone(),
         path: read.path.to_string_lossy().into_owned(),
@@ -4066,6 +4096,7 @@ fn refusal_tag(refusal: &DispatchError) -> &'static str {
         // tag, because one tag cannot route two opposite outcomes.
         DispatchError::EmptySlackFeedback { .. } => "empty_slack_feedback",
         DispatchError::NoBrowserHandOffWaiting { .. } => "respond_browser_hand_off",
+        DispatchError::NoDocumentHandOffWaiting { .. } => "respond_document_hand_off",
         _ => "dispatch",
     }
 }
@@ -4992,7 +5023,7 @@ mod tests {
         let ready = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let mut sink = HeldSink { ready: std::sync::Arc::clone(&ready) };
         let keepalive = Keepalive::default();
-        let mut sending = Box::pin(keepalive.ping(&mut sink));
+        let mut sending = std::pin::pin!(keepalive.ping(&mut sink));
 
         assert!(
             futures_util::poll!(sending.as_mut()).is_pending(),
@@ -5319,14 +5350,17 @@ mod tests {
         .await
         .expect("an attached connection is what the hand-off parks on");
 
-        // The answer rides the command a client's done sends, so the
+        // The answer rides the command a client's approve sends, so the
         // dispatch guard and the registry are both on this path.
         state
             .surface
             .dispatch(forge_workspace::Command::AnswerDocumentHandOff {
                 key: seat.clone(),
                 id,
-                answer: forge_primitives::document::DocumentHandOffEnding::Done { review_id: None },
+                answer: forge_primitives::document::DocumentHandOffEnding::Approve {
+                    review_id: None,
+                    note: None,
+                },
             })
             .expect("the answer lands on the parked ask");
         handed.await.expect("the task joins").expect("and the park releases");
@@ -5688,9 +5722,9 @@ mod tests {
             anchor: ReviewAnchor {
                 path: "/proj/docs/readme.md".to_owned(),
                 side: ReviewSide::New,
-                line: 3,
+                line: 1,
                 content_hash: 7,
-                context: vec!["^ # hi".to_owned()],
+                context: vec!["# hi".to_owned()],
                 base_ref: base_ref.to_owned(),
             },
             comments: vec![ReviewComment {
@@ -5744,9 +5778,116 @@ mod tests {
         assert!(reviewable, "and whether the document is reviewable");
         assert_eq!(content_hash, "42", "and the document's hash, as decimal digits");
         assert_eq!(threads.len(), 1, "the document's OWN comments ride the answer");
-        assert_eq!(threads[0].id, "d1");
-        assert_eq!(threads[0].anchor.base_ref, scope, "read under the document's scope");
+        assert_eq!(threads[0].thread.id, "d1");
+        assert_eq!(threads[0].thread.anchor.base_ref, scope, "read under the document's scope");
+        assert!(
+            matches!(
+                threads[0].resolution,
+                Some(crate::transport::wire::ThreadResolutionWire::Placed {
+                    line: 1,
+                    moved_from: None,
+                }),
+            ),
+            "and its captured line still sits where it was written: {:?}",
+            threads[0].resolution,
+        );
         assert_eq!(reviews.len(), 1, "and so do its review sets");
+
+        // The same scope read under a revised document: the captured line is
+        // gone, so the thread is carried with an OUTDATED landing rather than
+        // dropped - what lets the viewer draw it at its old line, marked.
+        let revised = Ok(DocumentRead {
+            path: std::path::PathBuf::from("/proj/docs/readme.md"),
+            kind: DocumentKind::Markdown,
+            bytes: b"# changed\n".to_vec(),
+            reviewable: true,
+            content_hash: 43,
+        });
+        let ServerMessage::DocumentRead { threads, .. } = document_answer(&surface, &seat, revised)
+        else {
+            panic!("a read that landed is its own answer")
+        };
+        assert_eq!(threads[0].thread.id, "d1", "the thread is still carried");
+        assert!(
+            matches!(
+                threads[0].resolution,
+                Some(crate::transport::wire::ThreadResolutionWire::Outdated {
+                    reason: crate::transport::wire::OutdatedReasonWire::Gone,
+                }),
+            ),
+            "and the revision is reported, not guessed: {:?}",
+            threads[0].resolution,
+        );
+
+        // **A leading BOM is not part of the first line.** The client decodes
+        // the bytes with TextDecoder, which strips a UTF-8 BOM, so the line
+        // it captures and hashes is `# hi`; the server must strip the same
+        // prefix or the comment reads outdated on the very read that filed
+        // it, and the viewer then writes that false state into the store.
+        let bommed = Ok(DocumentRead {
+            path: std::path::PathBuf::from("/proj/docs/readme.md"),
+            kind: DocumentKind::Markdown,
+            bytes: b"\xef\xbb\xbf# hi\n".to_vec(),
+            reviewable: true,
+            content_hash: 44,
+        });
+        let ServerMessage::DocumentRead { threads, .. } = document_answer(&surface, &seat, bommed)
+        else {
+            panic!("a read that landed is its own answer")
+        };
+        assert!(
+            matches!(
+                threads[0].resolution,
+                Some(crate::transport::wire::ThreadResolutionWire::Placed {
+                    line: 1,
+                    moved_from: None,
+                }),
+            ),
+            "a BOM does not move the first line the client captured: {:?}",
+            threads[0].resolution,
+        );
+
+        // **A read whose bytes are not text carries no landing.** The PDF's
+        // bytes fail UTF-8, so there are no source lines to place against and
+        // every thread answers `resolution: null` - what socket.md promises.
+        // A lossy decode would keep every test above green while placing a
+        // thread against replacement characters.
+        let pdf_path = "/proj/docs/scan.pdf";
+        let pdf_scope = forge_primitives::review::doc_scope_ref(pdf_path);
+        let pdf_thread = ReviewThread {
+            id: "p1".to_owned(),
+            anchor: ReviewAnchor {
+                path: pdf_path.to_owned(),
+                side: ReviewSide::New,
+                line: 1,
+                content_hash: 9,
+                context: vec!["a page".to_owned()],
+                base_ref: pdf_scope.clone(),
+            },
+            comments: Vec::new(),
+            status: ReviewStatus::Open,
+            created_at: String::new(),
+            updated_at: String::new(),
+            commit: None,
+        };
+        assert!(workspace.upsert_review_thread("forge", &pdf_scope, pdf_thread));
+        let pdf = Ok(DocumentRead {
+            path: std::path::PathBuf::from(pdf_path),
+            kind: DocumentKind::Pdf,
+            bytes: b"%PDF-1.4\n\xff\xfe".to_vec(),
+            reviewable: false,
+            content_hash: 45,
+        });
+        let ServerMessage::DocumentRead { threads, .. } = document_answer(&surface, &seat, pdf)
+        else {
+            panic!("a read that landed is its own answer")
+        };
+        assert_eq!(threads.len(), 1, "the PDF scope's thread rides the answer");
+        assert!(
+            threads[0].resolution.is_none(),
+            "a non-text read has no lines, so it carries no landing: {:?}",
+            threads[0].resolution,
+        );
 
         // A scope with nothing in it crosses empty rather than carrying the
         // other document's rows - the control for the read's own scope.

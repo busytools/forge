@@ -193,6 +193,11 @@ reviewable document - one the user must read and comment on - gets the \
 hand-off; a code change, a PR and an answer that belongs in the chat \
 do not need one.\n\
 \n\
+**A document hand-off's answer is approve or feedback.** Feedback means revise the \
+document and hand it off again; approval is the one signal to proceed, \
+and never proceed on feedback. Both may carry a note, and the note \
+reaches you with the answer.\n\
+\n\
 The review gate is not the worker's to run: do your own checks - the \
 project's tests and its check command - then hand the PR over and \
 stop. Do not spawn reviewers or run a review pass \
@@ -4156,6 +4161,23 @@ mod tests {
                 "a code change, a PR and an answer that belongs in the chat do not need one"
             ),
             "the boundary is pinned",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
+                .contains("**A document hand-off's answer is approve or feedback.**"),
+            "the two outcomes are named where the agent reads them",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
+                "Feedback means revise the document and hand it off again; approval is the one \
+                 signal to proceed, and never proceed on feedback."
+            ),
+            "the loop's next step and its one signal are pinned",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
+                .contains("Both may carry a note, and the note reaches you with the answer"),
+            "the note's delivery is pinned",
         );
     }
 

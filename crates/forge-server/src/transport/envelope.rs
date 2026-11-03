@@ -12,6 +12,7 @@ use forge_workspace::DictateAxes;
 use forge_workspace::env::git_diff::content::FileContent;
 use serde::{Deserialize, Serialize};
 
+use super::wire::ReviewedThreadWire;
 use crate::live::fleet_news;
 use crate::{Command, SessionUpdate};
 
@@ -671,9 +672,11 @@ pub enum ServerMessage {
     /// the envelope's own tag.
     ///
     /// `threads` and `reviews` are the document scope's own (`doc:<path>`)
-    /// store read, taken in the same handler: the viewer draws its comments
-    /// and decides which of them the document left behind from it, and no
-    /// second read exists for a scope the seat's record does not cover.
+    /// store read, taken in the same handler: the viewer draws its comments,
+    /// and each thread carries where its anchor sits in THIS document - the
+    /// code review's re-anchoring, resolved here because only the server
+    /// holds the whole file's lines. A thread the revision left nowhere is
+    /// carried with an `outdated` landing rather than dropped.
     /// `content_hash` crosses as DECIMAL DIGITS for the same reason a
     /// thread's anchor hash does - JS numbers are exact only to 2^53.
     DocumentRead {
@@ -683,7 +686,7 @@ pub enum ServerMessage {
         bytes: String,
         reviewable: bool,
         content_hash: String,
-        threads: Vec<forge_primitives::review::ReviewThread>,
+        threads: Vec<ReviewedThreadWire>,
         reviews: Vec<forge_primitives::ReviewSet>,
     },
 }
