@@ -343,7 +343,7 @@ mod tests {
     }
 
     fn appended(key: &SessionSlot, msg: Message) -> SessionUpdate {
-        SessionUpdate::ChatAppended { key: key.clone(), msg, origin: None, source: None }
+        SessionUpdate::ChatAppended { key: key.clone(), msg, source: None }
     }
 
     /// The failure mark is the view's own: a failure on a seat this page
@@ -716,7 +716,6 @@ mod tests {
         assert!(
             !fleet_news(&SessionUpdate::ChatAppended {
                 key: slot,
-                origin: None,
                 source: None,
                 msg: serde_json::from_value(serde_json::json!({
                     "type": "user",

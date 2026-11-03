@@ -36,7 +36,7 @@
     takePhase,
     takeSilenceLine,
   } from './dictate.svelte';
-  import { FORGE_COMMANDS, isForgeCommand } from './forge-commands';
+  import { FORGE_COMMANDS, coreAnswers } from './forge-commands';
   import {
     blocked,
     composerState,
@@ -1021,9 +1021,8 @@
     // command, a misuse or a slash name this session cannot run never reaches
     // a model, so no turn carries its words and the echo would stand as a row
     // nothing clears. The core's answer is the feedback.
-    const advertised = advisoriesFrom(record.slash_commands).some((row) => row.name === first);
-    const answered = isForgeCommand(first) || (first.startsWith('/') && !advertised);
-    if (!answered) {
+    const advertised = advisoriesFrom(record.slash_commands).map((row) => row.name);
+    if (!coreAnswers(first, advertised)) {
       // What the seat was doing when the words left: a send that starts a turn
       // is taken by it, one sent into a turn already running is not (it is
       // settled by the conversation carrying the words, or by a refusal).

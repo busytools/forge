@@ -1313,7 +1313,6 @@ impl crate::Workspace {
             uuid,
             source: crate::protocol::PromptSource::Peer,
             dispatch_id: None,
-            origin: None,
         })
     }
 
@@ -2477,14 +2476,13 @@ fix the parser, then the client row.";
         );
         let mut drawn = Vec::new();
         while let Ok(frame) = rx.try_recv() {
-            if let SessionUpdate::ChatAppended { msg, origin, source, .. } = &*frame.update {
-                drawn.push((msg.clone(), *origin, *source));
+            if let SessionUpdate::ChatAppended { msg, source, .. } = &*frame.update {
+                drawn.push((msg.clone(), *source));
             }
         }
-        let [(msg, origin, source)] = drawn.as_slice() else {
+        let [(msg, source)] = drawn.as_slice() else {
             panic!("the brief draws one row: {drawn:?}");
         };
-        assert!(origin.is_none(), "nobody typed it, so the frame claims no origin");
         assert_eq!(*source, Some(PromptSource::Forge), "the machinery's own words");
         let forge_primitives::Message::User { message, uuid, .. } = msg else {
             panic!("the row is the user turn it draws: {msg:?}");

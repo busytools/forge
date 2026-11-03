@@ -181,8 +181,8 @@ const NOT_NEWS: readonly string[] = [
   // A call's own output, which the row that asked for it draws: the fleet
   // region has no row for it.
   'call_output',
-  // The handoff row is the seat's conversation, which its page draws; no
-  // home row names the swap.
+  // The swap signal: the seat's page acts on the replacement that follows,
+  // and no home row names the swap.
   'handoff',
   // The composer's own stand-down, which the session page draws in its box.
   'machine_turn',

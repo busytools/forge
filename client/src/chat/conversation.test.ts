@@ -7237,22 +7237,25 @@ describe('the chat holds a queued prompt until the CLI takes it', () => {
     );
   });
 
-  it('draws refused words without the note, and drops cancelled ones', () => {
+  it('draws no row for a prompt that never starts', () => {
+    // Refused, discarded and cancelled all never reached a model, so no turn
+    // carries their words and the page copy never does either; the pile's own
+    // ending line is where they are read (#2816).
     const server = fakeConnection();
     const chat = new Chat(server.connection, LEAD);
     chat.start();
     server.send(page([turn('t1', 'first')], null));
 
-    server.update({ prompt_queued: { key: LEAD, uuid: 'p1', source: 'you', text: 'refuse me' } });
-    server.update({ chat_appended: { key: LEAD, msg: forgedUnder('refuse me', 'p1') } });
-    server.update({ prompt_lifecycle: { key: LEAD, uuid: 'p1', state: 'refused' } });
-    expect(words(chat), 'a hook-refused prompt still draws its words').toContain('refuse me');
-    expect(words(chat), 'and says nothing it cannot know').not.toContain('forge_note');
-
-    server.update({ prompt_queued: { key: LEAD, uuid: 'p2', source: 'you', text: 'drop me' } });
-    server.update({ chat_appended: { key: LEAD, msg: forgedUnder('drop me', 'p2') } });
-    server.update({ prompt_lifecycle: { key: LEAD, uuid: 'p2', state: 'cancelled' } });
-    expect(words(chat), 'a cancelled prompt goes with its card').not.toContain('drop me');
+    for (const [uuid, text, state] of [
+      ['p1', 'refuse me', 'refused'],
+      ['p2', 'discard me', 'discarded'],
+      ['p3', 'cancel me', 'cancelled'],
+    ] as const) {
+      server.update({ prompt_queued: { key: LEAD, uuid, source: 'you', text } });
+      server.update({ chat_appended: { key: LEAD, msg: forgedUnder(text, uuid) } });
+      server.update({ prompt_lifecycle: { key: LEAD, uuid, state } });
+      expect(words(chat), `a ${state} prompt draws nothing`).not.toContain(text);
+    }
   });
 
   it('releases a held row when the process that would start it fails', () => {

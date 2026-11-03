@@ -2678,6 +2678,36 @@ async fn session(
 
 #[cfg(test)]
 mod tests {
+    /// **The queue a view reads is three fields.** The attachments the task
+    /// keeps for the started row are core-side; a base64 payload on every seat
+    /// record read is the thing the row frame itself strips (#2440).
+    #[test]
+    fn the_served_queue_carries_no_attachment_payload() {
+        let state = super::SessionStateWire {
+            slot: forge_primitives::SessionSlot::lead("TestOrg", "proj"),
+            scan_cwd: std::path::PathBuf::from("/tmp/proj"),
+            queue: vec![forge_workspace::protocol::QueuedPrompt {
+                uuid: "p1".to_owned(),
+                source: forge_workspace::protocol::PromptSource::You,
+                text: "hello".to_owned(),
+                attachments: vec![forge_primitives::ImageAttachment {
+                    data: "iVBORw0KGgo=".to_owned(),
+                    mime_type: "image/png".to_owned(),
+                }],
+            }],
+            voice_listeners: 0,
+        };
+        let encoded = serde_json::to_string(&state).expect("the state encodes");
+        assert!(
+            !encoded.contains("iVBORw0KGgo=") && !encoded.contains("\"attachments\""),
+            "the queue a view reads carries no attachment payload: {encoded}",
+        );
+        assert!(
+            encoded.contains("\"uuid\":\"p1\"") && encoded.contains("\"text\":\"hello\""),
+            "and carries the row a view draws: {encoded}",
+        );
+    }
+
     /// **The read half of the cron pairing rides the page.** A cron row drawn
     /// while its delivery frame lands is titled by the schedule; the same row
     /// replayed from a transcript after a reload has no frame to read. The
@@ -6156,7 +6186,6 @@ mode = \"toggle\"
         crate::live::Live::lock(&state.live).apply(&crate::SessionUpdate::ChatAppended {
             key: seat.clone(),
             msg,
-            origin: Some(forge_workspace::PromptOrigin::View),
             source: Some(forge_workspace::PromptSource::You),
         });
         let session = encode_subject(&state, &Subject::Session(seat)).await.expect("encode");

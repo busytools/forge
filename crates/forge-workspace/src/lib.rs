@@ -110,8 +110,8 @@ pub use error::WorkspaceError;
 pub use forge_dictate::normalize::{Context, Structure, Styling};
 pub use handoff::{SkillInstall, install_skill, skill_path};
 pub use protocol::{
-    Command, DictateOutcome, DispatchError, NoticeSeverity, PromptOrigin, PromptSource,
-    SessionUpdate, TurnErrorClass,
+    Command, DictateOutcome, DispatchError, NoticeSeverity, PromptSource, SessionUpdate,
+    TurnErrorClass,
 };
 pub use target::{ProjectKey, SessionSlot, SessionTarget};
 pub use tts::{TtsSettings, TtsSnapshot, TtsView};

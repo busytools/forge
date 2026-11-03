@@ -1942,6 +1942,34 @@
       <div class="older-loading" role="status">Loading older messages&#8230;</div>
     <div class="conv">
 
+      <!-- The successor's own first turn: the brief forge delivered, drawn as
+           the handoff procedure. The row is the transcript's, not a record's -
+           the previous conversation went with the seat that left, so a handoff
+           opens a new chat that starts here, with nothing above it. -->
+      <div class="leaves">
+        <details class="leaf procedure" open>
+          <summary><svg class="ic gl"><use href="#i-handoff"/></svg><span class="k">handoff procedure</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+          <div class="body"><div class="prose">
+            <p>HANDOFF - 9cfe315c &#8594; 4b21e0a7</p>
+            <p>PART 1 is forge's own ground truth and is authoritative for facts; PART 2 is the handing-over session's own words.</p>
+            <p>PART 1: GROUND TRUTH (written by forge, not by a model)<br>
+            seat: Busytools/forge/server-browser<br>
+            cwd: /Users/vedhavyas/Projects/forge<br>
+            branch: worktree-server-browser @ 84369aae<br>
+            role: worker, charter opens: You build the cut.<br>
+            files: changed: crates/forge-browser/src/service.rs<br>
+            board: the server browser (in progress)<br>
+            agents: Explore: scan the pile (3 calls)<br>
+            background: local_bash: cargo watch [b1]<br>
+            monitors: watch the build [m1]: tail -f build.log<br>
+            processes: 42 cargo: cargo nextest run<br>
+            record: ~/.claude/projects/&#8230;/9cfe315c.jsonl</p>
+            <p>PART 2: JUDGMENT (written by the session that is handing over)<br>
+            note: round-1 item 7; configure_encoding missing, spawn args wired. Worktree server-browser at 84369aae, PR #2502 in flight; just check failed on client-tauri-test. Next: add configure_encoding, then just check.</p>
+          </div></div>
+        </details>
+      </div>
+
       <div class="mine">
         <div class="prose">
           <p>Make the call tree the default, let me open one call at a time, and cover every kind the CLI can produce.</p>
@@ -2862,34 +2890,6 @@ Contains simple_expansion</div>
         </summary>
         <div class="cpbody">trigger <b>auto</b> &#183; <b>154,013</b> tokens read before the cut, <b>4,712</b> carried after it</div>
       </details>
-
-      <!-- The successor's own first turn: the brief forge delivered, drawn as
-           the handoff procedure. The row is the transcript's, not a record's -
-           the previous conversation went with the seat that left, so a handoff
-           opens a new chat that starts here. -->
-      <div class="leaves">
-        <details class="leaf procedure" open>
-          <summary><svg class="ic gl"><use href="#i-handoff"/></svg><span class="k">handoff procedure</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
-          <div class="body"><div class="prose">
-            <p>HANDOFF - 9cfe315c &#8594; 4b21e0a7</p>
-            <p>PART 1 is forge's own ground truth and is authoritative for facts; PART 2 is the handing-over session's own words.</p>
-            <p>PART 1: GROUND TRUTH (written by forge, not by a model)<br>
-            seat: Busytools/forge/server-browser<br>
-            cwd: /Users/vedhavyas/Projects/forge<br>
-            branch: worktree-server-browser @ 84369aae<br>
-            role: worker, charter opens: You build the cut.<br>
-            files: changed: crates/forge-browser/src/service.rs<br>
-            board: the server browser (in progress)<br>
-            agents: Explore: scan the pile (3 calls)<br>
-            background: local_bash: cargo watch [b1]<br>
-            monitors: watch the build [m1]: tail -f build.log<br>
-            processes: 42 cargo: cargo nextest run<br>
-            record: ~/.claude/projects/&#8230;/9cfe315c.jsonl</p>
-            <p>PART 2: JUDGMENT (written by the session that is handing over)<br>
-            note: round-1 item 7; configure_encoding missing, spawn args wired. Worktree server-browser at 84369aae, PR #2502 in flight; just check failed on client-tauri-test. Next: add configure_encoding, then just check.</p>
-          </div></div>
-        </details>
-      </div>
 
       <div class="mine">
         <div class="prose">

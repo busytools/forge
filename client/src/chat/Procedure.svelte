@@ -30,7 +30,7 @@
   </summary>
   {#if opened}
     <div class="body">
-      <Prose {text} />
+      <Prose {text} preserveLines />
     </div>
   {/if}
 </details>

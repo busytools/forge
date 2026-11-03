@@ -171,7 +171,6 @@ mod tests {
         SessionUpdate::ChatAppended {
             key: seat(),
             msg,
-            origin: Some(forge_workspace::PromptOrigin::View),
             source: Some(forge_workspace::PromptSource::You),
         }
     }
@@ -196,7 +195,7 @@ mod tests {
             ]},
         }))
         .expect("a tool-result frame");
-        SessionUpdate::ChatAppended { key: seat(), msg, origin: None, source: None }
+        SessionUpdate::ChatAppended { key: seat(), msg, source: None }
     }
 
     #[test]
@@ -246,7 +245,6 @@ mod tests {
         composer.apply(&SessionUpdate::ChatAppended {
             key: seat(),
             msg: a_user_row(),
-            origin: None,
             source: Some(forge_workspace::PromptSource::Forge),
         });
         assert_eq!(
@@ -299,7 +297,7 @@ mod tests {
                 "type": "system", "session_id": "s1", "subtype": "status", "status": "compacting",
             }))
             .expect("a status frame");
-            SessionUpdate::ChatAppended { key: seat(), msg, origin: None, source: None }
+            SessionUpdate::ChatAppended { key: seat(), msg, source: None }
         }
         let replacement = SessionUpdate::SessionReplaced {
             key: seat(),

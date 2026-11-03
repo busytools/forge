@@ -651,9 +651,17 @@ describe('the box', () => {
     // A forge command, a misuse and a slash name the session cannot run never
     // reach a model, so no turn carries their words: an echo would stand as a
     // row nothing clears (#2816).
-    const harness = open({
-      record: record({ slash_commands: [{ name: '/clear', description: 'Clear chat history' }] }),
-    });
+    const catalogue = [
+      { name: '/clear', description: 'Clear chat history' },
+      { name: '/compact', description: 'Compact session context' },
+    ];
+    const harness = open({ record: record({ slash_commands: catalogue }) });
+    const settle = (): void => {
+      // The page's own record moves on when the command's turn ends; the
+      // harness has to say so, or the blocker keeps the field off screen.
+      harness.page.record = record({ slash_commands: catalogue });
+      flushSync();
+    };
     for (const words of ['/handoff', '/resume', '/spinner now']) {
       type(words);
       // The list a slash name opens takes Enter for its own pick; Escape
@@ -662,23 +670,29 @@ describe('the box', () => {
       press('Enter');
       flushSync();
       expect(echoAt(SLOT), `no echo for ${words}`).toBeUndefined();
-      // The page's own record moves on when the command's turn ends; the
-      // harness has to say so, or the blocker keeps the field off screen.
-      harness.page.record = record({
-        slash_commands: [{ name: '/clear', description: 'Clear chat history' }],
-      });
-      flushSync();
+      settle();
     }
-    // A command the CLI advertised is a turn like any other, so its send is
-    // echoed until the conversation carries it.
-    type('/clear');
+    // A name the CLI advertised is a turn like any other, so its send is
+    // echoed until the conversation carries it - and `/compact` is in the
+    // client's catalogue but the core forwards it, so it is one of these.
+    for (const words of ['/clear', '/compact']) {
+      type(words);
+      press('Escape');
+      press('Enter');
+      flushSync();
+      expect(echoAt(SLOT)?.words, `${words} is still the reader's send`).toBe(words);
+      settle();
+    }
+    // **An empty catalogue is forwarded.** The core cannot tell an unknown
+    // name from one the CLI has not advertised yet, so the send is a turn.
+    harness.page.record = record({ slash_commands: [] });
+    flushSync();
+    type('/spinner');
     press('Escape');
     press('Enter');
     flushSync();
-    expect(echoAt(SLOT)?.words, "an advertised slash name is still the reader's send").toBe(
-      '/clear',
-    );
-    expect(harness.sent.length, 'every send still went').toBe(4);
+    expect(echoAt(SLOT)?.words, 'an empty catalogue is forwarded').toBe('/spinner');
+    expect(harness.sent.length, 'every send still went').toBe(6);
   });
 
   it('hands an empty box up to the pile, and only an empty one', () => {

@@ -1000,7 +1000,6 @@ fn frames_record() -> Value {
     let update_sample = SessionUpdate::ChatAppended {
         key: seat.clone(),
         msg: sample_message(),
-        origin: None,
         source: Some(forge_workspace::PromptSource::You),
     };
     let encoded = serde_json::to_value(&update_sample).expect("the update sample encodes");
@@ -1782,7 +1781,6 @@ fn command_sampled(seat: &SessionSlot) -> BTreeMap<String, BTreeMap<String, Valu
             uuid: "u1".to_owned(),
             source: forge_workspace::PromptSource::You,
             dispatch_id: Some(1),
-            origin: None,
         }),
     );
     sampled.insert(

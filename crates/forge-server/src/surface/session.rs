@@ -101,7 +101,7 @@ mod tests {
             "status": status,
         }))
         .expect("a status frame");
-        crate::SessionUpdate::ChatAppended { key: slot.clone(), msg, origin: None, source: None }
+        crate::SessionUpdate::ChatAppended { key: slot.clone(), msg, source: None }
     }
 
     /// **A handoff owns the seat until the swap replaces it, and a

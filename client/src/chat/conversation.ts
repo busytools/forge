@@ -3185,15 +3185,12 @@ export class Chat {
         // "sending" over a card already showing them (Ved, 2026-10-04). Ids
         // only: two sends of the same text compare equal by words.
         if (echoes.of(this.key)?.id === uuid) echoes.clear(this.key);
-        // **The two frames race, and this side of the race is the retraction.**
-        // The dispatcher emits the user turn as it routes the prompt; the
-        // task's queue announcement follows it, so a frame often arrives before
-        // the pile knows the prompt is waiting. An announcement for a row the
-        // seat has already drawn pulls it back into the hold - and what keeps
-        // that invisible is the SERVER's batch window rather than this side:
-        // the transport coalesces both updates into one flush, so the draw and
-        // the retraction land in one paint. Outside that window the row hops
-        // back into the pile a beat late rather than standing in both.
+        // **A row the seat already drew is pulled back into the hold.** A page
+        // read can carry a prompt's own row while the queue still lists it -
+        // the transcript gained it before this view heard the announcement -
+        // and the card is what carries the words while they wait. The
+        // announcement retracts that copy, and the drain draws it once when
+        // the CLI starts it.
         //
         // **And a queued send is the reader acting, so the column follows it.**
         // A prompt the CLI queues never folds as a user unit - which is the one
@@ -3614,11 +3611,9 @@ export class Chat {
    * between the card's "queued" and the row's "sent", and the reason the row
    * was held at all. `completed` draws the same way, which is what saves a
    * hold whose `started` was lost - a reattached client that missed the frame.
-   * `refused` and `discarded` draw too, without the note, because those words
-   * never reached a model and the pile's own ending line is the only other
-   * place they exist. `cancelled` goes: the reader deleted it, and the send
-   * that was waiting on it is settled rather than left behind a copy that is
-   * never coming. Anything else keeps the hold.
+   * `cancelled`, `refused` and `discarded` draw nothing: none of them reached
+   * a model, so no turn carries the words, and the pile's own ending line is
+   * where they are read (#2816). Anything else keeps the hold.
    */
   private advanced(update: SessionUpdate): void {
     const uuid = textIn(update, 'prompt_lifecycle', 'uuid');
@@ -3646,6 +3641,14 @@ export class Chat {
     if (!dropped && !drawn) return;
     this.waiting.delete(uuid);
     this.drained.delete(uuid);
+    // **A prompt that never starts draws no row.** Refused and discarded join
+    // cancelled: the words never reached a model, the pile's own ending line
+    // is the only place they exist, and the page copy never carries them
+    // (#2816).
+    if (dropped) {
+      this.dropEmptied(uuid);
+      return;
+    }
     const into = this.emptied.get(uuid) ?? null;
     this.emptied.delete(uuid);
     // **A trigger the queue alone carried draws from the announcement's own
@@ -3661,7 +3664,7 @@ export class Chat {
     // carries them to the foot. The sender is the announcement's, kept in the
     // hold for this - the row it draws may be built from the announcement's
     // words alone, with no frame to read a source off.
-    this.append(dropped ? row : this.noted(row, waited), entry?.source === 'you', into);
+    this.append(this.noted(row, waited), entry?.source === 'you', into);
   }
 
   /**

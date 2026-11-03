@@ -1189,23 +1189,13 @@ mod tests {
         assert!(!held.live_of(&a_seat()), "nothing is open on an empty seat");
 
         held.apply(
-            &SessionUpdate::ChatAppended {
-                key: a_seat(),
-                msg: a_working_frame(),
-                origin: None,
-                source: None,
-            },
+            &SessionUpdate::ChatAppended { key: a_seat(), msg: a_working_frame(), source: None },
             None,
         );
         assert!(held.live_of(&a_seat()), "the model's own frame opens a turn");
 
         held.apply(
-            &SessionUpdate::ChatAppended {
-                key: a_seat(),
-                msg: a_result_frame(),
-                origin: None,
-                source: None,
-            },
+            &SessionUpdate::ChatAppended { key: a_seat(), msg: a_result_frame(), source: None },
             None,
         );
         assert!(!held.live_of(&a_seat()), "and the turn's report closes it");
@@ -1223,12 +1213,7 @@ mod tests {
         held.apply(&a_connect(vec![a_frame("from the replay")], 0), None);
 
         held.apply(
-            &SessionUpdate::ChatAppended {
-                key: a_seat(),
-                msg: a_frame("after"),
-                origin: None,
-                source: None,
-            },
+            &SessionUpdate::ChatAppended { key: a_seat(), msg: a_frame("after"), source: None },
             None,
         );
 
@@ -1262,7 +1247,6 @@ mod tests {
                     metadata_extras: serde_json::Map::new(),
                     extras: serde_json::Map::new(),
                 },
-                origin: None,
                 source: None,
             },
             None,
@@ -1498,7 +1482,6 @@ mod tests {
             &SessionUpdate::ChatAppended {
                 key: a_seat(),
                 msg: a_frame("before the seed"),
-                origin: None,
                 source: None,
             },
             None,

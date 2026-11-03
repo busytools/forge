@@ -283,9 +283,7 @@ use forge_gateway::ProviderHost as _;
 use crate::config::{ConfigReload, LoadedConfig, LoadedProject, load_from_dir};
 use crate::domain_session::DomainSession;
 use crate::error::WorkspaceError;
-use crate::protocol::{
-    Command, DispatchError, NoticeSeverity, PromptOrigin, PromptSource, SessionUpdate,
-};
+use crate::protocol::{Command, DispatchError, NoticeSeverity, PromptSource, SessionUpdate};
 use crate::session_task::SessionTask;
 use crate::spawn;
 use crate::target::{ProjectKey, SessionSlot, SessionTarget};
@@ -5661,7 +5659,6 @@ impl Workspace {
             uuid,
             source,
             dispatch_id: None,
-            origin: None,
         })
     }
 
@@ -5796,14 +5793,12 @@ impl Workspace {
                 uuid,
                 source,
                 dispatch_id: None,
-                origin: None,
             })
         };
         if result.is_ok() {
             let _ = self.update_sender().send(SessionUpdate::ChatAppended {
                 key: key.clone(),
                 msg: frame,
-                origin: None,
                 source: Some(source),
             });
         }
@@ -5861,22 +5856,20 @@ impl Workspace {
     /// [`DispatchError::SessionClosed`] when the task's command receiver has
     /// been dropped.
     pub fn dispatch(self: &Arc<Self>, cmd: Command) -> Result<(), DispatchError> {
-        self.dispatch_with_origin(cmd, PromptOrigin::Ui)
+        self.dispatch_answered(cmd)
     }
 
     /// Dispatch one command a view sent over the socket.
     ///
-    /// Apart from the origin it stamps on a prompt's frame, this is
-    /// [`Self::dispatch`] exactly. The two entries exist so the origin comes
-    /// from the code path rather than from the command: a client cannot claim
-    /// to be the UI's own entry, which would have a view skip words
-    /// it never saw.
+    /// The same dispatch as [`Self::dispatch`]: the frame a prompt draws is
+    /// the session task's, emitted when the CLI starts it, so no entry needs
+    /// to say which door the words came through.
     ///
     /// # Errors
     ///
     /// As [`Self::dispatch`].
     pub fn dispatch_from_view(self: &Arc<Self>, cmd: Command) -> Result<(), DispatchError> {
-        self.dispatch_with_origin(cmd, PromptOrigin::View)
+        self.dispatch_answered(cmd)
     }
 
     /// Route a command, answering the prompts forge handles itself.
@@ -5889,20 +5882,11 @@ impl Workspace {
     ///
     /// NOT from `dispatch_workspace_prompt`, which is the delivery path: a
     /// delivery already draws as an envelope turn of its own.
-    fn dispatch_with_origin(
-        self: &Arc<Self>,
-        cmd: Command,
-        origin: PromptOrigin,
-    ) -> Result<(), DispatchError> {
-        // The id is minted HERE, before the prose is taken, so the prompt, its
-        // lifecycle frames and the user turn it draws all carry one thing by
-        // id: a plain `Prompt` becomes the `PromptUnder` the rest of the tree
-        // already treats identically, keeping the mint on one path instead of
-        // two.
-        //
-        // **The origin is stamped here, never taken from the caller.** A view
-        // that could name its own origin could claim to be the process's own
-        // input handler, and every other view would skip a turn it never drew.
+    fn dispatch_answered(self: &Arc<Self>, cmd: Command) -> Result<(), DispatchError> {
+        // The id is minted HERE, before the prose is taken, so the prompt and
+        // its lifecycle frames carry one thing by id: a plain `Prompt` becomes
+        // the `PromptUnder` the rest of the tree already treats identically,
+        // keeping the mint on one path instead of two.
         let cmd = match cmd {
             Command::Prompt { key, text, attachments } => Command::PromptUnder {
                 key,
@@ -5911,18 +5895,9 @@ impl Workspace {
                 uuid: forge_sdk::request_id::next_prompt_id(),
                 source: crate::protocol::PromptSource::You,
                 dispatch_id: None,
-                origin: Some(origin),
             },
             Command::PromptUnder { key, text, attachments, uuid, source, dispatch_id, .. } => {
-                Command::PromptUnder {
-                    key,
-                    text,
-                    attachments,
-                    uuid,
-                    source,
-                    dispatch_id,
-                    origin: Some(origin),
-                }
+                Command::PromptUnder { key, text, attachments, uuid, source, dispatch_id }
             }
             other => other,
         };
@@ -13737,13 +13712,12 @@ provider = "anthropic"
         ws.dispatch_forged_prompt(&key, "get on with it".to_owned()).expect("forged dispatch");
         let drawn = drain_updates(&mut rx);
         let frame = drawn.iter().find_map(|u| match u {
-            SessionUpdate::ChatAppended { msg, origin, source, .. } => Some((msg, origin, source)),
+            SessionUpdate::ChatAppended { msg, source, .. } => Some((msg, source)),
             _ => None,
         });
-        let Some((msg, origin, source)) = frame else {
+        let Some((msg, source)) = frame else {
             panic!("a forged prompt draws its words; got {drawn:?}")
         };
-        assert!(origin.is_none(), "no view drew these words, so the frame claims no origin");
         // **And the source is forge's own**, which is what keeps a parked
         // reader off the foot: the frame is the same one a person's send
         // forges, so a reader's follow has only this to tell the two apart
@@ -13958,7 +13932,6 @@ provider = "anthropic"
             uuid: uuid.to_owned(),
             source,
             dispatch_id: None,
-            origin: None,
         };
 
         ws.dispatch(prompt("cron-1", crate::protocol::PromptSource::Cron)).expect("routed");
@@ -26040,30 +26013,6 @@ mod prompt_frame_origin_tests {
     /// The UI's own entry. The origin is stamped on the COMMAND: the frame
     /// itself is drawn by the session task, so the command is what this layer
     /// answers for.
-    #[test]
-    fn the_uis_own_entry_stamps_the_prompt_as_the_uis() {
-        let (ws, _rx, seat) = a_fleet();
-
-        let dispatched = ws.dispatch(a_prompt(&seat));
-
-        assert!(dispatched.is_ok(), "precondition: the core took the prompt: {dispatched:?}");
-        let commands = ws.drain_test_dispatch_buffer();
-        assert!(
-            matches!(
-                commands.as_slice(),
-                [Command::PromptUnder {
-                    origin: Some(PromptOrigin::Ui),
-                    source: PromptSource::You,
-                    key,
-                    ..
-                }] if key == &seat
-            ),
-            "the words the terminal drew at submit must be marked as its own, or it draws them \
-             twice - and as a person's send, which is the only thing a reader's follow arms \
-             on (#2198): {commands:?}",
-        );
-    }
-
     /// **The routed command carries the id its row is drawn from.** The
     /// session task announces this id and the CLI's lifecycle frames name it,
     /// so one id here is one id on the queue's row and the CLI's own copy of
@@ -26077,15 +26026,11 @@ mod prompt_frame_origin_tests {
         assert!(dispatched.is_ok(), "precondition: the core took the prompt: {dispatched:?}");
 
         let wired = ws.drain_test_dispatch_buffer();
-        let [Command::PromptUnder { uuid, origin, .. }] = wired.as_slice() else {
+        let [Command::PromptUnder { uuid, source, .. }] = wired.as_slice() else {
             panic!("a typed dispatch wires the prompt under a minted id: {wired:?}");
         };
         assert!(!uuid.is_empty(), "and a real one, not a blank");
-        assert_eq!(
-            *origin,
-            Some(PromptOrigin::View),
-            "and the socket's entry, not the UI's - the queue's row is drawn from that same id",
-        );
+        assert_eq!(*source, PromptSource::You, "and as a person's send");
     }
 
     /// `/new` from any composer is forge's own command, never the CLI's. The
@@ -26736,31 +26681,6 @@ mod prompt_frame_origin_tests {
              none: {drawn:?}",
         );
         assert!(!ws.drain_test_dispatch_buffer().is_empty(), "the prompt itself is wired");
-    }
-
-    /// The socket's entry, which is what `ViewSurface::dispatch` takes.
-    #[test]
-    fn a_views_entry_stamps_the_prompt_as_a_views() {
-        let (ws, _rx, seat) = a_fleet();
-
-        let dispatched = ws.dispatch_from_view(a_prompt(&seat));
-
-        assert!(dispatched.is_ok(), "precondition: the core took the prompt: {dispatched:?}");
-        let commands = ws.drain_test_dispatch_buffer();
-        assert!(
-            matches!(
-                commands.as_slice(),
-                [Command::PromptUnder {
-                    origin: Some(PromptOrigin::View),
-                    source: PromptSource::You,
-                    key,
-                    ..
-                }] if key == &seat
-            ),
-            "no view has drawn a send made over the socket, so every view has to - and the \
-             command says it is a person's send, the one source a reader's follow arms on \
-             (#2198): {commands:?}",
-        );
     }
 
     /// The delivery path, which already draws as an envelope turn of its own.

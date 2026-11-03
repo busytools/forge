@@ -216,15 +216,23 @@ pub mod wire;
 ///
 /// **v24 drops the handoff row from the conversation record.** The record's
 /// `handoff` field was what a v23 client drew the block from; the block is
-/// gone, so the field goes with it. A v23 client beside a v24 server draws no
-/// block, which is the picture this change wants; the successor transcript's
-/// own procedure row carries the handoff instead.
-/// `baselines/socket/23/` is the record a v23 server emitted.
+/// gone, so the field goes with it. A v23 client reading a v24 record draws
+/// no block from it, and one that watches the swap still receives the
+/// `handoff` update and draws its own block from that, because it is the old
+/// client. A v24 client draws neither: the successor transcript's own
+/// procedure row carries the handoff. `baselines/socket/23/` is the record a
+/// v23 server emitted.
+///
+/// **v25 removes the prompt origin from the wire.** `ChatAppended.origin` and
+/// `PromptUnder.origin` were the dispatch-time row's bookkeeping; the row is
+/// drawn when the CLI starts the prompt, so nothing carries an origin. A v24
+/// client reads both as absent and draws as it did.
+/// `baselines/socket/24/` is the record a v24 server emitted.
 ///
 /// **Additive fields do not bump.** `diff.base_error` is one, carried on the
 /// v16-era record: a client older than the field draws the vaguer line it
 /// always drew, and nothing it sends changes.
-pub const PROTOCOL_VERSION: u32 = 24;
+pub const PROTOCOL_VERSION: u32 = 25;
 
 /// The socket's keepalive: how often a connection is asked to prove it is
 /// still there, and how long it may stay silent before it is reaped.
