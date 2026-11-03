@@ -316,12 +316,25 @@ jobs:
           scripts/install.sh
           bin="$CARGO_INSTALL_ROOT/bin/forge"
           env -u LD_LIBRARY_PATH "$bin" --version
-          resolved=$(env -u LD_LIBRARY_PATH ldd "$bin" | awk '/libtranscribe\.so/ {print $3}')
-          expected="$CARGO_INSTALL_ROOT/bin/$(basename "$resolved")"
-          if [ "$resolved" != "$expected" ]; then
-            echo "libtranscribe resolved from '$resolved', not from beside the installed binary" >&2
+          libs=$(env -u LD_LIBRARY_PATH ldd "$bin" | grep -E '^(libtranscribe|libggml)')
+          if [ -z "$libs" ]; then
+            echo "the installed binary links no transcribe/ggml libraries" >&2
             exit 1
           fi
+          if echo "$libs" | grep -vFq -- "$CARGO_INSTALL_ROOT/bin/"; then
+            echo "$libs" | grep -vF -- "$CARGO_INSTALL_ROOT/bin/" >&2
+            echo "the libraries above do not resolve from beside the installed binary" >&2
+            exit 1
+          fi
+          # Control: the boot check must be sensitive to the installed copy.
+          resolved=$(echo "$libs" | awk '/^libtranscribe/ {print $3}')
+          mv "$resolved" "$resolved.aside"
+          if env -u LD_LIBRARY_PATH "$bin" --version > /dev/null 2>&1; then
+            echo "the binary booted with $resolved moved away" >&2
+            exit 1
+          fi
+          mv "$resolved.aside" "$resolved"
+          echo "installed binary boots with $(echo "$libs" | wc -l | tr -d ' ') transcribe/ggml libraries resolved from $CARGO_INSTALL_ROOT/bin"
 
   docs:
     name: cargo doc
