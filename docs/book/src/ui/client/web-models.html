@@ -343,23 +343,23 @@
           <div class="side"><span class="chip"><span class="dot ok"></span>loaded</span></div>
         </div>
 
-        <!-- The speaking model is a compiled pin whose two files are placed
-             by hand: the catalogue installs one file per variant from the
-             speech feed, and there is no speaking entry to fetch. -->
+        <!-- The speaking model comes from the Hugging Face Hub rather than the
+             speech feed: its role view carries the ONNX variants and the
+             voices the installed model carries. -->
         <div class="model">
           <button class="pick" type="button" aria-pressed="false" aria-label="show the speaking updates" title="show the speaking updates"></button>
           <span class="role">speaking</span>
           <div class="facts">
-            <div class="nm">Qwen3-TTS-12Hz-1.7B-Base-Q8_0.gguf</div>
-            <div class="meta"><b>1.85 GB</b> &middot; Q8_0 &middot; sha ac7931ae &middot; Apache-2.0</div>
-            <div class="meta">llama.cpp &middot; not in the feed</div>
-            <div class="meta src">placed by hand: the weights and their mmproj projector under the [tts] models_dir</div>
+            <div class="nm">model_quantized.onnx</div>
+            <div class="meta"><b>92 MB</b> &middot; int8 &middot; 82M params &middot; sha fbae9257 &middot; Apache-2.0</div>
+            <div class="meta">onnx &middot; not in the feed</div>
+            <div class="meta src">installed here</div>
           </div>
-          <div class="side"><span class="chip"><span class="dot ok"></span>placed</span></div>
+          <div class="side"><span class="chip"><span class="dot ok"></span>loaded</span></div>
         </div>
 
         <p class="note">dictation files live in <code>~/Library/Caches/forge-dictate</code> &middot; a download is checked against what its entry declares: the byte length always, and the sha256 a cleanup feed's blobs publish - the speech feed's files publish none, so those are checked by length and by the load</p>
-        <p class="note">the speaking model is placed by hand: its weights and mmproj projector live in <code>~/Library/Caches/forge-tts</code>, and the engine checks both against the digests their entries declare before it loads them</p>
+        <p class="note">speaking files live in <code>~/Library/Caches/forge-tts</code> &middot; the model installs from the Hub, and the engine checks every file against the digest its entry declares before it loads it</p>
       </section>
 
       <section class="block">
@@ -465,7 +465,7 @@
           <span class="spacer"></span>
           <button class="chip" type="button">score the loop</button>
           <span class="detail">the speaking model says each public transcript &middot; the transcribing pair hears it back and the words are scored again &middot; it scores the bundled public corpus</span>
-          <span class="detail">last run, Qwen3-TTS-12Hz-1.7B-Base-Q8_0.gguf &middot; measured 01:42: <b>round-trip WER 4.1%</b> &middot; <b>first audio 3.4s</b> &middot; 0.31&times; realtime &middot; 12 clips &middot; Qwen3-TTS-12Hz-1.7B-Base-Q8_0.gguf</span>
+          <span class="detail">last run, model_quantized.onnx &middot; measured 01:42: <b>round-trip WER 1.9%</b> &middot; <b>first audio 0.3s</b> &middot; 8.84&times; realtime &middot; 437 MB peak &middot; 32 clips</span>
         </div>
 
         <!-- The doors: what a run measured, and what can be run by hand.
@@ -561,6 +561,19 @@
       <p class="note">the feed is read only with <code>[dictate] enabled</code> set &middot; switch it on and restart forge, and the catalogue loads here</p>
     </div>
     <div class="tnote">The catalogue is loaded only for an enabled section, so the off forge's read answers no rows: a search box here would answer every query with "no entry matches", which reads as a feed that found nothing rather than one that was never fetched. The speaking role is <code>[tts]</code>'s own row, so it stays in use when that section is on even though dictation is off.</div>
+  </div>
+
+  <div class="tile">
+    <div class="tcap">the speaking role's own view: the Hub's ONNX variants, each installed or run, and the voices the model in use carries</div>
+    <div class="models-page">
+      <p class="note">the speaking role installs <b>hexgrad/Kokoro-82M</b> from the Hugging Face Hub: one ONNX export and the style files for its named voices &middot; the engine checks every digest before it loads them</p>
+      <div class="status"><span class="dot"></span><span class="t">kokoro-82m-fp32</span><span class="when">fp32 &middot; 326 MB</span><span class="spacer"></span><button class="chip" type="button">install fp32</button></div>
+      <div class="status"><span class="dot"></span><span class="t">kokoro-82m-fp16</span><span class="when">fp16 &middot; 163 MB</span><span class="spacer"></span><button class="chip" type="button">use for speaking</button></div>
+      <div class="status"><span class="dot ok"></span><span class="t">kokoro-82m-int8</span><span class="when">int8 &middot; 92 MB</span><span class="spacer"></span><span class="chip"><span class="dot ok"></span>active</span></div>
+      <button class="chip" type="button">use the default</button>
+      <p class="note">54 voices come with the model &middot; the default is <code>af_heart</code>, and the settings page sets the voice every reply renders in</p>
+    </div>
+    <div class="tnote">The variants are the Hub's ONNX exports of one model; every install fetches the chosen model file and the voice set beside it. A switch builds the new engine before it swaps, so a load that fails leaves the previous one serving.</div>
   </div>
 
   <div class="tile">

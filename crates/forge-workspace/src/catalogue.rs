@@ -33,9 +33,9 @@ pub struct DictateModelsSnapshot {
     pub enabled: bool,
     /// Where the dictation models land.
     pub models_dir: Option<PathBuf>,
-    /// Where the speaking model's two files land, which is `[tts]`'s own
-    /// directory rather than dictation's.
-    pub speaking_models_dir: Option<PathBuf>,
+    /// The speaking role's own read: its model, the variants that can run,
+    /// and the voices the installed model carries.
+    pub speaking: crate::tts::TtsView,
     /// The models forge is configured to run, pins and live state.
     pub in_use: Vec<InUseModel>,
     /// The catalogue's own freshness.
@@ -473,17 +473,34 @@ impl crate::Workspace {
         let mut in_use =
             if settings.enabled { in_use(entries, &active, &preflight) } else { Vec::new() };
         if self.voice_enabled() {
-            let pin = config.tts.pin();
-            for row in &self.voices().snapshot.models {
+            let view = self.voices();
+            let variant = crate::tts::SpeakingVariant::named(&view.active.variant)
+                .unwrap_or_else(crate::tts::SpeakingVariant::pinned);
+            let install = self.speaking_install(&view.active.variant);
+            let (size, sha256) = install.as_ref().map_or_else(
+                || (variant.size, Some(variant.sha256.to_owned())),
+                |row| (row.model_size, Some(row.model_sha256.clone())),
+            );
+            let from = match view.from {
+                crate::tts::SpeakingFrom::Config => crate::install::ActiveFrom::Config {
+                    key: "speaking_model".to_owned(),
+                    variant: variant.variant.to_owned(),
+                },
+                crate::tts::SpeakingFrom::Installed => {
+                    crate::install::ActiveFrom::Installed { variant: variant.variant.to_owned() }
+                }
+                crate::tts::SpeakingFrom::Pin => crate::install::ActiveFrom::Pin,
+            };
+            for row in &view.snapshot.models {
                 in_use.push(InUseModel {
                     role: row.role,
                     file: row.file.clone(),
-                    size: pin.size,
-                    sha256: pin.sha256.clone(),
+                    size,
+                    sha256: sha256.clone(),
                     state: row.state.clone(),
-                    facts: pin.facts.clone(),
+                    facts: variant.spec().facts,
                     catalogue: None,
-                    from: crate::install::ActiveFrom::Pin,
+                    from: from.clone(),
                     at: None,
                 });
             }
@@ -492,7 +509,7 @@ impl crate::Workspace {
         DictateModelsSnapshot {
             enabled: settings.enabled,
             models_dir: settings.models_dir(),
-            speaking_models_dir: config.tts.models_dir(),
+            speaking: self.voices(),
             in_use,
             check: state.check.clone(),
             updates: if settings.enabled { updates_for(entries, &specs) } else { Vec::new() },

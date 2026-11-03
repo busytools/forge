@@ -9,6 +9,9 @@
   import SettingRow from './SettingRow.svelte';
   import { ENTRY_FIELDS, addableGroups, currentEntryValue, currentValue } from './editor';
   import type { Draft } from './editor';
+  import SpeakingCard from './SpeakingCard.svelte';
+  import type { ActivateState, InstallState, SpeakingWire } from '../wire/models';
+  import type { SessionSlot } from '../wire/types';
   import { builtInFor, classesOf, groupsOf, selectedArea } from './view';
 
   /**
@@ -36,6 +39,23 @@
     focusAdd = null,
     errorPath = null,
     onBack = () => {},
+    speaking = null,
+    savedEnabled = true,
+    speakingPreview = null,
+    speakingPreviewFailure = null,
+    speakingListening = false,
+    speakingInstall = { state: 'idle' },
+    speakingActivate = { state: 'idle' },
+    speakingBusy = false,
+    speakingVoice = null,
+    speakingRefusal = null,
+    previewSeat = null,
+    onSpeakingInstall = () => {},
+    onSpeakingActivate = () => {},
+    onSpeakingDeactivate = () => {},
+    onSpeakingVoice = () => {},
+    onSpeakingStopPreview = () => {},
+    onSpeakingPreview = () => {},
   }: {
     document: SettingsDocument;
     mark: string | null;
@@ -65,6 +85,30 @@
     errorPath?: string | null;
     /** The back link, intercepted while the draft is dirty. */
     onBack?: (event: MouseEvent) => void;
+    /** The speaking role's read, for the voice area's own card. */
+    speaking?: SpeakingWire | null;
+    /** `[tts] enabled` as the saved file has it, which the core's gates read. */
+    savedEnabled?: boolean;
+    /** The preview this page asked for: its voice and where it is. */
+    speakingPreview?: { voice: string; phase: 'working' | 'playing' | 'failed' } | null;
+    /** The words the previewed row draws when the preview failed. */
+    speakingPreviewFailure?: string | null;
+    /** This client's voice switch for the seat a preview would play on. */
+    speakingListening?: boolean;
+    speakingInstall?: InstallState;
+    speakingActivate?: ActivateState;
+    speakingBusy?: boolean;
+    speakingVoice?: string | null;
+    /** The core's words for a refused speaking action. */
+    speakingRefusal?: string | null;
+    /** The seat a voice preview plays on; `null` before one was opened. */
+    previewSeat?: SessionSlot | null;
+    onSpeakingInstall?: (variant: string) => void;
+    onSpeakingActivate?: (file: string) => void;
+    onSpeakingDeactivate?: () => void;
+    onSpeakingVoice?: (voice: string) => void;
+    onSpeakingPreview?: (voice: string) => void;
+    onSpeakingStopPreview?: () => void;
   } = $props();
 
   const shown = $derived(selectedArea(document, selected));
@@ -226,6 +270,27 @@
       {:else if area.keys.length === 0 && added.length === 0}
         <p class="settings-empty">This area has no keys.</p>
       {:else}
+        {#if area.id === 'voice'}
+          <SpeakingCard
+            {speaking}
+            {savedEnabled}
+            install={speakingInstall}
+            activate={speakingActivate}
+            busy={speakingBusy}
+            voice={speakingVoice}
+            seat={previewSeat}
+            preview={speakingPreview}
+            previewFailure={speakingPreviewFailure}
+            listening={speakingListening}
+            refusal={speakingRefusal}
+            oninstall={onSpeakingInstall}
+            onactivate={onSpeakingActivate}
+            ondeactivate={onSpeakingDeactivate}
+            onchoose={onSpeakingVoice}
+            onpreview={onSpeakingPreview}
+            onstoppreview={onSpeakingStopPreview}
+          />
+        {/if}
         {#each groups as group, index (group.label)}
           {@const removed =
             editing && group.entryPath !== null ? draft.removes[group.entryPath] : undefined}

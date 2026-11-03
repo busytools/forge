@@ -14,14 +14,18 @@ use tracing::Instrument;
 pub struct VoiceSettings {
     pub enabled: bool,
     pub max_utterance_seconds: u64,
-    pub language: Option<String>,
+    /// The global voice; absent uses the engine's default.
+    pub voice: Option<String>,
 }
 
 impl Default for VoiceSettings {
     fn default() -> Self {
-        Self { enabled: true, max_utterance_seconds: 120, language: None }
+        Self { enabled: true, max_utterance_seconds: 120, voice: None }
     }
 }
+
+/// The line a voice preview speaks, so two previews can be compared.
+pub const PREVIEW_LINE: &str = "This is how this seat's voice sounds.";
 
 /// Why a `say` did not reach the sink.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -80,6 +84,21 @@ pub struct VoiceService {
     sink: Arc<dyn AudioSink>,
     notes: Arc<dyn NoteDispatch>,
     seats: Arc<Mutex<HashMap<SessionSlot, Seat>>>,
+    /// The previews one seat may have in flight: a held key updates the
+    /// newest voice instead of queueing one render per press.
+    previews: Arc<Mutex<HashMap<SessionSlot, PreviewSlot>>>,
+}
+
+#[derive(Default)]
+struct PreviewSlot {
+    latest: Option<String>,
+    running: bool,
+    /// The loop that owns `running`: a settle from an older loop must not
+    /// clear a newer loop's flag or drop the voice it has yet to render.
+    generation: u64,
+    /// Bumped on every accepted press, so a chunk from a render the reader has
+    /// already moved past is dropped rather than played.
+    presses: u64,
 }
 
 struct Seat {
@@ -97,8 +116,12 @@ struct Seat {
 
 struct Job {
     text: String,
+    voice: Option<String>,
     engine: Arc<dyn Engine>,
     first: oneshot::Sender<Result<(), SayError>>,
+    /// The seat's press count when this preview was taken up. A chunk from an
+    /// older press is dropped rather than played: the reader has moved on.
+    preview: Option<u64>,
 }
 
 impl VoiceService {
@@ -115,6 +138,7 @@ impl VoiceService {
             sink,
             notes,
             seats: Arc::new(Mutex::new(HashMap::new())),
+            previews: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -135,8 +159,119 @@ impl VoiceService {
         // say answers the empty seat rather than blaming the engine.
         let queue = self.listening_queue(seat)?;
         let (first, outcome) = oneshot::channel();
-        queue.send(Job { text, engine, first }).map_err(|_| SayError::NotReady)?;
+        let voice = self.settings.voice.clone();
+        queue
+            .send(Job { text, voice, engine, first, preview: None })
+            .map_err(|_| SayError::NotReady)?;
         outcome.await.map_err(|_| SayError::NotReady)?
+    }
+
+    /// Render one fixed line in `voice` on `seat`'s own stream, so a voice is
+    /// heard before it is chosen. The seat's speaker switch is the playback
+    /// gate: nobody listening means nowhere to play.
+    ///
+    /// **One render loop per seat.** While a preview renders, a second press
+    /// replaces the pending voice instead of queueing another render, so the
+    /// newest press is the one heard and a held key costs one render.
+    pub async fn preview(&self, seat: &SessionSlot, voice: String) -> Result<(), SayError> {
+        if !self.settings.enabled {
+            return Err(SayError::Disabled);
+        }
+        // Refuse before the load, so a seat nobody hears never pays it.
+        self.listening_queue(seat)?;
+        let mut generation = {
+            let mut previews = self.previews.lock().map_err(|_| SayError::NotReady)?;
+            let slot = previews.entry(seat.clone()).or_default();
+            slot.latest = Some(voice);
+            slot.presses += 1;
+            if slot.running {
+                return Ok(());
+            }
+            slot.running = true;
+            slot.generation += 1;
+            slot.generation
+        };
+        loop {
+            let outcome = self.render_previews(seat).await;
+            // The loop ends however it ends, and a press that landed after
+            // its last take is still waiting: it is rendered here rather
+            // than dropped by the settle.
+            let Some(pending) = self.settle_previews(seat, generation) else {
+                return outcome;
+            };
+            let Some(next) = self.restart_previews(seat, pending) else {
+                return outcome;
+            };
+            generation = next;
+        }
+    }
+
+    /// End the loop `generation` owns and hand back the voice a later press
+    /// left waiting. A newer loop's flag and voice are its own, and neither
+    /// is touched.
+    fn settle_previews(&self, seat: &SessionSlot, generation: u64) -> Option<String> {
+        let mut previews = self.previews.lock().ok()?;
+        let slot = previews.get_mut(seat)?;
+        if slot.generation != generation {
+            return None;
+        }
+        slot.running = false;
+        slot.latest.take()
+    }
+
+    /// Claim the seat for a waiting voice. `None` when a newer loop already
+    /// holds it: that loop carries the newest press, so an older voice is the
+    /// one to drop.
+    fn restart_previews(&self, seat: &SessionSlot, voice: String) -> Option<u64> {
+        let mut previews = self.previews.lock().ok()?;
+        let slot = previews.get_mut(seat)?;
+        if slot.running {
+            return None;
+        }
+        slot.latest = Some(voice);
+        slot.running = true;
+        slot.generation += 1;
+        Some(slot.generation)
+    }
+
+    /// Drain the seat's pending previews, newest last.
+    async fn render_previews(&self, seat: &SessionSlot) -> Result<(), SayError> {
+        loop {
+            // The take and the running flag move under one lock, so a press
+            // that lands as this loop exits either starts its own loop or is
+            // the voice this one renders.
+            let next = {
+                let mut previews = self.previews.lock().map_err(|_| SayError::NotReady)?;
+                let Some(slot) = previews.get_mut(seat) else {
+                    return Ok(());
+                };
+                let next = slot.latest.take().map(|voice| (voice, slot.presses));
+                if next.is_none() {
+                    slot.running = false;
+                }
+                next
+            };
+            let Some((voice, presses)) = next else {
+                return Ok(());
+            };
+            let engine = self.engine().await?;
+            // The listener can leave while the engine loads; a preview with
+            // nowhere to play is done rather than an error.
+            let Ok(queue) = self.listening_queue(seat) else {
+                return Ok(());
+            };
+            let (first, outcome) = oneshot::channel();
+            queue
+                .send(Job {
+                    text: PREVIEW_LINE.to_owned(),
+                    voice: Some(voice),
+                    engine,
+                    first,
+                    preview: Some(presses),
+                })
+                .map_err(|_| SayError::NotReady)?;
+            outcome.await.map_err(|_| SayError::NotReady)??;
+        }
     }
 
     /// The queue of a seat that still has a listener. A `say` reads it again
@@ -213,6 +348,12 @@ impl VoiceService {
         if let Some(text) = note {
             self.notes.note(seat, text);
         }
+    }
+
+    /// Swap the loaded engine for one already built, so a model change keeps
+    /// serving until the new engine is up.
+    pub async fn replace_engine(&self, engine: Arc<dyn Engine>) {
+        *self.engine.lock().await = Some(engine);
     }
 
     pub fn listeners(&self, seat: &SessionSlot) -> usize {
@@ -308,7 +449,7 @@ impl VoiceService {
     ) -> mpsc::UnboundedSender<Job> {
         let (queue, mut jobs) = mpsc::unbounded_channel::<Job>();
         let sink = Arc::clone(&self.sink);
-        let settings = self.settings.clone();
+        let previews = Arc::clone(&self.previews);
         let seat = seat.clone();
         tokio::spawn(async move {
             let mut seq = 0_u32;
@@ -319,7 +460,7 @@ impl VoiceService {
                 if live.load(Ordering::SeqCst) == 0 {
                     break;
                 }
-                seq = render(job, &seat, &settings, sink.as_ref(), &live, seq).await;
+                seq = render(job, &seat, sink.as_ref(), &live, seq, previews.as_ref()).await;
             }
         });
         queue
@@ -334,19 +475,31 @@ impl crate::Workspace {
     pub(crate) fn voice_service(self: &Arc<Self>) -> Arc<VoiceService> {
         self.voice
             .get_or_init(|| {
-                let config = self.config_arc();
-                let files = config.tts.files();
+                let weak = Arc::downgrade(self);
                 let loader: Loader = Arc::new(move || {
-                    let files = files
-                        .clone()
-                        .ok_or_else(|| "[tts] models_dir resolves to no directory".to_owned())?;
-                    let engine =
-                        forge_tts::QwenTts::load(&files).map_err(|error| error.to_string())?;
-                    Ok(Arc::new(engine) as Arc<dyn Engine>)
+                    let workspace =
+                        weak.upgrade().ok_or_else(|| "the workspace is gone".to_owned())?;
+                    workspace.load_speaking_engine()
                 });
                 Arc::new(self.build_voice_service(loader))
             })
             .clone()
+    }
+
+    /// Load the speaking engine for the active variant.
+    ///
+    /// The configured voice is checked against the installed set before the
+    /// model loads, so a bad id is refused by name at warm rather than
+    /// silently replaced by the engine's own single-voice fallback.
+    fn load_speaking_engine(&self) -> Result<Arc<dyn Engine>, String> {
+        let files = self.speaking_files().ok_or_else(|| {
+            "the speaking model is not installed; install it from the models page".to_owned()
+        })?;
+        let installed = files.installed_voices().map_err(|error| error.to_string())?;
+        forge_tts::select_voice(self.config_arc().tts.voice.as_deref(), &installed)
+            .map_err(|error| error.to_string())?;
+        let engine = forge_tts::KokoroTts::load(&files).map_err(|error| error.to_string())?;
+        Ok(Arc::new(engine) as Arc<dyn Engine>)
     }
 
     /// Load the speaking engine beside boot, so the first `say` pays no
@@ -368,17 +521,12 @@ impl crate::Workspace {
         if self.voice_prewarm_dispatched.swap(true, Ordering::AcqRel) {
             return;
         }
-        let files = settings.files();
-        let models_dir = settings.models_dir();
+        let files = self.speaking_files();
         let model = files
             .as_ref()
             .map_or_else(|| "unresolved".to_owned(), |files| files.model.display().to_string());
-        let projector = files
-            .as_ref()
-            .and_then(|files| files.projector.as_ref())
-            .map_or_else(|| "unresolved".to_owned(), |path| path.display().to_string());
-        let dir = models_dir
-            .as_ref()
+        let dir = settings
+            .models_dir()
             .map_or_else(|| "unresolved".to_owned(), |dir| dir.display().to_string());
         let service = self.voice_service();
         let started = std::time::Instant::now();
@@ -387,7 +535,6 @@ impl crate::Workspace {
             event_name = "voice_prewarm_starting",
             models_dir = %dir,
             model = %model,
-            projector = %projector,
             "loading the speaking engine"
         );
         tokio::spawn(
@@ -473,7 +620,7 @@ impl crate::Workspace {
         let settings = VoiceSettings {
             enabled: config.tts.enabled,
             max_utterance_seconds: config.tts.max_utterance_seconds,
-            language: config.tts.language.clone(),
+            voice: config.tts.voice.clone(),
         };
         VoiceService::new(
             loader,
@@ -552,29 +699,38 @@ impl NoteDispatch for WorkspaceNotes {
 async fn render(
     job: Job,
     seat: &SessionSlot,
-    settings: &VoiceSettings,
     sink: &dyn AudioSink,
     live: &AtomicUsize,
     mut seq: u32,
+    previews: &Mutex<HashMap<SessionSlot, PreviewSlot>>,
 ) -> u32 {
-    let Job { text, engine, first } = job;
+    let Job { text, voice, engine, first, preview } = job;
     let mut first = Some(first);
     for sentence in forge_tts::sentences(&text) {
         if live.load(Ordering::SeqCst) == 0 {
             return seq;
         }
-        let mut chunks =
-            engine.speak(SpeakRequest { text: sentence, language: settings.language.clone() });
+        let mut chunks = engine.speak(SpeakRequest { text: sentence, voice: voice.clone() });
         while let Some(result) = chunks.recv().await {
             if live.load(Ordering::SeqCst) == 0 {
                 return seq;
             }
             match result {
                 Ok(chunk) => {
+                    // A preview the reader has already pressed past is not
+                    // played: the newest press is the one heard, and this
+                    // chunk is the abandoned voice still finishing.
+                    let stale = preview.is_some_and(|presses| {
+                        previews.lock().map_or(true, |map| {
+                            map.get(seat).is_none_or(|slot| slot.presses != presses)
+                        })
+                    });
                     if let Some(sender) = first.take() {
                         let _ = sender.send(Ok(()));
                     }
-                    sink.push(seat, Chunk { seq, ..chunk });
+                    if !stale {
+                        sink.push(seat, Chunk { seq, ..chunk });
+                    }
                     seq = seq.wrapping_add(1);
                 }
                 Err(error) => {
@@ -638,21 +794,24 @@ mod tests {
     }
 
     /// Records each request and answers one chunk, so a sink's order is the
-    /// engine's order.
+    /// engine's order. The voice each request named is recorded too, so a test
+    /// can say which press was rendered.
     struct StubEngine {
         requests: Arc<Mutex<Vec<String>>>,
+        voices: Arc<Mutex<Vec<Option<String>>>>,
         gate: Option<Arc<tokio::sync::Semaphore>>,
     }
 
     impl StubEngine {
         fn new(requests: Arc<Mutex<Vec<String>>>) -> Self {
-            Self { requests, gate: None }
+            Self { requests, voices: Arc::new(Mutex::new(Vec::new())), gate: None }
         }
     }
 
     impl Engine for StubEngine {
         fn speak(&self, request: SpeakRequest) -> mpsc::Receiver<Result<Chunk, Error>> {
             self.requests.lock().expect("unpoisoned").push(request.text);
+            self.voices.lock().expect("unpoisoned").push(request.voice);
             let (sender, receiver) = mpsc::channel(2);
             let permit = self.gate.as_ref().map(|gate| gate.clone().acquire_owned());
             tokio::spawn(async move {
@@ -723,6 +882,314 @@ mod tests {
         assert_eq!(outcome, Err(SayError::NoListener));
         assert!(fixture.requests.lock().expect("unpoisoned").is_empty(), "the engine is untouched");
         assert_eq!(fixture.loads.load(Ordering::SeqCst), 0, "the 2.3 GB model is never loaded");
+    }
+
+    /// A preview is playback on a seat's own stream, so no listener is a
+    /// refusal before the engine is touched.
+    #[tokio::test]
+    async fn a_preview_with_no_listener_is_refused_without_touching_the_engine() {
+        let fixture = service_with(|| StubEngine::new(Arc::new(Mutex::new(Vec::new()))));
+        let outcome = fixture.service.preview(&seat(), "af_heart".to_owned()).await;
+        assert_eq!(outcome, Err(SayError::NoListener));
+        assert!(fixture.requests.lock().expect("unpoisoned").is_empty());
+        assert_eq!(fixture.loads.load(Ordering::SeqCst), 0);
+    }
+
+    /// **One preview loop per seat.** A render in flight swallows later
+    /// presses into its pending voice, so a held key cannot queue a render
+    /// per press; the newest press is the one heard after the one running.
+    #[tokio::test]
+    async fn previews_coalesce_to_the_newest_voice_per_seat() {
+        struct Gated {
+            voices: Arc<Mutex<Vec<String>>>,
+            permits: Arc<tokio::sync::Semaphore>,
+        }
+
+        impl Engine for Gated {
+            fn speak(&self, request: SpeakRequest) -> mpsc::Receiver<Result<Chunk, Error>> {
+                self.voices.lock().expect("unpoisoned").push(request.voice.unwrap_or_default());
+                let (sender, receiver) = mpsc::channel(2);
+                let permits = Arc::clone(&self.permits);
+                tokio::spawn(async move {
+                    let permit = permits.acquire_owned().await;
+                    drop(permit);
+                    let _ =
+                        sender.send(Ok(Chunk { seq: 0, sample_rate: 24_000, pcm: vec![1] })).await;
+                });
+                receiver
+            }
+        }
+
+        let voices = Arc::new(Mutex::new(Vec::new()));
+        let permits = Arc::new(tokio::sync::Semaphore::new(0));
+        let loader: super::Loader = {
+            let voices = Arc::clone(&voices);
+            let permits = Arc::clone(&permits);
+            Arc::new(move || {
+                Ok(Arc::new(Gated { voices: Arc::clone(&voices), permits: Arc::clone(&permits) })
+                    as Arc<dyn Engine>)
+            })
+        };
+        let service = VoiceService::new(
+            loader,
+            VoiceSettings::default(),
+            Arc::new(RecordingSink { chunks: Mutex::new(Vec::new()) }) as Arc<dyn AudioSink>,
+            Arc::new(RecordingNotes { said: Mutex::new(Vec::new()) }) as Arc<dyn NoteDispatch>,
+        );
+        let seat = seat();
+        service.set_listening(&seat, 1, true, false);
+
+        let running = tokio::spawn({
+            let service = service.clone();
+            let seat = seat.clone();
+            async move { service.preview(&seat, "af_heart".to_owned()).await }
+        });
+        for _ in 0..200 {
+            if !voices.lock().expect("unpoisoned").is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+
+        // Both land while the first render is blocked; only the last is owed
+        // a render of its own.
+        service.preview(&seat, "bf_emma".to_owned()).await.expect("queued");
+        service.preview(&seat, "am_adam".to_owned()).await.expect("queued");
+
+        permits.add_permits(2);
+        running.await.expect("the task joins").expect("the first preview renders");
+        for _ in 0..200 {
+            if voices.lock().expect("unpoisoned").len() >= 2 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+
+        assert_eq!(
+            voices.lock().expect("unpoisoned").clone(),
+            vec!["af_heart".to_owned(), "am_adam".to_owned()],
+            "the running voice, then the newest press - never the one it replaced",
+        );
+    }
+
+    /// **The listener leaves while the engine loads.** The preview loop is
+    /// already running when the load finishes with nowhere to play; the seat
+    /// must come back to rest, so the next press renders instead of finding a
+    /// loop that claims to be running and never runs.
+    #[tokio::test]
+    async fn a_listener_that_leaves_while_the_engine_loads_does_not_wedge_previews() {
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let (started, began) = std::sync::mpsc::channel::<()>();
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        let released = Arc::new(Mutex::new(released));
+        let loader: super::Loader = {
+            let requests = Arc::clone(&requests);
+            Arc::new(move || {
+                let _ = started.send(());
+                released.lock().expect("unpoisoned").recv().ok();
+                Ok(Arc::new(StubEngine::new(Arc::clone(&requests))) as Arc<dyn Engine>)
+            })
+        };
+        let service = VoiceService::new(
+            loader,
+            VoiceSettings::default(),
+            Arc::new(RecordingSink { chunks: Mutex::new(Vec::new()) }) as Arc<dyn AudioSink>,
+            Arc::new(RecordingNotes { said: Mutex::new(Vec::new()) }) as Arc<dyn NoteDispatch>,
+        );
+        let seat = seat();
+        service.set_listening(&seat, 1, true, false);
+
+        let preview = tokio::spawn({
+            let service = service.clone();
+            let seat = seat.clone();
+            async move { service.preview(&seat, "af_heart".to_owned()).await }
+        });
+        let mut loader_started = false;
+        for _ in 0..200 {
+            if began.try_recv().is_ok() {
+                loader_started = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert!(loader_started, "the loader starts");
+        // The listener leaves while the load is still blocked; a pause keeps
+        // the seat, so a return needs no new note.
+        service.set_listening(&seat, 1, false, false);
+        release.send(()).expect("the loader is released");
+
+        preview.await.expect("the task joins").expect("the preview ends without an error");
+
+        // A listener returns and the next press renders: the seat was not left
+        // claiming a preview runs.
+        service.set_listening(&seat, 1, true, false);
+        service.preview(&seat, "bf_emma".to_owned()).await.expect("the preview renders");
+        assert_eq!(requests.lock().expect("unpoisoned").len(), 1);
+    }
+
+    /// A press lands after a loop's last take but before that loop settles:
+    /// the old settle must leave the newer loop's flag and pending voice
+    /// alone, or the press is dropped and a third one starts a second loop.
+    #[tokio::test]
+    async fn a_stale_loop_does_not_settle_a_newer_press() {
+        let service = service_with(|| StubEngine::new(Arc::new(Mutex::new(Vec::new())))).service;
+        let seat = seat();
+        {
+            let mut previews = service.previews.lock().expect("unpoisoned");
+            let slot = previews.entry(seat.clone()).or_default();
+            slot.generation = 2;
+            slot.running = true;
+            slot.latest = Some("bf_emma".to_owned());
+        }
+
+        assert_eq!(service.settle_previews(&seat, 1), None, "a stale loop settles nothing");
+
+        let previews = service.previews.lock().expect("unpoisoned");
+        let slot = previews.get(&seat).expect("the slot");
+        assert!(slot.running, "a stale loop's settle cleared the newer loop's flag");
+        assert_eq!(slot.latest.as_deref(), Some("bf_emma"), "the newer press's voice was dropped");
+    }
+
+    /// A press lands while the first voice is still rendering: the abandoned
+    /// render's chunk is dropped rather than played, so the reader hears only
+    /// the voice they pressed last.
+    #[tokio::test]
+    async fn a_chunk_from_a_press_the_reader_moved_past_is_not_played() {
+        struct Gated {
+            requests: Arc<Mutex<Vec<Option<String>>>>,
+            release: Arc<tokio::sync::Semaphore>,
+        }
+        impl Engine for Gated {
+            fn speak(&self, request: SpeakRequest) -> mpsc::Receiver<Result<Chunk, Error>> {
+                self.requests.lock().expect("unpoisoned").push(request.voice.clone());
+                let (sender, receiver) = mpsc::channel(2);
+                let release = Arc::clone(&self.release);
+                let voice = request.voice;
+                tokio::spawn(async move {
+                    if voice.as_deref() == Some("af_heart") {
+                        release.acquire().await.ok();
+                    }
+                    let pcm = if voice.as_deref() == Some("af_heart") { vec![1] } else { vec![2] };
+                    let _ = sender.send(Ok(Chunk { seq: 0, sample_rate: 24_000, pcm })).await;
+                });
+                receiver
+            }
+        }
+
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let release = Arc::new(tokio::sync::Semaphore::new(0));
+        let sink = Arc::new(RecordingSink { chunks: Mutex::new(Vec::new()) });
+        let loader: super::Loader = {
+            let requests = Arc::clone(&requests);
+            let release = Arc::clone(&release);
+            Arc::new(move || {
+                Ok(Arc::new(Gated {
+                    requests: Arc::clone(&requests),
+                    release: Arc::clone(&release),
+                }) as Arc<dyn Engine>)
+            })
+        };
+        let service = VoiceService::new(
+            loader,
+            VoiceSettings::default(),
+            Arc::clone(&sink) as Arc<dyn AudioSink>,
+            Arc::new(RecordingNotes { said: Mutex::new(Vec::new()) }) as Arc<dyn NoteDispatch>,
+        );
+        let seat = seat();
+        service.set_listening(&seat, 1, true, false);
+
+        let first = tokio::spawn({
+            let service = service.clone();
+            let seat = seat.clone();
+            async move { service.preview(&seat, "af_heart".to_owned()).await }
+        });
+        let mut started = false;
+        for _ in 0..200 {
+            if requests.lock().expect("unpoisoned").as_slice() == [Some("af_heart".to_owned())] {
+                started = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert!(started, "the first voice renders");
+        service.preview(&seat, "bf_emma".to_owned()).await.expect("the second press is accepted");
+        release.add_permits(1);
+        first.await.expect("the task joins").expect("the preview ends");
+
+        wait_for(&sink, 1).await;
+        assert_eq!(
+            sink.chunks
+                .lock()
+                .expect("unpoisoned")
+                .iter()
+                .map(|(_, chunk)| chunk.pcm.clone())
+                .collect::<Vec<_>>(),
+            vec![vec![2]],
+            "only the newest press is heard",
+        );
+        assert_eq!(requests.lock().expect("unpoisoned").len(), 2, "both voices rendered");
+    }
+
+    /// A press lands while the loop is loading an engine that then fails. The
+    /// loop's settle must hand that voice to a fresh loop rather than clear
+    /// it: the caller of the second press already got its `Ok`.
+    #[tokio::test]
+    async fn a_press_during_a_failing_load_is_rendered_rather_than_dropped() {
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let voices = Arc::new(Mutex::new(Vec::new()));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let (started, began) = std::sync::mpsc::channel::<()>();
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        let released = Arc::new(Mutex::new(released));
+        let loader: super::Loader = {
+            let requests = Arc::clone(&requests);
+            let voices = Arc::clone(&voices);
+            let calls = Arc::clone(&calls);
+            Arc::new(move || {
+                if calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                    let _ = started.send(());
+                    released.lock().expect("unpoisoned").recv().ok();
+                    return Err("the first load dies".to_owned());
+                }
+                Ok(Arc::new(StubEngine {
+                    requests: Arc::clone(&requests),
+                    voices: Arc::clone(&voices),
+                    gate: None,
+                }) as Arc<dyn Engine>)
+            })
+        };
+        let service = VoiceService::new(
+            loader,
+            VoiceSettings::default(),
+            Arc::new(RecordingSink { chunks: Mutex::new(Vec::new()) }) as Arc<dyn AudioSink>,
+            Arc::new(RecordingNotes { said: Mutex::new(Vec::new()) }) as Arc<dyn NoteDispatch>,
+        );
+        let seat = seat();
+        service.set_listening(&seat, 1, true, false);
+
+        let first = tokio::spawn({
+            let service = service.clone();
+            let seat = seat.clone();
+            async move { service.preview(&seat, "af_heart".to_owned()).await }
+        });
+        let mut loader_started = false;
+        for _ in 0..200 {
+            if began.try_recv().is_ok() {
+                loader_started = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert!(loader_started, "the loader starts");
+        service.preview(&seat, "bf_emma".to_owned()).await.expect("the press is accepted");
+        release.send(()).expect("the loader is released");
+
+        first.await.expect("the task joins").expect("the waiting voice renders");
+        assert_eq!(
+            voices.lock().expect("unpoisoned").as_slice(),
+            &[Some("bf_emma".to_owned())],
+            "the press during the failing load is the voice rendered",
+        );
     }
 
     #[tokio::test]

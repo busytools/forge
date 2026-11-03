@@ -68,6 +68,7 @@ jobs:
           filters: |
             rust:
               - 'crates/**'
+              - 'vendor/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
               - 'rust-toolchain.toml'
