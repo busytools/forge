@@ -1949,7 +1949,7 @@ mod tests {
         ];
         for (answer, tool) in answers {
             assert!(answer.contains(note), "the note stays verbatim in {tool}'s refusal: {answer}");
-            assert!(answer.contains("expects a revision"), "and says what is expected: {answer}",);
+            assert!(answer.contains("expects a revision"), "and says what is expected: {answer}");
             assert!(answer.contains(tool), "and names the call to repeat: {answer}");
         }
     }
