@@ -4596,6 +4596,11 @@ describe('the conversation the chat draws', () => {
    * the second telling, and the transport now places the display row after the
    * frame that ended the turn - the place the CLI delivers the prompt at - so
    * the page's turn head for it comes after the answer rather than above it.
+   *
+   * **This pins the merge's drawing of the corrected page.** It passes on the
+   * merge-base client too; the transport change's red proof is
+   * `a_display_prompt_row_waits_for_the_frame_after_the_turns_end` in
+   * forge-server.
    */
   it('draws a mid-turn send below the answer the page ended the turn on', () => {
     const server = fakeConnection();
@@ -4663,6 +4668,11 @@ describe('the conversation the chat draws', () => {
    * survived. The transport now holds that frame out of the copy until the
    * turn ends, so a mid-turn page carries the running turn alone and the
    * end-of-turn page carries it once with the send's row after it.
+   *
+   * **This pins the merge's drawing of the corrected pages.** It passes on the
+   * merge-base client too; the transport change's red proof is
+   * `a_display_prompt_row_waits_for_the_frame_after_the_turns_end` in
+   * forge-server.
    */
   it('draws the turn once when pages land during it and after it', () => {
     const server = fakeConnection();
@@ -5658,6 +5668,42 @@ describe('the conversation the chat draws', () => {
         'handoff:old:new',
       );
       expect(keys, 'and the first turn is drawn below it').toContain('t0');
+    } finally {
+      stop();
+    }
+  });
+
+  /**
+   * **A walk page that reaches the transcript's first turn does not make the
+   * window the conversation's head (#2816).**
+   *
+   * A walk lands its page between the held tail above it and the turns below,
+   * so the page's own null cursor says the page reaches the start, not that
+   * the window does. Prepending the handoff block there put it above the
+   * newest exchange.
+   */
+  it('keeps head false when a walk page lands below held turns', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    try {
+      // A partial window of two turns, so the first landing's fill asks for
+      // nothing; then a newest page sharing no frame with it, which starts
+      // the walk and asks for the page above.
+      server.send(page([turn('t1', 'held one'), turn('t2', 'held two')], 'c1'));
+      server.send(page([turn('x1', 'the newest one')], 'c2'));
+      server.send(record([], 'c2', handoffRecord('old', 'new')));
+      // The walk's answer reaches the transcript's first turn.
+      server.send(page([turn('t0', 'the first turn')], null));
+
+      expect(
+        get(chat.value).head,
+        'held turns above the page mean the window is not the start',
+      ).toBe(false);
+      expect(
+        get(chat.value).turns.map((held) => held.key)[0],
+        'and the block does not lead it',
+      ).not.toBe('handoff:old:new');
     } finally {
       stop();
     }

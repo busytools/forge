@@ -3042,18 +3042,23 @@ export class Chat {
       const aboveHeld = healed.turns
         .map((turn) => keptByKey.get(turn.key))
         .filter((turn): turn is Turn => turn !== undefined);
+      // **A walk page lands in the middle, not at the front.** The plain older
+      // landing prepends above everything held, which is true for a scroll
+      // (its page is older than all of it) and false for a walk (its page is
+      // newer than the held tail it walks toward). The tail's keys split the
+      // held turns, and the page lands between them - so the recovered stretch
+      // draws where it happened, not above the history. The turns that stay
+      // above the page are what says the window does not reach the start, even
+      // when the page's own cursor is null.
+      const walkedAbove =
+        direction === 'older' && this.walkTo !== null && this.walkBelow !== null
+          ? rest.filter((turn) => this.walkBelow?.has(turn.key) === true)
+          : [];
       const turns =
         direction === 'older'
           ? this.walkTo !== null && this.walkBelow !== null
             ? [
-                // **A walk page lands in the middle, not at the front.**
-                // The plain older landing prepends above everything held,
-                // which is true for a scroll (its page is older than all of
-                // it) and false for a walk (its page is newer than the held
-                // tail it walks toward). The tail's keys split the held
-                // turns, and the page lands between them - so the recovered
-                // stretch draws where it happened, not above the history.
-                ...rest.filter((turn) => this.walkBelow?.has(turn.key) === true),
+                ...walkedAbove,
                 ...drawn,
                 ...rest.filter((turn) => this.walkBelow?.has(turn.key) !== true),
                 ...loose,
@@ -3113,9 +3118,11 @@ export class Chat {
             : held.cursor,
         // **A landing's own cursor says where its first turn sits.** A null
         // one means the page opens on the conversation's first turn, so what
-        // is drawn begins there; a handle means history is still above. A
-        // failed read says nothing and keeps the answer it met.
-        head: emptied ? held.head : cursor === null,
+        // is drawn begins there - unless a walk kept held turns above the
+        // page, where the window's first row is still not the start. A handle
+        // means history is above. A failed read says nothing and keeps the
+        // answer it met.
+        head: emptied ? held.head : cursor === null && walkedAbove.length === 0,
         prepends: held.prepends + (direction === 'older' ? 1 : 0),
       });
     });
