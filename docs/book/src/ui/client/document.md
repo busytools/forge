@@ -33,7 +33,7 @@ with no comment affordance anywhere.
 | A readable markdown or text document | its top-level blocks, each one a comment target, with a source-line gutter beside it: one numbered target per raw source line                                                                                                                   | the answer's `threads` and the page's own drafts                                                                             |
 | A comment on a line   | the gutter number is the target: hover or focus marks it, and a press opens the composer anchored at that line, the line first in its captured context                                                                                                      | the source line the press named                                                                                              |
 | A comment on a section | a press on the rendered block (outside the gutter) opens the composer anchored at the block's first line, its whole span captured                                                                                                                          | the block's own source span                                                                                                  |
-| Threads               | every turn the thread carries - the reader's words and the agent's reply beside them - drawn under the block their placed line lives in                                                                                                                     | each thread's anchor and the answer's `resolution`                                                                           |
+| Threads               | every turn the thread carries - the reader's words and the agent's reply beside them - drawn under the block their placed line lives in; a draft-held echo draws neither, its draft row standing in | each thread's anchor and the answer's `resolution` |
 | A moved thread        | the thread at the line its first captured line was re-found on, with `moved from N` naming where it was written                                                                                                                                            | the landing's `line` and `moved_from`                                                                                        |
 | An outdated thread    | the thread at its captured line, marked `outdated` and drawn inline - never collected below the body                                                                                                                                                        | the landing's `outdated` state                                                                                               |
 | Could not be placed   | only a thread whose captured line is past this version's last line: its captured lines, the thread's turns, and the sentence saying why                                                                                                                     | the anchor's line against the document's line count                                                                          |
@@ -113,7 +113,9 @@ still inline, because collecting it below the document would hide what it
 was about. Only a thread whose captured line is past this version's last
 line collects at the end, with the reason said in words. A thread the
 landing MOVED is not drift and is not aged in the store; one with no landing
-is, so the review record reads what the reader sees.
+is, so the review record reads what the reader sees - except a draft-held
+echo: it is not drawn and not aged while its draft row stands in, and a
+draft whose line no row holds draws only as its echo.
 
 **A comment's words render as markdown, through the chat's own renderer** -
 the same `Prose` the review page's turns draw with, the author's lines kept:
@@ -174,8 +176,9 @@ the page draws.
   (the platform's viewer takes the window).
 - **A readable markdown or text document**: the rendered blocks, every block
   a focusable comment target with a numbered gutter beside it, its comments
-  placed under their blocks and its drafts under theirs - a cold open
-  included, which draws the same body a hand-off's Open does.
+  placed under their blocks and its drafts under theirs, a draft-held echo
+  drawn by its draft row instead - a cold open included, which draws the
+  same body a hand-off's Open does.
 - **A comment being written**: the composer opens under the block, with its
   own comment and cancel pair and its mic; a written comment draws as
   `drafted` until an answer files it.
