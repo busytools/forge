@@ -504,25 +504,25 @@ mod tests {
         );
     }
 
-    /// The card's verbs are chosen from this field, so a delete has to be
-    /// distinguishable from an edit on the wire: both are one `slack__edit`
-    /// call, and the operation is the only thing that says which.
+    /// The card's verbs are chosen from this field, and the client narrows an
+    /// unknown value to "post" - so every name is pinned: a renamed variant
+    /// would draw post copy for a delete with nothing else red.
     #[test]
     fn a_draft_operation_crosses_as_the_name_the_card_reads() {
-        assert_eq!(
-            serde_json::to_value(SlackDraftOperation::Delete).expect("an operation serialises"),
-            serde_json::json!("delete"),
-        );
-        assert_eq!(
-            serde_json::to_value(SlackDraftOperation::Upload).expect("an operation serialises"),
-            serde_json::json!("upload"),
-        );
-        // Removing a reaction is not adding one: the card must not ask the
-        // reader to approve "React" for an act that takes one away.
-        assert_eq!(
-            serde_json::to_value(SlackDraftOperation::Unreact).expect("an operation serialises"),
-            serde_json::json!("unreact"),
-        );
+        for (operation, name) in [
+            (SlackDraftOperation::Post, "post"),
+            (SlackDraftOperation::Edit, "edit"),
+            (SlackDraftOperation::Delete, "delete"),
+            (SlackDraftOperation::React, "react"),
+            (SlackDraftOperation::Unreact, "unreact"),
+            (SlackDraftOperation::Upload, "upload"),
+        ] {
+            assert_eq!(
+                serde_json::to_value(operation).expect("an operation serialises"),
+                serde_json::json!(name),
+                "this is the name the card reads the operation from",
+            );
+        }
     }
 
     /// A view that did not answer still hears how the draft ended, and a
