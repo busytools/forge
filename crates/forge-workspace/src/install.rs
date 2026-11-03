@@ -534,6 +534,9 @@ impl Workspace {
             Ok(files) => files,
             Err(reason) => return self.fail_install(speaking.file.to_owned(), reason),
         };
+        if let Err(reason) = hub::verify_release(&speaking, &files.model) {
+            return self.fail_install(speaking.file.to_owned(), reason);
+        }
         let Some(model_sha256) = files.model.sha256.clone() else {
             return self.fail_install(
                 speaking.file.to_owned(),
@@ -544,12 +547,21 @@ impl Workspace {
         self.set_install_file(speaking.file, total);
         self.push_models();
 
+        // Every file this run creates, so a failure part way through a
+        // multi-hundred-megabyte set leaves nothing behind. A file that was
+        // already here belongs to an earlier install and stays.
+        let mut written: Vec<(std::path::PathBuf, bool)> = Vec::new();
+
         let model = dir.join(speaking.file);
+        let existed = model.exists();
         if let Err(reason) =
             download_blob(&self, &hub, &revision, &files.model, &model, 0, total).await
         {
+            remove_written(&written);
             return self.fail_install(speaking.file.to_owned(), reason);
         }
+        written.push((model, existed));
+
         let mut done = files.model.size;
         let mut voices = Vec::with_capacity(files.voices.len());
         for blob in &files.voices {
@@ -557,17 +569,21 @@ impl Workspace {
                 continue;
             };
             let Some(sha256) = blob.sha256.clone() else {
+                remove_written(&written);
                 return self.fail_install(
                     speaking.file.to_owned(),
                     format!("{} publishes no digest", blob.path),
                 );
             };
             let dest = dir.join("voices").join(format!("{name}.bin"));
+            let existed = dest.exists();
             if let Err(reason) =
                 download_blob(&self, &hub, &revision, blob, &dest, done, total).await
             {
+                remove_written(&written);
                 return self.fail_install(speaking.file.to_owned(), reason);
             }
+            written.push((dest, existed));
             done += blob.size;
             voices.push(VoiceFile { name: name.to_owned(), size: blob.size, sha256 });
         }
@@ -582,7 +598,7 @@ impl Workspace {
             at: rfc3339_now(),
         };
         if !self.record_speaking_install(&install) {
-            let _ = std::fs::remove_file(&model);
+            remove_written(&written);
             self.fail_install(
                 speaking.file.to_owned(),
                 "the download could not be recorded".to_owned(),
@@ -614,6 +630,16 @@ impl Workspace {
                 );
                 false
             }
+        }
+    }
+}
+
+/// Take back the files a failed install created, leaving files that were
+/// already on disk alone.
+fn remove_written(written: &[(std::path::PathBuf, bool)]) {
+    for (path, existed) in written {
+        if !existed {
+            let _ = std::fs::remove_file(path);
         }
     }
 }
@@ -1401,6 +1427,22 @@ mod tests_install {
             resolved.iter().find(|(role, _)| *role == DictateRole::Transcribing).expect("resolved");
         assert_eq!(*role, DictateRole::Transcribing);
         assert!(matches!(model.from, crate::install::ActiveFrom::Pin), "got: {:?}", model.from);
+    }
+
+    /// A late failure takes back the files this run created and leaves the
+    /// ones an earlier install already had.
+    #[test]
+    fn a_failed_install_takes_back_only_what_it_created() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let created = dir.path().join("model_quantized.onnx");
+        let kept = dir.path().join("af_heart.bin");
+        std::fs::write(&created, b"new").expect("written");
+        std::fs::write(&kept, b"old").expect("written");
+
+        remove_written(&[(created.clone(), false), (kept.clone(), true)]);
+
+        assert!(!created.exists(), "the model this run wrote goes");
+        assert!(kept.exists(), "a voice an earlier install wrote stays");
     }
 
     /// A speaking pick beats the compiled pin, and clearing it (the

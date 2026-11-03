@@ -7,9 +7,17 @@
 
 use std::io::Write;
 use std::path::Path;
+use std::time::Duration;
 
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
+
+/// How long the Hub gets to answer, how long a stalled read waits, and how
+/// long one listing may paginate before the install gives up.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const READ_TIMEOUT: Duration = Duration::from_secs(60);
+const TOTAL_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+const MAX_TREE_PAGES: usize = 20;
 
 /// One file the repository publishes.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -36,17 +44,20 @@ pub struct Hub {
 
 impl Hub {
     pub fn new(token: Option<String>) -> Result<Self, String> {
+        // A stalled Hub must fail the install rather than hold it in
+        // `Downloading` forever; the total is a backstop for one big file.
         let client = reqwest::Client::builder()
+            .connect_timeout(CONNECT_TIMEOUT)
+            .read_timeout(READ_TIMEOUT)
+            .timeout(TOTAL_TIMEOUT)
             .build()
             .map_err(|error| format!("the Hub client did not build: {error}"))?;
         Ok(Self { client, token })
     }
 
-    /// The repository's current revision sha. Every file URL is pinned to it,
-    /// so one install fetches one coherent set.
-    pub async fn revision(&self, repo: &str) -> Result<String, String> {
-        let url = format!("https://huggingface.co/api/models/{repo}");
-        let request = self.client.get(&url);
+    /// One authorised GET, its status checked.
+    async fn get(&self, url: &str) -> Result<reqwest::Response, String> {
+        let request = self.client.get(url);
         let request = match self.token.as_deref() {
             Some(token) => request.bearer_auth(token),
             None => request,
@@ -54,10 +65,18 @@ impl Hub {
         let response = request
             .send()
             .await
-            .map_err(|error| format!("the Hub did not answer for {repo}: {error}"))?;
+            .map_err(|error| format!("the Hub did not answer for {url}: {error}"))?;
         if !response.status().is_success() {
-            return Err(format!("the Hub answered {} for {repo}", response.status()));
+            return Err(format!("the Hub answered {} for {url}", response.status()));
         }
+        Ok(response)
+    }
+
+    /// The repository's current revision sha. Every file URL is pinned to it,
+    /// so one install fetches one coherent set.
+    pub async fn revision(&self, repo: &str) -> Result<String, String> {
+        let url = format!("https://huggingface.co/api/models/{repo}");
+        let response = self.get(&url).await?;
         let info: ModelInfo = response
             .json()
             .await
@@ -66,25 +85,32 @@ impl Hub {
     }
 
     /// Every file the revision publishes, with its LFS digest.
+    ///
+    /// **Recursive, because the model and its voices are not at the root.**
+    /// The plain tree call answers the root's own entries - `onnx` and
+    /// `voices` as directories - so a reader that dropped directories would
+    /// find no model at all. A page that caps follows its `Link` header.
     pub async fn blobs(&self, repo: &str, revision: &str) -> Result<Vec<HubBlob>, String> {
-        let url = format!("https://huggingface.co/api/models/{repo}/tree/{revision}");
-        let request = self.client.get(&url);
-        let request = match self.token.as_deref() {
-            Some(token) => request.bearer_auth(token),
-            None => request,
-        };
-        let response = request
-            .send()
-            .await
-            .map_err(|error| format!("the Hub did not answer for {repo}: {error}"))?;
-        if !response.status().is_success() {
-            return Err(format!("the Hub answered {} for {repo}", response.status()));
+        let mut url = tree_url(repo, revision);
+        let mut blobs = Vec::new();
+        for _ in 0..MAX_TREE_PAGES {
+            let response = self.get(&url).await?;
+            let next = response
+                .headers()
+                .get(reqwest::header::LINK)
+                .and_then(|link| link.to_str().ok())
+                .and_then(next_page);
+            let raw = response
+                .bytes()
+                .await
+                .map_err(|error| format!("the Hub's listing for {repo} did not read: {error}"))?;
+            blobs.extend(parse_blobs(&raw)?);
+            match next {
+                Some(next) => url = next,
+                None => return Ok(blobs),
+            }
         }
-        let raw = response
-            .bytes()
-            .await
-            .map_err(|error| format!("the Hub's listing for {repo} did not read: {error}"))?;
-        parse_blobs(&raw)
+        Err(format!("the Hub's listing for {repo} did not finish within {MAX_TREE_PAGES} pages"))
     }
 
     /// Fetch one pinned file, reporting the bytes written so far.
@@ -175,6 +201,54 @@ pub fn finish_file(
     std::fs::rename(part, dest).map_err(|error| format!("{}: {error}", dest.display()))
 }
 
+/// The listing URL for one revision: recursive, because the model and its
+/// voices sit under `onnx/` and `voices/`.
+pub fn tree_url(repo: &str, revision: &str) -> String {
+    format!("https://huggingface.co/api/models/{repo}/tree/{revision}?recursive=true&limit=1000")
+}
+
+/// The next page a `Link` header names, when it names one.
+pub fn next_page(link: &str) -> Option<String> {
+    for part in link.split(',') {
+        if !part.contains("rel=\"next\"") {
+            continue;
+        }
+        let start = part.find('<')?;
+        let end = start + 1 + part[start + 1..].find('>')?;
+        return Some(part[start + 1..end].to_owned());
+    }
+    None
+}
+
+/// Refuse a listing whose model file disagrees with the compiled variant.
+///
+/// The digest the install checks a download against comes from this same
+/// listing, so without this the compile-time pin would be display only: a
+/// replaced upstream file would install under a new revision while the page
+/// still drew the old one.
+pub fn verify_release(
+    variant: &crate::tts::SpeakingVariant,
+    model: &HubBlob,
+) -> Result<(), String> {
+    if model.size != variant.size {
+        return Err(format!(
+            "{} is {} bytes at this revision and the compiled entry declares {}",
+            variant.path, model.size, variant.size
+        ));
+    }
+    match model.sha256.as_deref() {
+        Some(digest) if digest.eq_ignore_ascii_case(variant.sha256) => Ok(()),
+        Some(digest) => Err(format!(
+            "{} declares sha256 {digest} at this revision and the compiled entry declares {}",
+            variant.path, variant.sha256
+        )),
+        None => Err(format!(
+            "{} publishes no digest at this revision, so the compiled one cannot be checked",
+            variant.path
+        )),
+    }
+}
+
 #[derive(Deserialize)]
 struct ModelInfo {
     sha: String,
@@ -253,6 +327,71 @@ mod tests {
             ]"#,
         )
         .expect("the listing parses")
+    }
+
+    /// The plain tree call answers only the root's directories; a listing
+    /// that is not recursive is an install that finds no model at all.
+    #[test]
+    fn the_tree_url_is_recursive() {
+        let url = super::tree_url("onnx-community/Kokoro-82M-v1.0-ONNX", "abc123");
+        assert!(url.contains("/tree/abc123?recursive=true"), "got: {url}");
+    }
+
+    #[test]
+    fn a_link_header_names_the_next_page_or_none() {
+        let next = super::next_page(
+            "<https://huggingface.co/api/models/o/r/tree/abc?recursive=true&cursor=xyz>; rel=\"next\"",
+        );
+        assert_eq!(
+            next.as_deref(),
+            Some("https://huggingface.co/api/models/o/r/tree/abc?recursive=true&cursor=xyz")
+        );
+        assert_eq!(super::next_page("<https://x>; rel=\"prev\""), None);
+    }
+
+    /// A recursive listing is flat: the model and its voices arrive by path
+    /// even though the root carries them as directories.
+    #[test]
+    fn a_recursive_listing_finds_the_nested_model_and_voices() {
+        let blobs = parse_blobs(
+            br#"[
+                {"type":"directory","path":"onnx","size":0},
+                {"type":"directory","path":"voices","size":0},
+                {"type":"file","path":"onnx/model_quantized.onnx","size":92,"lfs":{"oid":"aa"}},
+                {"type":"file","path":"voices/af_heart.bin","size":5,"lfs":{"oid":"bb"}},
+                {"type":"file","path":"voices/bf_emma.bin","size":5,"lfs":{"oid":"cc"}}
+            ]"#,
+        )
+        .expect("the listing parses");
+        let files = speaking_files(&blobs, "onnx/model_quantized.onnx").expect("the set");
+        assert_eq!(files.model.path, "onnx/model_quantized.onnx");
+        assert_eq!(files.voices.len(), 2);
+    }
+
+    /// The compiled variant's size and digest are the pin: a release that
+    /// disagrees is refused by the file it names.
+    #[test]
+    fn a_release_that_disagrees_with_the_compiled_pin_is_refused() {
+        let variant = crate::tts::SpeakingVariant::named(crate::tts::PINNED_VARIANT)
+            .expect("the pinned variant exists");
+        let pinned = HubBlob {
+            path: variant.path.to_owned(),
+            size: variant.size,
+            sha256: Some(variant.sha256.to_owned()),
+        };
+        super::verify_release(&variant, &pinned).expect("the compiled release is accepted");
+
+        let resized = HubBlob { size: variant.size + 1, ..pinned.clone() };
+        let error = super::verify_release(&variant, &resized).expect_err("a different size");
+        assert!(error.contains(variant.path), "got: {error}");
+
+        let rehashed = HubBlob { sha256: Some("00".repeat(32)), ..pinned.clone() };
+        let error = super::verify_release(&variant, &rehashed).expect_err("a different digest");
+        assert!(error.contains("sha256"), "got: {error}");
+
+        let undigested = HubBlob { sha256: None, ..pinned };
+        let error = super::verify_release(&variant, &undigested).expect_err("no digest");
+        assert!(error.contains("no digest"), "got: {error}");
     }
 
     #[test]
