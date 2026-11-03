@@ -1798,6 +1798,8 @@ export class Chat {
     const record = handoffOf(conversation.handoff);
     if (record !== null) this.seedHandoffJoin(record, 'ahead');
     const rows = pageTurns(conversation.turns);
+    // A store record with no turns seeds nothing; the page's own subscribe
+    // answers it.
     if (rows.length === 0) return;
     const cursor = typeof conversation.cursor === 'string' ? conversation.cursor : null;
     this.takePage(rows, cursor, 'newest');

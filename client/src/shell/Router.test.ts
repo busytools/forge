@@ -123,11 +123,13 @@ describe('the router at a session address', () => {
    * read as the page arriving half-built. The empty record draws the idle box
    * and the seat's own record fills it in.
    */
-  it('mounts the composer before the seat has a record, with the read wait in the band', () => {
+  it('mounts the composer before the seat has a record, with the read wait holding the box', () => {
     const body = draw();
     expect(body, 'the page drew no composer').toContain('class="composer"');
-    expect(body, 'and the box drew no field').toContain('<textarea');
-    // The band speaks the wait until the column reports the page landed.
-    expect(body, 'the band does not say it is reading').toContain('Reading the conversation');
+    // **The wait is the body until the column reports the page landed**:
+    // there is nothing to type into, so the field is not drawn and the hold
+    // says why.
+    expect(body, 'the box did not say it is reading').toContain('Reading the conversation');
+    expect(body, 'the box drew a field before the page landed').not.toContain('<textarea');
   });
 });
