@@ -170,9 +170,7 @@
    *  row the echo is the only one left. */
   const draftIds = $derived(
     new Set(
-      drafts
-        .filter((draft) => rows.some((row) => draft.line >= row.line && draft.line <= row.end))
-        .map((draft) => draft.id),
+      drafts.filter((draft) => rows.some((row) => holdsDraft(row, draft))).map((draft) => draft.id),
     ),
   );
   const placed = $derived(
@@ -929,6 +927,12 @@
     );
   }
 
+  /** Whether a row holds a draft's line: the one condition the row's own
+   *  draw and the store echo's suppression share. */
+  function holdsDraft(row: DocRow, draft: DocDraft): boolean {
+    return draft.line >= row.line && draft.line <= row.end;
+  }
+
   /** The source lines a rendered block spans, the gutter's own targets. */
   function rowLines(row: DocRow): number[] {
     const numbers: number[] = [];
@@ -1079,7 +1083,7 @@
             </div>
           {/if}
         {/each}
-        {#each drafts.filter((draft) => draft.line >= row.line && draft.line <= row.end) as draft (draft.id)}
+        {#each drafts.filter((draft) => holdsDraft(row, draft)) as draft (draft.id)}
           <div class="doc-note doc-draft">
             <span class="doc-who">you</span>
             <span class="doc-where">line {draft.line}</span>
