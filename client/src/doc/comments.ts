@@ -68,19 +68,23 @@ export function rowsOf(text: string, kind: 'markdown' | 'text'): DocRow[] {
     }));
   }
   const blocks = renderProseBlocks(text);
-  return blocks.map((block, at) => ({
-    line: block.line,
-    // **Every source line is a target, so a block owns the blank lines
-    // between it and the next one.** Without them the gutter skips the gaps,
-    // and a document with a blank line between every paragraph carries no
-    // target for half its lines. The rendered span stays in `context`.
-    end: blocks[at + 1] === undefined ? lines.length : Math.max(block.end, blocks[at + 1].line - 1),
-    context: lines
-      .slice(block.line - 1, Math.min(block.end, block.line - 1 + CONTEXT_CAP))
-      .map((held) => held.text),
-    html: block.html,
-    text: '',
-  }));
+  return blocks.map((block, at) => {
+    const next = blocks[at + 1];
+    return {
+      line: block.line,
+      // **Every source line is a target, so a block owns the blank lines
+      // between it and the next one.** Without them the gutter skips the
+      // gaps, and a document with a blank line between every paragraph
+      // carries no target for half its lines. The rendered span stays in
+      // `context`.
+      end: next === undefined ? lines.length : Math.max(block.end, next.line - 1),
+      context: lines
+        .slice(block.line - 1, Math.min(block.end, block.line - 1 + CONTEXT_CAP))
+        .map((held) => held.text),
+      html: block.html,
+      text: '',
+    };
+  });
 }
 
 /** The scope the store keys a document's threads under - the crate's
