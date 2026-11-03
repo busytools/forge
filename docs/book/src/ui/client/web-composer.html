@@ -60,7 +60,7 @@
   /* One bar: a live row of what this seat is doing, and one body slot holding
      exactly one of the field, an ask, a take's card or a blocked line. */
   .comp { display: flex; flex-direction: column; gap: 2px; }
-  .surf { position: relative;
+  .surf { position: relative; container-type: inline-size;
     border: 1.5px solid var(--ctl); border-radius: 16px;
     background: linear-gradient(180deg, rgba(20,25,38,.72), rgba(13,17,26,.78));
     backdrop-filter: blur(10px); box-shadow: 0 14px 38px rgba(0,0,0,.42);
@@ -210,7 +210,8 @@
   .dock .d-head { display: flex; align-items: baseline; gap: 9px; font-size: var(--fs-base); }
   .dock .d-head .qm { color: var(--accent); font-weight: 500; flex: none; }
   .dock .d-head .q { color: var(--dim); font-family: var(--mono); font-size: var(--fs-data);
-    margin-left: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    flex: 0 0 auto; margin-left: auto; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; }
   .dock .d-q { font-size: 16px; font-weight: 500; color: var(--text); }
   .dock .headend { margin-left: auto; display: flex; align-items: center; gap: 5px; }
   .dock .segs { display: flex; align-items: center; gap: 5px; }
@@ -220,8 +221,44 @@
   .dock .tag { font-family: var(--mono); font-size: var(--fs-label); border-radius: 999px;
     padding: 3px 10px; }
   .dock .tag.warn { color: var(--warn); border: 1px solid rgba(201,161,59,.45); }
-  .dock .dest { font-family: var(--mono); font-size: var(--fs-label); color: var(--muted);
-    border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px; }
+  /* The destination line: the pill that says where a draft goes, the thread
+     named beside it, and the people it tags. Thread first: it takes every
+     pixel the pill leaves and the excerpt truncates only inside that space.
+     Tags never take width from the thread and move below it where it needs
+     the row. Absence is silence: no segment and no separator. */
+  .dock .dest { flex: 1 1 0; min-width: 0; display: inline-flex; flex-wrap: wrap;
+    align-items: baseline; column-gap: 10px; row-gap: 4px;
+    font-family: var(--mono); font-size: var(--fs-label); color: var(--muted); }
+  .dock .pin { display: inline-flex; align-items: baseline; gap: 7px; flex: 0 1 auto;
+    min-width: 0; overflow: hidden; border: 1px solid var(--line);
+    border-radius: 999px; padding: 3px 10px; color: var(--muted); }
+  .dock .pin .ws { min-width: 0; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; }
+  .dock .pin .sp { flex: none; color: var(--dim); opacity: .6; }
+  .dock .pin .ch { flex: none; color: var(--text); font-weight: 500; white-space: nowrap; }
+  .dock .thr { display: inline-flex; align-items: baseline; gap: 6px; flex: 0 1 auto;
+    min-width: 0; }
+  .dock .thr::before { content: "\00b7" / ""; flex: none; color: var(--dim); opacity: .6;
+    margin-right: 2px; }
+  .dock .thr .lbl { flex: none; color: var(--dim); }
+  .dock .thr .who { flex: none; color: var(--text); font-weight: 500; white-space: nowrap; }
+  .dock .thr .ex { flex: 1 1 auto; min-width: 12ch; color: var(--muted);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .dock .tgs { display: inline-flex; align-items: baseline; gap: 5px; flex: 0 0 auto; }
+  .dock .tgs::before { content: "\00b7" / ""; flex: none; color: var(--dim); opacity: .6;
+    margin-right: 2px; }
+  .dock .tgs .nm { color: var(--muted); white-space: nowrap; }
+  @container (max-width: 980px) {
+    .dock .thr { flex: 0 0 100%; }
+    .dock .thr::before, .dock .tgs::before { content: none; }
+    .dock .tgs { flex-basis: 100%; }
+    .dock .pin { flex-shrink: 1; flex-wrap: wrap; row-gap: 0; border-radius: 12px; }
+    .dock .pin .sp { display: none; } }
+  @container (max-width: 620px) {
+    .dock .d-head { gap: 7px; }
+    .dock .dest { column-gap: 8px; }
+    .dock .thr { flex-wrap: wrap; row-gap: 0; }
+    .dock .thr .ex { flex: 1 1 100%; min-width: 0; } }
   .dock .reason { color: var(--warn); font-size: var(--fs-base); }
   .dock .desc { color: var(--dim); font-size: var(--fs-base); }
   /* A held write's value: monospace, bordered and scrollable, as the client
@@ -771,7 +808,17 @@ on the folded bar.</p>
           <span class="live-more">+9</span>
         </div>
         <div class="slot"><div class="ask-body"><div class="dock">
-          <div class="d-head"><span class="dest">Trust Machines &middot; #granite-staging-alerts</span>
+          <div class="d-head"><span class="dest">
+              <span class="pin"><span class="ws" title="Trust Machines">Trust Machines</span>
+                <span class="sp" aria-hidden="true">&middot;</span>
+                <span class="ch">#granite-staging-alerts</span></span>
+              <span class="thr"><span class="lbl">thread:</span>
+                <span class="who">@alice</span>
+                <span class="ex" title="the staging deploy is green and the canary held for twenty minutes">&quot;the staging deploy is green...&quot;</span></span>
+              <span class="tgs"><span class="lbl">tags:</span>
+                <span class="nm">@bob,</span>
+                <span class="nm">@carol</span></span>
+            </span>
             <span class="q">Reply in Slack</span>
             <span class="chevb"><svg class="ic"><use href="#i-down"/></svg></span></div>
           <div class="sent">Confirmed - the replica caught the bad statement, so production is
@@ -780,7 +827,9 @@ on the folded bar.</p>
         </div></div></div>
       </div></div>
       <p class="note" style="margin:8px 0 0">The text that would go out, verbatim; the approving
-      verb leads, the send-back sits between it and the refusal.</p>
+      verb leads, the send-back sits between it and the refusal. The thread is named by its
+      parent's author and opening words, and the people the draft tags are their names - the
+      timestamp and the raw ids are gone.</p>
     </div>
     <div class="col">
       <div class="lab">the send-back's words <span class="h">241px</span></div>
@@ -793,8 +842,14 @@ on the folded bar.</p>
           <span class="live-more">+9</span>
         </div>
         <div class="slot"><div class="ask-body"><div class="dock">
-          <div class="d-head"><span class="dest">Trust Machines &middot; #granite-staging-alerts</span>
-            <span class="q">Reply in Slack</span>
+          <div class="d-head"><span class="dest">
+              <span class="pin"><span class="ws" title="Trust Machines">Trust Machines</span>
+                <span class="sp" aria-hidden="true">&middot;</span>
+                <span class="ch">#granite-staging-alerts</span></span>
+              <span class="tgs"><span class="lbl">tags:</span>
+                <span class="nm">@bob</span></span>
+            </span>
+            <span class="q">Post to Slack</span>
             <span class="chevb"><svg class="ic"><use href="#i-down"/></svg></span></div>
           <div class="sent">Confirmed - the replica caught the bad statement, so production is
             clear to take the same set.</div>
@@ -803,7 +858,8 @@ on the folded bar.</p>
         </div></div></div>
       </div></div>
       <p class="note" style="margin:8px 0 0">Enter sends, Shift+Enter is a newline, Escape closes;
-      the verb is unavailable until the field has words.</p>
+      the verb is unavailable until the field has words. This draft is a root message, so no
+      thread segment is drawn and the verb says <b>Post to Slack</b>.</p>
     </div>
   </div>
   <div class="row">
@@ -818,7 +874,14 @@ on the folded bar.</p>
           <span class="live-more">+9</span>
         </div>
         <div class="slot"><div class="ask-body"><div class="dock">
-          <div class="d-head"><span class="dest">Trust Machines &middot; #granite-staging-alerts</span>
+          <div class="d-head"><span class="dest">
+              <span class="pin"><span class="ws" title="Trust Machines">Trust Machines</span>
+                <span class="sp" aria-hidden="true">&middot;</span>
+                <span class="ch">#granite-staging-alerts</span></span>
+              <span class="thr"><span class="lbl">message:</span>
+                <span class="who">@ved</span>
+                <span class="ex" title="the replica caught the bad statement, so production is clear">&quot;the replica caught the bad statement...&quot;</span></span>
+            </span>
             <span class="q">Delete in Slack</span>
             <span class="chevb"><svg class="ic"><use href="#i-down"/></svg></span></div>
           <div class="sent">[delete] message 1758901234.482910</div>
@@ -826,7 +889,8 @@ on the folded bar.</p>
         </div></div></div>
       </div></div>
       <p class="note" style="margin:8px 0 0">The same held-draft card, worded for what it would
-      do: a delete asks to delete, and its refusal is "keep it".</p>
+      do: a delete asks to delete, and its refusal is "keep it". The stamp's noun follows the
+      operation, so the segment names the message it acts on, not a thread.</p>
     </div>
   </div>
   <div class="row">

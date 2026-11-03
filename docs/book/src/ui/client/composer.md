@@ -47,9 +47,13 @@ do: one wording for a post, an edit, a delete, a reaction, a reaction's removal 
 would ask the reader to approve the wrong act. A post draws `Post` and `Do not post`; an edit
 draws `Apply edit` and `Do not apply`; a delete draws `Delete` and `Keep it`; adding a reaction
 draws `React` and `Do not react`, and removing one draws `Unreact` and `Do not unreact`; an
-upload draws `Upload` and `Do not upload`. The destination's stamp follows the same rule: a post
-or an upload names the thread it replies into, and every other operation names the message it
-acts on.
+upload draws `Upload` and `Do not upload`. The destination line follows the same rule: the pill
+carries the workspace and the conversation, and the segment beside it names the thread a post or
+an upload replies into, or the message every other operation acts on, by its author and its
+opening words. The people the draft tags follow as their names. A parent the core could not read
+draws its raw `ts` and a tag it could not resolve draws its id, so a failed lookup is drawn as
+itself rather than as a missing segment. A root message draws no thread segment, and a draft that
+tags nobody draws no tags segment.
 
 A third answer, send back with feedback, opens a field on the card. Enter sends, Shift+Enter is
 a newline, and Escape closes the field without sending. The words reach the agent as the blocked
