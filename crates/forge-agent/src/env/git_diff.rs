@@ -956,14 +956,15 @@ async fn refresh_base_owned(cwd: &Path, default_branch: &str, budget: Duration) 
     } else {
         git_command::SshCommand::User
     };
-    // **A non-origin name never reaches here**: both callers branch on a
-    // remote-tracking default first, and a local base is answered by
-    // [`local_base`] rather than fetched. Unchecked rather than a guess if
-    // that ever changes.
+    // **A local base never reaches here in production**: both callers branch
+    // on a remote-tracking default first and answer a local base from
+    // [`local_base`]. This crate's bounded tests drive the refresh directly
+    // with one, and they get the same probes rather than a fetch.
     let Some(remote_branch) = default_branch.strip_prefix("origin/") else {
+        let (state, base_ref) = local_base(cwd, default_branch, deadline).await;
         return BaseRefresh {
-            state: BaseState::Unverified,
-            base_ref: local_tip(cwd, default_branch, remaining(deadline)).await,
+            state,
+            base_ref,
             error: None,
             cut: false,
             unanswered: false,
