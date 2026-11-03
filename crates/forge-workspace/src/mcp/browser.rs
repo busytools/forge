@@ -422,6 +422,7 @@ mod tests {
                 cron: MockCronFacade::new().into_arc(),
                 gotify: MockGotifyFacade::new().into_arc(),
                 slack: MockSlackFacade::new().into_arc(),
+                settings: crate::mcp::settings::facade::ProdSettingsFacade::from_arc(&workspace),
                 tasks: MockTasksFacade::new().into_arc(),
                 systemone: None,
                 voice: workspace.voice_service(),

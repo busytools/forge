@@ -79,6 +79,8 @@
     "SessionReplaced": "session_replaced",
     "SetModeFailed": "set_mode_failed",
     "SetModelFailed": "set_model_failed",
+    "SettingsWritePending": "settings_write_pending",
+    "SettingsWriteResolved": "settings_write_resolved",
     "SlackDraftResolved": "slack_draft_resolved",
     "SlackMessageAppended": "slack_message_appended",
     "SlackPostPending": "slack_post_pending",
@@ -143,6 +145,7 @@
     "RespondBrowserHandOff": "respond_browser_hand_off",
     "RespondPermission": "respond_permission",
     "RespondQuestion": "respond_question",
+    "RespondSettingsWrite": "respond_settings_write",
     "RespondSlackPost": "respond_slack_post",
     "ResumeSession": "resume_session",
     "SetDictateOverride": "set_dictate_override",
@@ -310,6 +313,7 @@
       "/update/chat_appended": [
         "key",
         "msg",
+        "origin",
         "source"
       ],
       "/update/chat_appended/key": [
@@ -947,6 +951,33 @@
         "kind"
       ]
     },
+    "SettingsWritePending": {
+      "": [
+        "kind",
+        "seq",
+        "span",
+        "update"
+      ],
+      "/update": [
+        "settings_write_pending"
+      ],
+      "/update/settings_write_pending": [
+        "ask",
+        "key"
+      ],
+      "/update/settings_write_pending/ask": [
+        "current",
+        "id",
+        "key",
+        "proposed",
+        "unset"
+      ],
+      "/update/settings_write_pending/key": [
+        "label",
+        "org",
+        "project"
+      ]
+    },
     "SlackDraftResolved": {
       "": [
         "kind",
@@ -1453,6 +1484,7 @@
         "attachments",
         "dispatch_id",
         "key",
+        "origin",
         "source",
         "text",
         "uuid"

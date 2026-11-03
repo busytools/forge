@@ -2880,6 +2880,7 @@ pub(crate) fn execute_command_via_handle(
         | Command::PluginCheckUpdates
         | Command::MarketplaceAdd { .. }
         | Command::MarketplaceRepair { .. }
+        | Command::RespondSettingsWrite { .. }
         | Command::VoiceMode { .. }
         | Command::VoicePreview { .. }) => {
             tracing::warn!(

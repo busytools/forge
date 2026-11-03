@@ -171,6 +171,21 @@ export function slackDraftAsk(over: Record<string, unknown> = {}): unknown {
   };
 }
 
+/** A held configuration write as the core offers one, with whatever the test overrides. */
+export function settingsWriteAsk(over: Record<string, unknown> = {}): unknown {
+  return {
+    kind: 'settings_write',
+    request: {
+      id: '0192e1c0-0000-7000-8000-0000000000bb',
+      key: 'orgs.Default.projects.forge.max_workers',
+      current: 2,
+      proposed: 4,
+      unset: false,
+      ...over,
+    },
+  };
+}
+
 /** A browser hand-off as the core offers one, with whatever the test overrides. */
 export function browserHandOffAsk(over: Record<string, unknown> = {}): unknown {
   return {

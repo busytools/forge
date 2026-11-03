@@ -1031,6 +1031,7 @@ impl Bridge {
             "question_request",
             "browser_hand_off_pending",
             "document_hand_off_pending",
+            "settings_write_pending",
         ]
         .iter()
         .any(|key| update.get(*key).is_some());

@@ -125,6 +125,7 @@ import {
   questionAsk,
   record,
   seatRead,
+  settingsWriteAsk,
   SLOT,
   slackDraftAsk,
   take,
@@ -6209,6 +6210,78 @@ describe('the dock', () => {
     );
   });
 
+  it('draws a held config write with its key and both values', () => {
+    open({ record: record({ pending_asks: [settingsWriteAsk()] }) });
+
+    expect(drawn()).toContain('config write');
+    expect(drawn()).toContain('orgs.Default.projects.forge.max_workers');
+    expect(drawn(), 'the value it holds now is shown').toContain('2');
+    expect(drawn(), 'the value it would leave is shown').toContain('4');
+    expect(drawn()).toContain('Write it');
+    expect(drawn()).toContain("Don't write");
+  });
+
+  it('draws an unset write as a removal, not as a null value', () => {
+    open({
+      record: record({
+        pending_asks: [settingsWriteAsk({ unset: true, proposed: null })],
+      }),
+    });
+
+    expect(drawn()).toContain('cleared to its default');
+    expect(drawn(), 'the cleared value is not drawn as `null`').not.toContain('null');
+    expect(drawn(), 'the value it holds now is shown').toContain('2');
+  });
+
+  it('draws a key with no value as currently unset', () => {
+    open({
+      record: record({
+        pending_asks: [
+          settingsWriteAsk({ key: 'gotify.url', current: null, proposed: 'https://x' }),
+        ],
+      }),
+    });
+
+    expect(drawn()).toContain('currently unset');
+    expect(drawn(), 'no placeholder null is drawn').not.toContain('null');
+    expect(drawn()).toContain('would become');
+  });
+
+  it('answers a held config write from the verb the reader picks, by its own id', () => {
+    const harness = open({ record: record({ pending_asks: [settingsWriteAsk()] }) });
+
+    action('Write it').click();
+    flushSync();
+
+    expect(commands(harness)).toEqual([
+      {
+        respond_settings_write: {
+          key: { org: 'Busytools', project: 'forge', label: 'lead' },
+          id: '0192e1c0-0000-7000-8000-0000000000bb',
+          approved: true,
+        },
+      },
+    ]);
+    expect(document.querySelector('.dock'), 'the dock goes with the answer').toBeNull();
+  });
+
+  it('never writes on a decline', () => {
+    const harness = open({ record: record({ pending_asks: [settingsWriteAsk()] }) });
+
+    action("Don't write").click();
+    flushSync();
+
+    expect(commands(harness)).toEqual([
+      {
+        respond_settings_write: {
+          key: { org: 'Busytools', project: 'forge', label: 'lead' },
+          id: '0192e1c0-0000-7000-8000-0000000000bb',
+          approved: false,
+        },
+      },
+    ]);
+  });
+
   it('posts the held draft from the verb the reader picks, addressed by its own id', () => {
     const harness = open({ record: record({ pending_asks: [slackDraftAsk()] }) });
 
@@ -6315,6 +6388,32 @@ describe('the dock', () => {
 
     expect(document.querySelector('.dock'), 'the dock stands down').toBeNull();
     expect(drawn(), 'and the row says which ending took it').toContain('posted from another view');
+  });
+
+  it('says what became of a config write that left without this reader answering', () => {
+    const harness = open({ record: record({ pending_asks: [settingsWriteAsk()] }) });
+    expect(document.querySelector('.dock'), 'the dock is up').not.toBeNull();
+
+    // Another view answered it: the stand-down carries the ending, and the
+    // record goes with it as the apply arm leaves it.
+    harness.say({
+      kind: 'update',
+      update: {
+        settings_write_resolved: {
+          key: SLOT,
+          id: '0192e1c0-0000-7000-8000-0000000000bb',
+          ending: 'applied',
+        },
+      },
+    });
+    harness.page.record = record();
+    flushSync();
+
+    expect(document.querySelector('.dock'), 'the dock stands down').toBeNull();
+    expect(drawn(), 'and the row says a write was applied').toContain(
+      'config write was applied from another view',
+    );
+    expect(drawn(), 'never the Slack draft line').not.toContain('Slack');
   });
 
   it('says why an answer did not land when the draft left under the click', () => {
@@ -10171,6 +10270,7 @@ describe("the dock's settled shape", () => {
       ['slack_draft', slackDraftAsk(), 'Trust Machines'],
       ['document_hand_off', documentHandOffAsk(), '/proj/docs/plan.md'],
       ['browser_hand_off', browserHandOffAsk(), 'browser hand-off'],
+      ['settings_write', settingsWriteAsk(), 'orgs.Default.projects.forge.max_workers'],
     ] as const;
     for (const [kind, ask, subject] of cases) {
       open({ record: record({ pending_asks: [ask] }) });

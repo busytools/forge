@@ -233,21 +233,28 @@ pub mod wire;
 /// and a v24 client sends the old one this server refuses, so the numbers
 /// move. `baselines/socket/24/` is the record a v24 server emitted.
 ///
-/// **v26 drops the handoff row from the conversation record and the prompt
+/// **v26 holds a config write for the reader.** `respond_settings_write` is a
+/// new command variant, and the settings MCP tools park a write as a
+/// `settings_write_pending` update a v25 client has no vocabulary for: it
+/// would read the parked write as nothing, and the agent's call would wait on
+/// a dock nobody draws. `baselines/socket/25/` is the record a v25 server
+/// emitted.
+///
+/// **v27 drops the handoff row from the conversation record and the prompt
 /// origin from the wire.** The record's `handoff` field was what a client
-/// drew the block from; the block is gone, so the field goes with it - a v25
-/// client reading a v26 record draws no block from it, and one that watches
+/// drew the block from; the block is gone, so the field goes with it - a v26
+/// client reading a v27 record draws no block from it, and one that watches
 /// the swap still receives the `handoff` update and draws its own block from
 /// that, because it is the old client. `ChatAppended.origin` and
 /// `PromptUnder.origin` were the dispatch-time row's bookkeeping; the row is
-/// drawn when the CLI starts the prompt, so nothing carries an origin. A v25
+/// drawn when the CLI starts the prompt, so nothing carries an origin. A v26
 /// client reads both as absent and draws as it did.
-/// `baselines/socket/25/` is the record a v25 server emitted.
+/// `baselines/socket/26/` is the record a v26 server emitted.
 ///
 /// **Additive fields do not bump.** `diff.base_error` is one, carried on the
 /// v16-era record: a client older than the field draws the vaguer line it
 /// always drew, and nothing it sends changes.
-pub const PROTOCOL_VERSION: u32 = 26;
+pub const PROTOCOL_VERSION: u32 = 27;
 
 /// The socket's keepalive: how often a connection is asked to prove it is
 /// still there, and how long it may stay silent before it is reaped.

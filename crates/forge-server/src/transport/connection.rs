@@ -4094,6 +4094,7 @@ fn refusal_tag(refusal: &DispatchError) -> &'static str {
         // tag, because one tag cannot route two opposite outcomes.
         DispatchError::EmptySlackFeedback { .. } => "empty_slack_feedback",
         DispatchError::NoBrowserHandOffWaiting { .. } => "respond_browser_hand_off",
+        DispatchError::NoSettingsWriteWaiting { .. } => "respond_settings_write",
         DispatchError::NoDocumentHandOffWaiting { .. } => "respond_document_hand_off",
         _ => "dispatch",
     }
@@ -4297,6 +4298,28 @@ mod tests {
     use super::*;
     use crate::transport::Heartbeat;
     use crate::work::WorkCache;
+
+    /// **Every held-dock answer names its own operation.** A client draws the
+    /// refusal where the dock stood, so a refusal tagged `dispatch` leaves
+    /// the reason unattached and the second view learns nothing.
+    #[test]
+    fn every_held_dock_refusal_names_its_own_operation() {
+        let key = forge_workspace::SessionSlot::lead("Org", "proj");
+        let id = uuid::Uuid::nil();
+        assert_eq!(
+            refusal_tag(&DispatchError::NoDraftWaiting { key: key.clone(), id }),
+            "respond_slack_post",
+        );
+        assert_eq!(
+            refusal_tag(&DispatchError::NoBrowserHandOffWaiting { key: key.clone(), id }),
+            "respond_browser_hand_off",
+        );
+        assert_eq!(
+            refusal_tag(&DispatchError::NoSettingsWriteWaiting { key, id }),
+            "respond_settings_write",
+        );
+        assert_eq!(refusal_tag(&DispatchError::NoActiveSession), "dispatch");
+    }
 
     /// **A review write spends the landed words it carries, and only those.**
     /// The composer's own fold sees prompt rows and answers; a comment mints

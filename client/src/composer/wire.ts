@@ -193,6 +193,20 @@ export interface BrowserHandOff {
   target: string | null;
 }
 
+/** A held configuration write: what it would change, and what the key holds now. */
+export interface SettingsWriteAsk {
+  /** The write's own id, which is what an answer is addressed by. */
+  id: string;
+  /** The concrete catalogue path the write names. */
+  key: string;
+  /** The value the key stands at now; `null` when it is unset. */
+  current: unknown;
+  /** The value the write would leave; `null` when it clears the key. */
+  proposed: unknown;
+  /** Whether the write clears the key rather than setting it. */
+  unset: boolean;
+}
+
 /** A document hand-off: a session offering the person a document to open. */
 export interface DocumentHandOff {
   /** The hand-off's own id, which is what an answer is addressed by. */
@@ -210,7 +224,8 @@ export type Ask =
   /** A held Slack post, which this composer draws no dock for. */
   | { kind: 'slack_draft'; request: SlackDraft }
   | { kind: 'browser_hand_off'; request: BrowserHandOff }
-  | { kind: 'document_hand_off'; request: DocumentHandOff };
+  | { kind: 'document_hand_off'; request: DocumentHandOff }
+  | { kind: 'settings_write'; request: SettingsWriteAsk };
 
 const OPTION_KINDS: PermissionOption['kind'][] = ['allow', 'deny', 'edit', 'notes'];
 const PHASES: TakePhase[] = ['recording', 'transcribing'];
@@ -312,6 +327,8 @@ export function askFrom(value: unknown): Ask | null {
       return browserHandOffFrom(request);
     case 'document_hand_off':
       return documentHandOffFrom(request);
+    case 'settings_write':
+      return settingsWriteFrom(request);
     default:
       return null;
   }
@@ -396,6 +413,22 @@ function browserHandOffFrom(value: unknown): Ask {
       reason: text(held['reason']) ?? '',
       tab: number(held['tab']) ?? null,
       target: text(held['target']),
+    },
+  };
+}
+
+/** A held configuration write: the id is what an answer names, the key and
+ *  both values are what the reader decides on. */
+function settingsWriteFrom(value: unknown): Ask {
+  const held = record(value);
+  return {
+    kind: 'settings_write',
+    request: {
+      id: text(held['id']) ?? '',
+      key: text(held['key']) ?? '',
+      current: held['current'],
+      proposed: held['proposed'],
+      unset: held['unset'] === true,
     },
   };
 }

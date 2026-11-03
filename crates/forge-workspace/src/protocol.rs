@@ -79,6 +79,7 @@ pub enum PendingAsk {
     SlackDraft(Box<forge_primitives::slack::SlackDraft>),
     BrowserHandOff(Box<forge_primitives::browser::HandOff>),
     DocumentHandOff(Box<forge_primitives::document::DocumentHandOffAsk>),
+    SettingsWrite(Box<forge_primitives::settings::SettingsWriteAsk>),
 }
 
 impl PendingAsk {
@@ -90,7 +91,10 @@ impl PendingAsk {
         match self {
             Self::Permission(request) => Some(&request.tool_call.tool_call_id),
             Self::Question(request) => Some(&request.tool_call.tool_call_id),
-            Self::SlackDraft(_) | Self::BrowserHandOff(_) | Self::DocumentHandOff(_) => None,
+            Self::SlackDraft(_)
+            | Self::BrowserHandOff(_)
+            | Self::DocumentHandOff(_)
+            | Self::SettingsWrite(_) => None,
         }
     }
 }
@@ -370,6 +374,16 @@ pub enum Command {
         key: SessionSlot,
         id: uuid::Uuid,
         answer: forge_primitives::document::DocumentHandOffEnding,
+    },
+    /// Answer a held configuration write. The blocked `settings__set` /
+    /// `settings__unset` handler is awaiting this decision; `approved:
+    /// false` means nothing is written. App-level like `RespondSlackPost`:
+    /// the registry is workspace state, and `key` names the owner the
+    /// answer is checked against.
+    RespondSettingsWrite {
+        key: SessionSlot,
+        id: uuid::Uuid,
+        approved: bool,
     },
     RespondQuestion {
         key: SessionSlot,
@@ -917,6 +931,7 @@ impl Command {
             | Self::RespondSlackPost { .. }
             | Self::RespondBrowserHandOff { .. }
             | Self::AnswerDocumentHandOff { .. }
+            | Self::RespondSettingsWrite { .. }
             | Self::SubmitReview { .. }
             | Self::TaskVerdict { .. }
             | Self::TaskAnswer { .. }
@@ -1015,6 +1030,12 @@ impl std::fmt::Debug for Command {
                 .field("id", id)
                 .field("answer", answer)
                 .finish_non_exhaustive(),
+            Self::RespondSettingsWrite { key, id, approved } => f
+                .debug_struct("RespondSettingsWrite")
+                .field("key", key)
+                .field("id", id)
+                .field("approved", approved)
+                .finish(),
             Self::AnswerDocumentHandOff { key, id, answer } => f
                 .debug_struct("AnswerDocumentHandOff")
                 .field("key", key)
@@ -2124,6 +2145,22 @@ pub enum SessionUpdate {
         id: Uuid,
         ending: forge_primitives::document::DocumentHandOffEnding,
     },
+    /// A configuration write waits for the reader's approval in the dock:
+    /// the session's `settings__set` / `settings__unset` handler is blocked
+    /// on a oneshot until `Command::RespondSettingsWrite` answers it, so
+    /// nothing reaches `forge.toml` while this is outstanding.
+    SettingsWritePending {
+        key: SessionSlot,
+        ask: forge_primitives::settings::SettingsWriteAsk,
+    },
+    /// A held configuration write left the core's registry: answered in some
+    /// view, or its asking session gone. `ending` is what a view that did
+    /// not answer it says happened.
+    SettingsWriteResolved {
+        key: SessionSlot,
+        id: Uuid,
+        ending: forge_primitives::settings::SettingsWriteEnding,
+    },
     /// One rendered clip of the seat's speech, mono 16-bit samples at
     /// `sample_rate`. Chunks arrive in `seq` order and every client with
     /// voice on for the seat plays them; a client with voice off receives
@@ -2184,6 +2221,8 @@ impl SessionUpdate {
             | Self::BrowserHandOffResolved { key, .. }
             | Self::DocumentHandOffPending { key, .. }
             | Self::DocumentHandOffResolved { key, .. }
+            | Self::SettingsWritePending { key, .. }
+            | Self::SettingsWriteResolved { key, .. }
             | Self::VoiceAudio { key, .. }
             | Self::VoiceModeState { key, .. }
             | Self::ChatAppended { key, .. }
@@ -2519,6 +2558,18 @@ impl std::fmt::Debug for SessionUpdate {
             Self::DocumentHandOffResolved { key, .. } => {
                 f.debug_struct("DocumentHandOffResolved").field("key", key).finish_non_exhaustive()
             }
+            Self::SettingsWritePending { key, ask } => f
+                .debug_struct("SettingsWritePending")
+                .field("key", key)
+                .field("id", &ask.id)
+                .field("key_path", &ask.key)
+                .finish_non_exhaustive(),
+            Self::SettingsWriteResolved { key, id, ending } => f
+                .debug_struct("SettingsWriteResolved")
+                .field("key", key)
+                .field("id", id)
+                .field("ending", ending)
+                .finish_non_exhaustive(),
             Self::CatalogLoaded => f.write_str("CatalogLoaded"),
             Self::CliVersionChanged => f.write_str("CliVersionChanged"),
             Self::AccountsChanged { accounts } => f
@@ -2588,6 +2639,13 @@ pub enum DispatchError {
         "that document hand-off is no longer waiting: it has been answered, or its asking session went away"
     )]
     NoDocumentHandOffWaiting { key: SessionSlot, id: Uuid },
+    /// A settings answer named a held write the registry does not hold:
+    /// answered in another view, or its asking session went away. Its own
+    /// word for the same reason [`Self::NoDraftWaiting`] has one.
+    #[error(
+        "that configuration write is no longer waiting: it has been answered, or its asking session went away"
+    )]
+    NoSettingsWriteWaiting { key: SessionSlot, id: Uuid },
     /// A catalogue check was asked for with `[dictate]` switched off:
     /// there are no pinned models for a check to be about.
     #[error("dictation is off, so there is no catalogue to check")]
