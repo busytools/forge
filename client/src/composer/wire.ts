@@ -159,6 +159,24 @@ const SLACK_OPERATIONS = ['post', 'edit', 'delete', 'react', 'unreact', 'upload'
  */
 export type SlackOperation = (typeof SLACK_OPERATIONS)[number] | 'unknown';
 
+/**
+ * The thread a held draft replies into, named core-side: the parent's author
+ * and one line of its text, so the card does not ask the reader to read a ts.
+ */
+export interface SlackThreadName {
+  author: string;
+  excerpt: string;
+}
+
+/**
+ * A person a held draft tags. `name` is null when the lookup failed, and the
+ * card then draws the id rather than inventing one.
+ */
+export interface SlackPerson {
+  id: string;
+  name: string | null;
+}
+
 /** A held Slack draft: what is waiting, and what it would send. */
 export interface SlackDraft {
   /** The draft's own id, which is what an answer is addressed by. */
@@ -173,6 +191,13 @@ export interface SlackDraft {
   threadTs: string | null;
   text: string;
   operation: SlackOperation;
+  /**
+   * The thread named for the card. Null on a root message, and null when the
+   * core could not read the parent: the card then draws `threadTs`.
+   */
+  thread: SlackThreadName | null;
+  /** Every person the text tags, in order; an unresolved name keeps its id. */
+  tagged: SlackPerson[];
 }
 
 /** A browser hand-off: a session asking the person to act in a browser tab. */
@@ -387,6 +412,24 @@ function questionFrom(value: unknown): Ask | null {
   };
 }
 
+/** The thread name a held draft carries, or none when it carries no author. */
+function threadFrom(value: unknown): SlackThreadName | null {
+  const held = record(value);
+  const author = text(held['author']);
+  if (author === null) return null;
+  return { author, excerpt: text(held['excerpt']) ?? '' };
+}
+
+/** The people a held draft tags, dropping rows that name no person at all. */
+function taggedFrom(value: unknown): SlackPerson[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry) => {
+    const held = record(entry);
+    const id = text(held['id']);
+    return id === null ? [] : [{ id, name: text(held['name']) }];
+  });
+}
+
 /** A held post, which the dock names even though this composer holds no dock for it. */
 function slackFrom(value: unknown): Ask {
   const held = record(value);
@@ -399,6 +442,8 @@ function slackFrom(value: unknown): Ask {
       threadTs: text(held['thread_ts']),
       text: text(held['text']) ?? '',
       operation: narrow(held['operation'], SLACK_OPERATIONS, 'unknown'),
+      thread: threadFrom(held['thread']),
+      tagged: taggedFrom(held['tagged']),
     },
   };
 }

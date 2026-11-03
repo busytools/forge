@@ -166,6 +166,8 @@ export function slackDraftAsk(over: Record<string, unknown> = {}): unknown {
       thread_ts: null,
       text: 'Deploy finished on staging.',
       operation: 'post',
+      thread: null,
+      tagged: [],
       ...over,
     },
   };

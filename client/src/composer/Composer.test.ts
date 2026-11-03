@@ -6229,13 +6229,105 @@ describe('the dock', () => {
     );
   });
 
-  it('names the thread a reply goes into, rather than the tool that composed it', () => {
-    open({ record: record({ pending_asks: [slackDraftAsk({ thread_ts: '1758901234.482910' })] }) });
+  /** The card's destination line, with its whitespace collapsed for a read. */
+  function dest(): string {
+    return (document.querySelector('.dock .dest')?.textContent ?? '').replace(/\s+/g, ' ').trim();
+  }
+
+  it('names the thread a reply goes into and the people it tags', () => {
+    open({
+      record: record({
+        pending_asks: [
+          slackDraftAsk({
+            thread_ts: STAMP,
+            thread: { author: 'alice', excerpt: 'the staging deploy is green...' },
+            tagged: [
+              { id: 'U2', name: 'bob' },
+              { id: 'U3', name: 'carol' },
+            ],
+          }),
+        ],
+      }),
+    });
 
     expect(drawn()).toContain('Reply in Slack');
-    expect(drawn()).toContain('thread 1758901234.482910');
+    // The `·` separators before the thread and the tags are drawn by CSS, so
+    // the text carries the segments and the names; the gaps are the layout's.
+    expect(dest(), 'the thread is named by its author and its opening words').toBe(
+      `Trust Machines · granite-staging-alerts thread: @alice "the staging deploy is green..." tags: @bob,@carol`,
+    );
     expect(drawn(), 'the dock says where it goes, not which tool asked').not.toContain(
       'slack__post',
+    );
+  });
+
+  it('names a root post’s tags with no thread segment to leave behind', () => {
+    open({
+      record: record({
+        pending_asks: [slackDraftAsk({ tagged: [{ id: 'U2', name: 'bob' }] })],
+      }),
+    });
+
+    expect(dest(), 'no thread means no segment and no leftover separator').toBe(
+      'Trust Machines · granite-staging-alerts tags: @bob',
+    );
+    expect(dest(), 'and no empty thread label is drawn').not.toContain('thread:');
+  });
+
+  it('draws no tag segment when the draft tags nobody', () => {
+    open({
+      record: record({
+        pending_asks: [
+          slackDraftAsk({
+            thread_ts: STAMP,
+            thread: { author: 'alice', excerpt: 'should we roll the rest of the fleet now?' },
+          }),
+        ],
+      }),
+    });
+
+    expect(dest(), 'a label with no names behind it would read as a failed read').toBe(
+      `Trust Machines · granite-staging-alerts thread: @alice "should we roll the rest of the fleet now?"`,
+    );
+    expect(dest()).not.toContain('tags:');
+  });
+
+  it('draws an unresolved tag as its id and an unnamed thread as its stamp', () => {
+    open({
+      record: record({
+        pending_asks: [
+          slackDraftAsk({
+            thread_ts: STAMP,
+            thread: null,
+            tagged: [{ id: 'U3', name: null }],
+          }),
+        ],
+      }),
+    });
+
+    expect(dest(), 'an id is drawn as the id, never dropped and never invented over').toBe(
+      `Trust Machines · granite-staging-alerts thread: ${STAMP} tags: U3`,
+    );
+  });
+
+  it('keeps a long excerpt whole in the card, with the full line in the title', () => {
+    const excerpt =
+      'the canary is holding at 1% and every check is green, but the p99 on the read path is still 40ms above where it sat before the rollout';
+    open({
+      record: record({
+        pending_asks: [
+          slackDraftAsk({ thread_ts: STAMP, thread: { author: 'priya.raman', excerpt } }),
+        ],
+      }),
+    });
+
+    const ex = document.querySelector('.dock .dest .ex');
+    expect(
+      ex?.textContent,
+      'the card carries the excerpt whole and truncates it for the width',
+    ).toBe(`"${excerpt}"`);
+    expect(ex?.getAttribute('title'), 'the full line is reachable from the truncated one').toBe(
+      excerpt,
     );
   });
 
@@ -6612,15 +6704,15 @@ describe('the dock', () => {
   const STAMP = '1758901234.482910';
   const OPERATION_CARDS: [string, string | null, string, string, string, string | null][] = [
     ['post', null, 'Post to Slack', 'Post', 'Do not post', null],
-    ['post', STAMP, 'Reply in Slack', 'Post', 'Do not post', `thread ${STAMP}`],
-    ['edit', STAMP, 'Edit in Slack', 'Apply edit', 'Do not apply', `message ${STAMP}`],
-    ['delete', STAMP, 'Delete in Slack', 'Delete', 'Keep it', `message ${STAMP}`],
-    ['react', STAMP, 'React in Slack', 'React', 'Do not react', `message ${STAMP}`],
-    ['unreact', STAMP, 'Unreact in Slack', 'Unreact', 'Do not unreact', `message ${STAMP}`],
+    ['post', STAMP, 'Reply in Slack', 'Post', 'Do not post', `thread: ${STAMP}`],
+    ['edit', STAMP, 'Edit in Slack', 'Apply edit', 'Do not apply', `message: ${STAMP}`],
+    ['delete', STAMP, 'Delete in Slack', 'Delete', 'Keep it', `message: ${STAMP}`],
+    ['react', STAMP, 'React in Slack', 'React', 'Do not react', `message: ${STAMP}`],
+    ['unreact', STAMP, 'Unreact in Slack', 'Unreact', 'Do not unreact', `message: ${STAMP}`],
     ['upload', null, 'Upload to Slack', 'Upload', 'Do not upload', null],
-    ['upload', STAMP, 'Upload to Slack', 'Upload', 'Do not upload', `thread ${STAMP}`],
+    ['upload', STAMP, 'Upload to Slack', 'Upload', 'Do not upload', `thread: ${STAMP}`],
     // A value from a newer server draws neutral words, never a post's.
-    ['unknown', STAMP, 'Slack draft', 'Approve', 'Do not send', `message ${STAMP}`],
+    ['unknown', STAMP, 'Slack draft', 'Approve', 'Do not send', `message: ${STAMP}`],
   ];
 
   it.each(OPERATION_CARDS)(
@@ -6647,7 +6739,7 @@ describe('the dock', () => {
       expect(
         dest.replace(/\s+/g, ' ').trim(),
         'a message stamp and a thread stamp are different facts',
-      ).toBe(`Trust Machines · granite-staging-alerts${stamp === null ? '' : ` · ${stamp}`}`);
+      ).toBe(`Trust Machines · granite-staging-alerts${stamp === null ? '' : ` ${stamp}`}`);
     },
   );
 
