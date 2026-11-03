@@ -691,22 +691,17 @@ describe('the box', () => {
     expect(field().value, 'the box is empty once the words have gone').toBe('');
   });
 
-  it('posts no echo for a prompt the core answers itself', () => {
+  it('answers a core-answered command without ever blocking the box', () => {
     // A forge command, a misuse and a slash name the session cannot run never
-    // reach a model, so no turn carries their words: an echo would stand as a
-    // row nothing clears (#2816).
+    // reach a model, so no turn carries their words and no record update
+    // follows: an echo would stand as a row nothing clears, and a "Running"
+    // line would hold the field away with nothing to end it (#2816).
     const catalogue = [
       { name: '/clear', description: 'Clear chat history' },
       { name: '/compact', description: 'Compact session context' },
     ];
     const harness = open({ record: record({ slash_commands: catalogue }) });
-    const settle = (): void => {
-      // The page's own record moves on when the command's turn ends; the
-      // harness has to say so, or the blocker keeps the field off screen.
-      harness.page.record = record({ slash_commands: catalogue });
-      flushSync();
-    };
-    for (const words of ['/handoff', '/resume', '/spinner now']) {
+    for (const words of ['/handoff', '/resume', '/spinner now', '/model']) {
       type(words);
       // The list a slash name opens takes Enter for its own pick; Escape
       // closes it so the press below is the reader's send.
@@ -714,11 +709,24 @@ describe('the box', () => {
       press('Enter');
       flushSync();
       expect(echoAt(SLOT), `no echo for ${words}`).toBeUndefined();
-      settle();
+      // **No record update is delivered here**: the core answers the command
+      // itself, and this is the real path the old test hid by reassigning the
+      // record by hand. The field must still be there for the next thing.
+      expect(
+        document.querySelector('textarea'),
+        `${words} leaves the field on screen`,
+      ).not.toBeNull();
+      expect(drawn(), `${words} raises no running line`).not.toContain(`Running ${words}`);
     }
     // A name the CLI advertised is a turn like any other, so its send is
     // echoed until the conversation carries it - and `/compact` is in the
     // client's catalogue but the core forwards it, so it is one of these.
+    const settle = (): void => {
+      // The page's own record moves on when the command's turn ends; the
+      // harness has to say so, or the blocker keeps the field off screen.
+      harness.page.record = record({ slash_commands: catalogue });
+      flushSync();
+    };
     for (const words of ['/clear', '/compact']) {
       type(words);
       press('Escape');
@@ -736,7 +744,7 @@ describe('the box', () => {
     press('Enter');
     flushSync();
     expect(echoAt(SLOT)?.words, 'an empty catalogue is forwarded').toBe('/spinner');
-    expect(harness.sent.length, 'every send still went').toBe(6);
+    expect(harness.sent.length, 'every send still went').toBe(7);
   });
 
   it('hands an empty box up to the pile, and only an empty one', () => {
@@ -3503,6 +3511,38 @@ describe('the seat the box belongs to', () => {
     flushSync();
 
     expect(drawn(), 'the press draws its reason where it stood').toContain('the session is closed');
+  });
+
+  /**
+   * **A core-answered refusal lands on the seat that pressed it.** The reader
+   * may have moved on before the answer arrives; the reason belongs on the
+   * seat whose box minted the dispatch id, never on the seat shown now.
+   */
+  it('scopes a core-answered refusal to the press seat', () => {
+    const shared = wire();
+    const harness = open({}, shared);
+    type('/model');
+    press('Escape');
+    press('Enter');
+    flushSync();
+    const dispatched = harness.sent[0]?.command['prompt_under'] as Record<string, unknown>;
+
+    harness.page.slot = ELSEWHERE;
+    flushSync();
+    harness.say({
+      kind: 'error',
+      what: 'dispatch',
+      why: 'the model is gone',
+      dispatch_id: dispatched['dispatch_id'] as number,
+    });
+    flushSync();
+    expect(drawn(), 'the shown seat is not where the refusal lands').not.toContain(
+      'the model is gone',
+    );
+
+    harness.page.slot = SLOT;
+    flushSync();
+    expect(drawn(), "the press's own seat draws the reason").toContain('the model is gone');
   });
 
   it('drops a numbered refusal whose own press the seat has replaced', () => {
