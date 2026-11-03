@@ -3535,8 +3535,7 @@ mod tests {
     #[test]
     fn an_excerpt_is_one_line_cut_at_a_word_boundary() {
         assert_eq!(one_line_excerpt("the deploy\n is   green", 80), "the deploy is green");
-        let long =
-            "the canary is holding at 1% and every check is green but the p99 is still high";
+        let long = "the canary is holding at 1% and every check is green but the p99 is still high";
         let cut = one_line_excerpt(long, 40);
         assert!(cut.ends_with("..."), "the cut is marked: {cut:?}");
         assert!(cut.chars().count() <= 43, "the cut keeps the bound: {cut:?}");

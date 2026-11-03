@@ -594,10 +594,7 @@ mod tests {
             ]),
             "an unresolved mention crosses with no name rather than being dropped",
         );
-        assert_eq!(
-            serde_json::from_value::<SlackDraft>(encoded).expect("and decodes back"),
-            draft,
-        );
+        assert_eq!(serde_json::from_value::<SlackDraft>(encoded).expect("and decodes back"), draft,);
 
         let older = serde_json::json!({
             "id": Uuid::nil(),

@@ -561,29 +561,28 @@ impl ProdSlackFacade {
     ) {
         let host = crate::slack::SlackSubsystemHost::new(ws);
         if let Some(ts) = draft.thread_ts.clone() {
-            draft.thread =
-                match thread_parent(api, &draft.conversation, &ts).await {
-                    // A read anchored at a message inside a thread answers the
-                    // thread's parent instead. Naming it would label an edit or
-                    // a delete with the wrong message, so only an exact ts is
-                    // the message the card is about; anything else draws the ts.
-                    Ok(Some(parent)) if parent.ts == ts => {
-                        Self::thread_name(&host, api, label, &parent).await
-                    }
-                    Ok(_) => None,
-                    Err(error) => {
-                        tracing::debug!(
-                            target: "forge_workspace::slack",
-                            event_name = "slack_draft_thread_unreadable",
-                            workspace = label,
-                            conversation = %draft.conversation,
-                            parent = %ts,
-                            %error,
-                            "reading a held draft's thread parent failed; the card draws the ts",
-                        );
-                        None
-                    }
-                };
+            draft.thread = match thread_parent(api, &draft.conversation, &ts).await {
+                // A read anchored at a message inside a thread answers the
+                // thread's parent instead. Naming it would label an edit or
+                // a delete with the wrong message, so only an exact ts is
+                // the message the card is about; anything else draws the ts.
+                Ok(Some(parent)) if parent.ts == ts => {
+                    Self::thread_name(&host, api, label, &parent).await
+                }
+                Ok(_) => None,
+                Err(error) => {
+                    tracing::debug!(
+                        target: "forge_workspace::slack",
+                        event_name = "slack_draft_thread_unreadable",
+                        workspace = label,
+                        conversation = %draft.conversation,
+                        parent = %ts,
+                        %error,
+                        "reading a held draft's thread parent failed; the card draws the ts",
+                    );
+                    None
+                }
+            };
         }
         let mut tagged = Vec::new();
         for id in mention_ids(&draft.text) {
@@ -603,9 +602,9 @@ impl ProdSlackFacade {
         parent: &SlackHistoryMessage,
     ) -> Option<SlackThreadName> {
         let author = match parent.user.as_deref().filter(|user| !user.is_empty()) {
-            Some(user) => user_display_name(host, api, label, user)
-                .await
-                .unwrap_or_else(|| user.to_owned()),
+            Some(user) => {
+                user_display_name(host, api, label, user).await.unwrap_or_else(|| user.to_owned())
+            }
             None => parent.bot_name.clone().filter(|name| !name.is_empty())?,
         };
         Some(SlackThreadName {
@@ -2490,13 +2489,15 @@ token = "y"
     async fn a_held_draft_names_its_thread_and_the_people_it_tags() {
         let (facade, ws, api, _rx) = facade_with_recording_slack();
         api.seed_conversation("C1", "ops");
-        api.seed_replies("C1", "100.0", vec![parent_message("100.0", "U2", "the deploy\nis green")]);
+        api.seed_replies(
+            "C1",
+            "100.0",
+            vec![parent_message("100.0", "U2", "the deploy\nis green")],
+        );
 
         let task = tokio::spawn({
             let facade = facade.clone();
-            async move {
-                facade.post(&caller(), threaded_post("C1", "100.0", "confirmed <@U9>")).await
-            }
+            async move { facade.post(&caller(), threaded_post("C1", "100.0", "confirmed <@U9>")).await }
         });
 
         let draft = parked_draft(&ws).await;
@@ -2578,9 +2579,7 @@ token = "y"
 
         let task = tokio::spawn({
             let facade = facade.clone();
-            async move {
-                facade.edit(&caller(), edit_request("C1", "200.0", Some("rewritten"))).await
-            }
+            async move { facade.edit(&caller(), edit_request("C1", "200.0", Some("rewritten"))).await }
         });
 
         assert_eq!(
@@ -2604,9 +2603,7 @@ token = "y"
 
         let task = tokio::spawn({
             let facade = facade.clone();
-            async move {
-                facade.post(&caller(), threaded_post("C1", "100.0", "confirmed <@U9>")).await
-            }
+            async move { facade.post(&caller(), threaded_post("C1", "100.0", "confirmed <@U9>")).await }
         });
 
         let draft = parked_draft(&ws).await;
