@@ -134,8 +134,9 @@ run_binary "$STAGED_BIN" --version > /dev/null \
 # The live install is replaced only now. Real files get a fresh inode through
 # a temp name and a rename, so a forge already running keeps its mapped copy;
 # the SONAME and link names are repointed after them; the binary follows by
-# the same rename; the stale sweep runs last.
+# the same rename.
 mkdir -p "$FORGE_BIN_DIR"
+trap 'rm -f "$FORGE_BIN_DIR"/.*.new' EXIT
 for staged in "$FORGE_TRANSCRIBE_LIBS"/*; do
     [ -e "$staged" ] || continue
     if [ -L "$staged" ]; then
@@ -149,17 +150,20 @@ for staged in "$FORGE_TRANSCRIBE_LIBS"/*; do
     [ -L "$staged" ] || continue
     ln -sfn "$(readlink "$staged")" "$FORGE_BIN_DIR/${staged##*/}"
 done
-# Drop a library this build no longer ships, dangling links included; a stale
-# name beside the binary could satisfy the loader with the wrong file.
+cp "$STAGED_BIN" "$FORGE_BIN_DIR/.forge.new"
+mv -f "$FORGE_BIN_DIR/.forge.new" "$FORGE_BIN"
+run_binary "$FORGE_BIN" --version > /dev/null \
+    || die "the installed binary does not start - run $FORGE_BIN directly for the loader's error"
+# Drop a library this build no longer ships, dangling links included. The
+# sweep runs only now: before the binary replace it could remove an old
+# SONAME and then fail the copy, leaving a binary that cannot start. The two
+# prefixes are the runtime libraries forge ships.
 for installed in "$FORGE_BIN_DIR"/libtranscribe* "$FORGE_BIN_DIR"/libggml*; do
     [ -e "$installed" ] || [ -L "$installed" ] || continue
     staged="$FORGE_TRANSCRIBE_LIBS/${installed##*/}"
     [ -e "$staged" ] || [ -L "$staged" ] || rm -f "$installed"
 done
-cp "$STAGED_BIN" "$FORGE_BIN_DIR/.forge.new"
-mv -f "$FORGE_BIN_DIR/.forge.new" "$FORGE_BIN"
-run_binary "$FORGE_BIN" --version > /dev/null \
-    || die "the installed binary does not start - run $FORGE_BIN directly for the loader's error"
+trap - EXIT
 rm -rf "$STAGING_ROOT"
 
 log_success "forge installed at $FORGE_BIN"
