@@ -825,6 +825,7 @@
         footHeld = true;
         working?.following(true);
         anchor = null;
+        rememberPlace();
       }
       // The layout has settled, so the reach ask may have no scroll to ride
       // (#2139). **The fit itself is read inside `fillFittingRoom` and not
@@ -965,6 +966,7 @@
     }
     anchor = landed;
     owedUnplaced = false;
+    rememberPlace();
     return true;
   }
 
@@ -1200,6 +1202,9 @@
         // the incoming chat's trim.
         footHeld = true;
         working?.following(true);
+        // An entry lands at the latest, so a place a previous visit left is
+        // done - and a `/new` emptied the row it named.
+        places.delete(which);
       }
       // **And so were the asks this column is holding.** They belong to the
       // conversation that is going, and their pages are not coming here.
@@ -1278,34 +1283,29 @@
   /**
    * The reader's place, kept per seat for a mount that outlives the column.
    *
-   * **Written from the column's own state rather than from a scroll**: the
-   * anchor is where a parked reader is. A reader at the foot has no anchor to
-   * hold, so a seat left at its foot has no place - coming back to it should
-   * land at the latest. **The follow flag is not the test**: since #1673's
-   * gate, an arrival can arm the follow while the pin's condition holds a
-   * parked reader where they are, and that reader still holds the place a
-   * document return owes back.
+   * **Written where the anchor moves, not from a publish.** The anchor is a
+   * plain field and a reader who keeps scrolling while parked changes nothing
+   * the fold publishes - `following(false)` on an already-off follow is the
+   * same record - so a place written from an effect would stay at the first
+   * nudge while the reader kept scrolling. A reader at the foot has no anchor
+   * to hold, so a seat left at its foot has no place. A row of a conversation
+   * this seat no longer holds is not this seat's place, so it is not written
+   * over one.
    */
-  $effect(() => {
-    // The place being restored is already recorded; the placer writes it back
-    // when it lands, and a dropped one goes with the record it no longer has.
-    if (restoring !== null) return;
-    const here = anchor;
-    const which = seat;
+  function rememberPlace(): void {
     const places = conversations().places;
-    // **The seat's own value is read so this runs when it changes.** The
-    // anchor is a plain field rather than state, and a reader parks by moving
-    // the follow - so the write lands on the publish that settles it, not on
-    // the scroll event. A row of a conversation this seat no longer holds is
-    // not this seat's place, so it is not written over one.
-    const seatValue = held;
+    const here = anchor;
     if (here === null) {
-      places.delete(which);
+      places.delete(seat);
       return;
     }
-    if (!seatValue.turns.some((turn) => here.key.startsWith(`${turn.key}:`))) return;
-    places.set(which, here);
-  });
+    // The membership scan runs when the row changes, not on every pixel of a
+    // scroll within the same one.
+    if (places.get(seat)?.key !== here.key) {
+      if (!held.turns.some((turn) => here.key.startsWith(`${turn.key}:`))) return;
+    }
+    places.set(seat, here);
+  }
 
   /**
    * Take a returning reader back to the row their place names.
@@ -1324,7 +1324,7 @@
     if (place === null || handle === null || turns.length === 0 || restoreFrame !== null) return;
     const at = turns.findIndex((turn) => place.key.startsWith(`${turn.key}:`));
     if (at < 0) {
-      restoring = null;
+      giveUpRestore();
       return;
     }
     restoreFrame = requestAnimationFrame(() => {
@@ -1339,18 +1339,32 @@
     const place = restoring;
     if (place === null) return;
     if (viewport === null || held.following) {
-      restoring = null;
+      giveUpRestore();
       return;
     }
     if (viewport.querySelector(`[data-k="${CSS.escape(place.key)}"]`) === null) {
       restoreTries += 1;
       restoreFrame = restoreTries < RESTORE_TRIES ? requestAnimationFrame(placeRestored) : null;
-      if (restoreFrame === null) restoring = null;
+      if (restoreFrame === null) giveUpRestore();
       return;
     }
     restoring = null;
     restoreTries = 0;
     anchor = place;
+  }
+
+  /**
+   * The old entry when a restore cannot land: the reader goes to the foot,
+   * following, rather than staying at the turn's start with the follow off.
+   */
+  function giveUpRestore(): void {
+    restoring = null;
+    restoreTries = 0;
+    anchor = null;
+    rememberPlace();
+    footHeld = true;
+    working?.following(true);
+    land();
   }
 
   // A restore still waiting must not land on a column that is going.
@@ -2353,6 +2367,7 @@
         // The foot is where a following reader wants to be, so the place they
         // held on the way there is done with.
         anchor = null;
+        rememberPlace();
       }
     }
     // `placed` is where the last pin left the reader; before any pin has
@@ -2562,6 +2577,7 @@
         working?.following(true);
         settleWindow();
         anchor = null;
+        rememberPlace();
         // The reader asked for the foot, so this pass is theirs to make.
         land(true);
       }}
