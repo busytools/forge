@@ -226,8 +226,8 @@ state: there is nothing to type into until the page lands, so the line takes
 the box rather than sitting above a live field - a row above the field grew
 the composer and shrank it again before the chat appeared. A take in flight or
 a parked ask takes the body ahead of it, because both are the reader's own
-surface; the push-to-talk key begins nothing while the page is out, since the
-field is not on screen to receive the words. A row the column already
+surface; while the read wait holds the box the push-to-talk key begins
+nothing, since the field is not on screen to receive the words. A row the column already
 holds - a send carried across a reload, or one the takeover bar sent - still
 draws above as the reader's own, so those words are never lost.
 

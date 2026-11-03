@@ -1183,9 +1183,11 @@
     offered: () => dictation,
     bind: () => composer.bind,
     mode: () => composer.mode,
-    // The read wait begins nothing: the field is not on screen, and a take
-    // started here would carry words into a draft the reader cannot see.
-    machine: () => machineInForce(composer) !== null || reading,
+    // The read wait begins nothing: its hold draws no field, and a take
+    // started there would carry words into a draft the reader cannot see.
+    // The other holds still allow a take (a Failed seat relies on it), so
+    // this keys on the read hold rather than on `reading`.
+    machine: () => machineInForce(composer) !== null || blocker?.status === true,
     // **Only where the bar's own toggle is offered**, so a press can never
     // open a line the reader has no control to close (the page still opening,
     // or on a tab the hand-off did not name).

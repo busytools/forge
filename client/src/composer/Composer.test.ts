@@ -4343,6 +4343,45 @@ describe('the one body slot', () => {
     ).toBeNull();
   });
 
+  it('opens no capture from the bound key while the read wait holds the box', async () => {
+    // **The control first**, the same shape as the machine-turn case: an
+    // empty send below proves nothing unless the same press begins a take on
+    // a live box.
+    const live = open({ dictation: true });
+    key('ControlRight', 'keydown');
+    await opened();
+    expect(live.sent, 'the control: a live box begins the take').toHaveLength(1);
+    void unmount(app as Record<string, unknown>);
+    app = null;
+    document.body.innerHTML = '';
+
+    const harness = open({ dictation: true, reading: true });
+
+    key('ControlRight', 'keydown');
+    await opened();
+
+    expect(harness.sent, 'the key begins nothing under the read wait').toEqual([]);
+  });
+
+  it('inserts the live region when the read wait takes over from a waking hold', () => {
+    // The announced node must be a fresh insert, not a role added to the
+    // waking hold's node: screen readers reliably announce the former.
+    const page = open({
+      reading: true,
+      seat: seatRead({ lifecycle: null, waking: true }),
+    });
+    const before = document.querySelector('.slot > .blocked');
+    expect(before, 'precondition: the waking hold draws').not.toBeNull();
+
+    page.page.seat = seatRead({ lifecycle: 'Running' });
+    flushSync();
+    const after = document.querySelector('.slot > .blocked');
+
+    expect(after, 'the read hold did not draw').not.toBeNull();
+    expect(after, 'the live region reused the waking hold node').not.toBe(before);
+    expect(after?.getAttribute('role'), 'the read hold lost its live region').toBe('status');
+  });
+
   it("opens the autocomplete as the card's own popover, not a lane of the body", () => {
     // The list took the band from 121px to 557px while it sat in the box's
     // flow. It is a child of the card now, placed by a rule of its own: a
