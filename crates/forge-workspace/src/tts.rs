@@ -170,8 +170,8 @@ pub struct TtsSettings {
     #[serde(default)]
     pub voice: Option<String>,
     /// Ghost of the retired `[tts] language` hint: read only so a stale
-    /// config keeps loading. The engine takes the voice id and no language
-    /// field, so there is nothing for the key to set.
+    /// config keeps loading. The voice id is the language choice (the 54
+    /// voices cover eight languages), so there is nothing for the key to set.
     #[serde(default)]
     pub language: Option<toml::Value>,
     /// Upper bound on one utterance's text, as a character estimate at a

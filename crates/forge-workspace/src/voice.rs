@@ -93,6 +93,9 @@ pub struct VoiceService {
 struct PreviewSlot {
     latest: Option<String>,
     running: bool,
+    /// The loop that owns `running`: a settle from an older loop must not
+    /// clear a newer loop's flag or drop the voice it has yet to render.
+    generation: u64,
 }
 
 struct Seat {
@@ -168,7 +171,7 @@ impl VoiceService {
         }
         // Refuse before the load, so a seat nobody hears never pays it.
         self.listening_queue(seat)?;
-        {
+        let generation = {
             let mut previews = self.previews.lock().map_err(|_| SayError::NotReady)?;
             let slot = previews.entry(seat.clone()).or_default();
             slot.latest = Some(voice);
@@ -176,18 +179,22 @@ impl VoiceService {
                 return Ok(());
             }
             slot.running = true;
-        }
+            slot.generation += 1;
+            slot.generation
+        };
         let outcome = self.render_previews(seat).await;
         // The loop has stopped, however it stopped: a failure or a listener
         // that left mid-load must not leave the seat claiming a preview runs.
-        self.settle_previews(seat);
+        self.settle_previews(seat, generation);
         outcome
     }
 
-    /// Clear one seat's preview state, so the next press starts a fresh loop.
-    fn settle_previews(&self, seat: &SessionSlot) {
+    /// Clear the preview state the loop with `generation` owns. A newer loop
+    /// may already hold the seat, and its flag and pending voice are its own.
+    fn settle_previews(&self, seat: &SessionSlot, generation: u64) {
         if let Ok(mut previews) = self.previews.lock()
             && let Some(slot) = previews.get_mut(seat)
+            && slot.generation == generation
         {
             slot.latest = None;
             slot.running = false;
@@ -964,6 +971,29 @@ mod tests {
         service.set_listening(&seat, 1, true, false);
         service.preview(&seat, "bf_emma".to_owned()).await.expect("the preview renders");
         assert_eq!(requests.lock().expect("unpoisoned").len(), 1);
+    }
+
+    /// A press lands after a loop's last take but before that loop settles:
+    /// the old settle must leave the newer loop's flag and pending voice
+    /// alone, or the press is dropped and a third one starts a second loop.
+    #[tokio::test]
+    async fn a_stale_loop_does_not_settle_a_newer_press() {
+        let service = service_with(|| StubEngine::new(Arc::new(Mutex::new(Vec::new())))).service;
+        let seat = seat();
+        {
+            let mut previews = service.previews.lock().expect("unpoisoned");
+            let slot = previews.entry(seat.clone()).or_default();
+            slot.generation = 2;
+            slot.running = true;
+            slot.latest = Some("bf_emma".to_owned());
+        }
+
+        service.settle_previews(&seat, 1);
+
+        let previews = service.previews.lock().expect("unpoisoned");
+        let slot = previews.get(&seat).expect("the slot");
+        assert!(slot.running, "a stale loop's settle cleared the newer loop's flag");
+        assert_eq!(slot.latest.as_deref(), Some("bf_emma"), "the newer press's voice was dropped");
     }
 
     #[tokio::test]

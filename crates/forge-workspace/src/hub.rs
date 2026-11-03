@@ -12,11 +12,12 @@ use std::time::Duration;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
-/// How long the Hub gets to answer, how long a stalled read waits, and how
-/// long one listing may paginate before the install gives up.
+/// The Hub's connect and read bounds, a whole-request backstop sized so the
+/// largest variant (325 MB at 0.4 Mbps) still finishes, and the page cap on
+/// one listing before the install gives up.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const READ_TIMEOUT: Duration = Duration::from_secs(60);
-const TOTAL_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+const TOTAL_TIMEOUT: Duration = Duration::from_secs(2 * 60 * 60);
 const MAX_TREE_PAGES: usize = 20;
 
 /// One file the repository publishes.

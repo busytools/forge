@@ -6501,8 +6501,11 @@ impl Workspace {
                     forge_tts::select_voice(Some(&voice), &installed).map_err(|error| {
                         crate::DispatchError::VoiceOff { reason: error.to_string() }
                     })?;
-                    if let Ok(mut slot) = self.voice_preview_error.lock() {
-                        *slot = None;
+                    // A failure the client is still drawing is cleared here, and
+                    // the read pushed: an accepted press is the promise the old
+                    // error no longer stands, whatever this render does.
+                    if self.voice_preview_error.lock().is_ok_and(|mut slot| slot.take().is_some()) {
+                        self.push_models();
                     }
                     let this = Arc::clone(self);
                     tokio::spawn(async move {
