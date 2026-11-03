@@ -29,7 +29,7 @@ vi.mock('./conversation', async (importOriginal) => {
   return frozenConversation(await importOriginal<typeof import('./conversation')>());
 });
 
-const { clear, element, layout, list, measured, pinned, setElement, setMeasured, setModel } =
+const { clear, element, layout, list, measured, moved, pinned, setElement, setMeasured, setModel } =
   await import('./testing/records');
 const { default: Chat } = await import('./Chat.svelte');
 const { default: Seats } = await import('./testing/Seats.svelte');
@@ -2529,5 +2529,153 @@ describe('the heights a turn ends at', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+/**
+ * **A document return is not a seat switch** (#2834).
+ *
+ * The document and the session are separate branches of the router, so opening
+ * one unmounts the column and returning mounts a fresh one. The entry effect
+ * re-arms the follow - #1673's rule for a seat switch - so a reader parked
+ * mid-conversation is dropped to the foot on the same seat, the same
+ * conversation, and a place they never left.
+ *
+ * The page unmounting is the router's half and the column is the one under
+ * test: the return is this mount, over a conversation the connection kept.
+ */
+describe('a return to the seat the reader left', () => {
+  /** How far a returned reader is put back: 40px rows and 10px into the second. */
+  const PLACE = 50;
+
+  /** The column, mounted, with a page on it and the reader parked mid-history. */
+  async function parked(server: ReturnType<typeof stub>): Promise<void> {
+    clear();
+    clearObservers();
+    setMeasured(TOTAL, VIEWPORT);
+    app = mount(Chat, {
+      target: document.body,
+      props: { slot: LEAD, connection: server.connection },
+    });
+    flushSync();
+    server.page([spoken('t1'), spoken('t2'), spoken('t3')]);
+    await settle();
+    layOut(40);
+    readerAt(PLACE);
+    await settle();
+    expect(list(), 'the column is mounted with rows to hold').not.toBeNull();
+    expect(element.offset, 'precondition: the reader is parked, not at the foot').toBe(PLACE);
+  }
+
+  /** The document opening: the route unmounts the column, and the browser
+   *  throws the element holding the reader's offset away with it. */
+  async function ontoDocument(): Promise<void> {
+    if (app !== null) await unmount(app);
+    app = null;
+    document.body.innerHTML = '';
+    element.offset = 0;
+    clear();
+  }
+
+  /** The return: the same seat, a fresh column over the conversation kept. */
+  function returned(server: ReturnType<typeof stub>): void {
+    app = mount(Chat, {
+      target: document.body,
+      props: { slot: LEAD, connection: server.connection },
+    });
+    flushSync();
+    // The fresh list's rows are new elements, and jsdom lays nothing out.
+    layOut(40);
+  }
+
+  it('puts a parked reader back at their place, and pins nothing', async () => {
+    const server = stub();
+    await parked(server);
+
+    await ontoDocument();
+    returned(server);
+    await settle();
+    await settle();
+
+    const foot = Math.floor(TOTAL) - VIEWPORT;
+    expect(element.offset, 'the return dropped the reader to the foot').toBe(PLACE);
+    // **The list moved to the row's turn before the place was held.** A fresh
+    // list mounts at its start, so a row the reader left further down is
+    // outside the drawn window until this scroll draws it; the stub draws
+    // every row, so the call is the only half it can see.
+    expect(moved(), 'the return did not scroll the list to the row it restores').toEqual([
+      { at: 1, align: 'start' },
+    ]);
+    expect(
+      pinned().filter((pin) => pin.landed === foot),
+      'a return is not a seat switch: no foot pin',
+    ).toEqual([]);
+    expect(
+      document.querySelector('button.follow'),
+      'the returned reader is away from the foot, and the way back says so',
+    ).not.toBeNull();
+  });
+
+  /**
+   * The guard on the other side: a seat SWITCH still lands at the latest,
+   * whatever a seat was left holding (#1673). The switch is the same mounted
+   * column taking a different slot, which is what the app does.
+   */
+  it('still lands a seat switch at the foot', async () => {
+    const server = stub();
+    const seat = writable(LEAD);
+    clear();
+    clearObservers();
+    setMeasured(TOTAL, VIEWPORT);
+    app = mount(Seats, {
+      target: document.body,
+      props: { seat, connection: server.connection },
+    });
+    flushSync();
+    server.page([spoken('t1'), spoken('t2'), spoken('t3')]);
+    await settle();
+    layOut(40);
+    readerAt(PLACE);
+    await settle();
+    clear();
+
+    seat.set(OTHER);
+    flushSync();
+    server.page([spoken('o1'), spoken('o2')], OTHER);
+    await settle();
+
+    expect(element.offset, 'the switch did not open the new seat at its latest').toBe(
+      Math.floor(TOTAL) - VIEWPORT,
+    );
+
+    // **And back to the seat that holds a place.** A switch is not a return
+    // however recently the seat was left, so the place recorded on `LEAD`
+    // above is not taken back here - the way back is the only door to it.
+    seat.set(LEAD);
+    flushSync();
+    await settle();
+
+    expect(element.offset, 'the switch back reopened the place the seat was left at').toBe(
+      Math.floor(TOTAL) - VIEWPORT,
+    );
+  });
+
+  /** And a fresh open - no seat shown before it - has no place to return to. */
+  it('lands a fresh open at the latest', async () => {
+    const server = stub();
+    clear();
+    clearObservers();
+    setMeasured(TOTAL, VIEWPORT);
+    app = mount(Chat, {
+      target: document.body,
+      props: { slot: LEAD, connection: server.connection },
+    });
+    flushSync();
+    server.page([spoken('t1'), spoken('t2'), spoken('t3')]);
+    await settle();
+
+    expect(element.offset, 'a fresh open did not land at the foot').toBe(
+      Math.floor(TOTAL) - VIEWPORT,
+    );
   });
 });

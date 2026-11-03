@@ -2,7 +2,18 @@
   import type { Snippet } from 'svelte';
   import { SvelteSet } from 'svelte/reactivity';
 
-  import { boxes, element, gate, layout, list, pins, records, register, reported } from './records';
+  import {
+    boxes,
+    element,
+    gate,
+    layout,
+    list,
+    moves,
+    pins,
+    records,
+    register,
+    reported,
+  } from './records';
 
   /**
    * A stand-in for `virtua`'s list, for tests that have to see what the column
@@ -223,6 +234,22 @@
     reported.size = total;
     reported.viewport = height;
     onscroll?.(at);
+  }
+
+  /**
+   * The list moving to an item, which the real one computes from its own
+   * model. The stub draws every row, so the move only has to land where the
+   * item's share of the height is - what a return needs is that the scroll
+   * happened at all before the anchor's own restore reads the rows.
+   */
+  export function scrollToIndex(at: number, _options?: { align?: string }): void {
+    moves.push({ at, align: _options?.align ?? null });
+    const rows = data.length;
+    if (rows === 0 || reported.size <= 0) return;
+    const per = reported.size / rows;
+    const target = Math.max(0, Math.min(at * per, reported.size - reported.viewport));
+    element.offset = target;
+    onscroll?.(target);
   }
 
   /**
