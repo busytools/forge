@@ -131,16 +131,30 @@ run_binary() {
 run_binary "$STAGED_BIN" --version > /dev/null \
     || die "the staged binary does not start - run $STAGED_BIN directly for the loader's error"
 
-# The live install is replaced only now: libraries first, so the old binary
-# keeps working while they land, then the binary by rename, which is atomic
-# and never leaves a half-written forge in place.
+# The live install is replaced only now. Real files get a fresh inode through
+# a temp name and a rename, so a forge already running keeps its mapped copy;
+# the SONAME and link names are repointed after them; the binary follows by
+# the same rename; the stale sweep runs last.
 mkdir -p "$FORGE_BIN_DIR"
-cp -R "$FORGE_TRANSCRIBE_LIBS/." "$FORGE_BIN_DIR/"
-# Drop a library this build no longer ships; a stale copy beside the binary
-# would satisfy the loader with the wrong version.
+for staged in "$FORGE_TRANSCRIBE_LIBS"/*; do
+    [ -e "$staged" ] || continue
+    if [ -L "$staged" ]; then
+        continue
+    fi
+    name="${staged##*/}"
+    cp "$staged" "$FORGE_BIN_DIR/.$name.new"
+    mv -f "$FORGE_BIN_DIR/.$name.new" "$FORGE_BIN_DIR/$name"
+done
+for staged in "$FORGE_TRANSCRIBE_LIBS"/*; do
+    [ -L "$staged" ] || continue
+    ln -sfn "$(readlink "$staged")" "$FORGE_BIN_DIR/${staged##*/}"
+done
+# Drop a library this build no longer ships, dangling links included; a stale
+# name beside the binary could satisfy the loader with the wrong file.
 for installed in "$FORGE_BIN_DIR"/libtranscribe* "$FORGE_BIN_DIR"/libggml*; do
-    [ -e "$installed" ] || continue
-    [ -e "$FORGE_TRANSCRIBE_LIBS/${installed##*/}" ] || rm -f "$installed"
+    [ -e "$installed" ] || [ -L "$installed" ] || continue
+    staged="$FORGE_TRANSCRIBE_LIBS/${installed##*/}"
+    [ -e "$staged" ] || [ -L "$staged" ] || rm -f "$installed"
 done
 cp "$STAGED_BIN" "$FORGE_BIN_DIR/.forge.new"
 mv -f "$FORGE_BIN_DIR/.forge.new" "$FORGE_BIN"
