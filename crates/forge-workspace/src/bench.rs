@@ -623,11 +623,6 @@ impl Workspace {
                 reason: "[dictate] enabled is false, so the recognizer half cannot run".to_owned(),
             });
         }
-        let Some(files) = config.tts.files() else {
-            return Err(DispatchError::VoiceOff {
-                reason: "no models directory resolves".to_owned(),
-            });
-        };
         self.claim_bench()?;
         if let Some(holder) = self.dictate_runtime.lock().live_holder() {
             self.release_bench();
@@ -648,7 +643,7 @@ impl Workspace {
                     return;
                 }
             };
-            runtime.block_on(Arc::clone(&this).run_speaking_bench(files));
+            runtime.block_on(Arc::clone(&this).run_speaking_bench());
             this.push_models();
         });
         if let Err(error) = spawned {
@@ -671,7 +666,7 @@ impl Workspace {
     }
 
     /// Gather the public corpus, load both engines, and run the loop.
-    async fn run_speaking_bench(self: Arc<Self>, files: forge_tts::ModelFiles) {
+    async fn run_speaking_bench(self: Arc<Self>) {
         let settings = self.config_arc().dictate.clone();
         let active = self.active_models();
         let cfg = crate::dictate::preflight_config(&settings, &active);
@@ -712,7 +707,12 @@ impl Workspace {
         let total = clips.len();
         *self.speaking_bench.lock() = SpeakingBenchState::Running { clip: 0, clips: total };
 
-        let engine = match forge_tts::QwenTts::load(&files) {
+        let Some(files) = self.speaking_files() else {
+            return self.settle_speaking_bench(Err(
+                "the speaking model is not installed; install it from the models page".to_owned(),
+            ));
+        };
+        let engine = match forge_tts::KokoroTts::load(&files) {
             Ok(engine) => engine,
             Err(error) => return self.settle_speaking_bench(Err(error.to_string())),
         };
@@ -1152,7 +1152,7 @@ mod tests {
             panic!("a run with no speaking model must land failed");
         };
         assert!(!reason.contains("public corpus"), "the bundled corpus is not a blocker: {reason}");
-        assert!(reason.contains("Qwen3-TTS"), "the missing model is named: {reason}");
+        assert!(reason.contains("speaking model"), "the missing model is named: {reason}");
 
         let installed = forge_dictate::bench::public_corpus(&models.path().join("public-corpus"))
             .expect("the bundled slice installed");

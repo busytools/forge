@@ -18,7 +18,14 @@ import { subagents } from './subagents.svelte';
 import { PRE_RESUME, RESUME, RESUME_END, RESUME_KEY } from './testing/resume-2503';
 import SeatSwitch from './testing/seat-switch.svelte';
 import { installResizeObserver, resized } from './testing/viewport';
-import { clear, measured as listMeasured, setMeasured } from './testing/records';
+import {
+  clear,
+  gate,
+  measured as listMeasured,
+  setMeasured,
+  stuckEveryMount,
+  stuckOnce,
+} from './testing/records';
 
 installResizeObserver();
 
@@ -2503,5 +2510,94 @@ describe('the drawn mark', () => {
       states.indexOf('conversation'),
       'the content drawing follows the placeholder on the same open',
     ).toBeGreaterThan(0);
+  });
+});
+
+/**
+ * **A mounted list that draws no row** (#2825). `virtua` renders no item until
+ * its ResizeObserver reports the viewport, and a mount whose delivery is missed
+ * leaves the seat holding a conversation and the pane black until something
+ * resizes it or the reader leaves and comes back. The column can tell that
+ * state apart from a list that has measured and is drawing next frame, and a
+ * fresh mount is the measurement a seat switch was doing by hand.
+ */
+describe('a list that mounted and drew no rows', () => {
+  const turn = (key: string): unknown => ({
+    key,
+    messages: [
+      {
+        type: 'assistant',
+        message: {
+          id: `m-${key}`,
+          role: 'assistant',
+          model: 'claude-opus-5',
+          content: [{ type: 'text', text: `said ${key}` }],
+        },
+      },
+    ],
+  });
+
+  it('forces a re-measure and draws the rows the seat holds', async () => {
+    const server = stub();
+    paintedMark.mockClear();
+    stuckOnce();
+    // The pane has its room; the list is the half that never measured it.
+    setMeasured(1_005, 1_005);
+    draw({}, server);
+    server.answer([turn('t1')]);
+    await painted();
+
+    expect(gate.mounts, 'the stuck mount was replaced by a freshly measured one').toBe(2);
+    expect(document.querySelectorAll('[data-t]'), 'the rows the seat held now draw').toHaveLength(
+      1,
+    );
+
+    // The perf record stays honest: the fixed open reports the row it painted.
+    resized(120);
+    expect(paintedMark, 'the fixed open writes its painted mark').toHaveBeenCalled();
+  });
+
+  /**
+   * **The bound is one re-measure, not a retry loop.** Every mount misses the
+   * measure here, so a column that kept forcing would re-mount on every check -
+   * the timer this fix is not. Two extra frames give a loop room to show.
+   */
+  it('forces one re-measure and stops, even when the replacement misses too', async () => {
+    const server = stub();
+    stuckEveryMount();
+    // The pane has its room; the list is the half that never measures.
+    setMeasured(1_005, 1_005);
+    draw({}, server);
+    server.answer([turn('t1')]);
+    await painted();
+    await painted();
+
+    expect(gate.mounts, 'one forced mount, and no third when it too measured nothing').toBe(2);
+  });
+
+  it('leaves a list that measured its own viewport alone', async () => {
+    const server = stub();
+    setMeasured(1_005, 1_005);
+    draw({}, server);
+    server.answer([turn('t1')]);
+    await painted();
+
+    expect(gate.mounts, 'a list that measured drew its rows and was not re-mounted').toBe(1);
+  });
+
+  it('does not loop on a seat with nothing to draw', async () => {
+    const server = stub();
+    stuckOnce();
+    draw({}, server);
+    server.answer([]);
+    await painted();
+
+    expect(
+      document.querySelector('.hold'),
+      'the empty state is the column answering',
+    ).not.toBeNull();
+    expect(gate.mounts, 'no list mounts for an empty conversation, so nothing is re-measured').toBe(
+      0,
+    );
   });
 });

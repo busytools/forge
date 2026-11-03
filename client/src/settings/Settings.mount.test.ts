@@ -74,8 +74,9 @@ describe('the settings page', () => {
     expect(rail()).toHaveLength(settingsWire.areas.length);
     expect(rail()[0]?.textContent, 'the first area is named and counted').toContain('accounts');
     expect(rail()[0]?.textContent).toContain(String(settingsWire.areas[0]?.keys.length));
-    expect(rail()[4]?.textContent, 'an empty area still has a row').toContain('documents');
-    expect(rail()[4]?.textContent).toContain('0');
+    const empty = rail().find((row) => row.textContent?.includes('documents'));
+    expect(empty, 'an empty area still has a row').toBeDefined();
+    expect(empty?.textContent).toContain('0');
   });
 
   it('draws each instance as a card and each key as one line in it', () => {

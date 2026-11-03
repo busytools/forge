@@ -207,17 +207,24 @@ pub mod wire;
 /// wrong tab, so the numbers move. `baselines/socket/21/` is the record a v21
 /// server emitted.
 ///
-/// **v23 is a bump for the Slack draft's answer.** `respond_slack_post`
+/// **v23 takes a voice preview.** `voice_preview` is a new command variant,
+/// and a v22 server reads it as a message it does not know: a page that asked
+/// to hear a voice would be answered by an error rather than by one. The
+/// speaking read's fields ride along without moving the number, because a
+/// client older than them draws the role it always drew. `baselines/socket/22/`
+/// is the record a v22 server emitted.
+///
+/// **v24 is a bump for the Slack draft's answer.** `respond_slack_post`
 /// carries an answer now rather than a boolean: the reader can send a held
-/// draft back with words for the agent. A v22 server reads the new payload
-/// as a command it cannot decode, and a v22 client sends the old one this
-/// server refuses, so the numbers move. `baselines/socket/22/` is the record
-/// a v22 server emitted.
+/// draft back with words for the agent. A v23 server reads the new payload
+/// as a command it cannot decode, and a v23 client sends the old one this
+/// server refuses, so the numbers move. `baselines/socket/23/` is the record
+/// a v23 server emitted.
 ///
 /// **Additive fields do not bump.** `diff.base_error` is one, carried on the
 /// v16-era record: a client older than the field draws the vaguer line it
 /// always drew, and nothing it sends changes.
-pub const PROTOCOL_VERSION: u32 = 23;
+pub const PROTOCOL_VERSION: u32 = 24;
 
 /// The socket's keepalive: how often a connection is asked to prove it is
 /// still there, and how long it may stay silent before it is reaped.
