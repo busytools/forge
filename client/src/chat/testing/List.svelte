@@ -2,7 +2,7 @@
   import type { Snippet } from 'svelte';
   import { SvelteSet } from 'svelte/reactivity';
 
-  import { boxes, element, layout, list, pins, records, register, reported } from './records';
+  import { boxes, element, gate, layout, list, pins, records, register, reported } from './records';
 
   /**
    * A stand-in for `virtua`'s list, for tests that have to see what the column
@@ -44,6 +44,14 @@
     onscroll?: (offset: number) => void;
     children?: Snippet<[unknown]>;
   } = $props();
+
+  /**
+   * Whether THIS mount failed to measure its viewport, as `virtua`'s does when
+   * its ResizeObserver never reports (#2825): mounted with rows, drawing none,
+   * and reporting no viewport until something forces a fresh mount.
+   */
+  const unmeasured = gate.stuck && gate.mounts === 0;
+  gate.mounts += 1;
 
   /** What a row is keyed by: the list's own keyer, or its position without one. */
   function keyOf(row: unknown, at: number): string {
@@ -111,7 +119,7 @@
   }
 
   export function getViewportSize(): number {
-    return reported.viewport;
+    return unmeasured ? 0 : reported.viewport;
   }
 
   /**
@@ -255,7 +263,7 @@
 </script>
 
 <div class="conv" data-item-size={itemSize} {@attach container} {...rest}>
-  {#each data as row, at (keyOf(row, at))}
+  {#each unmeasured ? [] : data as row, at (keyOf(row, at))}
     {@const itemKey = keyOf(row, at)}
     {@const attrs = itemProps?.({ item: row, index: at }) ?? {}}
     <!-- The base class is the stub's own and every test's selector, so an
