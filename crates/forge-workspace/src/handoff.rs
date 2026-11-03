@@ -1349,31 +1349,6 @@ impl crate::Workspace {
         }
     }
 
-    /// The handoff row a seat's OCCUPANT arrived by, read from the store.
-    ///
-    /// This is what a view attaching after the swap - or after a forge
-    /// restart - draws the row from, where the transport holds no live copy.
-    /// It is looked up by the occupant, not by recency: a later handoff that
-    /// never reached its successor must not hide the row of the session that
-    /// is actually running.
-    pub fn handoff_record_for(&self, slot: &SessionSlot, occupant: &str) -> Option<HandoffRecord> {
-        let guard = self.db.lock();
-        let db = guard.as_ref()?;
-        match crate::store::handoffs::for_successor(db, slot, occupant) {
-            Ok(found) => found.map(|(record, _)| record),
-            Err(error) => {
-                tracing::warn!(
-                    target: "forge_workspace::handoff",
-                    event_name = "handoff_record_unreadable",
-                    slot = %slot.display(),
-                    %error,
-                    "the seat's handoff record could not be read",
-                );
-                None
-            }
-        }
-    }
-
     /// The brief waiting for `slot`'s successor, when one is.
     pub(crate) fn pending_brief_for(&self, slot: &SessionSlot) -> Option<PendingBrief> {
         self.pending_handoffs.lock().get(slot).cloned()

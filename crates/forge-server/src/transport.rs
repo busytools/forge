@@ -214,10 +214,17 @@ pub mod wire;
 /// client older than them draws the role it always drew. `baselines/socket/22/`
 /// is the record a v22 server emitted.
 ///
+/// **v24 drops the handoff row from the conversation record.** The record's
+/// `handoff` field was what a v23 client drew the block from; the block is
+/// gone, so the field goes with it. A v23 client beside a v24 server draws no
+/// block, which is the picture this change wants; the successor transcript's
+/// own procedure row carries the handoff instead.
+/// `baselines/socket/23/` is the record a v23 server emitted.
+///
 /// **Additive fields do not bump.** `diff.base_error` is one, carried on the
 /// v16-era record: a client older than the field draws the vaguer line it
 /// always drew, and nothing it sends changes.
-pub const PROTOCOL_VERSION: u32 = 23;
+pub const PROTOCOL_VERSION: u32 = 24;
 
 /// The socket's keepalive: how often a connection is asked to prove it is
 /// still there, and how long it may stay silent before it is reaped.

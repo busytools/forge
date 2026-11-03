@@ -604,31 +604,6 @@ impl From<&PendingAsk> for PendingAskWire {
     }
 }
 
-/// The handoff row a record carries.
-///
-/// **The live copy answers first, and a copy with none asks the store** -
-/// `stored` runs in the `or_else`, so the store is read only when the copy
-/// cannot answer, which is the ordinary case never. A forge restart seeds
-/// the successor's conversation from its connect, which carries no handoff
-/// with it, and that is the copy this covers.
-///
-/// **The store is asked by occupant, not by recency**: a later handoff that
-/// never reached its successor must not hide the row of the session that is
-/// running.
-///
-/// **Only the occupant the record names draws it.** A `/new` or a resume
-/// under the same seat leaves a row describing a session this record no
-/// longer holds.
-fn handoff_row(
-    occupant: Option<&forge_primitives::SessionId>,
-    held: Option<forge_primitives::HandoffRecord>,
-    stored: impl FnOnce(&str) -> Option<forge_primitives::HandoffRecord>,
-) -> Option<forge_primitives::HandoffRecord> {
-    let occupant = occupant?;
-    let record = held.or_else(|| stored(occupant.as_str()))?;
-    (record.to == occupant.as_str()).then_some(record)
-}
-
 /// The conversation a session's transcript replayed, and how many times it
 /// has compacted.
 ///
@@ -648,15 +623,6 @@ pub struct ConversationWire {
     /// is the conversation's first page: there is nothing above it.
     pub cursor: Option<String>,
     pub compaction_count: u32,
-    /// The row between the two conversations, when this seat's occupant
-    /// arrived by a handoff.
-    ///
-    /// It crosses here rather than as a turn so a client attaching after
-    /// the swap draws the same row a client that watched it draw: the row
-    /// describes the join, and the transcript the successor writes never
-    /// contains it.
-    #[serde(default)]
-    pub handoff: Option<forge_primitives::HandoffRecord>,
     /// The schedules the fired prompts in these turns came from, keyed by the
     /// prompt's own id.
     ///
@@ -2389,7 +2355,7 @@ async fn session(
                 // (#2420): a client seeds its conversation from this answer
                 // instead of asking `more` for the same page, and the handle
                 // is what names the history above it.
-                let (mut page, count, covered, handoff) = held.read(|held| {
+                let (mut page, count, covered) = held.read(|held| {
                     let mut page = page_within(
                         held.messages(),
                         held.rendered(),
@@ -2401,7 +2367,7 @@ async fn session(
                         Some((cap, &capped)),
                     );
                     floor_cursor(&mut page, held.dropped());
-                    (page, held.compaction_count(), held.watermark(), held.handoff().cloned())
+                    (page, held.compaction_count(), held.watermark())
                 });
                 // **A page cut to a byte budget was capped as it was
                 // measured**, turn by turn, so this pass would walk every
@@ -2417,7 +2383,7 @@ async fn session(
                 // than the record. The row is annotating the page, but it is
                 // part of building the answer.
                 let page_ms = at.elapsed().as_secs_f64() * 1000.0;
-                (page.turns, page.cursor, count, page_ms, covered, handoff, names)
+                (page.turns, page.cursor, count, page_ms, covered, names)
             })
             .await
             .unwrap_or_else(|error| {
@@ -2427,15 +2393,12 @@ async fn session(
                     slot = %seat.display(),
                     "the fold did not finish; the record is answered without it",
                 );
-                (Vec::new(), None, 0, 0.0, 0, None, BTreeMap::new())
+                (Vec::new(), None, 0, 0.0, 0, BTreeMap::new())
             })
         }
-        None => (Vec::new(), None, 0, 0.0, 0, None, BTreeMap::new()),
+        None => (Vec::new(), None, 0, 0.0, 0, BTreeMap::new()),
     };
-    let (turns, cursor, compaction_count, page_ms, covered, handoff, cron_names) = read;
-    let handoff = handoff_row(header.session_id.as_ref(), handoff, |occupant| {
-        surface.handoff_record(slot, occupant)
-    });
+    let (turns, cursor, compaction_count, page_ms, covered, cron_names) = read;
     timings.page_ms = page_ms;
     // **The answer's number is the copy's own**, not catch_up's pass: a seal
     // can reseed the copy after that check, and a pre-seal number would have
@@ -2635,7 +2598,7 @@ async fn session(
         monitors: surface.monitors(slot),
         pending_ask: asks.first().map(PendingAskWire::from),
         pending_asks: asks.iter().map(PendingAskWire::from).collect(),
-        conversation: ConversationWire { turns, cursor, compaction_count, handoff, cron_names },
+        conversation: ConversationWire { turns, cursor, compaction_count, cron_names },
         header: SessionHeaderWire {
             session_id: header.session_id.clone(),
             seq,
@@ -2810,25 +2773,6 @@ mod tests {
         )
     }
 
-    fn a_handoff_record(to: &str) -> forge_primitives::HandoffRecord {
-        forge_primitives::HandoffRecord {
-            slot: SessionSlot::lead("TestOrg", "proj"),
-            from: "old".to_owned(),
-            to: to.to_owned(),
-            reason: forge_primitives::HandoffReason::Fill,
-            fill_percent: Some(85),
-            total_tokens: Some(850_000),
-            max_tokens: Some(1_000_000),
-            at_percent: 85,
-            brief: forge_primitives::HandoffBrief::default(),
-            judgment_turn: Vec::new(),
-            transcript_path: "/tmp/old.jsonl".to_owned(),
-            at: "2026-10-24T08:00:00Z".to_owned(),
-            cycle: forge_primitives::HandoffCycle::default(),
-            successor: None,
-        }
-    }
-
     /// **The row states the check its diff was read against.** The store can
     /// hold a newer measurement (a bypass answered while a fetch landed), and
     /// taking the row from that side would leave the record disagreeing with
@@ -2903,34 +2847,6 @@ mod tests {
         );
     }
 
-    /// **The defect the scratch stack found**: a forge restart seeds the
-    /// successor's conversation from its connect, which carries no row - so
-    /// a copy with none must not blind the record to the store that has it,
-    /// and the store is asked by the occupant's id.
-    #[test]
-    fn the_store_answers_when_the_live_copy_has_no_row() {
-        let occupant = forge_primitives::SessionId::new("new-id");
-        let drawn = handoff_row(Some(&occupant), None, |asked| {
-            assert_eq!(asked, "new-id", "the store is asked by the occupant it must match");
-            Some(a_handoff_record("new-id"))
-        });
-        assert_eq!(
-            drawn.map(|record| record.to),
-            Some("new-id".to_owned()),
-            "the store's row draws for the occupant it names",
-        );
-    }
-
-    /// The ordinary case reads nothing: a live swap's own record answers.
-    #[test]
-    fn the_live_copy_answers_without_the_store() {
-        let occupant = forge_primitives::SessionId::new("new-id");
-        let drawn = handoff_row(Some(&occupant), Some(a_handoff_record("new-id")), |_| {
-            panic!("the store must not be read when the copy already has the row")
-        });
-        assert!(drawn.is_some(), "the copy's own row is the answer");
-    }
-
     /// A value whose serialisation fails, which is the only case a message
     /// can reach the page as anything but itself.
     struct WillNotSerialise;
@@ -2967,21 +2883,6 @@ mod tests {
             held,
             serde_json::json!({ "type": "widget_state", "n": 1 }),
             "a frame that serialises is carried unchanged",
-        );
-    }
-
-    /// A row naming another occupant is not drawn, and neither is one on a
-    /// record that names no occupant at all.
-    #[test]
-    fn a_row_is_drawn_only_for_the_occupant_it_names() {
-        let occupant = forge_primitives::SessionId::new("current");
-        assert!(
-            handoff_row(Some(&occupant), Some(a_handoff_record("old")), |_| None).is_none(),
-            "a row from before a later /new describes a session this record does not hold",
-        );
-        assert!(
-            handoff_row(None, Some(a_handoff_record("current")), |_| None).is_none(),
-            "a record naming no occupant has no join to draw",
         );
     }
 
