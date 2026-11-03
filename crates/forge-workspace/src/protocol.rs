@@ -373,10 +373,10 @@ pub enum Command {
         id: uuid::Uuid,
         answer: forge_primitives::browser::HandOffAnswer,
     },
-    /// Answer a parked document hand-off: `NotNow` declines it, `Done`
-    /// releases it with what the viewer's finish filed. The blocked
-    /// `hand_off_document` call is awaiting this; `key` names the owner the
-    /// answer is checked against.
+    /// Answer a parked document hand-off: `NotNow` declines it, `Approve`
+    /// and `Feedback` release it with the reader's decision, note and the
+    /// review the finish filed. The blocked `hand_off_document` call is
+    /// awaiting this; `key` names the owner the answer is checked against.
     AnswerDocumentHandOff {
         key: SessionSlot,
         id: uuid::Uuid,
@@ -2123,7 +2123,8 @@ pub enum SessionUpdate {
     ///
     /// **The call parks on this**, like the browser hand-off: `id` names the
     /// parked call, and the reader's answer releases it - `NotNow` here, or
-    /// `Done` when the viewer's finish files the reading. `path` is the
+    /// `Approve` / `Feedback` when the viewer's finish files the reading.
+    /// `path` is the
     /// resolved absolute path, the viewer's stable address; `reviewable` is
     /// what the hand-off asked for - the ask's own fact rather than the
     /// document's, because a readable document offers its review either way.

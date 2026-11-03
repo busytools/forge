@@ -740,7 +740,7 @@ pub enum FileContentWire {
 /// `resolution` is `None` when this read has no landing to report: a
 /// thread whose branch layer the scan could not read, or one
 /// numbered against another base.
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct ReviewedThreadWire {
     #[serde(flatten)]
@@ -750,7 +750,7 @@ pub struct ReviewedThreadWire {
 
 /// Where an anchor sits, as a view draws it: the line in the anchor's own
 /// side's numbering, or why it could not be placed.
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum ThreadResolutionWire {
     /// Placed, at `line`. `moved_from` is the recorded line when the
@@ -761,7 +761,7 @@ pub enum ThreadResolutionWire {
 }
 
 /// The resolver's own reason, crossing as data rather than as prose.
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OutdatedReasonWire {
     Gone,
@@ -972,7 +972,7 @@ fn resolution_wire(
 /// already resolved against the seat's own working file crosses as-is -
 /// the numbering is the anchor's home, so `moved_from` is always named
 /// when there is one.
-fn placement_wire(placement: AnchorPlacement) -> ThreadResolutionWire {
+pub(crate) fn placement_wire(placement: AnchorPlacement) -> ThreadResolutionWire {
     match placement {
         AnchorPlacement::Placed { line, moved_from } => {
             ThreadResolutionWire::Placed { line, moved_from }

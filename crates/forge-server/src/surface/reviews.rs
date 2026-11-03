@@ -2,7 +2,9 @@
 
 use forge_primitives::review::ReviewThread;
 use forge_primitives::{ReviewSet, SessionSlot};
-use forge_workspace::env::git_diff::resolver::{AnchorPlacement, place_anchor_in_lines};
+use forge_workspace::env::git_diff::resolver::{
+    AnchorPlacement, place_anchor_in_lines, place_document_anchor,
+};
 
 use super::ViewSurface;
 
@@ -17,11 +19,11 @@ pub struct ReviewsView {
     pub reviews: Result<Vec<ReviewSet>, String>,
 }
 
-/// One seat-tree thread and where its anchor sits in the seat's current
-/// file, or `None` when no landing could be taken - the file the comment
-/// was written on could not be read, or the seat's tree has no cwd. A
-/// thread with no landing is CARRIED, never dropped; the page parks it.
-pub struct TreeThreadView {
+/// One thread and where its anchor sits in the content it was written
+/// against, or `None` when no landing could be taken - the file could not
+/// be read, or the seat's tree has no cwd. A thread with no landing is
+/// CARRIED, never dropped; the page parks it.
+pub struct PlacedThread {
     pub thread: ReviewThread,
     pub placement: Option<AnchorPlacement>,
 }
@@ -33,7 +35,7 @@ pub struct TreeThreadView {
 /// changes with the branch a worker happens to be on.
 pub struct TreeReviewsView {
     pub scope: String,
-    pub threads: Result<Vec<TreeThreadView>, String>,
+    pub threads: Result<Vec<PlacedThread>, String>,
     pub reviews: Result<Vec<ReviewSet>, String>,
 }
 
@@ -68,7 +70,7 @@ impl ViewSurface {
         &self,
         seat: &SessionSlot,
         threads: Vec<ReviewThread>,
-    ) -> Vec<TreeThreadView> {
+    ) -> Vec<PlacedThread> {
         let cwd = self.roster().cwd_for(seat);
         let roots = self.roster().vault_roots_for(seat);
         let ceiling = self.workspace.document_max_bytes();
@@ -92,7 +94,27 @@ impl ViewSurface {
                     });
                     lines.as_ref().map(|lines| place_anchor_in_lines(&thread.anchor, lines))
                 });
-                TreeThreadView { thread, placement }
+                PlacedThread { thread, placement }
+            })
+            .collect()
+    }
+
+    /// A document's threads, each placed against the document's own
+    /// current lines by its first captured line - the code review's
+    /// re-anchoring rule, over a whole document rather than a diff.
+    ///
+    /// `None` when the read's bytes are not text: a viewer that draws no
+    /// source lines has no line to place a thread on.
+    pub fn place_document_threads(
+        &self,
+        threads: Vec<ReviewThread>,
+        lines: Option<&[String]>,
+    ) -> Vec<PlacedThread> {
+        threads
+            .into_iter()
+            .map(|thread| {
+                let placement = lines.map(|lines| place_document_anchor(&thread.anchor, lines));
+                PlacedThread { thread, placement }
             })
             .collect()
     }

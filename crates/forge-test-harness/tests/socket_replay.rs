@@ -60,7 +60,9 @@ use forge_primitives::{Message, SessionSlot};
 use forge_sdk::transport::codec::{DecodedLine, decode_dispatch};
 use forge_server::transport::PROTOCOL_VERSION;
 use forge_server::transport::envelope::{ClientMessage, ClientSettings, ServerMessage, Subject};
-use forge_server::transport::wire::TurnWire;
+use forge_server::transport::wire::{
+    OutdatedReasonWire, ReviewedThreadWire, ThreadResolutionWire, TurnWire,
+};
 use forge_server::{Command, SessionUpdate};
 use forge_test_harness::sdk_wire::{baseline_dir, legacy_baseline_dir, load_baseline_from};
 use forge_workspace::DictateModelState;
@@ -1231,26 +1233,31 @@ fn frames_record() -> Value {
             bytes: "IyBoaQo=".to_owned(),
             reviewable: true,
             content_hash: "7".to_owned(),
-            threads: vec![forge_primitives::review::ReviewThread {
-                id: "d1".to_owned(),
-                anchor: forge_primitives::review::ReviewAnchor {
-                    path: "/proj/docs/readme.md".to_owned(),
-                    side: forge_primitives::review::ReviewSide::New,
-                    line: 3,
-                    content_hash: 7,
-                    context: vec!["^ # hi".to_owned()],
-                    base_ref: forge_primitives::review::doc_scope_ref("/proj/docs/readme.md"),
+            threads: vec![ReviewedThreadWire {
+                thread: forge_primitives::review::ReviewThread {
+                    id: "d1".to_owned(),
+                    anchor: forge_primitives::review::ReviewAnchor {
+                        path: "/proj/docs/readme.md".to_owned(),
+                        side: forge_primitives::review::ReviewSide::New,
+                        line: 3,
+                        content_hash: 7,
+                        context: vec!["^ # hi".to_owned()],
+                        base_ref: forge_primitives::review::doc_scope_ref("/proj/docs/readme.md"),
+                    },
+                    comments: vec![forge_primitives::review::ReviewComment {
+                        author: forge_primitives::review::ReviewAuthor::User,
+                        text: "one line, please".to_owned(),
+                        at: "2026-10-12T00:00:00Z".to_owned(),
+                        review_id: Some("r1".to_owned()),
+                    }],
+                    status: forge_primitives::review::ReviewStatus::Open,
+                    created_at: "2026-10-12T00:00:00Z".to_owned(),
+                    updated_at: "2026-10-12T00:00:00Z".to_owned(),
+                    commit: None,
                 },
-                comments: vec![forge_primitives::review::ReviewComment {
-                    author: forge_primitives::review::ReviewAuthor::User,
-                    text: "one line, please".to_owned(),
-                    at: "2026-10-12T00:00:00Z".to_owned(),
-                    review_id: Some("r1".to_owned()),
-                }],
-                status: forge_primitives::review::ReviewStatus::Open,
-                created_at: "2026-10-12T00:00:00Z".to_owned(),
-                updated_at: "2026-10-12T00:00:00Z".to_owned(),
-                commit: None,
+                resolution: Some(ThreadResolutionWire::Outdated {
+                    reason: OutdatedReasonWire::Gone,
+                }),
             }],
             reviews: vec![forge_primitives::ReviewSet {
                 id: "r1".to_owned(),
@@ -1357,8 +1364,9 @@ fn frames_record() -> Value {
         shape_of(&an_update(SessionUpdate::DocumentHandOffResolved {
             key: seat.clone(),
             id: uuid::Uuid::new_v4(),
-            ending: forge_primitives::document::DocumentHandOffEnding::Done {
+            ending: forge_primitives::document::DocumentHandOffEnding::Approve {
                 review_id: Some("r-1".to_owned()),
+                note: Some("ship it".to_owned()),
             },
         })),
     );

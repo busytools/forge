@@ -18291,7 +18291,10 @@ mod worker_activity_tests {
         assert!(ws.resolve_document_hand_off(
             id,
             &seat,
-            forge_primitives::document::DocumentHandOffEnding::Done { review_id: None },
+            forge_primitives::document::DocumentHandOffEnding::Approve {
+                review_id: None,
+                note: None,
+            },
         ));
         assert_eq!(ws.session_activity(&seat), L::Running, "answered, the turn runs again");
         assert_eq!(ws.pending_interaction(&seat), None, "and the row stands down");
@@ -23653,12 +23656,15 @@ mod git_scan_cwd_tests {
         assert!(ws.resolve_document_hand_off(
             ask.0,
             &session_key,
-            DocumentHandOffEnding::Done { review_id: Some("r-1".to_owned()) },
+            DocumentHandOffEnding::Approve { review_id: Some("r-1".to_owned()), note: None },
         ));
 
         let (resolved, ending) = handed.await.expect("the task joins").expect("the hand-off lands");
         assert_eq!(resolved, expected.to_string_lossy(), "answered with the resolved path");
-        assert_eq!(ending, DocumentHandOffEnding::Done { review_id: Some("r-1".to_owned()) });
+        assert_eq!(
+            ending,
+            DocumentHandOffEnding::Approve { review_id: Some("r-1".to_owned()), note: None }
+        );
         assert!(
             std::iter::from_fn(|| updates.try_recv().ok()).any(|frame| matches!(
                 &*frame.update,
@@ -23761,7 +23767,7 @@ mod git_scan_cwd_tests {
         ws.resolve_document_hand_off(
             ask,
             &session_key,
-            DocumentHandOffEnding::Done { review_id: None },
+            DocumentHandOffEnding::Approve { review_id: None, note: None },
         );
         handed.await.expect("the task joins").expect("and the park releases");
 
