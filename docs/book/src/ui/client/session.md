@@ -293,6 +293,17 @@ through fresh history reads as moving content instead of a black column.
 The correction is the list's, and the column's foot and parked anchor
 absorb it, so the place the reader holds does not move under the reader.
 
+**A return to the seat the reader was last on puts them back where they
+were.** Any page that unmounts the session, such as a document, the review,
+the files, the home or the settings, leaves the connection keeping the
+conversation - so the mount that comes back to the seat it was last showing
+restores the row the reader held rather than landing at the foot. A place the
+reader gave up, by sending or by scrolling back to the latest, is not
+restored, and a restore that cannot land falls back to the foot. A seat
+switch, a fresh open and a `/new` still open at the latest: a place belongs
+to the visit that recorded it, and only a return to that visit takes it back
+(#1673, #2834).
+
 **The column's top edge says when it is fetching.** An older page is
 asked for as the reader nears the top and answered a moment later;
 while it is in flight the wheel has nothing left to scroll, so a small
