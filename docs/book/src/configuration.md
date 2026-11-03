@@ -536,9 +536,10 @@ An unrecognised key here fails the load, as one in `[dictate]` does: a
 mistyped `models_dir` would otherwise leave the engine looking in a
 directory that has no model, and the failure would surface at the boot
 prewarm rather than when the key is saved. `language` is the one exception -
-a declared ghost: the engine takes the voice id and no language field, so the
-key is warned about and ignored rather than obeyed, and a config still setting
-it keeps loading.
+a declared ghost: the voice id is the language choice, and the model's 54
+voices cover eight languages, so there is nothing for the key to set. It is
+warned about and ignored rather than obeyed, and a config still setting it
+keeps loading.
 
 The speaking model is Kokoro-82M, published by hexgrad as
 `hexgrad/Kokoro-82M`. forge installs the ONNX export that
@@ -557,7 +558,8 @@ sentences and each sentence's audio arrives when it finishes rendering. The
 output is 24 kHz mono 16-bit, Kokoro's own rate, and a model whose rate
 differed would be resampled once in the engine.
 
-**The model installs from the models page.** Every file is fetched at one
+**The model installs from the models page or the settings page's speaking
+card.** Every file is fetched at one
 pinned revision and checked against the LFS sha256 the Hub publishes; a
 digest that disagrees leaves nothing behind. The engine checks the whole
 set again before it loads it, so a truncated or substituted file is refused
@@ -862,8 +864,8 @@ fallbacks". That covers the top level, `[[orgs]]`, `[[orgs.projects]]`,
 
 A key forge itself retired is a declared ghost rather than an unknown
 key, so a stale `forge.toml` still boots and warns instead of failing:
-`[workers]`, `[projects.<name>]`, `[selection]`, `[ui]` and `[dictate]
-device`. In the tables above a stray key is a typo and is refused; a
+`[workers]`, `[projects.<name>]`, `[selection]`, `[ui]`, `[dictate] device`
+and `[tts] language`. In the tables above a stray key is a typo and is refused; a
 ghost is the exception,
 because its whole job is to accept what a live config still carries - so
 what a retired section holds is unconstrained and only the section

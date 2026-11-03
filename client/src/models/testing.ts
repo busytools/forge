@@ -391,5 +391,6 @@ export function fakeConnection() {
   };
 }
 
-/** The models page's subject, which only this page watches. */
+/** The models page's subject. This page watches it for its whole life; the
+ * settings page watches it too, only while its voice area is open. */
 export const MODELS: Subject = 'dictate_models';

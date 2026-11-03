@@ -48,6 +48,7 @@
 
   const chosen = $derived(voice ?? 'af_heart');
   const active = $derived(speaking?.active ?? null);
+  const enabled = $derived(speaking?.enabled ?? true);
   const downloading = $derived(installLine(install));
   const activating = $derived(activateLine(activate));
 </script>
@@ -60,6 +61,13 @@
   {:else if speaking.from === 'unknown'}
     <p class="note">this forge sent a speaking model state this client cannot read</p>
   {:else}
+    {#if !enabled}
+      <p class="note">
+        speech is off: <code>[tts] enabled</code> is unset, so every reply renders silently. Turn it on
+        below and save.
+      </p>
+    {/if}
+
     <p class="note">
       {speaking.speaking_model} is installed from the Hugging Face Hub as an ONNX export and the style
       files for its named voices &middot; every file is checked against its digest before the engine loads
@@ -77,21 +85,26 @@
         {#if active.installed}
           <span class="chip"><span class="dot ok"></span>active</span>
         {/if}
-        {#if !active.installed}
-          <button
-            class="chip"
-            type="button"
-            disabled={busy}
-            onclick={() => oninstall(active.variant)}>install {active.quant}</button
-          >
-        {:else if speaking.from === 'installed'}
-          <button class="chip" type="button" disabled={busy} onclick={ondeactivate}
-            >use the default</button
-          >
-        {:else if speaking.from === 'pin'}
-          <button class="chip" type="button" disabled={busy} onclick={() => onactivate(active.file)}
-            >activate</button
-          >
+        {#if enabled}
+          {#if !active.installed}
+            <button
+              class="chip"
+              type="button"
+              disabled={busy}
+              onclick={() => oninstall(active.variant)}>install {active.quant}</button
+            >
+          {:else if speaking.from === 'installed'}
+            <button class="chip" type="button" disabled={busy} onclick={ondeactivate}
+              >use the default</button
+            >
+          {:else if speaking.from === 'pin'}
+            <button
+              class="chip"
+              type="button"
+              disabled={busy}
+              onclick={() => onactivate(active.file)}>activate</button
+            >
+          {/if}
         {/if}
       </div>
     {/if}
@@ -125,8 +138,9 @@
       <p class="note">the voices arrive with the model; install it to choose one</p>
     {:else}
       <p class="note">
-        every reply renders in the chosen voice (<code>{chosen}</code>) &middot; this model carries
-        {speaking.voices.length} voices, and the choice is saved with the page's other edits
+        the chosen voice is <code>{chosen}</code> &middot; this model carries {speaking.voices
+          .length}
+        voices, and the choice is saved with the page's other edits
       </p>
       <GroupFold heading="voices" count={speaking.voices.length} startOpen>
         <ul class="list" aria-label="Voices">
@@ -139,18 +153,20 @@
                 <button class="chip" type="button" onclick={() => onchoose(id)}>use</button>
               {/if}
               <span class="spacer"></span>
-              <button
-                class="chip"
-                type="button"
-                disabled={seat === null}
-                title={seat === null ? 'open a session and turn its speaker on' : undefined}
-                onclick={() => onpreview(id)}>preview</button
-              >
+              {#if enabled}
+                <button
+                  class="chip"
+                  type="button"
+                  disabled={seat === null}
+                  title={seat === null ? 'open a session and turn its speaker on' : undefined}
+                  onclick={() => onpreview(id)}>preview</button
+                >
+              {/if}
             </li>
           {/each}
         </ul>
       </GroupFold>
-      {#if seat === null}
+      {#if enabled && seat === null}
         <p class="note">
           a preview plays on the seat you were last on, with its speaker switch on &middot; open a
           session and turn the speaker on, then come back

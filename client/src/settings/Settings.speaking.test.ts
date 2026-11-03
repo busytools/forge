@@ -115,7 +115,7 @@ describe("the settings page's speaking card", () => {
     expect(bodyText()).toContain('hexgrad/Kokoro-82M');
     expect(bodyText()).toContain('kokoro-82m-int8');
     expect(bodyText()).toContain('active');
-    expect(bodyText()).toContain('every reply renders in the chosen voice (bf_emma)');
+    expect(bodyText()).toContain('the chosen voice is bf_emma');
     expect(voiceRow('af_heart')).not.toBeNull();
     expect(voiceRow('bf_emma')).not.toBeNull();
   });
@@ -147,6 +147,21 @@ describe("the settings page's speaking card", () => {
     );
     expect(button?.disabled).toBe(true);
     expect(bodyText()).toContain('open a session and turn the speaker on');
+  });
+
+  /** `[tts] enabled` unset is a state the page draws: the core refuses an
+   * install or a preview while speech is off, so the card says why and
+   * withholds both controls rather than offering a press that always errors. */
+  it('says speech is off and withholds the model and preview controls', () => {
+    const wire = { ...modelsWire, speaking: { ...modelsWire.speaking, enabled: false } };
+    draw(connection({ dispatched: [], edits: [] }, wire));
+
+    expect(bodyText()).toContain('speech is off');
+    const labels = [
+      ...document.querySelectorAll<HTMLButtonElement>('.settings-speaking button'),
+    ].map((button) => button.textContent?.trim());
+    expect(labels).not.toContain('use the default');
+    expect(labels).not.toContain('preview');
   });
 
   /** A render that fails after the command was accepted is the core's

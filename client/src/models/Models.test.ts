@@ -164,17 +164,57 @@ describe('the models page as it draws', () => {
   });
 
   /// A pinned speaking role refuses the switch, so the row draws no control
-  /// that would always be refused.
-  it('draws no switch for a config-pinned speaking role', () => {
+  /// that would always be refused; a variant already on disk is a state, not
+  /// a download, or the press would fetch the model and all its voices again.
+  it('draws no switch for a config-pinned speaking role, and no download for what is installed', () => {
     const pinned = {
       ...modelsWire,
-      speaking: { ...modelsWire.speaking, from: 'config' as const },
+      speaking: {
+        ...modelsWire.speaking,
+        from: 'config' as const,
+        variants: modelsWire.speaking.variants.map((variant) =>
+          variant.variant === 'kokoro-82m-fp16' ? { ...variant, installed: true } : variant,
+        ),
+      },
     } as DictateModelsWire;
     const host = open(pinned);
     host.querySelector<HTMLButtonElement>('[aria-label="show the speaking updates"]')?.click();
     flushSync();
 
     expect(host.innerHTML).not.toContain('use for speaking');
+    const fp16 = [...host.querySelectorAll<HTMLElement>('.status')].find((row) =>
+      row.textContent?.includes('kokoro-82m-fp16'),
+    );
+    expect(fp16?.textContent, 'an installed variant under the pin is a state').toContain(
+      'installed',
+    );
+    expect(fp16?.querySelectorAll('button').length, 'no download for one already installed').toBe(
+      0,
+    );
+  });
+
+  /// **The download stays on a pinned role.** A pinned variant this machine
+  /// does not have offers install rather than a state it cannot run.
+  it('offers the download for a pinned variant this machine does not have', () => {
+    const pinned = {
+      ...modelsWire,
+      speaking: {
+        ...modelsWire.speaking,
+        from: 'config' as const,
+        variants: modelsWire.speaking.variants.map((variant) =>
+          variant.variant === 'kokoro-82m-int8' ? { ...variant, installed: false } : variant,
+        ),
+      },
+    } as DictateModelsWire;
+    const host = open(pinned);
+    host.querySelector<HTMLButtonElement>('[aria-label="show the speaking updates"]')?.click();
+    flushSync();
+
+    const int8 = [...host.querySelectorAll<HTMLElement>('.status')].find((row) =>
+      row.textContent?.includes('kokoro-82m-int8'),
+    );
+    expect(int8?.textContent, 'the missing pin offers the download').toContain('install int8');
+    expect(int8?.textContent, 'and does not claim to be running').not.toContain('active');
   });
 
   /**
