@@ -3787,14 +3787,16 @@ describe('the frame', () => {
   });
 
   /**
-   * The ladder's steps are container queries, so the box has to BE the
-   * container: without this the queries never match and the card simply grows
-   * past its box at every width below the full reading.
+   * **The surface is still a container, for what rides on it.** The card's
+   * ladder measures the card itself now (#2842), so the surface's remaining
+   * needs are the strip's compact-lane query, whose container it is, and the
+   * layout containment the takeover bar's fixed position is measured from.
    */
-  it('makes the surface the container the card ladder measures', () => {
-    expect(baseRule('.surf'), 'the surface is not a container, so no step can fire').toContain(
-      'container-type: inline-size',
-    );
+  it('keeps the surface a container for the strip and the takeover bar', () => {
+    expect(
+      baseRule('.surf'),
+      'the surface lost its containment, so the strip lane query and the takeover bar go with it',
+    ).toContain('container-type: inline-size');
   });
 
   it('caps a long option list rather than growing the lane past the viewport', () => {
@@ -3822,7 +3824,7 @@ describe('the frame', () => {
   });
 
   /**
-   * The card's ladder: as the box narrows, one reading leaves at a time from
+   * The card's ladder: as the card narrows, one reading leaves at a time from
    * the left, and the dot and the way out are never among them.
    *
    * Read off the sheet by name, because jsdom performs no layout: what it can
