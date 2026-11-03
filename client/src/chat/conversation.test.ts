@@ -5109,6 +5109,27 @@ describe('the conversation the chat draws', () => {
     stop();
   });
 
+  it("keeps the reader's place across a handoff", () => {
+    // **The rows stay mounted, so the follow must stay the reader's.** A
+    // handoff keeps the conversation above its row rather than clearing it,
+    // and the successor's page is then appended under a reader who may have
+    // scrolled away - a follow re-armed here pins them to the foot on its
+    // first frame. Only a plain `/new` opens following, because only it
+    // unmounts the list.
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(record([turn('t1', 'the work so far')]));
+    chat.following(false);
+    expect(get(chat.value).following, 'precondition: the reader is parked').toBe(false);
+
+    server.update({ handoff: { key: LEAD, handoff: handoffRecord('old', 'new') } });
+    server.update({ session_replaced: { key: LEAD, session_id: 'new' } });
+
+    expect(get(chat.value).following, 'the successor keeps the reader where they were').toBe(false);
+    stop();
+  });
+
   it('draws the handoff row a seat record carries', () => {
     const server = fakeConnection();
     const chat = new Chat(server.connection, LEAD);

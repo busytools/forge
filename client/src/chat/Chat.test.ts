@@ -22,6 +22,7 @@ import {
   clear,
   gate,
   measured as listMeasured,
+  setElement,
   setMeasured,
   stuckEveryMount,
   stuckOnce,
@@ -2599,5 +2600,53 @@ describe('a list that mounted and drew no rows', () => {
     expect(gate.mounts, 'no list mounts for an empty conversation, so nothing is re-measured').toBe(
       0,
     );
+  });
+});
+
+describe('the scroll record a pin writes', () => {
+  /** One turn as a page carries it: enough for the list to draw a row. */
+  const pageTurn = (key: string): unknown => ({
+    key,
+    messages: [
+      {
+        type: 'assistant',
+        uuid: `a-${key}`,
+        message: { role: 'assistant', content: [{ type: 'text', text: key }] },
+      },
+    ],
+  });
+
+  it('says the foot on a pin at the foot, and short of it on a model hold', async () => {
+    // **Coverage for the record the diagnosis reads, not a behaviour this
+    // change writes**: a pin at the foot reads as one that reached it, and a
+    // model hold says it stopped short instead of claiming a foot it never
+    // reached.
+    const server = stub();
+    scrollMark.mockClear();
+    setMeasured(1000.31, 300);
+    draw({}, server);
+    server.answer([pageTurn('t1')]);
+    await painted();
+
+    const opened: unknown = scrollMark.mock.calls.at(-1)?.[0];
+    expect(opened, 'the landing pin is a pin, and it reached the foot').toMatchObject({
+      pin: true,
+      foot: true,
+      reader: false,
+      aimed: false,
+    });
+
+    scrollMark.mockClear();
+    // The browser counts a row the list has not measured, so the pin holds at
+    // the list's own end: still a pin, and short of the browser's foot.
+    setElement(1400.31, 300);
+    resized();
+    await painted();
+
+    const held: unknown = scrollMark.mock.calls.at(-1)?.[0];
+    expect(held, 'a model hold is a pin that stopped short of the foot').toMatchObject({
+      pin: true,
+      foot: false,
+    });
   });
 });
