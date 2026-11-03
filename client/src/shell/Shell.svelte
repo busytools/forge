@@ -327,7 +327,7 @@
       const onSeat =
         showing.name === 'session' &&
         subjectKey({ session: showing.slot }) === subjectKey({ session: seat });
-      if (onSeat) go(removedLanding(wire, seat, spawnedBy, Date.now()));
+      if (onSeat) go(removedLanding(wire, seat, spawnedBy));
     };
     const stopRemovals = watchRemovals(open, land);
     const stopReleases = watchReleases(open, (seat) => land(seat, null));

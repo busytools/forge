@@ -84,9 +84,8 @@ const boardOf = (change: Partial<ProjectBoardWire>): BoardWire =>
 const railGroups = (
   home: HomeWire,
   current: SessionSlot,
-  now: number,
   closing: (slot: SessionSlot) => boolean = () => false,
-) => railGroupsWithBoard(home, null, current, now, closing);
+) => railGroupsWithBoard(home, null, current, closing);
 
 describe('the boundary', () => {
   /**
@@ -254,7 +253,7 @@ describe('the rail', () => {
       reason: null,
     };
     const held: AgentRow = { ...worker, pending: 'question' };
-    const groups = railGroups(withHome({ agents: [{ ...lead(), pending: null }, held] }), LEAD, 0);
+    const groups = railGroups(withHome({ agents: [{ ...lead(), pending: null }, held] }), LEAD);
     const needs = groups.find((group) => group.heading === 'needs you');
     expect(
       needs?.projects[0]?.why?.line,
@@ -291,7 +290,7 @@ describe('the rail', () => {
         },
       ],
     });
-    const groups = railGroups(home, LEAD, 0);
+    const groups = railGroups(home, LEAD);
     expect(
       groups.find((group) => group.heading === 'needs you'),
       'the wait lifted the project out of its own group',
@@ -333,7 +332,7 @@ describe('the rail', () => {
         },
       ],
     });
-    const asleep = railGroups(home, elsewhere, 0).find((group) => group.heading === 'asleep');
+    const asleep = railGroups(home, elsewhere).find((group) => group.heading === 'asleep');
     expect(asleep?.holds, 'the fold stayed shut over the only signal').toBe(true);
   });
 
@@ -341,7 +340,7 @@ describe('the rail', () => {
    *  rather than borrowing the permission line. */
   it('names a held hand-off on the row', () => {
     const held: AgentRow = { ...lead(), pending: 'hand_off', reason: null };
-    const groups = railGroups(withHome({ agents: [held] }), LEAD, 0);
+    const groups = railGroups(withHome({ agents: [held] }), LEAD);
     const needs = groups.find((group) => group.heading === 'needs you');
     expect(needs?.projects[0]?.why?.line).toBe('a hand-off is waiting');
   });
@@ -359,7 +358,7 @@ describe('the rail', () => {
 
     const block = (groups: RailGroup[]): RailProject | undefined =>
       groups.flatMap((group) => group.projects).find((entry) => entry.name === 'proj');
-    const working = block(railGroups(home, LEAD, 0, (slot) => slot.label === 'w1'));
+    const working = block(railGroups(home, LEAD, (slot) => slot.label === 'w1'));
     expect(
       working?.workers.map((row) => row.slot.label),
       'the closed worker stayed in the working rows',
@@ -371,7 +370,7 @@ describe('the rail', () => {
 
     // A lead's close cascades, so both of its rows carry the mark; the
     // project's rank is its strongest row either way.
-    const asleep = railGroups(home, LEAD, 0, () => true).find((group) => group.heading === 'asleep')
+    const asleep = railGroups(home, LEAD, () => true).find((group) => group.heading === 'asleep')
       ?.projects[0];
     expect(asleep?.name, "a closed lead's project stayed out of asleep").toBe('proj');
 
@@ -379,7 +378,7 @@ describe('the rail', () => {
     // does not keep the project's line alive under the asleep block.
     const held: AgentRow = { ...worker, pending: 'question' };
     const closed = block(
-      railGroups(withHome({ agents: [leadRow, held] }), LEAD, 0, (slot) => slot.label === 'w1'),
+      railGroups(withHome({ agents: [leadRow, held] }), LEAD, (slot) => slot.label === 'w1'),
     );
     expect(closed?.why, 'a closed seat still wrote on the project line').toBeNull();
   });
@@ -401,12 +400,10 @@ describe('the rail', () => {
     };
     const home = withHome({ agents: [sleeping] });
 
-    const quiet = railGroups(home, LEAD, 0).find((group) => group.heading === 'asleep');
+    const quiet = railGroups(home, LEAD).find((group) => group.heading === 'asleep');
     expect(quiet?.mark, 'a quietly asleep fold drew a mark').toBeNull();
 
-    const settling = railGroups(home, LEAD, 0, () => true).find(
-      (group) => group.heading === 'asleep',
-    );
+    const settling = railGroups(home, LEAD, () => true).find((group) => group.heading === 'asleep');
     expect(settling?.mark, 'a settling seat inside the fold drew no mark').toBe('off settling');
   });
 
@@ -420,7 +417,7 @@ describe('the rail', () => {
    */
   it('wears the ask mark on the seat that holds the question', () => {
     const mark = (asking: AgentRow): string | null => {
-      const row = railGroups(withHome({ agents: [asking] }), LEAD, 0).flatMap(
+      const row = railGroups(withHome({ agents: [asking] }), LEAD).flatMap(
         (group) => group.projects,
       )[0]?.row;
       return row === undefined ? null : railMark(row.state);
@@ -468,7 +465,7 @@ describe('the rail', () => {
     const failed: AgentRow = { ...lead(), pending: null, failed_turn: at };
     const home = withHome({ agents: [failed] });
 
-    const block = railGroups(home, LEAD, 0)[0]?.projects[0];
+    const block = railGroups(home, LEAD)[0]?.projects[0];
     if (block === undefined) throw new Error('the rail drew no block for the failed seat');
     expect(failedLine(block.row), 'the row names the failure').toBe('a turn failed');
     expect(block.why, 'and the line draws under the row').toEqual({
@@ -492,7 +489,7 @@ describe('the rail', () => {
       lifecycle: 'Failed',
       reason: 'transport closed before initialize',
     };
-    const needs = railGroups(withHome({ agents: [leadRow, failed] }), LEAD, 0).find(
+    const needs = railGroups(withHome({ agents: [leadRow, failed] }), LEAD).find(
       (group) => group.heading === 'needs you',
     );
 
@@ -511,7 +508,7 @@ describe('the rail', () => {
       reason: 'the subprocess exited',
     };
     const why = (home: HomeWire): RailProject['why'] | undefined =>
-      railGroups(home, LEAD, 0).find((group) => group.heading === 'needs you')?.projects[0]?.why;
+      railGroups(home, LEAD).find((group) => group.heading === 'needs you')?.projects[0]?.why;
 
     expect(why(withHome({ agents: [failed] })), "the lead's failure lost its text").toEqual({
       line: 'the subprocess exited',
@@ -537,7 +534,7 @@ describe('the rail', () => {
     const sleeping: AgentRow = { ...lead(), lifecycle: 'Sleeping', pending: null, reason: null };
     const home = withHome({ agents: [sleeping] });
     const asleep = (home: HomeWire, slot: SessionSlot): RailGroup | undefined =>
-      railGroups(home, slot, 0).find((group) => group.heading === 'asleep');
+      railGroups(home, slot).find((group) => group.heading === 'asleep');
 
     expect(asleep(home, LEAD)?.holds, 'the fold closed over the seat being shown').toBe(true);
     expect(
@@ -545,7 +542,7 @@ describe('the rail', () => {
       'a group claimed to hold a seat it does not carry',
     ).toBe(false);
     expect(
-      railGroups(homeWire, LEAD, 0).find((group) => group.heading === 'needs you')?.holds,
+      railGroups(homeWire, LEAD).find((group) => group.heading === 'needs you')?.holds,
       'a group the page is showing claimed nothing',
     ).toBe(true);
   });
@@ -560,11 +557,11 @@ describe('the rail', () => {
     const home = withHome({
       agents: [{ ...sleeping, slot: { ...sleeping.slot, label: 'lead' } }, worker],
     });
-    const asleep = railGroups(home, LEAD, 0).find((group) => group.heading === 'asleep');
+    const asleep = railGroups(home, LEAD).find((group) => group.heading === 'asleep');
 
     expect(asleep?.hidden, 'the asleep heading hides nothing it does not count').toBe(2);
     expect(
-      railGroups(homeWire, LEAD, 0).find((group) => group.heading === 'needs you')?.hidden,
+      railGroups(homeWire, LEAD).find((group) => group.heading === 'needs you')?.hidden,
       'a group that does not fold claimed a count',
     ).toBeNull();
   });
@@ -589,7 +586,7 @@ describe('the rail', () => {
         worker('w3', 'LoggedOut'),
       ],
     });
-    const project = railGroups(home, LEAD, 0).find((group) => group.heading === 'working')
+    const project = railGroups(home, LEAD).find((group) => group.heading === 'working')
       ?.projects[0];
 
     expect(
@@ -617,7 +614,7 @@ describe('the rail', () => {
     };
     const home = withHome({ agents: [leadRow, worker] });
     const project = (slot: SessionSlot): RailProject | undefined =>
-      railGroups(home, slot, 0)
+      railGroups(home, slot)
         .flatMap((group) => group.projects)
         .find((entry) => entry.name === 'proj');
 
@@ -665,7 +662,7 @@ describe('the rail', () => {
     });
 
     expect(fleetCount(recovered), 'a recovered seat was not counted live').toBe('1 live / 1');
-    const block = railGroups(recovered, LEAD, 0)[0]?.projects[0];
+    const block = railGroups(recovered, LEAD)[0]?.projects[0];
     if (block === undefined) throw new Error('the rail drew no block for the recovered seat');
     expect(failedLine(block.row), 'the death did not draw its reason').toBe(why);
   });

@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { flushSync, mount, unmount } from 'svelte';
+import { writable } from 'svelte/store';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { homeWire } from '../dev/fixture.data';
@@ -22,6 +23,11 @@ import { boxed } from './testing/props.svelte';
 const LEAD: SessionSlot = { org: 'TestOrg', project: 'proj', label: 'lead' };
 const WORKER: SessionSlot = { org: 'TestOrg', project: 'proj', label: 'w1' };
 const ELSEWHERE: SessionSlot = { org: 'TestOrg', project: 'proj', label: 'other' };
+
+/** The rail's clock, as the production page hands it down: the fixture's
+ *  stamps are measured from epoch zero, so this stays there to keep the ages
+ *  the assertions name. */
+const NOW = writable(0);
 
 let app: Record<string, unknown> | null = null;
 let acted: Command[] = [];
@@ -96,7 +102,7 @@ describe('the rail on a failed project row', () => {
       props: {
         home: failedLead(),
         current: ELSEWHERE,
-        now: 0,
+        now: NOW,
         connection: recording(),
       },
     });
@@ -181,7 +187,7 @@ describe('the rail on a project holding decision waits', () => {
   it('marks the project and the seat that holds one, and lists the asks behind it', () => {
     app = mount(Rail, {
       target: document.body,
-      props: { home: waiting(WAITS), current: ELSEWHERE, now: 0, connection: recording() },
+      props: { home: waiting(WAITS), current: ELSEWHERE, now: NOW, connection: recording() },
     });
     flushSync();
 
@@ -228,7 +234,7 @@ describe('the rail on a project holding decision waits', () => {
     const elsewhere: SessionSlot = { org: 'Other', project: 'other', label: 'lead' };
     app = mount(Rail, {
       target: document.body,
-      props: { home: sleeping, current: elsewhere, now: 0, connection: recording() },
+      props: { home: sleeping, current: elsewhere, now: NOW, connection: recording() },
     });
     flushSync();
 
@@ -245,7 +251,7 @@ describe('the rail on a project holding decision waits', () => {
     const props = boxed({
       home: waiting(WAITS),
       current: ELSEWHERE,
-      now: 0,
+      now: NOW,
       connection: recording(),
     });
     app = mount(Rail, { target: document.body, props });

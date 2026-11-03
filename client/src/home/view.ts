@@ -658,14 +658,29 @@ export function elapsedLabel(at: WireTime, now: number): string {
 }
 
 /**
+ * What a row's age cell reads as, before a clock is applied to it.
+ *
+ * **The row carries its age as data, not as a rendered string.** A page's
+ * clock moves every 30 s, and a string built here would be rebuilt with it -
+ * re-deriving every row on the seat. A raw stamp lets the cell read the
+ * clock itself, so only the text that changes re-renders.
+ */
+export type AgeReading = WireTime | 'never' | 'now';
+
+/** The clock's own reading of an `AgeReading`, for a cell that draws it. */
+export function ageLabel(at: AgeReading, now: number): string {
+  return typeof at === 'string' ? at : elapsedLabel(at, now);
+}
+
+/**
  * How long ago the session last wrote. A project nothing has run in is
  * `never`; a live session with no transcript yet has only just started,
  * which is `now` rather than an absence.
  */
-export function whenOf(row: Row, now: number): string {
+export function whenOf(row: Row): AgeReading {
   if (row.state.kind === 'never-started') return 'never';
   if (row.lastActivity === null) return 'now';
-  return elapsedLabel(row.lastActivity, now);
+  return row.lastActivity;
 }
 
 /**
