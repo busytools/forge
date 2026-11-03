@@ -192,8 +192,8 @@ impl HandOffTool {
                 );
                 format!(
                     "{opened}{}{}",
-                    self.note_line(note.as_deref()),
-                    self.review_line(&resolved, review_id.as_deref())
+                    Self::note_line(note.as_deref()),
+                    Self::review_line(self.review_available, &resolved, review_id.as_deref())
                 )
             }
             DocumentHandOffEnding::Feedback { review_id, note } => {
@@ -203,8 +203,8 @@ impl HandOffTool {
                 );
                 return Err(format!(
                     "{refused}{}{}",
-                    self.note_line(note.as_deref()),
-                    self.review_line(&resolved, review_id.as_deref())
+                    Self::note_line(note.as_deref()),
+                    Self::review_line(self.review_available, &resolved, review_id.as_deref())
                 ));
             }
             DocumentHandOffEnding::NotNow => {
@@ -217,7 +217,7 @@ impl HandOffTool {
     }
 
     /// The reader's own words, carried verbatim and said to be theirs.
-    fn note_line(&self, note: Option<&str>) -> String {
+    fn note_line(note: Option<&str>) -> String {
         match note {
             Some(note) => format!(" Their note: {note}"),
             None => String::new(),
@@ -227,12 +227,12 @@ impl HandOffTool {
     /// The review a finish filed, named the way this session can act on it:
     /// the id and scope plus the call that reads it back, or - for a
     /// session spawned without the family - the lead it hands the scope to.
-    fn review_line(&self, resolved: &str, review_id: Option<&str>) -> String {
+    fn review_line(review_available: bool, resolved: &str, review_id: Option<&str>) -> String {
         let Some(review_id) = review_id else {
             return String::new();
         };
         let scope = doc_scope_ref(resolved);
-        if self.review_available {
+        if review_available {
             format!(
                 " Their comments are filed as the review {review_id} under the document's own \
                  scope, {scope} - read them back with review__get and pass that scope."
