@@ -145,6 +145,33 @@ describe('what the read wait stands behind', () => {
     expect(blocked(running, state, null, true, false, true)?.line).toBe(
       'handing this session over',
     );
+    const compacting = composerFrom({ take: null, notice: null, machine: 'compacting' });
+    expect(blocked(running, compacting, null, true, false, true)?.line).toBe(
+      'compacting this session',
+    );
+  });
+
+  it('stands behind the seat states that have not come up', () => {
+    expect(
+      blocked(seatRead({ lifecycle: null, waking: true }), NO_COMPOSER, null, true, false, true)
+        ?.line,
+      'the read hold covered a wake',
+    ).toBe('Waking up agent...');
+    expect(
+      blocked(seatRead({ lifecycle: null }), NO_COMPOSER, null, false, false, true)?.line,
+      'the read hold covered a worker that is not running',
+    ).toBe('not running');
+    expect(
+      blocked(
+        seatRead({ lifecycle: 'Failed', reason: 'the CLI exited' }),
+        NO_COMPOSER,
+        null,
+        true,
+        false,
+        true,
+      )?.line,
+      'the read hold covered the error',
+    ).toBe('Input disabled due to error');
   });
 
   it('stands aside for a parked ask and for a live take', () => {

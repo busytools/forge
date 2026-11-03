@@ -559,7 +559,7 @@
     background: rgba(9,12,20,.35); }
   .blocked { display: flex; flex-direction: column; gap: 3px; padding: 12px 14px; }
   .blocked .b1 { display: flex; align-items: center; gap: 10px; font-family: var(--mono);
-    font-size: var(--fs-base); color: var(--accent); }
+    font-size: var(--fs-base); color: var(--text); }
   @keyframes shimmer { from { background-position: 150% 0; } to { background-position: -50% 0; } }
   .shimmer { background: linear-gradient(90deg, var(--muted) 0%, var(--muted) 35%, var(--hot) 50%,
     var(--muted) 65%, var(--muted) 100%);
@@ -3595,12 +3595,13 @@ branch main, nothing to commit</div>
 <div class="piece">
   <h2>The band's read wait</h2>
   <p class="note"><b>Every narrative state speaks in the composer's band.</b> A seat coming up,
-  its first page still out, a command in flight, a compaction, a handoff and a worker's
-  <span class="mono">not running</span> all take the composer's body with one line, the same
-  sweep and only the text changing; the column draws none of them. The read wait holds the
-  body like the rest: there is nothing to type into until the page arrives.
-  A send made before the page arrived is still drawn in the column as the reader's own row,
-  so words already on their way are never invisible.</p>
+  its first page still out, a command in flight, a compaction and a handoff all take the
+  composer's body with one line, the same sweep and only the text changing; the column draws
+  none of them. A worker's <span class="mono">not running</span> takes the same body but draws
+  no sweep, because a stop is not progress. The read wait holds the body like the rest: there
+  is nothing to type into until the page arrives. A row the column already holds - a send
+  carried across a reload, or one the takeover bar sent - still draws above as the reader's
+  own, so words already on their way are never invisible.</p>
   <div class="stage">
     <div class="row">
       <div class="col">

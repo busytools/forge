@@ -1183,7 +1183,9 @@
     offered: () => dictation,
     bind: () => composer.bind,
     mode: () => composer.mode,
-    machine: () => machineInForce(composer) !== null,
+    // The read wait begins nothing: the field is not on screen, and a take
+    // started here would carry words into a draft the reader cannot see.
+    machine: () => machineInForce(composer) !== null || reading,
     // **Only where the bar's own toggle is offered**, so a press can never
     // open a line the reader has no control to close (the page still opening,
     // or on a tab the hand-off did not name).
@@ -1770,13 +1772,18 @@
     />
     <div class="slot">
       {#if blocker !== null}
-        <Hold
-          line={blocker.line}
-          sub={blocker.sub}
-          bad={blocker.bad}
-          shimmer={blocker.shimmer}
-          status={blocker.status ?? false}
-        />
+        <!-- Keyed on the live-region line so crossing into an announced hold
+             (waking -> reading) inserts a fresh node rather than adding role
+             to an existing one, which screen readers do not reliably announce. -->
+        {#key blocker.status === true ? blocker.line : null}
+          <Hold
+            line={blocker.line}
+            sub={blocker.sub}
+            bad={blocker.bad}
+            shimmer={blocker.shimmer}
+            status={blocker.status ?? false}
+          />
+        {/key}
       {:else if dockAsk !== null}
         <!-- **The ask stays mounted under the reader's draft.** The chip on
            the live row swaps the body; the dock is hidden rather than

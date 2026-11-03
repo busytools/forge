@@ -287,6 +287,8 @@ interface Page {
   seat: SeatRead;
   /** The seat the page is showing, which moves with the record as a reader does. */
   slot: SessionSlot;
+  /** Whether the seat's page is still out, which the composer holds for. */
+  reading: boolean;
 }
 
 function pageOf(instance: Record<string, unknown>): Page {
@@ -1413,6 +1415,7 @@ describe('the box', () => {
         },
         'handing this session over',
       ],
+      [{ reading: true }, 'Reading the conversation...'],
     ];
     for (const [props, line] of cases) {
       open(props);
@@ -4296,7 +4299,7 @@ describe('the one body slot', () => {
     // came and went above a live field grew the composer and shrank it again
     // before the chat appeared (Ved, 2026-11-03); it takes the body now, and
     // the reader has nothing to type into until the page lands.
-    open({ reading: true });
+    const page = open({ reading: true });
 
     expect(
       document.querySelector('.slot > .blocked')?.textContent,
@@ -4307,6 +4310,13 @@ describe('the one body slot', () => {
       'the read wait lost its live region',
     ).toBe('status');
     expect(document.querySelector('.comp .line'), 'the read wait left the field live').toBeNull();
+
+    page.page.reading = false;
+    flushSync();
+    expect(
+      document.querySelector('textarea'),
+      'the field did not come back with the page',
+    ).not.toBeNull();
   });
 
   it('keeps a live take ahead of the read wait', () => {
