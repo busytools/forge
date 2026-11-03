@@ -176,7 +176,8 @@ fn parse_session_messages<R: std::io::Read>(reader: R) -> SessionHistory {
 /// **The harness's own completion notices are not these.** A background
 /// task's notice is pressed into the turn that was already running - it was
 /// never waiting in the queue - so its attachment row is its row, where the
-/// run ended. Only a prompt the CLI starts later moves to its remove row.
+/// run ended. Only a prompt the CLI took moves to its remove row, at the
+/// turn's end or absorbed into the running turn.
 fn is_queued_attachment_row(value: &Value) -> bool {
     if value.get("type").and_then(Value::as_str) != Some("attachment") {
         return false;
@@ -186,16 +187,28 @@ fn is_queued_attachment_row(value: &Value) -> bool {
         && attachment.get("commandMode").and_then(Value::as_str) != Some("task-notification")
 }
 
+/// The removal reasons that mean the CLI TOOK the prompt, read off this
+/// machine's transcripts: `absorbed_mid_turn` (pressed into the running
+/// turn), `delivered_to_agent` (handed over at its boundary), and the empty
+/// reason on rows written before the field existed. Any other reason did not
+/// start the prompt and draws no row.
+const START_REASONS: [&str; 3] = ["absorbed_mid_turn", "delivered_to_agent", ""];
+
 /// The `queue-operation remove` line as the queued prompt's row, or `None`
 /// for any other line.
 ///
 /// **The remove is the start.** The CLI writes it when it takes the prompt
-/// out of its queue, which is after the turn that ran when the press happened;
-/// the row's clock is that start, not the press.
+/// out of its queue - at the end of the turn that was running, or absorbed
+/// into it - so the row's clock is that removal, not the press. Only a
+/// reason in [`START_REASONS`] takes the prompt.
 fn queue_remove_row(value: &Value) -> Option<SessionMessage> {
     if value.get("type").and_then(Value::as_str) != Some("queue-operation")
         || value.get("operation").and_then(Value::as_str) != Some("remove")
     {
+        return None;
+    }
+    let reason = value.get("reason").and_then(Value::as_str).unwrap_or_default();
+    if !START_REASONS.contains(&reason) {
         return None;
     }
     let content = value.get("content").and_then(Value::as_str)?;
@@ -249,8 +262,10 @@ fn queued_start_row(
     mut row: SessionMessage,
 ) -> SessionMessage {
     let content = remove.get("content").and_then(Value::as_str).unwrap_or_default();
-    let exact = queued.iter().position(|held| queued_prompt_text(held) == Some(content));
-    let at = exact.or_else(|| (queued.len() == 1).then_some(0));
+    // **Exact words only.** A single pending attachment is not a safe guess:
+    // two prompts can be in play, and pairing by position would draw one
+    // prompt's words under another prompt's start.
+    let at = queued.iter().position(|held| queued_prompt_text(held) == Some(content));
     if let Some(at) = at {
         let attachment = queued.remove(at);
         row.message = attachment.message;
@@ -4840,6 +4855,90 @@ mod tests {
                 if uuid == "h1"),
             "and the boundary row as the frame it is, not a skip: {:?}",
             span.messages[2],
+        );
+    }
+
+    /// **Only a start reason draws the prompt.** A removal carrying any other
+    /// reason did not take the prompt, so neither the removal nor the
+    /// attachment it would have paired with draws a row.
+    #[test]
+    fn a_remove_reason_that_is_not_a_start_draws_no_prompt_row() {
+        let jsonl = r#"{"type":"user","message":{"role":"user","content":"plain"},"uuid":"u1","session_id":"s1"}
+{"type":"attachment","attachment":{"type":"queued_command","prompt":"cancelled words","commandMode":"prompt"},"uuid":"a1","session_id":"s1","timestamp":"2026-11-03T12:00:00Z"}
+{"type":"queue-operation","operation":"remove","reason":"cancelled","timestamp":"2026-11-03T12:00:05Z","sessionId":"s1","content":"cancelled words"}
+"#;
+        let msgs = parse_session_messages(jsonl.as_bytes()).messages;
+        assert_eq!(
+            msgs.iter().map(|row| row.uuid.as_str()).collect::<Vec<_>>(),
+            ["u1"],
+            "the prompt a non-start removal names draws nothing",
+        );
+    }
+
+    /// **The paged read holds a queued prompt until its start too.** An
+    /// assistant row written between the attachment and its `remove` must
+    /// come first in the served span: the page's order is the start's, and a
+    /// span that served the attachment at its own byte would put the words
+    /// above work the same turn wrote after the press.
+    #[test]
+    fn a_paged_read_serves_a_queued_prompt_at_its_remove() {
+        let config = tempfile::tempdir().unwrap();
+        let cwd = "/Users/me/Projects/playground";
+        let dir = project_dir_for(config.path(), cwd);
+        fs::create_dir_all(&dir).unwrap();
+        let session = "550e8400-e29b-41d4-a716-446655440000";
+        let body = format!(
+            "{}\n{}\n{}\n{}\n{}",
+            "{\"type\":\"user\",\"uuid\":\"u1\",\"session_id\":\"s1\",\
+             \"message\":{\"role\":\"user\",\"content\":\"before\"},\
+             \"timestamp\":\"2026-11-03T11:59:00Z\"}",
+            "{\"type\":\"attachment\",\"uuid\":\"a1\",\"session_id\":\"s1\",\
+             \"attachment\":{\"type\":\"queued_command\",\"prompt\":\"queued words\",\
+             \"commandMode\":\"prompt\",\"source_uuid\":\"p1\"},\
+             \"timestamp\":\"2026-11-03T12:00:00Z\"}",
+            "{\"type\":\"assistant\",\"uuid\":\"as1\",\"session_id\":\"s1\",\
+             \"message\":{\"id\":\"m1\",\"role\":\"assistant\",\"model\":\"claude-opus-5\",\
+             \"content\":[{\"type\":\"text\",\"text\":\"working\"}]},\
+             \"timestamp\":\"2026-11-03T12:00:01Z\"}",
+            "{\"type\":\"queue-operation\",\"operation\":\"remove\",\
+             \"reason\":\"absorbed_mid_turn\",\"timestamp\":\"2026-11-03T12:00:05Z\",\
+             \"sessionId\":\"s1\",\"content\":\"queued words\"}",
+            "{\"type\":\"user\",\"uuid\":\"u2\",\"session_id\":\"s1\",\
+             \"message\":{\"role\":\"user\",\"content\":\"after\"},\
+             \"timestamp\":\"2026-11-03T12:00:06Z\"}",
+        );
+        write_session_jsonl(&dir, session, &body);
+
+        let span = read_rows(config.path(), session, Some(cwd), Some(&anchored("u2")), 100)
+            .expect("a span over the queued prompt");
+
+        assert_eq!(span.messages.len(), 3, "the page carries the rows below the anchor");
+        assert!(
+            matches!(&span.messages[1], forge_primitives::Message::Assistant { .. }),
+            "the assistant row written between the press and the start is served first",
+        );
+        let forge_primitives::Message::User { uuid, timestamp, message, .. } = &span.messages[2]
+        else {
+            panic!("the queued prompt is a user row: {:?}", span.messages[2]);
+        };
+        assert!(
+            uuid.as_deref().is_some_and(|id| id.starts_with("queue-remove-2026-11-03T12:00:05Z-")),
+            "named by the start it was served at: {uuid:?}",
+        );
+        assert_eq!(
+            timestamp.as_deref(),
+            Some("2026-11-03T12:00:05Z"),
+            "stamped at the start, not the press",
+        );
+        assert!(
+            message.content.iter().any(|block| matches!(
+                block,
+                forge_primitives::ContentBlock::QueuedCommand { prompt, source_uuid, .. }
+                    if prompt.as_str() == Some("queued words")
+                        && source_uuid.as_deref() == Some("p1")
+            )),
+            "carrying the prompt's words and the id the live row pairs with: {:?}",
+            message,
         );
     }
 
