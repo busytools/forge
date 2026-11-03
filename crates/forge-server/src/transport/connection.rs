@@ -2354,6 +2354,7 @@ where
                         held.messages(),
                         held.rendered(),
                         held.dropped(),
+                        held.dropped_thinking(),
                         opening.as_deref(),
                         turns,
                         budget,
@@ -3871,7 +3872,7 @@ fn page_of_span(
 ) -> crate::transport::wire::Page {
     let rendered = crate::transcript::render(&span.messages, live);
     let mut page =
-        page_within(&span.messages, &rendered, 0, None, turns, budget, "more_page_cap_kb", cap);
+        page_within(&span.messages, &rendered, 0, 0, None, turns, budget, "more_page_cap_kb", cap);
     // The page's oldest row, out of the frames it served: the first one whose
     // id names a row of the span. A frame with no id - a forged ending, an
     // attachment's hoist - is stepped over, which errs toward serving a row

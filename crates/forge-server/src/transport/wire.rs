@@ -1515,10 +1515,21 @@ pub fn page(
     messages: &[Message],
     rendered: &Rendered,
     dropped: usize,
+    dropped_thinking: i64,
     before: Option<&str>,
     turns: u32,
 ) -> Page {
-    page_within(messages, rendered, dropped, before, turns, usize::MAX, "page", None)
+    page_within(
+        messages,
+        rendered,
+        dropped,
+        dropped_thinking,
+        before,
+        turns,
+        usize::MAX,
+        "page",
+        None,
+    )
 }
 
 /// [`page`], with the whole turns it carries held to `budget` bytes.
@@ -1550,6 +1561,7 @@ pub fn page_within(
     messages: &[Message],
     rendered: &Rendered,
     dropped: usize,
+    dropped_thinking: i64,
     before: Option<&str>,
     turns: u32,
     budget: usize,
@@ -1642,6 +1654,19 @@ pub fn page_within(
     // and keeps the same whole turns it always did.
     for turn in &mut page_turns {
         compact_counters(&mut turn.messages);
+    }
+    // The debt belongs to the turn open at the window's end, which only a page
+    // that serves that turn carries. Fold it into the first counter the turn
+    // still has, so a client's own fold sums the whole turn.
+    if dropped_thinking != 0
+        && ends_at == ranges.len()
+        && let Some(turn) = page_turns.last_mut()
+        && let Some(counter) = turn.messages.iter_mut().find(|frame| is_counter(frame))
+    {
+        let total = grown(counter).saturating_add(dropped_thinking);
+        if let Some(object) = counter.as_object_mut() {
+            object.insert("estimated_tokens_delta".to_owned(), Value::from(total));
+        }
     }
 
     // `None` is the real "nothing above this page": a page already opening on
@@ -2397,6 +2422,7 @@ async fn session(
                         held.messages(),
                         held.rendered(),
                         held.dropped(),
+                        held.dropped_thinking(),
                         None,
                         SUBSCRIBE_TURNS,
                         first_frame,
@@ -3021,7 +3047,7 @@ mod tests {
 
     /// The words every turn of a conversation opened on, oldest first.
     fn every_turn(messages: &[Message], rendered: &Rendered) -> Vec<String> {
-        page(messages, rendered, 0, None, u32::MAX).turns.iter().map(opened_on).collect()
+        page(messages, rendered, 0, 0, None, u32::MAX).turns.iter().map(opened_on).collect()
     }
 
     /// The bytes a page's turns occupy on the wire, which is what a budget
@@ -3042,12 +3068,12 @@ mod tests {
         let rows = turns_of(8);
         let borrowed: Vec<&str> = rows.iter().map(String::as_str).collect();
         let (messages, rendered) = a_conversation(&borrowed);
-        let every = page(&messages, &rendered, 0, None, u32::MAX);
+        let every = page(&messages, &rendered, 0, 0, None, u32::MAX);
         let newest_two = &every.turns[every.turns.len() - 2..];
         let budget = wire_bytes(newest_two);
 
         let bounded =
-            page_within(&messages, &rendered, 0, None, SUBSCRIBE_TURNS, budget, "test", None);
+            page_within(&messages, &rendered, 0, 0, None, SUBSCRIBE_TURNS, budget, "test", None);
 
         assert_eq!(
             bounded.turns.iter().map(opened_on).collect::<Vec<_>>(),
@@ -3056,7 +3082,7 @@ mod tests {
         );
         assert_eq!(
             bounded.cursor,
-            page(&messages, &rendered, 0, None, 2).cursor,
+            page(&messages, &rendered, 0, 0, None, 2).cursor,
             "the handle above the page names the message the first kept turn opened at",
         );
     }
@@ -3072,7 +3098,8 @@ mod tests {
         let (messages, rendered) = a_conversation(&borrowed);
         let every = every_turn(&messages, &rendered);
 
-        let bounded = page_within(&messages, &rendered, 0, None, SUBSCRIBE_TURNS, 1, "test", None);
+        let bounded =
+            page_within(&messages, &rendered, 0, 0, None, SUBSCRIBE_TURNS, 1, "test", None);
 
         assert_eq!(bounded.turns.len(), 1, "a budget under one turn still answers with one");
         assert_eq!(opened_on(&bounded.turns[0]), every[every.len() - 1], "and it is the newest");
@@ -3086,11 +3113,11 @@ mod tests {
         let rows = turns_of(30);
         let borrowed: Vec<&str> = rows.iter().map(String::as_str).collect();
         let (messages, rendered) = a_conversation(&borrowed);
-        let counted = page(&messages, &rendered, 0, None, SUBSCRIBE_TURNS);
+        let counted = page(&messages, &rendered, 0, 0, None, SUBSCRIBE_TURNS);
         let budget = wire_bytes(&counted.turns);
 
         let bounded =
-            page_within(&messages, &rendered, 0, None, SUBSCRIBE_TURNS, budget, "test", None);
+            page_within(&messages, &rendered, 0, 0, None, SUBSCRIBE_TURNS, budget, "test", None);
 
         assert_eq!(
             bounded.turns.len(),
@@ -3188,7 +3215,7 @@ mod tests {
         ];
         let rendered = crate::transcript::render(&messages, true);
 
-        let page = page(&messages, &rendered, 0, None, u32::MAX);
+        let page = page(&messages, &rendered, 0, 0, None, u32::MAX);
 
         assert_eq!(page.turns.len(), 1, "the frames are one live turn");
         let served = &page.turns[0].messages;
@@ -3234,7 +3261,7 @@ mod tests {
         ];
         let rendered = crate::transcript::render(&messages, true);
 
-        let page = page(&messages, &rendered, 0, None, u32::MAX);
+        let page = page(&messages, &rendered, 0, 0, None, u32::MAX);
 
         assert_eq!(
             counters_on(&page),
@@ -3250,6 +3277,45 @@ mod tests {
         assert_eq!(
             folded["folded_from"], "2026-10-24T09:00:00.000001Z",
             "and its range is its own run's, not the turn's",
+        );
+    }
+
+    /// **A page above the newest turn carries no cut debt.** The debt belongs
+    /// to the turn open at the window's end, so a page that stops below it
+    /// leaves every counter as it was.
+    #[test]
+    fn a_before_page_does_not_carry_the_cut_debt() {
+        let messages =
+            vec![opens_turn_at(1), counter(2, 10), ends_turn(3), opens_turn_at(4), counter(5, 20)];
+        let rendered = crate::transcript::render(&messages, false);
+        let newest = page_within(&messages, &rendered, 0, 1_000, None, 1, usize::MAX, "test", None);
+        assert_eq!(counters_on(&newest), vec![(1_020, None)], "the newest page carries the debt");
+        let cursor = newest.cursor.expect("a page above the newest turn");
+        let above =
+            page_within(&messages, &rendered, 0, 1_000, Some(&cursor), 2, usize::MAX, "test", None);
+
+        assert_eq!(
+            counters_on(&above),
+            vec![(10, None)],
+            "the page above the newest turn serves its own counters, not the debt",
+        );
+    }
+
+    /// **The debt lands on the newest turn only.** A page carrying several
+    /// turns folds the cut's growth into the first counter of the turn open at
+    /// its end, and leaves every older turn's counters alone.
+    #[test]
+    fn the_cut_debt_lands_on_the_newest_turn_only() {
+        let messages =
+            vec![opens_turn_at(1), counter(2, 10), ends_turn(3), opens_turn_at(4), counter(5, 20)];
+        let rendered = crate::transcript::render(&messages, false);
+        let served =
+            page_within(&messages, &rendered, 0, 1_000, None, u32::MAX, usize::MAX, "test", None);
+
+        assert_eq!(
+            counters_on(&served),
+            vec![(10, None), (1_020, None)],
+            "the older turn keeps its own counter and the newest carries the debt once",
         );
     }
 
@@ -3270,7 +3336,7 @@ mod tests {
         ];
         let rendered = crate::transcript::render(&messages, true);
 
-        let page = page(&messages, &rendered, 0, None, u32::MAX);
+        let page = page(&messages, &rendered, 0, 0, None, u32::MAX);
 
         assert_eq!(
             counters_on(&page),
@@ -3292,7 +3358,7 @@ mod tests {
         let messages = vec![opens_turn(), unstamped(1, 10), counter(2, 20), counter(3, 5)];
         let rendered = crate::transcript::render(&messages, true);
 
-        let page = page(&messages, &rendered, 0, None, u32::MAX);
+        let page = page(&messages, &rendered, 0, 0, None, u32::MAX);
 
         assert_eq!(
             counters_on(&page),
@@ -3336,8 +3402,17 @@ mod tests {
         };
         let newest_two: usize = ranges[ranges.len() - 2..].iter().map(raw_turn).sum();
 
-        let bounded =
-            page_within(&messages, &rendered, 0, None, SUBSCRIBE_TURNS, newest_two, "test", None);
+        let bounded = page_within(
+            &messages,
+            &rendered,
+            0,
+            0,
+            None,
+            SUBSCRIBE_TURNS,
+            newest_two,
+            "test",
+            None,
+        );
 
         assert_eq!(bounded.turns.len(), 2, "the same two turns the raw budget kept");
         assert!(
@@ -3369,12 +3444,14 @@ mod tests {
         let (messages, rendered) = a_conversation(&borrowed);
         let seat = fixture_seat();
 
-        let raw = page_within(&messages, &rendered, 0, None, SUBSCRIBE_TURNS, 2_048, "test", None);
+        let raw =
+            page_within(&messages, &rendered, 0, 0, None, SUBSCRIBE_TURNS, 2_048, "test", None);
         assert_eq!(raw.turns.len(), 1, "a raw record of 20 KB leaves one turn in 2 KB");
 
         let capped = page_within(
             &messages,
             &rendered,
+            0,
             0,
             None,
             SUBSCRIBE_TURNS,
@@ -3487,7 +3564,7 @@ mod tests {
             let mut held_on_a_page = 0_usize;
             let mut ended_where_held = 0_usize;
             loop {
-                let page = page(&messages, &rendered, 0, before.as_deref(), 1);
+                let page = page(&messages, &rendered, 0, 0, before.as_deref(), 1);
                 for turn in &page.turns {
                     if holds_call(turn, call) {
                         held_on_a_page += 1;
@@ -3527,7 +3604,7 @@ mod tests {
             r#"{"type":"system","subtype":"stop_hook_summary","hookCount":1,"hookInfos":[],"hookErrors":[],"hasOutput":false,"level":"suggestion","preventedContinuation":false,"stopReason":"","toolUseID":"tu1","uuid":"h1","sessionId":"s","timestamp":"2026-10-15T05:19:40.632Z"}"#,
             r#"{"type":"system","subtype":"compact_boundary","uuid":"b1","sessionId":"s","compactMetadata":{"trigger":"auto","preTokens":1018466,"postTokens":19526},"timestamp":"2026-10-15T05:20:11.004Z"}"#,
         ]);
-        let served = page(&messages, &rendered, 0, None, u32::MAX);
+        let served = page(&messages, &rendered, 0, 0, None, u32::MAX);
 
         let frames: Vec<&Value> =
             served.turns.iter().flat_map(|turn| turn.messages.iter()).collect();
@@ -3579,10 +3656,10 @@ mod tests {
         let (messages, rendered) = a_conversation(&borrowed);
 
         // Reached the way a client reaches one, from the cursor below it.
-        let lower = page(&messages, &rendered, 0, None, 2);
+        let lower = page(&messages, &rendered, 0, 0, None, 2);
         let cursor = lower.cursor.expect("there is a page above this one");
 
-        let above = page(&messages, &rendered, 0, Some(&cursor), 0);
+        let above = page(&messages, &rendered, 0, 0, Some(&cursor), 0);
 
         assert!(!above.turns.is_empty(), "a page carries turns rather than none at all");
         assert_ne!(
@@ -3603,7 +3680,7 @@ mod tests {
             r#"{"type":"result","uuid":"r1","subtype":"success","duration_ms":1,"duration_api_ms":1,"is_error":false,"num_turns":1,"session_id":"s"}"#,
         ]);
 
-        let first = page(&messages, &rendered, 0, None, 10);
+        let first = page(&messages, &rendered, 0, 0, None, 10);
 
         assert_eq!(first.turns.len(), 1, "precondition: this conversation is one turn");
         assert_eq!(
@@ -3636,7 +3713,7 @@ mod tests {
         );
         assert!(!messages.is_empty(), "precondition: and it has content");
 
-        let page = page(&messages, &rendered, 0, None, 10);
+        let page = page(&messages, &rendered, 0, 0, None, 10);
 
         assert_eq!(page.turns.len(), 1, "the conversation rides one turn rather than none");
         assert_eq!(page.turns[0].messages.len(), messages.len(), "and that turn carries all of it");
@@ -3663,7 +3740,7 @@ mod tests {
             "precondition: and both open at the one message that carried them",
         );
 
-        let page = page(&messages, &rendered, 0, None, 10);
+        let page = page(&messages, &rendered, 0, 0, None, 10);
 
         assert_eq!(page.turns.len(), 1, "one message is one turn on the page");
         assert_eq!(
@@ -3680,7 +3757,7 @@ mod tests {
         let rows = turns_of(50);
         let borrowed: Vec<&str> = rows.iter().map(String::as_str).collect();
         let (messages, rendered) = a_conversation(&borrowed);
-        let first = page(&messages, &rendered, 0, None, 10);
+        let first = page(&messages, &rendered, 0, 0, None, 10);
 
         // A page is the turns it was asked for, each opening where a turn
         // does. A page beginning anywhere else hands a client the tail of one
@@ -3705,7 +3782,7 @@ mod tests {
         // may never skip one, because a skipped turn is history the reader has
         // no way to ask for again.
         let all = every_turn(&messages, &rendered);
-        let second = page(&messages, &rendered, 0, first.cursor.as_deref(), 10);
+        let second = page(&messages, &rendered, 0, 0, first.cursor.as_deref(), 10);
         let second_turns: Vec<String> = second.turns.iter().map(opened_on).collect();
 
         assert!(!second_turns.is_empty(), "asking for more turns returns some");
@@ -3741,7 +3818,7 @@ mod tests {
         let mut cursor: Option<String> = None;
         let mut pages = 0;
         loop {
-            let asked = page(&messages, &rendered, 0, cursor.as_deref(), 5);
+            let asked = page(&messages, &rendered, 0, 0, cursor.as_deref(), 5);
             pages += 1;
             assert!(pages < every.len() + 2, "the walk terminates rather than cycling");
             seen.extend(asked.turns.iter().map(opened_on));

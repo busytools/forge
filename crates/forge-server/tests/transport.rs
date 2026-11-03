@@ -4824,6 +4824,22 @@ fn a_said_frame(text: &str) -> forge_primitives::Message {
     .expect("a user frame")
 }
 
+/// One thinking-token counter, with a cumulative absolute that is not its
+/// delta - so summing the wrong field fails.
+fn a_counter_frame(at: usize, delta: i64) -> forge_primitives::Message {
+    let absolute = at.saturating_add(1) * usize::try_from(delta).expect("a positive delta");
+    serde_json::from_value(serde_json::json!({
+        "type": "system",
+        "subtype": "thinking_tokens",
+        "estimated_tokens": absolute,
+        "estimated_tokens_delta": delta,
+        "uuid": format!("t-{at}"),
+        "session_id": "5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45",
+        "timestamp": format!("2026-10-24T09:00:{:02}.{:06}Z", at / 1_000_000, at % 1_000_000),
+    }))
+    .expect("a counter frame")
+}
+
 /// A user frame carrying a structured record, as a tool result does.
 fn a_recorded_frame(record: &serde_json::Value) -> forge_primitives::Message {
     serde_json::from_value(serde_json::json!({
@@ -10086,7 +10102,7 @@ async fn a_giant_seats_history_crosses_bounded_and_the_connection_survives() {
         available_models: Vec::new(),
         mode: None,
         history: window,
-        dropped,
+        dropped: dropped.frames,
         compaction_count: 0,
     });
     let frame = frame_until(
@@ -10115,7 +10131,11 @@ async fn a_giant_seats_history_crosses_bounded_and_the_connection_survives() {
     {
         let held = state.conversations.get(&seat).expect("the handover holds the seat");
         let seat_held = held.lock();
-        assert_eq!(seat_held.dropped(), dropped, "the seat's floor is the cut it rode in with");
+        assert_eq!(
+            seat_held.dropped(),
+            dropped.frames,
+            "the seat's floor is the cut it rode in with"
+        );
         assert!(
             weigh(seat_held.messages())
                 <= forge_workspace::conversation_window::CONVERSATION_CAP_BYTES
@@ -10161,6 +10181,87 @@ async fn a_giant_seats_history_crosses_bounded_and_the_connection_survives() {
     .await;
     let (subject, ..) = snapshot_answering(&mut socket).await;
     assert_eq!(subject, Subject::Home, "the connection survived the giant seat's history");
+}
+
+/// **A thought-heavy resume serves its whole thinking sum through the
+/// socket.** The handover cuts the window and folds the shed thinking into
+/// the first counter it carries; the record the client reads must then sum
+/// the whole turn, not only the suffix the window kept. This rides the
+/// production serve path, not a test's own call to `page_within`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_thought_heavy_resume_serves_its_whole_thinking_sum() {
+    let (url, fleet, state) = a_server_with_state().await;
+    let mut socket = connect_unbounded(&url).await;
+    let seat = lead_seat();
+
+    send(
+        &mut socket,
+        ClientMessage::Subscribe {
+            what: Subject::Session(seat.clone()),
+            answering: true,
+            review: false,
+        },
+    )
+    .await;
+    let (subject, ..) = snapshot_answering(&mut socket).await;
+    assert_eq!(subject, Subject::Session(seat.clone()), "precondition: the client shows the seat");
+
+    // The resume's read, cut and folded the way the session task does it.
+    let counters = 6_100;
+    let mut read = vec![a_said_frame("a thought-heavy turn")];
+    read.extend((0..counters).map(|at| a_counter_frame(at, 1)));
+    let (mut window, shed) = forge_workspace::conversation_window::Window::tail_of(&read);
+    window.carry_thinking(shed);
+
+    let session_id = SessionId::new("5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45");
+    fleet.emit(SessionUpdate::Connected {
+        key: seat.clone(),
+        session_id: session_id.clone(),
+        cwd: "/tmp".to_owned(),
+        current_model: a_current_model(),
+        available_models: Vec::new(),
+        mode: None,
+        history: window.messages().to_vec(),
+        dropped: shed.frames,
+        compaction_count: 0,
+    });
+    // A counter that opens no turn marks the seal the wait reads, and adds
+    // nothing to the sum.
+    fleet.emit(SessionUpdate::ChatAppended {
+        key: seat.clone(),
+        origin: None,
+        source: None,
+        msg: a_counter_frame(counters, 0),
+    });
+    assert!(
+        state.conversations.await_consumed(&seat, 1, SEED_WAIT).await,
+        "waited for the fold to take the handover, and it never marked it",
+    );
+
+    // The record a client reads, through the same serve path.
+    send(
+        &mut socket,
+        ClientMessage::Subscribe {
+            what: Subject::Session(seat.clone()),
+            answering: true,
+            review: false,
+        },
+    )
+    .await;
+    let (_, data, _) = snapshot_answering(&mut socket).await;
+    let sum: i64 = data["conversation"]["turns"]
+        .as_array()
+        .expect("the record's turns")
+        .iter()
+        .flat_map(|turn| turn["messages"].as_array().into_iter().flatten())
+        .filter(|frame| frame["subtype"] == "thinking_tokens")
+        .filter_map(|frame| frame["estimated_tokens_delta"].as_i64())
+        .sum();
+    assert_eq!(
+        sum,
+        i64::try_from(counters).expect("the test's count fits"),
+        "the served record carries the whole turn",
+    );
 }
 
 /// The frame is the seat's session facts and no transcript, and small enough
