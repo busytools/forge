@@ -75,11 +75,17 @@ if [ -d "$LEGACY_FORGE_ROOT" ]; then
 fi
 
 log_info "Building forge ($BUILD_LABEL - this can take a few minutes)"
+# Install into a staging root first: the live binary is replaced only after
+# the new one has started with its libraries beside it.
+STAGING_ROOT="$FORGE_REPO/target/install-root"
+rm -rf "$STAGING_ROOT"
+mkdir -p "$STAGING_ROOT"
 CARGO_ARGS=(
     --path "$FORGE_REPO/crates/forge-server"
     --bin forge
     --locked
     --force
+    --root "$STAGING_ROOT"
     # The build must land in the repo's own target dir: the transcribe
     # libraries forge-dictate stages beside the profile are what gets
     # installed next to the binary, and `cargo install` otherwise builds in a
@@ -103,6 +109,7 @@ CARGO_ARGS=(
 # default, falling back to `$CARGO_HOME/bin` (`~/.cargo/bin`).
 FORGE_BIN_DIR="${CARGO_INSTALL_ROOT:-${CARGO_HOME:-$HOME/.cargo}}/bin"
 FORGE_BIN="$FORGE_BIN_DIR/forge"
+STAGED_BIN="$STAGING_ROOT/bin/forge"
 
 # transcribe's ggml is built shared, and the binary's rpath names its own
 # directory, so the libraries ship beside it. The build staged them next to
@@ -113,12 +120,26 @@ FORGE_TARGET_DIR="$FORGE_REPO/target${CARGO_BUILD_TARGET:+/$CARGO_BUILD_TARGET}"
 FORGE_TRANSCRIBE_LIBS="$FORGE_TARGET_DIR/$BUILD_LABEL/transcribe-libs"
 [ -d "$FORGE_TRANSCRIBE_LIBS" ] \
     || die "transcribe's shared libraries were not staged at $FORGE_TRANSCRIBE_LIBS - a target-triple build stages under target/<triple>/$BUILD_LABEL, so set CARGO_BUILD_TARGET to the triple you build for"
-cp -R "$FORGE_TRANSCRIBE_LIBS/." "$FORGE_BIN_DIR/"
+cp -R "$FORGE_TRANSCRIBE_LIBS/." "$STAGING_ROOT/bin/"
 
-# The install is only done if the binary starts: the loader names what it
-# could not find, which is the one failure an installed copy has.
-"$FORGE_BIN" --version > /dev/null \
+# The installed binary gets no library path, so neither does the check: the
+# caller's environment must not be able to mask a missing library.
+run_binary() {
+    env -u LD_LIBRARY_PATH -u DYLD_LIBRARY_PATH -u DYLD_FALLBACK_LIBRARY_PATH "$@"
+}
+run_binary "$STAGED_BIN" --version > /dev/null \
+    || die "the staged binary does not start - run $STAGED_BIN directly for the loader's error"
+
+# The live install is replaced only now: libraries first, so the old binary
+# keeps working while they land, then the binary by rename, which is atomic
+# and never leaves a half-written forge in place.
+mkdir -p "$FORGE_BIN_DIR"
+cp -R "$FORGE_TRANSCRIBE_LIBS/." "$FORGE_BIN_DIR/"
+cp "$STAGED_BIN" "$FORGE_BIN_DIR/.forge.new"
+mv -f "$FORGE_BIN_DIR/.forge.new" "$FORGE_BIN"
+run_binary "$FORGE_BIN" --version > /dev/null \
     || die "the installed binary does not start - run $FORGE_BIN directly for the loader's error"
+rm -rf "$STAGING_ROOT"
 
 log_success "forge installed at $FORGE_BIN"
 log_success "  transcribe/ggml libraries shipped beside it"
