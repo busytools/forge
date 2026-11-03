@@ -923,8 +923,9 @@ content_hash, threads, reviews}`** - in answer to `document_read`: the
   anchor's `content_hash` crosses under), and the document's scope read:
   its comment threads - each carrying a `resolution` naming where its
   anchor sits in THIS document now, re-found by its first captured line,
-  or `outdated` when the revision left it nowhere - and the reviews they
-  were filed into. `session` is
+  or `outdated` when the revision left it nowhere; a read whose bytes are
+  not text carries no landing at all, so `resolution` is `null` for every
+  thread - and the reviews they were filed into. `session` is
   named back so a client holding two seats routes each answer to its own
   viewer; a refused read comes back as an `error` naming `document_read`,
   under the seat that asked - and so does one whose review store could not

@@ -93,13 +93,15 @@ is the same WebKit engine that was measured; Firefox ships its own pdf.js.
 
 **A comment anchors to a source line, or to a block's span.** A reviewable
 document draws as its rendered blocks, each carrying the source span it came
-from. A press on the block anchors at its first line with the span captured
-as its context; a press on a gutter number anchors at that exact line with
-the line FIRST in its captured context. That first captured line is the
-thread's identity across a revision. The anchor also carries the line's own
-hash, the same FNV-1a a code anchor hashes its line with. A plain-text
-document has no blocks, so its rows are its own lines, drawn as the text
-they are, each with its number in the gutter.
+from and owning the blank lines up to the next block, so every source line
+has a gutter target. A press on the block anchors at its first line with the
+span captured as its context; a press on a gutter number anchors at that
+exact line with the line FIRST in its captured context, capped at 12 lines -
+the line and the ones after it. That first captured line is the thread's
+identity across a revision. The anchor also carries the line's own hash, the
+same FNV-1a a code anchor hashes its line with. A plain-text document has no
+blocks, so its rows are its own lines, drawn as the text they are, each with
+its number in the gutter.
 
 **A thread re-anchors across a revision the way a code thread does.** The
 server resolves each doc thread against the document it is read with: the
