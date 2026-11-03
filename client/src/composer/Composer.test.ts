@@ -4375,10 +4375,7 @@ describe('the one body slot', () => {
     key('ControlRight', 'keydown');
     await opened();
 
-    expect(
-      harness.sent,
-      'a hold that is not the read hold refused the take',
-    ).toHaveLength(1);
+    expect(harness.sent, 'a hold that is not the read hold refused the take').toHaveLength(1);
   });
 
   it('inserts the live region when the read wait takes over from a waking hold', () => {
