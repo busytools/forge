@@ -2464,7 +2464,7 @@ async fn session(
     // network - and the review read answers the last completed check and kicks
     // a background refresh, so it never waits on the fetch either (#2818).
     let at = std::time::Instant::now();
-    let refresh = if review { surface.refresh_diff_base(&held).await } else { None };
+    let refresh = if review { surface.refresh_diff_base(slot, &held).await } else { None };
     timings.base_ms = slice_ms(at);
     // The refresh and the scan taken after it are one read of one base: the
     // count, the chain and the files cannot describe two refs.

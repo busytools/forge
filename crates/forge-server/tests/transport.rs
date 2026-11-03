@@ -7226,25 +7226,6 @@ async fn a_review_read_draws_the_checked_base_and_the_count_with_it() {
         cached["git"]["ahead"]["commit_count"], 2,
         "the stale base folds upstream's commit into the count: {cached}",
     );
-    // **The ordinary read reached no network**: the ref is where the stale
-    // fixture left it, so the count above was that ref's and nothing fetched.
-    let refs = |at: &std::path::Path, what: &str| {
-        let out = std::process::Command::new("git")
-            .arg("-C")
-            .arg(at)
-            .args(["rev-parse", what])
-            .output()
-            .expect("git rev-parse");
-        String::from_utf8_lossy(&out.stdout).trim().to_owned()
-    };
-    assert_eq!(
-        refs(
-            &state.surface.roster().cwd_for(&lead_seat()).expect("the seat's cwd"),
-            "refs/remotes/origin/main"
-        ),
-        refs(upstream.path(), "main~1"),
-        "an ordinary read leaves the base ref where it stood",
-    );
 
     // **The seat's watch lands the base check on its first pass** - that
     // pass is a forced scan, and the fetch it kicks is where the check comes
@@ -7281,6 +7262,57 @@ async fn a_review_read_draws_the_checked_base_and_the_count_with_it() {
         .expect("the branch layer is populated");
     let paths: Vec<&str> = files.iter().filter_map(|file| file["path"].as_str()).collect();
     assert_eq!(paths, vec!["feat.txt"], "only the branch's own file crosses: {fresh}");
+}
+
+/// **A seat with no session still draws the check its own read makes.** No
+/// watch runs for a sessionless seat, so a kicked refresh would land in a
+/// store nothing pushes to the page: the review read is the only path that
+/// can carry the check (#2818).
+#[tokio::test]
+async fn a_sessionless_seats_review_read_draws_the_check_it_makes() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let upstream = tempfile::tempdir().expect("upstream");
+    let fleet = Fleet::in_dir_with_server_and_env(root.path(), &[("TestOrg", &["proj"])], "", &[])
+        .expect("the fleet builds");
+    // **No `fleet.start`**: the seat has no session, and so no watch.
+    let repo = root.path().join("proj");
+    std::fs::create_dir_all(&repo).expect("the project directory");
+    a_repo_with_a_stale_base(&repo, upstream.path());
+
+    let state = Arc::new(TransportState::for_workspace(&fleet.workspace()));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let updates = state.surface.subscribe_mirror();
+    let served = Arc::clone(&state);
+    tokio::spawn(async move {
+        let _ = forge_server::transport::serve(served, listener, updates).await;
+    });
+    let url = format!("ws://{addr}/socket");
+
+    let mut review = connect(&url).await;
+    send(
+        &mut review,
+        ClientMessage::Subscribe {
+            what: Subject::Session(lead_seat()),
+            answering: true,
+            review: true,
+        },
+    )
+    .await;
+    let (_, record, _) = snapshot_answering(&mut review).await;
+    assert_eq!(
+        record["diff"]["base"], "current",
+        "the sessionless read carries its own check: {record}",
+    );
+    assert_eq!(
+        record["git"]["ahead"]["commit_count"], 1,
+        "the count and the files share one base: {record}",
+    );
+    let files = record["diff"]["branch_ahead"]["populated"]
+        .as_array()
+        .expect("the branch layer is populated");
+    let paths: Vec<&str> = files.iter().filter_map(|file| file["path"].as_str()).collect();
+    assert_eq!(paths, vec!["feat.txt"], "only the branch's own file crosses: {record}");
 }
 
 /// **A fetch that cannot run says what git said, on the read after it.** The

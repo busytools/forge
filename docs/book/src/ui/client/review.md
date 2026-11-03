@@ -61,24 +61,29 @@ carries its line:
 
 **The all-changes diff is measured against a base the page's own read answers
 at once, and the check that keeps it fresh runs off the read.** Opening the
-review page asks the server for a review-scoped read. That read never waits on
-the network: it answers the last completed check the checkout holds, or the
-base unchecked when it holds none, pinned to the local tip the diff is read
-at, and it kicks a throttled background refresh either way. A base the remote
-has moved past moves the merge-base back and folds main's own commits into the
-branch's diff, so the read never draws one as the branch's own change without
-saying what it holds. While the record is being read the page says `Reading
-the base for the diff...` with the work spinner; the check itself is no
-longer part of that wait.
+review page asks the server for a review-scoped read. On a seat with a
+session, that read never waits on the network: it answers the last completed
+check the checkout holds, or the base unchecked when it holds none, pinned to
+the local tip the diff is read at, and it kicks a throttled background
+refresh either way. **A seat with no session is the one exception**: no watch
+runs for it, so nothing would deliver a kicked check to the page, and its
+read is the one that runs the refresh and waits for it. A local base runs no
+fetch at all: the read probes whether it can lag behind anything and draws
+`local` when it cannot. A base the remote has moved past moves the merge-base
+back and folds main's own commits into the branch's diff, so the read never
+draws one as the branch's own change without saying what it holds. **A
+checked base may be up to four minutes old** - the store's own window - and
+the page draws its state without its age. While the
+record is being read the page says `Reading the base for the diff...` with the
+work spinner; the check itself is no longer part of that wait.
 
-**A read never waits on a fetch, its own or anybody else's.** When a check
+**A read never joins a refresh already in flight.** When a check
 lands, the seat's row carries the measurement at its next watch pass and
 arrives as `work_changed`; the page sees the measured base - its state or the
 words a failed check left - disagree with the one its own read drew and asks
 its own read again, which answers from that measurement rather than paying
 the network. So the page turns verified on its own with no second fetch and no
-second click, and a reading never joins a refresh, even one already in
-flight. Every other read of
+second click. Every other read of
 a seat with a session serves what the stores hold and never waits on the base
 (a seat with none still looks its PR up on the read - see the socket page -
 which is that read's own network call), so
@@ -387,10 +392,11 @@ carries.
 
 - **A seat's reviews**, the ordinary case.
 - **Nothing yet**: `Reading the base for the diff...` with the work spinner
-  before the first record arrives. The page's own read resolves the base
-  before it answers and that wait has no cap, so it is named for what it is
-  rather than drawn as a generic load; a branch with nothing to fetch still
-  reads its base, so the words stay true either way.
+  before the first record arrives. The page's own read builds the record
+  before it answers, and on a seat with no session it also carries the base
+  check; the line names that work rather than drawing a generic load, and a
+  branch with nothing to fetch still reads its base, so the words stay true
+  either way.
 - **A refused seat**: the server's own sentence, drawn the way the sibling
   routes draw a refused subscription.
 - **A half that failed**: the two reads fail apart on the server, so each is

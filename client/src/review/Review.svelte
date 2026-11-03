@@ -96,7 +96,7 @@
    * The floor between two of this page's own reads.
    *
    * A branch under a rebase or a burst of commits can move a chain faster than
-   * a read answers, and each read is a whole record plus a base fetch: the
+   * a read answers, and each read is a whole record: the
    * debounce alone has no ceiling, so this is the one that bounds the rate.
    */
   const REASK_FLOOR_MS = 10_000;
@@ -1590,9 +1590,8 @@
     color: var(--bad);
     padding: 2px 2px 8px;
   }
-  /* The one wait this page explains: its own read fetches the base before it
-     answers, with no cap, and the work spinner is the mark every surface uses
-     for work in flight. */
+  /* The one wait this page explains: its own record read, and the work
+     spinner is the mark every surface uses for work in flight. */
   .pending .ring {
     margin-right: 7px;
     vertical-align: -1px;

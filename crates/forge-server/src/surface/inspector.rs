@@ -160,21 +160,30 @@ impl ViewSurface {
         self.workspace.scan_work_at(slot, cwd, PrRefresh::Fetch).await
     }
 
-    /// Answer the base the seat's drawn branch diff is measured against from
-    /// the last completed check, and kick a background refresh; the fetch is
-    /// never waited on.
+    /// Answer the base the seat's drawn branch diff is measured against, and
+    /// keep it fresh off the read.
     ///
     /// `None` when no branch layer is drawn: the default branch, a detached
     /// HEAD, or no resolved default. Only the read that draws the diff calls
     /// this, so the check it reports is the one that read drew.
+    ///
+    /// **A seat with no session waits for its own check.** No watch runs for
+    /// one, so a kicked refresh would land in a store nothing pushes to the
+    /// page: this read is the only path that can carry the answer.
     pub async fn refresh_diff_base(
         &self,
+        slot: &SessionSlot,
         held: &WorkSnapshot,
     ) -> Option<forge_workspace::env::git_diff::BaseRefresh> {
         if !held.diff.branch_ahead.is_populated() {
             return None;
         }
         let default = held.diff.default_branch.as_deref()?;
+        if self.workspace.domain_session_for(slot).is_none() {
+            return Some(
+                forge_workspace::env::git_diff::refresh_base_now(&held.cwd, default).await,
+            );
+        }
         Some(forge_workspace::env::git_diff::refresh_base_for_display(&held.cwd, default).await)
     }
 
