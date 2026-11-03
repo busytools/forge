@@ -76,6 +76,30 @@ describe('the document comment helpers', () => {
     expect(rows[0]).toMatchObject({ line: 1, end: 3, context: ['one', 'two', 'three'] });
   });
 
+  /** **The rows cover the whole document from line 1**, including the blank
+   *  lines before the first block: a comment placed on one of those lines
+   *  must have a row to draw under, or it vanishes from the page. */
+  it('covers a document whose first block starts after a blank line', () => {
+    const rows = rowsOf('\n# hi\n', 'markdown');
+    const covered = rows.flatMap((row) =>
+      Array.from({ length: row.end - row.line + 1 }, (_, at) => row.line + at),
+    );
+
+    expect(covered).toEqual([1, 2]);
+    expect(rows[0]).toMatchObject({ line: 1, end: 1, html: null, text: '' });
+    expect(rows[1]).toMatchObject({ line: 2, end: 2 });
+  });
+
+  /** **A document of blank lines is still commentable.** It renders no block
+   *  at all, so one raw row carries every line rather than the page drawing
+   *  no target. */
+  it('makes a document of blank lines one raw row', () => {
+    const rows = rowsOf('\n\n', 'markdown');
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ line: 1, end: 2, html: null });
+  });
+
   /** A plain-text document has no blocks: its rows are its own lines, drawn
    *  as the text they are. */
   it('makes text documents a row per line', () => {
@@ -136,6 +160,18 @@ describe('the document comment helpers', () => {
     expect(placements[2]).toMatchObject({ line: null, stale: true });
     expect(placements[2]?.why).toContain('42');
     expect(placements[2]?.why, 'the sentence names what it is past').toContain('10');
+  });
+
+  /** **A landing the document cannot reach still draws somewhere.** A
+   *  server's placed line outside this version's lines is treated like no
+   *  landing: the captured line holds if it exists, else the bottom. A
+   *  placed line trusted blindly would draw under no row and vanish. */
+  it('does not vanish a landing past the document', () => {
+    const beyond = thread('beyond', 2, { state: 'placed', line: 42, moved_from: null });
+
+    const [placement] = placeThreads([beyond], 10);
+
+    expect(placement).toMatchObject({ line: 2, stale: true, why: null });
   });
 
   it('drafts survive the viewer leaving the document and coming back', () => {

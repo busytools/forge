@@ -5337,12 +5337,13 @@ details[open] > summary .arw { opacity: 1; }
   border-radius: var(--r); background: #fff; }
 
 /* ---------- a reviewable document: its rendered blocks ---------- */
-/* The document rendered, every top-level block a comment target: the block
-   under the pointer (or the focus) is marked, and a press opens the composer
-   under it. The anchor is the block's own source lines, which is what keeps
-   a comment's captured lines and its outdated marking exact when the
-   document changes. A plain-text document has no blocks, so its rows are
-   its own lines, drawn as the text they are. */
+/* The document rendered, every top-level block a comment target and every
+   source line in its gutter one too: the block or number under the pointer
+   (or the focus) is marked, and a press opens the composer under it. A
+   block anchor captures the block's span; a line anchor captures from the
+   pressed line, its first line being what a revision re-finds the thread
+   by. A plain-text document has no blocks, so its rows are its own lines,
+   drawn as the text they are. */
 .doc-page .doc-blocks { font-size: var(--fs-base); }
 /* **A block is a prose root with a source-line gutter.** Its rendered marks
    read the chat's own rules through `.prose`; the gutter is one numbered
@@ -5417,6 +5418,9 @@ details[open] > summary .arw { opacity: 1; }
 .doc-page .doc-movedfrom { font-family: var(--mono); font-size: var(--fs-label); color: var(--warn); }
 .doc-page .doc-why { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
 .doc-page .doc-who { color: var(--muted); font-size: var(--fs-label); }
+/* A draft's source line, so a line comment's card says which line it is on. */
+.doc-page .doc-where { color: var(--dim); font-family: var(--mono);
+  font-size: var(--fs-label); }
 /* The words are the chat's own prose - the renderer, the marks and the
    author's lines are `Prose`'s rules; this carries the note's tone, the way
    the review page's `.rv-turn .prose` carries its turn's. */
@@ -5447,8 +5451,10 @@ details[open] > summary .arw { opacity: 1; }
   color: var(--text); border-color: var(--text); }
 .doc-page .doc-comment-btn:disabled, .doc-page .doc-finish-btn:disabled,
 .doc-page .doc-answer-btn:disabled { color: var(--dim); cursor: default; }
-/* Comments written against an earlier version: their captured lines kept,
-   the same shape the code review's parked section draws. */
+/* **Only a thread with nowhere to draw collects here.** One the revision
+   could not re-find still draws inline at its captured line, marked; this
+   section is for the anchor whose line is past this version, its captured
+   lines kept and the sentence saying why. */
 .doc-page .doc-stale { margin: 24px 0 8px; border-top: 1px solid var(--line); padding-top: 14px; }
 .doc-page .doc-stale h2 { font-size: var(--fs-label); font-weight: 400; color: var(--dim);
   font-family: var(--mono); margin-bottom: 10px; }
@@ -5457,10 +5463,10 @@ details[open] > summary .arw { opacity: 1; }
   color: var(--muted); background: var(--bg); border: 1px solid var(--line);
   border-radius: 8px; padding: 6px 8px; white-space: pre-wrap;
   overflow-wrap: anywhere; }
-/* The exit, at the document's end - **in every state**: the one control
-   that files the round and answers the parked hand-off (a PDF or a
-   read-only document included), and the way back to the session when
-   there is nothing to release. */
+/* The exit, at the document's end - **in every state**. A parked hand-off
+   draws two answers, approve or something is off, each above the note the
+   reader may carry to the agent; a deep link has no call to answer and
+   draws the one done that files the round and returns. */
 .doc-page .doc-exit { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px;
   margin-top: 26px; padding-top: 14px; border-top: 1px solid var(--line); }
 .doc-page .doc-left { color: var(--ok); font-family: var(--ui); font-size: var(--fs-base); }

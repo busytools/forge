@@ -180,6 +180,10 @@
     for (const held of placements) {
       if (!held.stale) continue;
       const thread = held.thread;
+      // **A read with no landing is an older server, not drift.** Aging every
+      // thread on one would write Outdated into the store for a document the
+      // server never placed, so only a landing that is present ages.
+      if (thread.resolution === null) continue;
       if (thread.status !== 'open' && thread.status !== 'addressed') continue;
       void connection
         ?.dispatch(statusCommand(slot, scope, thread.id, 'Outdated'))
@@ -589,6 +593,9 @@
     | { kind: 'done'; answer: Finish; number: number | null }
     | { kind: 'refused'; answer: Finish; why: string }
   >({ kind: 'idle' });
+  /** The review this round filed, kept across a refused answer so a retry
+   *  still names it. */
+  let filedReview = $state<{ reviewId: string | null; number: number | null } | null>(null);
 
   /** Whether this page has been destroyed, which a pending return checks
    *  before it moves the app out from under whatever the reader is on. */
@@ -608,6 +615,14 @@
     composing = same ? null : { row: row.line, line, target };
     commentText = '';
     // The panel was opened off the box that is going; it goes with it.
+    dictate.panel = false;
+  }
+
+  /** Close the composer, whatever target it was on. Cancel is a close, not a
+   *  press on the block: a line comment must not reopen as a section one. */
+  function closeComposer(): void {
+    composing = null;
+    commentText = '';
     dictate.panel = false;
   }
 
@@ -734,6 +749,11 @@
     reviewId: string | null;
     number: number | null;
   } | null> {
+    // **A review already filed by a refused answer is still this round's.**
+    // The drafts went with the filing, so a retry has nothing to submit; it
+    // must answer with the review the first press filed rather than telling
+    // the agent a review exists and handing it no id.
+    if (drafts.length === 0 && filedReview !== null) return filedReview;
     let reviewId: string | null = null;
     let number: number | null = null;
     if (held.path !== null && drafts.length > 0) {
@@ -762,6 +782,7 @@
       const held = filed as { id?: unknown; number?: unknown };
       reviewId = typeof held.id === 'string' ? held.id : null;
       number = typeof held.number === 'number' ? held.number : null;
+      filedReview = { reviewId, number };
       // **The nudge the view this client replaced sent on its own drop**, so
       // the chat shows the review to the reader AND reaches the agent - one
       // line, not the comments - with the document's scope named. It stands
@@ -823,6 +844,7 @@
         return;
       }
     }
+    filedReview = null;
     returnTo(outcome, filed.number, 1200);
   }
 
@@ -837,6 +859,7 @@
     finishState = { kind: 'sending', answer: 'done' };
     const filed = await fileDrafts('done');
     if (filed === null) return;
+    filedReview = null;
     returnTo('done', filed.number, 1200);
   }
 
@@ -1006,9 +1029,10 @@
             </div>
           {/if}
         {/each}
-        {#each drafts.filter((draft) => draft.line === row.line) as draft (draft.id)}
+        {#each drafts.filter((draft) => draft.line >= row.line && draft.line <= row.end) as draft (draft.id)}
           <div class="doc-note doc-draft">
             <span class="doc-who">you</span>
+            <span class="doc-where">line {draft.line}</span>
             <Prose text={draft.text} preserveLines />
             <span class="doc-cc">drafted</span>
             <div class="rv-acts">
@@ -1097,9 +1121,7 @@
                 disabled={commentText.trim() === ''}
                 onclick={() => writeComment(row)}>comment</button
               >
-              <button class="doc-cancel-btn" onclick={() => openComposer(row, row.line, 'block')}
-                >cancel</button
-              >
+              <button class="doc-cancel-btn" onclick={closeComposer}>cancel</button>
               {#if dictation}
                 <DictateControl
                   {dictate}

@@ -68,9 +68,37 @@ export function rowsOf(text: string, kind: 'markdown' | 'text'): DocRow[] {
     }));
   }
   const blocks = renderProseBlocks(text);
-  return blocks.map((block, at) => {
+  const rows: DocRow[] = [];
+  const first = blocks[0];
+  // A document of blank lines has no rendered block at all; its lines are
+  // still targets, so it draws as one raw row.
+  if (first === undefined) {
+    rows.push({
+      line: 1,
+      end: lines.length,
+      context: lines.slice(0, CONTEXT_CAP).map((held) => held.text),
+      html: null,
+      text: lines.map((held) => held.text).join('\n'),
+    });
+    return rows;
+  }
+  // **The lines before the first block are a row of their own**, so a
+  // comment placed there has somewhere to draw and the gutter starts at
+  // line 1. They have no rendered mark; they draw as the blank lines they
+  // are.
+  if (first.line > 1) {
+    const lead = lines.slice(0, first.line - 1);
+    rows.push({
+      line: 1,
+      end: first.line - 1,
+      context: lead.slice(0, CONTEXT_CAP).map((held) => held.text),
+      html: null,
+      text: lead.map((held) => held.text).join('\n'),
+    });
+  }
+  for (const [at, block] of blocks.entries()) {
     const next = blocks[at + 1];
-    return {
+    rows.push({
       line: block.line,
       // **Every source line is a target, so a block owns the blank lines
       // between it and the next one.** Without them the gutter skips the
@@ -83,8 +111,9 @@ export function rowsOf(text: string, kind: 'markdown' | 'text'): DocRow[] {
         .map((held) => held.text),
       html: block.html,
       text: '',
-    };
-  });
+    });
+  }
+  return rows;
 }
 
 /** The scope the store keys a document's threads under - the crate's
@@ -151,7 +180,7 @@ export function placeThreads(
 ): DocThreadPlacement[] {
   return threads.map((thread) => {
     const resolution = thread.resolution;
-    if (resolution?.state === 'placed') {
+    if (resolution?.state === 'placed' && resolution.line >= 1 && resolution.line <= lineCount) {
       return {
         thread,
         line: resolution.line,

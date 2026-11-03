@@ -30,6 +30,31 @@ function rulesFor(fragment: string): { selector: string; body: string }[] {
   }));
 }
 
+/** Every at-rule block with this header, its body read by brace matching. */
+function mediaBlocks(header: string): string[] {
+  const blocks: string[] = [];
+  let from = 0;
+  for (;;) {
+    const start = SHEET.indexOf(header, from);
+    if (start < 0) return blocks;
+    const open = SHEET.indexOf('{', start);
+    if (open < 0) return blocks;
+    let depth = 0;
+    for (let at = open; at < SHEET.length; at += 1) {
+      if (SHEET[at] === '{') depth += 1;
+      else if (SHEET[at] === '}') {
+        depth -= 1;
+        if (depth === 0) {
+          blocks.push(SHEET.slice(open + 1, at));
+          from = at + 1;
+          break;
+        }
+      }
+    }
+    if (from <= open) return blocks;
+  }
+}
+
 describe('the document sheet', () => {
   /** **The route fills the surface.** The body is not capped to a column,
    *  prose keeps a readable measure of its own, and code and tables take
@@ -57,10 +82,18 @@ describe('the document sheet', () => {
     ).toBe(true);
   });
 
+  /** The body of the grouped rule that names this scroller part. */
+  function skinBody(part: string): string | undefined {
+    const token = `.doc-page::-webkit-scrollbar${part}`;
+    return rulesFor(token).find(
+      (rule) => rule.selector.includes(`${token},`) || rule.selector.trim().endsWith(token),
+    )?.body;
+  }
+
   /** **The route is its own scroller, under the one theme skin.** The page
    *  scrolls itself rather than the platform drawing a bar at the window's
-   *  edge, and every part of that bar - corner included - is skinned, so
-   *  no white block survives at the bottom-right. */
+   *  edge, and every part of that bar - corner included - carries the
+   *  theme's declarations, so no white block survives at the bottom-right. */
   it('scrolls its own route under the theme scrollbar skin', () => {
     const page = rulesFor('.doc-page');
     expect(
@@ -72,25 +105,21 @@ describe('the document sheet', () => {
       ),
       'the document route is the scroller',
     ).toBe(true);
-    for (const part of ['', '-track', '-corner', '-thumb']) {
-      expect(
-        SHEET.includes(`.doc-page::-webkit-scrollbar${part}`),
-        `the scroller's ${part || 'bar'} wears the theme's skin`,
-      ).toBe(true);
-    }
+    expect(skinBody(''), 'the bar is the theme width').toMatch(/width:\s*8px/);
+    expect(skinBody('-track'), 'the track is the ground').toMatch(/background:\s*transparent/);
+    expect(skinBody('-corner'), 'the corner is the ground').toMatch(/background:\s*transparent/);
+    expect(skinBody('-thumb'), 'the thumb is the theme thumb').toMatch(/background:\s*var\(--s3\)/);
   });
 
   /** **A finger's targets are the line numbers and the answers.** Both join
-   *  the 44px floor the page's other controls carry. */
+   *  the 44px floor the page's other controls carry, and that floor sits
+   *  inside the coarse-pointer gate rather than anywhere on the page. */
   it('gives the gutter and the answers a 44px target under a coarse pointer', () => {
-    const coarse = rulesFor('.doc-page .doc-lnum');
-    expect(
-      coarse.some(
-        (rule) =>
-          rule.selector.includes('.doc-page .doc-answer-btn') &&
-          /min-height:\s*44px/.test(rule.body),
-      ),
-      'the line numbers and both answers take the 44px floor',
-    ).toBe(true);
+    const coarse = mediaBlocks('@media (pointer: coarse)').find((block) =>
+      block.includes('.doc-page .doc-lnum'),
+    );
+    expect(coarse, 'the floor is gated on a coarse pointer').toBeDefined();
+    expect(coarse, 'the answers share the gutter rule').toContain('.doc-page .doc-answer-btn');
+    expect(coarse, 'and the rule is the 44px floor').toMatch(/min-height:\s*44px/);
   });
 });

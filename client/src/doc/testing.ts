@@ -31,6 +31,8 @@ interface FakeDoc {
   sent: unknown[];
   /** How the next submit (a reply-carrying command) answers. */
   submitAnswer: { body: unknown } | { reject: string };
+  /** Why the next answer command is refused, consumed once. */
+  answerReject: string | null;
   /** Say something to the page, as the server would. */
   emit(message: ServerMessage): void;
 }
@@ -105,6 +107,7 @@ export function fakeDoc(answer: DocAnswer): FakeDoc {
     sent,
     emit,
     submitAnswer: { body: { id: 'r1', number: 1, summary: null, created_at: 'x' } },
+    answerReject: null,
   };
   const connection = {
     readDocument(slot: SessionSlot, asked: string, reviewable: boolean): boolean {
@@ -142,6 +145,11 @@ export function fakeDoc(answer: DocAnswer): FakeDoc {
     dispatch(command: unknown): Promise<unknown> {
       sent.push(command);
       const variant = Object.keys(command as Record<string, unknown>)[0];
+      if (variant === 'answer_document_hand_off' && held.answerReject !== null) {
+        const why = held.answerReject;
+        held.answerReject = null;
+        return Promise.reject(new Error(why));
+      }
       if (variant !== 'submit_review') return Promise.resolve(null);
       if ('reject' in held.submitAnswer) {
         return Promise.reject(new Error(held.submitAnswer.reject));
