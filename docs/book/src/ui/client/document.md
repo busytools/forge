@@ -131,10 +131,13 @@ comment box wears the composer's own mic control, and the answer's note does
 too: a press starts a take, a hold opens what dictation is set to, and the
 take's bar takes the box's own line while it runs. The words land at the end
 of the box that was open when the take settled, read off the seat's record.
-A box the reader closed has nowhere to put them, so the words are dropped
-rather than written where the reader is not, and a notice about a take this
-page never watched is not placed at all. The push-to-talk key is honoured
-while a box is open, the same press and release the composer's box reads.
+The comment composer is the exception to a closed box: words submitted
+before the reader closed it reopen the box at the row and line that began
+the take, where the reader sees them. The edit, summary and note boxes no
+longer draw once closed, so their words are dropped rather than written
+where the reader is not, and a notice about a take this page never watched
+is not placed at all. The push-to-talk key is honoured while a box is open,
+the same press and release the composer's box reads.
 
 **The round keeps a description, and the answer keeps a note.** Once there
 is a review to file, a summary box sits above the answers - its own row, room
@@ -182,9 +185,10 @@ the page draws.
 - **An answer sending**: the pressed button says `approving...` or
   `sending...` and both disable while the round files and the call is
   answered.
-- **A refused answer**: the core's own words beside the answer row, both
-  buttons live again, and the drafts stay exactly where they were - a
-  refusal that cleared them would take the reviewer's words with it.
+- **A refused answer**: the core's own words beside the answer row and both
+  buttons live again. A refused FILING keeps the drafts exactly where they
+  were; a refused answer after the filing keeps the review it filed and its
+  id, so the next press still names it.
 - **Approved**: `approved - review left (R{n}) - the agent has it.`
 - **Sent back**: `sent back - review left (R{n}) - the agent has it.`
 - **Done (a deep link)**: `done - review left (R{n}).`
@@ -221,10 +225,9 @@ the page draws.
   rules, so a document and a quote from one render alike - and the blocks a
   comment anchors to are rendered by the same instance the body is.
 - The comment path is the review page's own: `upsertCommand`,
-  `submitCommand` and `statusCommand` from `review/write`, `ThreadTurn` for
-  every turn, and `authorName` from `review/view` - one writer, one
-  vocabulary, so a doc comment and a code comment are one kind of thing on
-  the wire.
+  `submitCommand` and `statusCommand` from `review/write`, and `ThreadTurn`
+  for every turn - one writer, one vocabulary, so a doc comment and a code
+  comment are one kind of thing on the wire.
 - The dictation pieces are the composer's own: the `Dictation` take, the
   `DictateControl` mic, the `TakeCard` bar, the `DictationPanel` and the
   `Landing` memory, all under `composer/` - one microphone, one take, one

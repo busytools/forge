@@ -532,6 +532,15 @@
         font-size: var(--fs-label);
         color: var(--warn);
       }
+      .strip .doc-who {
+        color: var(--muted);
+        font-size: var(--fs-label);
+      }
+      .strip .doc-where {
+        color: var(--dim);
+        font-family: var(--mono);
+        font-size: var(--fs-label);
+      }
       .strip .doc-cc {
         color: var(--warn);
         font-size: var(--fs-label);
@@ -587,7 +596,7 @@
         border-top: 1px solid var(--line);
         padding-top: 12px;
       }
-      .strip .doc-stale h3 {
+      .strip .doc-stale :is(h2, h3) {
         font-size: var(--fs-label);
         font-weight: 400;
         color: var(--dim);
@@ -870,15 +879,16 @@ max_size_mib = 10</pre>
               </p>
             </div>
             <div class="doc-note">
-              <span class="doc-cc">drafted</span>
-              <div class="rv-who"><span class="rv-nm">you</span></div>
+              <span class="doc-who">you</span>
+              <span class="doc-where">line 3</span>
               <div class="prose"><p>state the 10 MiB default here</p></div>
+              <span class="doc-cc">drafted</span>
             </div>
             <div class="doc-compose">
               <div class="box">comment on this part...</div>
               <div class="doc-compose-acts">
-                <button class="doc-cancel-btn">cancel</button>
                 <button class="doc-comment-btn">comment</button>
+                <button class="doc-cancel-btn">cancel</button>
                 <span class="mic"><svg class="ic" width="15" height="15"><use href="#i-mic" /></svg></span>
               </div>
             </div>
@@ -899,8 +909,9 @@ max_size_mib = 10</pre>
         </div>
         <div class="state">
           <div class="cap">
-            a refused answer: the core's own words beside the row, both buttons
-            live, the drafts kept
+            a refused answer: the core's own words beside the row and both
+            buttons live; a refused filing keeps the drafts, and a refused
+            answer keeps the filed review and its id
           </div>
           <div class="doc-answers">
             <div class="doc-answeracts">

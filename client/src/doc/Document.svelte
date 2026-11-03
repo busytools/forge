@@ -470,19 +470,17 @@
 
   /**
    * **A take goes with its box.** Closing the composer, or moving it to
-   * another block, ends the take rather than leaving the microphone
-   * capturing into a box nothing draws - whose words would land under
-   * another block, one press from being filed against the wrong part.
+   * another block or another line, ends the take rather than leaving the
+   * microphone capturing into a box nothing draws - whose words would land
+   * under another target, one press from being filed against the wrong part.
    */
   $effect(() => {
-    if (
-      takeIn === null ||
-      takeIn === 'summary' ||
-      takeIn === 'note' ||
-      takeIn === 'edit' ||
-      composing?.row === takeIn
-    )
-      return;
+    if (takeIn === null || takeIn === 'summary' || takeIn === 'note' || takeIn === 'edit') return;
+    // The take's identity is the whole target, not just the row: the gutter
+    // is live mid-take, and a press on another line is another box.
+    const still =
+      composing?.row === takeIn && composing.line === takeLine && composing.target === takeTarget;
+    if (still) return;
     // A take already SUBMITTED is not this effect's to cancel: the server
     // would read the stop as an abandon and drop words the reader kept.
     const live = dictate.take;

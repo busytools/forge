@@ -906,6 +906,13 @@ describe('the reviewable document', () => {
     expect(note?.textContent, 'the thread draws under its block').toContain('from before');
     expect(note?.textContent, 'and names where it came from').toContain('moved from 1');
     expect(note?.textContent, "the agent's reply reads beside it").toContain('addressed it');
+    // **The ROW is what places it**: the anchor was the heading block on line
+    // 1, so a thread drawn by `anchor.line` would sit after `# hi`, not after
+    // the paragraph whose line 3 carried the landing.
+    expect(
+      blockTarget('line three').nextElementSibling?.classList.contains('doc-note'),
+      'the thread is the next sibling of the block that holds its landing',
+    ).toBe(true);
     expect(document.querySelector('.doc-stale'), 'nothing collects at the bottom').toBeNull();
   });
 
@@ -1679,6 +1686,106 @@ describe("the block's own take", () => {
           document.querySelector<HTMLTextAreaElement>('.doc-compose textarea')?.value,
           'the words landed after the box closed and went nowhere the reader can see',
         ).toBe('the second line reads well');
+      },
+      { timeout: 2000 },
+    );
+  });
+
+  /** **A press on another line is another box.** The take goes with the
+   *  exact target it began on, not merely the row: the gutter is live while
+   *  it runs, and words aimed at line 2 must not land in line 3's composer. */
+  it('cancels the take when the reader moves to another line mid-take', async () => {
+    drawWithDictation();
+    push(seatRecord(IDLE));
+
+    const gutter = (line: string): HTMLButtonElement => {
+      const found = [...document.querySelectorAll<HTMLButtonElement>('button.doc-lnum')].find(
+        (number) => number.textContent?.trim() === line,
+      );
+      if (found === undefined) throw new Error(`no gutter for line ${line}`);
+      return found;
+    };
+
+    gutter('2').click();
+    flushSync();
+    composeMic().click();
+    await vi.waitFor(
+      () => {
+        expect(document.querySelector('.doc-compose .takeline'), "the take's bar").not.toBeNull();
+      },
+      { timeout: 2000 },
+    );
+    push(seatRecord(TAKE));
+    flushSync();
+
+    gutter('3').click();
+    flushSync();
+    // The server ends the cancelled take, as it does on the wire; the bar is
+    // the record's, so the record is what says the take is over.
+    push(seatRecord(IDLE));
+    flushSync();
+
+    expect(
+      document.querySelector('.doc-compose .takeline'),
+      'the take ended with the box it belonged to',
+    ).toBeNull();
+    expect(
+      document
+        .querySelector<HTMLTextAreaElement>('.doc-compose textarea')
+        ?.getAttribute('aria-label'),
+      'and the box is the line the reader pressed',
+    ).toBe('comment on line 3');
+
+    push(seatRecord(LANDED));
+    flushSync();
+    expect(
+      document.querySelector<HTMLTextAreaElement>('.doc-compose textarea')?.value ?? '',
+      'the cancelled take put no words in the new box',
+    ).toBe('');
+  });
+
+  /** **A line composer reopens on its own line after a take.** The rows share
+   *  one block here, so a reopen that kept only the row would come back as a
+   *  section comment at line 2's block start, not at line 2's number. */
+  it('reopens a line composer on the line it began, not the block', async () => {
+    drawWithDictation();
+    push(seatRecord(IDLE));
+
+    const second = [...document.querySelectorAll<HTMLButtonElement>('button.doc-lnum')].find(
+      (number) => number.textContent?.trim() === '2',
+    );
+    second?.click();
+    flushSync();
+
+    composeMic().click();
+    await vi.waitFor(
+      () => {
+        expect(document.querySelector('.doc-compose .takeline'), "the take's bar").not.toBeNull();
+      },
+      { timeout: 2000 },
+    );
+    push(seatRecord(TAKE));
+    flushSync();
+    composeMic().click();
+    push(seatRecord(TRANSCRIBING));
+    flushSync();
+
+    const cancel = [
+      ...document.querySelectorAll<HTMLButtonElement>('.doc-compose-acts button'),
+    ].find((button) => button.textContent?.trim() === 'cancel');
+    if (cancel === undefined) throw new Error("the line's box drew no cancel");
+    cancel.click();
+    flushSync();
+
+    push(seatRecord(LANDED));
+    flushSync();
+    await vi.waitFor(
+      () => {
+        const field = document.querySelector<HTMLTextAreaElement>('.doc-compose textarea');
+        expect(field?.getAttribute('aria-label'), 'the box reopens on its own line').toBe(
+          'comment on line 2',
+        );
+        expect(field?.value, 'with the words in it').toBe('the second line reads well');
       },
       { timeout: 2000 },
     );
