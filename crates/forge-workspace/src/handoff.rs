@@ -2450,11 +2450,12 @@ fix the parser, then the client row.";
         );
     }
 
-    /// The brief reaches the successor as a prompt and nowhere else: its
-    /// text is already in the handoff row, so a forged conversation row
-    /// would draw it twice (and the transcript a third time on reload).
+    /// **The brief forges the successor's procedure row.** The successor's
+    /// transcript opens with it and the client draws it as the handoff
+    /// procedure; the CLI never echoes a stdin prompt, so this frame is the
+    /// page's only carrier of it.
     #[test]
-    fn the_brief_does_not_forge_a_second_row() {
+    fn the_brief_forges_the_successors_procedure_row() {
         use crate::protocol::PromptSource;
 
         let (workspace, mut rx) = crate::Workspace::testing_stub();
@@ -2474,13 +2475,28 @@ fix the parser, then the client row.";
             )),
             "the successor runs it as forge's first turn: {routed:?}",
         );
+        let mut drawn = Vec::new();
         while let Ok(frame) = rx.try_recv() {
-            assert!(
-                !matches!(&*frame.update, SessionUpdate::ChatAppended { .. }),
-                "no conversation row is forged for it: {:?}",
-                frame.update,
-            );
+            if let SessionUpdate::ChatAppended { msg, origin, source, .. } = &*frame.update {
+                drawn.push((msg.clone(), *origin, *source));
+            }
         }
+        let [(msg, origin, source)] = drawn.as_slice() else {
+            panic!("the brief draws one row: {drawn:?}");
+        };
+        assert!(origin.is_none(), "nobody typed it, so the frame claims no origin");
+        assert_eq!(*source, Some(PromptSource::Forge), "the machinery's own words");
+        let forge_primitives::Message::User { message, uuid, .. } = msg else {
+            panic!("the row is the user turn it draws: {msg:?}");
+        };
+        assert_eq!(uuid.as_deref(), Some("brief-1"), "under the id the brief was sent with");
+        assert!(
+            matches!(
+                &message.content[0],
+                forge_primitives::ContentBlock::Text { text, .. } if text.starts_with("HANDOFF - ")
+            ),
+            "carrying the brief the successor arrived by: {message:?}",
+        );
     }
 
     /// **A handoff owns the seat from its begin until its successor lands.**

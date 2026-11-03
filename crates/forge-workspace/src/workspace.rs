@@ -5741,25 +5741,17 @@ impl Workspace {
 
     /// The brief a handoff's successor runs as its first turn.
     ///
-    /// **No conversation row.** The brief is already drawn, whole, inside the
-    /// handoff row; forging a second row for the prompt that carried it would
-    /// be the same text twice - and on a reload the transcript's own copy
-    /// would be a third.
+    /// **Its own row, forged like the machinery's other prompts.** The
+    /// successor's transcript opens with this prompt and the client draws it
+    /// as the handoff procedure; the CLI never echoes a stdin prompt, so this
+    /// frame is the page's only carrier of it.
     pub(crate) fn dispatch_handoff_brief(
         self: &Arc<Self>,
         key: &SessionSlot,
         text: String,
         uuid: String,
     ) -> Result<(), DispatchError> {
-        self.route(Command::PromptUnder {
-            key: key.clone(),
-            text,
-            attachments: Vec::new(),
-            uuid,
-            source: crate::protocol::PromptSource::Forge,
-            dispatch_id: None,
-            origin: None,
-        })
+        self.dispatch_forged_prompt_held(key, text, uuid, true)
     }
 
     /// The handoff's own judgment prompt.
