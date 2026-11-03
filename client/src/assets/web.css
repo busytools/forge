@@ -3061,8 +3061,11 @@ kbd { font-family: inherit; font-size: inherit; color: inherit;
 
 /* The take's card: one pill inside the box, at its top left, with the draft
    below it. It is a row rather than a floating reading, so the height it takes
-   is the height it uses. */
+   is the height it uses. **The card is its own container**, because the
+   readings' ladder below measures the room the readings have - the card's, not
+   the box's, since the row's controls take their share first (#2842). */
 .tc { align-self: flex-start; display: flex; max-width: 100%;
+  container-type: inline-size;
   align-items: center; gap: 10px; padding: 5px 10px; margin-bottom: 8px;
   border-radius: 999px;
   font-family: var(--mono); font-size: var(--fs-label); white-space: nowrap;
@@ -3175,7 +3178,7 @@ kbd { font-family: inherit; font-size: inherit; color: inherit;
    clock, graph, ready tally, frames, bytes, pace - and the dot, the way out
    and the state's colour are what remain. Items are removed, never reordered.
    Each step is one below the measured fit point in the real engine, against
-   the container's own measure (the box's content width), with the widest digits
+   the container's own measure (the card's content width), with the widest digits
    a take can be holding (90000 fr, 57.7 MB, 999 KB/s): the card is 506px with
    every reading, 457 without the clock, 331 without the graph, 267 without the
    tally, 196 without the frames, 124 without the bytes, and alone with the
