@@ -141,11 +141,25 @@ pub struct Conversation {
     ///
     /// **A prompt sent mid-turn is delivered at that turn's end**, so its row
     /// belongs after the answer still being written, not where the dispatch
-    /// framed it (#2816). The CLI writes its own row for the prompt then, and
-    /// the display row takes that place: held here until the frame that ends
-    /// the turn lands, then appended behind it. A page read before then does
-    /// not carry the words; the composer echo and the queue card do.
+    /// framed it (#2816). It leaves here one of three ways: the frame after
+    /// the turn ends puts it in front of the next turn, a cancelled lifecycle
+    /// drops it, a refused or discarded one appends it where the CLI settled
+    /// it. A seed clears it with the rest, because the history is the truth
+    /// about the prompt by then.
     pending: Vec<Message>,
+    /// Whether a Working frame has arrived since this copy was materialised.
+    ///
+    /// **The seed is not evidence of a running turn.** A transcript carries
+    /// no `Result`, so a completed turn's last row is an assistant frame and
+    /// `live_of_seed` reads it as live; only a Working frame the copy has
+    /// actually seen arms the hold for a send.
+    seen_working: bool,
+    /// Whether the turn has ended and the first frame after it is still owed.
+    ///
+    /// **Post-result frames belong to the turn that just ended.** A held row
+    /// waits for the next frame so it goes before the next turn's Working
+    /// frame, after any frame still keeping the ended one.
+    after_end: bool,
 }
 
 impl Conversation {
@@ -186,6 +200,8 @@ impl Conversation {
             handoff: None,
             live,
             pending: Vec::new(),
+            seen_working: false,
+            after_end: false,
         }
     }
 
@@ -258,8 +274,11 @@ impl Conversation {
         self.forged.retain(|id| self.window.messages().iter().any(|m| frame_id(m) == Some(id)));
         // A held prompt's place is the history's to say now: a transcript
         // read carries the CLI's own row for it, and a replay that does not
-        // will be given the words by the pile.
+        // will be given the words by the pile. The seed is not evidence of a
+        // running turn, so the hold's own memory of one goes too.
         self.pending.clear();
+        self.seen_working = false;
+        self.after_end = false;
         self.compaction_count = compaction_count;
         self.watermark = 0;
         self.dirty = true;
@@ -310,9 +329,27 @@ impl Conversation {
         // Every frame's own claim about the turn folds in here, the same walk
         // a seat's `DomainSession` makes: the model's frames open a turn, its
         // `Result` or error closes it, anything else says nothing.
-        let was_live = self.live;
-        if let Some(said) = liveness_of(&message) {
+        //
+        // **`seen_working` is the copy's own, not the seed's.** A transcript
+        // never carries a `Result`, so a completed turn's last row is an
+        // assistant frame and `live_of_seed` reads it as live: a resumed seat
+        // would hold its first send behind that send's own answer. Only a
+        // Working frame this copy has actually seen since the seed arms the
+        // hold.
+        let liveness = liveness_of(&message);
+        let working = liveness == Some(TurnLiveness::Working);
+        // **The frame after a turn's end is not that turn's own.** Post-result
+        // frames (`task_progress`, `background_tasks_changed`) are written
+        // after the Result and still belong to the turn that just ended, so a
+        // held row goes before the first Working frame - the next turn's own
+        // opening - and after any frame that keeps the ended turn. One row per
+        // turn: the rows behind it belong to the turns after it.
+        if self.after_end && working {
+            self.release_one();
+        }
+        if let Some(said) = liveness {
             self.live = said == TurnLiveness::Working;
+            self.seen_working = said == TurnLiveness::Working;
         }
         // **Before the push, so the drop pays for the room it makes.** After
         // it, this one frame is what tips the store into a doubling the drop
@@ -332,39 +369,51 @@ impl Conversation {
             self.rendered.endings.clear();
         }
         self.dirty = true;
-        // **The turn ended, so the prompts queued behind it take their
-        // place.** The frame that ends a turn is the last one written before
-        // the CLI delivers what waited on it, so the held rows go behind it -
-        // the order the transcript keeps, and the order a page draws.
-        if was_live && !self.live {
-            self.flush_pending();
+        if self.after_end && !working {
+            self.release_one();
         }
+        self.after_end = liveness == Some(TurnLiveness::Ended) && !self.pending.is_empty();
     }
 
     /// Take one frame into the copy, holding a prompt's display row when the
-    /// CLI will deliver that prompt at the end of the running turn.
+    /// running turn the copy has seen will deliver that prompt at its end.
     fn admit(&mut self, message: Message) {
-        if message.awaits_delivery() && self.live {
+        if message.awaits_delivery() && self.seen_working {
             self.pending.push(message);
             return;
         }
         self.push(message);
     }
 
-    /// Drop the held row for a prompt the CLI settled without running it.
-    ///
-    /// A cancelled, discarded or refused prompt never reached a model, so no
-    /// delivery will follow: a row kept for it would open a turn nothing
-    /// wrote. (A `started`/`completed` prompt keeps its row - it is the
-    /// reader's own words, and the CLI carries them.)
-    fn settle_pending(&mut self, uuid: &str) {
-        self.pending.retain(|message| frame_id(message) != Some(uuid));
+    /// Put one held row down, at the boundary the caller has reached.
+    fn release_one(&mut self) {
+        // Cleared before the push, because the push may reach this again.
+        self.after_end = false;
+        if self.pending.is_empty() {
+            return;
+        }
+        let message = self.pending.remove(0);
+        self.push(message);
     }
 
-    /// Append the rows the ended turn was holding, in the order they came.
-    fn flush_pending(&mut self) {
-        let pending = std::mem::take(&mut self.pending);
-        for message in pending {
+    /// Settle the held row for a prompt the CLI named a terminal lifecycle
+    /// state for.
+    ///
+    /// **`keep` is the client's own rule.** A cancelled prompt goes entirely:
+    /// the reader took it back, and nothing draws it. A refused or discarded
+    /// one keeps its row, appended where the CLI settled it, because the
+    /// client draws exactly those words with the pile's ending line. A
+    /// `started` or `completed` prompt keeps its row either way. A
+    /// `completed` that never started is a prompt the CLI settled without
+    /// running it, which this side cannot tell from one that ran: its row
+    /// still draws, the same row the client draws for it.
+    fn settle_pending(&mut self, uuid: &str, keep: bool) {
+        let Some(at) = self.pending.iter().position(|message| frame_id(message) == Some(uuid))
+        else {
+            return;
+        };
+        let message = self.pending.remove(at);
+        if keep {
             self.push(message);
         }
     }
@@ -916,14 +965,14 @@ impl Conversations {
                 // The parse and its failure log run before the seat's lock is
                 // taken; the lock below covers only the append and the mark.
                 let forged = crate::delivery::delivery_turn(update, slot).map(|(msg, _)| msg);
-                // A prompt the CLI will never run has no delivery to take its
-                // held row's place, so the row goes with the settle.
+                // A terminal lifecycle settles a held row: cancelled drops it,
+                // refused and discarded keep it where the CLI settled it.
                 let settled = match update {
-                    SessionUpdate::PromptLifecycle { uuid, state, .. }
-                        if matches!(state.as_str(), "cancelled" | "discarded" | "refused") =>
-                    {
-                        Some(uuid.as_str())
-                    }
+                    SessionUpdate::PromptLifecycle { uuid, state, .. } => match state.as_str() {
+                        "cancelled" => Some((uuid.as_str(), false)),
+                        "refused" | "discarded" => Some((uuid.as_str(), true)),
+                        _ => None,
+                    },
                     _ => None,
                 };
                 let mut conversation = held.lock();
@@ -933,8 +982,8 @@ impl Conversations {
                     // the file as the row it stopped at.
                     conversation.append_forged(msg);
                 }
-                if let Some(uuid) = settled {
-                    conversation.settle_pending(uuid);
+                if let Some((uuid, keep)) = settled {
+                    conversation.settle_pending(uuid, keep);
                 }
                 if let Some(seq) = seq {
                     conversation.set_watermark(seq);
@@ -1216,16 +1265,18 @@ mod tests {
         );
     }
 
-    /// **A prompt sent mid-turn is held to the turn's end (#2816).**
+    /// **A prompt sent mid-turn is held to the frame after the turn's end
+    /// (#2816).**
     ///
     /// The session task frames the reader's send at dispatch, and the CLI
-    /// writes its own row for the prompt only when the running turn ends - the
-    /// CLI echoes no stdin prompt over the stream, so the display row is the
+    /// echoes no stdin prompt over the stream, so the display row is the
     /// copy's only word on it. Placed where it was dispatched, it drew the
     /// reader's words above the assistant text they followed in every page
-    /// read before the turn ended.
+    /// read before the turn ended. The frame that ends the turn is not the
+    /// last word either: post-result frames still belong to it, so the row
+    /// goes down at the next turn's opening.
     #[test]
-    fn a_display_prompt_row_is_held_to_the_running_turns_end() {
+    fn a_display_prompt_row_waits_for_the_frame_after_the_turns_end() {
         let conversations = Conversations::new();
         let seat = a_seat();
         conversations.insert(&seat, Conversation::new(vec![a_frame("open the turn")], 0, 0));
@@ -1249,9 +1300,11 @@ mod tests {
             );
         });
 
-        // The turn ends; the row takes the place the CLI delivers the prompt
-        // at, after everything the turn wrote.
+        // The turn ends, then a post-result frame arrives. Both belong to the
+        // ended turn; the send goes in front of the next turn's own opening.
         conversations.apply(&a_chat(seat.clone(), a_result_frame()), Some(4));
+        conversations.apply(&a_chat(seat.clone(), a_status_frame()), Some(5));
+        conversations.apply(&a_chat(seat.clone(), an_answer("the next turn", "a-2")), Some(6));
 
         let held = conversations.get(&seat).expect("the seat is held");
         held.read(|held| {
@@ -1260,42 +1313,217 @@ mod tests {
                 .iter()
                 .position(|message| answer_text(message) == "Yes, now I can see them.")
                 .expect("the answer is held");
+            let status = messages
+                .iter()
+                .position(|message| matches!(message, Message::System { subtype, .. } if subtype == "status"))
+                .expect("the post-result frame is held");
             let words = messages
                 .iter()
                 .position(|message| said(message) == "Looks good, let's get going.")
                 .expect("the send is held");
-            assert!(answer < words, "the answer precedes the words delivered after it");
+            let next = messages
+                .iter()
+                .position(|message| answer_text(message) == "the next turn")
+                .expect("the next turn is held");
+            assert!(answer < status, "the post-result frame stays in the ended turn");
+            assert!(status < words, "the send starts the turn after it");
+            assert!(words < next, "and the next turn joins it");
             let opens: Vec<usize> =
                 held.rendered().turns.iter().map(|turn| turn.opens_at).collect();
             assert_eq!(opens, vec![0, words], "the words open the next turn, after the answer's");
         });
     }
 
-    /// A prompt the CLI never ran leaves no row: the reader's words were held
-    /// for a turn that will not deliver them.
+    /// **A resumed seat's first send is not held behind its own answer.**
+    ///
+    /// A transcript carries no `Result`, so a completed turn's last row is an
+    /// assistant frame and the seed reads it as live. The hold keys on a
+    /// Working frame this copy actually saw, not on the seed's ladder: a
+    /// seeded live=true with no Working frame held the first send and flushed
+    /// it behind that send's own answer.
     #[test]
-    fn a_cancelled_display_prompt_never_reaches_the_copy() {
+    fn a_send_after_a_resume_is_not_held_behind_its_own_answer() {
+        let conversations = Conversations::new();
+        let seat = a_seat();
+        conversations.insert(
+            &seat,
+            Conversation::new(
+                vec![a_frame("the previous prompt"), an_answer("the finished answer", "a-old")],
+                0,
+                0,
+            ),
+        );
+        conversations.apply(
+            &a_chat(seat.clone(), a_display_prompt("the new prompt", "send-resume")),
+            Some(1),
+        );
+        conversations.apply(&a_chat(seat.clone(), an_answer("the new answer", "a-new")), Some(2));
+
+        let held = conversations.get(&seat).expect("the seat is held");
+        held.read(|held| {
+            let messages = held.messages();
+            let answer = messages
+                .iter()
+                .position(|message| answer_text(message) == "the new answer")
+                .expect("the answer is held");
+            let words = messages
+                .iter()
+                .position(|message| said(message) == "the new prompt")
+                .expect("the send is held at once");
+            assert!(words < answer, "the send draws above its own answer");
+        });
+    }
+
+    /// **An idle send is never held.** A copy with no Working frame since its
+    /// seed pushes the display row where it lands; a hold here strands every
+    /// ordinary send until its answer's boundary.
+    #[test]
+    fn an_idle_display_prompt_row_is_drawn_at_once() {
+        let conversations = Conversations::new();
+        let seat = a_seat();
+        conversations.insert(&seat, Conversation::new(vec![a_frame("open the turn")], 0, 0));
+        conversations.apply(
+            &a_chat(seat.clone(), a_display_prompt("the idle prompt", "send-idle")),
+            Some(1),
+        );
+        conversations.apply(&a_chat(seat.clone(), an_answer("the idle answer", "a-idle")), Some(2));
+
+        let held = conversations.get(&seat).expect("the seat is held");
+        held.read(|held| {
+            assert!(
+                held.messages().iter().any(|message| said(message) == "the idle prompt"),
+                "an idle send draws at once, not behind its answer",
+            );
+        });
+    }
+
+    /// **A `started` lifecycle does not settle the held row.** `settle_pending`
+    /// acts on terminal states only: a match any wider drops every ordinary
+    /// mid-turn send the moment its prompt starts.
+    #[test]
+    fn a_started_lifecycle_keeps_the_held_row() {
         let conversations = Conversations::new();
         let seat = a_seat();
         conversations.insert(&seat, Conversation::new(vec![a_frame("open the turn")], 0, 0));
         conversations.apply(&a_chat(seat.clone(), a_working_frame()), Some(1));
-        conversations
-            .apply(&a_chat(seat.clone(), a_display_prompt("never sent", "send-2")), Some(2));
+        conversations.apply(
+            &a_chat(seat.clone(), a_display_prompt("the started prompt", "send-started")),
+            Some(2),
+        );
         conversations.apply(
             &SessionUpdate::PromptLifecycle {
                 key: seat.clone(),
-                uuid: "send-2".to_owned(),
-                state: "cancelled".to_owned(),
+                uuid: "send-started".to_owned(),
+                state: "started".to_owned(),
             },
             Some(3),
         );
-        conversations.apply(&a_chat(seat, a_result_frame()), Some(4));
+        conversations
+            .apply(&a_chat(seat.clone(), an_answer("the started answer", "a-started")), Some(4));
+        conversations.apply(&a_chat(seat.clone(), a_result_frame()), Some(5));
+        conversations.apply(&a_chat(seat.clone(), a_status_frame()), Some(6));
 
-        let held = conversations.get(&a_seat()).expect("the seat is held");
+        let held = conversations.get(&seat).expect("the seat is held");
         held.read(|held| {
             assert!(
-                !held.messages().iter().any(|message| said(message) == "never sent"),
-                "a cancelled prompt's held row goes with its cancel",
+                held.messages().iter().any(|message| said(message) == "the started prompt"),
+                "a started prompt keeps its row until the frame after its turn ends",
+            );
+        });
+    }
+
+    /// **A cancelled prompt leaves no row; a refused or discarded one keeps
+    /// it.**
+    ///
+    /// The client draws refused and discarded words with the pile's ending
+    /// line and drops only cancelled, so the copy must agree or a live row
+    /// disappears from every page read and reload (rule 25).
+    #[test]
+    fn a_cancelled_prompt_goes_and_a_refused_or_discarded_prompt_stays() {
+        for (state, keep) in [("cancelled", false), ("refused", true), ("discarded", true)] {
+            let conversations = Conversations::new();
+            let seat = a_seat();
+            conversations.insert(&seat, Conversation::new(vec![a_frame("open the turn")], 0, 0));
+            conversations.apply(&a_chat(seat.clone(), a_working_frame()), Some(1));
+            conversations
+                .apply(&a_chat(seat.clone(), a_display_prompt(state, "send-settled")), Some(2));
+            conversations.apply(
+                &SessionUpdate::PromptLifecycle {
+                    key: seat.clone(),
+                    uuid: "send-settled".to_owned(),
+                    state: state.to_owned(),
+                },
+                Some(3),
+            );
+
+            let held = conversations.get(&seat).expect("the seat is held");
+            held.read(|held| {
+                let drawn = held.messages().iter().any(|message| said(message) == state);
+                assert_eq!(drawn, keep, "a {state} prompt's row follows the client's own rule");
+            });
+        }
+    }
+
+    /// **A turn ended by a failure still releases the held row.** A failed
+    /// `Result` and a transport `Error` are endings like a successful one; a
+    /// flush that listens only for success strands the row.
+    #[test]
+    fn a_failed_turn_still_releases_the_held_row() {
+        for (name, end) in
+            [("failed Result", a_failed_result_frame()), ("transport Error", an_error_frame())]
+        {
+            let conversations = Conversations::new();
+            let seat = a_seat();
+            conversations.insert(&seat, Conversation::new(vec![a_frame("open the turn")], 0, 0));
+            conversations.apply(&a_chat(seat.clone(), a_working_frame()), Some(1));
+            conversations.apply(
+                &a_chat(seat.clone(), a_display_prompt("the failed prompt", "send-failed")),
+                Some(2),
+            );
+            conversations
+                .apply(&a_chat(seat.clone(), an_answer("the answer", "a-failed")), Some(3));
+            conversations.apply(&a_chat(seat.clone(), end), Some(4));
+            conversations.apply(&a_chat(seat.clone(), a_status_frame()), Some(5));
+
+            let held = conversations.get(&seat).expect("the seat is held");
+            held.read(|held| {
+                assert!(
+                    held.messages().iter().any(|message| said(message) == "the failed prompt"),
+                    "a turn ended by a {name} still puts the held row down",
+                );
+            });
+        }
+    }
+
+    /// **A delivery row is drawn where it arrived, not held.**
+    ///
+    /// `delivery_turn`'s row is the inbound message itself - the peer, Gotify
+    /// or Slack words - not the prompt the CLI takes, which is a frame of its
+    /// own. The mid-turn rule does not cover it: the message belongs at its
+    /// arrival.
+    #[test]
+    fn a_delivery_row_mid_turn_is_drawn_where_it_arrived() {
+        let conversations = Conversations::new();
+        let seat = a_seat();
+        conversations.insert(&seat, Conversation::new(vec![a_frame("open the turn")], 0, 0));
+        conversations.apply(&a_chat(seat.clone(), a_working_frame()), Some(1));
+        conversations.apply(&a_chat(seat.clone(), an_answer("the answer", "a-1")), Some(2));
+        conversations.apply(
+            &a_chat(
+                seat.clone(),
+                Message::display_only_user(
+                    "[Message id=m-1 from agent 'peer' (org 'x')] hello".to_owned(),
+                    "delivery-1".to_owned(),
+                ),
+            ),
+            Some(3),
+        );
+
+        let held = conversations.get(&seat).expect("the seat is held");
+        held.read(|held| {
+            assert!(
+                held.messages().iter().any(|message| said(message).contains("hello")),
+                "the delivery row is drawn at its arrival",
             );
         });
     }
@@ -1393,6 +1621,42 @@ mod tests {
             "duration_api_ms": 9,
         }))
         .expect("a result frame")
+    }
+
+    /// A turn that ended in failure.
+    fn a_failed_result_frame() -> Message {
+        serde_json::from_value(serde_json::json!({
+            "type": "result",
+            "subtype": "error_during_execution",
+            "uuid": "r-failed",
+            "session_id": "5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45",
+            "is_error": true,
+            "num_turns": 1,
+            "duration_ms": 12,
+            "duration_api_ms": 9,
+        }))
+        .expect("a failed result frame")
+    }
+
+    /// The transport's own error, the other way a turn ends.
+    fn an_error_frame() -> Message {
+        serde_json::from_value(serde_json::json!({
+            "type": "error",
+            "error": "the child died",
+        }))
+        .expect("an error frame")
+    }
+
+    /// A system frame written after a turn's Result, which still belongs to
+    /// that turn.
+    fn a_status_frame() -> Message {
+        serde_json::from_value(serde_json::json!({
+            "type": "system",
+            "subtype": "status",
+            "session_id": "5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45",
+            "uuid": "status-1",
+        }))
+        .expect("a status frame")
     }
 
     /// An assistant frame calling `id`, which is both a call and the frame
