@@ -182,6 +182,26 @@ pub fn forge_minted(uuid: Option<&str>) -> bool {
     uuid.is_some_and(|id| id.starts_with("forge_prompt_") || id.starts_with("forge_nudge_"))
 }
 
+/// Whether a frame opens a turn for a reader that attributes counters to the
+/// newest turn: the scan's own openings plus a queued prompt, which the fold
+/// opens a turn at but the window cut deliberately does not name.
+///
+/// **The cut's under-approximation is safe; the debt's is not.** A cut the
+/// scan cannot start on leaves a turn's head in place, while a debt
+/// attributed to the wrong turn adds another turn's counters to the figure.
+pub fn opens_for_debt(scan: &mut TurnScan, message: &Message) -> bool {
+    let named = scan.opens(message);
+    named || is_queued_prompt(message)
+}
+
+/// Whether a frame is the CLI's queued prompt, which the fold opens a turn at.
+pub fn is_queued_prompt(message: &Message) -> bool {
+    let Message::User { message, .. } = message else {
+        return false;
+    };
+    message.content.iter().any(|block| matches!(block, ContentBlock::QueuedCommand { .. }))
+}
+
 /// A frame a sub-agent produced. What it narrates and calls belongs to the
 /// SUBAGENTS surface, never to the session's own conversation.
 pub fn is_dispatched(message: &Message) -> bool {

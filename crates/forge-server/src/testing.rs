@@ -196,6 +196,13 @@ impl Fleet {
         self.workspace.emit_for_test_reported(update)
     }
 
+    /// Park a Slack draft on `key` as a blocked Slack call would, so a
+    /// transport test can answer it from the socket without a session agent
+    /// driving the tool. The draft's own id is the one to answer.
+    pub fn park_slack_draft(&self, key: &SessionSlot, draft: forge_primitives::slack::SlackDraft) {
+        self.workspace.park_slack_draft_for_test(key, draft);
+    }
+
     /// How many subscribers are attached right now, the transport's own fold
     /// included. A test that watches a socket's subscription arrive and leave
     /// reads this rather than asking whether an emit landed: the fold makes

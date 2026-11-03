@@ -252,6 +252,38 @@ pub fn place_anchor_in_lines_with(
     }
 }
 
+/// A document anchor placed against the document's whole current lines:
+/// the thread's FIRST captured line is the key, looked for by content.
+///
+/// A document has no hunks, and a rendered block's neighbours are not the
+/// anchor's neighbours the way a code line's are, so the code resolver's
+/// neighbourhood rule is not this one. Identity is the captured line's own
+/// text: in place at the recorded number, otherwise one unique match moves
+/// it, and two matches are a guess the placement refuses exactly as the
+/// code rule does.
+pub fn place_document_anchor(anchor: &ReviewAnchor, lines: &[String]) -> AnchorPlacement {
+    let Some(first) = anchor.context.first() else {
+        return AnchorPlacement::Outdated(OutdatedReason::Gone);
+    };
+    let key = anchor_hash(first);
+    if let Some(idx) = anchor.line.checked_sub(1).and_then(|i| usize::try_from(i).ok())
+        && lines.get(idx).is_some_and(|text| anchor_hash(text) == key)
+    {
+        return AnchorPlacement::Placed { line: anchor.line, moved_from: None };
+    }
+    let found: Vec<u32> = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, text)| anchor_hash(text) == key)
+        .map(|(idx, _)| u32::try_from(idx + 1).unwrap_or(u32::MAX))
+        .collect();
+    match found[..] {
+        [] => AnchorPlacement::Outdated(OutdatedReason::Gone),
+        [line] => AnchorPlacement::Placed { line, moved_from: Some(anchor.line) },
+        _ => AnchorPlacement::Outdated(OutdatedReason::Ambiguous { matches: found.len() }),
+    }
+}
+
 fn resolve_in(
     anchor: &ReviewAnchor,
     files: &[(&str, &[Hunk])],
@@ -564,6 +596,62 @@ mod tests {
             place_anchor_in_lines(&placed, &twice),
             AnchorPlacement::Outdated(OutdatedReason::Ambiguous { matches: 2 }),
         );
+    }
+
+    /// **A document thread is placed by its FIRST captured line's
+    /// content.** The recorded number still means what it says when that
+    /// line is unchanged; a revision that moved the line re-anchors it to
+    /// the one place its text now sits, and text that is gone - or that
+    /// now sits in two places - is not placed at all. A document's anchor
+    /// has no code neighbourhood to agree with, so the captured line
+    /// itself is the whole of its identity.
+    #[test]
+    fn a_document_anchor_is_placed_by_its_first_captured_line() {
+        let lines =
+            |texts: &[&str]| -> Vec<String> { texts.iter().map(|t| (*t).to_owned()).collect() };
+        let document = lines(&["# Plan", "", "the line", "after it"]);
+        let home = document_anchor(3, &["the line", "after it"]);
+        assert_eq!(
+            place_document_anchor(&home, &document),
+            AnchorPlacement::Placed { line: 3, moved_from: None },
+        );
+
+        let moved = lines(&["# Plan", "a new intro", "", "the line", "after it"]);
+        assert_eq!(
+            place_document_anchor(&home, &moved),
+            AnchorPlacement::Placed { line: 4, moved_from: Some(3) },
+            "the line moved down a line and is re-found by its own text",
+        );
+
+        let gone = lines(&["# Plan", "", "another line"]);
+        assert_eq!(
+            place_document_anchor(&home, &gone),
+            AnchorPlacement::Outdated(OutdatedReason::Gone),
+        );
+
+        let twice = lines(&["the line", "x", "the line", "y"]);
+        assert_eq!(
+            place_document_anchor(&document_anchor(2, &["the line"]), &twice),
+            AnchorPlacement::Outdated(OutdatedReason::Ambiguous { matches: 2 }),
+            "two homes for one line is a guess, not a move",
+        );
+
+        assert_eq!(
+            place_document_anchor(&document_anchor(2, &[]), &document),
+            AnchorPlacement::Outdated(OutdatedReason::Gone),
+            "nothing captured is nothing to place by",
+        );
+    }
+
+    fn document_anchor(line: u32, context: &[&str]) -> ReviewAnchor {
+        ReviewAnchor {
+            path: "/proj/docs/plan.md".to_owned(),
+            side: ReviewSide::New,
+            line,
+            content_hash: 0,
+            context: context.iter().map(|s| (*s).to_owned()).collect(),
+            base_ref: forge_primitives::review::doc_scope_ref("/proj/docs/plan.md"),
+        }
     }
 
     fn anchor(

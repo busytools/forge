@@ -610,14 +610,13 @@ describe('frames from the bridge', () => {
   });
 
   /**
-   * **A review read is never asked again, however long it waits.** Its base
-   * fetch has no server-side cap, so the client holds no deadline for it: any
-   * pass would presume a read lost while it is still legitimately running and
-   * ask a second whole review read under the first. The page draws the wait.
-   * This drives the caller rather than arming the bound by hand, so a call
-   * site that reintroduced a pass reds here.
+   * **A review read is bounded like any other.** The server no longer waits
+   * on the network for it, so an unanswered review read is presumed lost at
+   * the same pass as every other read rather than loading forever. This
+   * drives the caller rather than arming the bound by hand, so a call site
+   * that exempted it again reds here.
    */
-  it('never asks a review read again, however long it waits', async () => {
+  it('asks a review read again when it goes unanswered', async () => {
     vi.useFakeTimers();
     invoke.mockImplementation((command: string) => {
       if (command === 'client_state') return Promise.resolve(OPEN);
@@ -628,9 +627,9 @@ describe('frames from the bridge', () => {
     connection.subscribe(subject, { review: true });
     invoke.mockClear();
 
-    vi.advanceTimersByTime(600_000);
+    vi.advanceTimersByTime(5_000);
     await vi.waitFor(() =>
-      expect(invoke, 'a review read is never presumed lost').not.toHaveBeenCalledWith(
+      expect(invoke, 'a review read is presumed lost at the pass').toHaveBeenCalledWith(
         'client_refresh',
         { what: subject },
       ),
@@ -676,58 +675,6 @@ describe('frames from the bridge', () => {
       expect(invoke).toHaveBeenCalledWith('client_refresh', { what: subject }),
     );
     expect(store.state(), 'nothing has answered it').toEqual({ kind: 'loading' });
-  });
-
-  /**
-   * **A review read is never re-armed on open, because it is never armed.**
-   * The server waits for its base fetch with no cap, so the client holds no
-   * deadline for it: a re-arm on `open` would land inside a wait still
-   * legitimately running and ask a second whole review read under the first.
-   * The page draws the wait, and the transport's own reconnect recovers a
-   * lost answer.
-   */
-  it('never arms a review read, before or after the connection opens', async () => {
-    vi.useFakeTimers();
-    const connection = await opened({ status: 'connecting', greeting: null });
-    connection.subscribe(subject, { review: true });
-    invoke.mockClear();
-
-    invoke.mockImplementation((command: string) => {
-      if (command === 'client_state') {
-        return Promise.resolve({ status: 'open', generation: 1, greeting: null });
-      }
-      return Promise.resolve(undefined);
-    });
-    fire('client://connection', undefined);
-    await vi.waitFor(() => expect(connection.status()).toBe('open'));
-
-    // Ten minutes is far past any pass a bounded read would have taken.
-    vi.advanceTimersByTime(600_000);
-    await vi.waitFor(() =>
-      expect(invoke, 'a review read is never presumed lost').not.toHaveBeenCalledWith(
-        'client_refresh',
-        { what: subject },
-      ),
-    );
-  });
-
-  /**
-   * **A review-scoped re-ask arms nothing either**, not only a subscribe: the
-   * refresh keeps the shell's held scope, and a review read has no deadline
-   * at all, so a timer here would ask a second whole review read mid-wait.
-   */
-  it('never arms a review read on a refresh that states no scope', async () => {
-    vi.useFakeTimers();
-    const connection = await opened();
-    connection.subscribe(subject, { review: true });
-    invoke.mockClear();
-    connection.refresh(subject);
-    const refreshes = () => invoke.mock.calls.filter(([command]) => command === 'client_refresh');
-    await vi.waitFor(() => expect(refreshes()).toHaveLength(1));
-    const sent = refreshes().length;
-
-    vi.advanceTimersByTime(600_000);
-    expect(refreshes(), 'the review refresh armed a timer that asks again').toHaveLength(sent);
   });
 
   /**

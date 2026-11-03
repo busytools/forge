@@ -45,6 +45,7 @@
     joined,
     noticeLine,
     pendingAsk,
+    settingsWriteEndingLine,
     SIGN_IN_FALLBACK,
     type ComposerProps,
   } from './view';
@@ -332,7 +333,9 @@
   const dockAsk = $derived(
     ask !== null &&
       !(
-        (ask.kind === 'slack_draft' || ask.kind === 'browser_hand_off') &&
+        (ask.kind === 'slack_draft' ||
+          ask.kind === 'browser_hand_off' ||
+          ask.kind === 'settings_write') &&
         box.answered === ask.request.id &&
         box.refusal === null
       )
@@ -366,10 +369,17 @@
       return { mark: 'warning', label: 'approval', tone: 'att' as const };
     }
     if (held.kind === 'slack_draft') {
-      return { mark: 'plane', label: 'post waiting', tone: 'att' as const };
+      return {
+        mark: 'plane',
+        label: `${held.request.operation} waiting`,
+        tone: 'att' as const,
+      };
     }
     if (held.kind === 'document_hand_off') {
       return { mark: 'file', label: 'document waiting', tone: 'att' as const };
+    }
+    if (held.kind === 'settings_write') {
+      return { mark: 'settings', label: 'config write waiting', tone: 'att' as const };
     }
     return { mark: 'bell', label: 'browser waiting', tone: 'att' as const };
   });
@@ -469,10 +479,15 @@
    */
   $effect(() => {
     const held = ask;
-    if (held !== null && held.kind === 'slack_draft') {
-      box.shownDraft = held.request.id;
-      box.ended = null;
-    }
+    if (held === null || held.kind !== 'slack_draft') return;
+    const id = held.request.id;
+    // **The same draft re-handed is not a new one.** The record is replaced
+    // on every frame and on the session poll, and the `ask` object with it;
+    // clearing on that replacement erased a send-back's sending line inside
+    // the press-to-resolution window. Only a different draft starts blank.
+    if (box.shownDraft === id) return;
+    box.shownDraft = id;
+    box.ended = null;
   });
 
   /**
@@ -486,6 +501,40 @@
       box.shownHandOff = held.request.id;
       box.ended = null;
     }
+  });
+
+  /**
+   * The held configuration write this box is drawing, remembered on the
+   * draft's own terms: the record drops it from `pending_asks` on the same
+   * update that says it ended.
+   */
+  $effect(() => {
+    const held = ask;
+    if (held !== null && held.kind === 'settings_write') {
+      box.shownWrite = held.request.id;
+      box.ended = null;
+    }
+  });
+
+  /**
+   * A held write leaving the core, read on the draft's own terms: the ending
+   * rides the update alone, and it is what tells a reader who did not answer
+   * it what happened.
+   */
+  $effect(() => {
+    return connection.onMessage((message) => {
+      if (message.kind !== 'update') return;
+      const [name, payload] = variantOf(message.update);
+      if (name !== 'settings_write_resolved') return;
+      const at = slotOf(message.update);
+      if (at === null) return;
+      const held = boxes.held(boxKey(at));
+      if (held === undefined) return;
+      const id = typeof payload['id'] === 'string' ? payload['id'] : null;
+      if (id === null || id !== held.shownWrite) return;
+      if (held.answered === id) return;
+      held.ended = settingsWriteEndingLine(payload['ending']);
+    });
   });
 
   /**
@@ -512,8 +561,13 @@
       const id = typeof payload['id'] === 'string' ? payload['id'] : null;
       if (id === null || id !== held.shownDraft) return;
       // The reader's own answer, taken or not: the refusal that follows says
-      // so when it is not, and the ending would only repeat the click.
-      if (held.answered === id) return;
+      // so when it is not, and the ending would only repeat the click. A
+      // send-back's sending line is not an ending, so it goes with the draft
+      // it was drawn for.
+      if (held.answered === id) {
+        held.ended = null;
+        return;
+      }
       held.ended = draftEndingLine(payload['ending']);
     });
   });
@@ -909,6 +963,16 @@
   $effect(() => {
     return connection.onMessage((message) => {
       if (message.kind !== 'error') return;
+      // An answer the core refused but did NOT resolve: the draft is still
+      // waiting, so the card comes back with the reason rather than standing
+      // down for good.
+      if (message.what === 'empty_slack_feedback') {
+        box.answered = null;
+        box.answeredKey = null;
+        box.ended = null;
+        box.refusal = message.why;
+        return;
+      }
       // The answer to a draft the core no longer holds, refused by its own
       // operation's name: the dock is gone by then, so the reason is drawn
       // where it stood. A generic `dispatch` refusal cannot say which command
@@ -921,6 +985,10 @@
       // same terms: the dock is gone by then, and the reason belongs where it
       // stood.
       if (message.what === 'respond_browser_hand_off') {
+        box.ended = { tone: 'warn', text: message.why };
+        return;
+      }
+      if (message.what === 'respond_settings_write') {
         box.ended = { tone: 'warn', text: message.why };
         return;
       }
@@ -1312,6 +1380,18 @@
   }
 
   /**
+   * A send-back is on its way. The card stands down with the press, so the
+   * line where it stood is what tells the reader the press registered and
+   * that nothing went to Slack; a refusal replaces it with the reason.
+   */
+  function sendingBack(): void {
+    box.ended = {
+      tone: 'q',
+      text: 'Sending your feedback to the agent. Nothing was sent.',
+    };
+  }
+
+  /**
    * **The bar stays while the surface is up, even when the ask leaves**: a
    * hand-off the core resolved elsewhere takes the dock's card with it, and a
    * bare picture with no way back to the chat is a trap. With no ask the bar
@@ -1509,6 +1589,7 @@
       return `question:${current.request.toolId}:${String(current.request.index)}`;
     }
     if (current.kind === 'browser_hand_off') return `handoff:${current.request.id}`;
+    if (current.kind === 'settings_write') return `settings:${current.request.id}`;
     return `slack:${current.request.id}`;
   }
 
@@ -1525,7 +1606,8 @@
     if (
       current.kind === 'slack_draft' ||
       current.kind === 'browser_hand_off' ||
-      current.kind === 'document_hand_off'
+      current.kind === 'document_hand_off' ||
+      current.kind === 'settings_write'
     ) {
       return current.request.id;
     }
@@ -1728,6 +1810,7 @@
               carried={box.carried}
               onanswer={remember}
               onabandon={abandon}
+              onsending={sendingBack}
               onmic={() => dictate.toggle()}
               {dictation}
               silent={silentLine}

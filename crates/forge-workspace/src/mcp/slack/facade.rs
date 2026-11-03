@@ -13,8 +13,8 @@ use forge_connectors::slack::{
     shared_messages,
 };
 use forge_primitives::slack::{
-    SlackBookmark, SlackConversation, SlackDraft, SlackDraftEnding, SlackPin, SlackSearchMatch,
-    SlackSubscription, SlackSubscriptionTarget, SlackUser, SlackWatchMode,
+    SlackBookmark, SlackConversation, SlackDraft, SlackPin, SlackSearchMatch, SlackSubscription,
+    SlackSubscriptionTarget, SlackUser, SlackWatchMode,
 };
 use uuid::Uuid;
 
@@ -97,6 +97,8 @@ pub(crate) struct SlackPostRequest {
 pub(crate) enum SlackPostError {
     /// The user rejected the draft. Nothing was posted.
     Rejected,
+    /// The user sent it back with words to revise from. Nothing was posted.
+    SentBack { note: String },
     /// Some parts of a split draft are live and the rest is not. Carries
     /// how many landed so a retry resumes instead of duplicating.
     Partial { posted: usize, total: usize, source: String },
@@ -137,6 +139,11 @@ pub(crate) enum SlackEditError {
     NotOwnMessage,
     /// The user rejected the replacement. The message is untouched.
     Rejected,
+    /// The user sent it back with words to revise from. The message is
+    /// untouched.
+    SentBack {
+        note: String,
+    },
     Workspace(SlackWorkspaceError),
     Fetch(String),
 }
@@ -155,6 +162,11 @@ pub(crate) struct SlackReactRequest {
 pub(crate) enum SlackReactError {
     /// The user rejected the reaction. Nothing was added or removed.
     Rejected,
+    /// The user sent it back with words to revise from. Nothing was added or
+    /// removed.
+    SentBack {
+        note: String,
+    },
     Workspace(SlackWorkspaceError),
     Fetch(String),
 }
@@ -194,6 +206,10 @@ pub(crate) enum SlackAttachmentError {
     Io(String),
     /// The user rejected the upload. Nothing was sent.
     Rejected,
+    /// The user sent it back with words to revise from. Nothing was sent.
+    SentBack {
+        note: String,
+    },
     Workspace(SlackWorkspaceError),
     /// The Web API or the transfer failed.
     Fetch(String),
@@ -447,6 +463,11 @@ pub(crate) struct ProdSlackFacade {
 pub(crate) enum GateDecision {
     Approved,
     Rejected,
+    /// The reader did not send it, and wrote words for the agent to revise
+    /// from.
+    SentBack {
+        note: String,
+    },
 }
 
 /// Resolves the draft if the awaiting future is dropped before the reader
@@ -462,7 +483,11 @@ impl Drop for ResolveOnDrop {
     fn drop(&mut self) {
         // The waiter is gone rather than answering: the drop path is a
         // session that died mid-wait, never a decision.
-        self.workspace.resolve_slack_draft(self.id, &self.caller, SlackDraftEnding::Abandoned);
+        self.workspace.resolve_slack_draft(
+            self.id,
+            &self.caller,
+            crate::slack::DraftResolution::Abandoned,
+        );
     }
 }
 
@@ -542,10 +567,16 @@ impl ProdSlackFacade {
     ) -> GateDecision {
         let (id, decision) = workspace.register_slack_draft(caller, draft);
         let guard = ResolveOnDrop { workspace: Arc::clone(workspace), id, caller: caller.clone() };
-        let resolved = if decision.await.unwrap_or(false) {
-            GateDecision::Approved
-        } else {
-            GateDecision::Rejected
+        let resolved = match decision.await {
+            Ok(forge_primitives::slack::SlackDraftAnswer::Approve) => GateDecision::Approved,
+            Ok(forge_primitives::slack::SlackDraftAnswer::SendBack { note }) => {
+                GateDecision::SentBack { note }
+            }
+            // A dead waiter is the abandoned path, and it fails closed on
+            // the same side a decline does.
+            Ok(forge_primitives::slack::SlackDraftAnswer::Decline) | Err(_) => {
+                GateDecision::Rejected
+            }
         };
         drop(guard);
         resolved
@@ -583,11 +614,12 @@ impl SlackFacade for ProdSlackFacade {
             conversation_label,
             thread_ts: request.thread_ts,
             text: request.text,
-            tool: "slack__post".to_owned(),
+            operation: forge_primitives::slack::SlackDraftOperation::Post,
         };
         match Self::await_approval(&ws, caller, draft.clone()).await {
             GateDecision::Approved => {}
             GateDecision::Rejected => return Err(SlackPostError::Rejected),
+            GateDecision::SentBack { note } => return Err(SlackPostError::SentBack { note }),
         }
         let conversation_name = draft.conversation_label.clone();
         let parts = forge_connectors::slack::split_for_post(&draft.text);
@@ -671,11 +703,15 @@ impl SlackFacade for ProdSlackFacade {
                 Some(text) => text.clone(),
                 None => format!("[delete] message {}", request.ts),
             },
-            tool: "slack__edit".to_owned(),
+            operation: match &request.text {
+                Some(_) => forge_primitives::slack::SlackDraftOperation::Edit,
+                None => forge_primitives::slack::SlackDraftOperation::Delete,
+            },
         };
         match Self::await_approval(&ws, caller, draft).await {
             GateDecision::Approved => {}
             GateDecision::Rejected => return Err(SlackEditError::Rejected),
+            GateDecision::SentBack { note } => return Err(SlackEditError::SentBack { note }),
         }
 
         // Ownership is the wire's verdict, never a local lookup's:
@@ -726,11 +762,16 @@ impl SlackFacade for ProdSlackFacade {
             conversation_label,
             thread_ts: Some(request.ts.clone()),
             text: format!("[{verb}: {}]", request.name),
-            tool: "slack__react".to_owned(),
+            operation: if request.add {
+                forge_primitives::slack::SlackDraftOperation::React
+            } else {
+                forge_primitives::slack::SlackDraftOperation::Unreact
+            },
         };
         match Self::await_approval(&ws, caller, draft).await {
             GateDecision::Approved => {}
             GateDecision::Rejected => return Err(SlackReactError::Rejected),
+            GateDecision::SentBack { note } => return Err(SlackReactError::SentBack { note }),
         }
 
         api.set_reaction(&request.conversation, &request.ts, &request.name, request.add)
@@ -961,11 +1002,14 @@ impl SlackFacade for ProdSlackFacade {
             conversation_label,
             thread_ts: request.thread_ts.clone(),
             text: format!("[file] {name}\nfrom {}", request.path.display()),
-            tool: "slack__attachment".to_owned(),
+            operation: forge_primitives::slack::SlackDraftOperation::Upload,
         };
         match Self::await_approval(&ws, caller, draft).await {
             GateDecision::Approved => {}
             GateDecision::Rejected => return Err(SlackAttachmentError::Rejected),
+            GateDecision::SentBack { note } => {
+                return Err(SlackAttachmentError::SentBack { note });
+            }
         }
 
         let (url, file_id) = api
@@ -1445,12 +1489,13 @@ mod tests {
     use crate::config::LoadedConfig;
     use crate::mcp::slack::Unsubscribe;
     use crate::mcp::test_support::text_of;
+    use crate::slack::DraftResolution;
     use forge_connectors::slack::{
         AuthTest, MessagePage, PostedMessage, SearchPage, SlackApi, SlackError,
     };
     use forge_primitives::slack::{
-        SlackBookmark, SlackConfig, SlackFile, SlackFileShare, SlackFileShares, SlackPin,
-        SlackPinMessage, SlackUserProfile,
+        SlackBookmark, SlackConfig, SlackDraftAnswer, SlackDraftEnding, SlackDraftOperation,
+        SlackFile, SlackFileShare, SlackFileShares, SlackPin, SlackPinMessage, SlackUserProfile,
     };
     use forge_sdk::mcp::tool::{Tool as _, ToolInput};
     use std::collections::{BTreeMap, HashMap};
@@ -2052,8 +2097,16 @@ token = "y"
     /// An answer as the registry takes it. Every call site here is a view
     /// answering; the drop is a dead waiter, and it goes through the paths
     /// under test rather than through this.
-    fn answered(approved: bool) -> SlackDraftEnding {
-        SlackDraftEnding::Answered { approved }
+    fn answered(approved: bool) -> DraftResolution {
+        DraftResolution::Answered(if approved {
+            SlackDraftAnswer::Approve
+        } else {
+            SlackDraftAnswer::Decline
+        })
+    }
+
+    fn sent_back(note: &str) -> DraftResolution {
+        DraftResolution::Answered(SlackDraftAnswer::SendBack { note: note.to_owned() })
     }
 
     /// Wait for the blocked post to register its draft, then hand back its
@@ -2807,6 +2860,131 @@ token = "y"
         assert!(api.posts().is_empty(), "a rejected draft must not post");
     }
 
+    /// A send-back is not a decline: the blocked call reads the reader's
+    /// words and revises from them, and nothing goes out.
+    #[tokio::test]
+    async fn a_sent_back_post_hands_the_note_back_and_sends_nothing() {
+        let (facade, ws, api, _rx) = facade_with_recording_slack();
+        let task = tokio::spawn({
+            let facade = facade.clone();
+            async move { facade.post(&caller(), post_request("C1", "hello")).await }
+        });
+        let id = wait_for_draft(&ws).await;
+        ws.resolve_slack_draft(id, &caller(), sent_back("say staging, not prod"));
+
+        let outcome = task.await.expect("no panic");
+        assert_eq!(
+            outcome,
+            Err(SlackPostError::SentBack { note: "say staging, not prod".to_owned() }),
+            "the note reaches the blocked call whole",
+        );
+        assert!(api.posts().is_empty(), "a sent-back draft must not post");
+    }
+
+    /// Each gated operation has its own error, so each has its own sent-back
+    /// arm: one arm left as a plain decline would send the agent guessing.
+    #[tokio::test]
+    async fn a_sent_back_edit_hands_the_note_back_and_leaves_the_message() {
+        let (facade, ws, api, _rx) = facade_with_recording_slack();
+        let task = tokio::spawn({
+            let facade = facade.clone();
+            async move { facade.edit(&caller(), edit_request("C1", "100.0", Some("new"))).await }
+        });
+        let id = wait_for_draft(&ws).await;
+        ws.resolve_slack_draft(id, &caller(), sent_back("keep the original wording"));
+
+        assert_eq!(
+            task.await.expect("no panic"),
+            Err(SlackEditError::SentBack { note: "keep the original wording".to_owned() }),
+        );
+        assert!(api.updates.lock().is_empty(), "a sent-back replacement is never sent");
+    }
+
+    #[tokio::test]
+    async fn a_sent_back_delete_hands_the_note_back_and_keeps_the_message() {
+        let (facade, ws, api, _rx) = facade_with_recording_slack();
+        let task = tokio::spawn({
+            let facade = facade.clone();
+            async move { facade.edit(&caller(), edit_request("C1", "100.0", None)).await }
+        });
+        let id = wait_for_draft(&ws).await;
+        ws.resolve_slack_draft(id, &caller(), sent_back("that one needs to stay"));
+
+        assert_eq!(
+            task.await.expect("no panic"),
+            Err(SlackEditError::SentBack { note: "that one needs to stay".to_owned() }),
+        );
+        assert!(api.deletes.lock().is_empty(), "a sent-back deletion never removes anything");
+    }
+
+    #[tokio::test]
+    async fn a_sent_back_reaction_hands_the_note_back_and_applies_nothing() {
+        let (facade, ws, api, _rx) = facade_with_recording_slack();
+        let task = tokio::spawn({
+            let facade = facade.clone();
+            async move { facade.react(&caller(), react_request("C1", "100.0", "thumbsup", true)).await }
+        });
+        let id = wait_for_draft(&ws).await;
+        ws.resolve_slack_draft(id, &caller(), sent_back("that reads as sarcasm here"));
+
+        assert_eq!(
+            task.await.expect("no panic"),
+            Err(SlackReactError::SentBack { note: "that reads as sarcasm here".to_owned() }),
+        );
+        assert!(api.reactions.lock().is_empty(), "a sent-back reaction is never applied");
+    }
+
+    #[tokio::test]
+    async fn a_sent_back_upload_hands_the_note_back_and_sends_no_bytes() {
+        let (facade, ws, api, _rx) = facade_with_recording_slack();
+        let dir = tempdir().expect("tempdir");
+        let source = dir.path().join("file.txt");
+        std::fs::write(&source, b"payload").expect("write the source file");
+
+        let task = tokio::spawn({
+            let facade = facade.clone();
+            async move { facade.post_attachment(&caller(), upload_request("C1", &source)).await }
+        });
+        let id = wait_for_draft(&ws).await;
+        ws.resolve_slack_draft(id, &caller(), sent_back("wrong file, send the report instead"));
+
+        assert_eq!(
+            task.await.expect("no panic"),
+            Err(SlackAttachmentError::SentBack {
+                note: "wrong file, send the report instead".to_owned(),
+            }),
+        );
+        assert_eq!(api.upload_url_count(), 0, "a sent-back upload never reaches Slack");
+    }
+
+    /// A note belongs to the attempt it answered. The revised call parks its
+    /// own hold, and nothing sends until the reader approves that one.
+    #[tokio::test]
+    async fn a_revised_call_after_a_send_back_parks_its_own_draft() {
+        let (facade, ws, api, _rx) = facade_with_recording_slack();
+        let first = tokio::spawn({
+            let facade = facade.clone();
+            async move { facade.post(&caller(), post_request("C1", "prod is down")).await }
+        });
+        let first_id = wait_for_draft(&ws).await;
+        ws.resolve_slack_draft(first_id, &caller(), sent_back("say staging, not prod"));
+        assert!(first.await.expect("no panic").is_err(), "the first attempt was sent back");
+
+        let second = tokio::spawn({
+            let facade = facade.clone();
+            async move { facade.post(&caller(), post_request("C1", "staging is down")).await }
+        });
+        let second_id = wait_for_draft(&ws).await;
+
+        assert_ne!(second_id, first_id, "the revision parks its own card");
+        assert!(api.posts().is_empty(), "and nothing approves the revision on its behalf");
+
+        ws.resolve_slack_draft(second_id, &caller(), answered(true));
+        second.await.expect("no panic").expect("the reader's approval is what sends it");
+        assert_eq!(api.posts().len(), 1, "one message goes out");
+        assert_eq!(api.posts()[0].1, "staging is down", "the revised words are what went out");
+    }
+
     /// A prompt nobody answers must read as "not approved". Dropping the
     /// sender is how that happens - the session went away, or the dock
     /// prompt was cleared without a decision - and it must never be taken
@@ -3037,6 +3215,43 @@ token = "y"
 
         assert_eq!(task.await.expect("no panic"), Err(SlackReactError::Rejected));
         assert!(api.reactions.lock().is_empty(), "a rejected reaction is never applied");
+    }
+
+    /// Adding and removing a reaction are different acts, so the held draft
+    /// names which one it is: the card words its verbs from this field, and
+    /// a removal drawn as "React" asks the reader to approve the wrong act.
+    #[tokio::test]
+    async fn a_reaction_draft_names_whether_it_adds_or_removes() {
+        let (facade, ws, _api, mut rx) = facade_with_recording_slack();
+
+        for (add, expected) in
+            [(false, SlackDraftOperation::Unreact), (true, SlackDraftOperation::React)]
+        {
+            let task = tokio::spawn({
+                let facade = facade.clone();
+                async move {
+                    facade.react(&caller(), react_request("C1", "100.0", "thumbsup", add)).await
+                }
+            });
+            let mut seen = None;
+            for _ in 0..200 {
+                while let Ok(frame) = rx.try_recv() {
+                    if let crate::protocol::SessionUpdate::SlackPostPending { draft, .. } =
+                        std::sync::Arc::unwrap_or_clone(frame.update)
+                    {
+                        seen = Some(draft.operation);
+                    }
+                }
+                if seen.is_some() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            assert_eq!(seen, Some(expected), "the draft names the act it would do");
+            let id = wait_for_draft(&ws).await;
+            ws.resolve_slack_draft(id, &caller(), answered(false));
+            let _ = task.await;
+        }
     }
 
     fn cfg(label: &str) -> SlackConfig {

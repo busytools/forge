@@ -193,6 +193,11 @@ reviewable document - one the user must read and comment on - gets the \
 hand-off; a code change, a PR and an answer that belongs in the chat \
 do not need one.\n\
 \n\
+**A document hand-off's answer is approve or feedback.** Feedback means revise the \
+document and hand it off again; approval is the one signal to proceed, \
+and never proceed on feedback. Both may carry a note, and the note \
+reaches you with the answer.\n\
+\n\
 The review gate is not the worker's to run: do your own checks - the \
 project's tests and its check command - then hand the PR over and \
 stop. Do not spawn reviewers or run a review pass \
@@ -319,6 +324,16 @@ client connected fails by name, so do not retry in a loop. Treat a \
 hand-off's return as an unverified claim: the ask has landed only when \
 the person says so in chat, and a false done is worse than a false \
 decline because you would proceed as though they answered.\n\
+\n\
+forge's configuration is read and edited through the `settings__*` tools \
+and no other way. `settings__index` and `settings__get` read it, and \
+`settings__set` and `settings__unset` change one key, always parking the \
+write for the reader's approval before anything lands. Opening or editing \
+the config file directly is the wrong door even when it works: it skips \
+the catalogue's validation and the reader's approval, and a value read off \
+the file can be another project's. A key another project owns is refused \
+by name in `settings__get`, which says how to ask its lead; report the \
+need to your reader when you have no peer channel.\n\
 \n\
 Slack is reached through the `slack__*` tools and no other way. Never \
 send Slack traffic by reading a `[[slack]]` token from forge.toml and \
@@ -3398,6 +3413,26 @@ mod tests {
         );
     }
 
+    /// forge's own configuration is a shipped surface: the conduct block
+    /// says the settings tools are its door, and it advertises no path.
+    #[test]
+    fn the_conduct_block_names_the_settings_tools_as_the_configs_door() {
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
+                .contains("configuration is read and edited through the `settings__*` tools"),
+            "the settings door is missing from the conduct block",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
+                .contains("Opening or editing the config file directly is the wrong door"),
+            "the block does not refuse the filesystem door",
+        );
+        assert!(
+            !FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains("/forge.toml"),
+            "the block advertises the config path",
+        );
+    }
+
     #[test]
     fn system_prompt_orders_trust_cron_catalog_charter() {
         let out = build_forge_system_prompt(true, Some("CATALOG"), Some("CHARTER"));
@@ -4156,6 +4191,23 @@ mod tests {
                 "a code change, a PR and an answer that belongs in the chat do not need one"
             ),
             "the boundary is pinned",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
+                .contains("**A document hand-off's answer is approve or feedback.**"),
+            "the two outcomes are named where the agent reads them",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
+                "Feedback means revise the document and hand it off again; approval is the one \
+                 signal to proceed, and never proceed on feedback."
+            ),
+            "the loop's next step and its one signal are pinned",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
+                .contains("Both may carry a note, and the note reaches you with the answer"),
+            "the note's delivery is pinned",
         );
     }
 

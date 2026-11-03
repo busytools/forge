@@ -94,8 +94,8 @@ impl Recorder {
     /// Stop and answer what was written.
     pub fn stop(mut self) -> Outcome {
         self.stop.store(true, Ordering::Release);
-        self.thread.take().map_or_else(
-            || Outcome { seconds: 0, bytes: 0, capped: false, error: None },
+        self.thread.take().map_or(
+            Outcome { seconds: 0, bytes: 0, capped: false, error: None },
             |thread| {
                 thread.join().unwrap_or(Outcome {
                     seconds: 0,

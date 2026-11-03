@@ -516,13 +516,16 @@ pub(crate) type SlackDeliveryKey = (String, Option<String>, String, String, Opti
 /// Multi-session orchestrator. Owns the project catalog snapshot
 /// loaded from `<config_dir>/forge.toml` and the pool of currently
 /// One composed Slack message held for a decision: the session that asked,
-/// the draft itself, and the sender the blocked `slack__post` handler awaits.
+/// the draft itself, and the sender the blocked Slack handler awaits.
 ///
 /// The draft rides beside the sender for the same reason the permission and
 /// question requests do - the stream carries it once, so a view that attached
 /// after it landed has nothing else to draw the dock from.
-pub(crate) type ParkedSlackDraft =
-    (SessionSlot, forge_primitives::slack::SlackDraft, tokio::sync::oneshot::Sender<bool>);
+pub(crate) type ParkedSlackDraft = (
+    SessionSlot,
+    forge_primitives::slack::SlackDraft,
+    tokio::sync::oneshot::Sender<forge_primitives::slack::SlackDraftAnswer>,
+);
 
 /// One parked browser hand-off: the session that asked, the hand-off itself,
 /// and the sender the blocked `browser_hand_off` handler awaits.
@@ -1078,6 +1081,13 @@ pub struct Workspace {
     /// blocked `browser_hand_off` handler awaits the sender, with no timeout,
     /// for as long as the person takes.
     pub(crate) browser_handoffs: Mutex<HashMap<uuid::Uuid, ParkedBrowserHandOff>>,
+    /// Configuration writes held for the reader's approval, keyed by the
+    /// write's id and carrying the session that asked. Its own registry for
+    /// the same reason the draft's is: a held write exists on a seat with no
+    /// domain, and nothing reaches `forge.toml` until the blocked handler's
+    /// oneshot is answered.
+    pub(crate) settings_writes:
+        Mutex<HashMap<uuid::Uuid, crate::settings_ask::ParkedSettingsWrite>>,
     /// How many asks have ever arrived for a seat. **The ask's identity on the
     /// wire**: one ask replacing another reads as a different ask, and
     /// answering one of several leaves the number where it was.
@@ -2533,6 +2543,7 @@ impl Workspace {
             slack_ledger_failures: Mutex::new(std::collections::HashSet::new()),
             slack_drafts: Mutex::new(HashMap::new()),
             browser_handoffs: Mutex::new(HashMap::new()),
+            settings_writes: Mutex::new(HashMap::new()),
             pending_seq: Mutex::new(HashMap::new()),
             slack_recently_delivered: Mutex::new(HashMap::new()),
             slack_load_failed: std::sync::atomic::AtomicBool::new(slack_load_failed),
@@ -2952,6 +2963,19 @@ impl Workspace {
         live.sort_unstable();
         live.dedup();
         live
+    }
+
+    /// The effective-config document as the socket holds it, built from the
+    /// live config where the server has not published one yet (a test
+    /// workspace, or the first moments before the greeting). The settings
+    /// MCP tools read this one document, so a key they report and the value
+    /// the page draws cannot disagree.
+    pub(crate) fn settings_snapshot(&self) -> Arc<forge_primitives::SettingsDocument> {
+        if let Some(document) = self.settings.borrow().clone() {
+            return document;
+        }
+        let version = self.settings_version.get().map(String::as_str).unwrap_or_default();
+        Arc::new(crate::settings::document(&self.config_arc(), version, &self.config_path()))
     }
 
     /// Build the document from the live config and publish it when it
@@ -3572,6 +3596,7 @@ impl Workspace {
             let cron_facade = crate::mcp::cron::facade::ProdCronFacade::from_arc(self);
             let gotify_facade = crate::mcp::gotify::facade::ProdGotifyFacade::from_arc(self);
             let slack_facade = crate::mcp::slack::facade::ProdSlackFacade::from_arc(self);
+            let settings_facade = crate::mcp::settings::facade::ProdSettingsFacade::from_arc(self);
             let tasks_facade = crate::mcp::tasks::facade::ProdTasksFacade::from_arc(self);
             let systemone_facade = self.systemone.read().as_ref().map(|client| {
                 crate::mcp::systemone::facade::ProdSystemOneFacade::new(Arc::clone(client))
@@ -3593,6 +3618,7 @@ impl Workspace {
                     cron: cron_facade,
                     gotify: gotify_facade,
                     slack: slack_facade,
+                    settings: settings_facade,
                     tasks: tasks_facade,
                     systemone: systemone_facade,
                     voice: self.voice_service(),
@@ -6446,6 +6472,15 @@ impl Workspace {
                     });
                 }
             }
+            Command::RespondSettingsWrite { key, id, .. } => {
+                let waiting = self.settings_write_waiting(*id, key);
+                if !waiting {
+                    return Err(DispatchError::NoSettingsWriteWaiting {
+                        key: key.clone(),
+                        id: *id,
+                    });
+                }
+            }
             _ => {}
         }
         if let Some(key) = cmd.key() {
@@ -6875,14 +6910,22 @@ impl Workspace {
                         notification,
                     );
                 }
-                Command::RespondSlackPost { key, id, approved } => {
+                Command::RespondSlackPost { key, id, answer } => {
+                    // A send-back with no words is not an answer: it would
+                    // drop the reader's card and hand the agent nothing. The
+                    // draft stays waiting so the field can be sent again.
+                    if let forge_primitives::slack::SlackDraftAnswer::SendBack { note } = &answer
+                        && note.trim().is_empty()
+                    {
+                        return Err(DispatchError::EmptySlackFeedback { key: key.clone(), id });
+                    }
                     // The guard above already refused a draft this one is not
                     // waiting for, so a `false` here is a resolve that landed
                     // between the two: the same refusal, not a silent drop.
                     let answered = self.resolve_slack_draft(
                         id,
                         &key,
-                        forge_primitives::slack::SlackDraftEnding::Answered { approved },
+                        crate::slack::DraftResolution::Answered(answer),
                     );
                     if !answered {
                         return Err(DispatchError::NoDraftWaiting { key: key.clone(), id });
@@ -6930,6 +6973,15 @@ impl Workspace {
                             key: key.clone(),
                             id,
                         });
+                    }
+                }
+                Command::RespondSettingsWrite { key, id, approved } => {
+                    // Same shape as the two arms above: the guard already
+                    // refused one that is not waiting, so a `false` here is a
+                    // resolve that landed between the two.
+                    let answered = self.resolve_settings_write(id, &key, approved);
+                    if !answered {
+                        return Err(DispatchError::NoSettingsWriteWaiting { key: key.clone(), id });
                     }
                 }
                 Command::DictateCatalogueCheck => {
@@ -8061,6 +8113,9 @@ impl Workspace {
         // async tab close follows.
         self.release_browser_seat(session_key);
         crate::dictate::teardown_for_closed_session(self, session_key);
+        // A parked write is not a prompt the gone session can answer, and a
+        // reused label must not draw the previous occupant's edit on a dock.
+        self.abandon_settings_writes(session_key);
         // Anything parked for this session's owner was waiting on a
         // session that is now gone: fail the peer asks so their callers
         // are told, rather than letting them wait out the timeout.
@@ -8397,8 +8452,9 @@ impl Workspace {
     /// What the seat at `slot` is holding - **a draft leads, then arrival
     /// order** - empty when it is holding nothing. Every hop keeps that
     /// order, so a re-read and the live folds cannot disagree about the
-    /// front, with one exception: two drafts held at once come back in the
-    /// registry's own order, because the registry keeps none to offer.
+    /// front, with one exception: two drafts held at once - and two
+    /// configuration writes held at once - come back in the registry's own
+    /// order, because the registry keeps none to offer.
     ///
     /// **The list rather than one ask**, because a parallel batch parks
     /// several at once and a view that attached mid-batch has no other way to
@@ -8430,6 +8486,7 @@ impl Workspace {
                 crate::protocol::PendingAsk::DocumentHandOff(Box::new(held.ask.clone()))
             }));
         }
+        asks.extend(self.settings_write_asks(slot));
         if let Some(domain) = self.domain_session_for(slot) {
             let guard = domain.lock();
             asks.extend(
@@ -8617,6 +8674,7 @@ impl Workspace {
             || self.has_slack_draft(slot)
             || self.has_browser_hand_off(slot)
             || self.has_document_handoff(slot)
+            || self.has_settings_write(slot)
         {
             L::Attention
         } else {
@@ -17989,7 +18047,7 @@ mod worker_activity_tests {
             conversation_label: "acme".to_owned(),
             thread_ts: None,
             text: "hello".to_owned(),
-            tool: "slack__post".to_owned(),
+            operation: forge_primitives::slack::SlackDraftOperation::Post,
         };
         let (_id, _decision) = ws.register_slack_draft(&seat, draft);
 
@@ -18248,7 +18306,7 @@ mod worker_activity_tests {
             conversation_label: "acme".to_owned(),
             thread_ts: None,
             text: "hello".to_owned(),
-            tool: "slack__post".to_owned(),
+            operation: forge_primitives::slack::SlackDraftOperation::Post,
         };
         let (_id, _decision) = ws.register_slack_draft(&seat, draft);
 
@@ -18344,7 +18402,10 @@ mod worker_activity_tests {
         assert!(ws.resolve_document_hand_off(
             id,
             &seat,
-            forge_primitives::document::DocumentHandOffEnding::Done { review_id: None },
+            forge_primitives::document::DocumentHandOffEnding::Approve {
+                review_id: None,
+                note: None,
+            },
         ));
         assert_eq!(ws.session_activity(&seat), L::Running, "answered, the turn runs again");
         assert_eq!(ws.pending_interaction(&seat), None, "and the row stands down");
@@ -19626,6 +19687,7 @@ mod worker_respawn_tests {
                 cron: crate::mcp::cron::facade::ProdCronFacade::from_arc(workspace),
                 gotify: crate::mcp::gotify::facade::ProdGotifyFacade::from_arc(workspace),
                 slack: crate::mcp::slack::facade::ProdSlackFacade::from_arc(workspace),
+                settings: crate::mcp::settings::facade::ProdSettingsFacade::from_arc(workspace),
                 tasks: crate::mcp::tasks::facade::ProdTasksFacade::from_arc(workspace),
                 voice: workspace.voice_service(),
                 systemone: workspace.systemone.read().as_ref().map(|client| {
@@ -23706,12 +23768,15 @@ mod git_scan_cwd_tests {
         assert!(ws.resolve_document_hand_off(
             ask.0,
             &session_key,
-            DocumentHandOffEnding::Done { review_id: Some("r-1".to_owned()) },
+            DocumentHandOffEnding::Approve { review_id: Some("r-1".to_owned()), note: None },
         ));
 
         let (resolved, ending) = handed.await.expect("the task joins").expect("the hand-off lands");
         assert_eq!(resolved, expected.to_string_lossy(), "answered with the resolved path");
-        assert_eq!(ending, DocumentHandOffEnding::Done { review_id: Some("r-1".to_owned()) });
+        assert_eq!(
+            ending,
+            DocumentHandOffEnding::Approve { review_id: Some("r-1".to_owned()), note: None }
+        );
         assert!(
             std::iter::from_fn(|| updates.try_recv().ok()).any(|frame| matches!(
                 &*frame.update,
@@ -23814,7 +23879,7 @@ mod git_scan_cwd_tests {
         ws.resolve_document_hand_off(
             ask,
             &session_key,
-            DocumentHandOffEnding::Done { review_id: None },
+            DocumentHandOffEnding::Approve { review_id: None, note: None },
         );
         handed.await.expect("the task joins").expect("and the park releases");
 

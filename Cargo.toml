@@ -29,7 +29,7 @@ thiserror = "2"
 tracing = "0.1"
 anyhow = "1"
 async-trait = "0.1"
-getrandom = "0.3"
+getrandom = "0.4"
 hex = "0.4"
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "stream"] }
 sha2 = "0.11"
@@ -92,7 +92,9 @@ redb = "2.6"
 tokio-tungstenite = { version = "0.30", features = ["rustls-tls-native-roots"] }
 
 # Local speech recognition (ggml-backed) and microphone capture for
-# forge-dictate. `metal` is opted into per-target by the crate.
+# forge-dictate. `metal` is opted into per-target by the crate. 0.4's static
+# ggml duplicates llama-cpp-sys-2's symbols in one Linux binary, so
+# forge-dictate turns transcribe's ggml into a dylib and the install ships it.
 transcribe-cpp = "0.4.1"
 cpal = "0.18"
 

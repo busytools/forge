@@ -17,6 +17,8 @@
 //! - `gotify` - the caller's own Gotify subscriptions.
 //! - `slack` - the caller's own Slack subscriptions, reads and held
 //!   outbound actions.
+//! - `settings` - forge's own configuration (`index`, `get`, `set`,
+//!   `unset`), with every write held for the reader's approval.
 //! - `systemone` - the decision tools (`ask_noul`, `ask_choice`,
 //!   `ask_score`), injected only when `[systemone]` is configured and
 //!   enabled.
@@ -52,6 +54,7 @@ use crate::mcp::documents::facade::DocumentFacade;
 use crate::mcp::gotify::facade::GotifyFacade;
 use crate::mcp::peers::facade::WorkspaceFacade;
 use crate::mcp::review::facade::ReviewFacade;
+use crate::mcp::settings::facade::SettingsFacade;
 use crate::mcp::slack::facade::SlackFacade;
 use crate::mcp::systemone::facade::SystemOneFacade;
 use crate::mcp::tasks::facade::TasksFacade;
@@ -66,6 +69,7 @@ pub mod documents;
 pub mod gotify;
 pub mod peers;
 pub mod review;
+pub mod settings;
 pub mod slack;
 pub mod systemone;
 pub mod tasks;
@@ -279,6 +283,7 @@ pub struct ForgeServerFacades {
     pub cron: Arc<dyn CronFacade>,
     pub gotify: Arc<dyn GotifyFacade>,
     pub slack: Arc<dyn SlackFacade>,
+    pub settings: Arc<dyn SettingsFacade>,
     pub tasks: Arc<dyn TasksFacade>,
     pub systemone: Option<Arc<dyn SystemOneFacade>>,
     pub voice: Arc<crate::voice::VoiceService>,
@@ -333,6 +338,7 @@ pub fn build_forge_server(
         cron,
         gotify,
         slack,
+        settings,
         tasks,
         systemone,
         voice,
@@ -355,6 +361,10 @@ pub fn build_forge_server(
     // back, so its answer says so.
     let review_available = families.contains(&McpFamily::Review);
     builder = documents::add_tools(builder, documents, slot.clone(), review_available);
+    // Unconditional for the same reason: the config is every session's own
+    // environment, so no project has anything to withhold and every write is
+    // held for the reader regardless.
+    builder = settings::add_tools(builder, settings, slot.clone());
     if review_available {
         builder = review::add_tools(builder, review, slot.clone());
     }
@@ -431,6 +441,7 @@ mod tests {
     use crate::mcp::gotify::facade::MockGotifyFacade;
     use crate::mcp::peers::facade::MockWorkspaceFacade;
     use crate::mcp::review::facade::MockReviewFacade;
+    use crate::mcp::settings::facade::MockSettingsFacade;
     use crate::mcp::slack::facade::MockSlackFacade;
     use crate::mcp::systemone::facade::MockSystemOneFacade;
     use crate::mcp::tasks::facade::MockTasksFacade;
@@ -622,6 +633,7 @@ mod tests {
                 cron: MockCronFacade::new().into_arc(),
                 gotify: MockGotifyFacade::new().into_arc(),
                 slack: MockSlackFacade::new().into_arc(),
+                settings: MockSettingsFacade::new().into_arc(),
                 tasks: MockTasksFacade::new().into_arc(),
                 systemone: systemone_facade,
                 voice: silent_voice(),
@@ -681,7 +693,7 @@ mod tests {
     /// manage their own project's reviews, crons, tasks, subscriptions and
     /// decisions. The browser's own names are read off its table instead -
     /// one list per family, so a tool added there cannot leave this behind.
-    const ANY_CALLER_TOOLS: [&str; 35] = [
+    const ANY_CALLER_TOOLS: [&str; 39] = [
         "review__list",
         "review__get",
         "review__reply",
@@ -713,6 +725,10 @@ mod tests {
         "slack__me",
         "slack__pins",
         "slack__bookmarks",
+        "settings__index",
+        "settings__get",
+        "settings__set",
+        "settings__unset",
         "systemone__ask_noul",
         "systemone__ask_choice",
         "systemone__ask_score",
@@ -819,13 +835,25 @@ mod tests {
             Some(MockSystemOneFacade::new().into_arc()),
         ));
         worker.sort();
-        let mut expected: Vec<String> = ["agents__handoff", "agents__list", "agents__send_message", "agents__whoami"]
-            .into_iter()
-            .map(str::to_owned)
-            .chain(crate::mcp::browser::specs::specs().iter().map(|spec| spec.name.to_owned()))
-            // The document hand-off is always-on beside the browser.
-            .chain(["documents__hand_off"].into_iter().map(str::to_owned))
-            .collect();
+        let mut expected: Vec<String> =
+            ["agents__handoff", "agents__list", "agents__send_message", "agents__whoami"]
+                .into_iter()
+                .map(str::to_owned)
+                .chain(crate::mcp::browser::specs::specs().iter().map(|spec| spec.name.to_owned()))
+                // The document hand-off and the settings tools are always-on
+                // beside the browser.
+                .chain(
+                    [
+                        "documents__hand_off",
+                        "settings__index",
+                        "settings__get",
+                        "settings__set",
+                        "settings__unset",
+                    ]
+                    .into_iter()
+                    .map(str::to_owned),
+                )
+                .collect();
         expected.sort();
         assert_eq!(
             worker, expected,
@@ -857,8 +885,9 @@ mod tests {
             let documents = MockDocumentFacade::new();
             *documents.answer.lock() = Ok((
                 "/proj/docs/plan.md".to_owned(),
-                forge_primitives::document::DocumentHandOffEnding::Done {
+                forge_primitives::document::DocumentHandOffEnding::Approve {
                     review_id: Some("r-9".to_owned()),
+                    note: None,
                 },
             ));
             let server = build_forge_server(
@@ -871,6 +900,7 @@ mod tests {
                     cron: MockCronFacade::new().into_arc(),
                     gotify: MockGotifyFacade::new().into_arc(),
                     slack: MockSlackFacade::new().into_arc(),
+                    settings: MockSettingsFacade::new().into_arc(),
                     tasks: MockTasksFacade::new().into_arc(),
                     systemone: None,
                     voice: silent_voice(),
@@ -913,7 +943,17 @@ mod tests {
                 .into_iter()
                 .map(str::to_owned)
                 .chain(crate::mcp::browser::specs::specs().iter().map(|spec| spec.name.to_owned()))
-                .chain(["documents__hand_off"].into_iter().map(str::to_owned))
+                .chain(
+                    [
+                        "documents__hand_off",
+                        "settings__index",
+                        "settings__get",
+                        "settings__set",
+                        "settings__unset",
+                    ]
+                    .into_iter()
+                    .map(str::to_owned),
+                )
                 .chain(
                     ["cron__create", "cron__delete", "cron__list"].into_iter().map(str::to_owned),
                 )

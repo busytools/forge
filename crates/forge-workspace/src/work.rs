@@ -884,8 +884,8 @@ impl Workspace {
     }
 
     /// A sessionless seat's fetching scan with **no background kick**: the
-    /// read that will fetch the base itself a moment later takes this, so its
-    /// own fetch is the only one and nothing of forge's can be queued ahead of
+    /// read that draws the diff kicks the base refresh itself a moment later,
+    /// so its kick is the only one and nothing of forge's is queued ahead of
     /// it on the shared per-repository gate.
     pub async fn scan_work_at_without_base_fetch(
         &self,

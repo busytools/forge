@@ -84,7 +84,7 @@ describe('the ask as the composer reads it', () => {
         conversation_label: 'granite-staging-alerts',
         thread_ts: null,
         text: 'Deploy finished on staging.',
-        tool: 'slack__post',
+        operation: 'delete',
       },
     });
     if (held?.kind !== 'slack_draft') throw new Error('the held post did not narrow');
@@ -95,6 +95,48 @@ describe('the ask as the composer reads it', () => {
     expect(held.request.workspace).toBe('Trust Machines');
     expect(held.request.conversationLabel).toBe('granite-staging-alerts');
     expect(held.request.text).toBe('Deploy finished on staging.');
+    expect(
+      held.request.operation,
+      'the operation is what the card words its verbs from, so dropping it here silently draws post copy',
+    ).toBe('delete');
+  });
+
+  it('narrows an operation this client is older than to neutral, not a post', () => {
+    const held = askFrom({
+      kind: 'slack_draft',
+      request: {
+        id: '0192e1c0-0000-7000-8000-000000000000',
+        workspace: 'Trust Machines',
+        conversation: 'C0123',
+        conversation_label: 'granite-staging-alerts',
+        thread_ts: null,
+        text: 'Deploy finished on staging.',
+        operation: 'archive',
+      },
+    });
+    if (held?.kind !== 'slack_draft') throw new Error('the held post did not narrow');
+
+    expect(held.request.operation, 'an unknown value must not borrow a post verb').toBe('unknown');
+  });
+
+  it('names a held config write with the key and both values', () => {
+    const held = askFrom({
+      kind: 'settings_write',
+      request: {
+        id: '0192e1c0-0000-7000-8000-0000000000bb',
+        key: 'orgs.Default.projects.forge.max_workers',
+        current: 2,
+        proposed: 4,
+        unset: false,
+      },
+    });
+    if (held?.kind !== 'settings_write') throw new Error('the held write did not narrow');
+
+    expect(held.request.id).toBe('0192e1c0-0000-7000-8000-0000000000bb');
+    expect(held.request.key).toBe('orgs.Default.projects.forge.max_workers');
+    expect(held.request.current).toBe(2);
+    expect(held.request.proposed).toBe(4);
+    expect(held.request.unset).toBe(false);
   });
 });
 

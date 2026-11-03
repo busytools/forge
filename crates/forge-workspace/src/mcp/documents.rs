@@ -2,9 +2,10 @@
 //! at a client a document - markdown, a PDF or plain text - which opens in
 //! the client's own viewer rather than in the conversation.
 //!
-//! **The tool answers at the reader's finish, like the browser hand-off.**
+//! **The tool answers at the reader's decision, like the browser hand-off.**
 //! The call parks on the ask - **open** or **not now** - and the viewer's
-//! done releases it with what the finish filed; a review the reader leaves
+//! **approve** or **feedback** releases it with the decision, the note and
+//! the review the finish filed; a review the reader leaves
 //! is filed under the document's own scope and named in the answer, so the
 //! agent reads it back like any review. A session spawned without the
 //! `review` family still hands off, but its description and answer name the
@@ -72,11 +73,13 @@ review goes here with `reviewable: true`, never as a path or link in \
 chat. `path` is relative to the working directory, or absolute under \
 one of the project's `vault_roots` in `forge.toml`. Set `reviewable` \
 when you want review comments back: the reader opens it, comments on \
-lines and finishes, and their review then arrives filed under the \
-document's own scope. A PDF always opens read-only. The reader is asked \
-to open it or not, and **this call waits for them**: it answers when \
-they finish - with the review their comments were filed as - or when \
-they say not now.";
+lines and answers, and their review then arrives filed under the \
+document's own scope. A PDF always opens read-only. **The answer is \
+approve or something is off**: feedback means revise the document and \
+hand it off again, approval is the one signal to proceed, and neither \
+may be read as the other; both carry an optional note that reaches you. \
+The reader is asked to open it or not, and **this call waits for them**: \
+it answers when they approve, send feedback or say not now.";
 
 /// What a session spawned without `review` reads instead, before it calls:
 /// the hand-off works and the reader may still review, but the review is
@@ -91,13 +94,15 @@ review goes here with `reviewable: true`, never as a path or link in \
 chat. `path` is relative to the working directory, or absolute under \
 one of the project's `vault_roots` in `forge.toml`. Set `reviewable` \
 to ask the reader for a review of it: they open it, comment on lines \
-and finish, and their review is filed under the document's own scope. \
+and answer, and their review is filed under the document's own scope. \
 This session was spawned without the `review` MCP family, so you cannot \
 read it back; the answer names the review's id and scope, which your lead \
-reads with review__get. A PDF always opens read-only. The reader is \
-asked to open it or not, and **this call waits for them**: it answers \
-when they finish - with what the reader left - or when they say not \
-now.";
+reads with review__get. A PDF always opens read-only. **The answer is \
+approve or something is off**: feedback means revise the document and \
+hand it off again, approval is the one signal to proceed, and neither \
+may be read as the other; both carry an optional note that reaches you. \
+The reader is asked to open it or not, and **this call waits for them**: \
+it answers when they approve, send feedback or say not now.";
 
 /// The one tool: the hand-off itself.
 pub(crate) struct HandOffTool {
@@ -181,24 +186,26 @@ impl HandOffTool {
         };
         let (resolved, ending) = self.facade.hand_off(&self.slot, path, reviewable).await?;
         Ok(match ending {
-            DocumentHandOffEnding::Done { review_id: Some(review_id) } => {
-                let filed = format!(
-                    "The reader finished at {resolved}, and their comments are filed as the \
-                     review {review_id} under the document's own scope, {}",
-                    doc_scope_ref(&resolved),
+            DocumentHandOffEnding::Approve { review_id, note } => {
+                let opened = format!(
+                    "The reader approved {resolved}. Approval is the one signal to proceed."
                 );
-                if self.review_available {
-                    format!("{filed} - read them back with review__get and pass that scope.")
-                } else {
-                    format!(
-                        "{filed}. This session was spawned without the `review` MCP family, so \
-                         you cannot read them back - hand your lead the review id and scope \
-                         above, which it reads with review__get."
-                    )
-                }
+                format!(
+                    "{opened}{}{}",
+                    Self::note_line(note.as_deref()),
+                    Self::review_line(self.review_available, &resolved, review_id.as_deref())
+                )
             }
-            DocumentHandOffEnding::Done { review_id: None } => {
-                format!("The reader finished at {resolved} without leaving comments.")
+            DocumentHandOffEnding::Feedback { review_id, note } => {
+                let refused = format!(
+                    "The reader says something is off at {resolved}. This is not approval: \
+                     revise the document and hand it off again for another answer."
+                );
+                return Err(format!(
+                    "{refused}{}{}",
+                    Self::note_line(note.as_deref()),
+                    Self::review_line(self.review_available, &resolved, review_id.as_deref())
+                ));
             }
             DocumentHandOffEnding::NotNow => {
                 return Err("the reader said not now, so nothing opened".to_owned());
@@ -207,6 +214,37 @@ impl HandOffTool {
                 return Err("The hand-off ended without an answer.".to_owned());
             }
         })
+    }
+
+    /// The reader's own words, carried verbatim and said to be theirs.
+    fn note_line(note: Option<&str>) -> String {
+        match note {
+            Some(note) => format!(" Their note: {note}"),
+            None => String::new(),
+        }
+    }
+
+    /// The review a finish filed, named the way this session can act on it:
+    /// the id and scope plus the call that reads it back, or - for a
+    /// session spawned without the family - the lead it hands the scope to.
+    fn review_line(review_available: bool, resolved: &str, review_id: Option<&str>) -> String {
+        let Some(review_id) = review_id else {
+            return String::new();
+        };
+        let scope = doc_scope_ref(resolved);
+        if review_available {
+            format!(
+                " Their comments are filed as the review {review_id} under the document's own \
+                 scope, {scope} - read them back with review__get and pass that scope."
+            )
+        } else {
+            format!(
+                " Their comments are filed as the review {review_id} under the document's own \
+                 scope, {scope}. This session was spawned without the `review` MCP family, so \
+                 you cannot read them back - hand your lead the review id and scope above, \
+                 which it reads with review__get."
+            )
+        }
     }
 }
 
@@ -240,7 +278,7 @@ mod tests {
         let mock = Arc::new(MockDocumentFacade::new());
         *mock.answer.lock() = Ok((
             "/proj/docs/readme.md".to_owned(),
-            DocumentHandOffEnding::Done { review_id: None },
+            DocumentHandOffEnding::Approve { review_id: None, note: None },
         ));
 
         let out = tool(Arc::clone(&mock) as Arc<dyn DocumentFacade>)
@@ -287,7 +325,7 @@ mod tests {
         let mock = Arc::new(MockDocumentFacade::new());
         *mock.answer.lock() = Ok((
             "/proj/docs/readme.md".to_owned(),
-            DocumentHandOffEnding::Done { review_id: Some("r-7".to_owned()) },
+            DocumentHandOffEnding::Approve { review_id: Some("r-7".to_owned()), note: None },
         ));
         let tool = tool(Arc::clone(&mock) as Arc<dyn DocumentFacade>);
 
@@ -303,12 +341,58 @@ mod tests {
 
         *mock.answer.lock() = Ok((
             "/proj/docs/readme.md".to_owned(),
-            DocumentHandOffEnding::Done { review_id: None },
+            DocumentHandOffEnding::Approve { review_id: None, note: None },
         ));
         let without = tool.call(ToolInput { value: json!({ "path": "docs/readme.md" }) }).await;
         assert!(!without.is_error, "{:?}", without.blocks);
         let text = crate::mcp::test_support::block_text(&without.blocks[0]);
         assert!(!text.contains("doc:"), "nothing commented, so no scope to name: {text}");
+    }
+
+    /// **Approve and feedback are different answers, and the note rides
+    /// both verbatim.** Approval is the one signal an agent may act on;
+    /// feedback says the opposite in its own words and keeps the reader's
+    /// note exactly as they wrote it.
+    #[tokio::test]
+    async fn approve_and_feedback_carry_the_note_and_never_read_as_each_other() {
+        let mock = Arc::new(MockDocumentFacade::new());
+        let tool = tool(Arc::clone(&mock) as Arc<dyn DocumentFacade>);
+
+        *mock.answer.lock() = Ok((
+            "/proj/docs/readme.md".to_owned(),
+            DocumentHandOffEnding::Approve {
+                review_id: Some("r-7".to_owned()),
+                note: Some("ship it".to_owned()),
+            },
+        ));
+        let approved = tool
+            .call(ToolInput { value: json!({ "path": "docs/readme.md", "reviewable": true }) })
+            .await;
+        assert!(!approved.is_error, "an approval is a success: {:?}", approved.blocks);
+        let text = crate::mcp::test_support::block_text(&approved.blocks[0]);
+        assert!(text.contains("approved"), "the answer says what happened: {text}");
+        assert!(text.contains("ship it"), "and carries the note verbatim: {text}");
+        assert!(text.contains("read them back with review__get"), "and the review: {text}");
+
+        *mock.answer.lock() = Ok((
+            "/proj/docs/readme.md".to_owned(),
+            DocumentHandOffEnding::Feedback {
+                review_id: Some("r-8".to_owned()),
+                note: Some("the table is wrong".to_owned()),
+            },
+        ));
+        let refused = tool
+            .call(ToolInput { value: json!({ "path": "docs/readme.md", "reviewable": true }) })
+            .await;
+        assert!(refused.is_error, "feedback is not a hand-off success: {:?}", refused.blocks);
+        let text = crate::mcp::test_support::block_text(&refused.blocks[0]);
+        assert!(text.contains("something is off"), "the reader's answer is named: {text}");
+        assert!(text.contains("the table is wrong"), "the note reaches the agent: {text}");
+        assert!(
+            text.contains("revise the document and hand it off again"),
+            "and the loop's next step is stated: {text}",
+        );
+        assert!(text.contains("not approval"), "never read as done: {text}");
     }
 
     /// A session spawned without the `review` family can hand a reviewable
@@ -322,7 +406,7 @@ mod tests {
 
         *mock.answer.lock() = Ok((
             "/proj/docs/readme.md".to_owned(),
-            DocumentHandOffEnding::Done { review_id: Some("r-7".to_owned()) },
+            DocumentHandOffEnding::Approve { review_id: Some("r-7".to_owned()), note: None },
         ));
         let out = tool
             .call(ToolInput { value: json!({ "path": "docs/readme.md", "reviewable": true }) })
@@ -432,6 +516,35 @@ mod tests {
                 "the description carries the delivery rule (review_available: {review_available}): \
                  {}",
                 tool.description(),
+            );
+        }
+    }
+
+    /// **The loop is stated before the call, in both descriptions.** A
+    /// session reads the paragraph at the moment it reaches for the tool:
+    /// the two outcomes, feedback's next step and approval's exclusivity,
+    /// and the note that rides them. The conduct block pins the same
+    /// contract for a session that never opens the tool.
+    #[test]
+    fn both_descriptions_state_the_hand_offs_loop() {
+        for review_available in [true, false] {
+            let tool = tool_with_review(MockDocumentFacade::new().into_arc(), review_available);
+            let description = tool.description();
+            assert!(
+                description.contains("The answer is approve or something is off"),
+                "the two outcomes are named (review_available: {review_available}): {description}",
+            );
+            assert!(
+                description.contains(
+                    "feedback means revise the document and hand it off again, approval is the \
+                     one signal to proceed, and neither may be read as the other"
+                ),
+                "feedback's next step and approval's exclusivity are stated \
+                 (review_available: {review_available}): {description}",
+            );
+            assert!(
+                description.contains("both carry an optional note that reaches you"),
+                "the note's delivery is stated (review_available: {review_available}): {description}",
             );
         }
     }

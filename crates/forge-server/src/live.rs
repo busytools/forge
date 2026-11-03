@@ -289,6 +289,11 @@ pub fn fleet_news(update: &SessionUpdate) -> FleetNews<'_> {
         // e2e). It redraws no row; the arm is what carries it there.
         | SessionUpdate::DocumentHandOffPending { .. }
         | SessionUpdate::DocumentHandOffResolved { .. }
+        // A held configuration write is the same shape again: the seat
+        // moves into the needs-you group while the dock waits on the
+        // reader's answer and back out when it resolves.
+        | SessionUpdate::SettingsWritePending { .. }
+        | SessionUpdate::SettingsWriteResolved { .. }
         | SessionUpdate::WorkerStatusChanged { .. }
         // The seat's release has begun: its row says where it is going until
         // the roster lands it asleep or gone. Announced at the start of the
