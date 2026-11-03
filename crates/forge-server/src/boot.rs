@@ -185,7 +185,11 @@ where
 #[cfg(target_os = "macos")]
 fn refresh_browser(workspace: &Workspace, fleet: &Arc<forge_browser::service::BrowserService>) {
     let browser = workspace.browser_settings();
-    fleet.configure_encoding(browser.fps, browser.quality);
+    if browser.fps > 0 {
+        if browser.quality > 0 {
+            fleet.configure_encoding(browser.fps, browser.quality);
+        }
+    }
     fleet.configure_idle(browser.idle_minutes);
     configure_fleet_profiles(workspace, fleet);
 }
