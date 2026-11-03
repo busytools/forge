@@ -39,10 +39,11 @@ export interface DocRead {
   kind: DocumentKind | null;
   bytes: Uint8Array | null;
   reviewable: boolean;
-  /** The document's own hash, as decimal digits - what a thread's anchor
-   *  was written against. */
+  /** The document's own whole-content hash, as decimal digits. Threads are
+   *  placed by their own `resolution` now; this stays the read's fact. */
   contentHash: string | null;
-  /** The document's comments, and the reviews they were filed into. */
+  /** The document's comments - each carrying where its anchor sits in THIS
+   *  document - and the reviews they were filed into. */
   threads: ReviewThreadRecord[];
   reviews: ReviewSetRecord[];
   /** Why it could not be read: the server's sentence, or the client's own. */

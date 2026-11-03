@@ -218,10 +218,11 @@ describe('the controls that draw a boundary nothing else carries', () => {
     );
     expect(
       boundaryOf(
-        '.doc-page .doc-comment-btn, .doc-page .doc-cancel-btn, .doc-page .doc-finish-btn',
+        '.doc-page .doc-comment-btn, .doc-page .doc-cancel-btn, .doc-page .doc-finish-btn, ' +
+          '.doc-page .doc-answer-btn',
         SHEET,
       ),
-      "the document page's actions",
+      "the document page's actions and its two answers",
     ).toBe(CONTROL);
   });
 

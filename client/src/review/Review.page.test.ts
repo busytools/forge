@@ -1527,12 +1527,12 @@ describe('the steppers', () => {
   });
 
   /**
-   * **The open says what it is waiting for.** The review read fetches the
-   * base before it answers and that wait has no cap, so the longest wait the
-   * page has is the one it must explain; the work spinner is the mark every
-   * other surface uses for work in flight.
+   * **The open says what it is waiting for.** The record read still builds the
+   * diff and its reviews before it answers, so the longest wait the page has
+   * is the one it must explain; the work spinner is the mark every other
+   * surface uses for work in flight.
    */
-  it('says it is fetching the base while its own read is in flight', () => {
+  it('says it is reading the base while its own read is in flight', () => {
     app = mount(Review, {
       target: document.body,
       props: { connection: connection(), slot: SLOT, dictation: true },

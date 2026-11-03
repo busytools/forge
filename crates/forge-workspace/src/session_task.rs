@@ -334,7 +334,14 @@ impl SessionTask {
                 // (2.5GiB on the seat #2150 was filed from) may not ride the
                 // update or be paid again per consumer: one cut, and the
                 // window is what is handed over.
-                let (window, left_behind) = crate::conversation_window::Window::tail_of(&read);
+                let (mut window, shed) = crate::conversation_window::Window::tail_of(&read);
+                let left_behind = shed.frames;
+                // **The handover has no page to fold into yet.** The debt the
+                // cut took from the newest turn rides the frames, so the
+                // first counter it still carries absorbs it before the update
+                // crosses - a resume of a thought-heavy turn otherwise serves
+                // only the suffix.
+                window.carry_thinking(shed);
                 // **And the cut itself rides along.** A consumer holding the
                 // window alone reads it as the conversation's front, and a
                 // client's walk below the window would stop there rather than
@@ -10073,6 +10080,88 @@ provider = "anthropic"
                                 if text == &format!("frame {}", read - 1))))
                 }),
                 "and it is the NEWEST window rather than the oldest: the transcript's own tail",
+            );
+        }
+    }
+
+    /// **A handover's cut rides the frames as thinking debt.** A resume hands
+    /// the window to the update stream with no page to fold into, so the first
+    /// counter the newest turn carries absorbs what the cut took - else a
+    /// thought-heavy turn resumes showing only the surviving suffix.
+    #[tokio::test]
+    async fn a_resumed_connect_folds_the_cut_thinking_into_the_window() {
+        let read = 5_100;
+        for connected_once in [false, true] {
+            let (workspace, mut update_rx) = crate::Workspace::testing_stub();
+            let session_key = SessionSlot::from_str_for_test("handover-thinking-uuid");
+            let domain =
+                Arc::new(parking_lot::Mutex::new(DomainSession::new(session_key.clone(), None)));
+            let (handle, _agent_cmd_rx) = Agent::testing_stub();
+            let (_cmd_tx, command_rx) =
+                tokio::sync::mpsc::unbounded_channel::<crate::protocol::Command>();
+            let mut task = SessionTask {
+                key: session_key.clone(),
+                handle: Arc::new(handle),
+                command_rx,
+                domain,
+                update_tx: workspace.update_sender(),
+                connected_once,
+                workspace: Arc::downgrade(&workspace),
+                compaction_count: 0,
+                successor: None,
+                teardown_done: None,
+            };
+            let counter = |at: usize| {
+                serde_json::from_value::<forge_primitives::Message>(serde_json::json!({
+                    "type": "system",
+                    "subtype": "thinking_tokens",
+                    "estimated_tokens": 1,
+                    "estimated_tokens_delta": 1,
+                    "uuid": format!("t-{at}"),
+                    "session_id": session_key.display(),
+                }))
+                .expect("a counter frame")
+            };
+            let mut history = vec![
+                serde_json::from_value::<forge_primitives::Message>(serde_json::json!({
+                    "type": "user",
+                    "message": {"role": "user", "content": "the thought-heavy turn"},
+                    "session_id": session_key.display(),
+                }))
+                .expect("a user frame"),
+            ];
+            history.extend((0..read).map(counter));
+            let mut event = connected_event(&session_key.display(), "/tmp/handed-over");
+            if let AgentEvent::Connected { history_updates, .. } = &mut event {
+                *history_updates = Some(history);
+            }
+            task.translate_event(event);
+
+            let mut handed = None;
+            while let Ok(frame) = update_rx.try_recv() {
+                match std::sync::Arc::unwrap_or_clone(frame.update) {
+                    SessionUpdate::Connected { history, .. }
+                    | SessionUpdate::SessionReplaced { history, .. } => {
+                        handed = Some(history);
+                    }
+                    _ => {}
+                }
+            }
+            let handed = handed.expect("a connect crosses as Connected or SessionReplaced");
+            let sum: i64 = handed
+                .iter()
+                .filter_map(|message| match message {
+                    forge_primitives::Message::ThinkingTokens {
+                        estimated_tokens_delta, ..
+                    } => Some(*estimated_tokens_delta),
+                    _ => None,
+                })
+                .sum();
+            assert_eq!(
+                sum,
+                i64::try_from(read).expect("the test's count fits"),
+                "the handover carries the whole turn, not the suffix (connected_once: \
+                 {connected_once})",
             );
         }
     }

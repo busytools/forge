@@ -660,9 +660,10 @@
         "key"
       ],
       "/update/document_hand_off_resolved/ending": [
-        "done"
+        "approve"
       ],
-      "/update/document_hand_off_resolved/ending/done": [
+      "/update/document_hand_off_resolved/ending/approve": [
+        "note",
         "review_id"
       ],
       "/update/document_hand_off_resolved/key": [
@@ -700,6 +701,7 @@
         "commit",
         "created_at",
         "id",
+        "resolution",
         "status",
         "updated_at"
       ],
@@ -716,6 +718,18 @@
         "author",
         "review_id",
         "text"
+      ],
+      "/threads[]/resolution": [
+        "line",
+        "moved_from",
+        "reason",
+        "state"
+      ],
+      "/threads[]/resolution/reason": [
+        "ambiguous"
+      ],
+      "/threads[]/resolution/reason/ambiguous": [
+        "matches"
       ]
     },
     "Error": {

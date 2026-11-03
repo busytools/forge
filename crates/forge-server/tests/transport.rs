@@ -4808,6 +4808,22 @@ fn a_said_frame(text: &str) -> forge_primitives::Message {
     .expect("a user frame")
 }
 
+/// One thinking-token counter, with a cumulative absolute that is not its
+/// delta - so summing the wrong field fails.
+fn a_counter_frame(at: usize, delta: i64) -> forge_primitives::Message {
+    let absolute = at.saturating_add(1) * usize::try_from(delta).expect("a positive delta");
+    serde_json::from_value(serde_json::json!({
+        "type": "system",
+        "subtype": "thinking_tokens",
+        "estimated_tokens": absolute,
+        "estimated_tokens_delta": delta,
+        "uuid": format!("t-{at}"),
+        "session_id": "5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45",
+        "timestamp": format!("2026-10-24T09:00:{:02}.{:06}Z", at / 1_000_000, at % 1_000_000),
+    }))
+    .expect("a counter frame")
+}
+
 /// A user frame carrying a structured record, as a tool result does.
 fn a_recorded_frame(record: &serde_json::Value) -> forge_primitives::Message {
     serde_json::from_value(serde_json::json!({
@@ -7103,14 +7119,33 @@ async fn a_subscribe_serves_the_stored_pr_and_the_watch_pushes_the_lookup() {
     assert!(marker.exists(), "the lookup ran, off the read path");
 }
 
-/// **The review page's own read refreshes the base, and the count moves with
-/// it.** An ordinary record read serves the stored state and says its base was
-/// not checked; the review-scoped read fetches first and re-reads the stats
-/// pinned to the same sha, so the file list and the "N commits" describe one
-/// base. Deleting the pinned scan leaves the count on the stale base and reds
-/// this.
+/// Wait for the checkout's base measurement to land, so the read after it can
+/// draw the check. The kick is a real fetch against the fixture's local
+/// remote, and its own children are bounded by the scanner's budget; the wait
+/// is a wedge, not a latency claim.
+async fn base_measured(
+    repo: &std::path::Path,
+    branch: &str,
+) -> forge_workspace::env::git_diff::BaseMeasurement {
+    let deadline = Instant::now() + WATCH_PASS_WEDGE;
+    loop {
+        if let Some(measured) = forge_workspace::env::git_diff::last_base_measurement(repo, branch)
+        {
+            return measured;
+        }
+        assert!(Instant::now() < deadline, "the kicked base refresh never landed");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// **The review read draws the check the seat's watch landed, and the count
+/// moves with it.** An ordinary record read serves the stored state and says
+/// its base was not checked; once the watch's own refresh has measured the
+/// base, the review-scoped read draws that check - the base current and the
+/// count and file list moved onto it - so the file list and the "N commits"
+/// describe one base. The refresh that measured it ran off the read.
 #[tokio::test]
-async fn a_review_read_refreshes_the_base_and_the_count_with_it() {
+async fn a_review_read_draws_the_checked_base_and_the_count_with_it() {
     let root = tempfile::tempdir().expect("tempdir");
     let upstream = tempfile::tempdir().expect("upstream");
     let fleet = Fleet::in_dir_with_server_and_env(root.path(), &[("TestOrg", &["proj"])], "", &[])
@@ -7121,9 +7156,9 @@ async fn a_review_read_refreshes_the_base_and_the_count_with_it() {
     a_repo_with_a_stale_base(&repo, upstream.path());
 
     let state = Arc::new(TransportState::for_workspace(&fleet.workspace()));
-    // The store holds a scan of the stale tree, taken now and with its PR
-    // attempt stamped now, so the seat's watch neither re-reads it nor starts
-    // a lookup: the ref can only move when the review read refreshes it.
+    // The store holds a scan of the stale tree with its PR attempt stamped
+    // now, so the watch's first pass starts no lookup; the base check that
+    // pass lands is what the review read below must draw.
     let mut stored = forge_workspace::env::git_diff::scan_serving_cached_pr(
         &repo,
         &std::collections::HashMap::new(),
@@ -7135,7 +7170,7 @@ async fn a_review_read_refreshes_the_base_and_the_count_with_it() {
         &lead_seat(),
         forge_server::surface::inspector::WorkSnapshot {
             diff: stored,
-            cwd: repo,
+            cwd: repo.clone(),
             read_at: std::time::Instant::now(),
             base: None,
             base_at: None,
@@ -7171,27 +7206,21 @@ async fn a_review_read_refreshes_the_base_and_the_count_with_it() {
         cached["git"]["ahead"]["commit_count"], 2,
         "the stale base folds upstream's commit into the count: {cached}",
     );
-    // **The ordinary read reached no network**: the ref is where the stale
-    // fixture left it, so the count above was that ref's and nothing fetched.
-    let refs = |at: &std::path::Path, what: &str| {
-        let out = std::process::Command::new("git")
-            .arg("-C")
-            .arg(at)
-            .args(["rev-parse", what])
-            .output()
-            .expect("git rev-parse");
-        String::from_utf8_lossy(&out.stdout).trim().to_owned()
-    };
+
+    // **The seat's watch lands the base check on its first pass** - that
+    // pass is a forced scan, and the fetch it kicks is where the check comes
+    // from. Waiting for it puts this read in the 30-240 s gap the issue
+    // measured: a check is in hand, so the review read must draw it.
+    let measured = base_measured(&repo, "origin/main").await;
     assert_eq!(
-        refs(
-            &state.surface.roster().cwd_for(&lead_seat()).expect("the seat's cwd"),
-            "refs/remotes/origin/main"
-        ),
-        refs(upstream.path(), "main~1"),
-        "an ordinary read leaves the base ref where it stood",
+        measured.state,
+        forge_primitives::git_diff::BaseState::Current,
+        "the watch's fetch measured the base",
     );
 
-    // The review page's own read: the base refreshed, the count with it.
+    // **The review read answers from that check, and the count and files
+    // describe its base.** The stale count beside a checked base is the
+    // Granite symptom this path exists to prevent.
     let mut review = connect(&url).await;
     send(
         &mut review,
@@ -7203,7 +7232,7 @@ async fn a_review_read_refreshes_the_base_and_the_count_with_it() {
     )
     .await;
     let (_, fresh, _) = snapshot_answering(&mut review).await;
-    assert_eq!(fresh["diff"]["base"], "current", "the review read refreshed the base: {fresh}");
+    assert_eq!(fresh["diff"]["base"], "current", "the review read draws the checked base: {fresh}");
     assert_eq!(
         fresh["git"]["ahead"]["commit_count"], 1,
         "the count and the files share one base: {fresh}",
@@ -7215,16 +7244,155 @@ async fn a_review_read_refreshes_the_base_and_the_count_with_it() {
     assert_eq!(paths, vec!["feat.txt"], "only the branch's own file crosses: {fresh}");
 }
 
-/// **A fetch that cannot run says what git said.** The page draws the reason
-/// beside the base line, so a reader learns the remote is gone rather than
-/// only that the base could not be checked.
+/// **A held seat's review read answers while the seat's own fetch runs.** The
+/// watch's first pass kicks the base refresh; a review read must not wait on
+/// it. The fetch is held, so a read that waited could not answer at all, and
+/// the record arriving while it is still held is the proof.
 #[tokio::test]
-async fn a_review_read_names_why_the_base_fetch_failed() {
+async fn a_held_seats_review_read_answers_while_its_fetch_runs() {
+    use std::os::unix::fs::PermissionsExt as _;
+
     let root = tempfile::tempdir().expect("tempdir");
     let upstream = tempfile::tempdir().expect("upstream");
     let fleet = Fleet::in_dir_with_server_and_env(root.path(), &[("TestOrg", &["proj"])], "", &[])
         .expect("the fleet builds");
     fleet.start("TestOrg", "proj").expect("the project starts");
+    let repo = root.path().join("proj");
+    std::fs::create_dir_all(&repo).expect("the project directory");
+    a_repo_with_a_stale_base(&repo, upstream.path());
+
+    // **The fetch is held until this test lets it go.** The wrapper marks its
+    // start so the read below is sent with the fetch provably in flight.
+    let bin = tempfile::tempdir().expect("wrapper dir");
+    let started = bin.path().join("fetch-started");
+    let release = bin.path().join("fetch-release");
+    let wrapper = bin.path().join("held-git");
+    std::fs::write(
+        &wrapper,
+        format!(
+            "#!/bin/sh\ncase \"$*\" in\n  *\" fetch \"*) : > '{started}'; \
+             while [ ! -e '{release}' ]; do /bin/sleep 0.02; done ;;\nesac\n\
+             GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null exec git \"$@\"\n",
+            started = started.display(),
+            release = release.display(),
+        ),
+    )
+    .expect("the wrapper");
+    std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).expect("+x");
+    forge_workspace::env::git_diff::point_git_at_for_tests(&repo, &wrapper);
+
+    let state = Arc::new(TransportState::for_workspace(&fleet.workspace()));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let updates = state.surface.subscribe_mirror();
+    let served = Arc::clone(&state);
+    tokio::spawn(async move {
+        let _ = forge_server::transport::serve(served, listener, updates).await;
+    });
+    let url = format!("ws://{addr}/socket");
+
+    // The ordinary open holds the seat and starts its watch; the watch's first
+    // pass is what kicks the refresh this test holds.
+    let mut plain = connect(&url).await;
+    send(
+        &mut plain,
+        ClientMessage::Subscribe {
+            what: Subject::Session(lead_seat()),
+            answering: true,
+            review: false,
+        },
+    )
+    .await;
+    let _ = snapshot_answering(&mut plain).await;
+    let deadline = Instant::now() + WATCH_PASS_WEDGE;
+    while !started.exists() {
+        assert!(Instant::now() < deadline, "the seat's fetch never started");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    // **The review read answers with the fetch still held.**
+    let mut review = connect(&url).await;
+    send(
+        &mut review,
+        ClientMessage::Subscribe {
+            what: Subject::Session(lead_seat()),
+            answering: true,
+            review: true,
+        },
+    )
+    .await;
+    let (_, record, _) = snapshot_answering(&mut review).await;
+    assert!(!release.exists(), "the read answered while the seat's fetch was still held");
+    assert_eq!(
+        record["diff"]["base"], "unverified",
+        "no check was in hand, so the base is unchecked: {record}",
+    );
+
+    std::fs::write(&release, b"go").expect("release the fetch");
+    forge_workspace::env::git_diff::clear_git_point_for_tests(&repo);
+}
+
+/// **A seat with no session still draws the check its own read makes.** No
+/// watch runs for a sessionless seat, so a kicked refresh would land in a
+/// store nothing pushes to the page: the review read is the only path that
+/// can carry the check (#2818).
+#[tokio::test]
+async fn a_sessionless_seats_review_read_draws_the_check_it_makes() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let upstream = tempfile::tempdir().expect("upstream");
+    let fleet = Fleet::in_dir_with_server_and_env(root.path(), &[("TestOrg", &["proj"])], "", &[])
+        .expect("the fleet builds");
+    // **No `fleet.start`**: the seat has no session, and so no watch.
+    let repo = root.path().join("proj");
+    std::fs::create_dir_all(&repo).expect("the project directory");
+    a_repo_with_a_stale_base(&repo, upstream.path());
+
+    let state = Arc::new(TransportState::for_workspace(&fleet.workspace()));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let updates = state.surface.subscribe_mirror();
+    let served = Arc::clone(&state);
+    tokio::spawn(async move {
+        let _ = forge_server::transport::serve(served, listener, updates).await;
+    });
+    let url = format!("ws://{addr}/socket");
+
+    let mut review = connect(&url).await;
+    send(
+        &mut review,
+        ClientMessage::Subscribe {
+            what: Subject::Session(lead_seat()),
+            answering: true,
+            review: true,
+        },
+    )
+    .await;
+    let (_, record, _) = snapshot_answering(&mut review).await;
+    assert_eq!(
+        record["diff"]["base"], "current",
+        "the sessionless read carries its own check: {record}",
+    );
+    assert_eq!(
+        record["git"]["ahead"]["commit_count"], 1,
+        "the count and the files share one base: {record}",
+    );
+    let files = record["diff"]["branch_ahead"]["populated"]
+        .as_array()
+        .expect("the branch layer is populated");
+    let paths: Vec<&str> = files.iter().filter_map(|file| file["path"].as_str()).collect();
+    assert_eq!(paths, vec!["feat.txt"], "only the branch's own file crosses: {record}");
+}
+
+/// **A sessionless seat's own check names git's failure.** Its read runs the
+/// refresh, so a fetch that cannot run reaches it with git's words rather
+/// than leaving silence that nothing on that seat could heal.
+#[tokio::test]
+async fn a_sessionless_seats_review_read_names_the_base_failure() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let upstream = tempfile::tempdir().expect("upstream");
+    let fleet = Fleet::in_dir_with_server_and_env(root.path(), &[("TestOrg", &["proj"])], "", &[])
+        .expect("the fleet builds");
+    // **No `fleet.start`**: the seat has no session, and so no watch.
     let repo = root.path().join("proj");
     std::fs::create_dir_all(&repo).expect("the project directory");
     a_repo_with_a_stale_base(&repo, upstream.path());
@@ -7237,6 +7405,71 @@ async fn a_review_read_names_why_the_base_fetch_failed() {
         .output()
         .expect("run git");
     assert!(out.status.success(), "git set-url: {}", String::from_utf8_lossy(&out.stderr));
+
+    let state = Arc::new(TransportState::for_workspace(&fleet.workspace()));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let updates = state.surface.subscribe_mirror();
+    let served = Arc::clone(&state);
+    tokio::spawn(async move {
+        let _ = forge_server::transport::serve(served, listener, updates).await;
+    });
+    let url = format!("ws://{addr}/socket");
+
+    let mut review = connect(&url).await;
+    send(
+        &mut review,
+        ClientMessage::Subscribe {
+            what: Subject::Session(lead_seat()),
+            answering: true,
+            review: true,
+        },
+    )
+    .await;
+    let (_, record, _) = snapshot_answering(&mut review).await;
+    assert_eq!(
+        record["diff"]["base"], "unverified",
+        "a fetch that cannot run leaves the base unverified: {record}",
+    );
+    let said = record["diff"]["base_error"].as_str().unwrap_or_default();
+    assert!(
+        said.contains("does not appear to be a git repository"),
+        "and the sessionless read carries git's own words: {said:?}",
+    );
+}
+
+/// **A fetch that cannot run says what git said, on the read after it.** The
+/// page draws the reason beside the base line, so a reader learns the remote
+/// is gone rather than only that the base could not be checked. The fetch is
+/// held and then fails, so the first read's silence is real rather than a
+/// failure that happened to land while it was still answering.
+#[tokio::test]
+async fn a_review_read_names_why_the_base_fetch_failed() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let root = tempfile::tempdir().expect("tempdir");
+    let upstream = tempfile::tempdir().expect("upstream");
+    let fleet = Fleet::in_dir_with_server_and_env(root.path(), &[("TestOrg", &["proj"])], "", &[])
+        .expect("the fleet builds");
+    fleet.start("TestOrg", "proj").expect("the project starts");
+    let repo = root.path().join("proj");
+    std::fs::create_dir_all(&repo).expect("the project directory");
+    a_repo_with_a_stale_base(&repo, upstream.path());
+    let bin = tempfile::tempdir().expect("wrapper dir");
+    let release = bin.path().join("fetch-release");
+    let wrapper = bin.path().join("held-failing-git");
+    std::fs::write(
+        &wrapper,
+        format!(
+            "#!/bin/sh\ncase \"$*\" in\n  *\" fetch \"*) while [ ! -e '{release}' ]; do \
+             /bin/sleep 0.02; done; echo 'fatal: forced fetch failure' >&2; exit 128 ;;\n\
+             esac\nGIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null exec git \"$@\"\n",
+            release = release.display(),
+        ),
+    )
+    .expect("the wrapper");
+    std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).expect("+x");
+    forge_workspace::env::git_diff::point_git_at_for_tests(&repo, &wrapper);
 
     let state = Arc::new(TransportState::for_workspace(&fleet.workspace()));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
@@ -7260,17 +7493,41 @@ async fn a_review_read_names_why_the_base_fetch_failed() {
         },
     )
     .await;
-    let (_, record, _) = snapshot_answering(&mut review).await;
+    let (_, first, _) = snapshot_answering(&mut review).await;
+    assert_eq!(
+        first["diff"]["base"], "unverified",
+        "this fixture's fetch always fails, so the base is never claimed: {first}",
+    );
+    assert!(
+        first["diff"]["base_error"].is_null(),
+        "and the read names no failure it has not seen: {first}",
+    );
 
+    // The held fetch fails, and its words reach the next read.
+    std::fs::write(&release, b"go").expect("release the fetch");
+    let measured = base_measured(&repo, "origin/main").await;
+    assert!(measured.error.is_some(), "the held fetch failed");
+    let mut again = connect(&url).await;
+    send(
+        &mut again,
+        ClientMessage::Subscribe {
+            what: Subject::Session(lead_seat()),
+            answering: true,
+            review: true,
+        },
+    )
+    .await;
+    let (_, record, _) = snapshot_answering(&mut again).await;
     assert_eq!(
         record["diff"]["base"], "unverified",
         "a fetch that cannot run leaves the base unverified: {record}",
     );
     let said = record["diff"]["base_error"].as_str().unwrap_or_default();
     assert!(
-        said.contains("does not appear to be a git repository"),
+        said.contains("forced fetch failure"),
         "and the record carries git's own words for it: {said:?}",
     );
+    forge_workspace::env::git_diff::clear_git_point_for_tests(&repo);
 
     // An ordinary read has not checked the base, so it names no failure.
     let mut plain = connect(&url).await;
@@ -7284,16 +7541,18 @@ async fn a_review_read_names_why_the_base_fetch_failed() {
     )
     .await;
     let (_, cached, _) = snapshot_answering(&mut plain).await;
-    assert!(
-        cached["diff"]["base_error"].is_null(),
-        "an ordinary read claims no failure it never saw: {cached}",
+    // **The ordinary read performs no check of its own**: whatever words the
+    // store carries, the base it states is unchecked.
+    assert_eq!(
+        cached["diff"]["base"], "unverified",
+        "an ordinary read claims no base it did not check: {cached}",
     );
 }
 
-/// **A review read never holds its connection.** That read waits for a base
-/// fetch with no cap, and it is served off the loop: a second ask on the same
-/// socket is answered while the read is still in flight, and a client going
-/// away is visible rather than queued behind it.
+/// **A review read never holds its connection.** That read waits on the seat's
+/// work gate for its pinned scan, and it is served off the loop: a second ask
+/// on the same socket is answered while the read is still in flight, and a
+/// client going away is visible rather than queued behind it.
 #[tokio::test]
 async fn a_subscribe_behind_a_review_read_is_answered_while_it_waits() {
     let root = tempfile::tempdir().expect("tempdir");
@@ -7711,11 +7970,11 @@ async fn a_queued_ask_is_withdrawn_and_answered_when_its_subject_is_released() {
 }
 
 /// **A refused pin is re-read locally, so the count and the files still share
-/// the base the refresh left.** The store's count predates the fetch; serving
-/// it beside content read at the post-fetch ref is the Granite symptom in the
+/// the base the read answered.** The store's count predates the check; serving
+/// it beside content read at the checked base is the Granite symptom in the
 /// path meant to be the safe degradation.
 #[tokio::test]
-async fn a_refused_pin_re_reads_the_tree_against_the_refreshed_base() {
+async fn a_refused_pin_re_reads_the_tree_against_the_answered_base() {
     let root = tempfile::tempdir().expect("tempdir");
     let upstream = tempfile::tempdir().expect("upstream");
     let fleet = Fleet::in_dir_with_server_and_env(root.path(), &[("TestOrg", &["proj"])], "", &[])
@@ -7737,7 +7996,7 @@ async fn a_refused_pin_re_reads_the_tree_against_the_refreshed_base() {
         &lead_seat(),
         forge_server::surface::inspector::WorkSnapshot {
             diff: stored,
-            cwd: repo,
+            cwd: repo.clone(),
             read_at: std::time::Instant::now(),
             base: None,
             base_at: None,
@@ -7771,6 +8030,11 @@ async fn a_refused_pin_re_reads_the_tree_against_the_refreshed_base() {
     let gate = fleet.workspace().hold_work_gate(&lead_seat()).expect("the seat is held");
     let in_flight = gate.lock().await;
 
+    // The first read kicks the refresh; the gate keeps the watch from
+    // adopting the measurement, so the second read below is the one that
+    // draws it. Its own answer's state is environment-dependent (the watch
+    // may have landed a check before the gate was taken), so the property is
+    // asserted where it is deterministic: on the second read.
     let mut review = connect(&url).await;
     send(
         &mut review,
@@ -7781,24 +8045,41 @@ async fn a_refused_pin_re_reads_the_tree_against_the_refreshed_base() {
         },
     )
     .await;
-    let (_, fresh, _) = snapshot_answering(&mut review).await;
+    let _ = snapshot_answering(&mut review).await;
+    let measured = base_measured(&repo, "origin/main").await;
+    assert_eq!(
+        measured.state,
+        forge_primitives::git_diff::BaseState::Current,
+        "the kicked fetch measured the base",
+    );
+
+    // The second read answers that check, and the pin it takes is refused by
+    // the held gate: it re-reads locally at the base the answer names.
+    let mut again = connect(&url).await;
+    send(
+        &mut again,
+        ClientMessage::Subscribe {
+            what: Subject::Session(lead_seat()),
+            answering: true,
+            review: true,
+        },
+    )
+    .await;
+    let (_, fresh, _) = snapshot_answering(&mut again).await;
     drop(in_flight);
     forge_workspace::work::set_pinned_gate_wait(0);
 
-    assert_eq!(
-        fresh["diff"]["base"], "current",
-        "the refresh landed, so the base is the one it left: {fresh}",
-    );
+    assert_eq!(fresh["diff"]["base"], "current", "the answered base is the checked one: {fresh}");
     assert_eq!(
         fresh["git"]["ahead"]["commit_count"], 1,
-        "the local re-read is the post-fetch base, not the store's stale count: {fresh}",
+        "the local re-read is the answered base, not the store's stale count: {fresh}",
     );
     // **The row's own base is the one this read measured.** The local re-read
-    // carries the refresh's state, so `git.base` and `diff.base` cannot
+    // carries the check's state, so `git.base` and `diff.base` cannot
     // contradict each other in one record.
     assert_eq!(
         fresh["git"]["base"], "current",
-        "the row's base is the state the refresh found: {fresh}",
+        "the row's base is the state the check found: {fresh}",
     );
     let files = fresh["diff"]["branch_ahead"]["populated"]
         .as_array()
@@ -9776,7 +10057,7 @@ async fn a_giant_seats_history_crosses_bounded_and_the_connection_survives() {
         available_models: Vec::new(),
         mode: None,
         history: window,
-        dropped,
+        dropped: dropped.frames,
         compaction_count: 0,
     });
     let frame = frame_until(
@@ -9804,7 +10085,11 @@ async fn a_giant_seats_history_crosses_bounded_and_the_connection_survives() {
     {
         let held = state.conversations.get(&seat).expect("the handover holds the seat");
         let seat_held = held.lock();
-        assert_eq!(seat_held.dropped(), dropped, "the seat's floor is the cut it rode in with");
+        assert_eq!(
+            seat_held.dropped(),
+            dropped.frames,
+            "the seat's floor is the cut it rode in with"
+        );
         assert!(
             weigh(seat_held.messages())
                 <= forge_workspace::conversation_window::CONVERSATION_CAP_BYTES
@@ -9850,6 +10135,86 @@ async fn a_giant_seats_history_crosses_bounded_and_the_connection_survives() {
     .await;
     let (subject, ..) = snapshot_answering(&mut socket).await;
     assert_eq!(subject, Subject::Home, "the connection survived the giant seat's history");
+}
+
+/// **A thought-heavy resume serves its whole thinking sum through the
+/// socket.** The handover cuts the window and folds the shed thinking into
+/// the first counter it carries; the record the client reads must then sum
+/// the whole turn, not only the suffix the window kept. This rides the
+/// production serve path, not a test's own call to `page_within`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_thought_heavy_resume_serves_its_whole_thinking_sum() {
+    let (url, fleet, state) = a_server_with_state().await;
+    let mut socket = connect_unbounded(&url).await;
+    let seat = lead_seat();
+
+    send(
+        &mut socket,
+        ClientMessage::Subscribe {
+            what: Subject::Session(seat.clone()),
+            answering: true,
+            review: false,
+        },
+    )
+    .await;
+    let (subject, ..) = snapshot_answering(&mut socket).await;
+    assert_eq!(subject, Subject::Session(seat.clone()), "precondition: the client shows the seat");
+
+    // The resume's read, cut and folded the way the session task does it.
+    let counters = 6_100;
+    let mut read = vec![a_said_frame("a thought-heavy turn")];
+    read.extend((0..counters).map(|at| a_counter_frame(at, 1)));
+    let (mut window, shed) = forge_workspace::conversation_window::Window::tail_of(&read);
+    window.carry_thinking(shed);
+
+    let session_id = SessionId::new("5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45");
+    fleet.emit(SessionUpdate::Connected {
+        key: seat.clone(),
+        session_id: session_id.clone(),
+        cwd: "/tmp".to_owned(),
+        current_model: a_current_model(),
+        available_models: Vec::new(),
+        mode: None,
+        history: window.messages().to_vec(),
+        dropped: shed.frames,
+        compaction_count: 0,
+    });
+    // A counter that opens no turn marks the seal the wait reads, and adds
+    // nothing to the sum.
+    fleet.emit(SessionUpdate::ChatAppended {
+        key: seat.clone(),
+        source: None,
+        msg: a_counter_frame(counters, 0),
+    });
+    assert!(
+        state.conversations.await_consumed(&seat, 1, SEED_WAIT).await,
+        "waited for the fold to take the handover, and it never marked it",
+    );
+
+    // The record a client reads, through the same serve path.
+    send(
+        &mut socket,
+        ClientMessage::Subscribe {
+            what: Subject::Session(seat.clone()),
+            answering: true,
+            review: false,
+        },
+    )
+    .await;
+    let (_, data, _) = snapshot_answering(&mut socket).await;
+    let sum: i64 = data["conversation"]["turns"]
+        .as_array()
+        .expect("the record's turns")
+        .iter()
+        .flat_map(|turn| turn["messages"].as_array().into_iter().flatten())
+        .filter(|frame| frame["subtype"] == "thinking_tokens")
+        .filter_map(|frame| frame["estimated_tokens_delta"].as_i64())
+        .sum();
+    assert_eq!(
+        sum,
+        i64::try_from(counters).expect("the test's count fits"),
+        "the served record carries the whole turn",
+    );
 }
 
 /// The frame is the seat's session facts and no transcript, and small enough

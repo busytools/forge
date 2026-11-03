@@ -72,82 +72,201 @@
         -webkit-font-smoothing: antialiased;
       }
 
-      /* ---------- the viewer's column (web.css `.wrap` and `.doc-page`) ---------- */
+      /* ---------- the viewer's column (web.css `.wrap` and `.doc-page`) ----------
+         The route fills the surface and is its own scroller; the one scrollbar
+         skin covers every part of it, the corner included, so no white block
+         shows at the bottom-right. */
       .wrap {
         padding: 30px 40px 64px;
       }
       .doc-page {
         max-width: none;
         margin: 0;
+        height: 100dvh;
+        overflow-y: auto;
+        overflow-x: hidden;
+        scrollbar-gutter: stable;
       }
-      /* the sheet: the document rests on the app like a page on a desk (Ved,
-         the look, chosen over the full-bleed page) - one panel at a reading
-         measure, a hairline over every section, the desk around it */
+      .doc-page::-webkit-scrollbar {
+        width: 8px;
+        cursor: pointer;
+      }
+      .doc-page::-webkit-scrollbar-track {
+        background: transparent;
+        cursor: pointer;
+      }
+      .doc-page::-webkit-scrollbar-corner {
+        background: transparent;
+        cursor: pointer;
+      }
+      .doc-page::-webkit-scrollbar-thumb {
+        background: var(--s3);
+        border-radius: 99px;
+        cursor: pointer;
+      }
+      .doc-page::-webkit-scrollbar-thumb:hover {
+        background: var(--line);
+      }
+      .doc-page::-webkit-scrollbar-thumb:active {
+        background: var(--muted);
+      }
+      /* the sheet fills the route: prose keeps a readable measure of its own,
+         code and tables take the width the desk has */
       .doc-body {
-        max-width: 940px;
-        margin: 0 auto;
+        max-width: none;
+        margin: 0;
         container-type: inline-size;
         background: var(--s1);
         border: 1px solid var(--line);
         border-radius: 10px;
         padding: 52px 60px 44px;
       }
+      .doc-body :is(h1, h2, h3, p, li, blockquote) {
+        max-width: 76ch;
+      }
+      .doc-body :is(pre, table, .code) {
+        max-width: none;
+      }
       /* a readable markdown or text document: every top-level block is a
-         comment target - the block under the pointer is marked and a press
-         opens the composer under it. The door belongs to the document, so a
-         cold open draws this exactly as a hand-off's Open does. */
+         comment target with a source-line gutter beside it - the block under
+         the pointer is marked, and a gutter number comments on its line */
       .doc-blocks {
         font-size: var(--fs-base);
       }
-      /* a block is a prose root: its rendered marks read the chat's own rules
-         through `.prose`, and with no vertical padding the first and last
-         child margins collapse through the box, so the blocks space
-         themselves by the sheet's own rhythm */
       .doc-block {
         position: relative;
         border-radius: 6px;
-        padding: 0 10px;
-        margin: 0 -10px;
         cursor: pointer;
+        display: grid;
+        grid-template-columns: 3.4rem minmax(0, 1fr);
+        column-gap: 10px;
+        padding: 0 10px 0 0;
+        margin: 0 -10px 0 0;
       }
       .doc-block:hover,
       .doc-block.target {
         background: var(--s1);
         box-shadow: inset 2px 0 0 var(--accent);
       }
-      /* `p + p` cannot see across two block boxes */
-      .doc-block:has(> p) + .doc-block:has(> p) > p {
+      /* the gutter: one numbered target per source line the block spans */
+      .doc-lines {
+        display: flex;
+        flex-direction: column;
+        align-items: stretch;
+        border-right: 1px solid var(--line);
+        padding-right: 4px;
+      }
+      .doc-lnum {
+        font-family: var(--mono);
+        font-size: var(--fs-label);
+        color: var(--dim);
+        background: none;
+        border: 0;
+        border-radius: 4px;
+        padding: 0 4px;
+        cursor: pointer;
+        text-align: right;
+        flex: 1 1 0;
+        min-height: 1.5em;
+        line-height: 1.5;
+      }
+      .doc-lnum:hover,
+      .doc-lnum.target {
+        color: var(--text);
+        background: var(--s2);
+        box-shadow: inset 2px 0 0 var(--accent);
+      }
+      .doc-block-body {
+        min-width: 0;
+      }
+      .doc-block:has(> .doc-block-body > p) + .doc-block:has(> .doc-block-body > p)
+        > .doc-block-body
+        > p {
         margin-top: 20px;
       }
-      /* a rule's target and hover band are drawn around the hairline, so its
-         row does not move */
-      .doc-block:has(> hr)::before {
+      .doc-block:has(> .doc-block-body > hr)::before {
         content: '';
         position: absolute;
         inset: -10px 0;
         border-radius: 6px;
       }
-      .doc-block:has(> hr):hover::before,
-      .doc-block:has(> hr).target::before {
+      .doc-block:has(> .doc-block-body > hr):hover::before,
+      .doc-block:has(> .doc-block-body > hr).target::before {
         box-shadow: inset 2px 0 0 var(--accent);
       }
+      .doc-blocks > .doc-block:first-child > .doc-block-body > :first-child {
+        margin-top: 0;
+      }
+      .doc-blocks > .doc-block:not(:has(~ .doc-block)) > .doc-block-body > :last-child {
+        margin-bottom: 0;
+      }
+      /* a comment under the block its placed line lives in: every turn the
+         thread carries, with its acts on a line of their own */
       .doc-note {
         display: flex;
-        flex-wrap: wrap;
-        gap: 8px;
-        align-items: baseline;
+        flex-direction: column;
+        gap: 6px;
         margin: 4px 0 8px 2.2rem;
         padding: 6px 10px;
         background: var(--s1);
         border-left: 2px solid var(--line);
         border-radius: 0 var(--r) var(--r) 0;
+        font-family: var(--ui);
         font-size: var(--fs-base);
       }
-      .doc-who {
+      .doc-note.doc-outdated {
+        border-left-color: var(--warn);
+      }
+      .doc-notehead {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        align-items: baseline;
+      }
+      .rv-who {
+        display: flex;
+        gap: 8px;
+        align-items: baseline;
         color: var(--muted);
         font-size: var(--fs-label);
       }
-      .pending {
+      .rv-nm {
+        color: var(--muted);
+      }
+      .rv-at {
+        font-family: var(--mono);
+        font-size: var(--fs-label);
+        color: var(--dim);
+      }
+      .rv-a {
+        font-family: var(--mono);
+        font-size: var(--fs-label);
+        color: var(--muted);
+        border: 1px solid var(--ctl);
+        border-radius: 8px;
+        padding: 2px 9px;
+      }
+      .rv-acts {
+        display: flex;
+        gap: 8px;
+        margin-left: auto;
+      }
+      .doc-movedfrom {
+        font-family: var(--mono);
+        font-size: var(--fs-label);
+        color: var(--warn);
+      }
+      .doc-why {
+        font-family: var(--mono);
+        font-size: var(--fs-label);
+        color: var(--dim);
+      }
+      .doc-cc {
+        color: var(--warn);
+        font-size: var(--fs-label);
+        font-family: var(--mono);
+      }
+      .doc-pending {
         color: var(--muted);
         font-size: var(--fs-base);
         margin-top: 12vh;
@@ -198,7 +317,6 @@
         margin: 20px 0;
         list-style-position: outside;
       }
-      /* A number's marker is 28.6px at one digit and 47.6px at three. */
       .prose ol {
         padding-left: 3.2em;
       }
@@ -260,8 +378,12 @@
       /* A prose table too wide for the column stacks, as the terminal stacks
          it: one field per line, each cell labelled with its heading. */
       @container (max-width: 760px) {
-        .doc-block table, .doc-block thead, .doc-block tbody, .doc-block tr,
-        .doc-block th, .doc-block td {
+        .doc-block table,
+        .doc-block thead,
+        .doc-block tbody,
+        .doc-block tr,
+        .doc-block th,
+        .doc-block td {
           display: block;
         }
         .doc-block table:has(tbody tr) thead {
@@ -332,8 +454,8 @@
 
       /* the states below the measure, each in its own frame */
       .strip {
-        max-width: 960px;
-        margin: 40px auto 0;
+        max-width: none;
+        margin: 40px 0 0;
         padding-top: 18px;
         border-top: 1px solid var(--line);
       }
@@ -356,8 +478,6 @@
         color: var(--dim);
         margin-bottom: 8px;
       }
-
-      /* a reviewable document: its rendered blocks, each one a comment target */
       .strip .doc-blocks {
         font-size: var(--fs-base);
       }
@@ -366,6 +486,7 @@
         border-radius: 6px;
         padding: 0 10px;
         margin: 0 -10px;
+        display: block;
       }
       .strip .doc-block.target {
         background: var(--s1);
@@ -380,22 +501,10 @@
         margin: 8px 0;
         line-height: 1.55;
       }
-      /* The card's own verbs: the edit and the retraction every surface
-         draws (Ved, 2026-10-17). */
-      .strip .rv-acts { display: flex; gap: 8px; padding-top: 6px; }
-      .strip .rv-a {
-        font-family: var(--mono);
-        font-size: var(--fs-label);
-        color: var(--muted);
-        border: 1px solid var(--ctl);
-        border-radius: 8px;
-        padding: 2px 9px;
-      }
       .strip .doc-note {
         display: flex;
-        flex-wrap: wrap;
-        gap: 8px;
-        align-items: baseline;
+        flex-direction: column;
+        gap: 6px;
         margin: 4px 0 8px 2.2rem;
         padding: 6px 10px;
         background: var(--s1);
@@ -404,14 +513,33 @@
         font-family: var(--ui);
         font-size: var(--fs-base);
       }
+      .strip .doc-note.doc-outdated {
+        border-left-color: var(--warn);
+      }
+      .strip .doc-notehead {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        align-items: baseline;
+      }
+      .strip .doc-why {
+        font-family: var(--mono);
+        font-size: var(--fs-label);
+        color: var(--dim);
+      }
+      .strip .doc-movedfrom {
+        font-family: var(--mono);
+        font-size: var(--fs-label);
+        color: var(--warn);
+      }
       .strip .doc-who {
         color: var(--muted);
         font-size: var(--fs-label);
       }
-      /* The words are the chat's own prose - the sheet's `.prose` rules
-         carry the marks; this carries the note's tone. */
-      .strip .doc-note .prose {
-        color: var(--text);
+      .strip .doc-where {
+        color: var(--dim);
+        font-family: var(--mono);
+        font-size: var(--fs-label);
       }
       .strip .doc-cc {
         color: var(--warn);
@@ -424,7 +552,8 @@
         flex-direction: column;
         gap: 8px;
       }
-      .strip .doc-compose .box {
+      .strip .doc-compose .box,
+      .strip .doc-exitbox {
         width: 100%;
         min-height: 44px;
         background: var(--bg);
@@ -435,88 +564,21 @@
         font-family: var(--ui);
         font-size: var(--fs-base);
       }
-      .strip .doc-compose-acts {
+      .strip .doc-compose-acts,
+      .strip .doc-answeracts {
         display: flex;
         gap: 8px;
         justify-content: flex-end;
       }
-      /* The box's dictation: the composer's own mic at the far end of the
-         acts, and the take's bar in the field's own line while it runs. */
-      .strip .mic {
-        width: 24px;
-        height: 24px;
-        margin-left: auto;
-        display: grid;
-        place-items: center;
-        color: var(--dim);
-      }
-      .strip .ic {
-        width: 15px;
-        height: 15px;
-        flex: 0 0 15px;
-        display: block;
-      }
-      .strip .line {
+      .strip .doc-answers {
         display: flex;
-        align-items: center;
-        gap: 8px;
-      }
-      .strip .tc {
-        align-self: center;
-        margin: 0;
-        border: 0;
-        background: none;
-        padding: 0;
-        flex: 1 1 auto;
-        min-width: 0;
-        display: flex;
-        align-items: center;
+        flex-direction: column;
         gap: 10px;
-        font-family: var(--mono);
-        font-size: var(--fs-label);
-        white-space: nowrap;
-      }
-      .strip .tc .dot {
-        width: 7px;
-        height: 7px;
-        flex: none;
-        border-radius: 50%;
-        background: var(--accent);
-      }
-      .strip .tc .clock {
-        color: var(--text);
-      }
-      .strip .tc .ready {
-        color: var(--muted);
-      }
-      .strip .tc .fr,
-      .strip .tc .kb,
-      .strip .tc .pace {
-        color: var(--dim);
-      }
-      .strip .tc .pace {
-        color: var(--ok);
-      }
-      .strip .tc .x {
-        color: var(--dim);
-      }
-      .strip .tc .wave {
-        flex: 1 1 auto;
-        min-width: 0;
-        height: 26px;
-        align-self: center;
-      }
-      .strip .tc .wave .area {
-        fill: var(--accent);
-      }
-      .strip .tc .wave .edge {
-        fill: none;
-        stroke: var(--hot);
-        stroke-width: 1.5px;
       }
       .strip .doc-comment-btn,
       .strip .doc-cancel-btn,
-      .strip .doc-finish-btn {
+      .strip .doc-finish-btn,
+      .strip .doc-answer-btn {
         font-family: var(--mono);
         font-size: var(--fs-label);
         border-radius: 9px;
@@ -525,8 +587,6 @@
         background: var(--s1);
         color: var(--muted);
       }
-      /* The comment button hovered: the sheet lifts both its label and its
-         boundary to the prose tone. */
       .strip .doc-comment-btn {
         color: var(--text);
         border-color: var(--text);
@@ -536,7 +596,7 @@
         border-top: 1px solid var(--line);
         padding-top: 12px;
       }
-      .strip .doc-stale h3 {
+      .strip .doc-stale :is(h2, h3) {
         font-size: var(--fs-label);
         font-weight: 400;
         color: var(--dim);
@@ -558,39 +618,9 @@
         white-space: pre-wrap;
       }
       .strip .doc-finish {
-        display: grid;
-        grid-template-columns: minmax(0, 1fr);
-        gap: 8px;
-        margin-top: 18px;
-        padding-top: 12px;
-        border-top: 1px solid var(--line);
-      }
-      /* The round's description, its own row above the door (roomy and
-         resizable on the real page). */
-      .strip .doc-finishbox {
-        background: var(--s1);
-        border: 1px solid var(--line);
-        border-radius: 7px;
-        padding: 6px 8px;
-        min-height: 52px;
-        font-size: var(--fs-base);
-        color: var(--dim);
-      }
-      .strip .doc-finishacts { display: flex; align-items: center; gap: 12px; }
-      .strip .doc-finishacts .mic {
-        flex: none;
-        margin-left: auto;
-        width: 24px;
-        height: 24px;
-        display: grid;
-        place-items: center;
-        color: var(--dim);
-      }
-      .strip .doc-finishacts .ic {
-        width: 15px;
-        height: 15px;
-        flex: 0 0 15px;
-        display: block;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
       }
       .strip .doc-left {
         color: var(--ok);
@@ -600,7 +630,7 @@
     </style>
   </head>
   <body>
-    <!-- The mic the composer wears, which this page's box wears too. -->
+    <!-- The mic the composer wears, which this page's boxes wear too. -->
     <svg width="0" height="0" style="position: absolute" aria-hidden="true">
       <symbol
         id="i-mic"
@@ -618,96 +648,183 @@
       <article class="doc-body">
         <div class="doc-blocks">
           <div class="doc-block prose">
-            <h1>Forge file hand-off &middot; the plan</h1>
+            <div class="doc-lines"><button class="doc-lnum">1</button></div>
+            <div class="doc-block-body"><h1>Forge file hand-off &middot; the plan</h1></div>
           </div>
           <div class="doc-block prose">
-            <p>
-              The agent hands the reader a document, and it opens here: the
-              client's own viewer, on every surface the client runs. This
-              drawing is the ordinary state - a markdown document, its
-              top-level blocks rendered by the same module the chat draws its
-              prose with, and every block a comment target whether the page was
-              handed over or opened cold.
-            </p>
-          </div>
-          <div class="doc-block prose">
-            <p>
-              A second paragraph block follows the first, so the gap the sheet
-              states between two of them is drawn here as the chat draws it.
-            </p>
-          </div>
-          <div class="doc-block target prose">
-            <h2>The ask, and the done</h2>
-          </div>
-          <div class="doc-note">
-            <span class="doc-who">you</span>
-            <div class="prose"><p>name the two verbs here</p></div>
-          </div>
-          <div class="doc-block prose">
-            <ul>
-              <li>
-                The hand-off arrives as the dock's ask - <strong>Open</strong>
-                or <strong>Not now</strong> - and Open lands here, at the
-                document's resolved path.
-              </li>
-              <li>
-                The parked call waits: the reader's <strong>done</strong> files
-                their comments as one review and answers with what was filed,
-                so the agent hears what the reading produced.
-              </li>
-            </ul>
-          </div>
-          <div class="doc-block prose">
-            <blockquote>
+            <div class="doc-lines"><button class="doc-lnum">2</button></div>
+            <div class="doc-block-body">
               <p>
-                Not now answers the decline; the open answers nothing; the done
-                answers the review.
+                The agent hands the reader a document, and it opens here: the
+                client's own viewer, on every surface the client runs. The route
+                fills the surface, and prose keeps a readable measure while code
+                and tables take the width.
               </p>
-            </blockquote>
-          </div>
-          <div class="doc-block prose">
-            <p>A fence takes the chat's own code panel:</p>
-            <div class="code">
-              <div class="head">toml</div>
-              <pre>
-[documents]
-max_size_mib = 10</pre>
             </div>
           </div>
           <div class="doc-block prose">
-            <table>
-              <thead>
-                <tr>
-                  <th>surface</th>
-                  <th>the PDF rides</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr>
-                  <td data-label="surface">desktop app</td>
-                  <td data-label="the PDF rides">WKWebView's own viewer (measured)</td>
-                </tr>
-                <tr>
-                  <td data-label="surface">a browser</td>
-                  <td data-label="the PDF rides">its own viewer (Chromium measured)</td>
-                </tr>
-                <tr>
-                  <td data-label="surface">the phone</td>
-                  <td data-label="the PDF rides">pdf.js, in the page</td>
-                </tr>
-              </tbody>
-            </table>
+            <div class="doc-lines"><button class="doc-lnum">3</button></div>
+            <div class="doc-block-body">
+              <p>
+                A press on a gutter number comments on that exact source line,
+                the line first in its captured context - so a revision can
+                re-find the thread by it.
+              </p>
+            </div>
+          </div>
+          <!-- a thread the landing MOVED: it draws at its new line, the old
+               line named, and the agent's reply still beside the comment -->
+          <div class="doc-note">
+            <div class="doc-notehead">
+              <span class="doc-movedfrom">moved from 2</span>
+              <div class="rv-acts"><span class="rv-a">delete</span></div>
+            </div>
+            <div class="rv-who"><span class="rv-nm">you</span><span class="rv-at">R1</span><span class="rv-a">edit</span></div>
+            <div class="prose"><p>name which document this is</p></div>
+            <div class="rv-who"><span class="rv-nm">implementer</span><span class="rv-at">12m</span></div>
+            <div class="prose"><p>named at the top, and the address follows</p></div>
           </div>
           <div class="doc-block prose">
-            <hr />
+            <div class="doc-lines"><button class="doc-lnum">4</button></div>
+            <div class="doc-block-body"><h2>The ask, and the answer</h2></div>
           </div>
           <div class="doc-block prose">
-            <p>
-              The document sits on the app as a page on a desk: one panel at a
-              reading measure, a hairline over every section, and a plain-text
-              document wraps inside it - the sheet has no sideways scroller
-              anywhere.
-            </p>
+            <div class="doc-lines">
+              <button class="doc-lnum">5</button><button class="doc-lnum">6</button
+              ><button class="doc-lnum">7</button>
+            </div>
+            <div class="doc-block-body">
+              <ul>
+                <li>
+                  The hand-off arrives as the dock's ask - <strong>Open</strong>
+                  or <strong>Not now</strong> - and Open lands here, at the
+                  document's resolved path.
+                </li>
+                <li>
+                  The answer is <strong>approve</strong> or
+                  <strong>something is off</strong>: feedback means revise the
+                  document and hand it off again, and a bare done is not an
+                  answer.
+                </li>
+                <li>
+                  The parked call waits until one is chosen: a reader who
+                  presses neither leaves it parked, and nothing on the page
+                  releases it.
+                </li>
+              </ul>
+            </div>
+          </div>
+          <div class="doc-block prose">
+            <div class="doc-lines"><button class="doc-lnum">8</button></div>
+            <div class="doc-block-body">
+              <blockquote>
+                <p>
+                  Approval is the one signal to proceed; feedback is never read
+                  as it.
+                </p>
+              </blockquote>
+            </div>
+          </div>
+          <div class="doc-block prose">
+            <div class="doc-lines">
+              <button class="doc-lnum">9</button><button class="doc-lnum">10</button
+              ><button class="doc-lnum">11</button><button class="doc-lnum">12</button>
+            </div>
+            <div class="doc-block-body">
+              <p>A fence takes the chat's own code panel:</p>
+              <div class="code">
+                <div class="head">toml</div>
+                <pre>
+[documents]
+max_size_mib = 10</pre>
+              </div>
+            </div>
+          </div>
+          <div class="doc-block prose">
+            <div class="doc-lines">
+              <button class="doc-lnum">13</button><button class="doc-lnum">14</button
+              ><button class="doc-lnum">15</button><button class="doc-lnum">16</button
+              ><button class="doc-lnum">17</button><button class="doc-lnum">18</button
+              ><button class="doc-lnum">19</button>
+            </div>
+            <div class="doc-block-body">
+              <table>
+                <thead>
+                  <tr>
+                    <th>surface</th>
+                    <th>the PDF rides</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td data-label="surface">desktop app</td>
+                    <td data-label="the PDF rides">WKWebView's own viewer (measured)</td>
+                  </tr>
+                  <tr>
+                    <td data-label="surface">a browser</td>
+                    <td data-label="the PDF rides">its own viewer (Chromium measured)</td>
+                  </tr>
+                  <tr>
+                    <td data-label="surface">the phone</td>
+                    <td data-label="the PDF rides">pdf.js, in the page</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <div class="doc-block prose target">
+            <div class="doc-lines">
+              <button class="doc-lnum">20</button><button class="doc-lnum target">21</button>
+            </div>
+            <div class="doc-block-body">
+              <p>
+                The document sits on the app as a page on a desk, the window's
+                width its own - and its scroller wears the theme's bar, corner
+                included, so no white block shows at the bottom-right.
+              </p>
+            </div>
+          </div>
+          <!-- a thread the revision could not re-find: inline, marked -->
+          <div class="doc-note doc-outdated">
+            <div class="doc-notehead">
+              <span class="doc-cc">outdated</span>
+              <div class="rv-acts"><span class="rv-a">delete</span></div>
+            </div>
+            <div class="rv-who"><span class="rv-nm">you</span><span class="rv-at">R2</span><span class="rv-a">edit</span></div>
+            <div class="prose"><p>the address belongs in this paragraph</p></div>
+            <div class="rv-who"><span class="rv-nm">implementer</span><span class="rv-at">3m</span></div>
+            <div class="prose"><p>moved it above; the anchor did not survive the rewrite</p></div>
+          </div>
+        </div>
+
+        <!-- only a thread whose captured line is past this version draws here -->
+        <section class="doc-stale">
+          <h2>cannot be placed in this version of the document</h2>
+          <div class="doc-note doc-quoted">
+            <div class="doc-quote">
+              the block this was written beside, as it stood then
+            </div>
+            <p class="doc-why">line 42 is past this version's 21 lines</p>
+            <div class="doc-notehead">
+              <span class="doc-cc">outdated</span>
+              <div class="rv-acts"><span class="rv-a">delete</span></div>
+            </div>
+            <div class="rv-who"><span class="rv-nm">you</span><span class="rv-at">R1</span></div>
+            <div class="prose"><p>state the 10 MiB default here</p></div>
+          </div>
+        </section>
+
+        <div class="doc-exit">
+          <div class="doc-finish">
+            <div class="doc-exitbox">summary (optional)</div>
+            <div class="doc-exitbox">note (optional)</div>
+            <div class="doc-answeracts">
+              <button class="doc-answer-btn">approve</button>
+              <button class="doc-answer-btn">something is off</button>
+              <span class="mic" title="dictation"
+                ><svg class="ic" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="10" height="12" x="7" y="3" rx="5"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v3"/></svg></span
+              >
+            </div>
           </div>
         </div>
       </article>
@@ -717,7 +834,8 @@ max_size_mib = 10</pre>
         <div class="state">
           <div class="cap">
             a refusal (missing, unreadable, over the ceiling, outside the tree,
-            a PDF asked to be reviewable, non-UTF&nbsp;8)
+            a PDF asked to be reviewable, non-UTF&nbsp;8) - the answer row still
+            draws for a parked call
           </div>
           <p class="doc-said">no document at /Users/me/proj/docs/plan.md</p>
         </div>
@@ -742,106 +860,72 @@ max_size_mib = 10</pre>
         </div>
         <div class="state">
           <div class="cap">opening - the read is out</div>
-          <p class="pending">Opening /Users/me/proj/docs/plan.md...</p>
+          <p class="doc-pending">Opening /Users/me/proj/docs/plan.md...</p>
         </div>
         <div class="state">
           <div class="cap">
-            a comment being written: the composer opens under the block, a
-            written comment draws as drafted until the done files it, and the
-            marked block is the one the comment is anchored to
+            a comment on a line: the number is the target, the composer opens
+            under the block, and a written comment draws as drafted until an
+            answer files it
           </div>
           <div class="doc-blocks">
             <div class="doc-block prose">
               <h1>Forge file hand-off &middot; the plan</h1>
             </div>
-            <div class="doc-block prose">
-              <p>
-                The agent hands the reader a document, and it opens here.
-                <strong>Markdown renders</strong>, and every block of it is a
-                comment target.
-              </p>
-            </div>
-            <div class="doc-note">
-              <span class="doc-who">you</span>
-              <div class="prose"><p>name which document this is</p></div>
-              <div class="rv-acts">
-                <span class="rv-a">edit</span>
-                <span class="rv-a">delete</span>
-              </div>
-            </div>
             <div class="doc-block target prose">
               <p>
                 A review left arrives filed under the document's scope - the
-                block under the pointer is the one a press comments on.
-              </p>
-            </div>
-            <div class="doc-compose">
-              <div class="line">
-                <div class="box">comment on this part...</div>
-              </div>
-              <div class="doc-compose-acts">
-                <button class="doc-cancel-btn">cancel</button>
-                <button class="doc-comment-btn">comment</button>
-                <span class="mic"><svg class="ic"><use href="#i-mic" /></svg></span>
-              </div>
-            </div>
-            <!-- The same box mid-take: the bar takes the field's own line. -->
-            <div class="doc-compose">
-              <div class="line">
-                <span class="tc"
-                  ><span class="dot"></span><span class="clock">0:05</span>
-                  <svg class="wave" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
-                    <path
-                      class="area"
-                      d="M 0 78 C 10 78, 14 54, 22 54 C 30 54, 36 16, 46 16 C 56 16, 58 62, 67 62 C 76 62, 80 34, 88 34 C 96 34, 97 50, 100 50 L 100 100 L 0 100 Z"
-                    ></path>
-                    <path
-                      class="edge"
-                      d="M 0 78 C 10 78, 14 54, 22 54 C 30 54, 36 16, 46 16 C 56 16, 58 62, 67 62 C 76 62, 80 34, 88 34 C 96 34, 97 50, 100 50"
-                    ></path>
-                  </svg>
-                  <span class="ready">1 ready</span>
-                  <span class="fr">204 fr</span>
-                  <span class="kb">124.5 KB</span>
-                  <span class="pace">28 KB/s</span>
-                  <span class="x">&#10005;</span></span
-                >
-              </div>
-              <div class="doc-compose-acts">
-                <button class="doc-cancel-btn">cancel</button>
-                <button class="doc-comment-btn">comment</button>
-                <span class="mic"><svg class="ic"><use href="#i-mic" /></svg></span>
-              </div>
-            </div>
-            <div class="doc-block prose">
-              <p>
-                The hand-off waits for the done, and the done answers it with
-                the review.
+                number under the pointer is the line a press comments on.
               </p>
             </div>
             <div class="doc-note">
               <span class="doc-who">you</span>
+              <span class="doc-where">line 3</span>
               <div class="prose"><p>state the 10 MiB default here</p></div>
               <span class="doc-cc">drafted</span>
             </div>
-          </div>
-          <div class="doc-stale">
-            <h3>written against an earlier version of this document</h3>
-            <div class="doc-note doc-quoted">
-              <div class="doc-quote">
-                the block this was written beside, as it stood then
+            <div class="doc-compose">
+              <div class="box">comment on this part...</div>
+              <div class="doc-compose-acts">
+                <button class="doc-comment-btn">comment</button>
+                <button class="doc-cancel-btn">cancel</button>
+                <span class="mic"><svg class="ic" width="15" height="15"><use href="#i-mic" /></svg></span>
               </div>
-              <span class="doc-who">you</span>
-              <div class="prose"><p>the address belongs in this paragraph</p></div>
             </div>
           </div>
-          <div class="doc-finish">
-            <div class="doc-finishbox">summary (optional)</div>
-            <div class="doc-finishacts">
-              <button class="doc-finish-btn">done (2)</button>
-              <span class="mic" title="dictation"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="10" height="12" x="7" y="3" rx="5"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v3"/></svg></span>
+        </div>
+        <div class="state">
+          <div class="cap">
+            both answers, sending: the pressed one says what it is doing and
+            both disable until the round files and the call is answered
+          </div>
+          <div class="doc-answers">
+            <div class="doc-exitbox">note (optional)</div>
+            <div class="doc-answeracts">
+              <button class="doc-answer-btn">approving...</button>
+              <button class="doc-answer-btn">something is off</button>
             </div>
           </div>
+        </div>
+        <div class="state">
+          <div class="cap">
+            a refused answer: the core's own words beside the row and both
+            buttons live; a refused filing keeps the drafts, and a refused
+            answer keeps the filed review and its id
+          </div>
+          <div class="doc-answers">
+            <div class="doc-answeracts">
+              <button class="doc-answer-btn">approve</button>
+              <button class="doc-answer-btn">something is off</button>
+            </div>
+            <p class="doc-said">the store is not open</p>
+          </div>
+        </div>
+        <div class="state">
+          <div class="cap">
+            approved: one line, and the agent has it
+          </div>
+          <p class="doc-left">approved - review left (R4) - the agent has it.</p>
         </div>
       </section>
     </main>

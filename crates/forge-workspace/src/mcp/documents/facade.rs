@@ -78,7 +78,7 @@ impl MockDocumentFacade {
             seats: parking_lot::Mutex::new(Vec::new()),
             answer: parking_lot::Mutex::new(Ok((
                 "/proj/docs/readme.md".to_owned(),
-                DocumentHandOffEnding::Done { review_id: None },
+                DocumentHandOffEnding::Approve { review_id: None, note: None },
             ))),
         }
     }

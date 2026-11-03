@@ -51,6 +51,7 @@ use std::path::PathBuf;
 use forge_dictate::ModelFacts;
 use forge_dictate::bench::{CorpusId, Metrics, StageTotals, Tier};
 use forge_dictate::catalogue::EntryKind;
+use forge_primitives::document::DocumentHandOffEnding;
 use forge_primitives::plugins::{
     InstalledPluginEntry, MarketplaceEntry, MarketplaceHealth, MarketplaceSourceEntry,
     PluginCapability, PluginComponents, PluginRunRowStatus, PluginUpdateRun, PluginUpdateRunRow,
@@ -60,7 +61,9 @@ use forge_primitives::{Message, SessionSlot};
 use forge_sdk::transport::codec::{DecodedLine, decode_dispatch};
 use forge_server::transport::PROTOCOL_VERSION;
 use forge_server::transport::envelope::{ClientMessage, ClientSettings, ServerMessage, Subject};
-use forge_server::transport::wire::TurnWire;
+use forge_server::transport::wire::{
+    OutdatedReasonWire, ReviewedThreadWire, ThreadResolutionWire, TurnWire,
+};
 use forge_server::{Command, SessionUpdate};
 use forge_test_harness::sdk_wire::{baseline_dir, legacy_baseline_dir, load_baseline_from};
 use forge_workspace::DictateModelState;
@@ -148,21 +151,25 @@ macro_rules! census {
 ///
 /// Each name arrives backticked, and the last one carries the error's own
 /// position after it, so the token between the backticks is what is taken.
-/// A parse that found nothing returns empty rather than a junk name, and the
-/// caller fails on that rather than comparing against an empty set.
+/// **serde spells the list two ways**: "one of" above two variants, and
+/// "a or b" at exactly two - so both separators are read, and a two-variant
+/// enum (a resolution and its reason) is not silently compared against
+/// nothing. A parse that found nothing returns empty rather than a junk
+/// name, and the caller fails on that rather than comparing against an
+/// empty set.
 fn serde_names(error: &str) -> Vec<String> {
-    error
-        .split_once("expected one of ")
-        .map(|(_, listed)| {
-            listed
-                .split(", ")
-                .filter_map(|piece| {
-                    let piece = piece.trim().trim_start_matches('`');
-                    piece.split_once('`').map(|(name, _)| name.to_owned())
-                })
-                .collect()
+    let Some((_, listed)) = error.split_once("expected ") else {
+        return Vec::new();
+    };
+    let listed = listed.strip_prefix("one of ").unwrap_or(listed);
+    listed
+        .split(", ")
+        .flat_map(|piece| piece.split(" or "))
+        .filter_map(|piece| {
+            let piece = piece.trim().trim_start_matches('`');
+            piece.split_once('`').map(|(name, _)| name.to_owned())
         })
-        .unwrap_or_default()
+        .collect()
 }
 
 /// Assert that the sources carrying these enums hold no SPLIT renaming.
@@ -189,8 +196,10 @@ fn assert_no_split_renames() {
     ];
     for (name, source) in [
         ("envelope.rs", include_str!("../../forge-server/src/transport/envelope.rs")),
+        ("wire.rs", include_str!("../../forge-server/src/transport/wire.rs")),
         ("protocol.rs", include_str!("../../forge-workspace/src/protocol.rs")),
         ("messages.rs", include_str!("../../forge-primitives/src/messages.rs")),
+        ("document.rs", include_str!("../../forge-primitives/src/document.rs")),
     ] {
         let flat: String = source.chars().filter(|ch| !ch.is_whitespace()).collect();
         for pattern in SPLIT {
@@ -264,6 +273,24 @@ census!(ServerMessage,
         DocumentRead struct,
     ],
     server_message_census, SERVER_MESSAGE_VARIANTS);
+
+census!(DocumentHandOffEnding,
+    [
+        Approve struct, Feedback struct, NotNow unit, Abandoned unit,
+    ],
+    document_hand_off_ending_census, DOCUMENT_HAND_OFF_ENDING_VARIANTS);
+
+census!(ThreadResolutionWire,
+    [
+        Placed struct, Outdated struct,
+    ],
+    thread_resolution_census, THREAD_RESOLUTION_VARIANTS);
+
+census!(OutdatedReasonWire,
+    [
+        Gone unit, Ambiguous struct,
+    ],
+    outdated_reason_census, OUTDATED_REASON_VARIANTS);
 
 census!(Subject,
     [Home struct, Board struct, Session tuple, Usage struct, DictateModels struct,
@@ -798,6 +825,25 @@ fn frames_record() -> Value {
     assert_serde_names!(r#""__forge_probe__""#, Subject, SUBJECT_VARIANTS);
     assert_serde_names!(r#""__forge_probe__""#, SessionUpdate, SESSION_UPDATE_VARIANTS);
     assert_serde_names!(r#""__forge_probe__""#, Command, COMMAND_VARIANTS);
+    assert_serde_names!(
+        r#"{"state":"__forge_probe__"}"#,
+        ThreadResolutionWire,
+        THREAD_RESOLUTION_VARIANTS
+    );
+    assert_serde_names!(r#""__forge_probe__""#, OutdatedReasonWire, OUTDATED_REASON_VARIANTS);
+    assert_serde_names!(
+        r#""__forge_probe__""#,
+        DocumentHandOffEnding,
+        DOCUMENT_HAND_OFF_ENDING_VARIANTS
+    );
+    assert_eq!(document_hand_off_ending_census(&DocumentHandOffEnding::NotNow), "NotNow",);
+    // The census functions are the compiler-checked half: a variant added or
+    // removed from either enum fails here before the record can state it.
+    assert_eq!(
+        thread_resolution_census(&ThreadResolutionWire::Placed { line: 1, moved_from: None }),
+        "Placed",
+    );
+    assert_eq!(outdated_reason_census(&OutdatedReasonWire::Gone), "Gone");
 
     let samples = [
         ServerMessage::Settings {
@@ -1230,27 +1276,86 @@ fn frames_record() -> Value {
             bytes: "IyBoaQo=".to_owned(),
             reviewable: true,
             content_hash: "7".to_owned(),
-            threads: vec![forge_primitives::review::ReviewThread {
-                id: "d1".to_owned(),
-                anchor: forge_primitives::review::ReviewAnchor {
-                    path: "/proj/docs/readme.md".to_owned(),
-                    side: forge_primitives::review::ReviewSide::New,
-                    line: 3,
-                    content_hash: 7,
-                    context: vec!["^ # hi".to_owned()],
-                    base_ref: forge_primitives::review::doc_scope_ref("/proj/docs/readme.md"),
+            threads: vec![
+                // One PLACED thread, moved, so `line` and `moved_from` are
+                // in the record: a rename of either draws every thread at 0.
+                ReviewedThreadWire {
+                    thread: forge_primitives::review::ReviewThread {
+                        id: "d1".to_owned(),
+                        anchor: forge_primitives::review::ReviewAnchor {
+                            path: "/proj/docs/readme.md".to_owned(),
+                            side: forge_primitives::review::ReviewSide::New,
+                            line: 3,
+                            content_hash: 7,
+                            context: vec!["^ # hi".to_owned()],
+                            base_ref: forge_primitives::review::doc_scope_ref(
+                                "/proj/docs/readme.md",
+                            ),
+                        },
+                        comments: vec![forge_primitives::review::ReviewComment {
+                            author: forge_primitives::review::ReviewAuthor::User,
+                            text: "one line, please".to_owned(),
+                            at: "2026-10-12T00:00:00Z".to_owned(),
+                            review_id: Some("r1".to_owned()),
+                        }],
+                        status: forge_primitives::review::ReviewStatus::Open,
+                        created_at: "2026-10-12T00:00:00Z".to_owned(),
+                        updated_at: "2026-10-12T00:00:00Z".to_owned(),
+                        commit: None,
+                    },
+                    resolution: Some(ThreadResolutionWire::Placed { line: 4, moved_from: Some(3) }),
                 },
-                comments: vec![forge_primitives::review::ReviewComment {
-                    author: forge_primitives::review::ReviewAuthor::User,
-                    text: "one line, please".to_owned(),
-                    at: "2026-10-12T00:00:00Z".to_owned(),
-                    review_id: Some("r1".to_owned()),
-                }],
-                status: forge_primitives::review::ReviewStatus::Open,
-                created_at: "2026-10-12T00:00:00Z".to_owned(),
-                updated_at: "2026-10-12T00:00:00Z".to_owned(),
-                commit: None,
-            }],
+                // And one OUTDATED thread, so the reason's own shapes ride too.
+                ReviewedThreadWire {
+                    thread: forge_primitives::review::ReviewThread {
+                        id: "d2".to_owned(),
+                        anchor: forge_primitives::review::ReviewAnchor {
+                            path: "/proj/docs/readme.md".to_owned(),
+                            side: forge_primitives::review::ReviewSide::New,
+                            line: 7,
+                            content_hash: 8,
+                            context: vec!["^ old".to_owned()],
+                            base_ref: forge_primitives::review::doc_scope_ref(
+                                "/proj/docs/readme.md",
+                            ),
+                        },
+                        comments: Vec::new(),
+                        status: forge_primitives::review::ReviewStatus::Open,
+                        created_at: "2026-10-12T00:00:00Z".to_owned(),
+                        updated_at: "2026-10-12T00:00:00Z".to_owned(),
+                        commit: None,
+                    },
+                    resolution: Some(ThreadResolutionWire::Outdated {
+                        reason: OutdatedReasonWire::Gone,
+                    }),
+                },
+                // The AMBIGUOUS reason's own `matches`: the client reads it
+                // with a silent `?? 0`, so a rename would draw zero matches
+                // everywhere and nothing would say so.
+                ReviewedThreadWire {
+                    thread: forge_primitives::review::ReviewThread {
+                        id: "d3".to_owned(),
+                        anchor: forge_primitives::review::ReviewAnchor {
+                            path: "/proj/docs/readme.md".to_owned(),
+                            side: forge_primitives::review::ReviewSide::New,
+                            line: 9,
+                            content_hash: 9,
+                            context: vec!["^ twice".to_owned()],
+                            base_ref: forge_primitives::review::doc_scope_ref(
+                                "/proj/docs/readme.md",
+                            ),
+                        },
+                        comments: Vec::new(),
+                        status: forge_primitives::review::ReviewStatus::Open,
+                        created_at: "2026-10-12T00:00:00Z".to_owned(),
+                        updated_at: "2026-10-12T00:00:00Z".to_owned(),
+                        commit: None,
+                    },
+                    resolution: Some(ThreadResolutionWire::Outdated {
+                        reason: OutdatedReasonWire::Ambiguous { matches: 2 },
+                    }),
+                },
+            ],
             reviews: vec![forge_primitives::ReviewSet {
                 id: "r1".to_owned(),
                 number: 1,
@@ -1356,8 +1461,9 @@ fn frames_record() -> Value {
         shape_of(&an_update(SessionUpdate::DocumentHandOffResolved {
             key: seat.clone(),
             id: uuid::Uuid::new_v4(),
-            ending: forge_primitives::document::DocumentHandOffEnding::Done {
+            ending: forge_primitives::document::DocumentHandOffEnding::Approve {
                 review_id: Some("r-1".to_owned()),
+                note: Some("ship it".to_owned()),
             },
         })),
     );
