@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { flushSync, mount, unmount } from 'svelte';
-import { writable } from 'svelte/store';
+import { get, writable } from 'svelte/store';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ServerMessage } from '../protocol';
@@ -35,8 +35,10 @@ const {
   layout,
   list,
   measured,
+  moved,
   pinned,
   quantised,
+  reported,
   setElement,
   setMeasured,
   setModel,
@@ -2825,5 +2827,449 @@ describe('the heights a turn ends at', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+/**
+ * **A document return is not a seat switch** (#2834).
+ *
+ * The document and the session are separate branches of the router, so opening
+ * one unmounts the column and returning mounts a fresh one. The entry effect
+ * re-arms the follow - #1673's rule for a seat switch - so a reader parked
+ * mid-conversation is dropped to the foot on the same seat, the same
+ * conversation, and a place they never left.
+ *
+ * The page unmounting is the router's half and the column is the one under
+ * test: the return is this mount, over a conversation the connection kept.
+ */
+describe('a return to the seat the reader left', () => {
+  /** How far a returned reader is put back: 40px rows and 10px into the second. */
+  const PLACE = 50;
+
+  /** The column, mounted, with a page on it and the reader parked mid-history. */
+  async function parked(server: ReturnType<typeof stub>): Promise<void> {
+    clear();
+    clearObservers();
+    setMeasured(TOTAL, VIEWPORT);
+    app = mount(Chat, {
+      target: document.body,
+      props: { slot: LEAD, connection: server.connection },
+    });
+    flushSync();
+    server.page([spoken('t1'), spoken('t2'), spoken('t3')]);
+    await settle();
+    layOut(40);
+    readerAt(PLACE);
+    await settle();
+    expect(list(), 'the column is mounted with rows to hold').not.toBeNull();
+    expect(element.offset, 'precondition: the reader is parked, not at the foot').toBe(PLACE);
+  }
+
+  /** The document opening: the route unmounts the column, and the browser
+   *  throws the element holding the reader's offset away with it. */
+  async function ontoDocument(): Promise<void> {
+    if (app !== null) await unmount(app);
+    app = null;
+    document.body.innerHTML = '';
+    element.offset = 0;
+    clear();
+  }
+
+  /** The return: the same seat, a fresh column over the conversation kept. */
+  function returned(server: ReturnType<typeof stub>): void {
+    app = mount(Chat, {
+      target: document.body,
+      props: { slot: LEAD, connection: server.connection },
+    });
+    flushSync();
+    // The fresh list's rows are new elements, and jsdom lays nothing out.
+    layOut(40);
+  }
+
+  /** The seat's follow flag, which is the state the return's entry changes. */
+  function following(server: ReturnType<typeof stub>): boolean | undefined {
+    const chat = conversationsFor(server.connection).live.get(subjectKey({ session: LEAD }))?.chat;
+    return chat === undefined ? undefined : get(chat.value).following;
+  }
+
+  it('puts a parked reader back at their place, and pins nothing', async () => {
+    const server = stub();
+    await parked(server);
+
+    await ontoDocument();
+    returned(server);
+    await settle();
+    await settle();
+
+    const foot = Math.floor(TOTAL) - VIEWPORT;
+    expect(element.offset, 'the return dropped the reader to the foot').toBe(PLACE);
+    // **The list moved to the row's turn before the place was held.** A fresh
+    // list mounts at its start, so a row the reader left further down is
+    // outside the drawn window until this scroll draws it; the stub draws
+    // every row, so the call is the only half it can see.
+    expect(moved(), 'the return did not scroll the list to the row it restores').toEqual([
+      { at: 1, align: 'start' },
+    ]);
+    expect(
+      pinned().filter((pin) => pin.landed === foot),
+      'a return is not a seat switch: no foot pin',
+    ).toEqual([]);
+    expect(
+      document.querySelector('button.follow'),
+      'the returned reader is away from the foot, and the way back says so',
+    ).not.toBeNull();
+  });
+
+  /**
+   * **The place is where the reader stopped, not where they first parked.**
+   * Once the follow is off, another nudge changes nothing that publishes -
+   * `following(false)` on an already-off flag is the same record - so a place
+   * written from a publish would stay at the first nudge while the reader
+   * keeps scrolling.
+   */
+  it('records where the reader stopped, not where they first parked', async () => {
+    const server = stub();
+    await parked(server);
+
+    readerAt(30);
+    await settle();
+
+    await ontoDocument();
+    returned(server);
+    await settle();
+    await settle();
+
+    expect(element.offset, 'the return went to the first place the reader left').toBe(30);
+  });
+
+  /**
+   * **A send that lands the foot leaves no place behind.** The reader was
+   * parked, then their own message took them to the latest; the pin is where
+   * that move is made, and a place left standing would drag a later document
+   * return back up to the row they left.
+   */
+  it('keeps no place for a reader their own send carried to the foot', async () => {
+    const server = stub();
+    await parked(server);
+
+    server.prompt();
+    await settle();
+    expect(element.offset, 'precondition: the send landed the foot').toBe(FOOT);
+    clear();
+
+    await ontoDocument();
+    returned(server);
+    await settle();
+    await settle();
+
+    expect(element.offset, 'the return restored the row the send left').toBe(FOOT);
+  });
+
+  /**
+   * **The other direction: a place the reader gave up is not restored.** A
+   * reader who scrolls back to the latest is done with their place, and the
+   * foot branch that notices is what clears it; a later document return lands
+   * at the latest rather than reopening the row.
+   */
+  it('forgets a place the reader gave up by returning to the latest', async () => {
+    const server = stub();
+    await parked(server);
+
+    // An arrival arms the follow while the reader stays parked, so the trip to
+    // the foot changes no published state and no pin follows it - the foot
+    // branch's own clear is the only thing that can drop the place.
+    const chat = conversationsFor(server.connection).live.get(subjectKey({ session: LEAD }))?.chat;
+    expect(chat, 'precondition: the column holds the seat conversation').toBeDefined();
+    chat?.following(true);
+    await settle();
+    clear();
+
+    readerAt(FOOT);
+    await settle();
+    clear();
+
+    await ontoDocument();
+    returned(server);
+    await settle();
+    await settle();
+
+    expect(element.offset, 'the return reopened a place the reader had left').toBe(FOOT);
+  });
+
+  /**
+   * The membership guard's other case: a `/new` empties the conversation under
+   * the place, so the row it names is no longer one this seat holds. The return
+   * lands at the latest rather than scrolling to a row the new occupant never
+   * wrote.
+   */
+  it('lands a /new at the foot on the next document return', async () => {
+    const server = stub();
+    await parked(server);
+
+    server.replaced();
+    await settle();
+    clear();
+
+    await ontoDocument();
+    returned(server);
+    // The new occupant's page reuses the fold's own turn keys, which is what
+    // makes the row's name collide: without the entry's membership guard the
+    // restore would find a turn to scroll to and take the place back.
+    server.page([spoken('t1'), spoken('t2'), spoken('t3')]);
+    layOut(40);
+    await settle();
+    await settle();
+
+    expect(element.offset, 'the return restored the old occupant place').toBe(
+      Math.floor(TOTAL) - VIEWPORT,
+    );
+    expect(moved(), 'the emptied conversation has no row to scroll the list to').toEqual([]);
+  });
+
+  /**
+   * **The follow flag is not the test** (#1673's own gate): an arrival re-arms
+   * the follow, and the pin's condition holds the reader where they are rather
+   * than carrying them down. That reader still holds a place, and a document
+   * return owes it back - and the place is where they stopped, so a nudge after
+   * the arm is recorded even though no publish follows it.
+   */
+  it('puts a parked reader back when an arrival armed the follow', async () => {
+    const server = stub();
+    clear();
+    clearObservers();
+    setMeasured(TOTAL, VIEWPORT);
+    app = mount(Chat, {
+      target: document.body,
+      props: { slot: LEAD, connection: server.connection },
+    });
+    flushSync();
+    // Enough rows to park below the disarm slack without reaching the foot.
+    server.page(Array.from({ length: 30 }, (_, at) => spoken(`t${at}`)));
+    await settle();
+    layOut(40);
+
+    // A first nudge parks the reader, and the follow turns off with it.
+    readerAt(PLACE);
+    await settle();
+    expect(following(server), 'precondition: the reader parked, so the follow is off').toBe(false);
+
+    // An arrival re-arms the follow while the reader stays parked.
+    const chat = conversationsFor(server.connection).live.get(subjectKey({ session: LEAD }))?.chat;
+    expect(chat, 'precondition: the column holds the seat conversation').toBeDefined();
+    chat?.following(true);
+    await settle();
+    expect(following(server), 'precondition: the arrival armed the follow').toBe(true);
+
+    // A second nudge inside the disarm slack keeps the follow on and moves the
+    // place; the capture is what records it, because nothing publishes.
+    readerAt(660);
+    await settle();
+    expect(following(server), 'precondition: the follow is still on').toBe(true);
+    clear();
+
+    await ontoDocument();
+    returned(server);
+    await settle();
+    await settle();
+
+    expect(element.offset, 'the return went to the first place the reader left').toBe(660);
+    expect(following(server), 'the return turns the follow off under the parked reader').toBe(
+      false,
+    );
+    expect(
+      pinned().filter((pin) => pin.landed === Math.floor(TOTAL) - VIEWPORT),
+      'a return is not a seat switch: no foot pin',
+    ).toEqual([]);
+  });
+
+  /**
+   * **A restore that cannot land falls back to the foot.** An arrival arms the
+   * follow under the return, and the placer will not put a following reader
+   * back mid-history - so rather than stranding them at the turn's start with
+   * the follow off, the column re-arms the foot and lands there.
+   */
+  it('falls back to the foot when the follow is armed under a return', async () => {
+    const server = stub();
+    await parked(server);
+
+    await ontoDocument();
+    returned(server);
+    // The restore's scroll runs on the first frame; the follow is armed
+    // between it and the frame that would put the row back.
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
+    flushSync();
+    const chat = conversationsFor(server.connection).live.get(subjectKey({ session: LEAD }))?.chat;
+    expect(chat, 'precondition: the column holds the seat conversation').toBeDefined();
+    chat?.following(true);
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
+    flushSync();
+    await settle();
+
+    expect(element.offset, 'the dropped restore left the reader at the turn start').toBe(FOOT);
+
+    // And the return is finished with: the next one takes a fresh place, at an
+    // offset the pre-fallback one does not hold.
+    readerAt(30);
+    await settle();
+    await ontoDocument();
+    returned(server);
+    await settle();
+    await settle();
+    expect(element.offset, 'the dropped restore outlived its return').toBe(30);
+  });
+
+  /**
+   * **A returning list has not measured when its first observer delivery
+   * arrives.** Its estimate can fit the column while the drawn conversation
+   * overflows, and a fit branch reading that estimate would re-arm the foot
+   * and drop the recorded place under the restore - a short session with a few
+   * long turns, exactly where a reader scrolls up, would land at the foot.
+   */
+  it('leaves a returning list to its restore until it has measured', async () => {
+    const server = stub();
+    await parked(server);
+
+    await ontoDocument();
+    // The return's list has not reported its viewport yet, and the element's
+    // own box fits while the drawn rows overflow it.
+    reported.viewport = 0;
+    setElement(VIEWPORT, VIEWPORT);
+    returned(server);
+    // The observer's first delivery lands before the restore's own frame.
+    resized();
+    flushSync();
+    // The real measure arrives, and the restore finishes.
+    setMeasured(TOTAL, VIEWPORT);
+    await settle();
+    await settle();
+
+    expect(element.offset, 'the unmeasured fit carried the return to the foot').toBe(PLACE);
+  });
+
+  /**
+   * **And the same fit is refused on a list that HAS measured.** The restore's
+   * placer owns the entry until it lands, whatever the list reports: a fit
+   * that arrives between the mount and the placer's frame would otherwise
+   * re-arm the foot over a reader the return is putting back.
+   */
+  it('does not re-arm the foot from a fit delivered under the restore', async () => {
+    const server = stub();
+    await parked(server);
+
+    await ontoDocument();
+    setElement(VIEWPORT, VIEWPORT);
+    returned(server);
+    resized();
+    flushSync();
+    setMeasured(TOTAL, VIEWPORT);
+    await settle();
+    await settle();
+
+    expect(element.offset, 'the fit under the restore carried the reader to the foot').toBe(PLACE);
+  });
+
+  /**
+   * **And a fit is no fit on a list that has not reported its viewport**,
+   * after a return has landed: the estimate is not the drawn column, and
+   * re-arming on it would carry a restored reader to the foot.
+   */
+  it('does not re-arm the foot from an unmeasured fit after the return', async () => {
+    const server = stub();
+    await parked(server);
+
+    await ontoDocument();
+    returned(server);
+    await settle();
+    await settle();
+    expect(element.offset, 'precondition: the return put the reader back').toBe(PLACE);
+
+    // The list stops reporting a viewport, and its element briefly fits.
+    reported.viewport = 0;
+    setElement(VIEWPORT, VIEWPORT);
+    resized();
+    flushSync();
+    setMeasured(TOTAL, VIEWPORT);
+    resized();
+    await settle();
+
+    expect(element.offset, 'the unmeasured fit reopened the foot').toBe(PLACE);
+  });
+
+  /**
+   * **The restore's ladder is walked to its last rung.** A place whose turn is
+   * still held but whose row is gone cannot be put back: the placer moves the
+   * list to the turn once, waits its retries for the row, then gives up to the
+   * foot. (The half where the row lands on a later frame needs a live list:
+   * the stub draws every row it holds.)
+   */
+  it('gives up a place whose row is gone while its turn survives', async () => {
+    const server = stub();
+    await parked(server);
+
+    // The place keeps a turn this conversation still holds, but names a row it
+    // no longer draws - the re-key a fold can make in place.
+    const store = conversationsFor(server.connection);
+    const which = subjectKey({ session: LEAD });
+    const place = store.places.get(which);
+    expect(place, 'precondition: the column recorded a place').toBeDefined();
+    if (place !== undefined) {
+      const turn = place.key.slice(0, place.key.indexOf(':'));
+      store.places.set(which, { key: `${turn}:gone`, into: place.into });
+    }
+
+    await ontoDocument();
+    returned(server);
+    await settle();
+    await settle();
+    await settle();
+
+    expect(moved(), 'the placer moved the list to the surviving turn once').toEqual([
+      { at: 1, align: 'start' },
+    ]);
+    expect(element.offset, 'the missing row ended the restore at the foot').toBe(FOOT);
+  });
+
+  /**
+   * The guard on the other side: a seat SWITCH still lands at the latest,
+   * whatever a seat was left holding (#1673). The switch is the same mounted
+   * column taking a different slot, which is what the app does.
+   */
+  it('still lands a seat switch at the foot', async () => {
+    const server = stub();
+    const seat = writable(LEAD);
+    clear();
+    clearObservers();
+    setMeasured(TOTAL, VIEWPORT);
+    app = mount(Seats, {
+      target: document.body,
+      props: { seat, connection: server.connection },
+    });
+    flushSync();
+    server.page([spoken('t1'), spoken('t2'), spoken('t3')]);
+    await settle();
+    layOut(40);
+    readerAt(PLACE);
+    await settle();
+    clear();
+
+    seat.set(OTHER);
+    flushSync();
+    server.page([spoken('o1'), spoken('o2')], OTHER);
+    await settle();
+
+    expect(element.offset, 'the switch did not open the new seat at its latest').toBe(
+      Math.floor(TOTAL) - VIEWPORT,
+    );
+
+    // **And back to the seat that holds a place.** A switch is not a return
+    // however recently the seat was left, so the place recorded on `LEAD`
+    // above is not taken back here - the way back is the only door to it.
+    seat.set(LEAD);
+    flushSync();
+    await settle();
+
+    expect(element.offset, 'the switch back reopened the place the seat was left at').toBe(
+      Math.floor(TOTAL) - VIEWPORT,
+    );
   });
 });

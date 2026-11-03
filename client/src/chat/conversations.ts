@@ -14,6 +14,7 @@
 import { SvelteMap } from 'svelte/reactivity';
 
 import type { Connection } from '../socket';
+import type { Anchor } from './anchor';
 import type { Chat, Conversation } from './conversation';
 
 /** One seat's open conversation and the column that keeps folding it. */
@@ -23,12 +24,27 @@ export interface HeldChat {
   stop: () => void;
 }
 
-/** The two maps one connection holds. */
+/** What one connection holds for its seats. */
 export interface Conversations {
   /** Each seat's last drawn conversation, so a return paints it at once. */
   kept: SvelteMap<string, Conversation>;
   /** Each seat's open conversation, which keeps folding after the page leaves. */
   live: SvelteMap<string, HeldChat>;
+  /**
+   * Where each seat's reader was parked when the column was last on it.
+   *
+   * **A place outlives the column, the way the conversation does** (#2834):
+   * a document unmounts the page, and where the element was scrolled is not in
+   * the kept record. A seat with no entry was left at its foot, which needs no
+   * restoring.
+   */
+  places: Map<string, Anchor>;
+  /**
+   * The seat the column last drew for this connection, which is what tells a
+   * return to a seat from a seat switch: only a mount onto this seat takes its
+   * place back, and a switch to any other lands at the latest (#1673).
+   */
+  shown: string | null;
 }
 
 const HELD = new WeakMap<Connection, Conversations>();
@@ -37,7 +53,12 @@ const HELD = new WeakMap<Connection, Conversations>();
 export function conversationsFor(connection: Connection): Conversations {
   const held = HELD.get(connection);
   if (held !== undefined) return held;
-  const fresh: Conversations = { kept: new SvelteMap(), live: new SvelteMap() };
+  const fresh: Conversations = {
+    kept: new SvelteMap(),
+    live: new SvelteMap(),
+    places: new Map(),
+    shown: null,
+  };
   HELD.set(connection, fresh);
   return fresh;
 }
@@ -55,4 +76,6 @@ export function releaseConversation(connection: Connection, key: string): void {
   held.live.get(key)?.stop();
   held.live.delete(key);
   held.kept.delete(key);
+  held.places.delete(key);
+  if (held.shown === key) held.shown = null;
 }

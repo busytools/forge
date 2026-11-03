@@ -287,6 +287,8 @@ interface Page {
   seat: SeatRead;
   /** The seat the page is showing, which moves with the record as a reader does. */
   slot: SessionSlot;
+  /** Whether the seat's page is still out, which the composer holds for. */
+  reading: boolean;
 }
 
 function pageOf(instance: Record<string, unknown>): Page {
@@ -1461,6 +1463,7 @@ describe('the box', () => {
         },
         'handing this session over',
       ],
+      [{ reading: true }, 'Reading the conversation...'],
     ];
     for (const [props, line] of cases) {
       open(props);
@@ -4370,33 +4373,107 @@ describe('the one body slot', () => {
     ).toBeNull();
   });
 
-  it('says the read wait on the band above the field', () => {
-    // **One place for every narrative state.** The read wait was the column's
-    // own line; it is the band's now, above the field rather than in its
-    // place - the seat is up and takes a prompt while the page is out.
-    open({ reading: true });
+  it('holds the box with the read wait, like every other narrative state', () => {
+    // **The read wait is a hold, not a row above the field.** A line that
+    // came and went above a live field grew the composer and shrank it again
+    // before the chat appeared (Ved, 2026-11-03); it takes the body now, and
+    // the reader has nothing to type into until the page lands.
+    const page = open({ reading: true });
 
     expect(
-      document.querySelector('.surf .slot > .notice')?.textContent,
-      'the band does not say it is reading',
+      document.querySelector('.slot > .blocked')?.textContent,
+      'the box is not held while the page is out',
     ).toContain('Reading the conversation');
     expect(
-      document.querySelector('.slot > .notice')?.getAttribute('role'),
-      'the read wait lost the live region the column carried',
+      document.querySelector('.slot > .blocked')?.getAttribute('role'),
+      'the read wait lost its live region',
     ).toBe('status');
-    expect(document.querySelector('.comp .line'), 'the read wait took the field').not.toBeNull();
+    expect(document.querySelector('.comp .line'), 'the read wait left the field live').toBeNull();
+
+    page.page.reading = false;
+    flushSync();
+    expect(
+      document.querySelector('textarea'),
+      'the field did not come back with the page',
+    ).not.toBeNull();
+  });
+
+  it('keeps a live take ahead of the read wait', () => {
+    // A take is the reader's own row: the hold would cover the card and leave
+    // a recording with nowhere to draw until the page landed.
+    open({
+      reading: true,
+      record: record({ composer: { take: take(), notice: null, machine: null } }),
+    });
+
+    expect(document.querySelector('.slot > .blocked'), 'the read hold covered a take').toBeNull();
+    expect(document.querySelector('.line .tc'), 'the live take lost its card').not.toBeNull();
   });
 
   it('keeps a parked ask ahead of the read wait', () => {
-    // The dock is the body when an ask waits: the read line belongs to the
-    // field's body and would be a second thing in the slot.
+    // The dock is the body when an ask waits: the read hold would cover the
+    // one thing the reader can answer.
     open({ reading: true, record: record({ pending_asks: [questionAsk()] }) });
 
     expect(document.querySelector('.slot .dock'), 'the wait covered the ask').not.toBeNull();
     expect(
-      document.querySelector('.slot > .notice'),
+      document.querySelector('.slot > .blocked'),
       'the read wait drew beside a parked ask',
     ).toBeNull();
+  });
+
+  it('opens no capture from the bound key while the read wait holds the box', async () => {
+    // **The control first**, the same shape as the machine-turn case: an
+    // empty send below proves nothing unless the same press begins a take on
+    // a live box.
+    const live = open({ dictation: true });
+    key('ControlRight', 'keydown');
+    await opened();
+    expect(live.sent, 'the control: a live box begins the take').toHaveLength(1);
+    void unmount(app as Record<string, unknown>);
+    app = null;
+    document.body.innerHTML = '';
+
+    const harness = open({ dictation: true, reading: true });
+
+    key('ControlRight', 'keydown');
+    await opened();
+
+    expect(harness.sent, 'the key begins nothing under the read wait').toEqual([]);
+  });
+
+  it('still begins a take under a non-read hold while the page is out', async () => {
+    // The gate keys on the read hold, not on `reading`: a Failed seat draws
+    // its own hold and may still begin a take while the page is still out.
+    const harness = open({
+      dictation: true,
+      reading: true,
+      seat: seatRead({ lifecycle: 'Failed', reason: 'the CLI exited' }),
+    });
+
+    key('ControlRight', 'keydown');
+    await opened();
+
+    expect(harness.sent, 'a hold that is not the read hold refused the take').toHaveLength(1);
+  });
+
+  it('inserts the live region when the read wait takes over from a waking hold', () => {
+    // The announced node must be a fresh insert, not a role added to the
+    // waking hold's node: screen readers reliably announce the former.
+    const page = open({
+      reading: true,
+      seat: seatRead({ lifecycle: null, waking: true }),
+    });
+    const before = document.querySelector('.slot > .blocked');
+    expect(before, 'precondition: the waking hold draws').not.toBeNull();
+
+    page.page.seat = seatRead({ lifecycle: 'Running' });
+    flushSync();
+    const after = document.querySelector('.slot > .blocked');
+
+    expect(after, 'the read hold did not draw').not.toBeNull();
+    expect(after, 'the live region reused the waking hold node').not.toBe(before);
+    expect(after?.getAttribute('role'), 'the read hold lost its live region').toBe('status');
   });
 
   it("opens the autocomplete as the card's own popover, not a lane of the body", () => {

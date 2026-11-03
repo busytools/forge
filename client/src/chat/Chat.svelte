@@ -104,6 +104,8 @@
   const ARRIVE_MS = 340;
   /** The longest a return's hold waits for a paint before it lifts anyway. */
   const HOLD_MAX_MS = 250;
+  /** How many frames a restored place waits for its row to draw before giving it up. */
+  const RESTORE_TRIES = 3;
   /** How far above the last pin counts as the reader when no input preceded it. */
   const DISARM_SLACK = 48;
   /** How far above the very end still counts as standing at the foot. */
@@ -197,6 +199,20 @@
    * follow is back on, because the foot is where that reader wants to be.
    */
   let anchor: Anchor | null = null;
+  /**
+   * The place a returning reader is being put back on, until the list draws
+   * the row it names.
+   *
+   * **A fresh list mounts at its start**, so the row may be outside the drawn
+   * window while this is set: the captures and the parked passes stand aside
+   * until the scroll to its turn has drawn it, or the column would take the
+   * top of the window as the reader's place.
+   */
+  let restoring = $state<Anchor | null>(null);
+  /** The frame the return's own scroll waits on, held so one schedule is outstanding. */
+  let restoreFrame: number | null = null;
+  /** How many frames a restored place has waited for its row to draw. */
+  let restoreTries = 0;
   let working: Chat | null = null;
   /**
    * The conversation built for one seat over one connection.
@@ -721,8 +737,10 @@
     padTop = Number.parseFloat(getComputedStyle(node).paddingTop) || 0;
     // A token armed against a previous viewport must not eat this one's first event.
     pinEcho = null;
-    // A list mounts at its start and opens following, so its first pin is the
-    // column putting the reader at the foot rather than an arrival moving one.
+    // A fresh list mounts at its start and opens following, so its first pin
+    // is the column putting the reader at the foot rather than an arrival
+    // moving one. A return's list is placed by its restore before any pin can
+    // move it.
     footHeld = true;
     // The sizes and the last event belong to the element a previous conversation scrolled.
     lastSeen = { content: 0, room: 0 };
@@ -803,12 +821,18 @@
     window.addEventListener('blur', onRelease);
     const content = node.firstElementChild;
     const watcher = new ResizeObserver(() => {
-      if (holdsEverything()) {
+      // **A returning list has not measured when this first arrives**: the
+      // delivery can report an estimate that fits while the drawn rows
+      // overflow, and a re-arm here would carry the reader to the foot under
+      // the restore's own scroll. The restore's placer owns the entry until it
+      // lands, and a list with no viewport has no fit to read (#2825).
+      if (restoring === null && list !== null && list.getViewportSize() > 0 && holdsEverything()) {
         // Nothing is left to scroll, so the end is where the reader is
         // sitting, whether or not an event came to say so.
         footHeld = true;
         working?.following(true);
         anchor = null;
+        rememberPlace();
       }
       // The layout has settled, so the reach ask may have no scroll to ride
       // (#2139). **The fit itself is read inside `fillFittingRoom` and not
@@ -935,6 +959,9 @@
    * this function.
    */
   function captureAnchor(): boolean {
+    // A return is still placing its reader: the top of the window it is
+    // scrolling to is not where they were.
+    if (restoring !== null) return false;
     if (viewport === null) {
       owedUnplaced = true;
       return false;
@@ -946,6 +973,7 @@
     }
     anchor = landed;
     owedUnplaced = false;
+    rememberPlace();
     return true;
   }
 
@@ -965,6 +993,8 @@
    * frame `f<index>` within its own turn, and two turns can each carry one.
    */
   function restoreAnchor(): boolean {
+    // The return's own placer owns the scroll until its row is drawn.
+    if (restoring !== null) return true;
     const held = anchor;
     if (held === null || viewport === null) return true;
     const row = viewport.querySelector(`[data-k="${CSS.escape(held.key)}"]`);
@@ -1038,7 +1068,11 @@
   $effect(() => {
     const which = seat;
     const open = connection;
-    const { kept, live } = conversations();
+    const store = conversations();
+    const { kept, live, places } = store;
+    // The seat this connection's column drew last, read before this run
+    // overwrites it: a mount onto that seat is a return, any other is an entry.
+    const shownBefore = store.shown;
     let entry = untrack(() => live.get(which));
     /** Whether this run carries a conversation the column did not already hold. */
     let fresh = false;
@@ -1130,23 +1164,57 @@
         cancelAnimationFrame(checkFrame);
         checkFrame = null;
       }
+      // A restore still on its way belongs to the seat that is going.
+      if (restoreFrame !== null) {
+        cancelAnimationFrame(restoreFrame);
+        restoreFrame = null;
+      }
+      restoring = null;
+      restoreTries = 0;
       // The place a reader held was a row of the conversation that is going.
       anchor = null;
       // And so were the sizes and the last event, which read that element.
       lastSeen = { content: 0, room: 0 };
       movedFrom = 0;
-      // Every entry lands at the latest, so the reader is at the foot before
-      // the first pin rather than an arrival moving them to one.
-      footHeld = true;
-      // **And so is the follow, which is why the entry re-arms it** (#1673):
-      // a seat's conversation is kept, and its follow flag was kept with it -
-      // so a seat left scrolled up came back with the pass returning early
-      // and the reader landing wherever the old offset fell. A place belongs
-      // to the visit; every entry lands at the latest. The window is settled
-      // by the follow effect below, which runs on the arriving conversation's
-      // own publish - this call would hand the outgoing seat's row key to the
-      // incoming chat's trim.
-      working?.following(true);
+      // **A return to the seat this connection was last on keeps the
+      // reader's place; every other entry follows the latest** (#1673,
+      // #2834). A document unmounts the column while the connection keeps
+      // its conversation, so the mount that follows is a return rather than
+      // a switch - and the row it recorded is the reader's place, as long as
+      // the conversation still holds it. A fresh open, a seat switch and a
+      // `/new` (whose conversation no longer holds the row) all land at the
+      // latest. The window is settled by the follow effect below, which runs
+      // on the arriving conversation's own publish - this call would hand
+      // the outgoing seat's row key to the incoming chat's trim.
+      const turning = untrack(() => kept.get(which))?.turns ?? [];
+      const place = shownBefore === which ? (places.get(which) ?? null) : null;
+      if (place !== null && turning.some((turn) => place.key.startsWith(`${turn.key}:`))) {
+        // A returning reader is parked where they left, not at the foot, so
+        // the pin's own condition must not carry them down while the row is
+        // being drawn back. The follow flag goes off with it, as it was when
+        // the place was recorded.
+        footHeld = false;
+        restoring = place;
+        working?.following(false);
+      } else {
+        // **Every other entry lands at the latest** - a seat switch, a fresh
+        // open, and a `/new` whose conversation no longer holds the row - so
+        // the reader is at the foot before the first pin rather than an
+        // arrival moving them to one. **And so is the follow, which is why the
+        // entry re-arms it** (#1673): a seat's conversation is kept, and its
+        // follow flag was kept with it - so a seat left scrolled up came back
+        // with the pass returning early and the reader landing wherever the
+        // old offset fell. **A place belongs to the visit that recorded it**,
+        // so only a return to that visit takes it back. The window is settled
+        // by the follow effect below, which runs on the arriving
+        // conversation's own publish - this call would hand the outgoing
+        // seat's row key to the incoming chat's trim.
+        footHeld = true;
+        working?.following(true);
+        // The entry lands at the latest, so a place a previous visit left is
+        // done - and a `/new` emptied the row it named.
+        places.delete(which);
+      }
       // **And so were the asks this column is holding.** They belong to the
       // conversation that is going, and their pages are not coming here.
       outstanding = 0;
@@ -1207,6 +1275,9 @@
     if (switched) {
       noteConversationOpened(slot);
     }
+    // The seat this column has drawn, for the next mount to tell the seat it
+    // left from one it never showed.
+    store.shown = which;
     // Leaving the seat: its store notifications stop with its frames.
     return () => {
       unsubscribe();
@@ -1216,6 +1287,108 @@
   // A hold that outlived its column must not ask for a seat nothing draws.
   $effect(() => () => {
     entered += 1;
+  });
+
+  /**
+   * The reader's place, kept per seat for a mount that outlives the column.
+   *
+   * **Written where the anchor moves, not from a publish.** The anchor is a
+   * plain field and a reader who keeps scrolling while parked changes nothing
+   * the fold publishes - `following(false)` on an already-off follow is the
+   * same record - so a place written from an effect would stay at the first
+   * nudge while the reader kept scrolling. A reader at the foot has no anchor
+   * to hold, so a seat left at its foot has no place. A row of a conversation
+   * this seat no longer holds is not this seat's place, so it is not written
+   * over one.
+   */
+  function rememberPlace(): void {
+    const places = conversations().places;
+    const here = anchor;
+    if (here === null) {
+      places.delete(seat);
+      return;
+    }
+    // The membership scan runs when the row changes, not on every pixel of a
+    // scroll within the same one. Untracked, because a caller is an effect
+    // whose pin must not re-run on the dependency this read would add.
+    if (places.get(seat)?.key !== here.key) {
+      const mine = untrack(() => held.turns.some((turn) => here.key.startsWith(`${turn.key}:`)));
+      if (!mine) return;
+    }
+    places.set(seat, here);
+  }
+
+  /**
+   * Take a returning reader back to the row their place names.
+   *
+   * **A fresh list mounts at its start**, so the row may be outside the drawn
+   * window until the list is moved to its turn. A turn is the list's item, so
+   * scrolling to it draws every row in it - and the ordinary anchor restore
+   * then puts the reader exactly back. A restore that cannot land is given up
+   * and the reader goes to the foot, rather than staying at the turn the
+   * scroll reached with the follow off.
+   */
+  $effect(() => {
+    const place = restoring;
+    const handle = list;
+    const turns = held.turns;
+    if (place === null || handle === null || turns.length === 0 || restoreFrame !== null) return;
+    if (!turns.some((turn) => place.key.startsWith(`${turn.key}:`))) {
+      giveUpRestore();
+      return;
+    }
+    restoreFrame = requestAnimationFrame(() => {
+      // **The turn is read again in the frame it is scrolled in**: a prepend
+      // can land between this schedule and its frame, and an index from the
+      // earlier read would name a different turn.
+      const at = held.turns.findIndex((turn) => place.key.startsWith(`${turn.key}:`));
+      if (at < 0) {
+        giveUpRestore();
+        return;
+      }
+      handle.scrollToIndex(at, { align: 'start' });
+      restoreFrame = requestAnimationFrame(placeRestored);
+    });
+  });
+
+  /** Put the reader back on the row once its turn is drawn, or give it up. */
+  function placeRestored(): void {
+    restoreFrame = null;
+    const place = restoring;
+    if (place === null) return;
+    if (viewport === null || held.following) {
+      giveUpRestore();
+      return;
+    }
+    if (viewport.querySelector(`[data-k="${CSS.escape(place.key)}"]`) === null) {
+      restoreTries += 1;
+      restoreFrame = restoreTries < RESTORE_TRIES ? requestAnimationFrame(placeRestored) : null;
+      if (restoreFrame === null) giveUpRestore();
+      return;
+    }
+    restoring = null;
+    restoreTries = 0;
+    anchor = place;
+  }
+
+  /**
+   * The old entry when a restore cannot land: the reader goes to the foot,
+   * following, rather than staying at the turn's start with the follow off.
+   */
+  function giveUpRestore(): void {
+    restoring = null;
+    restoreTries = 0;
+    anchor = null;
+    rememberPlace();
+    footHeld = true;
+    working?.following(true);
+    land();
+  }
+
+  // A restore still waiting must not land on a column that is going.
+  $effect(() => () => {
+    if (restoreFrame !== null) cancelAnimationFrame(restoreFrame);
+    restoreFrame = null;
   });
 
   /**
@@ -1719,7 +1892,20 @@
     // or the list's own while the browser counts a row it has not drawn. Both
     // are the foot for the next arrival's decision - give or take the fraction
     // the browser rounds the offset to.
-    footHeld = viewport.scrollTop >= reachable - FOOT_QUANTUM;
+    // **The value is read here rather than back out of `footHeld`**: `land()`
+    // runs from the follow's own effect, and a read of that state would make
+    // the write below a dependency - the effect re-runs and pins twice for one
+    // landing.
+    const landedAtFoot = viewport.scrollTop >= reachable - FOOT_QUANTUM;
+    footHeld = landedAtFoot;
+    // **A pin that lands at the foot is the reader leaving their place.** The
+    // pin's own echo returns to the scrolled handler before the foot branch
+    // there, so the record has to be cleared here - a place left standing is a
+    // row a later document return restores for a reader who moved on.
+    if (landedAtFoot) {
+      anchor = null;
+      rememberPlace();
+    }
     return foot;
   }
 
@@ -2013,6 +2199,10 @@
   $effect(() => {
     const park = held;
     const moving = compensating;
+    // **A return's own placer owns the scroll until its row is drawn.** The
+    // pass runs again when the place is taken or dropped, so nothing is owed
+    // for the frames it stands aside on.
+    if (restoring !== null) return;
     // **A follow that cannot pin is a parked reader here too.** The gate can
     // refuse a follow that is on (the third state the way-back and the
     // observer's restore already serve), and skipping the pass on the flag
@@ -2208,6 +2398,7 @@
         // The foot is where a following reader wants to be, so the place they
         // held on the way there is done with.
         anchor = null;
+        rememberPlace();
       }
     }
     // `placed` is where the last pin left the reader; before any pin has
@@ -2417,6 +2608,7 @@
         working?.following(true);
         settleWindow();
         anchor = null;
+        rememberPlace();
         // The reader asked for the foot, so this pass is theirs to make.
         land(true);
       }}

@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
 import type { DictateWire } from '../wire/home';
-import { dictationOffered, draftEndingLine, settingsWriteEndingLine } from './view';
+import { seatRead, take } from './testing';
+import { blocked, dictationOffered, draftEndingLine, settingsWriteEndingLine } from './view';
+import { composerFrom, NO_COMPOSER } from './wire';
 
 /** The home's dictate read, with whatever the test overrides. */
 function dictate(over: Partial<DictateWire> = {}): DictateWire {
@@ -121,5 +123,66 @@ describe('the line a resolved config write leaves', () => {
 
   it('still says the write is gone for an ending this client is older than', () => {
     expect(settingsWriteEndingLine({ something_new: null }).text).toContain('no longer waiting');
+  });
+});
+
+/**
+ * The read wait is the last hold: every state more specific than "the page is
+ * still out" takes the body first, and two states take it instead.
+ */
+describe('what the read wait stands behind', () => {
+  const running = seatRead();
+
+  it('stands behind the command the reader sent', () => {
+    expect(
+      blocked(running, NO_COMPOSER, '/compact', true, false, true)?.line,
+      'a page still loading covered the command in flight',
+    ).toBe('Running /compact');
+  });
+
+  it('stands behind a machine turn', () => {
+    const state = composerFrom({ take: null, notice: null, machine: 'handoff' });
+    expect(blocked(running, state, null, true, false, true)?.line).toBe(
+      'handing this session over',
+    );
+    const compacting = composerFrom({ take: null, notice: null, machine: 'compacting' });
+    expect(blocked(running, compacting, null, true, false, true)?.line).toBe(
+      'compacting this session',
+    );
+  });
+
+  it('stands behind the seat states that have not come up', () => {
+    expect(
+      blocked(seatRead({ lifecycle: null, waking: true }), NO_COMPOSER, null, true, false, true)
+        ?.line,
+      'the read hold covered a wake',
+    ).toBe('Waking up agent...');
+    expect(
+      blocked(seatRead({ lifecycle: null }), NO_COMPOSER, null, false, false, true)?.line,
+      'the read hold covered a worker that is not running',
+    ).toBe('not running');
+    expect(
+      blocked(
+        seatRead({ lifecycle: 'Failed', reason: 'the CLI exited' }),
+        NO_COMPOSER,
+        null,
+        true,
+        false,
+        true,
+      )?.line,
+      'the read hold covered the error',
+    ).toBe('Input disabled due to error');
+  });
+
+  it('stands aside for a parked ask and for a live take', () => {
+    expect(
+      blocked(running, NO_COMPOSER, null, true, true, true),
+      'the read hold covered the dock',
+    ).toBeNull();
+    const state = composerFrom({ take: take(), notice: null, machine: null });
+    expect(
+      blocked(running, state, null, true, false, true),
+      'the read hold covered a take',
+    ).toBeNull();
   });
 });
