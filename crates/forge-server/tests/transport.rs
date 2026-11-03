@@ -10086,7 +10086,7 @@ async fn a_giant_seats_history_crosses_bounded_and_the_connection_survives() {
         available_models: Vec::new(),
         mode: None,
         history: window,
-        dropped,
+        dropped: dropped.frames,
         compaction_count: 0,
     });
     let frame = frame_until(
@@ -10115,7 +10115,11 @@ async fn a_giant_seats_history_crosses_bounded_and_the_connection_survives() {
     {
         let held = state.conversations.get(&seat).expect("the handover holds the seat");
         let seat_held = held.lock();
-        assert_eq!(seat_held.dropped(), dropped, "the seat's floor is the cut it rode in with");
+        assert_eq!(
+            seat_held.dropped(),
+            dropped.frames,
+            "the seat's floor is the cut it rode in with"
+        );
         assert!(
             weigh(seat_held.messages())
                 <= forge_workspace::conversation_window::CONVERSATION_CAP_BYTES

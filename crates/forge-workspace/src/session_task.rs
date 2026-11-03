@@ -362,7 +362,8 @@ impl SessionTask {
                 // (2.5GiB on the seat #2150 was filed from) may not ride the
                 // update or be paid again per consumer: one cut, and the
                 // window is what is handed over.
-                let (window, left_behind) = crate::conversation_window::Window::tail_of(&read);
+                let (window, shed) = crate::conversation_window::Window::tail_of(&read);
+                let left_behind = shed.frames;
                 // **And the cut itself rides along.** A consumer holding the
                 // window alone reads it as the conversation's front, and a
                 // client's walk below the window would stop there rather than

@@ -42,6 +42,7 @@ use forge_primitives::{Message, SessionSlot};
 // The window this copy is kept in. The fan-out's ring is sized from the same
 // caps, because a ring exists to fill a copy that is behind; the ceilings' why,
 // and what the drop costs, are stated there.
+use forge_workspace::conversation_turns::TurnScan;
 use forge_workspace::conversation_window::Window;
 // The delivered liveness rule, folded off the frames this copy sees - the same
 // one the client's `inFlightOf` keeps and the core folds into a seat's own
@@ -137,6 +138,17 @@ pub struct Conversation {
     /// mid-call delivery from being cut off from a result that has not
     /// streamed yet (#2379).
     live: bool,
+    /// Where the stream opens turns, folded over every frame this copy has
+    /// seen rather than over the window: a cut moves the window's front, not
+    /// the rule that says which frame opens a turn.
+    scan: TurnScan,
+    /// The thinking growth a cut took out of the turn open at the window's
+    /// end, which the page serving that turn carries back into its first
+    /// counter.
+    ///
+    /// **It never crosses a turn.** A `Result` closes the turn it belonged to,
+    /// and a frame that opens a turn starts the next one with nothing carried.
+    dropped_thinking: i64,
 }
 
 impl Conversation {
@@ -162,8 +174,16 @@ impl Conversation {
         // seed's own ladder is what a copy materialised mid-turn reads from
         // before any frame arrives.
         let live = live_of_seed(&messages);
-        let (window, dropped) = Window::tail_of(&as_blocks(messages));
-        let dropped = carried.saturating_add(dropped);
+        let blocks = as_blocks(messages);
+        // **The scan is primed over the whole history**, not the window: its
+        // state is what the frames before a turn left, and a cut takes frames
+        // the next opening would otherwise be read under.
+        let mut scan = TurnScan::default();
+        for message in &blocks {
+            scan.opens(message);
+        }
+        let (window, shed) = Window::tail_of(&blocks);
+        let dropped = carried.saturating_add(shed.frames);
         Self {
             window,
             rendered: Rendered { turns: Vec::new(), endings: HashMap::new() },
@@ -176,6 +196,10 @@ impl Conversation {
             occupant: None,
             handoff: None,
             live,
+            scan,
+            // Only a turn still open can draw the figure, so a settled history
+            // carries no debt.
+            dropped_thinking: if live { shed.thinking } else { 0 },
         }
     }
 
@@ -232,9 +256,16 @@ impl Conversation {
         // and the block it converts to are one frame. The cut then runs over
         // the converted history, so the window it keeps is the one weighed.
         let live = live_of_seed(&messages);
-        let (kept, left) = Window::tail_of(&as_blocks(messages));
+        let blocks = as_blocks(messages);
+        let mut scan = TurnScan::default();
+        for message in &blocks {
+            scan.opens(message);
+        }
+        let (kept, shed) = Window::tail_of(&blocks);
         self.live = live;
         self.window = kept;
+        self.scan = scan;
+        self.dropped_thinking = if live { shed.thinking } else { 0 };
         // **The boundaries go with the messages they describe.** The fold's
         // turns name a prefix of the messages, and a reader that saw the new
         // list under the old boundaries would slice off the end of it.
@@ -242,7 +273,7 @@ impl Conversation {
         // fold rebuilds them.
         self.rendered.turns.clear();
         self.rendered.endings.clear();
-        self.dropped = carried.saturating_add(left);
+        self.dropped = carried.saturating_add(shed.frames);
         // A frame whose id is no longer held cannot be met again, so the set
         // that answers "did forge forge this" holds only what the seat keeps.
         self.forged.retain(|id| self.window.messages().iter().any(|m| frame_id(m) == Some(id)));
@@ -285,6 +316,11 @@ impl Conversation {
     }
 
     fn push(&mut self, message: Message) {
+        // **The scan sees every frame once, in stream order**, so its answer
+        // stays exact across a fold (which empties the window, never the
+        // scan).
+        let opened = self.scan.opens(&message);
+        let ended = matches!(message, Message::Result { .. });
         // **A boundary that arrives moves the count**, the same way the
         // session task's own count does. Without this the record reports the
         // value its last SEED carried, which is stale for every compaction
@@ -302,9 +338,17 @@ impl Conversation {
         // **Before the push, so the drop pays for the room it makes.** After
         // it, this one frame is what tips the store into a doubling the drop
         // is about to throw away. Both ceilings are the window's own.
-        let dropped = self.window.push(message);
-        if dropped > 0 {
-            self.dropped = self.dropped.saturating_add(dropped);
+        let shed = self.window.push(message, opened);
+        // **A cut on a boundary owes nothing**: the turn it belongs to is
+        // either closed by this frame or the one before it, and the next turn
+        // starts its figure at zero.
+        if opened || ended {
+            self.dropped_thinking = 0;
+        } else {
+            self.dropped_thinking = self.dropped_thinking.saturating_add(shed.thinking);
+        }
+        if shed.frames > 0 {
+            self.dropped = self.dropped.saturating_add(shed.frames);
             // A forged row the seat no longer holds cannot be met again, so
             // the set that answers "did forge forge this" keeps only what it
             // keeps.
@@ -381,6 +425,12 @@ impl Conversation {
     /// turns a held index into the one a page's cursor carries.
     pub fn dropped(&self) -> usize {
         self.dropped
+    }
+
+    /// The thinking growth a cut took out of the turn open at the window's
+    /// end, which a page of that turn carries back into its first counter.
+    pub fn dropped_thinking(&self) -> i64 {
+        self.dropped_thinking
     }
 }
 
@@ -1075,6 +1125,126 @@ mod tests {
                 turns,
             )
         })
+    }
+
+    /// The newest page with the cut's thinking debt folded into it, which is
+    /// the shape the transport serves.
+    fn page_with_debt(held: &Held, turns: u32) -> crate::transport::wire::Page {
+        held.read(|held| {
+            crate::transport::wire::page_within(
+                held.messages(),
+                held.rendered(),
+                held.dropped(),
+                held.dropped_thinking(),
+                None,
+                turns,
+                usize::MAX,
+                "test",
+                None,
+            )
+        })
+    }
+
+    /// One thinking-token counter.
+    fn a_counter(at: usize, delta: i64) -> Message {
+        serde_json::from_value(serde_json::json!({
+            "type": "system",
+            "subtype": "thinking_tokens",
+            "estimated_tokens": delta as u64,
+            "estimated_tokens_delta": delta,
+            "uuid": format!("t-{at}"),
+            "session_id": "5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45",
+        }))
+        .expect("a counter frame")
+    }
+
+    /// One turn with `counters` thinking-token frames after its opening row.
+    fn a_thought_heavy_turn(counters: usize) -> Vec<Message> {
+        let mut messages = vec![a_frame("a thought-heavy turn")];
+        for at in 0..counters {
+            messages.push(a_counter(at, 1));
+        }
+        messages
+    }
+
+    /// The sum of the counter deltas a page serves.
+    fn served_thinking(page: &crate::transport::wire::Page) -> i64 {
+        page.turns
+            .iter()
+            .flat_map(|turn| turn.messages.iter())
+            .filter_map(|frame| {
+                if frame["type"] == "system" && frame["subtype"] == "thinking_tokens" {
+                    frame["estimated_tokens_delta"].as_i64()
+                } else {
+                    None
+                }
+            })
+            .sum()
+    }
+
+    /// **A cut inside a running turn leaves a debt the page pays.** The window
+    /// caps at 4,000 frames plus 1,000 slack, and a thinking storm is exactly
+    /// the turn that outgrows it: the cut takes the turn's leading counters,
+    /// and the page must carry their growth back on the first counter it has.
+    #[test]
+    fn a_thought_heavy_turn_serves_its_whole_sum_after_the_window_sheds_its_head() {
+        let counters = 5_100;
+        let held = Held::new(Conversation::new(a_thought_heavy_turn(counters), 0, 0));
+
+        let dropped = held.read(|held| held.dropped_thinking());
+        assert!(dropped > 0, "the cut took the turn's leading counters");
+
+        let page = page_with_debt(&held, u32::MAX);
+        assert_eq!(
+            served_thinking(&page),
+            counters as i64,
+            "the page carries the whole turn, not only the counters that survived",
+        );
+    }
+
+    /// **The debt never crosses a turn.** A `Result` closes the turn it
+    /// belonged to, and a frame that opens a turn starts the next one with
+    /// nothing carried.
+    #[test]
+    fn the_dropped_thinking_resets_on_a_result_and_on_a_new_turn() {
+        let mut conversation = Conversation::empty();
+        conversation.append(a_frame("a thought-heavy turn"));
+        for at in 0..5_100 {
+            conversation.append(a_counter(at, 1));
+        }
+        assert!(conversation.dropped_thinking() > 0, "the drop carries a debt");
+
+        conversation.append(a_result_frame());
+        assert_eq!(conversation.dropped_thinking(), 0, "a result closes the turn and its debt");
+
+        conversation.append(a_frame("the next turn"));
+        for at in 5_100..10_200 {
+            conversation.append(a_counter(at, 1));
+        }
+        assert!(conversation.dropped_thinking() > 0, "the next drop carries a debt");
+
+        conversation.append(a_frame("a new turn"));
+        assert_eq!(
+            conversation.dropped_thinking(),
+            0,
+            "a frame that opens a turn starts with nothing carried",
+        );
+    }
+
+    /// **A turn that fits is served exactly as it was.** No cut means no debt,
+    /// and the page's own sum is the turn's.
+    #[test]
+    fn a_turn_that_fits_is_served_unchanged() {
+        let mut conversation = Conversation::empty();
+        conversation.append(a_frame("a small turn"));
+        for at in 0..10 {
+            conversation.append(a_counter(at, 2));
+        }
+        assert_eq!(conversation.dropped_thinking(), 0, "no cut, no debt");
+
+        let held = Held::new(conversation);
+        let page = page_with_debt(&held, u32::MAX);
+        assert_eq!(served_thinking(&page), 20, "the page is the turn's own sum");
     }
 
     fn a_connect(history: Vec<Message>, compaction_count: u32) -> SessionUpdate {
