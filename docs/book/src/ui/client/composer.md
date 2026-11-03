@@ -38,6 +38,21 @@ marked row - is lost to the swap.
 it, which is what makes the CLI emit the lifecycle frames [the queue page](./queue.md) reads;
 without a stamp the CLI emits none.
 
+## The ask's dock
+
+While a prompt holds the body it replaces the field with its own card. A held Slack draft shows
+where it would go and the words that would go out, verbatim, and its verbs follow what it would
+do: one wording for a post, an edit, a delete, a reaction and an upload would ask the reader to
+approve the wrong act. A post draws `Post` and `Do not post`; an edit draws `Apply edit` and
+`Do not apply`, or `Delete` and `Keep it`; a reaction draws `React` and `Do not react`; an upload
+draws `Upload` and `Do not upload`.
+
+A third answer, send back with feedback, opens a field on the card. Enter sends, Shift+Enter is
+a newline, and Escape closes the field without sending. The words reach the agent as the blocked
+call's refusal, so it revises and calls again, and the revision parks as its own card; nothing
+posts until the reader approves that one. The press stands the card down, a line where it stood
+says the feedback is on its way, and a refusal replaces that line with its reason.
+
 ## The five lists
 
 Five triggers, one popover shape, each row carrying the real icon for its kind rather than a
