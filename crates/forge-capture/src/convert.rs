@@ -1,6 +1,7 @@
 //! What the device delivers, turned into the mono model-rate signal.
 
 use rubato::Resampler as _;
+use rubato::audioadapter_buffers::direct::{SequentialSliceOfSlices, SequentialSliceOfVecs};
 
 use crate::Error;
 use crate::SAMPLE_RATE;
@@ -31,7 +32,7 @@ fn sinc_parameters() -> rubato::SincInterpolationParameters {
     // The documented starting point.
     rubato::SincInterpolationParameters {
         sinc_len: 256,
-        f_cutoff: 0.95,
+        f_cutoff: Some(0.95),
         oversampling_factor: 256,
         interpolation: rubato::SincInterpolationType::Cubic,
         window: rubato::WindowFunction::BlackmanHarris2,
@@ -54,12 +55,13 @@ pub fn resample_mono(pcm: &[f32], from: u32, to: u32) -> Result<Vec<f32>, Error>
         return Ok(Vec::new());
     }
 
-    let mut resampler = rubato::SincFixedIn::<f32>::new(
+    let mut resampler = rubato::Async::<f32>::new_sinc(
         f64::from(to) / f64::from(from),
         1.0,
-        sinc_parameters(),
+        &sinc_parameters(),
         CHUNK,
         1,
+        rubato::FixedAsync::Input,
     )
     .map_err(|error| Error::Capture { message: error.to_string() })?;
     let from_frames = usize::try_from(from).unwrap_or(usize::MAX);
@@ -67,32 +69,36 @@ pub fn resample_mono(pcm: &[f32], from: u32, to: u32) -> Result<Vec<f32>, Error>
     let mut converted = Vec::with_capacity(
         pcm.len().saturating_mul(to_frames).saturating_div(from_frames).saturating_add(CHUNK),
     );
-    let mut buffer = resampler.output_buffer_allocate(true);
+    let mut buffer = vec![vec![0.0f32; resampler.output_frames_max()]];
+    let frames_out = buffer[0].len();
 
     let mut position = 0;
     while position < pcm.len() {
-        let remaining = pcm.len() - position;
-        let produced = if remaining >= CHUNK {
-            let input = &pcm[position..position + CHUNK];
-            resampler
-                .process_into_buffer(&[input], &mut buffer, None)
-                .map_err(|error| Error::Capture { message: error.to_string() })?
-                .1
-        } else {
-            let input = &pcm[position..];
-            resampler
-                .process_partial_into_buffer(Some(std::slice::from_ref(&input)), &mut buffer, None)
-                .map_err(|error| Error::Capture { message: error.to_string() })?
-                .1
-        };
+        let input = &pcm[position..position + CHUNK.min(pcm.len() - position)];
+        let input_buffer =
+            SequentialSliceOfSlices::new(std::slice::from_ref(&input), 1, input.len())
+                .map_err(|error| Error::Capture { message: error.to_string() })?;
+        let mut output_buffer = SequentialSliceOfVecs::new_mut(&mut buffer, 1, frames_out)
+            .map_err(|error| Error::Capture { message: error.to_string() })?;
+        let indexing = rubato::Indexing::new().partial_len(input.len());
+        let produced = resampler
+            .process_into_buffer(&input_buffer, &mut output_buffer, Some(&indexing))
+            .map_err(|error| Error::Capture { message: error.to_string() })?
+            .1;
         converted.extend_from_slice(&buffer[0][..produced]);
-        position += CHUNK.min(remaining);
+        position += input.len();
     }
     // The filter's own delay: pad once more so the tail comes out rather
     // than being cut off by the delay line, then cut the padding response
     // off at the buffer's own duration.
+    let empty: [&[f32]; 1] = [&[]];
+    let input_buffer = SequentialSliceOfSlices::new(&empty, 1, 0)
+        .map_err(|error| Error::Capture { message: error.to_string() })?;
+    let mut output_buffer = SequentialSliceOfVecs::new_mut(&mut buffer, 1, frames_out)
+        .map_err(|error| Error::Capture { message: error.to_string() })?;
+    let indexing = rubato::Indexing::new().partial_len(0);
     let flushed = resampler
-        .process_partial_into_buffer::<&[f32], Vec<f32>>(None, &mut buffer, None)
+        .process_into_buffer(&input_buffer, &mut output_buffer, Some(&indexing))
         .map_err(|error| Error::Capture { message: error.to_string() })?
         .1;
     converted.extend_from_slice(&buffer[0][..flushed]);
@@ -143,7 +149,7 @@ impl InputConverter {
 }
 
 struct Resampling {
-    resampler: rubato::SincFixedIn<f32>,
+    resampler: rubato::Async<f32>,
     staging: Vec<f32>,
     input: Vec<Vec<f32>>,
     output: Vec<Vec<f32>>,
@@ -156,15 +162,16 @@ struct Resampling {
 
 impl Resampling {
     fn new(device_rate: u32) -> Result<Self, Error> {
-        let resampler = rubato::SincFixedIn::<f32>::new(
+        let resampler = rubato::Async::<f32>::new_sinc(
             f64::from(SAMPLE_RATE) / f64::from(device_rate),
             1.0,
-            sinc_parameters(),
+            &sinc_parameters(),
             RESAMPLE_CHUNK,
             1,
+            rubato::FixedAsync::Input,
         )
         .map_err(|error| Error::Capture { message: error.to_string() })?;
-        let output = resampler.output_buffer_allocate(true);
+        let output = vec![vec![0.0f32; resampler.output_frames_max()]];
         // Sized for the largest block a callback could bring, so the
         // extends below stay inside the allocation. Overflow past it
         // would grow once and then hold - the same first-malloc trade
@@ -192,21 +199,31 @@ impl Resampling {
             // The only failure is a buffer-size mismatch, and both
             // buffers are sized to the resampler at construction; a
             // warn beats panicking the audio thread.
-            let (_, produced) =
-                match self.resampler.process_into_buffer(&self.input, &mut self.output, None) {
-                    Ok(used) => used,
-                    Err(error) => {
-                        // Defensive: a persistent rejection must not
-                        // grow staging without bound.
-                        self.staging.clear();
-                        tracing::warn!(
-                            event_name = "resampler_block_rejected",
-                            %error,
-                            "resampler rejected a block; dropping it"
-                        );
-                        return;
-                    }
-                };
+            let frames_out = self.output[0].len();
+            let input = SequentialSliceOfVecs::new(&self.input, 1, RESAMPLE_CHUNK);
+            let output = SequentialSliceOfVecs::new_mut(&mut self.output, 1, frames_out);
+            let processed = match (input, output) {
+                (Ok(input), Ok(mut output)) => self
+                    .resampler
+                    .process_into_buffer(&input, &mut output, None)
+                    .map(|(_, produced)| produced)
+                    .map_err(|error| error.to_string()),
+                (Err(error), _) | (_, Err(error)) => Err(error.to_string()),
+            };
+            let produced = match processed {
+                Ok(produced) => produced,
+                Err(error) => {
+                    // Defensive: a persistent rejection must not
+                    // grow staging without bound.
+                    self.staging.clear();
+                    tracing::warn!(
+                        event_name = "resampler_block_rejected",
+                        %error,
+                        "resampler rejected a block; dropping it"
+                    );
+                    return;
+                }
+            };
             self.staging.drain(..RESAMPLE_CHUNK);
             out(&self.output[0][..produced], std::mem::take(&mut self.pending_peak));
         }
