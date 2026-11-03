@@ -336,23 +336,30 @@ describe('the queue pile', () => {
     expect(second?.textContent, 'with no raw backticks').not.toContain('`marks`');
   });
 
-  it('says what an ending was, where the card was', () => {
+  it('says what an ending was, with the words it carried', () => {
     const { connection } = recording();
-    mount(Queue, {
-      target: host,
-      props: {
-        rows: [],
-        ended: { text: 'the lost one', state: 'discarded' },
-        slot: SLOT,
-        connection,
-      },
-    });
-    flushSync();
+    for (const [state, said] of [
+      ['discarded', 'discarded, never sent: the lost one'],
+      ['refused', 'refused by a hook: the refused one'],
+    ] as const) {
+      const text = state === 'discarded' ? 'the lost one' : 'the refused one';
+      mount(Queue, {
+        target: host,
+        props: {
+          rows: [],
+          ended: { text, state },
+          slot: SLOT,
+          connection,
+        },
+      });
+      flushSync();
 
-    expect(
-      host.querySelector('.ended')?.textContent,
-      'a row that vanishes silently reads as one that was delivered',
-    ).toBe('discarded, never sent');
+      expect(
+        host.querySelector('.ended')?.textContent,
+        'a row that vanishes silently reads as one that was delivered',
+      ).toBe(said);
+      host.replaceChildren();
+    }
   });
 
   /**

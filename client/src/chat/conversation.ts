@@ -3612,8 +3612,10 @@ export class Chat {
    * was held at all. `completed` draws the same way, which is what saves a
    * hold whose `started` was lost - a reattached client that missed the frame.
    * `cancelled`, `refused` and `discarded` draw nothing: none of them reached
-   * a model, so no turn carries the words, and the pile's own ending line is
-   * where they are read (#2816). Anything else keeps the hold.
+   * a model, so no turn carries the words. A refusal or a discard hands them
+   * to the pile's ending line, which draws them where the card was; a cancel
+   * has said what it had to say by leaving (#2816). Anything else keeps the
+   * hold.
    */
   private advanced(update: SessionUpdate): void {
     const uuid = textIn(update, 'prompt_lifecycle', 'uuid');
@@ -3641,10 +3643,10 @@ export class Chat {
     if (!dropped && !drawn) return;
     this.waiting.delete(uuid);
     this.drained.delete(uuid);
-    // **A prompt that never starts draws no row.** Refused and discarded join
-    // cancelled: the words never reached a model, the pile's own ending line
-    // is the only place they exist, and the page copy never carries them
-    // (#2816).
+    // **A prompt that never starts draws no row.** Refused and discarded
+    // leave their words to the pile's ending line, which is the only place
+    // after the card; cancelled leaves nothing, because the reader ended it
+    // (#2816). The page copy never carries any of them.
     if (dropped) {
       this.dropEmptied(uuid);
       return;

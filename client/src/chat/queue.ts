@@ -1,15 +1,26 @@
 import type { QueueEnding, QueuedPromptRow } from '../session/wire';
+import { joinedLine } from './text';
 
 /**
  * The one line an ending leaves where the card was, or `null` for an ending
  * that needs no word: a row that was taken, or one the reader cancelled, has
  * said what it had to say by leaving.
+ *
+ * **The words ride the line.** A refused or discarded prompt never reaches a
+ * turn, so this line is the only place its words exist after the card leaves;
+ * naming the ending alone lost them.
  */
 export function endingLine(ended: QueueEnding | null): string | null {
   if (ended === null) return null;
-  if (ended.state === 'discarded') return 'discarded, never sent';
-  if (ended.state === 'refused') return 'refused by a hook';
-  return null;
+  const words = joinedLine(ended.text);
+  const ending =
+    ended.state === 'discarded'
+      ? 'discarded, never sent'
+      : ended.state === 'refused'
+        ? 'refused by a hook'
+        : null;
+  if (ending === null) return null;
+  return words === '' ? ending : `${ending}: ${words}`;
 }
 
 /**
