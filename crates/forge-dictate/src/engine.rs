@@ -910,7 +910,7 @@ fn load_models(asr_path: &Path, cfg: &Config) -> Result<Loaded, (PathBuf, String
         // The rate is baked into the weights, so a model that wants a
         // different one does not fail - it silently transcribes worse.
         // Reading what the GGUF declares turns that into a refusal.
-        let declared = model.capabilities().native_sample_rate;
+        let declared = model.capabilities()?.native_sample_rate;
         if declared == i32::try_from(SAMPLE_RATE).unwrap_or(i32::MAX) {
             Ok((model, session))
         } else {

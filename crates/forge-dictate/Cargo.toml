@@ -24,7 +24,9 @@ hex = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 dirs = { workspace = true }
-transcribe-cpp = { workspace = true }
+# Shared ggml: llama-cpp-2 links its own static ggml, and two static
+# copies collide on Linux (`duplicate symbol: ggml_backend_*`).
+transcribe-cpp = { workspace = true, features = ["shared"] }
 llama-cpp-2 = { workspace = true }
 encoding_rs = { workspace = true }
 # Per-take diagnostics: the take's capture written back as a canonical
