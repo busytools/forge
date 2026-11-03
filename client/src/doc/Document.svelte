@@ -161,13 +161,17 @@
    * has no place at all.
    */
   const placements = $derived(placeThreads(held.threads, lines.length));
+
+  /** The comment targets: rendered blocks for markdown, lines for text. */
+  const rows = $derived(held.kind === 'text' ? rowsOf(text, 'text') : rowsOf(text, 'markdown'));
+
   /** The store echoes a draft back as a thread with the same id. The shelf
-   *  row is the one that draws only while its line is still in this version;
-   *  past the last line the echo is the only row left. */
+   *  row is the one that draws only while a row would hold it; past the last
+   *  row the echo is the only one left. */
   const draftIds = $derived(
     new Set(
       drafts
-        .filter((draft) => draft.line >= 1 && draft.line <= lines.length)
+        .filter((draft) => rows.some((row) => draft.line >= row.line && draft.line <= row.end))
         .map((draft) => draft.id),
     ),
   );
@@ -175,9 +179,6 @@
     placements.filter((held) => held.line !== null && !draftIds.has(held.thread.id)),
   );
   const unplaceable = $derived(placements.filter((held) => held.line === null));
-
-  /** The comment targets: rendered blocks for markdown, lines for text. */
-  const rows = $derived(held.kind === 'text' ? rowsOf(text, 'text') : rowsOf(text, 'markdown'));
 
   /**
    * The drift is written back where it is drawn: a diff's overlay ages a
