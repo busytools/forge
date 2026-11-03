@@ -6428,19 +6428,24 @@ describe('the dock', () => {
     ]);
   });
 
-  const OPERATION_CARDS: [string, string | null, string, string, string][] = [
-    ['post', null, 'Post to Slack', 'Post', 'Do not post'],
-    ['post', '1758901234.482910', 'Reply in Slack', 'Post', 'Do not post'],
-    ['edit', null, 'Edit in Slack', 'Apply edit', 'Do not apply'],
-    ['delete', null, 'Delete in Slack', 'Delete', 'Keep it'],
-    ['react', null, 'React in Slack', 'React', 'Do not react'],
-    ['unreact', null, 'Unreact in Slack', 'Unreact', 'Do not unreact'],
-    ['upload', null, 'Upload to Slack', 'Upload', 'Do not upload'],
+  // The server sets `thread_ts` to the target MESSAGE's ts on every non-post
+  // operation - the field is a reply thread only for a post or an upload - so
+  // these rows carry the shape a real server sends, not a null.
+  const STAMP = '1758901234.482910';
+  const OPERATION_CARDS: [string, string | null, string, string, string, string | null][] = [
+    ['post', null, 'Post to Slack', 'Post', 'Do not post', null],
+    ['post', STAMP, 'Reply in Slack', 'Post', 'Do not post', `thread ${STAMP}`],
+    ['edit', STAMP, 'Edit in Slack', 'Apply edit', 'Do not apply', `message ${STAMP}`],
+    ['delete', STAMP, 'Delete in Slack', 'Delete', 'Keep it', `message ${STAMP}`],
+    ['react', STAMP, 'React in Slack', 'React', 'Do not react', `message ${STAMP}`],
+    ['unreact', STAMP, 'Unreact in Slack', 'Unreact', 'Do not unreact', `message ${STAMP}`],
+    ['upload', null, 'Upload to Slack', 'Upload', 'Do not upload', null],
+    ['upload', STAMP, 'Upload to Slack', 'Upload', 'Do not upload', `thread ${STAMP}`],
   ];
 
   it.each(OPERATION_CARDS)(
     'draws a %s draft with its own words',
-    (operation, thread, head, approve, decline) => {
+    (operation, thread, head, approve, decline, stamp) => {
       open({
         record: record({
           pending_asks: [slackDraftAsk({ operation, thread_ts: thread })],
@@ -6456,6 +6461,13 @@ describe('the dock', () => {
         'Send back with feedback',
         decline,
       ]);
+      // Read the destination itself: an operation's own body can repeat the
+      // timestamp, so the whole drawn text cannot tell the stamp's noun.
+      const dest = document.querySelector('.dock .dest')?.textContent ?? '';
+      expect(
+        dest.replace(/\s+/g, ' ').trim(),
+        'a message stamp and a thread stamp are different facts',
+      ).toBe(`Trust Machines · granite-staging-alerts${stamp === null ? '' : ` · ${stamp}`}`);
     },
   );
 
@@ -6665,6 +6677,9 @@ describe('the dock', () => {
     expect(drawn(), 'and draws the revised words').toContain('staging is down');
     expect(drawn(), 'not the ones that were sent back').not.toContain(
       'Deploy finished on staging.',
+    );
+    expect(drawn(), 'and the previous press no longer reads as on its way').not.toContain(
+      'Sending your feedback',
     );
   });
 

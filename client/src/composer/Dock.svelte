@@ -164,10 +164,25 @@
   const slackVerbs = $derived.by(() => {
     if (ask.kind !== 'slack_draft') return { head: '', approve: '', decline: '' };
     const verbs = SLACK_VERBS[ask.request.operation];
-    // Only a post can reply: an edit's timestamp names the message it
-    // changes, not a thread.
+    // Only a post leads with "Reply": an upload's thread is the destination's
+    // stamp, not the card's verb.
     const reply = ask.request.operation === 'post' && ask.request.threadTs !== null;
     return { ...verbs, head: reply ? 'Reply in Slack' : verbs.head };
+  });
+
+  /**
+   * The card's destination line: where it goes, and what its timestamp means.
+   * A post's or an upload's stamp names the thread it replies into; every
+   * other operation carries the target MESSAGE's ts in the same field, and a
+   * destructive card must not call that a thread.
+   */
+  const slackDest = $derived.by(() => {
+    if (ask.kind !== 'slack_draft') return '';
+    const { workspace, conversationLabel, threadTs, operation } = ask.request;
+    const line = `${workspace} · ${conversationLabel}`;
+    if (threadTs === null) return line;
+    const noun = operation === 'post' || operation === 'upload' ? 'thread' : 'message';
+    return `${line} · ${noun} ${threadTs}`;
   });
 
   /** One of a question's options, as its row draws it. */
@@ -604,7 +619,7 @@
     });
   }
 
-  /** A held post's two verbs, which are buttons rather than rows. */
+  /** A held draft's verbs, which are buttons rather than rows. */
   function post(decision: 'approve' | 'decline'): void {
     if (answered || ask.kind !== 'slack_draft') return;
     const id = ask.request.id;
@@ -1182,11 +1197,7 @@
       <div class="desc">{ask.request.header}</div>
     {:else if ask.kind === 'slack_draft'}
       <div class="d-head">
-        <span class="dest">
-          {ask.request.workspace} · {ask.request
-            .conversationLabel}{#if ask.request.threadTs !== null}
-            · thread {ask.request.threadTs}{/if}
-        </span>
+        <span class="dest">{slackDest}</span>
         <span class="q mono">{slackVerbs.head}</span>
         {@render foldButton()}
       </div>

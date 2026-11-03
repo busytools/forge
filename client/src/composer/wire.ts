@@ -160,7 +160,11 @@ export interface SlackDraft {
   id: string;
   workspace: string;
   conversationLabel: string;
-  /** `null` posts a root message; a timestamp replies into that thread. */
+  /**
+   * What the timestamp is depends on the operation: for a post or an
+   * upload it is the thread it replies into (absent on a root), and for an
+   * edit, delete, react or unreact it is the target MESSAGE's own ts.
+   */
   threadTs: string | null;
   text: string;
   operation: SlackOperation;
