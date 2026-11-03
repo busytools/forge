@@ -144,10 +144,7 @@ mod tests {
         let state = super::SessionState::collect(&workspace, &seat, Path::new("/tmp"));
 
         assert_eq!(state.queue.len(), 1, "the waiting prompt is still served");
-        assert!(
-            state.queue[0].attachments.is_empty(),
-            "and its payloads stay core-side",
-        );
+        assert!(state.queue[0].attachments.is_empty(), "and its payloads stay core-side",);
     }
 
     /// **A handoff owns the seat until the swap replaces it, and a

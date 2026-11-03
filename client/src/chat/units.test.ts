@@ -2993,7 +2993,10 @@ describe('one turn folded into the units a view draws', () => {
     // session handing over stays folded like any other procedure.
     const brief = 'HANDOFF - a -> b\n\nPART 1: GROUND TRUTH\nseat: TestOrg/send-row/lead';
     const live = fold([heard([text(brief)], { uuid: 'forge_nudge_5_1a2b3c4d' })]);
-    expect(proceduresOf(live[0]).map((row) => row.open), 'the brief opens itself').toEqual([true]);
+    expect(
+      proceduresOf(live[0]).map((row) => row.open),
+      'the brief opens itself',
+    ).toEqual([true]);
 
     const judgment = 'A handoff is starting for this session: run the skill.';
     const before = fold([heard([text(judgment)], { uuid: 'forge_nudge_handoff_7_feedface' })]);

@@ -12671,7 +12671,10 @@ provider = "anthropic"
                 } else {
                     echoed < anchor && ended < anchor
                 };
-                assert!(ordered, "{label}: the words and their settle sit with the occupant's frame");
+                assert!(
+                    ordered,
+                    "{label}: the words and their settle sit with the occupant's frame"
+                );
             }
         }
     }
