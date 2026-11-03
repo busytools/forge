@@ -191,6 +191,7 @@ describe('the document comment helpers', () => {
 
     const built = docThread(draft, '/proj/docs/plan.md');
 
+    expect(built.id, 'the stored thread keeps the draft id the echo pairs on').toBe('x');
     expect(built.anchor).toEqual({
       path: '/proj/docs/plan.md',
       side: 'New',

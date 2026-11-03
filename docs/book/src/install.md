@@ -123,13 +123,16 @@ The gate is two commands: run this one before opening a pull request, and
 `just check-feature-configs` with it. `just check` runs with
 `--all-features`, so it deliberately leaves out the configuration
 `install.sh` builds; the second command is what compiles it. Beyond that
-this is CI's set with three differences: CI also runs
-`cargo check --release` and the client's production build with
+this is CI's set with four differences: CI also runs
+`cargo check --release`, the client's production build with
 `scripts/check_client_wasm.py` (the wasm the highlighter imports, which
-`just check` never builds), while `client-android-warnings` (the shell's
-android step) is in `just check` alone - the vendoring its build needs
-refuses non-macOS hosts, so CI runs no such job yet (issue #1959, closed
-as an enhancement and tracked in #2258). The
+`just check` never builds), and `scripts/install.sh` followed by a boot of
+the installed binary with no library path (the shared transcribe/ggml
+libraries have to resolve from beside it, and neither local command
+installs anything), while `client-android-warnings` (the shell's android
+step) is in `just check` alone - the vendoring its build needs refuses
+non-macOS hosts, so CI runs no such job yet (issue #1959, closed as an
+enhancement and tracked in #2258). The
 client's steps are in here too, so the client and the server are not
 separate commands, and a failure on either side lands on the same verdict
 line.
@@ -227,7 +230,10 @@ sees.
 `just check-feature-configs` compiles the configurations nothing else
 builds: the one `just install` produces - release, the test-only features
 off, the server binary plus the host executable `install.sh` builds
-separately - and `testing` on its own.
+separately - and `testing` on its own. CI goes one step further and
+installs the server binary of that configuration, booting it with no
+library path to prove the shared transcribe/ggml libraries resolve beside
+it; the local recipe stops at compiling.
 `--all-features` cannot stand in for either, because it turns every
 feature on regardless and so never exercises which configuration
 enables what: the install build leaving `test-helpers` off, or
@@ -247,10 +253,23 @@ unless you have overridden `CARGO_INSTALL_ROOT` or `CARGO_HOME`. It
 builds whatever branch is checked out; it does not clone, fetch or
 reset.
 
+It also ships transcribe's shared libraries beside the binary. The 0.4
+ggml builds as a shared library, because its static copy duplicates
+llama-cpp-2's symbols in one Linux binary, and the loader does not search
+the executable's own directory: `forge` carries a loader path naming that
+directory, and the `libtranscribe` and `libggml*` files land beside it. No
+environment variable is involved. A hand-rolled `cargo install` copies only
+the binary and leaves one that cannot start.
+
+The install builds into a staging root and replaces the installed binary
+only once the staged copy starts with its libraries beside it; a failure
+before the replacement leaves the previous binary untouched.
+
 One side effect worth knowing about: it regenerates the zsh completion
 at `~/.zsh/completions/_forge` (override the directory with
 `FORGE_ZSH_COMPLETION_DIR`) and removes `~/.zcompdump*` so the next
-shell picks it up.
+shell picks it up. On macOS it also stages the browser host and its
+driver; `FORGE_INSTALL_BROWSER=0` skips that stage.
 
 `just release <version>` installs this binary too, and publishes the
 release. It bumps the workspace and the client's manifest to the same

@@ -594,6 +594,137 @@ describe('the reviewable document', () => {
     expect(cut?.delete_review_thread.thread_id, 'and the store heard about it').toBeTruthy();
   });
 
+  /**
+   * **A written comment draws once.** The store echoes the draft back on the
+   * next read, so the thread it answers with carries the draft's own id; the
+   * shelf is the truth while the comment is unfiled, and the echo must not
+   * draw a second row beside it. The first and last lines are the anchors a
+   * boundary slip would duplicate first, so both are carried here.
+   */
+  it('draws a written comment once when the store echoes it back', () => {
+    addDraft(docScope(PATH), { id: 't-1', line: 1, text: 'the first words', context: ['# hi'] });
+    addDraft(docScope(PATH), {
+      id: 't-3',
+      line: 3,
+      text: 'the last words',
+      context: ['line three'],
+    });
+    const first = {
+      ...placedThread('t-1', 1, { state: 'placed', line: 1, moved_from: null }, ['# hi']),
+      comments: [{ author: 'User', text: 'the first words', at: 'x', review_id: null }],
+    };
+    const last = {
+      ...placedThread('t-3', 3, { state: 'placed', line: 2, moved_from: 3 }, ['line three']),
+      comments: [{ author: 'User', text: 'the last words', at: 'x', review_id: null }],
+    };
+    drawReviewable({
+      kind: 'landed',
+      document_kind: 'markdown',
+      // The last line's text now sits at line 2, so the echo's move is the
+      // placement the server's re-anchor would produce.
+      bytes: enc('# hi\nline three\nline two'),
+      reviewable: true,
+      content_hash: '42',
+      threads: [first, last],
+    });
+
+    const rows = [...document.querySelectorAll('.doc-note')];
+    expect(rows.length, 'no store echo draws beside either draft').toBe(2);
+    expect(
+      rows.every((row) => row.classList.contains('doc-draft')),
+      'both rows are the shelf rows',
+    ).toBe(true);
+    const words = rows.map((row) => row.textContent ?? '');
+    expect(
+      words.some((text) => text.includes('the first words')),
+      'the line 1 draft draws',
+    ).toBe(true);
+    expect(
+      words.some((text) => text.includes('the last words')),
+      'the last-line draft draws',
+    ).toBe(true);
+  });
+
+  /**
+   * **The page ages the echoes it draws, never one a shelf row covers.** A
+   * suppressed echo's stale landing must not reach the store behind the
+   * reader's back; every other drifted thread still ages, including a draft
+   * whose own line is past the document and can only draw as its echo.
+   */
+  it('ages every drifted echo except one its draft row covers', () => {
+    addDraft(docScope(PATH), {
+      id: 't-1',
+      line: 2,
+      text: 'the words',
+      context: ['line two'],
+    });
+    addDraft(docScope(PATH), {
+      id: 't-5',
+      line: 5,
+      text: 'past the document',
+      context: ['line two'],
+    });
+    const suppressed = {
+      ...placedThread('t-1', 2, { state: 'outdated', reason: 'gone' }, ['line two']),
+      comments: [{ author: 'User', text: 'the words', at: 'x', review_id: null }],
+    };
+    const drifted = placedThread('d-9', 2, { state: 'outdated', reason: 'gone' }, ['line two']);
+    const past = {
+      ...placedThread('t-5', 5, { state: 'outdated', reason: 'gone' }, ['line two']),
+      comments: [{ author: 'User', text: 'past the document', at: 'x', review_id: null }],
+    };
+    const page = drawReviewable({
+      kind: 'landed',
+      document_kind: 'markdown',
+      bytes: enc('# hi\nline two\nline three'),
+      reviewable: true,
+      content_hash: '42',
+      threads: [suppressed, drifted, past],
+    });
+
+    const aged = (page.sent as Record<string, Record<string, unknown>>[])
+      .filter((command) => 'set_review_thread_status' in command)
+      .map((command) => command['set_review_thread_status']);
+    expect(aged, 'only the echoes the page draws are aged').toEqual([
+      { project: SLOT.project, branch: `doc:${PATH}`, thread_id: 'd-9', status: 'Outdated' },
+      { project: SLOT.project, branch: `doc:${PATH}`, thread_id: 't-5', status: 'Outdated' },
+    ]);
+  });
+
+  /**
+   * **A draft past this version's last line is the store's row to draw.**
+   * The draft row only draws inside the document's rows, so a comment
+   * written at line 5 of a document now three lines long has no shelf row;
+   * the store re-found its content at line 2, and dropping that echo would
+   * leave the comment with no row at all while the finish still files it.
+   */
+  it('draws the stored thread when a draft line is past the document', () => {
+    addDraft(docScope(PATH), {
+      id: 't-2',
+      line: 5,
+      text: 'the moved words',
+      context: ['line two'],
+    });
+    const echo = {
+      ...placedThread('t-2', 5, { state: 'placed', line: 2, moved_from: 5 }, ['line two']),
+      comments: [{ author: 'User', text: 'the moved words', at: 'x', review_id: null }],
+    };
+    drawReviewable({
+      kind: 'landed',
+      document_kind: 'markdown',
+      bytes: enc('# hi\nline two\nline three'),
+      reviewable: true,
+      content_hash: '42',
+      threads: [echo],
+    });
+
+    const rows = [...document.querySelectorAll('.doc-note')].filter((row) =>
+      row.textContent?.includes('the moved words'),
+    );
+    expect(rows.length, 'the stored thread is the only row').toBe(1);
+    expect(rows[0]?.classList.contains('doc-draft'), 'the shelf has no row to draw').toBe(false);
+  });
+
   /** **The nudge the view this client replaced sent on its own drop.** The
    *  finish pushes the review-ready line into the session, so the chat shows
    *  the review to the reader and reaches the agent - with the document's
