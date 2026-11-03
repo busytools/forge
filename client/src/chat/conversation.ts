@@ -146,19 +146,6 @@ function heldIds(turn: Turn): ReadonlySet<string> {
   );
 }
 
-/**
- * Whether a page row opens on a mid-turn prompt: the `queued_command` block
- * the scan hoists the transcript's `attachment` row into.
- *
- * The CLI queues a prompt only while a turn is running, so a row opening on
- * one is the turn above it carrying on rather than a turn of its own. The
- * harness's own background-completion notice rides the same block and opens no
- * turn at all, so it is not one of these.
- */
-function queuedPrompt(row: PageTurn): boolean {
-  return queuedWords(messagesOf(row)[0]) !== null;
-}
-
 /** Whether a seat's own record says a turn is in flight. */
 function runningOf(data: unknown): boolean {
   const header = (data as { header?: { turn_in_flight?: unknown } } | null)?.header;
@@ -542,32 +529,6 @@ function triggerRow(uuid: string, text: string): unknown {
 }
 
 /**
- * The frame in `messages` that is the same message as `message` under its other
- * carrier - the words it says - or `null` when none is left to pair with it.
- *
- * **One frame answers for one copy**, which is why the frames that have already
- * answered are carried in: two prompts saying the same words inside one turn are
- * two messages, and the second would otherwise be read as a repeat of the first
- * and dropped - the reader's own words, gone.
- *
- * By identity rather than by position, because the frames it is asked about
- * belong to rows that are merged into one: a pairing counted by where a frame
- * sits is lost as soon as the row grows.
- */
-function pairedWith(
-  messages: unknown[],
-  message: unknown,
-  answered: ReadonlySet<unknown>,
-): unknown {
-  const words = wordsOf(message);
-  if (words.length === 0) return null;
-  for (const held of messages) {
-    if (!answered.has(held) && sameWords(words, wordsOf(held))) return held;
-  }
-  return null;
-}
-
-/**
  * What one frame says, when it is a person's own words.
  *
  * The words are read from both carriers a prompt travels in: the frame's own
@@ -586,11 +547,6 @@ function wordsOf(message: unknown): string[] {
   const queued = queuedWords(message);
   if (queued !== null) words.push(queued);
   return words;
-}
-
-/** Whether two frames say the same words, in the same order. */
-function sameWords(one: string[], other: string[]): boolean {
-  return one.length === other.length && one.every((word, at) => word === other[at]);
 }
 
 /**
@@ -2439,17 +2395,6 @@ export class Chat {
        * moved into that place rather than the one that was there.
        */
       const namedTurn: Array<Turn | null> = [];
-      /**
-       * The frames that have answered for a copy of the reader's own words,
-       * for the WHOLE page.
-       *
-       * The row it is read against spans rows: the fold opens a turn on every
-       * queued prompt, so two of them arrive as two rows and both join the one
-       * above - and a count minted per row forgets what the row before it
-       * paired with, which lets the next copy consume the same frame and drop
-       * the words.
-       */
-      const answered = new Set<unknown>();
       for (const row of pageRows) {
         // What the turn is held under: the fold's own name where it gave one,
         // and the name this conversation gave it where it did not. Reading
@@ -2490,42 +2435,10 @@ export class Chat {
           namedTurn.push(repeated);
           continue;
         }
-        // **A row the fold cut at a mid-turn prompt is not a row of its own.**
-        // The CLI queues a prompt only while a turn is running, and it writes
-        // the transcript's row where it queued it - inside that turn - so the
-        // row above it is the turn it interrupted, and the page's cut joins
-        // back where the live path draws the words: inside the running row.
-        const above = named[named.length - 1];
-        if (above !== undefined && queuedPrompt(row)) {
-          let messages = [...(copies[copies.length - 1] ?? [])];
-          // **The row grows below, so its index grows with it.** A frame the
-          // loop itself appends is one the next asks have to find - an index
-          // that only read its constructor would answer for the row as it
-          // was, and the same prompt would land a second time.
-          const carried = new Frames(messages);
-          // The prompt the row already grew with is the SAME words under the
-          // carrier a page holds them in, and the two carriers mint different
-          // ids - so a copy is paired with the frame it is, and no other frame
-          // answers for it twice.
-          for (const message of messagesOf(row)) {
-            if (carried.carries(message)) continue;
-            const paired = pairedWith(messages, message, answered);
-            if (paired === null) {
-              // **An unmatched copy keeps the page's position, settled row or
-              // not.** Its live echo never arrived, and appending it put it
-              // below frames the row already held - frames the page says came
-              // after it (#1584).
-              messages = rejoin(messages, [message], messagesOf(row));
-              carried.add(message);
-              answered.add(message);
-            } else {
-              answered.add(paired);
-            }
-          }
-          named[named.length - 1] = { ...above, messages };
-          copies[copies.length - 1] = messages;
-          continue;
-        }
+        // **A page row is a turn of its own.** The scanner serves a queued
+        // prompt at the CLI's start, after the turn it was typed into, which
+        // is where the live path draws it - so no row here belongs to the
+        // turn above.
         const key = nameIn(row, taken);
         taken.add(key);
         const fresh: Turn = { key, messages: messagesOf(row), live: false };
@@ -2939,10 +2852,10 @@ export class Chat {
       }
       // **The turns a newest page does not carry keep the order they were
       // held in.** A settled turn and one still in play are not two ranks
-      // here: a watched swap leaves the judgment turn in play while its row
-      // is already settled, and placing every settled turn above every
-      // in-play one lifted the row over the turn it ends - within one
-      // successor turn (#2639). The seam is one stretch of held order.
+      // here: a turn can settle while a later one is still running, and
+      // placing every settled turn above every in-play one lifted the later
+      // turn over the one it follows (#2639). The seam is one stretch of
+      // held order.
       //
       // **An older landing needs no such rule.** Its page is older than
       // every held turn, so the recorded seam sits wholly below it; the one

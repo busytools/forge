@@ -4378,9 +4378,9 @@ describe('the conversation the chat draws', () => {
    * The fold opens a turn at the mid-turn prompt's own row, so one running turn
    * arrives as the opening row and then a row per prompt with the frames that
    * followed it. **The prompt here is a delivered-prompt frame**, which is the
-   * carrier the `placedAt` arm meets: a prompt hoisted as a `queued_command`
-   * attachment never reaches it, because `queuedPrompt` absorbs that row above
-   * and appends. The two-row page is the reduction of the three-row one (a
+   * carrier the `placedAt` arm meets: a queued prompt's own row is served at
+   * the CLI's start and is its own turn, so it never lands inside this cut.
+   * The two-row page is the reduction of the three-row one (a
    * `queued_command` row, then the delivered row, then the tail): the same
    * cut, without the absorbed row in the middle. Both rows match the one live
    * turn by the frames they share, so the second goes through the `placedAt`
@@ -4436,13 +4436,14 @@ describe('the conversation the chat draws', () => {
   });
 
   /**
-   * **An unmatched mid-turn copy keeps the page's position, not the row's
-   * end.** The live echo of the reader's mid-turn prompt never arrived, so
-   * the page's copy has nothing to pair with - and appending it put it below
-   * the frames the row already held, which the page says came after it
-   * (#1584).
+   * **A queued prompt's page row is its own turn after the interrupted one.**
+   * The CLI queues a prompt while a turn runs and starts it when that turn
+   * ends, and the scanner places the row at that start - so the page opens a
+   * turn there, after the frames the interrupted turn wrote once the press
+   * happened. Folding the row back into the turn above put the reader's words
+   * before work written after they pressed (#2816).
    */
-  it('places an unmatched mid-turn copy where the page had it', () => {
+  it('keeps a queued prompt\'s page row as its own turn after the interrupted one', () => {
     const server = fakeConnection();
     const chat = new Chat(server.connection, LEAD);
     const stop = chat.start();
@@ -4467,94 +4468,36 @@ describe('the conversation the chat draws', () => {
         },
       };
 
-      // The page's cut at the mid-turn prompt: the turn's own row first, then
-      // the prompt's row carrying the frames that followed it.
+      // The page as the scanner serves it: the interrupted turn's frames,
+      // then the prompt's row at the start, carrying what answered it.
       server.send(
         page(
           [
             { key: null, messages: [typed('open'), said('call one'), said('call two')] },
-            { key: null, messages: [queued, said('call two'), said('missed')] },
+            { key: null, messages: [queued, said('answered it'), said('missed')] },
           ],
           null,
         ),
       );
 
-      const carriers = get(chat.value).turns.filter((row) =>
+      const turns = get(chat.value).turns;
+      const carriers = turns.filter((row) =>
         JSON.stringify(row.messages).includes('the words that never echoed'),
       );
       expect(carriers, 'the copy draws in one row, not a second one').toHaveLength(1);
-      const order = (carriers[0]?.messages ?? []).map((message) => JSON.stringify(message));
-      const at = (needle: string): number => order.findIndex((held) => held.includes(needle));
-      expect(
-        at('call one'),
-        'precondition: the frame the prompt followed is drawn',
-      ).toBeGreaterThan(-1);
-      expect(
-        at('the words that never echoed'),
-        'the copy sits after the frame it followed on the page',
-      ).toBeGreaterThan(at('call one'));
-      expect(
-        at('the words that never echoed'),
-        'and above the frame the page says came after it',
-      ).toBeLessThan(at('call two'));
-    } finally {
-      stop();
-    }
-  });
-
-  /**
-   * **A settled row takes the unmatched copy the same way.** The issue's
-   * second half: when the row it would join has already settled (a `result`
-   * in it), the copy still keeps the page's position rather than landing
-   * below frames the row already held (#1584).
-   */
-  it('places an unmatched mid-turn copy in a settled row by its page position', () => {
-    const server = fakeConnection();
-    const chat = new Chat(server.connection, LEAD);
-    const stop = chat.start();
-    try {
-      server.send(page([turn('t0', 'earlier')], null));
-      for (const frame of [typed('open'), said('call one'), said('call two')]) {
-        server.update({ chat_appended: { key: LEAD, msg: frame } });
-      }
-      const queued = {
-        type: 'user',
-        uuid: 'cli-queued-2',
-        message: {
-          role: 'user',
-          content: [
-            {
-              type: 'queued_command',
-              commandMode: 'prompt',
-              prompt: 'the words that never echoed',
-              source_uuid: 'forge_mid_2',
-            },
-          ],
-        },
-      };
-
-      // The page's cut, settled: its row carries the exchange's own result.
-      server.send(
-        page(
-          [
-            { key: null, messages: [typed('open'), said('call one'), said('call two')] },
-            { key: null, messages: [queued, said('call two'), ended()] },
-          ],
-          null,
-        ),
+      const interrupted = turns.findIndex((row) =>
+        JSON.stringify(row.messages).includes('call two'),
       );
-
-      const carriers = get(chat.value).turns.filter((row) =>
+      const prompt = turns.findIndex((row) =>
         JSON.stringify(row.messages).includes('the words that never echoed'),
       );
-      expect(carriers, 'the copy draws in one row, not a second one').toHaveLength(1);
+      expect(prompt, 'the prompt opens its own row').toBeGreaterThan(interrupted);
       const order = (carriers[0]?.messages ?? []).map((message) => JSON.stringify(message));
       const at = (needle: string): number => order.findIndex((held) => held.includes(needle));
       expect(
         at('the words that never echoed'),
-        'the settled row still places the copy where the page had it',
-      ).toBeLessThan(at('call two'));
-      expect(at('the words that never echoed')).toBeGreaterThan(at('call one'));
+        'the words sit above what answered them',
+      ).toBeLessThan(at('answered it'));
     } finally {
       stop();
     }
@@ -6668,34 +6611,6 @@ describe('the chat holds a queued prompt until the CLI takes it', () => {
     server.update({ prompt_lifecycle: { key: LEAD, uuid: 'p1', state: 'started' } });
     expect(words(chat), 'and the drain draws it once, when it starts').toContain('raced words');
     expect(words(chat).split('raced words').length - 1, 'once').toBe(1);
-  });
-
-  /**
-   * **The joined row's index grows with the row.** The loop appends frames to
-   * a queued row as it runs, and the frame it just appended is one the next
-   * copy has to be found in - an index that only read the row as it stood
-   * would hand the same copy a second landing.
-   */
-  it('lands one copy of a frame the joined row grew with', () => {
-    const server = fakeConnection();
-    const chat = new Chat(server.connection, LEAD);
-    chat.start();
-    server.send(page([turn('t1', 'first')], null));
-
-    // The fold cut this row at a mid-turn prompt, and the same frame rides it
-    // twice: the second is found in the list the first grew.
-    const copy = {
-      type: 'user',
-      uuid: 'q-g1',
-      timestamp: '2026-10-01T10:00:02Z',
-      message: {
-        role: 'user',
-        content: [{ type: 'queued_command', prompt: 'grown words', commandMode: 'prompt' }],
-      },
-    };
-    server.send(page([turn('t1', 'first'), { key: 't2', messages: [copy, copy] }], null));
-
-    expect(words(chat).split('grown words').length - 1, 'the copy landed twice').toBe(1);
   });
 
   it('holds the row a page carries while the prompt still waits', () => {
