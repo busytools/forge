@@ -1220,7 +1220,7 @@ mod tests {
         let page = page_with_debt(&held, u32::MAX);
         assert_eq!(
             served_thinking(&page),
-            counters as i64,
+            i64::try_from(counters).expect("the test's count fits"),
             "the page carries the whole turn, not only the counters that survived",
         );
     }
