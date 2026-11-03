@@ -1,16 +1,24 @@
 <script lang="ts">
   import type { HomeRead } from '../home/live';
-  import { goTo, holdRoute, type Route } from '../routes';
+  import { watchModels } from '../models/live';
+  import { boxKey } from '../composer/box.svelte';
+  import type { Command } from '../protocol';
+  import { goTo, holdRoute, lastSeat, type Route } from '../routes';
+  import { voiceFor } from '../voice/registry';
+  import { connectionPort } from '../voice/voice.svelte';
   import type { Connection } from '../socket';
   import type { SettingsDocument, SettingsEditRequest, SettingsKey } from '../wire/settings';
+  import type { ActivateState, InstallState, SpeakingWire } from '../wire/models';
   import ConfirmDialog from '../components/ConfirmDialog.svelte';
   import SettingsBody from './SettingsBody.svelte';
   import { settingsFrame } from './frame';
+  import { previewNext } from './preview';
   import {
     addEntry,
     dirtyCount,
     editRequests,
     emptyDraft,
+    findKey,
     removeEntry,
     restartKeys,
     setEntryValue,
@@ -77,6 +85,153 @@
   let timer: ReturnType<typeof setTimeout> | null = null;
 
   const dirty = $derived(dirtyCount(draft));
+
+  /** The models read, watched only while this page is open. */
+  let models = $state<{
+    speaking: SpeakingWire | null;
+    install: InstallState;
+    activate: ActivateState;
+    busy: boolean;
+  }>({ speaking: null, install: { state: 'idle' }, activate: { state: 'idle' }, busy: false });
+  /** The core's own words for a refused speaking action. */
+  let speakingRefusal = $state<string | null>(null);
+  /** The preview this page asked for: its row and where it is - working until
+   * the first chunk sounds, playing while it does, failed when the core names
+   * a failure. `ignored` is the failure already on screen when the press
+   * landed, so a stale one does not flash the fresh press as failed. */
+  let speakingPreview = $state<{
+    voice: string;
+    phase: 'working' | 'playing' | 'failed';
+  } | null>(null);
+  let ignoredPreviewFailure = $state<string | null>(null);
+  /** The clips that had started when the press landed: the stopped clip is
+   * still `playing` for a moment, and must not mark the new press. */
+  let previewStarted = $state(0);
+  const seat = $derived($lastSeat);
+  const seatVoice = $derived(
+    seat === null ? null : voiceFor(boxKey(seat), connectionPort(connection, seat)),
+  );
+
+  // The settings route holds no composer, so the seat's cached voice is
+  // pumped here while the page is open: a preview's frames play now rather
+  // than waiting for the session page to return and playing stale.
+  $effect(() => {
+    const at = seat;
+    if (at === null) return;
+    const voice = voiceFor(boxKey(at), connectionPort(connection, at));
+    const held = connection.store({ session: at });
+    return held?.value.subscribe(() => voice.pump());
+  });
+  const speaking = $derived(models.speaking);
+  /** The saved voice, off the settings document: a save's reload push moves
+   * this without a second read of the models snapshot. */
+  const savedVoice = $derived.by(() => {
+    if (frame.status !== 'ready') return models.speaking?.voice ?? null;
+    const key = findKey(frame.document, 'tts.voice');
+    return key?.value.kind === 'string' ? key.value.text : null;
+  });
+  /** The staged choice while there is one, else the saved value. */
+  const speakingVoice = $derived(
+    typeof draft.values['tts.voice'] === 'string' ? draft.values['tts.voice'] : savedVoice,
+  );
+  /** The saved `[tts] enabled`: the core's install and switch gates read the
+   * file, so the card follows the file while the running role may differ
+   * until a restart takes the edit. */
+  const savedSpeakingEnabled = $derived.by(() => {
+    if (frame.status !== 'ready') return models.speaking?.enabled ?? false;
+    const key = findKey(frame.document, 'tts.enabled');
+    return key?.value.kind === 'bool'
+      ? key.value.text === 'true'
+      : (models.speaking?.enabled ?? false);
+  });
+
+  // The speaking card is the only reader of the models subject here, so the
+  // subscription lives only while its area is open - a page left on accounts
+  // asks forge for nothing it draws.
+  $effect(() => {
+    if (selected !== 'voice') return;
+    const open = connection;
+    return watchModels(open).subscribe((read) => {
+      const wire = read.wire;
+      models = {
+        speaking: wire?.speaking ?? null,
+        install: wire?.install ?? { state: 'idle' },
+        activate: wire?.activate ?? { state: 'idle' },
+        busy:
+          wire !== null &&
+          (wire.install.state === 'downloading' || wire.activate.state === 'activating'),
+      };
+    });
+  });
+
+  $effect(() => {
+    const stop = connection.onMessage((message) => {
+      if (message.kind === 'error' && message.what === 'dispatch') {
+        speakingRefusal = message.why;
+      }
+    });
+    return stop;
+  });
+
+  /** The preview's phases follow the two things that answer them: the
+   * playback's own `playing`, and a failure the core or the socket named.
+   * The transitions live in `previewNext` where the tests can drive them. */
+  $effect(() => {
+    const held = speakingPreview;
+    if (held === null) return;
+    const failure = speaking?.preview_error ?? speakingRefusal;
+    if (failure === null) ignoredPreviewFailure = null;
+    // A clip the press stopped can still read as playing for a moment; only
+    // a clip that began after the press is the pressed voice sounding.
+    const playing = (seatVoice?.started ?? 0) > previewStarted && seatVoice?.state === 'speaking';
+    const next = previewNext(held, playing, failure, ignoredPreviewFailure);
+    if (next !== held) speakingPreview = next;
+  });
+
+  /** The failure the previewed row draws: the same words the card would,
+   * in place on the row the press belongs to. */
+  const previewFailure = $derived(
+    speakingPreview?.phase === 'failed' ? (speaking?.preview_error ?? speakingRefusal) : null,
+  );
+
+  function speakingAct(command: Command): void {
+    speakingRefusal = null;
+    try {
+      void connection.dispatch(command);
+    } catch (why) {
+      // A dispatch with no open socket throws before anything is sent; that
+      // belongs on the card beside a refusal, not in the console.
+      speakingRefusal = why instanceof Error ? why.message : String(why);
+    }
+  }
+
+  /** One preview at a time: the clip sounding now stops and its queued
+   * buffers go, so the pressed voice is heard as its first chunk arrives
+   * rather than behind the clip already playing. The audio device is woken in
+   * this same gesture, so the platform cannot leave it suspended. */
+  function startPreview(id: string): void {
+    if (seat === null) return;
+    seatVoice?.unlock();
+    seatVoice?.stop();
+    previewStarted = seatVoice?.started ?? 0;
+    ignoredPreviewFailure = speaking?.preview_error ?? speakingRefusal;
+    speakingPreview = { voice: id, phase: 'working' };
+    speakingAct({ voice_preview: { key: seat, voice: id } });
+  }
+
+  function stopPreview(): void {
+    seatVoice?.stop();
+    speakingPreview = null;
+  }
+
+  /** Stage the voice choice as this page's own edit, written by its Save. */
+  function chooseVoice(id: string): void {
+    if (frame.status !== 'ready') return;
+    const key = findKey(frame.document, 'tts.voice');
+    if (key === null) return;
+    if (!editing) toggleEditing();
+    setValue(draft, key, id);
+  }
 
   /** The bar's one claim, in strict precedence: refusal, conflict, saving,
    *  saved, idle. There is one slot, so two can never be drawn at once. */
@@ -492,6 +647,26 @@
       onUndoRemove={(path: string) => undoRemove(draft, path)}
       errorPath={refusal?.keyPath ?? null}
       onBack={goHome}
+      {speaking}
+      savedEnabled={savedSpeakingEnabled}
+      speakingInstall={models.install}
+      speakingActivate={models.activate}
+      speakingBusy={models.busy}
+      {speakingVoice}
+      speakingRefusal={speakingPreview?.phase === 'failed'
+        ? null
+        : (speakingRefusal ?? speaking?.preview_error ?? null)}
+      {speakingPreview}
+      speakingPreviewFailure={previewFailure}
+      speakingListening={seatVoice?.on ?? false}
+      onSpeakingStopPreview={stopPreview}
+      previewSeat={seat}
+      onSpeakingInstall={(variant: string) => speakingAct({ dictate_install: { variant } })}
+      onSpeakingActivate={(file: string) =>
+        speakingAct({ dictate_activate: { role: 'speaking', file } })}
+      onSpeakingDeactivate={() => speakingAct({ dictate_deactivate: { role: 'speaking' } })}
+      onSpeakingVoice={chooseVoice}
+      onSpeakingPreview={startPreview}
     />
 
     {#if editing && (dirty > 0 || saving || refusal !== null || saved || conflict !== null || restart.length > 0)}

@@ -173,6 +173,10 @@ describe('the controls that draw a boundary nothing else carries', () => {
       boundaryOf('.models-page button.chip, .extensions-page button.chip', SHEET),
       'a chip that is a button',
     ).toBe('var(--ctl)');
+    expect(
+      boundaryOf('.settings-speaking button.chip', SHEET),
+      "the speaking card's chip that is a button",
+    ).toBe('var(--ctl)');
     // **A button's state keeps a boundary that holds.** The base rule is
     // outranked by each state's tint, and the warn tint measures 2.42:1, so
     // each state that is a BUTTON marks itself in its own solid tone.

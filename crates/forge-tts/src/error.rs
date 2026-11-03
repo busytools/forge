@@ -4,6 +4,8 @@
 pub enum Error {
     #[error("model file missing: {0}")]
     ModelMissing(String),
+    #[error("voice {0} is not installed")]
+    VoiceMissing(String),
     #[error("model load failed: {0}")]
     Load(String),
     #[error("render failed: {0}")]

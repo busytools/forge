@@ -19,7 +19,8 @@ import type { Store } from '../stores';
 import { modelsFrom, type DictateModelsWire } from '../wire/models';
 import type { Subject } from '../protocol';
 
-/** The models page's subject, which only this page watches. */
+/** The models page's subject. This page watches it for its whole life; the
+ * settings page watches it too, only while its voice area is open. */
 const MODELS: Subject = 'dictate_models';
 
 /** What the models page has to draw from, and why it has nothing when it does not. */

@@ -163,7 +163,8 @@
     "UpsertReviewThread": "upsert_review_thread",
     "VoiceBenchStart": "voice_bench_start",
     "VoiceBenchStop": "voice_bench_stop",
-    "VoiceMode": "voice_mode"
+    "VoiceMode": "voice_mode",
+    "VoicePreview": "voice_preview"
   },
   "client_message": {
     "BrowserControl": "browser_control",
@@ -385,8 +386,8 @@
         "read_aloud",
         "results",
         "rows",
+        "speaking",
         "speaking_bench",
-        "speaking_models_dir",
         "speaking_results",
         "updates"
       ],
@@ -534,6 +535,37 @@
         "quant",
         "size_bytes"
       ],
+      "/update/dictate_models_changed/models/speaking": [
+        "active",
+        "enabled",
+        "from",
+        "models_dir",
+        "preview_error",
+        "snapshot",
+        "speaking_model",
+        "variants",
+        "voice",
+        "voices"
+      ],
+      "/update/dictate_models_changed/models/speaking/active": [
+        "active",
+        "file",
+        "installed",
+        "quant",
+        "size",
+        "variant"
+      ],
+      "/update/dictate_models_changed/models/speaking/snapshot": [
+        "models"
+      ],
+      "/update/dictate_models_changed/models/speaking/variants[]": [
+        "active",
+        "file",
+        "installed",
+        "quant",
+        "size",
+        "variant"
+      ],
       "/update/dictate_models_changed/models/speaking_bench": [
         "reason",
         "state"
@@ -552,6 +584,7 @@
       "/update/dictate_models_changed/models/speaking_results[]/metrics": [
         "clips",
         "first_audio_ms",
+        "peak_rss_bytes",
         "realtime_factor",
         "round_trip_wer"
       ],
@@ -627,10 +660,9 @@
         "key"
       ],
       "/update/document_hand_off_resolved/ending": [
-        "approve"
+        "done"
       ],
-      "/update/document_hand_off_resolved/ending/approve": [
-        "note",
+      "/update/document_hand_off_resolved/ending/done": [
         "review_id"
       ],
       "/update/document_hand_off_resolved/key": [
@@ -668,7 +700,6 @@
         "commit",
         "created_at",
         "id",
-        "resolution",
         "status",
         "updated_at"
       ],
@@ -685,10 +716,6 @@
         "author",
         "review_id",
         "text"
-      ],
-      "/threads[]/resolution": [
-        "reason",
-        "state"
       ]
     },
     "Error": {

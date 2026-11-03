@@ -76,6 +76,15 @@ export function shownSeat(at: Route): SessionSlot | null {
   return 'slot' in at ? at.slot : null;
 }
 
+/**
+ * The seat the reader was last on.
+ *
+ * A global page has no seat of its own, and the speaking preview plays on a
+ * seat's own voice stream - so it plays on this one, whose speaker switch is
+ * what the core checks. `null` before the reader has opened a session.
+ */
+export const lastSeat = writable<SessionSlot | null>(null);
+
 /** The route a path names. Anything the server does not serve is `notFound`. */
 export function parseRoute(path: string): Route {
   const segments = withoutDocument(path)

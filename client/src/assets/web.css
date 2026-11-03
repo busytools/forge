@@ -1584,7 +1584,10 @@ details.gfold > summary .gh { font-size: var(--fs-label); font-weight: 500;
 details.gfold > summary:hover .gh { color: var(--muted); }
 details.gfold > summary .cn { margin-left: auto; font-family: var(--mono);
   font-size: var(--fs-data); letter-spacing: 0; color: var(--dim); }
-details.gfold > summary .arw { color: var(--dim); font-size: var(--fs-data); }
+/* The fold IS a door: its chevron shows at rest in both states, because a
+   collapsed section whose only affordance is hover is a section nobody
+   opens. */
+details.gfold > summary .arw { opacity: 1; color: var(--dim); font-size: var(--fs-data); }
 details.gfold[open] > summary .arw { color: var(--accent); }
 .pj { border-radius: 10px; margin: 1px 0; }
 .pj:hover { background: rgba(27,33,48,.5); }
@@ -3914,7 +3917,8 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
    drawing, and the sheet's sweeps read a rule by its class name wherever it
    sits. */
 .models-page .facts { min-width: 0; flex: 1; }
-.models-page .nm { font-family: var(--mono); font-size: var(--fs-data); color: var(--text);
+.models-page .nm, .settings-speaking .nm { font-family: var(--mono);
+  font-size: var(--fs-data); color: var(--text);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .models-page .meta { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
   margin-top: 3px; }
@@ -3922,32 +3926,44 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
 .models-page .side { display: flex; align-items: center; gap: 8px; flex: none; }
 
 /* the chip: the dictation panel's own chip, at this page's scale - a state
-   when it is a span, an action when it is a button */
-.models-page .chip { display: inline-flex; align-items: center; gap: 7px;
+   when it is a span, an action when it is a button. The settings page's
+   speaking card draws the same chip, so the two surfaces' controls are one
+   vocabulary rather than two looks. */
+.models-page .chip,
+.settings-speaking .chip { display: inline-flex; align-items: center; gap: 7px;
   font-family: var(--mono); font-size: var(--fs-label); padding: 4px 10px;
   border: 1px solid var(--line); border-radius: 9px; color: var(--muted);
   background: none; white-space: nowrap; }
-.models-page button.chip { cursor: pointer; }
+.models-page button.chip,
+.settings-speaking button.chip { cursor: pointer; }
 /* A chip that is a BUTTON is an action: its pill boundary is the only mark,
    so it takes the control mark. A chip that is a span is a state and keeps
    the hairline. */
 .models-page button.chip,
 .extensions-page button.chip { border-color: var(--ctl); }
+/* The speaking card's chips are this same action vocabulary. */
+.settings-speaking button.chip { border-color: var(--ctl); }
 .models-page button.chip:hover,
 .extensions-page button.chip:hover { border-color: var(--text); color: var(--text); }
+.settings-speaking button.chip:hover { border-color: var(--text); color: var(--text); }
 /* One download and one activation run at a time, so a second control is
    disabled rather than offered and then refused; a disabled one still says
    what it would do. */
 .models-page button.chip:disabled { opacity: .5; cursor: default; }
+.settings-speaking button.chip:disabled { opacity: .5; cursor: default; }
 .models-page button.chip:disabled:hover { border-color: var(--line); color: var(--muted); }
+.settings-speaking button.chip:disabled:hover { border-color: var(--line); color: var(--muted); }
 
 /* the check line and an update line: one shape, toned by what it says */
-.models-page .status { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+.models-page .status,
+.settings-speaking .status { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
   border: 1px solid var(--line); border-radius: var(--r); background: rgba(13,17,26,.6);
   padding: 12px 15px; margin-bottom: 10px; }
-.models-page .status .t { font-family: var(--mono); font-size: var(--fs-data); color: var(--text); }
-.models-page .status .when { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
-.models-page .status .spacer { margin-left: auto; }
+.models-page .status .t, .settings-speaking .status .t {
+  font-family: var(--mono); font-size: var(--fs-data); color: var(--text); }
+.models-page .status .when, .settings-speaking .status .when {
+  font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
+.models-page .status .spacer, .settings-speaking .status .spacer { margin-left: auto; }
 .models-page .status.warn { border-color: rgba(201,161,59,.35); }
 .models-page .status.warn .t { color: var(--warn); }
 .models-page .status.failed { border-color: rgba(224,104,62,.4); }
@@ -3957,7 +3973,8 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
 .models-page .status .detail b { color: var(--muted); font-weight: 500; }
 /* The download's bar: the figure the words beside it carry, drawn the way the
    platform draws it rather than as a div sized by a style attribute. */
-.models-page .status progress { flex: none; width: 140px; height: 7px;
+.models-page .status progress, .settings-speaking .status progress {
+  flex: none; width: 140px; height: 7px;
   accent-color: var(--accent); }
 /* A line this side's own failure - a refused microphone, a keep that never
    reached the socket - or the core's, drawn in the error tone. */
@@ -3965,6 +3982,42 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
 /* The passage is prose somebody reads aloud, so its lines read left to
    right at a measure a voice can hold, not the full width of the card. */
 .models-page .status .detail.passage { max-width: 84ch; }
+
+/* The settings page's speaking section draws the models page's own status
+   row, then its voices as this page's own card: the head band is the
+   disclosure, and each voice is a setting line. */
+.settings-speaking { margin-top: 24px; }
+.settings-speaking > .t { font-size: 15px; font-weight: 500; margin: 0 0 8px;
+  color: var(--text); }
+/* A foldable card's head band is a summary, not a header: the disclosure
+   marker goes, and the chevron shows at rest in both states. */
+.settings-page details.settings-card > summary.settings-card-head { list-style: none; cursor: pointer; }
+.settings-page details.settings-card > summary.settings-card-head::-webkit-details-marker { display: none; }
+.settings-page details.settings-card > summary .arw { opacity: 1; color: var(--dim); }
+.settings-page details.settings-card[open] > summary .arw { color: var(--accent); }
+/* The voices card's rows: the language is a sub-heading, and the fifty-four
+   rows scroll inside the card rather than growing the page by the catalogue. */
+.settings-speaking details.settings-card { max-height: 460px; overflow-y: auto; }
+.settings-speaking .voice-group { margin: 12px 16px 2px; font-family: var(--mono);
+  font-size: 10.5px; font-weight: 500; color: var(--dim); }
+.settings-speaking .voice-rows { display: flex; flex-direction: column; }
+.settings-speaking .voice-rows > .settings-setting { flex-wrap: wrap; }
+.settings-speaking .voice-actions { display: inline-flex; align-items: center;
+  justify-content: flex-end; gap: 6px; flex-wrap: wrap; }
+/* The chosen and the sounding rows are marked the same way: the name takes
+   the weight, so the row the reader hears is identifiable at a glance. */
+.settings-speaking .settings-setting.chosen > .settings-setting-label code,
+.settings-speaking .settings-setting.playing > .settings-setting-label code {
+  font-weight: 500; color: var(--text); }
+/* A preview's failure lands on the row the press belongs to, under it. */
+.settings-speaking .settings-setting > .bad { flex: 1 1 100%; font-family: var(--mono);
+  font-size: var(--fs-label); color: var(--bad); }
+.settings-speaking .note.bad { color: var(--bad); }
+@media (pointer: coarse) {
+  /* A finger-driven page gets the standard's target on the card's controls. */
+  .settings-speaking .settings-setting { min-height: 44px; }
+  .settings-speaking button.chip { min-height: 44px; padding: 0 12px; }
+}
 
 /* The add control sits between the recordings list and the results below it,
    so it carries the space on both sides: a bare chip there touches both. */
@@ -4020,21 +4073,24 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
 .models-page .link { border: 0; background: none; padding: 0; font: inherit; cursor: pointer;
   color: var(--muted); text-decoration: underline; }
 .models-page .link:hover { color: var(--text); }
-.models-page .note { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
+.models-page .note, .settings-speaking .note {
+  font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
   margin-top: 10px; }
 
 /* a candidate row: the home's row shape, shrunk to a list item, and a LINK -
    it opens the entry's own document, so it carries the chrome a way in has:
    a hover ground and a marker drawn at rest rather than on the pointer. */
-.models-page .list { margin-top: 12px; border: 1px solid var(--line); border-radius: var(--r);
+.models-page .list, .settings-speaking .list {
+  margin-top: 12px; border: 1px solid var(--line); border-radius: var(--r);
   overflow: hidden; background: rgba(13,17,26,.4); }
 /* The hairline is the LI's, which is the home's own pattern: the row inside
    it is an anchor, and an anchor is always its li's only child - a
    `:last-child` on the row would match every one of them and the separator
    would be dead in the whole list. */
-.models-page .list li { display: flex; align-items: center; gap: 10px; padding-right: 12px;
+.models-page .list li, .settings-speaking .list li {
+  display: flex; align-items: center; gap: 10px; padding-right: 12px;
   border-bottom: 1px solid var(--line); }
-.models-page .list li:last-child { border-bottom: 0; }
+.models-page .list li:last-child, .settings-speaking .list li:last-child { border-bottom: 0; }
 /* A row's control sits beside its link, never inside it: an anchor holding a
    button is markup no browser will run. */
 .models-page .list li > .chip { flex: none; }
