@@ -4291,31 +4291,44 @@ describe('the one body slot', () => {
     ).toBeNull();
   });
 
-  it('says the read wait on the band above the field', () => {
-    // **One place for every narrative state.** The read wait was the column's
-    // own line; it is the band's now, above the field rather than in its
-    // place - the seat is up and takes a prompt while the page is out.
+  it('holds the box with the read wait, like every other narrative state', () => {
+    // **The read wait is a hold, not a row above the field.** A line that
+    // came and went above a live field grew the composer and shrank it again
+    // before the chat appeared (Ved, 2026-11-03); it takes the body now, and
+    // the reader has nothing to type into until the page lands.
     open({ reading: true });
 
     expect(
-      document.querySelector('.surf .slot > .notice')?.textContent,
-      'the band does not say it is reading',
+      document.querySelector('.slot > .blocked')?.textContent,
+      'the box is not held while the page is out',
     ).toContain('Reading the conversation');
     expect(
-      document.querySelector('.slot > .notice')?.getAttribute('role'),
-      'the read wait lost the live region the column carried',
+      document.querySelector('.slot > .blocked')?.getAttribute('role'),
+      'the read wait lost its live region',
     ).toBe('status');
-    expect(document.querySelector('.comp .line'), 'the read wait took the field').not.toBeNull();
+    expect(document.querySelector('.comp .line'), 'the read wait left the field live').toBeNull();
+  });
+
+  it('keeps a live take ahead of the read wait', () => {
+    // A take is the reader's own row: the hold would cover the card and leave
+    // a recording with nowhere to draw until the page landed.
+    open({
+      reading: true,
+      record: record({ composer: { take: take(), notice: null, machine: null } }),
+    });
+
+    expect(document.querySelector('.slot > .blocked'), 'the read hold covered a take').toBeNull();
+    expect(document.querySelector('.line .tc'), 'the live take lost its card').not.toBeNull();
   });
 
   it('keeps a parked ask ahead of the read wait', () => {
-    // The dock is the body when an ask waits: the read line belongs to the
-    // field's body and would be a second thing in the slot.
+    // The dock is the body when an ask waits: the read hold would cover the
+    // one thing the reader can answer.
     open({ reading: true, record: record({ pending_asks: [questionAsk()] }) });
 
     expect(document.querySelector('.slot .dock'), 'the wait covered the ask').not.toBeNull();
     expect(
-      document.querySelector('.slot > .notice'),
+      document.querySelector('.slot > .blocked'),
       'the read wait drew beside a parked ask',
     ).toBeNull();
   });

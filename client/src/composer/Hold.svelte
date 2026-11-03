@@ -13,10 +13,18 @@
     sub = null,
     bad = false,
     shimmer = false,
-  }: { line: string; sub?: string | null; bad?: boolean; shimmer?: boolean } = $props();
+    status = false,
+  }: {
+    line: string;
+    sub?: string | null;
+    bad?: boolean;
+    shimmer?: boolean;
+    /** Whether the hold is a live region - the read wait is announced. */
+    status?: boolean;
+  } = $props();
 </script>
 
-<div class="blocked" class:err={bad}>
+<div class="blocked" class:err={bad} role={status ? 'status' : undefined}>
   <span class="b1"><span class:shimmer>{line}</span></span>
   {#if sub !== null}<span class="b2">{sub}</span>{/if}
 </div>
