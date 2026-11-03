@@ -316,7 +316,9 @@ jobs:
           scripts/install.sh
           bin="$CARGO_INSTALL_ROOT/bin/forge"
           env -u LD_LIBRARY_PATH "$bin" --version
-          libs=$(env -u LD_LIBRARY_PATH ldd "$bin" | grep -E '^(libtranscribe|libggml)')
+          # ldd indents its lines, and a no-match grep must reach the emptiness
+          # check rather than abort the step under pipefail.
+          libs=$(env -u LD_LIBRARY_PATH ldd "$bin" | grep -E '^[[:space:]]*(libtranscribe|libggml)' || true)
           if [ -z "$libs" ]; then
             echo "the installed binary links no transcribe/ggml libraries" >&2
             exit 1
@@ -327,7 +329,7 @@ jobs:
             exit 1
           fi
           # Control: the boot check must be sensitive to the installed copy.
-          resolved=$(echo "$libs" | awk '/^libtranscribe/ {print $3}')
+          resolved=$(echo "$libs" | awk '/^[[:space:]]*libtranscribe/ {print $3}')
           mv "$resolved" "$resolved.aside"
           if env -u LD_LIBRARY_PATH "$bin" --version > /dev/null 2>&1; then
             echo "the binary booted with $resolved moved away" >&2
@@ -496,9 +498,10 @@ jobs:
           scripts/install.sh
           bin="$CARGO_INSTALL_ROOT/bin/forge"
           env -u DYLD_LIBRARY_PATH -u DYLD_FALLBACK_LIBRARY_PATH "$bin" --version
+          # A no-match grep reaches the emptiness check below, not an abort.
           loaded=$(env -u DYLD_LIBRARY_PATH -u DYLD_FALLBACK_LIBRARY_PATH \
             DYLD_PRINT_LIBRARIES=1 "$bin" --version 2>&1 \
-            | grep -E '/(libtranscribe|libggml)[^/]*\.dylib')
+            | grep -E '/(libtranscribe|libggml)[^/]*\.dylib' || true)
           if [ -z "$loaded" ]; then
             echo "the installed binary loaded no transcribe/ggml libraries" >&2
             exit 1
