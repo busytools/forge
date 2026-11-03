@@ -7139,14 +7139,34 @@ async fn a_subscribe_serves_the_stored_pr_and_the_watch_pushes_the_lookup() {
     assert!(marker.exists(), "the lookup ran, off the read path");
 }
 
-/// **The review page's own read refreshes the base, and the count moves with
-/// it.** An ordinary record read serves the stored state and says its base was
-/// not checked; the review-scoped read fetches first and re-reads the stats
-/// pinned to the same sha, so the file list and the "N commits" describe one
-/// base. Deleting the pinned scan leaves the count on the stale base and reds
-/// this.
+/// Wait for the checkout's base measurement to land, so the read after it can
+/// draw the check. The kick is a real fetch against the fixture's local
+/// remote, and its own children are bounded by the scanner's budget; the wait
+/// is a wedge, not a latency claim.
+async fn base_measured(
+    repo: &std::path::Path,
+    branch: &str,
+) -> forge_workspace::env::git_diff::BaseMeasurement {
+    let deadline = Instant::now() + WATCH_PASS_WEDGE;
+    loop {
+        if let Some(measured) = forge_workspace::env::git_diff::last_base_measurement(repo, branch)
+        {
+            return measured;
+        }
+        assert!(Instant::now() < deadline, "the kicked base refresh never landed");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// **The review read answers the base at once, and the refresh it kicks is
+/// what the next read draws.** An ordinary record read serves the stored state
+/// and says its base was not checked; the review-scoped read holds no check on
+/// its first open, so it answers unchecked beside the stored stale count and
+/// kicks the fetch. That fetch's measurement then answers the next review
+/// read, and the count moves onto the base it pins: the file list and the "N
+/// commits" describe one base on each read.
 #[tokio::test]
-async fn a_review_read_refreshes_the_base_and_the_count_with_it() {
+async fn a_review_read_answers_the_base_at_once_and_the_refresh_lands_for_the_next() {
     let root = tempfile::tempdir().expect("tempdir");
     let upstream = tempfile::tempdir().expect("upstream");
     let fleet = Fleet::in_dir_with_server_and_env(root.path(), &[("TestOrg", &["proj"])], "", &[])
@@ -7171,7 +7191,7 @@ async fn a_review_read_refreshes_the_base_and_the_count_with_it() {
         &lead_seat(),
         forge_server::surface::inspector::WorkSnapshot {
             diff: stored,
-            cwd: repo,
+            cwd: repo.clone(),
             read_at: std::time::Instant::now(),
             base: None,
             base_at: None,
@@ -7227,7 +7247,9 @@ async fn a_review_read_refreshes_the_base_and_the_count_with_it() {
         "an ordinary read leaves the base ref where it stood",
     );
 
-    // The review page's own read: the base refreshed, the count with it.
+    // **The review read answers at once.** No check is in hand yet, so the
+    // base is unchecked beside the stored stale count, and the fetch runs off
+    // the read.
     let mut review = connect(&url).await;
     send(
         &mut review,
@@ -7238,8 +7260,35 @@ async fn a_review_read_refreshes_the_base_and_the_count_with_it() {
         },
     )
     .await;
-    let (_, fresh, _) = snapshot_answering(&mut review).await;
-    assert_eq!(fresh["diff"]["base"], "current", "the review read refreshed the base: {fresh}");
+    let (_, first, _) = snapshot_answering(&mut review).await;
+    assert_eq!(
+        first["diff"]["base"], "unverified",
+        "the first review read holds no check yet: {first}",
+    );
+
+    // The refresh it kicked lands a measurement, and the next review read
+    // draws it: the base checked, the count moved onto it.
+    let measured = base_measured(&repo, "origin/main").await;
+    assert_eq!(
+        measured.state,
+        forge_primitives::git_diff::BaseState::Current,
+        "the kicked fetch measured the base",
+    );
+    let mut fresh_read = connect(&url).await;
+    send(
+        &mut fresh_read,
+        ClientMessage::Subscribe {
+            what: Subject::Session(lead_seat()),
+            answering: true,
+            review: true,
+        },
+    )
+    .await;
+    let (_, fresh, _) = snapshot_answering(&mut fresh_read).await;
+    assert_eq!(
+        fresh["diff"]["base"], "current",
+        "the next review read draws the checked base: {fresh}"
+    );
     assert_eq!(
         fresh["git"]["ahead"]["commit_count"], 1,
         "the count and the files share one base: {fresh}",
@@ -7251,9 +7300,11 @@ async fn a_review_read_refreshes_the_base_and_the_count_with_it() {
     assert_eq!(paths, vec!["feat.txt"], "only the branch's own file crosses: {fresh}");
 }
 
-/// **A fetch that cannot run says what git said.** The page draws the reason
-/// beside the base line, so a reader learns the remote is gone rather than
-/// only that the base could not be checked.
+/// **A fetch that cannot run says what git said, on the read after it.** The
+/// page draws the reason beside the base line, so a reader learns the remote
+/// is gone rather than only that the base could not be checked. The read that
+/// kicks the failed fetch answers unchecked without words it has not seen; the
+/// measurement it leaves carries git's own line to the next read.
 #[tokio::test]
 async fn a_review_read_names_why_the_base_fetch_failed() {
     let root = tempfile::tempdir().expect("tempdir");
@@ -7296,8 +7347,27 @@ async fn a_review_read_names_why_the_base_fetch_failed() {
         },
     )
     .await;
-    let (_, record, _) = snapshot_answering(&mut review).await;
+    let (_, first, _) = snapshot_answering(&mut review).await;
+    assert_eq!(
+        first["diff"]["base"], "unverified",
+        "the read that kicks the fetch holds no check yet: {first}",
+    );
+    assert!(first["diff"]["base_error"].is_null(), "and names no failure it has not seen: {first}");
 
+    // The fetch the read kicked fails, and its words reach the next read.
+    let measured = base_measured(&repo, "origin/main").await;
+    assert!(measured.error.is_some(), "the kicked fetch failed");
+    let mut again = connect(&url).await;
+    send(
+        &mut again,
+        ClientMessage::Subscribe {
+            what: Subject::Session(lead_seat()),
+            answering: true,
+            review: true,
+        },
+    )
+    .await;
+    let (_, record, _) = snapshot_answering(&mut again).await;
     assert_eq!(
         record["diff"]["base"], "unverified",
         "a fetch that cannot run leaves the base unverified: {record}",
@@ -7326,10 +7396,10 @@ async fn a_review_read_names_why_the_base_fetch_failed() {
     );
 }
 
-/// **A review read never holds its connection.** That read waits for a base
-/// fetch with no cap, and it is served off the loop: a second ask on the same
-/// socket is answered while the read is still in flight, and a client going
-/// away is visible rather than queued behind it.
+/// **A review read never holds its connection.** That read waits on the seat's
+/// work gate for its pinned scan, and it is served off the loop: a second ask
+/// on the same socket is answered while the read is still in flight, and a
+/// client going away is visible rather than queued behind it.
 #[tokio::test]
 async fn a_subscribe_behind_a_review_read_is_answered_while_it_waits() {
     let root = tempfile::tempdir().expect("tempdir");
@@ -7748,11 +7818,11 @@ async fn a_queued_ask_is_withdrawn_and_answered_when_its_subject_is_released() {
 }
 
 /// **A refused pin is re-read locally, so the count and the files still share
-/// the base the refresh left.** The store's count predates the fetch; serving
-/// it beside content read at the post-fetch ref is the Granite symptom in the
+/// the base the read answered.** The store's count predates the check; serving
+/// it beside content read at the checked base is the Granite symptom in the
 /// path meant to be the safe degradation.
 #[tokio::test]
-async fn a_refused_pin_re_reads_the_tree_against_the_refreshed_base() {
+async fn a_refused_pin_re_reads_the_tree_against_the_answered_base() {
     let root = tempfile::tempdir().expect("tempdir");
     let upstream = tempfile::tempdir().expect("upstream");
     let fleet = Fleet::in_dir_with_server_and_env(root.path(), &[("TestOrg", &["proj"])], "", &[])
@@ -7774,7 +7844,7 @@ async fn a_refused_pin_re_reads_the_tree_against_the_refreshed_base() {
         &lead_seat(),
         forge_server::surface::inspector::WorkSnapshot {
             diff: stored,
-            cwd: repo,
+            cwd: repo.clone(),
             read_at: std::time::Instant::now(),
             base: None,
             base_at: None,
@@ -7808,6 +7878,9 @@ async fn a_refused_pin_re_reads_the_tree_against_the_refreshed_base() {
     let gate = fleet.workspace().hold_work_gate(&lead_seat()).expect("the seat is held");
     let in_flight = gate.lock().await;
 
+    // The first read answers unchecked and kicks the refresh; the gate keeps
+    // the watch from adopting the measurement, so the second read below is
+    // the one that draws it.
     let mut review = connect(&url).await;
     send(
         &mut review,
@@ -7818,24 +7891,45 @@ async fn a_refused_pin_re_reads_the_tree_against_the_refreshed_base() {
         },
     )
     .await;
-    let (_, fresh, _) = snapshot_answering(&mut review).await;
+    let (_, unchecked, _) = snapshot_answering(&mut review).await;
+    assert_eq!(
+        unchecked["diff"]["base"], "unverified",
+        "the first read holds no check yet: {unchecked}",
+    );
+    let measured = base_measured(&repo, "origin/main").await;
+    assert_eq!(
+        measured.state,
+        forge_primitives::git_diff::BaseState::Current,
+        "the kicked fetch measured the base",
+    );
+
+    // The second read answers that check, and the pin it takes is refused by
+    // the held gate: it re-reads locally at the base the answer names.
+    let mut again = connect(&url).await;
+    send(
+        &mut again,
+        ClientMessage::Subscribe {
+            what: Subject::Session(lead_seat()),
+            answering: true,
+            review: true,
+        },
+    )
+    .await;
+    let (_, fresh, _) = snapshot_answering(&mut again).await;
     drop(in_flight);
     forge_workspace::work::set_pinned_gate_wait(0);
 
-    assert_eq!(
-        fresh["diff"]["base"], "current",
-        "the refresh landed, so the base is the one it left: {fresh}",
-    );
+    assert_eq!(fresh["diff"]["base"], "current", "the answered base is the checked one: {fresh}");
     assert_eq!(
         fresh["git"]["ahead"]["commit_count"], 1,
-        "the local re-read is the post-fetch base, not the store's stale count: {fresh}",
+        "the local re-read is the answered base, not the store's stale count: {fresh}",
     );
     // **The row's own base is the one this read measured.** The local re-read
-    // carries the refresh's state, so `git.base` and `diff.base` cannot
+    // carries the check's state, so `git.base` and `diff.base` cannot
     // contradict each other in one record.
     assert_eq!(
         fresh["git"]["base"], "current",
-        "the row's base is the state the refresh found: {fresh}",
+        "the row's base is the state the check found: {fresh}",
     );
     let files = fresh["diff"]["branch_ahead"]["populated"]
         .as_array()

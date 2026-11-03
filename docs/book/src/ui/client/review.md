@@ -26,7 +26,7 @@ file tree, and the diff with the threads on their lines.
 | Header        | the back link to the seat, `Review`, the branch, the round count, and the loop's state - `N replies to read`, in the warn tone while any thread waits on the reader, and `N open`                                                                                               | the record's `work.branch`, and the two review halves              |
 | Tabs          | `Conversation` and `Files changed`, with the commit count                                                                                                                                                                                                                       | the record's git chain                                             |
 | Scope         | the scope on screen and its place (`scope 3 of 9`), a stepper whose ends stop, the keys, the unified/split picker, and the comments' stepper with its `N/M` count                                                                                                                | the record's git chain (the commit list), and the scope's own threads |
-| Base          | the ref the All changes diff is measured against: the page asks for its own read on open; a read with no answer in hand resolves the base before it answers and waits for the fetch with no cap, while one that arrives during the seat's own background fetch answers at once with the base unchecked and turns verified when that fetch's measurement reaches the page; a line above the canvas says how far behind upstream it is, or that it could not be checked together with the fetch's own words for why, when the fetch could not land | the record's `diff.base` and `diff.baseError`, and the ref's name from `record.git.defaultBranch`; the page's own re-asks watch `record.git.base` |
+| Base          | the ref the All changes diff is measured against: the page asks for its own read on open, and that read answers at once - the last completed check the checkout holds, or the base unchecked when it holds none - and kicks a throttled background check whose measurement turns the page verified when it reaches the page; a line above the canvas says how far behind upstream it is, or that it could not be checked together with the fetch's own words for why, when the fetch could not land | the record's `diff.base` and `diff.baseError`, and the ref's name from `record.git.defaultBranch`; the page's own re-asks watch `record.git.base` |
 | Tree          | the scope's files as their own hierarchy - a row per directory and per file, folders before files, indented by depth, each row carrying the files view's own glyph for its kind; a directory carries the files beneath it, and the file whose region the reader is inside is marked as the current one                                    | the scope's diff, the threads in that scope, and the canvas's own scroll |
 | Canvas        | the scope's files as diffs, with each thread inserted under its own line, the composer under the line a comment is being written on, and GitHub's own gap strips between two hunks (above the first, below the last) that draw the lines the diff left out, a press at a time      | the scope's diff, the threads, the server's landing per thread, and the file's whole content read |
 | Outdated      | every thread whose code could not be placed, drawn against the lines captured when the comment was written                                                                                                                                                                      | the threads half                                                   |
@@ -59,38 +59,35 @@ carries its line:
   a commit's diff, so placing it there would be a guess the resolver refuses
   to make.
 
-**The all-changes diff is measured against a base the page's own read
-resolves first, when it has to.** Opening the review page asks the server for a
-review-scoped read. **The fetch has no cap**: a read with no answer of its own
-fetches the remote-tracking default (`origin/main`) before it reads the branch
-layer, because a base the remote has moved past moves the merge-base back and
-folds main's own commits into the branch's diff. The read waits for that fetch
-and ends on the resolved diff, or on a failure it can name, and the wait is the
-server's - the connection keeps serving everything else while it runs, and the
-page can be left. While it waits the page says `Reading the base for the
-diff...` with the work spinner.
+**The all-changes diff is measured against a base the page's own read answers
+at once, and the check that keeps it fresh runs off the read.** Opening the
+review page asks the server for a review-scoped read. That read never waits on
+the network: it answers the last completed check the checkout holds, or the
+base unchecked when it holds none, pinned to the local tip the diff is read
+at, and it kicks a throttled background refresh either way. A base the remote
+has moved past moves the merge-base back and folds main's own commits into the
+branch's diff, so the read never draws one as the branch's own change without
+saying what it holds. While the record is being read the page says `Reading
+the base for the diff...` with the work spinner; the check itself is no
+longer part of that wait.
 
-**A read does not wait on a fetch it did not start.** A seat's watch keeps the
-base fresh with a throttled background fetch, and a page open while one is in
-flight answers at once with the base unchecked, pinned to the local tip the
-diff is read at: the page draws the line saying the base could not be checked,
-and no spinner. When that fetch lands, the seat's row carries the measurement
-at its next watch pass and arrives as `work_changed`; the page sees the
-measured base - its state or the words a failed check left - disagree with
-the one its own read drew and asks its own read again, which answers from the
-refresh that has just finished rather than paying the network twice. A
-refresh that completed within the last half minute answers a read directly,
-so the page turns verified on its own with no second fetch and no second
-click. A fetch another read is running is joined rather than repeated; a
-background kick's is not waited on at all. Every other read of a seat with a
-session serves what the stores hold and never waits on the base (a seat with
-none still looks its PR up on the read - see the socket page - which is that
-read's own network call), so
+**A read never waits on a fetch, its own or anybody else's.** When a check
+lands, the seat's row carries the measurement at its next watch pass and
+arrives as `work_changed`; the page sees the measured base - its state or the
+words a failed check left - disagree with the one its own read drew and asks
+its own read again, which answers from that measurement rather than paying
+the network. So the page turns verified on its own with no second fetch and no
+second click, and a reading never joins a refresh, even one already in
+flight. Every other read of
+a seat with a session serves what the stores hold and never waits on the base
+(a seat with none still looks its PR up on the read - see the socket page -
+which is that read's own network call), so
 a record this page did not read itself is drawn with no base line at all: it
 has not checked, and the page says nothing it cannot back. When the fetch
 cannot run, the page says so above the canvas instead of drawing the files as
-the branch's change: plainly that the base could not be checked, with the
-fetch's own words for why. A lag count is still drawn when a record carries
+the branch's change: plainly that the base could not be checked, and, once the
+failed check lands, the fetch's own words for why. A lag count is still drawn
+when a record carries
 one, and this server no longer measures it: a successful refresh trusts the
 ref its own explicit refspec wrote, and a failed one reads no remote tip to
 count against. A commit's own view reads that commit's immutable tree, so it

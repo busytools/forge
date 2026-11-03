@@ -135,8 +135,8 @@ impl ViewSurface {
         &self,
         slot: &SessionSlot,
         cwd: &std::path::Path,
-        // Whether this is the review page's own read, which fetches the base
-        // itself a moment later.
+        // Whether this is the review page's own read, which kicks the base
+        // refresh itself a moment later.
         review: bool,
     ) -> WorkSnapshot {
         // **The record's read never waits on the PR lookup.** A
@@ -151,22 +151,22 @@ impl ViewSurface {
         // A seat with no session has no store to hold a read, and its record
         // still answers the tree it stands in - so there is nothing cached to
         // serve and no loop to refresh it either: this read fetches. **The
-        // review read fetches the base itself**, so its scan takes none of the
-        // background kick: one read, one fetch, and nothing of forge's queued
-        // ahead of that fetch on the shared repository gate.
+        // review read kicks the base refresh itself**, so its scan takes none
+        // of the background kick: one read, one refresh, and nothing of
+        // forge's queued ahead of it on the shared repository gate.
         if review {
             return self.workspace.scan_work_at_without_base_fetch(slot, cwd).await;
         }
         self.workspace.scan_work_at(slot, cwd, PrRefresh::Fetch).await
     }
 
-    /// Refresh the base the seat's drawn branch diff is measured against,
-    /// waiting for the fetch with no cap.
+    /// Answer the base the seat's drawn branch diff is measured against from
+    /// the last completed check, and kick a background refresh; the fetch is
+    /// never waited on.
     ///
     /// `None` when no branch layer is drawn: the default branch, a detached
     /// HEAD, or no resolved default. Only the read that draws the diff calls
-    /// this, so a state it reports belongs to the moment that diff was read
-    /// rather than to an earlier scan.
+    /// this, so the check it reports is the one that read drew.
     pub async fn refresh_diff_base(
         &self,
         held: &WorkSnapshot,
