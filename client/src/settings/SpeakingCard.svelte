@@ -203,12 +203,14 @@
       <p class="note">the voices arrive with the model; install it to choose one</p>
     {:else}
       <p class="note">
-        the chosen voice is <code>{chosen}</code> &middot; the choice is saved with the page's other edits
+        the chosen voice is <code>{chosen}</code> &middot; the ids are the model's own voice names &middot;
+        the choice is saved with the page's other edits
       </p>
       <InstanceCard
         label="voices"
         count={speaking.voices.length}
         countNoun={null}
+        detail={chosen}
         headingId="speaking-voices"
         foldable
       >

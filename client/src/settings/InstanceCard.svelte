@@ -16,6 +16,7 @@
     label = '',
     count = null,
     countNoun = 'key',
+    detail = null,
     headingId = null,
     removed = false,
     fresh = false,
@@ -28,6 +29,9 @@
     /** What the count counts: a key card says keys; `null` draws the bare
      * number, for a card whose own name already says what it counts. */
     countNoun?: string | null;
+    /** A second fact beside the count, in the count's own words: the voices
+     * card names the chosen voice here, so a shut card still says the pick. */
+    detail?: string | null;
     /** The card heading's id; `null` draws no heading and names the pane's. */
     headingId?: string | null;
     /** A removal waiting on the save: the head stands, the lines do not. */
@@ -53,6 +57,9 @@
     <span class="settings-card-count"
       >{count}{countNoun === null ? '' : ` ${count === 1 ? countNoun : `${countNoun}s`}`}</span
     >
+  {/if}
+  {#if detail !== null}
+    <span class="settings-card-count">{detail}</span>
   {/if}
   <span class="settings-card-grow"></span>
   {@render actions?.()}

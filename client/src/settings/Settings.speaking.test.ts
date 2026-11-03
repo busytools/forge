@@ -226,7 +226,12 @@ describe("the settings page's speaking card", () => {
     const head = at.querySelector('summary.settings-card-head');
     expect(head, 'the card head is the summary').not.toBeNull();
     expect(head?.querySelector('h3')?.textContent?.trim()).toBe('voices');
-    expect(head?.querySelector('.settings-card-count')?.textContent?.trim()).toBe('2');
+    expect(
+      [...(head?.querySelectorAll('.settings-card-count') ?? [])].map((part) =>
+        part.textContent?.trim(),
+      ),
+      'the count and the chosen voice are both on the head, shut or open',
+    ).toEqual(['2', 'bf_emma']);
     expect(head?.querySelector('.arw'), 'the chevron draws shut too').not.toBeNull();
     expect(
       ruleFor('.settings-page details.settings-card > summary .arw'),
