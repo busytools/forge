@@ -368,9 +368,34 @@ pub struct SlackDraft {
     /// `None` posts a root message; `Some(ts)` replies into that thread.
     pub thread_ts: Option<String>,
     pub text: String,
-    /// The MCP tool that composed the draft, so a held edit, reaction or
-    /// upload does not read as `slack__post` in the session list.
-    pub tool: String,
+    /// What the draft would do, which the approval prompt's verbs follow:
+    /// the MCP tool alone cannot tell an edit from a delete, and the card
+    /// must not say "post" for either.
+    pub operation: SlackDraftOperation,
+}
+
+/// What a held draft would do in Slack.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SlackDraftOperation {
+    Post,
+    Edit,
+    Delete,
+    React,
+    Upload,
+}
+
+/// The reader's answer to a held draft, which is what the blocked call
+/// receives.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SlackDraftAnswer {
+    /// Let it go out.
+    Approve,
+    /// Do not send it.
+    Decline,
+    /// Do not send it, and hand the note back to the agent to revise.
+    SendBack { note: String },
 }
 
 /// What ended a held draft, which a view that did not answer it has no
@@ -381,6 +406,8 @@ pub enum SlackDraftEnding {
     /// The reader answered it, in whichever view: `approved` says whether
     /// the message went out.
     Answered { approved: bool },
+    /// The reader sent it back with words for the agent; nothing went out.
+    SentBack,
     /// The asking session went away before anyone answered.
     Abandoned,
 }
@@ -455,6 +482,49 @@ mod tests {
                 mode: SlackWatchMode::All,
             },
             "a missing name decodes as None, never as a decode failure",
+        );
+    }
+
+    /// A send-back carries the reader's words, so the shape has to hold them
+    /// whole: a note flattened to a tag would reach the agent as a hint rather
+    /// than as what the reader said.
+    #[test]
+    fn a_draft_answer_carries_the_note_verbatim() {
+        let answer = SlackDraftAnswer::SendBack { note: "tone it down".to_owned() };
+        let encoded = serde_json::to_value(&answer).expect("an answer serialises");
+        assert_eq!(
+            encoded,
+            serde_json::json!({ "send_back": { "note": "tone it down" } }),
+            "the note rides the variant as its own field",
+        );
+        assert_eq!(
+            serde_json::from_value::<SlackDraftAnswer>(encoded).expect("and decodes back"),
+            answer,
+        );
+    }
+
+    /// The card's verbs are chosen from this field, so a delete has to be
+    /// distinguishable from an edit on the wire: both are one `slack__edit`
+    /// call, and the operation is the only thing that says which.
+    #[test]
+    fn a_draft_operation_crosses_as_the_name_the_card_reads() {
+        assert_eq!(
+            serde_json::to_value(SlackDraftOperation::Delete).expect("an operation serialises"),
+            serde_json::json!("delete"),
+        );
+        assert_eq!(
+            serde_json::to_value(SlackDraftOperation::Upload).expect("an operation serialises"),
+            serde_json::json!("upload"),
+        );
+    }
+
+    /// A view that did not answer still hears how the draft ended, and a
+    /// send-back is not a plain decline: the reader wrote something.
+    #[test]
+    fn a_sent_back_ending_crosses_as_its_own_name() {
+        assert_eq!(
+            serde_json::to_value(SlackDraftEnding::SentBack).expect("an ending serialises"),
+            serde_json::json!("sent_back"),
         );
     }
 }

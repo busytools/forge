@@ -583,7 +583,7 @@ impl SlackFacade for ProdSlackFacade {
             conversation_label,
             thread_ts: request.thread_ts,
             text: request.text,
-            tool: "slack__post".to_owned(),
+            operation: forge_primitives::slack::SlackDraftOperation::Post,
         };
         match Self::await_approval(&ws, caller, draft.clone()).await {
             GateDecision::Approved => {}
@@ -671,7 +671,10 @@ impl SlackFacade for ProdSlackFacade {
                 Some(text) => text.clone(),
                 None => format!("[delete] message {}", request.ts),
             },
-            tool: "slack__edit".to_owned(),
+            operation: match &request.text {
+                Some(_) => forge_primitives::slack::SlackDraftOperation::Edit,
+                None => forge_primitives::slack::SlackDraftOperation::Delete,
+            },
         };
         match Self::await_approval(&ws, caller, draft).await {
             GateDecision::Approved => {}
@@ -726,7 +729,7 @@ impl SlackFacade for ProdSlackFacade {
             conversation_label,
             thread_ts: Some(request.ts.clone()),
             text: format!("[{verb}: {}]", request.name),
-            tool: "slack__react".to_owned(),
+            operation: forge_primitives::slack::SlackDraftOperation::React,
         };
         match Self::await_approval(&ws, caller, draft).await {
             GateDecision::Approved => {}
@@ -961,7 +964,7 @@ impl SlackFacade for ProdSlackFacade {
             conversation_label,
             thread_ts: request.thread_ts.clone(),
             text: format!("[file] {name}\nfrom {}", request.path.display()),
-            tool: "slack__attachment".to_owned(),
+            operation: forge_primitives::slack::SlackDraftOperation::Upload,
         };
         match Self::await_approval(&ws, caller, draft).await {
             GateDecision::Approved => {}

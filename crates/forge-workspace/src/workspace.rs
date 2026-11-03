@@ -17936,7 +17936,7 @@ mod worker_activity_tests {
             conversation_label: "acme".to_owned(),
             thread_ts: None,
             text: "hello".to_owned(),
-            tool: "slack__post".to_owned(),
+            operation: forge_primitives::slack::SlackDraftOperation::Post,
         };
         let (_id, _decision) = ws.register_slack_draft(&seat, draft);
 
@@ -18195,7 +18195,7 @@ mod worker_activity_tests {
             conversation_label: "acme".to_owned(),
             thread_ts: None,
             text: "hello".to_owned(),
-            tool: "slack__post".to_owned(),
+            operation: forge_primitives::slack::SlackDraftOperation::Post,
         };
         let (_id, _decision) = ws.register_slack_draft(&seat, draft);
 
