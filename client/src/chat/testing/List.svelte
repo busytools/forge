@@ -50,8 +50,9 @@
    * its ResizeObserver never reports (#2825): mounted with rows, drawing none,
    * and reporting no viewport until something forces a fresh mount.
    */
-  const unmeasured = gate.stuck && gate.mounts === 0;
+  const unmeasured = gate.mounts < gate.misses;
   gate.mounts += 1;
+  if (unmeasured && Number.isFinite(gate.misses)) gate.misses -= 1;
 
   /** What a row is keyed by: the list's own keyer, or its position without one. */
   function keyOf(row: unknown, at: number): string {

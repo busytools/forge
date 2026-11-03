@@ -1076,8 +1076,14 @@
       // that is going, so the column takes it again with the seat.
       paintNoted = false;
       // And so does the one forced re-measure (#2825): the list this open
-      // mounts is its own, and a black one is its own to fix.
+      // mounts is its own, and a black one is its own to fix. A check still
+      // waiting belongs to the seat that is going, so it is cancelled rather
+      // than left to read the arriving seat's first frames as its failure.
       remeasured = false;
+      if (checkFrame !== null) {
+        cancelAnimationFrame(checkFrame);
+        checkFrame = null;
+      }
       // The place a reader held was a row of the conversation that is going.
       anchor = null;
       // And so were the sizes and the last event, which read that element.
@@ -1258,15 +1264,9 @@
   });
 
   /**
-   * Tell a list that has measured and draws next frame from one whose measure
-   * never arrived, and force the measure in the second case (#2825).
-   *
-   * **Measured with no rows is not the failure**: the list renders its first
-   * rows a frame after the viewport lands, so only a list reporting no
-   * viewport at all, with the element holding its room and the seat holding
-   * turns, is the gate that never opened. One forced mount per open - a list
-   * still empty after that needs more than a measurement, and re-mounting on
-   * a loop would be the timer this fix is not.
+   * Force the measure when a list mounted over turns never reported one
+   * (#2825): no viewport, no rows, room to draw them. One mount per open, so a
+   * list still empty after it is not re-mounted on a loop.
    */
   function checkMeasured(): void {
     checkFrame = null;
@@ -1282,12 +1282,9 @@
   }
 
   /**
-   * Ask the question two frames out, which is the first frame that can answer.
-   *
-   * **ResizeObserver notifications are delivered after a frame's own rAF
-   * callbacks.** A check on the very next frame would read a healthy list as
-   * unmeasured in the same update that measures it; the second frame sees the
-   * delivery the first was too early for.
+   * Check two frames out: ResizeObserver notifications are delivered after a
+   * frame's rAF callbacks, so the first frame would read a healthy list as
+   * unmeasured in the same update that measures it.
    */
   function scheduleMeasureCheck(): void {
     if (remeasured || checkFrame !== null) return;

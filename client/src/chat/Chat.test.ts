@@ -18,7 +18,14 @@ import { subagents } from './subagents.svelte';
 import { PRE_RESUME, RESUME, RESUME_END, RESUME_KEY } from './testing/resume-2503';
 import SeatSwitch from './testing/seat-switch.svelte';
 import { installResizeObserver, resized } from './testing/viewport';
-import { clear, gate, measured as listMeasured, setMeasured, stuckOnce } from './testing/records';
+import {
+  clear,
+  gate,
+  measured as listMeasured,
+  setMeasured,
+  stuckEveryMount,
+  stuckOnce,
+} from './testing/records';
 
 installResizeObserver();
 
@@ -2548,6 +2555,24 @@ describe('a list that mounted and drew no rows', () => {
     // The perf record stays honest: the fixed open reports the row it painted.
     resized(120);
     expect(paintedMark, 'the fixed open writes its painted mark').toHaveBeenCalled();
+  });
+
+  /**
+   * **The bound is one re-measure, not a retry loop.** Every mount misses the
+   * measure here, so a column that kept forcing would re-mount on every check -
+   * the timer this fix is not. Two extra frames give a loop room to show.
+   */
+  it('forces one re-measure and stops, even when the replacement misses too', async () => {
+    const server = stub();
+    stuckEveryMount();
+    // The pane has its room; the list is the half that never measures.
+    setMeasured(1_005, 1_005);
+    draw({}, server);
+    server.answer([turn('t1')]);
+    await painted();
+    await painted();
+
+    expect(gate.mounts, 'one forced mount, and no third when it too measured nothing').toBe(2);
   });
 
   it('leaves a list that measured its own viewport alone', async () => {
