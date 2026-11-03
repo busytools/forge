@@ -7,7 +7,7 @@
 //! it replaces the file.
 
 use forge_primitives::settings::{
-    EditKind, SettingsDocument, SettingsEditOp, SettingsEditRequest, SettingsKey,
+    EditKind, SettingsDocument, SettingsEdit, SettingsEditOp, SettingsEditRequest, SettingsKey,
 };
 use toml_edit::{Array, ArrayOfTables, DocumentMut, InlineTable, Item, Table, Value};
 
@@ -637,6 +637,16 @@ fn descend_from<'a>(
 }
 
 /// Convert a JSON value to the TOML shape its edit kind names.
+/// Validate one value against a key's edit spec without applying it, so a
+/// tool can refuse a wrong type before it asks the reader anything.
+pub(crate) fn validate(
+    value: &serde_json::Value,
+    edit: &SettingsEdit,
+    path: &str,
+) -> Result<(), WriteError> {
+    to_toml(value, edit.kind, &edit.allowed, path).map(|_| ())
+}
+
 fn to_toml(
     value: &serde_json::Value,
     kind: EditKind,

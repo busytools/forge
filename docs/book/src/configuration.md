@@ -1,8 +1,11 @@
 # forge.toml reference
 
 `forge.toml` is the only file forge reads for configuration. It is
-hand-authored; the settings page's save is the one path that writes it,
-and nothing else in forge does. A change is picked up while
+hand-authored; two paths write it - the settings page's save and the
+settings MCP tools (`settings__set` and `settings__unset`) - and both go
+through the same catalogue, validation and validated-temp-file writer, with
+an agent's edit held for the reader's approval before it applies. Nothing
+else in forge does. A change is picked up while
 forge runs: the server watches this one file, re-reads it whole, and
 applies what can take effect without a restart. A running session keeps
 the account it spawned on, its model, mode, cwd and child environment;

@@ -1075,6 +1075,13 @@ pub struct Workspace {
     /// blocked `browser_hand_off` handler awaits the sender, with no timeout,
     /// for as long as the person takes.
     pub(crate) browser_handoffs: Mutex<HashMap<uuid::Uuid, ParkedBrowserHandOff>>,
+    /// Configuration writes held for the reader's approval, keyed by the
+    /// write's id and carrying the session that asked. Its own registry for
+    /// the same reason the draft's is: a held write exists on a seat with no
+    /// domain, and nothing reaches `forge.toml` until the blocked handler's
+    /// oneshot is answered.
+    pub(crate) settings_writes:
+        Mutex<HashMap<uuid::Uuid, crate::settings_ask::ParkedSettingsWrite>>,
     /// How many asks have ever arrived for a seat. **The ask's identity on the
     /// wire**: one ask replacing another reads as a different ask, and
     /// answering one of several leaves the number where it was.
@@ -2529,6 +2536,7 @@ impl Workspace {
             slack_ledger_failures: Mutex::new(std::collections::HashSet::new()),
             slack_drafts: Mutex::new(HashMap::new()),
             browser_handoffs: Mutex::new(HashMap::new()),
+            settings_writes: Mutex::new(HashMap::new()),
             pending_seq: Mutex::new(HashMap::new()),
             slack_recently_delivered: Mutex::new(HashMap::new()),
             slack_load_failed: std::sync::atomic::AtomicBool::new(slack_load_failed),
@@ -2948,6 +2956,19 @@ impl Workspace {
         live.sort_unstable();
         live.dedup();
         live
+    }
+
+    /// The effective-config document as the socket holds it, built from the
+    /// live config where the server has not published one yet (a test
+    /// workspace, or the first moments before the greeting). The settings
+    /// MCP tools read this one document, so a key they report and the value
+    /// the page draws cannot disagree.
+    pub(crate) fn settings_snapshot(&self) -> Arc<forge_primitives::SettingsDocument> {
+        if let Some(document) = self.settings.borrow().clone() {
+            return document;
+        }
+        let version = self.settings_version.get().map(String::as_str).unwrap_or_default();
+        Arc::new(crate::settings::document(&self.config_arc(), version, &self.config_path()))
     }
 
     /// Build the document from the live config and publish it when it
@@ -3568,6 +3589,7 @@ impl Workspace {
             let cron_facade = crate::mcp::cron::facade::ProdCronFacade::from_arc(self);
             let gotify_facade = crate::mcp::gotify::facade::ProdGotifyFacade::from_arc(self);
             let slack_facade = crate::mcp::slack::facade::ProdSlackFacade::from_arc(self);
+            let settings_facade = crate::mcp::settings::facade::ProdSettingsFacade::from_arc(self);
             let tasks_facade = crate::mcp::tasks::facade::ProdTasksFacade::from_arc(self);
             let systemone_facade = self.systemone.read().as_ref().map(|client| {
                 crate::mcp::systemone::facade::ProdSystemOneFacade::new(Arc::clone(client))
@@ -3589,6 +3611,7 @@ impl Workspace {
                     cron: cron_facade,
                     gotify: gotify_facade,
                     slack: slack_facade,
+                    settings: settings_facade,
                     tasks: tasks_facade,
                     systemone: systemone_facade,
                     voice: self.voice_service(),
@@ -6442,6 +6465,15 @@ impl Workspace {
                     });
                 }
             }
+            Command::RespondSettingsWrite { key, id, .. } => {
+                let waiting = self.settings_write_waiting(*id, key);
+                if !waiting {
+                    return Err(DispatchError::NoSettingsWriteWaiting {
+                        key: key.clone(),
+                        id: *id,
+                    });
+                }
+            }
             _ => {}
         }
         if let Some(key) = cmd.key() {
@@ -6877,6 +6909,19 @@ impl Workspace {
                             key: key.clone(),
                             id,
                         });
+                    }
+                }
+                Command::RespondSettingsWrite { key, id, approved } => {
+                    // Same shape as the two arms above: the guard already
+                    // refused one that is not waiting, so a `false` here is a
+                    // resolve that landed between the two.
+                    let answered = self.resolve_settings_write(
+                        id,
+                        &key,
+                        forge_primitives::settings::SettingsWriteEnding::Answered { approved },
+                    );
+                    if !answered {
+                        return Err(DispatchError::NoSettingsWriteWaiting { key: key.clone(), id });
                     }
                 }
                 Command::DictateCatalogueCheck => {
@@ -8377,6 +8422,7 @@ impl Workspace {
                 crate::protocol::PendingAsk::DocumentHandOff(Box::new(held.ask.clone()))
             }));
         }
+        asks.extend(self.settings_write_asks(slot));
         if let Some(domain) = self.domain_session_for(slot) {
             let guard = domain.lock();
             asks.extend(
@@ -8564,6 +8610,7 @@ impl Workspace {
             || self.has_slack_draft(slot)
             || self.has_browser_hand_off(slot)
             || self.has_document_handoff(slot)
+            || self.has_settings_write(slot)
         {
             L::Attention
         } else {
@@ -19573,6 +19620,7 @@ mod worker_respawn_tests {
                 cron: crate::mcp::cron::facade::ProdCronFacade::from_arc(workspace),
                 gotify: crate::mcp::gotify::facade::ProdGotifyFacade::from_arc(workspace),
                 slack: crate::mcp::slack::facade::ProdSlackFacade::from_arc(workspace),
+                settings: crate::mcp::settings::facade::ProdSettingsFacade::from_arc(workspace),
                 tasks: crate::mcp::tasks::facade::ProdTasksFacade::from_arc(workspace),
                 voice: workspace.voice_service(),
                 systemone: workspace.systemone.read().as_ref().map(|client| {

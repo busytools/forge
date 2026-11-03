@@ -304,6 +304,7 @@ census!(SessionUpdate,
         DictateProgress struct, DictateEnded struct, FatalError struct,
         DictateModelsChanged struct,
         DocumentHandOffPending struct, DocumentHandOffResolved struct,
+        SettingsWritePending struct, SettingsWriteResolved struct,
         VoiceAudio struct, VoiceModeState struct,
     ],
     session_update_census, SESSION_UPDATE_VARIANTS);
@@ -316,6 +317,7 @@ census!(Command,
         ResumeSession struct, Handoff struct, RespondPermission struct, RespondSlackPost struct,
         RespondBrowserHandOff struct,
         AnswerDocumentHandOff struct,
+        RespondSettingsWrite struct,
         RespondQuestion struct, SetDictateOverride struct, ResetDictateOverrides struct,
         DictateCatalogueCheck struct, DictateInstall struct,
         DictateActivate struct, DictateDeactivate struct, DictateBench struct,
@@ -1186,6 +1188,26 @@ fn frames_record() -> Value {
                     ending: forge_primitives::browser::HandOffEnding::Feedback,
                     source: forge_primitives::browser::HandOffSource::Feedback,
                     client: Some(3),
+                },
+            }),
+            seq: Some(9),
+            span: 0,
+        }),
+    );
+    // **A held config write's own shape.** The dock draws the key and both
+    // values, and a rename inside this payload fails no census line while
+    // the write draws an empty key nobody can approve knowingly.
+    payload_sampled.insert(
+        "SettingsWritePending".to_owned(),
+        shape_of(&ServerMessage::Update {
+            update: Box::new(forge_server::surface::SessionUpdate::SettingsWritePending {
+                key: seat.clone(),
+                ask: forge_primitives::settings::SettingsWriteAsk {
+                    id: uuid::Uuid::from_u128(11),
+                    key: "orgs.Default.projects.forge.max_workers".to_owned(),
+                    current: serde_json::json!(2),
+                    proposed: serde_json::json!(4),
+                    unset: false,
                 },
             }),
             seq: Some(9),

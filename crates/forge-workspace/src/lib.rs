@@ -81,6 +81,7 @@ mod provider_probe;
 mod review;
 mod session_task;
 pub mod settings;
+mod settings_ask;
 mod settings_write;
 mod single_instance;
 mod slack;

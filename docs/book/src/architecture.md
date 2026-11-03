@@ -261,9 +261,9 @@ name. Do not read an isolation guarantee into it.
 forge exposes one MCP server, named `forge`, to every spawned session.
 It is not a subprocess: it is hosted inside forge and reached over the
 CLI's own MCP transport. Its tools are grouped by submodule and render
-to the model as `mcp__forge__<group>__<tool>`, with ten groups today:
+to the model as `mcp__forge__<group>__<tool>`, with eleven groups today:
 `agents`, `browser`, `documents`, `review`, `cron`, `tasks`, `gotify`,
-`slack`, `systemone` and `voice`.
+`slack`, `settings`, `systemone` and `voice`.
 
 `browser` is the exception to the render pattern, crossing unprefixed:
 its tools are upstream `@playwright/mcp`'s own -
@@ -273,18 +273,20 @@ resolving here unchanged. Every other group renders in full, the
 document hand-off included: `documents__hand_off` crosses as
 `mcp__forge__documents__hand_off`.
 
-`browser`, `documents`, `review`, `cron`, `tasks`, `gotify` and `slack`
-are registered for every session; `systemone` joins them when
+`browser`, `documents`, `review`, `cron`, `tasks`, `gotify`, `slack` and
+`settings` are registered for every session; `systemone` joins them when
 `[systemone]` is configured and enabled, and `voice` joins them when
 `[tts]` is on. A worker's families can be
 narrowed at spawn - `agents__spawn`'s `mcp_families` list, revised by
 `agents__update` and stored on the worker's durable record - and each
 withheld family is named in that worker's own prompt. The `agents` group
-is always on, and so are `browser` and `documents`: the browser is the
-server's own - a session drives a host the server runs, whether or not any
-client is watching - and a hand-off reads the caller's own tree or its
+is always on, and so are `browser`, `documents` and `settings`: the browser
+is the server's own - a session drives a host the server runs, whether or
+not any client is watching - a hand-off reads the caller's own tree or its
 project's `vault_roots`, so there is nothing a project could withhold of
-either. Two groups vary by session kind: inside `agents`, any session
+either, and the config is every session's own environment, read through the
+same document the settings page draws and written only through a held,
+catalogue-validated edit the reader approves. Two groups vary by session kind: inside `agents`, any session
 may `list`, `tell`, `ask` and read its own identity, while the four verbs
 that act on the caller's own project - `spawn`, `despawn`, `update` and
 `capacity` - are lead-only; and inside `tasks`, `tasks__approve` is the

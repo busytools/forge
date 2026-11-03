@@ -1400,6 +1400,139 @@ pub(crate) fn document(config: &LoadedConfig, version: &str, source: &Path) -> S
     .with_totals()
 }
 
+/// One key a settings tool can address: the document row the writer would
+/// locate, with everything an edit needs to be built and validated.
+pub(crate) struct SettingsTarget {
+    pub path: String,
+    pub pattern: String,
+    pub area: String,
+    pub class: EffectClass,
+    pub edit: SettingsEdit,
+    pub current: serde_json::Value,
+}
+
+/// The document row a concrete path names, or `None` when the path is no
+/// key this load resolves. `settings__get` and `settings__set` take a path
+/// exactly as the row states it - never a catalogue pattern, which has no
+/// value and no instance to write.
+pub(crate) fn target(document: &SettingsDocument, path: &str) -> Option<SettingsTarget> {
+    for area in &document.areas {
+        if let Some(key) = area.keys.iter().find(|key| key.path == path) {
+            return Some(SettingsTarget {
+                path: key.path.clone(),
+                pattern: key.pattern.clone(),
+                area: area.id.clone(),
+                class: key.class,
+                edit: key.edit.clone(),
+                current: key.value.clone(),
+            });
+        }
+    }
+    None
+}
+
+/// The project a concrete path belongs to, when the path is one of a
+/// project's keys. The config's own names are matched, longest first, so a
+/// project name containing a dot stays one name.
+pub(crate) fn owning_project<'a>(
+    config: &'a LoadedConfig,
+    path: &str,
+) -> Option<&'a LoadedProject> {
+    config
+        .projects
+        .iter()
+        .filter(|project| {
+            path.starts_with(&format!("orgs.{}.projects.{}.", project.org, project.name))
+        })
+        .max_by_key(|project| project.org.len() + project.name.len())
+}
+
+/// The name of a value's edit control, as the index states its type.
+fn edit_kind_name(kind: forge_primitives::EditKind) -> &'static str {
+    match kind {
+        forge_primitives::EditKind::String => "string",
+        forge_primitives::EditKind::Number => "number",
+        forge_primitives::EditKind::Bool => "bool",
+        forge_primitives::EditKind::Enum => "enum",
+        forge_primitives::EditKind::List => "list",
+    }
+}
+
+/// The instance names a repeated catalogue key takes, for the caller's own
+/// reach: its project's keys list its project alone, and the global
+/// accounts, workspaces and models list every one this config declares.
+fn index_instances(config: &LoadedConfig, pattern: &str, org: &str, project: &str) -> Vec<String> {
+    if pattern.starts_with("accounts[]") {
+        return config.accounts.iter().map(|account| account.display_name.clone()).collect();
+    }
+    if pattern.starts_with("orgs[].projects[]") {
+        return config
+            .projects
+            .iter()
+            .filter(|held| held.org == org && held.name == project)
+            .map(|held| format!("{}/{}", held.org, held.name))
+            .collect();
+    }
+    if pattern.starts_with("orgs[]") {
+        if config.projects.iter().any(|held| held.org == org) {
+            return vec![org.to_owned()];
+        }
+        return Vec::new();
+    }
+    if pattern.starts_with("slack[]") {
+        return config.slack.iter().map(|workspace| workspace.workspace.clone()).collect();
+    }
+    if pattern.starts_with("models.*") {
+        let mut names: Vec<String> = config.models.keys().cloned().collect();
+        names.sort_unstable();
+        return names;
+    }
+    Vec::new()
+}
+
+/// The compact catalogue an agent reads: sections and keys with type, whether
+/// the config sets one, and when an edit lands. No value crosses, so this is
+/// the shape of the file without its contents.
+pub(crate) fn index_text(
+    config: &LoadedConfig,
+    document: &SettingsDocument,
+    org: &str,
+    project: &str,
+) -> String {
+    use std::fmt::Write as _;
+
+    let rows: Vec<&SettingsKey> = document.areas.iter().flat_map(|area| &area.keys).collect();
+    let mut out = String::from(
+        "forge's configuration, one line per catalogue key:\n\
+         key  type  state  effect  [instances]\n",
+    );
+    let _ = writeln!(out, "your project: {org}/{project}");
+    for area in AREAS {
+        out.push('\n');
+        out.push_str(area.id);
+        out.push('\n');
+        for key in all_keys().filter(|key| key.area == area.id) {
+            let set = rows
+                .iter()
+                .any(|row| row.pattern == key.path && row.value != serde_json::Value::Null);
+            let instances = index_instances(config, key.path, org, project);
+            let _ = write!(
+                out,
+                "  {}  {}  {}  {}",
+                key.path,
+                edit_kind_name(edit_spec(key.path).kind),
+                if set { "set" } else { "unset" },
+                key.class.as_str(),
+            );
+            if !instances.is_empty() {
+                let _ = write!(out, "  [{}]", instances.join(", "));
+            }
+            out.push('\n');
+        }
+    }
+    out
+}
+
 /// The reload summary, derived from the same rows the page draws: a key
 /// reported as moved and the class the page chips it with are one table's.
 pub(crate) fn diff(previous: &LoadedConfig, next: &LoadedConfig) -> ConfigReload {
@@ -2212,5 +2345,91 @@ models = ["m"]
         let source = PathBuf::from("/tmp/forge.toml");
         let document = document(&config, "v", &source);
         assert_eq!(document.source, source.display().to_string());
+    }
+
+    const TWO_PROJECTS: &str = r#"
+[[accounts]]
+display_name = "Primary"
+provider = "anthropic"
+token = "t"
+models = ["claude-sonnet-5"]
+
+[[orgs]]
+name = "Acme"
+accounts = ["Primary"]
+
+[[orgs.projects]]
+name = "one"
+path = "/tmp/one"
+
+[[orgs.projects]]
+name = "two"
+path = "/tmp/two"
+"#;
+
+    /// The index is the catalogue, not the document: one line per accepted
+    /// key, and no value anywhere.
+    #[test]
+    fn the_index_carries_the_catalogue_and_no_value() {
+        let config = load(EVERY_KEY);
+        let document = document(&config, "v", Path::new("/tmp/forge.toml"));
+
+        let text = index_text(&config, &document, "TestOrg", "proj");
+
+        let entries = text.lines().filter(|line| line.starts_with("  ")).count();
+        assert_eq!(
+            entries,
+            all_keys().count(),
+            "the index's key set is the catalogue's, not a hand-written list: {text}",
+        );
+        for key in all_keys() {
+            assert!(text.contains(key.path), "`{}` is missing from the index", key.path);
+        }
+        assert!(
+            !text.contains("https://openrouter.ai/api"),
+            "a value leaked into the index: {text}",
+        );
+        assert!(!text.contains("PROVIDER_FLAG"), "an env value leaked: {text}");
+    }
+
+    /// The index teaches the caller the keys it can address, so another
+    /// project's instance is not listed - its pattern still is.
+    #[test]
+    fn the_index_lists_the_callers_own_project_and_not_another() {
+        let config = load(TWO_PROJECTS);
+        let document = document(&config, "v", Path::new("/tmp/forge.toml"));
+
+        let text = index_text(&config, &document, "Acme", "one");
+
+        assert!(text.contains("Acme/one"), "the caller's project is named: {text}");
+        assert!(!text.contains("Acme/two"), "another project's instance is not listed: {text}");
+        assert!(text.contains("orgs[].projects[].model"), "the shape is still the catalogue's");
+    }
+
+    /// A tool's key resolves to the row the writer locates by, and an
+    /// unknown key resolves to nothing rather than to a guess.
+    #[test]
+    fn a_target_is_the_documents_own_row() {
+        let config = load(EVERY_KEY);
+        let document = document(&config, "v", Path::new("/tmp/forge.toml"));
+
+        let resolved = target(&document, "accounts.Primary.token").expect("the row exists");
+        assert_eq!(resolved.pattern, "accounts[].token");
+        assert_eq!(resolved.area, "accounts");
+        assert_eq!(resolved.current, json!("t"));
+        assert!(target(&document, "accounts.Nobody.token").is_none());
+    }
+
+    /// The project a path belongs to is read off the config's own names, so
+    /// a dotted project name stays one name.
+    #[test]
+    fn the_owning_project_is_read_off_the_path() {
+        let config = load(TWO_PROJECTS);
+        assert_eq!(
+            owning_project(&config, "orgs.Acme.projects.two.max_workers")
+                .map(|project| project.name.as_str()),
+            Some("two"),
+        );
+        assert!(owning_project(&config, "server.port").is_none());
     }
 }
