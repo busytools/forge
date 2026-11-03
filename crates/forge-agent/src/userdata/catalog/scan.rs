@@ -3316,9 +3316,13 @@ mod tests {
             Some(&warm),
         )
         .await;
+        // The scan orders by millisecond mtime, so rows written inside one
+        // millisecond have no promised order among themselves.
+        let mut again_ids = session_ids(&again);
+        again_ids.sort();
         assert_eq!(
-            session_ids(&again),
-            vec!["beta-own", "alpha-own"],
+            again_ids,
+            vec!["alpha-own", "beta-own"],
             "a transcript that changed after its scan must be read, not skipped",
         );
 
