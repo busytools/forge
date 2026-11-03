@@ -141,7 +141,6 @@ import {
   markOf,
   modelState,
   projectRows,
-  rankOf,
   refusal,
   settingsCard,
   whenOf,
@@ -370,7 +369,6 @@ const LEAD_ROW: Row = {
   tree: null,
   gate: null,
   waits: [],
-  attention: 0,
   task: null,
   pending: null,
   reason: null,
@@ -433,9 +431,11 @@ describe('the fleet the snapshot describes', () => {
     ]);
   });
 
-  /// **A decision wait is the person's, and both the project and the seat it
-  /// names carry it** (#2756): the mark counts, and the row it belongs to
-  /// ranks with the attention states rather than under a merely busy seat.
+  /// **A decision wait is the person's to answer, and both the project and
+  /// the seat it names carry it** (#2756). **The count is the mark's, not the
+  /// rank's** (Ved, 2026-11-03): a task wait is often future work and its
+  /// seat can be asleep, so the mark and its list stay while the row keeps
+  /// the group its own state puts it in.
   it('counts the decision waits a project holds, on its row and its seat', () => {
     const wait: AttentionRow = {
       task: 't1',
@@ -446,15 +446,15 @@ describe('the fleet the snapshot describes', () => {
     };
     const fleet = fleetRows({ ...FLEET, fleet: [fleetRow('forge', 1, 0, [wait])] });
     expect(fleet[0]?.waits.length, 'the project carries the count').toBe(1);
-    expect(fleet[0]?.seats[0]?.attention, 'and the seat it names carries one').toBe(1);
+    expect(fleet[0]?.seats[0]?.waits, 'and the seat it names holds the item').toEqual([wait]);
     expect(
-      fleet[0]?.seats[0] && rankOf(fleet[0].seats[0].state, null, 1),
-      'a wait ranks with the attention states',
-    ).toBe(0);
+      fleetGroups(fleet).map((group) => group.heading),
+      'the wait lifted its project out of the group its state names',
+    ).toEqual(['working']);
 
     const rows = rowsOf({ ...FLEET, fleet: [fleetRow('forge', 1, 0, [wait])] });
     expect(rows.waits, 'the rail is handed the wait itself').toEqual([wait]);
-    expect(rows.lead.attention, 'and its lead row counts it').toBe(1);
+    expect(rows.lead.waits, 'and its lead row lists it').toEqual([wait]);
   });
 
   /// **Two open waits on one seat are two.** A batch collapses into one
@@ -467,18 +467,17 @@ describe('the fleet the snapshot describes', () => {
     ];
     const fleet = fleetRows({ ...FLEET, fleet: [fleetRow('forge', 1, 0, waits)] });
     expect(fleet[0]?.waits.length, 'the project counts both').toBe(2);
-    expect(fleet[0]?.seats[0]?.attention, 'and the seat it names holds both').toBe(2);
     expect(fleet[0]?.seats[0]?.waits, 'with the items behind its count').toEqual(waits);
 
     const rows = rowsOf({ ...FLEET, fleet: [fleetRow('forge', 1, 0, waits)] });
-    expect(rows.lead.attention, 'the rail row counts both').toBe(2);
-    expect(rows.lead.waits, 'and lists them').toEqual(waits);
+    expect(rows.lead.waits, 'the rail row lists both').toEqual(waits);
   });
 
   /// **A wait outlives the seat that raised it** (review focus 5): a
   /// sleeping project draws no worker row, so the project mark is the only
-  /// place its decision wait can be seen.
-  it('keeps a seatless wait counted on its project', () => {
+  /// place its decision wait can be seen. It stays a mark: the wait does not
+  /// lift the project out of the group its own state names (Ved, 2026-11-03).
+  it('keeps a seatless wait marked on its project, without lifting its group', () => {
     const wait: AttentionRow = {
       task: 't1',
       owner: 'gone',
@@ -486,7 +485,11 @@ describe('the fleet the snapshot describes', () => {
       words: 'sign this off',
       at: { secs_since_epoch: 5, nanos_since_epoch: 0 },
     };
-    const wire: HomeWire = { ...FLEET, fleet: [fleetRow('forge', 0, 0, [wait])] };
+    const wire: HomeWire = {
+      ...FLEET,
+      agents: [agent('Busytools', 'forge', 'lead', 'Sleeping')],
+      fleet: [fleetRow('forge', 0, 0, [wait])],
+    };
     const fleet = fleetRows(wire);
     expect(fleet[0]?.waits.length, 'the project counts a wait whose seat has no row').toBe(1);
     expect(
@@ -494,9 +497,9 @@ describe('the fleet the snapshot describes', () => {
       'and the fixture draws no row for that seat',
     ).not.toContain('gone');
     expect(
-      fleetGroups(fleet)[0]?.heading,
-      'the project itself ranks with the attention states, so the rail cannot fold it',
-    ).toBe('needs you');
+      fleetGroups(fleet).map((group) => group.heading),
+      'the wait lifted a sleeping project out of its fold',
+    ).toEqual(['asleep']);
     expect(rowsOf(wire).waits, 'the rail is still handed the wait').toEqual([wait]);
   });
 
@@ -589,7 +592,6 @@ describe('the fleet the snapshot describes', () => {
               state: { kind: 'lifecycle', lifecycle: 'Idle' },
               pending: null,
               waits: [],
-              attention: 0,
               href: '/session/TestOrg/proj/lead',
             },
           ],
