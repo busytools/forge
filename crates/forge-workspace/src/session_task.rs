@@ -715,7 +715,7 @@ impl SessionTask {
                 // **After the occupant's own frame**: a replacement resets the
                 // page's conversation, so a row drawn before it would be
                 // wiped before the reader saw it.
-                self.draw_lost_queued(lost_prompts);
+                self.settle_lost_queued(lost_prompts);
             }
             AgentEvent::ConnectionFailed { message, kind } => {
                 let key = self.key.clone();
@@ -813,7 +813,7 @@ impl SessionTask {
                 // Before the failure frame, while the page's pile is still
                 // standing: the row draws over the pile's own card, and the
                 // card settles with it.
-                self.draw_lost_queued(lost_prompts);
+                self.settle_lost_queued(lost_prompts);
                 self.emit(SessionUpdate::ConnectionFailed {
                     key: key.clone(),
                     message,
@@ -1300,11 +1300,12 @@ impl SessionTask {
     /// The row a person's prompt draws.
     ///
     /// **Emitted at `started` wherever the CLI can follow a queue** (#2816):
-    /// the CLI queues a prompt sent while a turn runs and takes it when that
-    /// turn ends, so a row forged at dispatch drew above the answer still
-    /// being written. The held copy needs it here for the other half: the CLI
-    /// never echoes a stdin prompt on the wire, so this frame is the page's
-    /// only carrier of the reader's own words.
+    /// the CLI takes a prompt sent while a turn runs at its own start - at
+    /// that turn's end, or absorbed into the running turn - and emits
+    /// `command_lifecycle: started` then, so a row forged at dispatch drew
+    /// above the answer still being written. The held copy needs it here for
+    /// the other half: the CLI never echoes a stdin prompt on the wire, so
+    /// this frame is the page's only carrier of the reader's own words.
     ///
     /// **Two fallbacks draw at dispatch**, because no `started` is coming: a
     /// CLI that cannot follow a queue, and a dispatch that fails after the
@@ -1331,24 +1332,30 @@ impl SessionTask {
         });
     }
 
-    /// Draw the row a prompt still in the queue will never get: its process
-    /// died, or a new occupant took the seat, and no CLI frame is coming.
+    /// Settle the prompts still in the queue when the occupant went.
     ///
-    /// **Only a person's prompt.** A delivery's envelope or the machinery's
-    /// forged row is already its own carrier; a person's words have only the
-    /// row this draws.
-    fn draw_lost_queued(&self, prompts: Vec<crate::protocol::QueuedPrompt>) {
+    /// **No row is forged for one that never started.** A live row would have
+    /// no read carrier: the transcript keeps only the enqueue attachment and
+    /// no start, so a reload would drop it and the two paths would disagree.
+    /// The pile's ending line carries the words instead, the same carrier a
+    /// refused or discarded prompt uses, and the card settles with it.
+    fn settle_lost_queued(&self, prompts: Vec<crate::protocol::QueuedPrompt>) {
         for prompt in prompts {
-            if prompt.source != PromptSource::You {
-                continue;
-            }
-            self.emit_prompt_row(&prompt.text, &prompt.attachments, &prompt.uuid, prompt.source);
-            // The same settle the failed-dispatch path emits: the prompt never
-            // reached a model, and the card has nothing left to wait on.
+            // **The words are re-announced so the ending line can carry them.**
+            // A replacement may already have reset the page's queue to an
+            // empty read; the announcement restores the row the discarded
+            // state then turns into the one line. A page that still holds the
+            // row ignores it by uuid.
+            self.emit(SessionUpdate::PromptQueued {
+                key: self.key.clone(),
+                uuid: prompt.uuid.clone(),
+                source: prompt.source,
+                text: prompt.text,
+            });
             self.emit(SessionUpdate::PromptLifecycle {
                 key: self.key.clone(),
                 uuid: prompt.uuid,
-                state: "started".to_owned(),
+                state: "discarded".to_owned(),
             });
         }
     }
@@ -1879,6 +1886,12 @@ impl SessionTask {
                 );
             }
             for prompt in held {
+                // The press never ran, so its composer mark settles here.
+                self.emit(SessionUpdate::PromptLifecycle {
+                    key: self.key.clone(),
+                    uuid: prompt.uuid.clone(),
+                    state: "cancelled".to_owned(),
+                });
                 if let Some(sender) = &prompt.sender {
                     workspace.notice_undelivered_message(
                         sender,
@@ -2241,6 +2254,13 @@ impl SessionTask {
                     %error,
                     "a prompt held during an aborted handoff could not be handed back",
                 );
+                // The hand-back failed, so the original press never runs and
+                // its composer mark settles here.
+                let _ = update_tx.send(SessionUpdate::PromptLifecycle {
+                    key: key.clone(),
+                    uuid: prompt.uuid.clone(),
+                    state: "cancelled".to_owned(),
+                });
                 if let Some(sender) = sender {
                     workspace.notice_undelivered_message(
                         &sender,
@@ -2414,6 +2434,12 @@ impl SessionTask {
             self.emit(SessionUpdate::MachineTurn { key: self.key.clone(), machine: None });
             let held = workspace.end_swap(&self.key);
             for prompt in held {
+                // The press never ran, so its composer mark settles here.
+                self.emit(SessionUpdate::PromptLifecycle {
+                    key: self.key.clone(),
+                    uuid: prompt.uuid.clone(),
+                    state: "cancelled".to_owned(),
+                });
                 if let Some(sender) = &prompt.sender {
                     workspace.notice_undelivered_message(
                         sender,
@@ -2699,6 +2725,12 @@ impl Drop for SessionTask {
                 );
             }
             for prompt in &held {
+                // The press never ran, so its composer mark settles here.
+                let _ = self.update_tx.send(SessionUpdate::PromptLifecycle {
+                    key: self.key.clone(),
+                    uuid: prompt.uuid.clone(),
+                    state: "cancelled".to_owned(),
+                });
                 if let Some(sender) = &prompt.sender {
                     workspace.notice_undelivered_message(
                         sender,
@@ -4555,10 +4587,12 @@ mod tests {
         assert!(!workspace.swap_in_progress(&key), "the gate is closed with the swap");
         let mut said = Vec::new();
         let mut turns = Vec::new();
+        let mut settled = Vec::new();
         while let Ok(frame) = update_rx.try_recv() {
             match std::sync::Arc::unwrap_or_clone(frame.update) {
                 SessionUpdate::Notice { text, .. } => said.push(text),
                 SessionUpdate::MachineTurn { machine, .. } => turns.push(machine),
+                SessionUpdate::PromptLifecycle { uuid, state, .. } => settled.push((uuid, state)),
                 _ => {}
             }
         }
@@ -4569,6 +4603,10 @@ mod tests {
         assert!(
             said.iter().any(|text| text.contains("this prompt waits no longer")),
             "and the held prompt is accounted for: {said:?}",
+        );
+        assert!(
+            settled.iter().any(|(uuid, state)| uuid == "held-1" && state == "cancelled"),
+            "and the press's composer mark settles: {settled:?}",
         );
         // **The seat keeps its session, so it keeps its composer.** No
         // successor arrives whose record read would clear the machine turn.
@@ -12536,12 +12574,14 @@ provider = "anthropic"
         );
     }
 
-    /// **A prompt queued into an occupant that dies or is replaced draws its
-    /// row.** The queue goes with the CLI process, and the client drops the
-    /// pile on the same event - so without the row the reader's words exist
-    /// nowhere, and a prompt behind it survives only as the ending line.
+    /// **A prompt queued into an occupant that dies or is replaced settles
+    /// into the pile's ending, not a forged row.** A live row would have no
+    /// read carrier: the transcript keeps the enqueue attachment and no start,
+    /// so a reload draws nothing. The words ride the queue announcement again
+    /// and the discarded state turns the card into the ending line - the same
+    /// carrier a refused or discarded prompt uses.
     #[tokio::test]
-    async fn a_lost_queue_draws_each_person_prompt_before_the_occupant_goes() {
+    async fn a_lost_queue_settles_each_prompt_into_the_pile_ending() {
         for replaced in [false, true] {
             let dir = tempfile::tempdir().expect("tempdir");
             let (workspace, _rx) =
@@ -12587,45 +12627,51 @@ provider = "anthropic"
             }
             .unwrap_or_else(|| panic!("{label}: the occupant's own frame is missing"));
             for (uuid, text) in [("lost-1", "first lost"), ("lost-2", "second lost")] {
-                let row = announced
+                let echoed = announced
                     .iter()
                     .position(|update| {
                         matches!(
                             update,
-                            SessionUpdate::ChatAppended {
-                                msg: forge_primitives::Message::User { uuid: Some(id), message, .. },
-                                source: Some(crate::protocol::PromptSource::You),
+                            SessionUpdate::PromptQueued {
+                                uuid: id,
+                                source: crate::protocol::PromptSource::You,
+                                text: said,
                                 ..
-                            } if id == uuid
-                                && message.content.iter().any(|block| matches!(
-                                    block,
-                                    forge_primitives::ContentBlock::Text { text: said, .. }
-                                        if said == text
-                                ))
+                            } if id == uuid && said == text
                         )
                     })
                     .unwrap_or_else(|| {
-                        panic!("{label}: {uuid}'s words draw: {announced:?}")
+                        panic!("{label}: {uuid}'s words reach the ending line: {announced:?}")
                     });
-                let drained = announced
+                let ended = announced
                     .iter()
                     .position(|update| {
                         matches!(
                             update,
                             SessionUpdate::PromptLifecycle { uuid: id, state, .. }
-                                if id == uuid && state == "started"
+                                if id == uuid && state == "discarded"
                         )
                     })
-                    .unwrap_or_else(|| panic!("{label}: {uuid}'s card settles"));
-                // A replacement resets the page's conversation, so its row
+                    .unwrap_or_else(|| panic!("{label}: {uuid}'s card settles into the ending"));
+                assert!(
+                    !announced.iter().any(|update| matches!(
+                        update,
+                        SessionUpdate::ChatAppended {
+                            msg: forge_primitives::Message::User { uuid: Some(id), .. },
+                            ..
+                        } if id == uuid
+                    )),
+                    "{label}: {uuid} never draws a forged row",
+                );
+                // A replacement resets the page's conversation, so the ending
                 // must follow it; a death is the other way round, with the
-                // row drawn while the pile is still standing.
+                // pile still standing as it settles.
                 let ordered = if replaced {
-                    row > anchor && drained > anchor
+                    echoed > anchor && ended > anchor
                 } else {
-                    row < anchor && drained < anchor
+                    echoed < anchor && ended < anchor
                 };
-                assert!(ordered, "{label}: the row and its settle sit with the occupant's frame");
+                assert!(ordered, "{label}: the words and their settle sit with the occupant's frame");
             }
         }
     }

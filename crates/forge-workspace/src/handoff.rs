@@ -1401,6 +1401,12 @@ impl crate::Workspace {
                 );
             }
             for prompt in &held {
+                // The press never ran, so its composer mark settles here.
+                let _ = self.update_tx.send(SessionUpdate::PromptLifecycle {
+                    key: request.slot.clone(),
+                    uuid: prompt.uuid.clone(),
+                    state: "cancelled".to_owned(),
+                });
                 if let Some(sender) = &prompt.sender {
                     self.notice_undelivered_message(
                         sender,
