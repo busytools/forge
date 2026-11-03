@@ -248,9 +248,11 @@ pub mod wire;
 /// that, because it is the old client - though the record no longer carries
 /// the judgment turn, which only that block read. `ChatAppended.origin` and
 /// `PromptUnder.origin` were the dispatch-time row's bookkeeping; the row is
-/// drawn when the CLI starts the prompt, so nothing carries an origin. A v26
-/// client reads both fields as absent; what it draws for a dispatch is that
-/// client's own rule, unchanged by the missing field.
+/// drawn when the CLI takes the prompt (`started`), which can be inside the
+/// running turn when the CLI absorbs it, so nothing carries an origin. A v26
+/// client reads both fields as absent; its dispatch row and its echo are that
+/// client's own code, and a core-answered command leaves its echo standing
+/// because that client has no answered-command set.
 /// `baselines/socket/26/` is the record a v26 server emitted.
 ///
 /// **Additive fields do not bump.** `diff.base_error` is one, carried on the
