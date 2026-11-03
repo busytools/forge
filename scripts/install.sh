@@ -135,6 +135,12 @@ run_binary "$STAGED_BIN" --version > /dev/null \
 # and never leaves a half-written forge in place.
 mkdir -p "$FORGE_BIN_DIR"
 cp -R "$FORGE_TRANSCRIBE_LIBS/." "$FORGE_BIN_DIR/"
+# Drop a library this build no longer ships; a stale copy beside the binary
+# would satisfy the loader with the wrong version.
+for installed in "$FORGE_BIN_DIR"/libtranscribe* "$FORGE_BIN_DIR"/libggml*; do
+    [ -e "$installed" ] || continue
+    [ -e "$FORGE_TRANSCRIBE_LIBS/${installed##*/}" ] || rm -f "$installed"
+done
 cp "$STAGED_BIN" "$FORGE_BIN_DIR/.forge.new"
 mv -f "$FORGE_BIN_DIR/.forge.new" "$FORGE_BIN"
 run_binary "$FORGE_BIN" --version > /dev/null \

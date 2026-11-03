@@ -42,6 +42,7 @@ fn profile_dir() -> Option<PathBuf> {
 
 fn stage(runtime_dir: &Path, dest: &Path) -> io::Result<()> {
     fs::create_dir_all(dest)?;
+    let mut shipped = Vec::new();
     for entry in fs::read_dir(runtime_dir)? {
         let entry = entry?;
         let name = entry.file_name();
@@ -60,6 +61,16 @@ fn stage(runtime_dir: &Path, dest: &Path) -> io::Result<()> {
             fs::copy(entry.path(), &target)?;
         } else {
             fs::copy(entry.path(), &target)?;
+        }
+        shipped.push(name);
+    }
+    // Drop a library this build no longer produces: a stale copy beside the
+    // binary would satisfy the loader with the wrong version.
+    for entry in fs::read_dir(dest)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        if is_library(&name) && !shipped.contains(&name) {
+            remove_if_present(&entry.path())?;
         }
     }
     Ok(())
