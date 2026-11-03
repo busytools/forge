@@ -843,9 +843,15 @@ mod tests {
                 // The document hand-off and the settings tools are always-on
                 // beside the browser.
                 .chain(
-                    ["documents__hand_off", "settings__index", "settings__get", "settings__set", "settings__unset"]
-                        .into_iter()
-                        .map(str::to_owned),
+                    [
+                        "documents__hand_off",
+                        "settings__index",
+                        "settings__get",
+                        "settings__set",
+                        "settings__unset",
+                    ]
+                    .into_iter()
+                    .map(str::to_owned),
                 )
                 .collect();
         expected.sort();
