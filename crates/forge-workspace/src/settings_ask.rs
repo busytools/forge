@@ -16,9 +16,12 @@ use crate::workspace::Workspace;
 use forge_primitives::settings::{SettingsWriteAsk, SettingsWriteEnding};
 
 /// One composed write held for a decision: the session that asked, the ask
-/// itself, and the sender the blocked tool handler awaits.
+/// itself, and the sender the blocked tool handler awaits. The sender is
+/// taken at the answer: **the entry stays until the write is settled**, so a
+/// second view's answer is refused while the first one applies, and the
+/// resolved update carries the write's own outcome rather than the click.
 pub(crate) type ParkedSettingsWrite =
-    (SessionSlot, SettingsWriteAsk, tokio::sync::oneshot::Sender<bool>);
+    (SessionSlot, SettingsWriteAsk, Option<tokio::sync::oneshot::Sender<bool>>);
 
 impl Workspace {
     /// Hold a composed write and hand back its id plus the receiver the
@@ -32,7 +35,7 @@ impl Workspace {
     ) -> (Uuid, tokio::sync::oneshot::Receiver<bool>, bool) {
         let (sender, receiver) = tokio::sync::oneshot::channel();
         let id = ask.id;
-        self.settings_writes.lock().insert(id, (caller.clone(), ask.clone(), sender));
+        self.settings_writes.lock().insert(id, (caller.clone(), ask.clone(), Some(sender)));
         let answerable = self
             .update_sender()
             .send_answering(SessionUpdate::SettingsWritePending { key: caller.clone(), ask });
@@ -54,13 +57,36 @@ impl Workspace {
         self.settings_writes.lock().get(&id).is_some_and(|(owner, _, _)| owner == caller)
     }
 
-    /// Answer a held write, returning whether one was waiting for THIS
-    /// caller. True exactly once, for the entry that was there; a write held
-    /// for another session is refused rather than answered.
+    /// Answer a held write with the reader's decision, returning whether one
+    /// was waiting for THIS caller. True exactly once, for the entry that was
+    /// there; a write held for another session, or one already answered and
+    /// still applying, is refused rather than answered.
     ///
-    /// The removal is the one point every removal funnels through - an
-    /// answer, or a dead waiter - so the stand-down is emitted here.
+    /// **The entry stays until the write is settled** ([`Self::settle_settings_write`]):
+    /// the answer unblocks the caller, which applies the edit and then
+    /// reports the outcome, so the resolved update says what happened to the
+    /// write rather than merely that a button was pressed.
     pub(crate) fn resolve_settings_write(
+        &self,
+        id: Uuid,
+        caller: &SessionSlot,
+        approved: bool,
+    ) -> bool {
+        let mut writes = self.settings_writes.lock();
+        let Some((owner, _, sender)) = writes.get_mut(&id) else { return false };
+        if owner != caller {
+            return false;
+        }
+        let Some(sender) = sender.take() else { return false };
+        drop(writes);
+        let _ = sender.send(approved);
+        true
+    }
+
+    /// Settle an answered or abandoned write: remove the entry and emit the
+    /// ending every view reads. Idempotent, because the caller's drop guard
+    /// and the answer path both reach it and only the first has an entry.
+    pub(crate) fn settle_settings_write(
         &self,
         id: Uuid,
         caller: &SessionSlot,
@@ -70,15 +96,35 @@ impl Workspace {
         if !writes.get(&id).is_some_and(|(owner, _, _)| owner == caller) {
             return false;
         }
-        let Some((owner, _, sender)) = writes.remove(&id) else { return false };
+        let Some((owner, _, _)) = writes.remove(&id) else { return false };
         drop(writes);
-        let _ = sender.send(matches!(ending, SettingsWriteEnding::Answered { approved: true }));
         let _ = self.update_sender().send(SessionUpdate::SettingsWriteResolved {
             key: owner,
             id,
             ending,
         });
         true
+    }
+
+    /// End every write `slot` still holds as abandoned.
+    ///
+    /// **A parked write outlives its own future.** The blocked MCP handler's
+    /// future is dropped when the session's task goes, but a detached control
+    /// task is not aborted by the client's disconnect, so the registry sweep
+    /// is what tells every other view the dock is over. Worker labels are
+    /// reused, and an entry left behind would draw the previous occupant's
+    /// write on the next session's dock.
+    pub(crate) fn abandon_settings_writes(&self, slot: &SessionSlot) {
+        let ids: Vec<Uuid> = self
+            .settings_writes
+            .lock()
+            .iter()
+            .filter(|(_, (owner, _, _))| owner == slot)
+            .map(|(id, _)| *id)
+            .collect();
+        for id in ids {
+            self.settle_settings_write(id, slot, SettingsWriteEnding::Abandoned);
+        }
     }
 
     /// Whether `slot` is holding a parked configuration write: its own
@@ -88,8 +134,10 @@ impl Workspace {
         self.settings_writes.lock().values().any(|(owner, _, _)| owner == slot)
     }
 
-    /// Every held write this seat owns, oldest first, as the record read
-    /// returns them.
+    /// Every held write this seat owns, **in the registry's own order** - a
+    /// `HashMap` keeps no arrival order to offer, the same exception two
+    /// Slack drafts already have. A seat with one write sees the same frame
+    /// and read; only two at once can differ between them.
     pub(crate) fn settings_write_asks(&self, slot: &SessionSlot) -> Vec<PendingAsk> {
         self.settings_writes
             .lock()
@@ -178,17 +226,14 @@ mod tests {
         let (id, mut held, _) = ws.register_settings_write(&caller(), ask);
 
         assert!(ws.settings_write_waiting(id, &caller()));
-        assert!(ws.resolve_settings_write(
-            id,
-            &caller(),
-            SettingsWriteEnding::Answered { approved: true },
-        ));
+        assert!(ws.resolve_settings_write(id, &caller(), true));
         assert_eq!(held.try_recv(), Ok(true), "the approval reaches the blocked caller");
-        assert!(!ws.resolve_settings_write(
-            id,
-            &caller(),
-            SettingsWriteEnding::Answered { approved: false },
-        ));
+        assert!(!ws.resolve_settings_write(id, &caller(), false), "one answer only");
+        assert!(
+            ws.settings_write_waiting(id, &caller()),
+            "the entry stays until the write is settled",
+        );
+        assert!(ws.settle_settings_write(id, &caller(), SettingsWriteEnding::Applied));
         assert!(!ws.settings_write_waiting(id, &caller()));
     }
 
@@ -201,11 +246,7 @@ mod tests {
         let (id, _held, _) = ws.register_settings_write(&caller(), ask);
 
         let elsewhere = SessionSlot::worker("Default", "forge", "someone-else");
-        assert!(!ws.resolve_settings_write(
-            id,
-            &elsewhere,
-            SettingsWriteEnding::Answered { approved: true },
-        ));
+        assert!(!ws.resolve_settings_write(id, &elsewhere, true));
         assert!(ws.settings_write_waiting(id, &caller()), "the write is still the asker's");
     }
 
@@ -256,11 +297,7 @@ mod tests {
         let mut ask = an_ask("server.port");
         ask.id = Uuid::new_v4();
         let (id, _decision, _) = ws.register_settings_write(&caller(), ask);
-        assert!(ws.resolve_settings_write(
-            id,
-            &caller(),
-            SettingsWriteEnding::Answered { approved: true },
-        ));
+        assert!(ws.resolve_settings_write(id, &caller(), true));
 
         let refused = ws.dispatch(crate::protocol::Command::RespondSettingsWrite {
             key: caller(),
@@ -298,6 +335,33 @@ mod tests {
         assert!(ws.settings_write_waiting(id, &asker), "the write is still the asker's");
     }
 
+    /// **A session going away ends every write it holds.** A detached MCP
+    /// control task is not aborted by the client's disconnect, so without
+    /// this sweep the entry would outlive the session that could answer it -
+    /// and a reused worker label would draw the previous occupant's write on
+    /// the next session's dock.
+    #[test]
+    fn a_session_teardown_abandons_the_writes_it_holds() {
+        let (ws, mut rx) = Workspace::testing_stub();
+        let mut ask = an_ask("server.port");
+        ask.id = Uuid::new_v4();
+        let (_id, mut held, _) = ws.register_settings_write(&caller(), ask);
+
+        ws.abandon_settings_writes(&caller());
+
+        assert!(ws.settings_writes.lock().is_empty(), "the teardown leaves nothing parked");
+        assert!(held.try_recv().is_err(), "the blocked caller is released as abandoned");
+        let mut endings = Vec::new();
+        while let Ok(frame) = rx.try_recv() {
+            if let SessionUpdate::SettingsWriteResolved { ending, .. } =
+                std::sync::Arc::unwrap_or_clone(frame.update)
+            {
+                endings.push(ending);
+            }
+        }
+        assert_eq!(endings, vec![SettingsWriteEnding::Abandoned]);
+    }
+
     /// A waiter whose session went away is abandoned rather than approved:
     /// the registry clears it, the blocked caller reads false, and the
     /// resolved update says which ending took it.
@@ -308,8 +372,8 @@ mod tests {
         ask.id = Uuid::new_v4();
         let (id, mut held, _) = ws.register_settings_write(&caller(), ask);
 
-        assert!(ws.resolve_settings_write(id, &caller(), SettingsWriteEnding::Abandoned));
-        assert_eq!(held.try_recv(), Ok(false), "abandoned is not an approval");
+        assert!(ws.settle_settings_write(id, &caller(), SettingsWriteEnding::Abandoned));
+        assert!(held.try_recv().is_err(), "abandoned is not an approval");
         assert!(ws.settings_writes.lock().is_empty());
 
         let mut endings = Vec::new();

@@ -6968,11 +6968,7 @@ impl Workspace {
                     // Same shape as the two arms above: the guard already
                     // refused one that is not waiting, so a `false` here is a
                     // resolve that landed between the two.
-                    let answered = self.resolve_settings_write(
-                        id,
-                        &key,
-                        forge_primitives::settings::SettingsWriteEnding::Answered { approved },
-                    );
+                    let answered = self.resolve_settings_write(id, &key, approved);
                     if !answered {
                         return Err(DispatchError::NoSettingsWriteWaiting { key: key.clone(), id });
                     }
@@ -8106,6 +8102,9 @@ impl Workspace {
         // async tab close follows.
         self.release_browser_seat(session_key);
         crate::dictate::teardown_for_closed_session(self, session_key);
+        // A parked write is not a prompt the gone session can answer, and a
+        // reused label must not draw the previous occupant's edit on a dock.
+        self.abandon_settings_writes(session_key);
         // Anything parked for this session's owner was waiting on a
         // session that is now gone: fail the peer asks so their callers
         // are told, rather than letting them wait out the timeout.
@@ -8442,8 +8441,9 @@ impl Workspace {
     /// What the seat at `slot` is holding - **a draft leads, then arrival
     /// order** - empty when it is holding nothing. Every hop keeps that
     /// order, so a re-read and the live folds cannot disagree about the
-    /// front, with one exception: two drafts held at once come back in the
-    /// registry's own order, because the registry keeps none to offer.
+    /// front, with one exception: two drafts held at once - and two
+    /// configuration writes held at once - come back in the registry's own
+    /// order, because the registry keeps none to offer.
     ///
     /// **The list rather than one ask**, because a parallel batch parks
     /// several at once and a view that attached mid-batch has no other way to

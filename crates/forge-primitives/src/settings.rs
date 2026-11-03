@@ -123,13 +123,18 @@ pub struct SettingsWriteAsk {
 
 /// What ended a held write, which a view that did not answer it has no other
 /// way to learn.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SettingsWriteEnding {
-    /// The reader answered it, in whichever view: `approved` says whether
-    /// the edit was applied.
-    Answered { approved: bool },
-    /// The asking session went away before anyone answered.
+    /// The reader approved it and the edit was written.
+    Applied,
+    /// The reader declined it; nothing was written.
+    Declined,
+    /// The reader approved it and the write did not land, in the writer's
+    /// own words. The ending is emitted after the write, so `Applied` above
+    /// never stands for a failed one.
+    Refused { message: String },
+    /// The asking session went away before the write was settled.
     Abandoned,
 }
 

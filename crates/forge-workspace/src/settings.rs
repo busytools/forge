@@ -1564,10 +1564,7 @@ fn instances_exist(config: &LoadedConfig, pattern: &str, names: &[String]) -> bo
 /// project's keys. The config's own names are matched, longest first, so a
 /// project name containing a dot stays one name.
 ///
-/// **Org-level keys are not a project's**, so `orgs.<org>.browser_profile`
-/// and the org's Slack binding read freely like a global key: the read
-/// policy scopes the keys that sit under `orgs.<org>.projects.<project>`.
-/// Every write is held either way.
+/// Org-level keys are [`owning_org`]'s, and global keys belong to neither.
 pub(crate) fn owning_project<'a>(
     config: &'a LoadedConfig,
     path: &str,
@@ -1579,6 +1576,22 @@ pub(crate) fn owning_project<'a>(
             path.starts_with(&format!("orgs.{}.projects.{}.", project.org, project.name))
         })
         .max_by_key(|project| project.org.len() + project.name.len())
+}
+
+/// The org a concrete path belongs to, when it is one of the org's own keys
+/// (`orgs.<org>.browser_profile`, the org's Slack binding) rather than a
+/// project's. A read from another org is refused by name like another
+/// project's key is: the org's settings shape every project in it, and the
+/// org segment is ownership even though the plan's sentence names projects.
+pub(crate) fn owning_org<'a>(config: &'a LoadedConfig, path: &str) -> Option<&'a str> {
+    org_names(config)
+        .into_iter()
+        .filter(|org| path.starts_with(&format!("orgs.{org}.")))
+        .max_by_key(|org| org.len())
+        .filter(|org| {
+            let rest = &path[format!("orgs.{org}.").len()..];
+            !rest.starts_with("projects.")
+        })
 }
 
 /// The name of a value's edit control, as the index states its type.
@@ -1624,6 +1637,27 @@ fn index_instances(config: &LoadedConfig, pattern: &str, org: &str, project: &st
     Vec::new()
 }
 
+/// Whether a row's value is one the reader would act on. The resolvers draw
+/// "not set" for an unset optional that has no row of its own (a model's
+/// window), so that placeholder is not a setting either.
+fn index_value_set(value: &serde_json::Value) -> bool {
+    !value.is_null() && value.as_str() != Some("not set")
+}
+
+/// Whether a row is one the caller's reach covers: its own project's rows
+/// and its own org's, so another project's set key does not mark the
+/// caller's index as set.
+fn index_row_in_reach(row: &SettingsKey, pattern: &str, org: &str, project: &str) -> bool {
+    if pattern.starts_with("orgs[].projects[]") {
+        row.group.first().is_some_and(|held| held == org)
+            && row.group.get(1).is_some_and(|held| held == project)
+    } else if pattern.starts_with("orgs[]") {
+        row.group.first().is_some_and(|held| held == org)
+    } else {
+        true
+    }
+}
+
 /// The compact catalogue an agent reads: sections and keys with type, whether
 /// the config sets one, and when an edit lands. No value crosses, so this is
 /// the shape of the file without its contents.
@@ -1638,7 +1672,8 @@ pub(crate) fn index_text(
     let rows: Vec<&SettingsKey> = document.areas.iter().flat_map(|area| &area.keys).collect();
     let mut out = String::from(
         "forge's configuration, one line per catalogue key:\n\
-         key  type  state  effect  [instances]\n",
+         key  type  state  effect  [instances]\n\
+         `unset` means this config resolves no value for it; a key with a built-in shows set.\n",
     );
     let _ = writeln!(out, "your project: {org}/{project}");
     for area in AREAS {
@@ -1646,15 +1681,18 @@ pub(crate) fn index_text(
         out.push_str(area.id);
         out.push('\n');
         for key in all_keys().filter(|key| key.area == area.id) {
-            let set = rows
-                .iter()
-                .any(|row| row.pattern == key.path && row.value != serde_json::Value::Null);
+            let set = rows.iter().any(|row| {
+                row.pattern == key.path
+                    && index_value_set(&row.value)
+                    && index_row_in_reach(row, key.path, org, project)
+            });
             let instances = index_instances(config, key.path, org, project);
+            let pattern = key.path;
             let _ = write!(
                 out,
                 "  {}  {}  {}  {}",
-                key.path,
-                edit_kind_name(edit_spec(key.path).kind),
+                pattern,
+                edit_kind_name(edit_spec(pattern).kind),
                 if set { "set" } else { "unset" },
                 key.class.as_str(),
             );
@@ -1724,7 +1762,7 @@ GLOBAL_FLAG = "1"
 display_name = "Primary"
 provider = "openrouter"
 base_url = "https://openrouter.ai/api"
-token = "t"
+token = "sk-settings-index-sentinel"
 models = ["glm-5.3-flash"]
 model_slugs = { "glm-5.3-flash" = "z-ai/glm-5.3-flash" }
 model_aliases = { "glm-5.3-flash" = ["glm-flash"] }
@@ -2511,6 +2549,9 @@ path = "/tmp/one"
 [[orgs.projects]]
 name = "two"
 path = "/tmp/two"
+env_file = "/tmp/two.env"
+
+[models."claude-sonnet-5"]
 "#;
 
     /// The index is the catalogue, not the document: one line per accepted
@@ -2536,6 +2577,10 @@ path = "/tmp/two"
             "a value leaked into the index: {text}",
         );
         assert!(!text.contains("PROVIDER_FLAG"), "an env value leaked: {text}");
+        assert!(
+            !text.contains("sk-settings-index-sentinel"),
+            "an account token leaked into the index: {text}",
+        );
     }
 
     /// The index teaches the caller the keys it can address, so another
@@ -2550,6 +2595,28 @@ path = "/tmp/two"
         assert!(text.contains("Acme/one"), "the caller's project is named: {text}");
         assert!(!text.contains("Acme/two"), "another project's instance is not listed: {text}");
         assert!(text.contains("orgs[].projects[].model"), "the shape is still the catalogue's");
+
+        let line = |pattern: &str| {
+            text.lines()
+                .find(|line| line.trim_start().starts_with(&format!("{pattern}  ")))
+                .unwrap_or_else(|| panic!("`{pattern}` is missing: {text}"))
+        };
+        assert!(
+            line("orgs[].projects[].env_file").contains("unset"),
+            "another project's env file does not mark the caller's index as set",
+        );
+        assert!(
+            line("models.*.auto_compact_window").contains("unset"),
+            "the resolver's `not set` placeholder is not a setting: {}",
+            line("models.*.auto_compact_window"),
+        );
+
+        let other = index_text(&config, &document, "Acme", "two");
+        let line = other
+            .lines()
+            .find(|line| line.trim_start().starts_with("orgs[].projects[].env_file  "))
+            .expect("the pattern is listed");
+        assert!(line.contains("set"), "the caller's own env file reads as set: {line}");
     }
 
     /// A tool's key resolves to the row the writer locates by, and an
@@ -2562,7 +2629,7 @@ path = "/tmp/two"
         let resolved = target(&document, "accounts.Primary.token").expect("the row exists");
         assert_eq!(resolved.pattern, "accounts[].token");
         assert_eq!(resolved.area, "accounts");
-        assert_eq!(resolved.current, json!("t"));
+        assert_eq!(resolved.current, json!("sk-settings-index-sentinel"));
         assert!(target(&document, "accounts.Nobody.token").is_none());
     }
 

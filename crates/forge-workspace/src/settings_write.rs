@@ -664,7 +664,6 @@ fn descend_from<'a>(
     descend_from(next, rest, create)
 }
 
-/// Convert a JSON value to the TOML shape its edit kind names.
 /// Validate one value against a key's edit spec without applying it, so a
 /// tool can refuse a wrong type before it asks the reader anything.
 pub(crate) fn validate(
@@ -675,6 +674,7 @@ pub(crate) fn validate(
     to_toml(value, edit.kind, &edit.allowed, path).map(|_| ())
 }
 
+/// Convert a JSON value to the TOML shape its edit kind names.
 fn to_toml(
     value: &serde_json::Value,
     kind: EditKind,

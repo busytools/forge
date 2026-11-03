@@ -24,6 +24,8 @@ pub(crate) enum SettingsError {
     /// The key belongs to a project the caller is not in; reads refuse it by
     /// name rather than returning another project's setting.
     ForeignProject { key: String, org: String, project: String },
+    /// The key is one of another org's own keys, refused on the same terms.
+    ForeignOrg { key: String, org: String, caller_org: String },
     /// The catalogue refused the value, the key cannot be unset, or the
     /// write would change nothing.
     Wanted(String),
@@ -48,6 +50,12 @@ impl SettingsError {
                  the peer channel - agents__send_message to org \"{org}\", project \
                  \"{project}\", label \"lead\" - or, if you have no peer channel, report the \
                  need to your reader instead"
+            ),
+            Self::ForeignOrg { key, org, caller_org } => format!(
+                "`{key}` belongs to org {org}; you are in {caller_org}. Ask one of that org's \
+                 project leads through the peer channel - agents__send_message to org \"{org}\" \
+                 and one of its projects, label \"lead\" - or, if you have no peer channel, \
+                 report the need to your reader instead"
             ),
             Self::Wanted(message) => message.clone(),
             Self::NoReader => "no client is attached to approve a configuration write, so \
@@ -107,10 +115,11 @@ pub(crate) trait SettingsFacade: Send + Sync {
     ) -> Result<SettingsWriteOutcome, SettingsError>;
 }
 
-/// Resolves the held write if the awaiting future is dropped before the
-/// reader answers - the calling session died mid-wait, or its connection
-/// went. Without this the registry entry and its oneshot sender outlive
-/// everyone who could answer them.
+/// Settles the held write as abandoned if the awaiting future is dropped
+/// before the write is settled - the calling session died mid-wait, or its
+/// connection went. The registry's own teardown sweep covers a session that
+/// goes without running this drop; this covers a cancelled call on a live
+/// session. Settling twice is a no-op in the registry.
 struct ResolveOnDrop {
     workspace: Arc<Workspace>,
     id: Uuid,
@@ -119,11 +128,7 @@ struct ResolveOnDrop {
 
 impl Drop for ResolveOnDrop {
     fn drop(&mut self) {
-        self.workspace.resolve_settings_write(
-            self.id,
-            &self.caller,
-            SettingsWriteEnding::Abandoned,
-        );
+        self.workspace.settle_settings_write(self.id, &self.caller, SettingsWriteEnding::Abandoned);
     }
 }
 
@@ -204,18 +209,43 @@ impl ProdSettingsFacade {
             return Err(SettingsError::NoReader);
         }
         // The guard outlives the await: dropping the future (a cancelled
-        // tool call, a session that died) clears the registry and says the
-        // write was abandoned rather than leaving the prompt to be answered
-        // after its asker is gone.
+        // tool call, a session that died) settles the registry as abandoned
+        // rather than leaving the prompt to be answered after its asker is
+        // gone.
         let _guard = ResolveOnDrop { workspace: Arc::clone(&ws), id, caller: caller.clone() };
-        match decision.await {
-            Ok(true) => {}
-            Ok(false) => return Ok(SettingsWriteOutcome::Declined),
-            Err(_) => return Err(SettingsError::Abandoned),
+        let Ok(approved) = decision.await else {
+            ws.settle_settings_write(id, caller, SettingsWriteEnding::Abandoned);
+            return Err(SettingsError::Abandoned);
+        };
+        if !approved {
+            ws.settle_settings_write(id, caller, SettingsWriteEnding::Declined);
+            return Ok(SettingsWriteOutcome::Declined);
         }
-        ws.save_settings(&fingerprint, std::slice::from_ref(&edit))
-            .map_err(|error| SettingsError::Refused(error.to_string()))?;
-        Ok(SettingsWriteOutcome::Applied { effect: target.class })
+        // **The ending is emitted after the write, not after the click.** A
+        // view that did not answer must not read "applied" for an edit the
+        // writer then refused, so the outcome crosses with the ending.
+        match ws.save_settings(&fingerprint, std::slice::from_ref(&edit)) {
+            Ok(()) => {
+                ws.settle_settings_write(id, caller, SettingsWriteEnding::Applied);
+                Ok(SettingsWriteOutcome::Applied { effect: target.class })
+            }
+            Err(error) => {
+                let message = match error {
+                    crate::workspace::SettingsSaveError::Stale => {
+                        "the configuration changed since this write was shown; nothing was \
+                         written. Call again to write against the current config"
+                            .to_owned()
+                    }
+                    other => other.to_string(),
+                };
+                ws.settle_settings_write(
+                    id,
+                    caller,
+                    SettingsWriteEnding::Refused { message: message.clone() },
+                );
+                Err(SettingsError::Refused(message))
+            }
+        }
     }
 }
 
@@ -237,6 +267,15 @@ impl SettingsFacade for ProdSettingsFacade {
                 key: key.to_owned(),
                 org: owner.org.clone(),
                 project: owner.name.clone(),
+            });
+        }
+        if let Some(owner_org) = crate::settings::owning_org(&config, key)
+            && owner_org != caller.org()
+        {
+            return Err(SettingsError::ForeignOrg {
+                key: key.to_owned(),
+                org: owner_org.to_owned(),
+                caller_org: caller.org().to_owned(),
             });
         }
         let document = ws.settings_snapshot();
@@ -480,11 +519,7 @@ provider = "anthropic"
             "the record read carries the key and both values",
         );
 
-        assert!(ws.resolve_settings_write(
-            id,
-            &caller(),
-            SettingsWriteEnding::Answered { approved: true },
-        ));
+        assert!(ws.resolve_settings_write(id, &caller(), true));
         let outcome = task.await.expect("no panic").expect("the write lands");
         assert_eq!(
             outcome,
@@ -499,14 +534,26 @@ provider = "anthropic"
             async move { facade.set(&caller(), key, json!(7)).await }
         });
         let id = wait_for_write(&ws).await;
-        assert!(ws.resolve_settings_write(
-            id,
-            &caller(),
-            SettingsWriteEnding::Answered { approved: false },
-        ));
+        assert!(ws.resolve_settings_write(id, &caller(), false));
         let outcome = task.await.expect("no panic").expect("a decline is an outcome");
         assert_eq!(outcome, SettingsWriteOutcome::Declined);
         assert!(read_config(&ws).contains("max_workers = 4"), "a decline writes nothing");
+    }
+
+    /// A section the config does not have emits no row either: the global
+    /// keys `settings__index` lists are readable before the section exists.
+    #[tokio::test]
+    async fn an_unset_global_section_key_reads_null() {
+        let (ws, _dir) = fixture();
+        let facade = facade(&ws);
+
+        let gotify = facade.get(&caller(), "gotify.url").await.expect("gotify.url reads");
+        assert_eq!(gotify.value, json!(null));
+        assert_eq!(gotify.pattern, "gotify.url");
+
+        let systemone =
+            facade.get(&caller(), "systemone.enabled").await.expect("systemone.enabled reads");
+        assert_eq!(systemone.value, json!(null));
     }
 
     /// An optional key the config does not set reads as unset and can be
@@ -552,11 +599,7 @@ provider = "anthropic"
             async move { facade.set(&caller(), key, json!(true)).await }
         });
         let id = wait_for_write(&ws).await;
-        assert!(ws.resolve_settings_write(
-            id,
-            &caller(),
-            SettingsWriteEnding::Answered { approved: true },
-        ));
+        assert!(ws.resolve_settings_write(id, &caller(), true));
         let outcome = task.await.expect("no panic").expect("the write lands");
         assert!(matches!(outcome, SettingsWriteOutcome::Applied { .. }));
         assert!(read_config(&ws).contains("enabled = true"), "the key was created");
@@ -588,32 +631,68 @@ provider = "anthropic"
             "the write parks with the foreign key the reader has to see",
         );
 
-        assert!(ws.resolve_settings_write(
-            id,
-            &caller(),
-            SettingsWriteEnding::Answered { approved: true },
-        ));
+        assert!(ws.resolve_settings_write(id, &caller(), true));
         let outcome = task.await.expect("no panic").expect("the write lands");
         assert!(matches!(outcome, SettingsWriteOutcome::Applied { .. }));
         assert!(read_config(&ws).contains("max_workers = 5"));
     }
 
-    /// An org's own keys are not a project's, so another org's read like a
-    /// global key: the read policy scopes `orgs.<org>.projects.<project>`.
+    /// **An org's own keys belong to that org.** They are not a project's,
+    /// but they shape every project in it, so another org's are refused by
+    /// name with the same request path a project's key gets.
     #[tokio::test]
-    async fn another_orgs_org_level_key_reads_like_a_global_key() {
+    async fn another_orgs_org_level_key_is_refused_by_name() {
         let (ws, _dir) = fixture();
 
-        let read = facade(&ws)
+        let error = facade(&ws)
             .get(&caller(), "orgs.Other.browser_profile")
             .await
-            .expect("org-level keys are global for reads");
+            .expect_err("another org's key is refused");
 
-        assert_eq!(
-            read.value,
-            json!("default"),
-            "the org's effective profile reads, not a foreign-project refusal",
-        );
+        let message = error.message();
+        assert!(message.contains("orgs.Other.browser_profile"), "{message}");
+        assert!(message.contains("belongs to org Other"), "{message}");
+        assert!(message.contains("agents__send_message"), "{message}");
+        assert!(message.contains("reader"), "{message}");
+    }
+
+    /// A cancelled call settles the registry as abandoned and says so, so a
+    /// dock elsewhere stands down rather than waiting on a caller that is
+    /// gone. A killed session whose control task outlives its disconnect is
+    /// the teardown sweep's, tested in `settings_ask`.
+    #[tokio::test]
+    async fn a_cancelled_call_settles_the_write_as_abandoned() {
+        let (ws, _dir) = fixture();
+        let _answerer = ws.subscribe_answerer();
+        let mut updates = ws.subscribe_mirror();
+        let facade = facade(&ws);
+        let task = tokio::spawn({
+            let facade = Arc::clone(&facade);
+            async move {
+                facade.set(&caller(), "orgs.Default.projects.forge.max_workers", json!(5)).await
+            }
+        });
+        let _id = wait_for_write(&ws).await;
+
+        task.abort();
+        let _ = task.await;
+        for _ in 0..200 {
+            if ws.settings_writes.lock().is_empty() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+
+        assert!(ws.settings_writes.lock().is_empty(), "the cancelled call left nothing parked");
+        let mut endings = Vec::new();
+        while let Ok(frame) = updates.try_recv() {
+            if let crate::protocol::SessionUpdate::SettingsWriteResolved { ending, .. } =
+                std::sync::Arc::unwrap_or_clone(frame.update)
+            {
+                endings.push(ending);
+            }
+        }
+        assert_eq!(endings, vec![SettingsWriteEnding::Abandoned]);
     }
 
     /// An unknown key and a wrong type are refused naming the key before any
@@ -659,11 +738,7 @@ provider = "anthropic"
             async move { facade.unset(&caller(), "orgs.Default.projects.forge.max_workers").await }
         });
         let id = wait_for_write(&ws).await;
-        assert!(ws.resolve_settings_write(
-            id,
-            &caller(),
-            SettingsWriteEnding::Answered { approved: true },
-        ));
+        assert!(ws.resolve_settings_write(id, &caller(), true));
         let outcome = task.await.expect("no panic").expect("the clear lands");
         assert!(matches!(outcome, SettingsWriteOutcome::Applied { .. }));
         assert!(
@@ -705,11 +780,7 @@ provider = "anthropic"
         });
         let id = wait_for_write(&ws).await;
         fs::write(ws.config_path(), format!("{CONFIG}\n# moved\n")).expect("move the file");
-        assert!(ws.resolve_settings_write(
-            id,
-            &caller(),
-            SettingsWriteEnding::Answered { approved: true },
-        ));
+        assert!(ws.resolve_settings_write(id, &caller(), true));
 
         let error = task.await.expect("no panic").expect_err("a stale write is refused");
         assert!(matches!(error, SettingsError::Refused(_)), "{error:?}");
