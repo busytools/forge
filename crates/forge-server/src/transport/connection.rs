@@ -4059,7 +4059,9 @@ fn document_answer(
 /// refuses a dispatch builds the tag here, so the two cannot drift.
 fn refusal_tag(refusal: &DispatchError) -> &'static str {
     match refusal {
-        DispatchError::NoDraftWaiting { .. } => "respond_slack_post",
+        DispatchError::NoDraftWaiting { .. } | DispatchError::EmptySlackFeedback { .. } => {
+            "respond_slack_post"
+        }
         DispatchError::NoBrowserHandOffWaiting { .. } => "respond_browser_hand_off",
         _ => "dispatch",
     }

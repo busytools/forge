@@ -3736,7 +3736,7 @@ async fn a_refused_slack_answer_names_its_own_operation() {
             command: Box::new(Command::RespondSlackPost {
                 key: lead_seat(),
                 id: uuid::Uuid::new_v4(),
-                approved: true,
+                answer: forge_primitives::slack::SlackDraftAnswer::Approve,
             }),
             reply_to: None,
         },

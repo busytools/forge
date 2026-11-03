@@ -540,9 +540,22 @@ impl Tool for Unsubscribe {
     }
 }
 
+/// What a blocked call reads when the reader sends its draft back. The note
+/// is the reader's own words and stays whole; the fixed halves say what did
+/// not happen and what the agent is expected to do next.
+fn sent_back_refusal(outcome: &str, tool: &str, note: &str) -> String {
+    format!(
+        "{outcome}: the reader sent it back with this feedback and expects a revision.\n\n\
+         {note}\n\nRevise it and call {tool} again."
+    )
+}
+
 fn format_post_error(err: &SlackPostError) -> String {
     match err {
         SlackPostError::Rejected => "the post was not approved, so nothing was sent".to_owned(),
+        SlackPostError::SentBack { note } => {
+            sent_back_refusal("the post was not sent", "slack__post", note)
+        }
         SlackPostError::Workspace(err) => format_workspace_error(err),
         SlackPostError::Partial { posted, total, source } => {
             format!("posted part {posted} of {total}; the rest were NOT sent ({source})")
@@ -559,6 +572,9 @@ fn format_edit_error(err: &SlackEditError) -> String {
         SlackEditError::Rejected => {
             "the replacement was not approved, so the message is untouched".to_owned()
         }
+        SlackEditError::SentBack { note } => {
+            sent_back_refusal("the change was not made", "slack__edit", note)
+        }
         SlackEditError::Workspace(err) => format_workspace_error(err),
         SlackEditError::Fetch(message) => format!("Slack request failed: {message}"),
     }
@@ -568,6 +584,9 @@ fn format_react_error(err: &SlackReactError) -> String {
     match err {
         SlackReactError::Rejected => {
             "the reaction was not approved, so nothing was added or removed".to_owned()
+        }
+        SlackReactError::SentBack { note } => {
+            sent_back_refusal("the reaction was not applied", "slack__react", note)
         }
         SlackReactError::Workspace(err) => format_workspace_error(err),
         SlackReactError::Fetch(message) => format!("Slack request failed: {message}"),
@@ -797,6 +816,9 @@ fn format_attachment_error(err: &SlackAttachmentError) -> String {
         SlackAttachmentError::Io(message) => format!("file error: {message}"),
         SlackAttachmentError::Rejected => {
             "the upload was not approved, so nothing was sent".to_owned()
+        }
+        SlackAttachmentError::SentBack { note } => {
+            sent_back_refusal("the upload was not sent", "slack__attachment", note)
         }
         SlackAttachmentError::Workspace(err) => format_workspace_error(err),
         SlackAttachmentError::Fetch(message) => format!("Slack request failed: {message}"),
@@ -1899,6 +1921,35 @@ mod tests {
         ];
         for answer in answers {
             assert_eq!(answer, expected, "every tool shares the one wording");
+        }
+    }
+
+    /// The reader's words are what the agent revises from, so the refusal
+    /// has to carry them whole and say what is expected next: a bare "not
+    /// approved" leaves it guessing at the change, which is the loop this
+    /// answer exists to close.
+    #[test]
+    fn a_sent_back_refusal_carries_the_note_and_the_next_step() {
+        let note = "say staging, not prod";
+        let answers = [
+            (format_post_error(&SlackPostError::SentBack { note: note.to_owned() }), "slack__post"),
+            (format_edit_error(&SlackEditError::SentBack { note: note.to_owned() }), "slack__edit"),
+            (
+                format_react_error(&SlackReactError::SentBack { note: note.to_owned() }),
+                "slack__react",
+            ),
+            (
+                format_attachment_error(&SlackAttachmentError::SentBack { note: note.to_owned() }),
+                "slack__attachment",
+            ),
+        ];
+        for (answer, tool) in answers {
+            assert!(answer.contains(note), "the note stays verbatim in {tool}'s refusal: {answer}");
+            assert!(
+                answer.contains("expects a revision"),
+                "and says what is expected: {answer}",
+            );
+            assert!(answer.contains(tool), "and names the call to repeat: {answer}");
         }
     }
 
