@@ -604,11 +604,11 @@
   }
 
   /** A held post's two verbs, which are buttons rather than rows. */
-  function post(answer_: 'approve' | 'decline'): void {
+  function post(decision: 'approve' | 'decline'): void {
     if (answered || ask.kind !== 'slack_draft') return;
     const id = ask.request.id;
     onanswer(id);
-    answer({ respond_slack_post: { key: slot, id, answer: answer_ } });
+    answer({ respond_slack_post: { key: slot, id, answer: decision } });
   }
 
   /** Whether the send-back field is open, and the words it holds. */
