@@ -1362,6 +1362,33 @@ fn frames_record() -> Value {
             },
         })),
     );
+    // **The held Slack draft's own payload.** The census covers its variant
+    // name and nothing inside it, and `operation` is what the card words its
+    // verbs from: a rename there would draw post copy for a delete with
+    // nothing red. The resolution's ending rides the pair.
+    payload_sampled.insert(
+        "SlackPostPending".to_owned(),
+        shape_of(&an_update(SessionUpdate::SlackPostPending {
+            key: seat.clone(),
+            draft: forge_primitives::slack::SlackDraft {
+                id: uuid::Uuid::new_v4(),
+                workspace: "acme".to_owned(),
+                conversation: "C1".to_owned(),
+                conversation_label: "acme".to_owned(),
+                thread_ts: None,
+                text: "hello".to_owned(),
+                operation: forge_primitives::slack::SlackDraftOperation::Delete,
+            },
+        })),
+    );
+    payload_sampled.insert(
+        "SlackDraftResolved".to_owned(),
+        shape_of(&an_update(SessionUpdate::SlackDraftResolved {
+            key: seat.clone(),
+            id: uuid::Uuid::new_v4(),
+            ending: forge_primitives::slack::SlackDraftEnding::SentBack,
+        })),
+    );
     // **The models read, whose payload the whole page is drawn from.** The
     // census covers its variant name and nothing inside it: a rename among
     // these - a fact key, a state tag, the digest a remove control quotes -

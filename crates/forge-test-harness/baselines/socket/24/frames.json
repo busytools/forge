@@ -934,6 +934,56 @@
         "kind"
       ]
     },
+    "SlackDraftResolved": {
+      "": [
+        "kind",
+        "seq",
+        "span",
+        "update"
+      ],
+      "/update": [
+        "slack_draft_resolved"
+      ],
+      "/update/slack_draft_resolved": [
+        "ending",
+        "id",
+        "key"
+      ],
+      "/update/slack_draft_resolved/key": [
+        "label",
+        "org",
+        "project"
+      ]
+    },
+    "SlackPostPending": {
+      "": [
+        "kind",
+        "seq",
+        "span",
+        "update"
+      ],
+      "/update": [
+        "slack_post_pending"
+      ],
+      "/update/slack_post_pending": [
+        "draft",
+        "key"
+      ],
+      "/update/slack_post_pending/draft": [
+        "conversation",
+        "conversation_label",
+        "id",
+        "operation",
+        "text",
+        "thread_ts",
+        "workspace"
+      ],
+      "/update/slack_post_pending/key": [
+        "label",
+        "org",
+        "project"
+      ]
+    },
     "SnapshotBoard": {
       "": [
         "data",
