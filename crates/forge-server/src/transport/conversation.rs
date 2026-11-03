@@ -42,7 +42,7 @@ use forge_primitives::{Message, SessionSlot};
 // The window this copy is kept in. The fan-out's ring is sized from the same
 // caps, because a ring exists to fill a copy that is behind; the ceilings' why,
 // and what the drop costs, are stated there.
-use forge_workspace::conversation_turns::TurnScan;
+use forge_workspace::conversation_turns::{TurnScan, opens_for_debt};
 use forge_workspace::conversation_window::Window;
 // The delivered liveness rule, folded off the frames this copy sees - the same
 // one the client's `inFlightOf` keeps and the core folds into a seat's own
@@ -197,9 +197,9 @@ impl Conversation {
             handoff: None,
             live,
             scan,
-            // Only a turn still open can draw the figure, so a settled history
-            // carries no debt.
-            dropped_thinking: if live { shed.thinking } else { 0 },
+            // A settled turn still draws its report, so a seed keeps the debt
+            // its own cut produced whether or not the turn is still open.
+            dropped_thinking: shed.thinking,
         }
     }
 
@@ -265,7 +265,7 @@ impl Conversation {
         self.live = live;
         self.window = kept;
         self.scan = scan;
-        self.dropped_thinking = if live { shed.thinking } else { 0 };
+        self.dropped_thinking = shed.thinking;
         // **The boundaries go with the messages they describe.** The fold's
         // turns name a prefix of the messages, and a reader that saw the new
         // list under the old boundaries would slice off the end of it.
@@ -318,9 +318,9 @@ impl Conversation {
     fn push(&mut self, message: Message) {
         // **The scan sees every frame once, in stream order**, so its answer
         // stays exact across a fold (which empties the window, never the
-        // scan).
-        let opened = self.scan.opens(&message);
-        let ended = matches!(message, Message::Result { .. });
+        // scan). A queued prompt opens a turn in the fold the window serves,
+        // so it opens one for the debt too.
+        let opened = opens_for_debt(&mut self.scan, &message);
         // **A boundary that arrives moves the count**, the same way the
         // session task's own count does. Without this the record reports the
         // value its last SEED carried, which is stale for every compaction
@@ -339,10 +339,12 @@ impl Conversation {
         // it, this one frame is what tips the store into a doubling the drop
         // is about to throw away. Both ceilings are the window's own.
         let shed = self.window.push(message, opened);
-        // **A cut on a boundary owes nothing**: the turn it belongs to is
-        // either closed by this frame or the one before it, and the next turn
-        // starts its figure at zero.
-        if opened || ended {
+        // **Only a new turn clears the debt.** A settled turn is still the
+        // newest turn a page serves, and its report draws the figure - so the
+        // debt survives a `Result` and an `Error` alike, the two turn ends
+        // `liveness_of` names, and only a frame that opens the next turn
+        // starts with nothing carried.
+        if opened {
             self.dropped_thinking = 0;
         } else {
             self.dropped_thinking = self.dropped_thinking.saturating_add(shed.thinking);
@@ -1121,6 +1123,7 @@ mod tests {
                 held.messages(),
                 held.rendered(),
                 held.dropped(),
+                held.dropped_thinking(),
                 None,
                 turns,
             )
@@ -1156,6 +1159,11 @@ mod tests {
             "session_id": "5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45",
         }))
         .expect("a counter frame")
+    }
+
+    /// The frame an error leaves, which ends a turn as a `Result` does.
+    fn a_error_frame() -> Message {
+        Message::Error { error: "the turn failed".to_owned(), extras: serde_json::Map::new() }
     }
 
     /// One turn with `counters` thinking-token frames after its opening row.
@@ -1202,28 +1210,30 @@ mod tests {
         );
     }
 
-    /// **The debt never crosses a turn.** A `Result` closes the turn it
-    /// belonged to, and a frame that opens a turn starts the next one with
-    /// nothing carried.
+    /// **A settled turn still draws its report, so its debt survives the
+    /// result.** Only a frame that opens the next turn clears it, and the rule
+    /// names no turn end at all - `Result` and `Error` are treated alike.
     #[test]
-    fn the_dropped_thinking_resets_on_a_result_and_on_a_new_turn() {
+    fn the_dropped_thinking_survives_a_result_and_clears_on_the_next_turn() {
         let mut conversation = Conversation::empty();
         conversation.append(a_frame("a thought-heavy turn"));
         for at in 0..5_100 {
             conversation.append(a_counter(at, 1));
         }
-        assert!(conversation.dropped_thinking() > 0, "the drop carries a debt");
+        let carried = conversation.dropped_thinking();
+        assert!(carried > 0, "the drop carries a debt");
 
         conversation.append(a_result_frame());
-        assert_eq!(conversation.dropped_thinking(), 0, "a result closes the turn and its debt");
+        assert_eq!(
+            conversation.dropped_thinking(),
+            carried,
+            "a settled turn is still the newest turn a page serves",
+        );
+
+        conversation.append(a_error_frame());
+        assert_eq!(conversation.dropped_thinking(), carried, "an error ends a turn the same way");
 
         conversation.append(a_frame("the next turn"));
-        for at in 5_100..10_200 {
-            conversation.append(a_counter(at, 1));
-        }
-        assert!(conversation.dropped_thinking() > 0, "the next drop carries a debt");
-
-        conversation.append(a_frame("a new turn"));
         assert_eq!(
             conversation.dropped_thinking(),
             0,
@@ -1245,6 +1255,18 @@ mod tests {
         let held = Held::new(conversation);
         let page = page_with_debt(&held, u32::MAX);
         assert_eq!(served_thinking(&page), 20, "the page is the turn's own sum");
+        let first = page.turns[0]
+            .messages
+            .iter()
+            .find(|frame| frame["subtype"] == "thinking_tokens")
+            .expect("a counter");
+        assert_eq!(first["estimated_tokens_delta"], 2, "no debt is added to a turn that fits",);
+        let plain = newest_page(&held, u32::MAX);
+        assert_eq!(
+            serde_json::to_string(&page.turns).expect("the page encodes"),
+            serde_json::to_string(&plain.turns).expect("the page encodes"),
+            "and the bytes are the page with no debt, unchanged",
+        );
     }
 
     fn a_connect(history: Vec<Message>, compaction_count: u32) -> SessionUpdate {
@@ -1708,7 +1730,14 @@ mod tests {
 
         let conversation = held.get(&a_seat()).expect("the seat is held");
         let page = conversation.read(|held| {
-            crate::transport::wire::page(held.messages(), held.rendered(), held.dropped(), None, 5)
+            crate::transport::wire::page(
+                held.messages(),
+                held.rendered(),
+                held.dropped(),
+                held.dropped_thinking(),
+                None,
+                5,
+            )
         });
         assert_eq!(page.turns.len(), 1, "the reseeded conversation is one turn");
         assert_eq!(
@@ -1845,6 +1874,7 @@ mod tests {
             &messages,
             &whole,
             0,
+            0,
             None,
             crate::transport::wire::SUBSCRIBE_TURNS,
         );
@@ -1909,7 +1939,14 @@ mod tests {
         // seed left it.
         let cursor = newest_page(&held, 2).cursor.expect("a page above the newest one");
         let above_before = held.read(|held| {
-            crate::transport::wire::page(held.messages(), held.rendered(), held.dropped(), None, 4)
+            crate::transport::wire::page(
+                held.messages(),
+                held.rendered(),
+                held.dropped(),
+                held.dropped_thinking(),
+                None,
+                4,
+            )
         });
 
         // Frames until the appends spend the slack and a second drop runs.
@@ -1929,6 +1966,7 @@ mod tests {
                 held.messages(),
                 held.rendered(),
                 held.dropped(),
+                held.dropped_thinking(),
                 Some(&cursor),
                 2,
             )
@@ -1955,7 +1993,14 @@ mod tests {
 
         // The newest page, and the cursor it hands back for the page above it.
         let newest = held.read(|held| {
-            crate::transport::wire::page(held.messages(), held.rendered(), held.dropped(), None, 2)
+            crate::transport::wire::page(
+                held.messages(),
+                held.rendered(),
+                held.dropped(),
+                held.dropped_thinking(),
+                None,
+                2,
+            )
         });
         let cursor = newest.cursor.expect("there is a page above the newest one");
 
@@ -1964,12 +2009,20 @@ mod tests {
                 held.messages(),
                 held.rendered(),
                 held.dropped(),
+                held.dropped_thinking(),
                 Some(&cursor),
                 2,
             )
         });
         let carried = held.read(|held| {
-            crate::transport::wire::page(held.messages(), held.rendered(), held.dropped(), None, 4)
+            crate::transport::wire::page(
+                held.messages(),
+                held.rendered(),
+                held.dropped(),
+                held.dropped_thinking(),
+                None,
+                4,
+            )
         });
         assert_eq!(
             turn_texts(&above),
@@ -1986,6 +2039,7 @@ mod tests {
                 held.messages(),
                 held.rendered(),
                 held.dropped(),
+                held.dropped_thinking(),
                 Some(&dropped.saturating_sub(1).to_string()),
                 2,
             )

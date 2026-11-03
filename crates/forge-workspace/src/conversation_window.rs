@@ -149,13 +149,15 @@ pub struct Window {
     sizes: Vec<usize>,
     /// The running total of `sizes`, so a push never walks the window.
     bytes: usize,
-    /// Where the newest turn's opening frame sits in `messages`, `None` once a
-    /// cut has dropped it.
+    /// Where the newest turn's opening frame sits in `messages`, `None` when
+    /// the window holds no opening frame for it - either a cut dropped it or
+    /// the scan named none.
     ///
     /// **It is how a drop tells the newest turn's counters from older ones**:
     /// a cut at a turn's first frame takes settled turns, whose counters no
     /// page owes, while a cut inside the newest turn owes every counter after
-    /// its opening.
+    /// its opening. **No opening frame means the whole window is one turn**,
+    /// so every dropped counter from its front belongs to that turn.
     newest_open: Option<usize>,
 }
 
@@ -203,6 +205,32 @@ impl Window {
         // exact; it is only its position that moves.
         if let Some(at) = other.newest_open {
             self.newest_open = Some(base + at);
+        }
+        // The donor is left empty, so its own answer must be too.
+        other.newest_open = None;
+    }
+
+    /// Fold a cut's thinking debt into the first counter the newest turn still
+    /// carries.
+    ///
+    /// **A handover has no page to fold into.** A resume hands the window to
+    /// the update stream, so the debt rides the frames rather than a serve:
+    /// the first counter the newest turn carries absorbs it, and every reader
+    /// of the handover sums the whole turn.
+    pub fn carry_thinking(&mut self, shed: Shed) {
+        if shed.thinking == 0 {
+            return;
+        }
+        let from = self.newest_open.unwrap_or(0);
+        let Some(at) =
+            self.messages[from..].iter().position(|message| turn_counter(message).is_some())
+        else {
+            return;
+        };
+        if let Message::ThinkingTokens { estimated_tokens_delta, .. } =
+            &mut self.messages[from + at]
+        {
+            *estimated_tokens_delta = estimated_tokens_delta.saturating_add(shed.thinking);
         }
     }
 
@@ -303,7 +331,7 @@ impl Window {
         let mut scan = crate::conversation_turns::TurnScan::default();
         let mut newest_open = None;
         for (at, message) in history.iter().enumerate() {
-            if scan.opens(message) {
+            if crate::conversation_turns::opens_for_debt(&mut scan, message) {
                 newest_open = Some(at);
             }
         }
@@ -324,15 +352,26 @@ impl Window {
 }
 
 /// The thinking growth a run of frames stands for: the sum of the deltas on
-/// the counters among them.
+/// the turn's own counters among them.
 fn thinking_in(messages: &[Message]) -> i64 {
-    messages
-        .iter()
-        .map(|message| match message {
-            Message::ThinkingTokens { estimated_tokens_delta, .. } => *estimated_tokens_delta,
-            _ => 0,
-        })
-        .sum()
+    messages.iter().filter_map(turn_counter).sum()
+}
+
+/// The growth a frame stands for when it is the turn's own thinking counter,
+/// not a dispatched sub-agent's.
+///
+/// **The same guard `compact_counters` keeps**: a sub-agent's counters belong
+/// to the subagents surface, and adding them to the turn's debt would put
+/// them on the parent's figure.
+fn turn_counter(message: &Message) -> Option<i64> {
+    let Message::ThinkingTokens { estimated_tokens_delta, extras, .. } = message else {
+        return None;
+    };
+    let dispatched = extras
+        .get("parent_tool_use_id")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|id| !id.trim().is_empty());
+    (!dispatched).then_some(*estimated_tokens_delta)
 }
 
 /// What a frame weighs on the wire: its JSON, which is what a page carries.
@@ -511,6 +550,34 @@ mod tests {
         .expect("a user frame")
     }
 
+    /// One thinking-token counter.
+    fn a_counter(at: usize, delta: i64) -> Message {
+        serde_json::from_value(serde_json::json!({
+            "type": "system",
+            "subtype": "thinking_tokens",
+            "estimated_tokens": delta as u64,
+            "estimated_tokens_delta": delta,
+            "uuid": format!("t-{at}"),
+            "session_id": "5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45",
+        }))
+        .expect("a counter frame")
+    }
+
+    /// The frame that ends a turn.
+    fn a_result() -> Message {
+        serde_json::from_value(serde_json::json!({
+            "type": "result",
+            "subtype": "success",
+            "uuid": "r-1",
+            "session_id": "5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45",
+            "is_error": false,
+            "num_turns": 1,
+            "duration_ms": 12,
+            "duration_api_ms": 9,
+        }))
+        .expect("a result frame")
+    }
+
     /// `turns` turns of `frames_each` frames: the user row that opens one,
     /// then frames that belong to it and open none of their own.
     fn a_history_of(turns: usize, frames_each: usize) -> Vec<Message> {
@@ -609,6 +676,27 @@ mod tests {
             !opens_a_turn(&window.messages()[0]),
             "inside the turn, which is the only option when a single turn alone exceeds the slack",
         );
+    }
+
+    /// **A cut inside a turn reports the counters it took.** The debt is the
+    /// newest turn's own counters, not the settled turn's before it, and a
+    /// cut at a turn's first frame owes nothing.
+    #[test]
+    fn a_cut_inside_a_turn_reports_the_thinking_it_took() {
+        let mut history = vec![a_said("settled"), a_counter(1, 5), a_result(), a_said("running")];
+        for at in 0..10 {
+            history.push(a_counter(at + 10, 3));
+        }
+
+        let inside = Budget { count: 5, count_slack: 0, bytes: usize::MAX, byte_slack: 0 };
+        let (_, shed) = Window::tail_of_with(&history, inside);
+        assert_eq!(shed.frames, 9, "the cut passes the settled turn and the running head");
+        assert_eq!(shed.thinking, 15, "only the running turn's dropped counters count");
+
+        let boundary = Budget { count: 11, count_slack: 0, bytes: usize::MAX, byte_slack: 0 };
+        let (_, shed) = Window::tail_of_with(&history, boundary);
+        assert_eq!(shed.frames, 3, "the cut lands on the running turn's first frame");
+        assert_eq!(shed.thinking, 0, "a cut at a turn's first frame owes nothing");
     }
 
     /// **A head the scan cannot read leaves the count's own cut, deliberately.**
