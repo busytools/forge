@@ -469,6 +469,33 @@ jobs:
       # The server's browser host and the server arm that installs it: a
       # compile error here passes every Ubuntu job.
       - run: cargo check -p forge-browser -p forge-server --all-targets
+      # The macOS half of the install proof: the same script into a temp
+      # root, then a boot with no DYLD_* library path. @loader_path and the
+      # copied dylibs are macOS-only, so the Ubuntu job cannot cover this.
+      # The browser stage is skipped: the bundle and driver it downloads are
+      # exercised by the steps around this one.
+      - name: The installed binary resolves its libraries (macOS)
+        env:
+          CARGO_INSTALL_ROOT: ${{ runner.temp }}/forge-install-macos
+          FORGE_ZSH_COMPLETION_DIR: ${{ runner.temp }}/forge-zsh-macos
+          FORGE_INSTALL_BROWSER: "0"
+        run: |
+          scripts/install.sh
+          bin="$CARGO_INSTALL_ROOT/bin/forge"
+          env -u DYLD_LIBRARY_PATH -u DYLD_FALLBACK_LIBRARY_PATH "$bin" --version
+          loaded=$(env -u DYLD_LIBRARY_PATH -u DYLD_FALLBACK_LIBRARY_PATH \
+            DYLD_PRINT_LIBRARIES=1 "$bin" --version 2>&1 \
+            | grep -E '/(libtranscribe|libggml)[^/]*\.dylib')
+          if [ -z "$loaded" ]; then
+            echo "the installed binary loaded no transcribe/ggml libraries" >&2
+            exit 1
+          fi
+          if echo "$loaded" | grep -vFq -- "$CARGO_INSTALL_ROOT/bin/"; then
+            echo "$loaded" | grep -vF -- "$CARGO_INSTALL_ROOT/bin/" >&2
+            echo "the libraries above do not load from beside the installed binary" >&2
+            exit 1
+          fi
+          echo "installed binary boots with $(echo "$loaded" | wc -l | tr -d ' ') transcribe/ggml libraries from $CARGO_INSTALL_ROOT/bin"
       # **This is the only place the FSEvents watch runs.** The config watch
       # tests are macOS-ignored because the maintainer's loaded machine stalls
       # fsevents delivery; Ubuntu runs them on inotify, which is a different

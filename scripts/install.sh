@@ -18,6 +18,7 @@
 #
 # Env overrides:
 #   FORGE_ZSH_COMPLETION_DIR    zsh completion dir   (default: ~/.zsh/completions)
+#   FORGE_INSTALL_BROWSER       0 skips the macOS browser stage (default: 1)
 
 set -euo pipefail
 
@@ -154,7 +155,9 @@ log_success "  forge @ $CURRENT_SHA (branch: $CURRENT_BRANCH, build: $BUILD_LABE
 # The browser host: its own signed bundle beside forge's machine-local state.
 # `cargo install` builds only the server binary, so the host executable is
 # built here and handed to the script that owns the bundle's layout.
-if [ "$(uname -s)" = "Darwin" ]; then
+# FORGE_INSTALL_BROWSER=0 skips it: the bundle and its driver cost a release
+# build and a 140 MB download, which a server-only install does not need.
+if [ "$(uname -s)" = "Darwin" ] && [ "${FORGE_INSTALL_BROWSER:-1}" != "0" ]; then
     log_info "Building and staging the browser host bundle"
     (
         cd "$FORGE_REPO"
