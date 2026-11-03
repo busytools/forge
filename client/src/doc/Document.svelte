@@ -193,6 +193,7 @@
     for (const held of placements) {
       if (!held.stale) continue;
       const thread = held.thread;
+      if (draftIds.has(thread.id)) continue;
       // **A read with no landing is an older server, not drift.** Aging every
       // thread on one would write Outdated into the store for a document the
       // server never placed, so only a landing that is present ages.

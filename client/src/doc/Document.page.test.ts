@@ -644,6 +644,38 @@ describe('the reviewable document', () => {
   });
 
   /**
+   * **The page does not age a comment it never drew.** A suppressed draft's
+   * echo can come back stale from a revised document; the shelf is what the
+   * reader is looking at and what the finish files, so the store must not be
+   * written Outdated behind it.
+   */
+  it('leaves a suppressed draft echo unaged', () => {
+    addDraft(docScope(PATH), {
+      id: 't-1',
+      line: 2,
+      text: 'the words',
+      context: ['line two'],
+    });
+    const echo = {
+      ...placedThread('t-1', 2, { state: 'outdated', reason: 'gone' }, ['^ old line']),
+      comments: [{ author: 'User', text: 'the words', at: 'x', review_id: null }],
+    };
+    const page = drawReviewable({
+      kind: 'landed',
+      document_kind: 'markdown',
+      bytes: enc('# hi\nline two\nline three'),
+      reviewable: true,
+      content_hash: '42',
+      threads: [echo],
+    });
+
+    const aged = (page.sent as Record<string, unknown>[]).filter(
+      (command) => 'set_review_thread_status' in command,
+    );
+    expect(aged, 'the shelf is what the store hears until the finish').toEqual([]);
+  });
+
+  /**
    * **A draft past this version's last line is the store's row to draw.**
    * The draft row only draws inside the document's rows, so a comment
    * written at line 5 of a document now three lines long has no shelf row;
