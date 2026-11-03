@@ -3060,6 +3060,60 @@ describe('a return to the seat the reader left', () => {
   });
 
   /**
+   * **A send that lands the foot leaves no place behind.** The reader was
+   * parked, then their own message took them to the latest; the pin is where
+   * that move is made, and a place left standing would drag a later document
+   * return back up to the row they left.
+   */
+  it('keeps no place for a reader their own send carried to the foot', async () => {
+    const server = stub();
+    await parked(server);
+
+    server.prompt();
+    await settle();
+    expect(element.offset, 'precondition: the send landed the foot').toBe(FOOT);
+    clear();
+
+    await ontoDocument();
+    returned(server);
+    await settle();
+    await settle();
+
+    expect(element.offset, 'the return restored the row the send left').toBe(FOOT);
+  });
+
+  /**
+   * **The other direction: a place the reader gave up is not restored.** A
+   * reader who scrolls back to the latest is done with their place, and the
+   * foot branch that notices is what clears it; a later document return lands
+   * at the latest rather than reopening the row.
+   */
+  it('forgets a place the reader gave up by returning to the latest', async () => {
+    const server = stub();
+    await parked(server);
+
+    // An arrival arms the follow while the reader stays parked, so the trip to
+    // the foot changes no published state and no pin follows it - the foot
+    // branch's own clear is the only thing that can drop the place.
+    const chat = conversationsFor(server.connection).live.get(subjectKey({ session: LEAD }))?.chat;
+    expect(chat, 'precondition: the column holds the seat conversation').toBeDefined();
+    chat?.following(true);
+    await settle();
+    clear();
+
+    readerAt(FOOT);
+    await settle();
+    clear();
+
+    await ontoDocument();
+    returned(server);
+    await settle();
+    await settle();
+
+    expect(element.offset, 'the return reopened a place the reader had left').toBe(FOOT);
+  });
+
+  /**
    * The membership guard's other case: a `/new` empties the conversation under
    * the place, so the row it names is no longer one this seat holds. The return
    * lands at the latest rather than scrolling to a row the new occupant never
@@ -3143,6 +3197,41 @@ describe('a return to the seat the reader left', () => {
       pinned().filter((pin) => pin.landed === Math.floor(TOTAL) - VIEWPORT),
       'a return is not a seat switch: no foot pin',
     ).toEqual([]);
+  });
+
+  /**
+   * **A restore that cannot land falls back to the foot.** An arrival arms the
+   * follow under the return, and the placer will not put a following reader
+   * back mid-history - so rather than stranding them at the turn's start with
+   * the follow off, the column re-arms the foot and lands there.
+   */
+  it('falls back to the foot when the follow is armed under a return', async () => {
+    const server = stub();
+    await parked(server);
+
+    await ontoDocument();
+    returned(server);
+    // The restore's scroll runs on the first frame; the follow is armed
+    // between it and the frame that would put the row back.
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
+    flushSync();
+    const chat = conversationsFor(server.connection).live.get(subjectKey({ session: LEAD }))?.chat;
+    expect(chat, 'precondition: the column holds the seat conversation').toBeDefined();
+    chat?.following(true);
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
+    flushSync();
+    await settle();
+
+    expect(element.offset, 'the dropped restore left the reader at the turn start').toBe(FOOT);
+
+    // And the return is finished with: the next one takes a fresh place.
+    readerAt(PLACE);
+    await settle();
+    await ontoDocument();
+    returned(server);
+    await settle();
+    await settle();
+    expect(element.offset, 'the dropped restore outlived its return').toBe(PLACE);
   });
 
   /**

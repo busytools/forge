@@ -1180,7 +1180,7 @@
       // on the arriving conversation's own publish - this call would hand
       // the outgoing seat's row key to the incoming chat's trim.
       const turning = untrack(() => kept.get(which))?.turns ?? [];
-      const place = !fresh && shownBefore === which ? (places.get(which) ?? null) : null;
+      const place = shownBefore === which ? (places.get(which) ?? null) : null;
       if (place !== null && turning.some((turn) => place.key.startsWith(`${turn.key}:`))) {
         // A returning reader is parked where they left, not at the foot, so
         // the pin's own condition must not carry them down while the row is
@@ -1300,9 +1300,11 @@
       return;
     }
     // The membership scan runs when the row changes, not on every pixel of a
-    // scroll within the same one.
+    // scroll within the same one. Untracked, because a caller is an effect
+    // whose pin must not re-run on the dependency this read would add.
     if (places.get(seat)?.key !== here.key) {
-      if (!held.turns.some((turn) => here.key.startsWith(`${turn.key}:`))) return;
+      const mine = untrack(() => held.turns.some((turn) => here.key.startsWith(`${turn.key}:`)));
+      if (!mine) return;
     }
     places.set(seat, here);
   }
@@ -1313,21 +1315,28 @@
    * **A fresh list mounts at its start**, so the row may be outside the drawn
    * window until the list is moved to its turn. A turn is the list's item, so
    * scrolling to it draws every row in it - and the ordinary anchor restore
-   * then puts the reader exactly back. A row the conversation no longer holds
-   * is left where the scroll put them rather than re-capturing the top of the
-   * window as their place.
+   * then puts the reader exactly back. A restore that cannot land is given up
+   * and the reader goes to the foot, rather than staying at the turn the
+   * scroll reached with the follow off.
    */
   $effect(() => {
     const place = restoring;
     const handle = list;
     const turns = held.turns;
     if (place === null || handle === null || turns.length === 0 || restoreFrame !== null) return;
-    const at = turns.findIndex((turn) => place.key.startsWith(`${turn.key}:`));
-    if (at < 0) {
+    if (!turns.some((turn) => place.key.startsWith(`${turn.key}:`))) {
       giveUpRestore();
       return;
     }
     restoreFrame = requestAnimationFrame(() => {
+      // **The turn is read again in the frame it is scrolled in**: a prepend
+      // can land between this schedule and its frame, and an index from the
+      // earlier read would name a different turn.
+      const at = held.turns.findIndex((turn) => place.key.startsWith(`${turn.key}:`));
+      if (at < 0) {
+        giveUpRestore();
+        return;
+      }
       handle.scrollToIndex(at, { align: 'start' });
       restoreFrame = requestAnimationFrame(placeRestored);
     });
@@ -1874,7 +1883,19 @@
     // or the list's own while the browser counts a row it has not drawn. Both
     // are the foot for the next arrival's decision - give or take the fraction
     // the browser rounds the offset to.
-    footHeld = viewport.scrollTop >= reachable - FOOT_QUANTUM;
+    // **The value is read here rather than back out of `footHeld`**: the
+    // effect that ran this pass watches that state, and reading it would make
+    // the write below a reason to run again, pinning twice for one landing.
+    const landedAtFoot = viewport.scrollTop >= reachable - FOOT_QUANTUM;
+    footHeld = landedAtFoot;
+    // **A pin that lands at the foot is the reader leaving their place.** The
+    // pin's own echo returns to the scrolled handler before the foot branch
+    // there, so the record has to be cleared here - a place left standing is a
+    // row a later document return restores for a reader who moved on.
+    if (landedAtFoot) {
+      anchor = null;
+      rememberPlace();
+    }
     return foot;
   }
 
