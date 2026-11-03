@@ -863,18 +863,15 @@ pub async fn refresh_base_now(cwd: &Path, default_branch: &str) -> BaseRefresh {
     // **The slot is another run's.** Answer the check it left when there is
     // one; otherwise wait on a run - a sessionless page has no watch to heal
     // an answer that names no check.
-    match last_base_measurement(cwd, default_branch)
+    if let Some(measured) = last_base_measurement(cwd, default_branch)
         .filter(|measured| measurement_in_window(measured, decided_at))
     {
-        Some(measured) => {
-            let base_ref = local_tip(cwd, default_branch, COMMAND_TIMEOUT).await;
-            answer_measurement(measured, base_ref)
-        }
-        None => {
-            let refresh = refresh_base(cwd, default_branch, DISPLAY_FETCH_BUDGET).await;
-            give_back_slot(cwd, &refresh);
-            refresh
-        }
+        let base_ref = local_tip(cwd, default_branch, COMMAND_TIMEOUT).await;
+        answer_measurement(measured, base_ref)
+    } else {
+        let refresh = refresh_base(cwd, default_branch, DISPLAY_FETCH_BUDGET).await;
+        give_back_slot(cwd, &refresh);
+        refresh
     }
 }
 
