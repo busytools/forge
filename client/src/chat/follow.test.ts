@@ -629,12 +629,19 @@ describe('whether the column follows the newest end', () => {
     setElement(TOTAL + 400, VIEWPORT);
     server.frame();
     await settle();
+    // `clear` resets the stub's grid, so the second half opts in again.
     clear();
+    quantised(0.5);
 
     server.frame();
     await settle();
 
-    expect(pinned(), 'the follow survives a read-back a half pixel short').not.toEqual([]);
+    // One pin, for the model foot: a stray repin or an empty list would not
+    // say the follow survived.
+    const landed = pinned();
+    expect(landed, 'the frame after a short read-back writes one pin').toHaveLength(1);
+    expect(landed[0]?.asked, 'and it asks for the model foot').toBeCloseTo(700.2, 5);
+    expect(landed[0]?.landed, 'which the browser rounds onto the grid').toBe(FOOT);
   });
 
   it('does not pin onto a slot the list has reserved for the newest turn but not drawn', async () => {
@@ -850,6 +857,29 @@ describe('whether the column follows the newest end', () => {
 
     expect(pinned(), 'the successor arriving is not the reader moving').toEqual([]);
     expect(element.offset, 'the reader stays where they were reading').toBe(parked);
+  });
+
+  it('keeps following a successor when the reader was at the foot', async () => {
+    // **The symmetric case of the handoff's carry.** A reader at the foot
+    // during the swap is still following: the successor's frames keep landing
+    // under their eyes, and the way back stays out of the way. The fold drops
+    // the flag and the reader is stranded at the foot with no pin following
+    // the stream.
+    const server = stub();
+    await draw(server);
+    readerAt(FOOT);
+    await settle();
+    clear();
+
+    server.handoff('old', 'new');
+    server.replaced('new');
+    await settle();
+    clear();
+
+    server.frame();
+    await settle();
+
+    expect(pinned(), "the successor's frames still follow a reader at the foot").toEqual([PIN]);
   });
 
   it('does not carry an outgoing send arm across a handoff', async () => {
@@ -1648,6 +1678,45 @@ describe('whether the column follows the newest end', () => {
     await settle();
 
     expect(pinned(), 'the new conversation opens at its foot').toEqual([PIN]);
+  });
+
+  it('lands a kept seat at its foot after the reader parked on another', async () => {
+    // **The list survives the switch, so the entry's own arm is the only
+    // thing that can put the reader at the foot.** Visited seats are kept,
+    // and the list is not re-created for a seat change - so returning to one
+    // runs no mount reset, and a reader parked on the seat they are leaving
+    // would otherwise open the kept conversation wherever that number falls.
+    const seat = writable(LEAD);
+    const server = stub();
+    clear();
+    clearObservers();
+    setMeasured(TOTAL, VIEWPORT);
+    app = mount(Seats, {
+      target: document.body,
+      props: { seat, connection: server.connection },
+    });
+    flushSync();
+    server.page([turn('t1'), turn('t2')]);
+    await settle();
+
+    // Visit the other seat and let its page land, then park on it. The offset
+    // has to MOVE for the reader's place to be read: the switch left it at 0.
+    seat.set(OTHER);
+    flushSync();
+    server.page([turn('o1'), turn('o2')], OTHER);
+    await settle();
+    readerAt(100);
+    await settle();
+    clear();
+
+    // Back to the first, whose conversation is kept and whose list is the one
+    // already mounted.
+    seat.set(LEAD);
+    flushSync();
+    await settle();
+
+    expect(pinned(), 'the kept seat opens at its foot').toEqual([PIN]);
+    expect(element.offset, 'and the reader is there').toBe(FOOT);
   });
 
   it('opens a plain new conversation at the foot for a parked reader', async () => {

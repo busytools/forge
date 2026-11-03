@@ -2617,9 +2617,10 @@ describe('the scroll record a pin writes', () => {
   });
 
   it('says the foot on a pin at the foot, and short of it on a model hold', async () => {
-    // **The record is one of this fix's own behaviours**: a pin at the foot
-    // still reads as a pin that reached it, and one that stops at the list's
-    // measured end says so rather than claiming a foot it never reached.
+    // **Coverage for the record the diagnosis reads, not a behaviour this
+    // change writes**: a pin at the foot reads as one that reached it, and a
+    // model hold says it stopped short instead of claiming a foot it never
+    // reached.
     const server = stub();
     scrollMark.mockClear();
     setMeasured(1000.31, 300);
