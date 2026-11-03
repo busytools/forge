@@ -616,7 +616,9 @@ impl Tool for Post {
         "Post a message to Slack as the user - a root message, or a reply into an existing \
          thread when `thread_ts` is passed. This is HELD FOR APPROVAL: the call does not return \
          until the user decides in the dock prompt, with no timeout of its own, and a rejected \
-         draft posts nothing. Text past 4000 characters is split into numbered parts automatically, each a \
+         draft posts nothing. The user may instead send the draft back with feedback: the call \
+         fails with their words and nothing is posted, so revise the draft and call again. Text \
+         past 4000 characters is split into numbered parts automatically, each a \
          separate message. Returns {workspace, ts, conversation_name, parts}: `workspace` is \
          the resolved `[[slack]]` label it posted into, and `ts` names every message it posted, \
          in the order they went out; slack__edit, slack__react and a reply each take one. Any \
@@ -697,7 +699,9 @@ impl Tool for Edit {
          replacement puts new words in front of people as you, and a deletion changes what they \
          see on a message attributed to you and cannot be undone by editing again. The call does \
          not return until the user decides, with no timeout of its own, and a rejected draft \
-         leaves the message untouched. Slack refuses a message you did not post - including an edit of \
+         leaves the message untouched. The user may instead send the draft back with feedback: \
+         the call fails with their words and the message is untouched, so revise the change and \
+         call again. Slack refuses a message you did not post - including an edit of \
          your own thread reply, which a channel-history lookup cannot see. Any session in \
          the project may call this."
     }
@@ -1950,6 +1954,28 @@ mod tests {
                 "and says what is expected: {answer}",
             );
             assert!(answer.contains(tool), "and names the call to repeat: {answer}");
+        }
+    }
+
+    /// An agent reads the description before it acts. A send-back is part of
+    /// what the gated call can return, and the agent's correct response to it
+    /// is to revise and call again - so both gated tools say so up front.
+    #[test]
+    fn the_gated_slack_descriptions_state_that_a_send_back_expects_a_revision() {
+        let facade: Arc<dyn SlackFacade> = Arc::new(MockSlackFacade::new());
+        let descriptions = [
+            ("slack__post", Post { facade: facade.clone(), slot: caller_slot() }.description()),
+            ("slack__edit", Edit { facade, slot: caller_slot() }.description()),
+        ];
+        for (name, description) in descriptions {
+            assert!(
+                description.contains("send the draft back with feedback"),
+                "{name} must say the user can send it back: {description}",
+            );
+            assert!(
+                description.contains("revise"),
+                "{name} must say what the agent should do with the feedback: {description}",
+            );
         }
     }
 
