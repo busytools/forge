@@ -341,10 +341,11 @@ jobs:
           # libraries one directory down.
           env -u LD_LIBRARY_PATH target/release/forge --version
           # A second install must land a new inode for the real library:
-          # copying over it would rewrite a running forge's mapping.
-          before=$(stat -c %i "$resolved")
+          # copying over it would rewrite a running forge's mapping. The
+          # resolved path is the SONAME symlink, so dereference it.
+          before=$(stat -Lc %i "$resolved")
           scripts/install.sh
-          [ "$before" != "$(stat -c %i "$resolved")" ] || {
+          [ "$before" != "$(stat -Lc %i "$resolved")" ] || {
             echo "the installed library kept its inode across an install" >&2
             exit 1
           }
