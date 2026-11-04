@@ -19,7 +19,7 @@
 import { fold } from '../chat/units';
 import { FALLBACK_FLOOR_DB, fractionOf } from '../composer/meter';
 import { surfaceFrom } from '../composer/wire';
-import { MORE_TURNS, type SessionUpdate } from '../protocol';
+import { SUBSCRIBE_TURNS, type SessionUpdate } from '../protocol';
 import { METER_CELLS } from '../wire/limits';
 import {
   backgroundTaskFrom,
@@ -705,9 +705,9 @@ function settled(held: SessionRecord): SessionRecord {
  * Nothing draws these turns whole: a view reads them flattened, so a
  * difference here is a row count rather than a picture.
  *
- * **The record keeps the window a fresh read sends**: `SUBSCRIBE_TURNS` in
- * `crates/forge-server/src/transport/wire.rs`, which its own comment holds
- * equal to this client's `MORE_TURNS`.
+ * **The record keeps the ceiling a fresh read sends**: `SUBSCRIBE_TURNS`, the
+ * server's count (`crates/forge-server/src/transport/wire.rs`), which its own
+ * byte cap can carry fewer of.
  */
 function appendFrame(conversation: Conversation, message: unknown): Conversation {
   // **A boundary moves the count**, the same rule the server's own copy keeps
@@ -732,7 +732,7 @@ function appendFrame(conversation: Conversation, message: unknown): Conversation
 
 /** The conversation cut to the newest whole turns, which never splits the live one. */
 function windowed(conversation: Conversation): Conversation {
-  const over = conversation.turns.length - MORE_TURNS;
+  const over = conversation.turns.length - SUBSCRIBE_TURNS;
   return over > 0 ? { ...conversation, turns: conversation.turns.slice(over) } : conversation;
 }
 

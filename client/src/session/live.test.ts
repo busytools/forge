@@ -36,11 +36,11 @@ import { installResizeObserver, resized } from '../chat/testing/viewport';
 import { homeWire } from '../dev/fixture.data';
 import sessionFixture from '../dev/fixtures/session.json';
 import type { ServerMessage, SessionUpdate, Subject } from '../protocol';
-import { MORE_TURNS, PROTOCOL_VERSION, subjectKey } from '../protocol';
+import { PROTOCOL_VERSION, SUBSCRIBE_TURNS, subjectKey } from '../protocol';
 import type { Route } from '../routes';
 import Router from '../shell/Router.svelte';
 import { connect, MAX_RETRY_MS, type Connection, type ConnectionStatus } from '../socket';
-import type { Store, StoreState, StoreValue } from '../stores';
+import { Stores, type Store, type StoreState, type StoreValue } from '../stores';
 import { DEFAULT_SETTINGS, type SessionSlot } from '../wire/types';
 import { REPLACES } from './apply';
 import { clearReview, releaseSeat, rereadSeat, watchSession, type SessionRead } from './live';
@@ -1936,6 +1936,31 @@ function drivable(refusedAtFirst = false, rangeAskFails = false): Driveable {
 }
 
 /**
+ * The same driven connection, with the real stores behind its seats.
+ *
+ * The default fake answers `updates()` with nothing, which is all the page's
+ * own work needs; a case about what the store RETAINS needs the store.
+ */
+function stored(): { connection: Driveable; held: Stores } {
+  const held = new Stores();
+  const base = drivable();
+  return {
+    connection: {
+      ...base,
+      subscribe: (what, options) => {
+        base.subscribe(what, options);
+        return held.open(what);
+      },
+      release: (what) => {
+        while (held.get(what) !== undefined) held.close(what);
+      },
+      store: (what) => held.get(what),
+    },
+    held,
+  };
+}
+
+/**
  * Land the server's refusal of the seat's subscribe.
  *
  * Both halves of it, the way the socket delivers one: the store is set to
@@ -2024,6 +2049,20 @@ function spoke(text: string, uuid = 'u1'): Record<string, unknown> {
     uuid,
     message: { role: 'user', content: [{ type: 'text', text }] },
     session_id: 's',
+  };
+}
+
+/** One assistant frame: traffic no reader of the seat store folds. */
+function chatFrame(at: number): SessionUpdate {
+  return {
+    chat_appended: {
+      key: LEAD,
+      msg: {
+        type: 'assistant',
+        uuid: `a-${at}`,
+        message: { role: 'assistant', content: [{ type: 'text', text: `row ${at}` }] },
+      },
+    },
   };
 }
 
@@ -2703,6 +2742,32 @@ describe('the record a page holds over an update stream', () => {
     releaseSeat(connection, LEAD);
 
     expect(outputs.of('tu-released'), 'a released seat kept a call output').toBeUndefined();
+  });
+
+  /**
+   * **A page leaving stops the seat store retaining frames**; the seat itself
+   * stays. Without the drain, every frame a busy seat streams while nobody
+   * reads stays in the store's tail until the next whole read.
+   */
+  it('drains the seat store when the page leaves, and keeps draining', () => {
+    const { connection, held } = stored();
+    const seat = watchSession(connection, LEAD, false);
+    const stop = seat.subscribe(() => {});
+    const store = held.get({ session: LEAD });
+    expect(store, 'the seat opened no store').toBeDefined();
+    if (store === undefined) return;
+    store.set({ header: { turn_in_flight: false } });
+
+    // A busy seat while the page is up: the tail is the store's to hand a folder.
+    for (let at = 0; at < 50; at += 1) store.push(chatFrame(at));
+    expect(store.updates().length, 'precondition: the seat kept a tail').toBe(50);
+
+    stop();
+    expect(store.updates().length, 'the page left and the tail stayed').toBeLessThan(2);
+
+    // And the frames after the leave do not rebuild it.
+    for (let at = 0; at < 100; at += 1) store.push(chatFrame(at + 50));
+    expect(store.updates().length, 'a left seat kept streaming frames').toBeLessThan(2);
   });
 
   /**
@@ -4074,8 +4139,8 @@ describe('the seat sequence', () => {
    */
   it('draws two owed ranges whichever answer lands first', () => {
     // Every row is a turn of its own here, so the record keeps the newest
-    // `MORE_TURNS` of them - the window a fresh read sends.
-    const expected = Array.from({ length: 31 }, (_, at) => `row ${at + 1}`).slice(-MORE_TURNS);
+    // `SUBSCRIBE_TURNS` of them - the ceiling a fresh read sends.
+    const expected = Array.from({ length: 31 }, (_, at) => `row ${at + 1}`).slice(-SUBSCRIBE_TURNS);
     const orders = [
       [
         [2, 10],
