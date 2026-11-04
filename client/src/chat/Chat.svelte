@@ -2390,10 +2390,15 @@
       pin: false,
     });
     // **A layout move is not the reader leaving.** The browser's own scroll
-    // anchoring shifts the offset toward the foot when rows above measure, and
-    // at an entry it can land short of a foot the reader already stood at;
-    // read as the reader's, that leaves a following column parked short for
-    // good (measured live: 5,317 px, 2026-11-04). The pass goes back.
+    // anchoring shifts the offset toward the foot when rows above measure; a
+    // following column it leaves short of the foot goes back rather than
+    // adopt the displacement. Only that shape: the reader stood at the foot
+    // (`wasFoot`), the follow is on, and no hand made the move. `!footHeld`
+    // is this event's landing: a move that already holds the foot needs no
+    // re-land, and writing the same value again would only cost the write.
+    // No shrink term: a shrink cannot carry a foot-standing reader's offset
+    // further down, so the shape cannot be one.
+    // `restoring` is a return still placing its reader, not a foot to land.
     if (
       wasFoot &&
       held.following &&
@@ -2401,7 +2406,6 @@
       !footHeld &&
       !byReader &&
       !aimed &&
-      !shrank &&
       restoring === null
     ) {
       land(true);

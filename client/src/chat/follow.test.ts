@@ -524,6 +524,18 @@ describe('whether the column follows the newest end', () => {
     ]);
   });
 
+  /**
+   * A layout move that carries a following column toward the foot, short of
+   * it: the content grows and the offset moves down with the rows above.
+   */
+  function layoutMovesShort(): number {
+    const grown = Math.floor(TOTAL + 400);
+    setElement(grown, VIEWPORT);
+    list()?.scrolledTo(FOOT + 100, grown, VIEWPORT);
+    flushSync();
+    return grown;
+  }
+
   it('keeps the foot when a layout move carries the reader short of it, with no hand', async () => {
     // **The browser's own scroll anchoring, at an entry.** Rows above measure
     // while the page settles, the offset moves down with them, and the foot
@@ -535,20 +547,53 @@ describe('whether the column follows the newest end', () => {
     await settle();
     clear();
 
-    // The content grows around the reader: the offset moves down with the
-    // rows above, and the new foot sits past where it lands.
-    const grown = Math.floor(TOTAL + 400);
-    setElement(grown, VIEWPORT);
-    list()?.scrolledTo(FOOT + 100, grown, VIEWPORT);
-    flushSync();
-    clear();
+    const grown = layoutMovesShort();
 
+    // **The move's own pass is the one under test.** The observer's pass that
+    // follows it also lands the foot, so a branch that only re-armed the hold
+    // would read green if this read waited for the resize.
+    expect(pinned(), 'the layout move itself lands the foot').toEqual([
+      { asked: grown, landed: grown - VIEWPORT },
+    ]);
+
+    clear();
     resized();
     await settle();
 
-    expect(pinned(), 'the layout move is not the reader leaving').toEqual([
+    expect(pinned(), 'and the observer keeps it there').toEqual([
       { asked: grown, landed: grown - VIEWPORT },
     ]);
+  });
+
+  it('does not re-land a reader whose own touch moved them short', async () => {
+    // The move is the layout's, but the hand is theirs: a touch aims at
+    // nothing and arms the whole gesture, so a move it could have made is the
+    // reader's, not one to correct.
+    const server = stub();
+    await draw(server);
+    readerAt(FOOT);
+    await settle();
+    clear();
+
+    document.querySelector('.conv')?.dispatchEvent(new Event('touchstart'));
+    layoutMovesShort();
+
+    expect(pinned(), 'their own touch made the move').toEqual([]);
+  });
+
+  it('does not re-land a down-wheel that lands short of the foot', async () => {
+    // A wheel down aims at the foot without touching the reader's arm, so the
+    // aimed token is the only thing that can say the move was theirs.
+    const server = stub();
+    await draw(server);
+    readerAt(FOOT);
+    await settle();
+    clear();
+
+    document.querySelector('.conv')?.dispatchEvent(new WheelEvent('wheel', { deltaY: 120 }));
+    layoutMovesShort();
+
+    expect(pinned(), 'their own wheel made the move').toEqual([]);
   });
 
   it("holds the pin at the list's own end while the browser counts a row it has not measured", async () => {
@@ -2945,6 +2990,45 @@ describe('a return to the seat the reader left', () => {
       document.querySelector('button.follow'),
       'the returned reader is away from the foot, and the way back says so',
     ).not.toBeNull();
+  });
+
+  it('leaves a restore in flight alone when the layout moves the reader short', async () => {
+    // **A restore in flight is not a foot for the pin to land.** The mount
+    // re-arms the hold while `restoring` still names the row to place, and a
+    // re-land there writes the foot with no anchor and forgets the place the
+    // reader left, so a later return cannot take them back.
+    const server = stub();
+    await parked(server);
+    await ontoDocument();
+    returned(server);
+
+    // The follow can be armed while the restore is still placing the reader.
+    const chat = conversationsFor(server.connection).live.get(subjectKey({ session: LEAD }))?.chat;
+    expect(chat, 'precondition: the column holds the seat conversation').toBeDefined();
+    chat?.following(true);
+
+    // The layout moves toward the foot and lands short of it, before the
+    // restore's own frame runs.
+    const grown = Math.floor(TOTAL + 400);
+    setElement(grown, VIEWPORT);
+    list()?.scrolledTo(FOOT + 100, grown, VIEWPORT);
+    flushSync();
+
+    expect(
+      pinned().filter((pin) => pin.landed === grown - VIEWPORT),
+      'the restore in flight is not a pin to the foot',
+    ).toEqual([]);
+
+    // Let the follow go again so the restore can finish its own placement,
+    // then come back: the place has to still be the reader's.
+    chat?.following(false);
+    await settle();
+    await ontoDocument();
+    returned(server);
+    await settle();
+    await settle();
+
+    expect(element.offset, 'the place survived the restore').toBe(PLACE);
   });
 
   /**
