@@ -325,10 +325,10 @@ impl ProdVaultFacade {
     ) -> Result<(), VaultToolError> {
         match approved.session.ensure_keys_current(&approved.caller, item).await {
             Ok(()) => Ok(()),
-            Err(error) => {
-                approved.workspace.rebase_vault_asks(true);
-                approved.fail(VaultToolError::Vault(error))
-            }
+            // No eager rebase: a transient HTTP failure on the check must not
+            // ask for a password. `done` restamps when the session is locked,
+            // which is the rotation case.
+            Err(error) => approved.fail(VaultToolError::Vault(error)),
         }
     }
 
@@ -723,10 +723,25 @@ impl VaultFacade for ProdVaultFacade {
             let id = created.get("id").and_then(Value::as_str).ok_or_else(|| {
                 VaultToolError::Message("the vault did not return the new item's id".to_owned())
             })?;
-            // A missing name field falls back to what the caller asked for;
-            // any decrypt failure is the operation's own error.
+            // A missing name field falls back to what the caller asked for.
+            // A decrypt failure means the item already exists, so the audit
+            // line names the id it landed under before the error surfaces.
             let name = match created.get("name").and_then(Value::as_str) {
-                Some(enc) => keys.decrypt_item_str(&created, enc)?,
+                Some(enc) => match keys.decrypt_item_str(&created, enc) {
+                    Ok(name) => name,
+                    Err(error) => {
+                        session.audit(
+                            caller,
+                            VaultTool::Create,
+                            Some(id),
+                            Some(&input.name),
+                            None,
+                            "approve",
+                            &format!("created as {id}; its name could not be decrypted: {error}"),
+                        );
+                        return Err(VaultToolError::Vault(error));
+                    }
+                },
                 None => input.name.clone(),
             };
             Ok(json!({ "id": id, "name": name, "type": kind }))
@@ -1759,22 +1774,41 @@ fn read_attachment(path: &Path, cap: u64) -> Result<Vec<u8>, VaultToolError> {
 }
 
 fn write_private(path: &Path, bytes: &[u8]) -> Result<(), VaultToolError> {
+    use rustix::fs::{Mode, OFlags};
     use std::io::Write;
-    use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
-    // `O_NOFOLLOW` refuses a final-component symlink, and set_permissions on
-    // the held fd fixes an existing looser mode, which `mode` only applies at
-    // creation.
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(path)?;
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    let parent = path
+        .parent()
+        .ok_or_else(|| VaultToolError::Message("the destination has no parent".to_owned()))?;
+    let name = path
+        .file_name()
+        .ok_or_else(|| VaultToolError::Message("the destination has no file name".to_owned()))?;
+    // The parent is held as a directory handle and the file is opened
+    // relative to it, so the path checked for containment is the one written.
+    let dir = rustix::fs::open(parent, OFlags::RDONLY | OFlags::CLOEXEC, Mode::empty())
+        .map_err(errno_io)?;
+    let dir = std::fs::File::from(dir);
+    let file = rustix::fs::openat(
+        &dir,
+        name,
+        OFlags::WRONLY | OFlags::CREATE | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+        Mode::from_bits_truncate(0o600),
+    )
+    .map_err(errno_io)?;
+    let mut file = std::fs::File::from(file);
+    let metadata = file.metadata()?;
+    // A FIFO would block the blocking thread; a device or socket is not an
+    // attachment destination either.
+    if !metadata.file_type().is_file() {
+        return Err(VaultToolError::Message(
+            "the destination is not a regular file; refusing to write".to_owned(),
+        ));
+    }
     // A hard link names bytes outside this tree; truncating through one would
     // write another file's contents. The truncate waits until the link count
     // has been checked.
-    if file.metadata()?.nlink() > 1 {
+    if metadata.nlink() > 1 {
         return Err(VaultToolError::Message(
             "the destination is a hard link; refusing to write through it".to_owned(),
         ));
@@ -1784,6 +1818,10 @@ fn write_private(path: &Path, bytes: &[u8]) -> Result<(), VaultToolError> {
     file.write_all(bytes)?;
     file.flush()?;
     Ok(())
+}
+
+fn errno_io(error: rustix::io::Errno) -> std::io::Error {
+    std::io::Error::from_raw_os_error(error.raw_os_error())
 }
 
 /// A mock facade for the tool tests: records each call and returns a fixed
@@ -2152,7 +2190,9 @@ mod tests {
         rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::SeatUpdate>,
     ) -> VaultDraft {
         loop {
-            let frame = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+            // Generous: PBKDF2 unlock runs on the blocking pool, and a loaded
+            // machine can keep this off the requester longer than a few seconds.
+            let frame = tokio::time::timeout(std::time::Duration::from_secs(30), rx.recv())
                 .await
                 .expect("the locked call parks a card")
                 .expect("the seat stream stays open");
@@ -2786,7 +2826,7 @@ mod tests {
 
         let mut restamped = None;
         while restamped.is_none() {
-            let frame = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+            let frame = tokio::time::timeout(std::time::Duration::from_secs(30), rx.recv())
                 .await
                 .expect("the unlock pushes a restamp")
                 .expect("the seat stream stays open");
@@ -2841,6 +2881,46 @@ mod tests {
                 assert!(!text.contains(secret), "a secret reached Debug: {text}");
             }
         }
+    }
+
+    /// A file whose organization key did not unlock draws `(unreadable)` on
+    /// the card; it is not a stale-key failure.
+    #[test]
+    fn an_attachment_name_without_its_org_key_is_unreadable() {
+        use forge_connectors::vault::crypto::make_symmetric_key;
+
+        let unlocked = Unlocked {
+            user_key: make_symmetric_key(),
+            private_key: None,
+            org_keys: std::collections::HashMap::new(),
+            failed_orgs: vec!["org-1".to_owned()],
+            user_key_fingerprint: String::new(),
+        };
+        let cipher = serde_json::json!({
+            "organizationId": "org-1",
+            "attachments": [{ "id": "att-1", "fileName": "2.x|y|z", "size": 7 }],
+        });
+
+        let (name, size) = attachment_named(&unlocked, &cipher, "att-1").expect("the fallback");
+
+        assert_eq!(name, "(unreadable)");
+        assert_eq!(size, 7);
+    }
+
+    /// A FIFO destination is refused without blocking the write thread.
+    #[test]
+    fn write_private_refuses_a_fifo_without_blocking() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let fifo = dir.path().join("fifo");
+        let created = std::process::Command::new("mkfifo")
+            .arg(fifo.as_os_str())
+            .status()
+            .expect("mkfifo runs");
+        assert!(created.success(), "mkfifo failed");
+
+        let started = std::time::Instant::now();
+        let _error = write_private(&fifo, b"x").expect_err("the FIFO is refused");
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
     }
 
     /// A hard link names bytes outside this tree; writing through one would
@@ -3339,6 +3419,258 @@ mod tests {
         session.ensure_keys_current(&caller, None).await.expect("the key is unchanged");
 
         assert!(!session.is_locked());
+    }
+
+    /// A session whose fingerprint is not the synced key, for write tests.
+    fn rotated_worker_workspace(
+        address: std::net::SocketAddr,
+        user_key: forge_connectors::vault::crypto::SymmetricCryptoKey,
+    ) -> (
+        Arc<Workspace>,
+        Arc<ProdVaultFacade>,
+        SessionSlot,
+        tempfile::TempDir,
+        tokio::sync::mpsc::UnboundedReceiver<crate::SeatUpdate>,
+        Arc<VaultSession>,
+    ) {
+        use forge_connectors::vault::crypto::sha256_hex;
+        unlocked_worker_workspace(address, user_key, sha256_hex(b"unlocked-key"))
+    }
+
+    /// A sync carrying the wrapped key the session unlocked with.
+    fn synced_steps(extra: Vec<Step>) -> Vec<Step> {
+        let sync = serde_json::json!({ "profile": { "key": "unlocked-key" } }).to_string();
+        let mut steps = vec![Step { path: "/api/sync", reply: Reply::Json(sync), pause: None }];
+        steps.extend(extra);
+        steps
+    }
+
+    /// A sync carrying a different wrapped key.
+    fn rotated_steps(extra: Vec<Step>) -> Vec<Step> {
+        let sync = serde_json::json!({ "profile": { "key": "sync-key" } }).to_string();
+        let mut steps = vec![Step { path: "/api/sync", reply: Reply::Json(sync), pause: None }];
+        steps.extend(extra);
+        steps
+    }
+
+    /// Requests that happen before the gate, then the rotated-key sync.
+    fn rotated_steps_after(first: Vec<Step>) -> Vec<Step> {
+        let mut steps = first;
+        steps.extend(rotated_steps(Vec::new()));
+        steps
+    }
+
+    /// A sync with no wrapped key at all.
+    #[tokio::test]
+    async fn a_sync_without_the_user_key_locks_the_session() {
+        use forge_connectors::vault::crypto::{make_symmetric_key, sha256_hex};
+
+        let sync = serde_json::json!({ "profile": {} }).to_string();
+        let address =
+            serve_steps(vec![Step { path: "/api/sync", reply: Reply::Json(sync), pause: None }])
+                .await;
+        let (_workspace, _facade, caller, _dir, _rx, session) =
+            unlocked_worker_workspace(address, make_symmetric_key(), sha256_hex(b"unlocked-key"));
+
+        let error = session.ensure_keys_current(&caller, None).await.expect_err("no key");
+
+        assert!(matches!(error, VaultError::KeyUnverifiable), "{error}");
+        assert!(session.is_locked(), "an unverifiable key locks the session");
+    }
+
+    /// Each write path refuses after the account key rotated during the park.
+    #[tokio::test]
+    async fn a_rotated_key_refuses_create() {
+        use forge_connectors::vault::crypto::make_symmetric_key;
+
+        let address = serve_steps(rotated_steps(Vec::new())).await;
+        let (workspace, facade, caller, _dir, mut rx, session) =
+            rotated_worker_workspace(address, make_symmetric_key());
+        let asked = caller.clone();
+        let call = {
+            let facade = Arc::clone(&facade);
+            tokio::spawn(async move {
+                facade
+                    .create(&asked, &CreateInput { name: "bank".to_owned(), ..Default::default() })
+                    .await
+            })
+        };
+        let draft = parked_draft(&mut rx).await;
+        approve(&workspace, &caller, draft.id);
+        let result = call.await.expect("the call finishes");
+        assert!(matches!(result, Err(VaultToolError::Vault(VaultError::KeyRotated))), "{result:?}");
+        assert!(session.is_locked());
+    }
+
+    #[tokio::test]
+    async fn a_rotated_key_refuses_folder_list() {
+        use forge_connectors::vault::crypto::make_symmetric_key;
+
+        let address = serve_steps(rotated_steps(Vec::new())).await;
+        let (workspace, facade, caller, _dir, mut rx, session) =
+            rotated_worker_workspace(address, make_symmetric_key());
+        let asked = caller.clone();
+        let call = {
+            let facade = Arc::clone(&facade);
+            tokio::spawn(async move { facade.folder_list(&asked).await })
+        };
+        let draft = parked_draft(&mut rx).await;
+        approve(&workspace, &caller, draft.id);
+        let result = call.await.expect("the call finishes");
+        assert!(matches!(result, Err(VaultToolError::Vault(VaultError::KeyRotated))), "{result:?}");
+        assert!(session.is_locked());
+    }
+
+    #[tokio::test]
+    async fn a_rotated_key_refuses_folder_create() {
+        use forge_connectors::vault::crypto::make_symmetric_key;
+
+        let address = serve_steps(rotated_steps(Vec::new())).await;
+        let (workspace, facade, caller, _dir, mut rx, session) =
+            rotated_worker_workspace(address, make_symmetric_key());
+        let asked = caller.clone();
+        let call = {
+            let facade = Arc::clone(&facade);
+            tokio::spawn(async move { facade.folder_create(&asked, "bank").await })
+        };
+        let draft = parked_draft(&mut rx).await;
+        approve(&workspace, &caller, draft.id);
+        let result = call.await.expect("the call finishes");
+        assert!(matches!(result, Err(VaultToolError::Vault(VaultError::KeyRotated))), "{result:?}");
+        assert!(session.is_locked());
+    }
+
+    #[tokio::test]
+    async fn a_rotated_key_refuses_folder_update() {
+        use forge_connectors::vault::crypto::make_symmetric_key;
+
+        let address = serve_steps(rotated_steps(Vec::new())).await;
+        let (workspace, facade, caller, _dir, mut rx, session) =
+            rotated_worker_workspace(address, make_symmetric_key());
+        let asked = caller.clone();
+        let call = {
+            let facade = Arc::clone(&facade);
+            tokio::spawn(async move { facade.folder_update(&asked, "folder-1", "renamed").await })
+        };
+        let draft = parked_draft(&mut rx).await;
+        approve(&workspace, &caller, draft.id);
+        let result = call.await.expect("the call finishes");
+        assert!(matches!(result, Err(VaultToolError::Vault(VaultError::KeyRotated))), "{result:?}");
+        assert!(session.is_locked());
+    }
+
+    #[tokio::test]
+    async fn a_rotated_key_refuses_update() {
+        use forge_connectors::vault::crypto::{encrypt_str, make_symmetric_key};
+
+        let user_key = make_symmetric_key();
+        let name = encrypt_str("bank", &user_key).expect("the name");
+        let cipher = serde_json::json!({
+            "id": "item-1",
+            "type": 1,
+            "name": name,
+            "login": {},
+        })
+        .to_string();
+        let address = serve_steps(rotated_steps_after(vec![Step {
+            path: "/api/ciphers/item-1",
+            reply: Reply::Json(cipher),
+            pause: None,
+        }]))
+        .await;
+        let (workspace, facade, caller, _dir, mut rx, session) =
+            rotated_worker_workspace(address, user_key);
+        let asked = caller.clone();
+        let call = {
+            let facade = Arc::clone(&facade);
+            tokio::spawn(async move {
+                let patch = PatchInput { password: Some("new".to_owned()), ..Default::default() };
+                facade.update(&asked, "item-1", &patch).await
+            })
+        };
+        let draft = parked_draft(&mut rx).await;
+        approve(&workspace, &caller, draft.id);
+        let result = call.await.expect("the call finishes");
+        assert!(matches!(result, Err(VaultToolError::Vault(VaultError::KeyRotated))), "{result:?}");
+        assert!(session.is_locked());
+    }
+
+    #[tokio::test]
+    async fn a_rotated_key_refuses_attachment_put() {
+        use forge_connectors::vault::crypto::{encrypt_str, make_symmetric_key};
+
+        let user_key = make_symmetric_key();
+        let name = encrypt_str("bank", &user_key).expect("the name");
+        let cipher = serde_json::json!({
+            "id": "item-1",
+            "type": 1,
+            "name": name,
+            "login": {},
+            "attachments": [],
+        })
+        .to_string();
+        let address = serve_steps(rotated_steps_after(vec![Step {
+            path: "/api/ciphers/item-1",
+            reply: Reply::Json(cipher),
+            pause: None,
+        }]))
+        .await;
+        let (workspace, facade, caller, dir, mut rx, session) =
+            rotated_worker_workspace(address, user_key);
+        std::fs::write(dir.path().join("upload.txt"), b"content").expect("the upload file");
+        let asked = caller.clone();
+        let call = {
+            let facade = Arc::clone(&facade);
+            tokio::spawn(async move {
+                facade.attachment_put(&asked, "item-1", "upload.txt", None, None).await
+            })
+        };
+        let draft = parked_draft(&mut rx).await;
+        approve(&workspace, &caller, draft.id);
+        let result = call.await.expect("the call finishes");
+        assert!(matches!(result, Err(VaultToolError::Vault(VaultError::KeyRotated))), "{result:?}");
+        assert!(session.is_locked());
+    }
+
+    /// `create` returns a Crypto failure through `done` and audits the id the
+    /// item landed under, rather than swallowing it.
+    #[tokio::test]
+    async fn create_propagates_a_name_decrypt_failure_and_names_the_id() {
+        use forge_connectors::vault::crypto::{make_symmetric_key, sha256_hex};
+
+        let created = serde_json::json!({
+            "id": "new-item",
+            "name": "2.bad|bad|bad",
+        })
+        .to_string();
+        let address = serve_steps(synced_steps(vec![Step {
+            path: "/api/ciphers",
+            reply: Reply::Json(created),
+            pause: None,
+        }]))
+        .await;
+        let (workspace, facade, caller, dir, mut rx, session) =
+            unlocked_worker_workspace(address, make_symmetric_key(), sha256_hex(b"unlocked-key"));
+        let asked = caller.clone();
+        let call = {
+            let facade = Arc::clone(&facade);
+            tokio::spawn(async move {
+                facade
+                    .create(&asked, &CreateInput { name: "bank".to_owned(), ..Default::default() })
+                    .await
+            })
+        };
+        let draft = parked_draft(&mut rx).await;
+        approve(&workspace, &caller, draft.id);
+        let result = call.await.expect("the call finishes");
+
+        assert!(matches!(result, Err(VaultToolError::Vault(VaultError::Crypto(_)))), "{result:?}");
+        assert!(session.is_locked(), "the crypto failure drops the keys");
+        assert!(
+            audit_text(&dir).contains("created as new-item"),
+            "the audit names the id that landed: {}",
+            audit_text(&dir),
+        );
     }
 
     /// A missing organization key falls back; any other decrypt failure locks

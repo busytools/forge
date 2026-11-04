@@ -247,13 +247,30 @@ impl VaultSession {
         let keys = self.keys()?;
         let sync = self.sync().await?;
         let Some(profile_key) = sync.profile.key.as_deref().filter(|key| !key.is_empty()) else {
-            return Ok(());
+            // A sync that omits the key cannot prove the unlock still holds;
+            // proceeding would be the corruption this check exists to stop.
+            self.note_key_unverifiable(caller, item);
+            return Err(VaultError::KeyUnverifiable);
         };
         if crypto::sha256_hex(profile_key.as_bytes()) != keys.user_key_fingerprint {
             self.note_key_rotation(caller, item);
             return Err(VaultError::KeyRotated);
         }
         Ok(())
+    }
+
+    /// Drop the keys when a sync cannot prove which user key the account
+    /// holds, so the next call asks for the master password instead of
+    /// writing under an unverified unlock.
+    pub(crate) fn note_key_unverifiable(&self, caller: &SessionSlot, item: Option<&str>) {
+        tracing::warn!(
+            event_name = "vault_key_unverifiable",
+            caller = %caller.display(),
+            item = item,
+            vault = %self.client.base(),
+            "the sync carried no wrapped user key; the session is locked"
+        );
+        self.lock();
     }
 
     /// Drop the keys after an account rotation; re-entering the master

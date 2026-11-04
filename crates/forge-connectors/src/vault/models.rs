@@ -6,8 +6,9 @@
 //! the server. The facade decrypts the fields it needs from the value; the
 //! connector only moves it.
 
+use serde::de::{Deserializer, IgnoredAny, MapAccess, Visitor};
 use serde::{Deserialize, Serialize};
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 /// The prelogin answer: which KDF the account uses and its parameters.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
@@ -23,18 +24,71 @@ pub struct Prelogin {
 }
 
 /// The token endpoint's answer for both the password and refresh grants.
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Clone, Serialize)]
 pub struct TokenResponse {
     pub access_token: String,
-    #[serde(default)]
     pub refresh_token: Option<String>,
     /// The wrapped user key. Vaultwarden capitalises the field; some clients
     /// lower-case it, so both spellings parse.
-    #[serde(default, rename = "Key", alias = "key")]
     pub key: Option<String>,
     /// The wrapped account private key, in the same two spellings.
-    #[serde(default, rename = "PrivateKey", alias = "privateKey")]
     pub private_key: Option<String>,
+}
+
+/// Hand-written so a malformed response drops every field it had already
+/// read through `Zeroizing`: the access and refresh tokens are credentials.
+impl<'de> Deserialize<'de> for TokenResponse {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct TokenVisitor;
+
+        impl<'de> Visitor<'de> for TokenVisitor {
+            type Value = TokenResponse;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a token response")
+            }
+
+            fn visit_map<M>(self, mut map: M) -> Result<Self::Value, M::Error>
+            where
+                M: MapAccess<'de>,
+            {
+                let mut access: Option<Zeroizing<String>> = None;
+                let mut refresh: Option<Zeroizing<String>> = None;
+                let mut key: Option<Zeroizing<String>> = None;
+                let mut private_key: Option<Zeroizing<String>> = None;
+                while let Some(field) = map.next_key::<String>()? {
+                    match field.as_str() {
+                        "access_token" => access = Some(Zeroizing::new(map.next_value()?)),
+                        "refresh_token" => {
+                            refresh = map.next_value::<Option<String>>()?.map(Zeroizing::new);
+                        }
+                        "Key" | "key" => {
+                            key = map.next_value::<Option<String>>()?.map(Zeroizing::new);
+                        }
+                        "PrivateKey" | "privateKey" => {
+                            private_key = map.next_value::<Option<String>>()?.map(Zeroizing::new);
+                        }
+                        _ => {
+                            let _: IgnoredAny = map.next_value()?;
+                        }
+                    }
+                }
+                let mut access = access
+                    .ok_or_else(|| <M::Error as serde::de::Error>::missing_field("access_token"))?;
+                Ok(TokenResponse {
+                    access_token: std::mem::take(&mut *access),
+                    refresh_token: refresh.map(|value| (*value).clone()),
+                    key: key.map(|value| (*value).clone()),
+                    private_key: private_key.map(|value| (*value).clone()),
+                })
+            }
+        }
+
+        deserializer.deserialize_map(TokenVisitor)
+    }
 }
 
 /// Every field is a credential, so dropping the token wipes it even on an
