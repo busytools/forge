@@ -89,13 +89,14 @@ the host starts that address in a browser of its own, so the engine has no
 popup target to share the opener's renderer with, and the attached driver
 keeps working. `window.opener` in the popup is a matching proxy and
 `postMessage` is relayed in both directions with each side's own origin
-checked at delivery, so an OAuth flow's result reaches the app the way the
-platform delivers it. A same-origin popup keeps the engine's own popup path
-and its real, scriptable `window.opener`. **The takeover follows a popup in**:
-a surface showing the opener moves to the popup when it appears, and hands
-back to the opener when the popup closes, so a sign-in is seen without
-hunting the strip. The hand-off ask stays parked on the page it named, and
-Done and Not now return with the surface to that page.
+checked at delivery, so an OAuth flow's result reaches the app as a JSON
+payload. A same-origin popup keeps the engine's
+own popup path and its real, scriptable `window.opener`. **The takeover
+follows a popup in**: a surface showing the opener moves to the popup when it
+appears, and hands back to the opener when the popup closes, so a sign-in is
+seen without hunting the strip. The hand-off ask stays parked on the page it
+named, and Done and Not now come back with the surface when it returns to
+that page.
 
 **A same-origin popup's own document is the one the host starts.** Its target
 answers no page-domain command until it has a document, so the passkey veto -

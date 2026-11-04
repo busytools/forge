@@ -525,11 +525,13 @@ reply**, so a client that draws the rows sends `reply_to`:
 the profile's host is running; `connected` is whether a driver is attached
 to it; `closing_at_ms` is the idle clock's deadline as Unix epoch
 milliseconds, or `null` when no host is up; and each row is
-`{number, title, url, owner, state}`. `number` is the host's own tab number,
-which frames and input already speak; `owner` is the session whose calls
-drive it, as `{org, project, label}`; and `state` is `in_use` (a call is
-driving it), `idle`, or `held` (a parked hand-off is waiting on the person
-in it). **The ask is the subscription**: the connection follows the same row
+`{number, title, url, owner, opener, state, dialog}`. `number` is the host's
+own tab number, which frames and input already speak; `owner` is the session
+whose calls drive it, as `{org, project, label}`; `opener` is the tab whose
+page opened this one, or `null` for a tab a session owns outright; `state` is
+`in_use` (a call is driving it), `idle`, or `held` (a parked hand-off is
+waiting on the person in it); and `dialog` is the page dialog holding the
+tab, as `{kind, message}`, or `null` when none is open. **The ask is the subscription**: the connection follows the same row
 list from then on, and every change is pushed as a `browser_tabs` frame. A
 refusal answers `{"ok": false, "why": ...}`; with no `reply_to`, a refusal is
 an `error` frame and a success is silent.
