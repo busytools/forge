@@ -147,6 +147,12 @@
    */
   let fromMic = false;
   /**
+   * The box the press came from, captured at the press and consumed when the
+   * take begins. The send-back box is a third destination: a press on its
+   * mic is the reader asking for words there, not in the composer behind it.
+   */
+  let pressedFrom: 'dock' | 'feedback' | null = null;
+  /**
    * The counts of the take this page last finished, kept while the record
    * still shows it transcribing.
    *
@@ -217,7 +223,14 @@
         boxKey(untrack(() => slot)),
         untrack(() => composer.notice),
       );
-      target.tookFrom = untrack(() => toDock()) ? 'dock' : 'composer';
+      const from = pressedFrom;
+      pressedFrom = null;
+      target.tookFrom =
+        from === 'feedback'
+          ? 'feedback'
+          : from === 'dock' || untrack(() => toDock())
+            ? 'dock'
+            : 'composer';
     },
     onLine: (line) => {
       const target = lineBox ?? box;
@@ -706,6 +719,12 @@
     box.dockLanded = null;
     box.barLanded = null;
     box.carried = null;
+    // **The send-back box belongs to the prompt too.** Its open state and the
+    // words written for the last held post do not come back in the box that
+    // replaces it.
+    box.feedbackOpen = false;
+    box.feedbackDraft = '';
+    box.feedbackLanded = null;
     barRefused = null;
   });
 
@@ -820,6 +839,18 @@
       return;
     }
     const words = box.landing.place(boxKey(slot), held, composer.take?.generation ?? null);
+    // Read untracked so the effect still runs on the notice alone.
+    // **A box the answer took away is not a box to land in.** Answering a held
+    // draft unmounts the dock before the core drops the ask, and the words
+    // belong in the composer then - the send-back field's state is about to be
+    // cleared with the prompt.
+    const feedbackHolds = untrack(
+      () => box.tookFrom === 'feedback' && box.feedbackOpen && dockAsk !== null,
+    );
+    // **A landing the memory already placed is not a second one.** The record
+    // hands the same notice over on every write, so the memory - not a re-read
+    // of the text - is what keeps the send-back box from taking the words
+    // twice and the clipboard from being written twice.
     if (words === null) return;
     // **Where the words go is where the take began, checked against what is
     // still on screen.** A take the dock's own row never touched still belongs
@@ -827,10 +858,16 @@
     // the reader's last touch wrote it into a draft nobody could see - and a
     // take begun in the composer keeps its words even when a prompt arrived
     // mid-flight.
-    // Read untracked so the effect still runs on the notice alone.
     const barHolds = untrack(() => box.tookFrom === 'dock' && toDock());
     const onBar = untrack(() => barLineHolds);
-    if (barHolds) {
+    if (feedbackHolds) {
+      box.feedbackDraft = joined(
+        untrack(() => box.feedbackDraft),
+        words,
+      );
+      box.feedbackLanded = words;
+      box.landing.placed(held);
+    } else if (barHolds) {
       box.dockDraft = joined(
         untrack(() => box.dockDraft),
         words,
@@ -854,12 +891,19 @@
       box.barLanded = null;
     }
     box.beatAt = Date.now();
+    // **Every landing copies its words.** One write per landing, overwriting
+    // what the clipboard held; a page with no clipboard or a refused write
+    // costs the reader nothing that just landed.
+    void navigator.clipboard?.writeText(words).catch((error: unknown) => {
+      console.debug('the clipboard refused the landed words', error);
+    });
     // The words come with the keyboard, so an immediate Enter sends what just
     // landed. The guards above already make this the landing rather than every
     // frame. When the words went to the dock this handle still holds the element
     // the prompt replaced - destroyed with the box, so detached, and taking no
-    // focus - and the dock brings its own box back from its `land`.
-    field?.focus();
+    // focus - and the dock brings its own box back from its `land`. The
+    // send-back box brings its own back from its `feedbackLand`.
+    if (!feedbackHolds) field?.focus();
   });
 
   /**
@@ -1217,6 +1261,9 @@
     // or on a tab the hand-off did not name).
     barLine: () => barTakesKey,
     onBegin: () => {
+      // **A key press is the composer's own**, so a destination a refused
+      // press left behind is not this take's to inherit.
+      pressedFrom = null;
       if (barTakesKey) {
         barOpen = true;
         // The field is drawn by that state, so it takes the keyboard once
@@ -1655,7 +1702,12 @@
       silent={silentLine}
       nav={surface.nav}
       onabandon={abandon}
-      onmic={() => dictate.toggle()}
+      onmic={() => {
+        // **The bar's own mic is the composer's destination too.** A press
+        // here clears a destination an earlier press left behind.
+        pressedFrom = null;
+        dictate.toggle();
+      }}
       {dictation}
       takeline={barRefused !== null ? { tone: 'bad', text: barRefused } : takeoverLine}
       opening={openingShown}
@@ -1688,6 +1740,10 @@
           {dictate}
           onpress={() => {
             fromMic = true;
+            // **The composer's own mic is the composer's destination.** A
+            // press here clears a destination an earlier press left behind: a
+            // refused send-back press must not decide where these words go.
+            pressedFrom = null;
           }}
           element={(el: HTMLElement | null) => {
             micEl = el;
@@ -1833,13 +1889,25 @@
               take={composer.take}
               {wire}
               bind:notes={box.dockDraft}
+              bind:feedback={box.feedbackDraft}
+              bind:feedbackOpen={box.feedbackOpen}
               bind:ownOpen={dockOpen}
               land={box.dockLanded}
+              feedbackLand={box.feedbackLanded}
               carried={box.carried}
               onanswer={remember}
               onabandon={abandon}
               onsending={sendingBack}
-              onmic={() => dictate.toggle()}
+              onmic={(from: 'dock' | 'feedback') => {
+                pressedFrom = from;
+                // **A press on the send-back mic means the send-back box.**
+                // Its field is open under the press, and the words land there:
+                // the bound prop can lag a frame behind the press on a fresh
+                // mount, so the landing reads the same intent the press stated.
+                if (from === 'feedback') box.feedbackOpen = true;
+              }}
+              {dictate}
+              tookFrom={box.tookFrom}
               {dictation}
               silent={silentLine}
               takeline={box.dictateLine}

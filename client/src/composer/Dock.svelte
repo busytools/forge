@@ -4,6 +4,8 @@
   import { closeSurface, openSurface, surface } from '../browser/surface.svelte';
   import Field from './Field.svelte';
   import TakeCard from './TakeCard.svelte';
+  import DictateControl from './DictateControl.svelte';
+  import type { Dictation } from './dictate.svelte';
   import type { Command } from '../protocol';
   import { goTo } from '../routes';
   import { report, type Connection } from '../socket';
@@ -27,12 +29,17 @@
     take = null,
     wire = null,
     notes = $bindable(''),
+    feedback = $bindable(''),
+    feedbackOpen = $bindable(false),
     ownOpen = $bindable(false),
     land = null,
+    feedbackLand = null,
     onanswer = () => {},
     onabandon = () => {},
     onsending = () => {},
     onmic = () => {},
+    dictate = null,
+    tookFrom = null,
     dictation = false,
     silent = null,
     takeline = null,
@@ -77,7 +84,17 @@
      * exist on a phone, so a row that could only SHOW a take would leave a
      * finger no way to dictate an answer at all.
      */
-    onmic?: () => void;
+    onmic?: (from: 'dock' | 'feedback') => void;
+    /** The send-back box's own words, held by the composer like `notes`. */
+    feedback?: string;
+    /** Whether the send-back box is open, which makes it a destination. */
+    feedbackOpen?: boolean;
+    /** A take's words that landed in the send-back box, which come with the keyboard. */
+    feedbackLand?: string | null;
+    /** The dictation control both boxes wear, which the composer owns. */
+    dictate?: Dictation | null;
+    /** Which box the take began in, captured per take. */
+    tookFrom?: 'dock' | 'composer' | 'feedback' | null;
     /**
      * Whether this install can dictate at all, which gates the mic.
      *
@@ -551,6 +568,13 @@
     if (field !== null) field.focus();
   });
 
+  // The send-back box's own landing: a take begun there focuses its field,
+  // the same way the composer's does.
+  $effect(() => {
+    if (feedbackLand === null) return;
+    if (feedbackEl !== null) feedbackEl.focus();
+  });
+
   /** The tool the prompt is waiting on, which an answer is addressed by. */
   const toolId = $derived(
     ask.kind === 'permission' || ask.kind === 'question' ? ask.request.toolId : null,
@@ -746,9 +770,6 @@
     answer({ respond_slack_post: { key: slot, id, answer: decision } });
   }
 
-  /** Whether the send-back field is open, and the words it holds. */
-  let feedbackOpen = $state(false);
-  let feedback = $state('');
   let feedbackEl = $state<HTMLElement | null>(null);
   let sendBackButton = $state<HTMLButtonElement | null>(null);
 
@@ -1178,22 +1199,18 @@
           }}
         />
       {/if}
-      {#if dictation}
-        <button
-          class="micb"
-          type="button"
-          aria-label={take === null ? 'dictate the answer' : 'stop dictating'}
-          onclick={() => {
+      {#if dictation && dictate !== null}
+        <DictateControl
+          {dictate}
+          onpress={() => {
             // **Pressing the mic is being in the row.** It counts as use
             // whether or not the caret follows it, so the caret comes back to
             // the words row when the take's card leaves - which a touch screen
             // cannot reach any other way.
             visited = true;
-            onmic();
+            onmic('dock');
           }}
-        >
-          <Icon name="mic" />
-        </button>
+        />
       {/if}
       {#if take === null && notes.trim() !== ''}
         <button
@@ -1545,28 +1562,44 @@
         <!-- The send-back's words, on the card the draft is drawn on: the
              reader says what is wrong where they read what would go out. -->
         <div class="sendback">
-          <Field
-            editor="dock"
-            class="notes"
-            bind:value={feedback}
-            rows={2}
-            placeholder="What should change?"
-            aria={{ label: 'feedback for the agent' }}
-            onkeydown={(event: KeyboardEvent) => {
-              onFeedbackKey(event);
-            }}
-            field={(el: HTMLElement | null) => {
-              feedbackEl = el;
-            }}
-          />
+          {#if take !== null && tookFrom === 'feedback'}
+            <!-- The take's card draws where the words will land, so a reader
+                 who pressed the send-back mic sees their recording where the
+                 words are going. -->
+            <TakeCard {take} phase={take.phase} {wire} oncancel={onabandon} {silent} spread />
+          {:else}
+            <Field
+              editor="dock"
+              class="notes"
+              bind:value={feedback}
+              rows={2}
+              placeholder="What should change?"
+              aria={{ label: 'feedback for the agent' }}
+              onkeydown={(event: KeyboardEvent) => {
+                onFeedbackKey(event);
+              }}
+              field={(el: HTMLElement | null) => {
+                feedbackEl = el;
+              }}
+            />
+            {#if dictation && dictate !== null}
+              <DictateControl
+                {dictate}
+                onpress={() => {
+                  onmic('feedback');
+                }}
+              />
+            {/if}
+          {/if}
           <button class="btn" disabled={feedback.trim() === ''} onclick={sendBack}>Send back</button
           >
         </div>
       {/if}
-      {#if take !== null}
+      {#if take !== null && !(tookFrom === 'feedback' && feedbackOpen)}
         <!-- A take still running behind a held draft: this branch draws no words
            row, so without this line a prompt would swallow a recording that is
-           still going. -->
+           still going. The send-back box draws its own card while it is open,
+           so the line stands down there. -->
         <div class="blip">
           <span class="dot" class:tr={take.phase === 'transcribing'}></span>
           dictating · the words land in your draft either way
