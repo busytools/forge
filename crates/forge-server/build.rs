@@ -57,15 +57,10 @@ fn main() {
 
     // The install ships transcribe's shared libraries beside the binary (0.4's
     // static ggml duplicates llama-cpp-sys-2's symbols on Linux), and the
-    // loader does not search the executable's own directory. The second entry
-    // is where a build stages the same files, for a binary run out of target/.
-    let rpaths: &[&str] = match std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default().as_str() {
-        "linux" => &["$ORIGIN", "$ORIGIN/transcribe-libs"],
-        "macos" => &["@loader_path", "@loader_path/transcribe-libs"],
-        _ => &[],
-    };
-    for rpath in rpaths {
-        println!("cargo:rustc-link-arg-bin=forge=-Wl,-rpath,{rpath}");
+    // loader does not search the executable's own directory. Every bin here
+    // links the workspace, so every one of them needs the path.
+    for bin in ["forge", "forge-protocol-client", "forge-fold-cost"] {
+        emit_rpath(bin);
     }
 
     // Digest of the Cargo.lock this build saw, which is a different
@@ -74,6 +69,20 @@ fn main() {
     // e.g. a packaged build outside the workspace.
     println!("cargo:rerun-if-changed=../../Cargo.lock");
     println!("cargo:rustc-env=FORGE_CARGO_LOCK_DIGEST={}", cargo_lock_digest());
+}
+
+/// The loader search paths for `bin`: beside the executable, and the
+/// directory a build stages the same libraries in for a binary run out of
+/// `target/`.
+fn emit_rpath(bin: &str) {
+    let rpaths: &[&str] = match std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default().as_str() {
+        "linux" => &["$ORIGIN", "$ORIGIN/transcribe-libs"],
+        "macos" => &["@loader_path", "@loader_path/transcribe-libs"],
+        _ => &[],
+    };
+    for rpath in rpaths {
+        println!("cargo:rustc-link-arg-bin={bin}=-Wl,-rpath,{rpath}");
+    }
 }
 
 /// Short digest of the workspace `Cargo.lock`, or empty when it cannot
