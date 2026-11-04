@@ -1782,18 +1782,13 @@ fn write_private(path: &Path, bytes: &[u8]) -> Result<(), VaultToolError> {
     // The parent is held as a directory handle and the file is opened
     // relative to it, so the path checked for containment is the one written.
     // The handle is then proven to be the directory the containment check
-    // looked at: dev/ino from the opened fd must equal the canonical path's.
-    let expected = rustix::fs::stat(parent).map_err(errno_io)?;
-    let dir = rustix::fs::open(parent, OFlags::RDONLY | OFlags::CLOEXEC, Mode::empty())
+    // looked at by reading the fd's own path back: a parent swapped between
+    // the canonicalize and the open makes the two disagree.
+    let expected = std::fs::canonicalize(parent)?;
+    let dir = rustix::fs::open(&expected, OFlags::RDONLY | OFlags::CLOEXEC, Mode::empty())
         .map_err(errno_io)?;
-    let actual = rustix::fs::fstat(&dir).map_err(errno_io)?;
-    if expected.st_dev != actual.st_dev || expected.st_ino != actual.st_ino {
-        return Err(VaultToolError::Message(
-            "the destination directory changed while the call was parked; nothing was written"
-                .to_owned(),
-        ));
-    }
     let dir = std::fs::File::from(dir);
+    verify_dir_path(&dir, &expected)?;
     let file = rustix::fs::openat(
         &dir,
         name,
@@ -1827,6 +1822,45 @@ fn write_private(path: &Path, bytes: &[u8]) -> Result<(), VaultToolError> {
 
 fn errno_io(error: rustix::io::Errno) -> std::io::Error {
     std::io::Error::from_raw_os_error(error.raw_os_error())
+}
+
+/// The canonical path of an opened directory, read from the descriptor
+/// itself. A platform that cannot answer fails closed.
+fn dir_path(dir: &std::fs::File) -> std::io::Result<PathBuf> {
+    #[cfg(target_os = "linux")]
+    use std::os::fd::AsRawFd;
+    #[cfg(target_os = "macos")]
+    use std::os::unix::ffi::OsStrExt;
+
+    #[cfg(target_os = "linux")]
+    {
+        std::fs::read_link(format!("/proc/self/fd/{}", dir.as_raw_fd()))
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let path = rustix::fs::getpath(dir).map_err(errno_io)?;
+        Ok(PathBuf::from(std::ffi::OsStr::from_bytes(path.as_bytes())))
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = dir;
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "this platform cannot read a directory handle's path",
+        ))
+    }
+}
+
+/// The opened directory must be the canonical directory the containment check
+/// approved, not merely a path that resolved to it a moment later.
+fn verify_dir_path(dir: &std::fs::File, expected: &Path) -> Result<(), VaultToolError> {
+    if dir_path(dir)? != expected {
+        return Err(VaultToolError::Message(
+            "the destination directory changed while the call was parked; nothing was written"
+                .to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 /// A mock facade for the tool tests: records each call and returns a fixed
@@ -2940,6 +2974,22 @@ mod tests {
         let error = write_private(&fifo, b"x").expect_err("the FIFO is refused");
 
         assert!(error.to_string().contains("not a regular file"), "{error}");
+    }
+
+    /// The directory handle must be the directory the containment check
+    /// approved: a handle whose own path is another directory is refused.
+    #[test]
+    fn write_private_refuses_a_directory_whose_fd_path_differs() {
+        let first = tempfile::tempdir().expect("first");
+        let second = tempfile::tempdir().expect("second");
+        let expected = std::fs::canonicalize(first.path()).expect("canonical first");
+        let dir = std::fs::File::open(first.path()).expect("the directory handle");
+
+        verify_dir_path(&dir, &expected).expect("the same directory passes");
+
+        let other = std::fs::canonicalize(second.path()).expect("canonical second");
+        let error = verify_dir_path(&dir, &other).expect_err("a different directory is refused");
+        assert!(error.to_string().contains("changed"), "{error}");
     }
 
     /// A hard link names bytes outside this tree; writing through one would
