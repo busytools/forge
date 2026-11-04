@@ -687,3 +687,14 @@ export type BrowserInputEvent =
  * count the dispatch and compaction walks keep asking for.
  */
 export const MORE_TURNS = 20;
+
+/**
+ * The newest turns a subscribe answers with, at most.
+ *
+ * The server's ceiling is `SUBSCRIBE_TURNS`
+ * (`crates/forge-server/src/transport/wire.rs`), and its comment keeps that
+ * equal to `MORE_TURNS`; `[server] first_frame_cap_kb` can carry fewer turns
+ * than this. The seat record trims to it, so a long-lived seat holds no more
+ * turns than a read can carry.
+ */
+export const SUBSCRIBE_TURNS = 20;

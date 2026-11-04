@@ -196,8 +196,9 @@ export function runningAt(
   // the OLDEST off the front, and the `init` that opens a turn is the front of
   // it - so replaying an incomplete tail can miss the frame that opened the
   // turn and answer from a snapshot the frames since have left behind. The
-  // snapshot's own answer is the honest one there.
-  if (store.dropped() > 0) return held;
+  // snapshot's own answer is the honest one there. A tail compacted to what
+  // this fold reads is not that case: it is complete for its reader.
+  if (store.dropped() > 0 && !store.compacted()) return held;
   for (const update of store.updates()) {
     const message = (update as { chat_appended?: { msg?: unknown } }).chat_appended?.msg;
     if (message !== undefined) held = inFlightOf(held, message);

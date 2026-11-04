@@ -1828,9 +1828,10 @@ async fn seed_from_transcript(
 /// refreshes of a 68.9 MB transcript, which is 99% of that connection's
 /// traffic - for turns it will not draw.
 ///
-/// The window matches the client's own `MORE_TURNS` (20), so the newest page
-/// a subscribe carries and the newest page a client asks for are the same
-/// page: a client that asks anyway is handed what it already holds, which it
+/// The window matches the client's own `SUBSCRIBE_TURNS` (20), which its seat
+/// record trims to, and the `MORE_TURNS` page a client asks for: the newest
+/// page a subscribe carries and the newest page a client asks for are the same
+/// page, so a client that asks anyway is handed what it already holds, which it
 /// drops by turn key.
 ///
 /// **It is a ceiling, not the page.** `[server] first_frame_cap_kb` holds the

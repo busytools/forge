@@ -73,6 +73,9 @@ function emptyStore(what: Subject): Store {
     dropped: () => 0,
     set: () => {},
     push: () => {},
+    compact: () => {},
+    compacted: () => false,
+    generation: () => 0,
     takeAudio: () => [],
     refuse: () => {},
   };

@@ -183,6 +183,8 @@ function stub() {
         updates: () => updates,
         state: () => ({ kind: 'ready' as const }),
         dropped: () => dropped,
+        compacted: () => false,
+        generation: () => 0,
         set: () => undefined,
         push: () => undefined,
         takeAudio: () => [],
