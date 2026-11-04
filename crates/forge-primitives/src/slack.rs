@@ -360,8 +360,9 @@ pub struct SlackFollowedThread {
 /// read a ts.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SlackThreadName {
-    /// The parent's author: the resolved display name, else the raw user id.
-    /// Never invented.
+    /// The parent's author: a bot's own name when the parent carries one,
+    /// else the resolved display name, else the raw user id when that lookup
+    /// fails. Never invented.
     pub author: String,
     /// The parent's text flattened to one line and truncated at a word
     /// boundary. Empty when the parent carried no text.

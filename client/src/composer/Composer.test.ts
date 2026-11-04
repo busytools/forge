@@ -6254,8 +6254,9 @@ describe('the dock', () => {
     });
 
     expect(drawn()).toContain('Reply in Slack');
-    // The `·` separators before the thread and the tags are drawn by CSS, so
-    // the text carries the segments and the names; the gaps are the layout's.
+    // The `·` before the thread is CSS; the one before the tags is a DOM item
+    // (`.tsep`) so a wrapped tag row never opens with it. The gaps are the
+    // layout's, which is why the names carry commas but no spaces.
     expect(dest(), 'the thread is named by its author and its opening words').toBe(
       `Trust Machines · #granite-staging-alerts thread: @alice "the staging deploy is green..." · tags: @bob,@carol`,
     );
@@ -6328,6 +6329,20 @@ describe('the dock', () => {
     const ex = document.querySelector('.dock .dest .ex');
     expect(ex?.textContent, 'the card draws the excerpt the core resolved').toBe(`"${excerpt}"`);
     expect(ex?.getAttribute('title'), 'and the whole excerpt is reachable from it').toBe(excerpt);
+  });
+
+  it('draws a named thread whose parent carried no text without an empty quote', () => {
+    open({
+      record: record({
+        pending_asks: [
+          slackDraftAsk({ thread_ts: STAMP, thread: { author: 'alice', excerpt: '' } }),
+        ],
+      }),
+    });
+
+    expect(dest(), 'no excerpt means no quote marks and no empty pair').toBe(
+      `Trust Machines · #granite-staging-alerts thread: @alice`,
+    );
   });
 
   it('draws a held config write with its key and both values', () => {

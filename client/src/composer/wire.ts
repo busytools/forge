@@ -415,9 +415,9 @@ function questionFrom(value: unknown): Ask | null {
 /** The thread name a held draft carries, or none when it carries no author. */
 function threadFrom(value: unknown): SlackThreadName | null {
   const held = record(value);
-  const author = text(held['author']);
+  const author = line(held['author']);
   if (author === null) return null;
-  return { author, excerpt: text(held['excerpt']) ?? '' };
+  return { author, excerpt: line(held['excerpt']) ?? '' };
 }
 
 /** The people a held draft tags, dropping rows that name no person at all. */
@@ -425,8 +425,8 @@ function taggedFrom(value: unknown): SlackPerson[] {
   if (!Array.isArray(value)) return [];
   return value.flatMap((entry) => {
     const held = record(entry);
-    const id = text(held['id']);
-    return id === null ? [] : [{ id, name: text(held['name']) }];
+    const id = line(held['id']);
+    return id === null ? [] : [{ id, name: line(held['name']) }];
   });
 }
 

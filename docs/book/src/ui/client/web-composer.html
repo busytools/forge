@@ -236,9 +236,14 @@
   .dock .pin .ws { min-width: 0; overflow: hidden; text-overflow: ellipsis;
     white-space: nowrap; }
   .dock .pin .sp { flex: none; color: var(--dim); opacity: .6; }
-  .dock .pin .ch { flex: none; color: var(--text); font-weight: 500; white-space: nowrap; }
-  .dock .thr { display: inline-flex; align-items: baseline; gap: 6px; flex: 1 1 0;
+  .dock .pin .ch { flex: 0 1 auto; min-width: 0; overflow: hidden;
+    text-overflow: ellipsis; color: var(--text); font-weight: 500; white-space: nowrap; }
+  .dock .thr { display: inline-flex; align-items: baseline; gap: 6px; flex: 0 1 auto;
     min-width: 0; }
+  /* Crowded: the thread takes the row and the tags move below it. */
+  .dock .dest.tags-below .thr { flex: 1 1 0; }
+  .dock .dest.tags-below .tgs { flex-basis: 100%; }
+  .dock .dest.tags-below .tsep { display: none; }
   .dock .thr::before { content: "\00b7" / ""; flex: none; color: var(--dim); opacity: .6;
     margin-right: 2px; }
   .dock .thr .lbl { flex: none; color: var(--dim); }
@@ -258,8 +263,9 @@
     .dock .thr::before { content: none; }
     .dock .tsep { display: none; }
     .dock .tgs { flex-basis: 100%; }
-    .dock .pin { flex-shrink: 1; flex-wrap: wrap; row-gap: 0; border-radius: 12px; }
-    .dock .pin .sp { display: none; } }
+    .dock .dest.pill-stacked .pin { flex-shrink: 1; flex-wrap: wrap; row-gap: 0;
+      border-radius: 12px; }
+    .dock .dest.pill-stacked .pin .sp { display: none; } }
   @container (max-width: 620px) {
     .dock .d-head { gap: 7px; }
     .dock .dest { column-gap: 8px; }

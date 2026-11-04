@@ -214,6 +214,77 @@
     return { workspace, conversation: conversationLabel, noun, threadTs, thread, tagged };
   });
 
+  /**
+   * The two places the line yields are decided from MEASURED widths, because
+   * a container query cannot know how long an excerpt or a tag list is.
+   *
+   * `tags-below` is the mock's crowded state: the thread takes the row and
+   * the tags move under it. `pill-stacked` is the chip's: its two halves
+   * stack only when they cannot share a line, so the `·` between them is not
+   * hidden while they still read as one line (Ved's round-2 note).
+   */
+  let destEl = $state<HTMLSpanElement | null>(null);
+  let tagsBelow = $state(false);
+  let pillStacked = $state(false);
+
+  /** A segment's one-line width, with a clipped child contributing its whole content. */
+  function segmentWidth(segment: Element | null): number {
+    if (!(segment instanceof HTMLElement)) return 0;
+    const style = getComputedStyle(segment);
+    const gap = Number.parseFloat(style.columnGap) || 0;
+    const frame =
+      (Number.parseFloat(style.paddingLeft) || 0) +
+      (Number.parseFloat(style.paddingRight) || 0) +
+      (Number.parseFloat(style.borderLeftWidth) || 0) +
+      (Number.parseFloat(style.borderRightWidth) || 0);
+    const children = [...segment.children];
+    const width = children.reduce((sum, child) => {
+      if (!(child instanceof HTMLElement)) return sum;
+      const clipped = child.scrollWidth > child.clientWidth;
+      return sum + (clipped ? child.scrollWidth : child.offsetWidth);
+    }, 0);
+    return width + frame + gap * Math.max(0, children.length - 1);
+  }
+
+  $effect(() => {
+    const el = destEl;
+    // Keyed on the line's own content, so a new draft is measured again.
+    void slackDest.workspace;
+    void slackDest.conversation;
+    void slackDest.threadTs;
+    void slackDest.thread;
+    void slackDest.tagged;
+    if (el === null || typeof ResizeObserver === 'undefined') return;
+    const measure = (): void => {
+      const width = el.clientWidth;
+      if (width === 0) return;
+      const gap = Number.parseFloat(getComputedStyle(el).columnGap) || 0;
+      const parts = [...el.children];
+      const need =
+        parts.reduce((sum, part) => {
+          if (!(part instanceof HTMLElement)) return sum;
+          // The tag separator is its own item; the thread's leading `·` is a
+          // pseudo-element this sum cannot see.
+          if (part.classList.contains('tsep')) return sum + 6;
+          const leading = part.classList.contains('thr') ? 8 : 0;
+          return sum + segmentWidth(part) + leading;
+        }, 0) +
+        gap * Math.max(0, parts.length - 1);
+      tagsBelow = need > width;
+      const ws = el.querySelector('.pin .ws');
+      const ch = el.querySelector('.pin .ch');
+      const pinNeed =
+        (ws instanceof HTMLElement ? ws.scrollWidth : 0) +
+        (ch instanceof HTMLElement ? ch.scrollWidth : 0) +
+        40;
+      pillStacked = pinNeed > width;
+    };
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    measure();
+    return () => observer.disconnect();
+  });
+
   /** One of a question's options, as its row draws it. */
   interface Row {
     key: string;
@@ -1256,11 +1327,16 @@
       <div class="desc">{ask.request.header}</div>
     {:else if ask.kind === 'slack_draft'}
       <div class="d-head">
-        <span class="dest">
+        <span
+          class="dest"
+          class:tags-below={tagsBelow}
+          class:pill-stacked={pillStacked}
+          bind:this={destEl}
+        >
           <span class="pin">
             <span class="ws" title={slackDest.workspace}>{slackDest.workspace}</span>
             <span class="sp" aria-hidden="true">·</span>
-            <span class="ch">{slackDest.conversation}</span>
+            <span class="ch" title={slackDest.conversation}>{slackDest.conversation}</span>
           </span>
           {#if slackDest.threadTs !== null}
             <span class="thr">

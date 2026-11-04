@@ -459,7 +459,7 @@ pub fn mention_ids(text: &str) -> Vec<String> {
 
 /// One flattened line of a message's text, for a card that quotes it: the
 /// whitespace collapses, and a line past `limit` characters stops at the
-/// last whole word before it, marked with an ellipsis.
+/// last space before the bound where there is one, marked with an ellipsis.
 pub fn one_line_excerpt(text: &str, limit: usize) -> String {
     let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
     if flat.chars().count() <= limit {
@@ -785,7 +785,7 @@ pub async fn user_display_name(
                     workspace,
                     user,
                     %error,
-                    "resolving a slack user for a draft's tag failed; the card draws the id",
+                    "resolving a slack user for a held draft failed; the card draws the id",
                 );
             } else {
                 tracing::debug!(
@@ -794,7 +794,7 @@ pub async fn user_display_name(
                     workspace,
                     user,
                     %error,
-                    "resolving a slack user for a draft's tag failed again",
+                    "resolving a slack user for a held draft failed again",
                 );
             }
             None
