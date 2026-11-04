@@ -1336,21 +1336,17 @@
       // the same occupant. Two things are not that conversation's place: one
       // its claude session id has moved on from (`/new`, `/resume`), and one
       // whose row the conversation no longer holds (a compaction or a trim
-      // ate it) - both land at the latest.
+      // ate it). The restore's own session comparison gives up a moved id a
+      // frame later, and `Places.settle` has usually dropped it already; this
+      // entry only has to keep the one that is still the conversation's.
       const arriving = untrack(() => kept.get(which));
       const turning = arriving?.turns ?? [];
       const place = places.of(which) ?? null;
-      const moved =
-        place !== null &&
-        place.session !== null &&
-        arriving?.sessionId != null &&
-        place.session !== arriving.sessionId;
       // **A conversation still loading may hold the row in the page on its
       // way**, so only a loaded one that lacks it is a stale place.
       const holdsRow =
         place !== null && turning.some((turn) => place.anchor.key.startsWith(`${turn.key}:`));
-      const open =
-        place !== null && !moved && (holdsRow || arriving === undefined || !arriving.loaded);
+      const open = place !== null && (holdsRow || arriving === undefined || !arriving.loaded);
       if (open && place !== null) {
         // A returning reader is parked where they left, not at the foot, so
         // the pin's own condition must not carry them down while the row is
