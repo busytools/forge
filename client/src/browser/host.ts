@@ -173,8 +173,9 @@ function tabRowOf(value: unknown): BrowserTabList['rows'][number] {
     throw new Error(`tab ${number} names no state`);
   }
   // **A popup names the tab that opened it**, or null; the surface follows it
-  // in and hands back on that number.
-  if (opener !== null && typeof opener !== 'number') {
+  // in and hands back on that number. An additive field is absent from an
+  // older server's rows, which reads as null like `closing_at_ms`.
+  if (opener !== null && opener !== undefined && typeof opener !== 'number') {
     throw new Error(`tab ${number} names no readable opener`);
   }
   if (typeof owner !== 'object' || owner === null) {
@@ -205,7 +206,7 @@ function tabRowOf(value: unknown): BrowserTabList['rows'][number] {
     title,
     url,
     owner: { org: slot['org'], project: slot['project'], label: slot['label'] },
-    opener,
+    opener: opener ?? null,
     state,
     dialog,
   };

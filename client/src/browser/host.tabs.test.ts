@@ -89,6 +89,28 @@ describe("the strip's tab rows", () => {
     ).toThrow(/owner/);
   });
 
+  /// **An older server omits the additive field**, and its rows must still
+  /// draw: `opener` absent reads as null, like `closing_at_ms`.
+  it('reads a missing opener as null', () => {
+    const list = tabListOf({
+      profile: 'p',
+      id: 1,
+      up: true,
+      connected: true,
+      closing_at_ms: null,
+      rows: [
+        {
+          number: 1,
+          title: '',
+          url: '',
+          owner: { org: 'O', project: 'p', label: 'l' },
+          state: 'idle',
+        },
+      ],
+    });
+    expect(list.rows[0]?.opener).toBeNull();
+  });
+
   /// **An unreadable list is a refusal, not an empty strip.** The rows used
   /// to be cast, so a malformed `rows` drew "no tabs yet" - a claim that a
   /// read found nothing.

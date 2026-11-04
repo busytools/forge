@@ -782,17 +782,50 @@ describe('the browser surface', () => {
   /// sign-in without hunting the strip. The ask is not touched.
   it('follows a popup opened from the tab it is showing', async () => {
     const seat = { org: 'Busytools', project: 'forge', label: 'lead' };
+    // **Listen before the open**, so the landing's own read is the first list
+    // the surface sees; the birth then arrives as a new row against it.
+    const seen = await pushes();
+    tabs.mockResolvedValue(list([row({ number: 2 })]));
     show.mockResolvedValueOnce({ profile: 'hunt', tab: 2 });
     await openSurface('hunt', seat, 2);
-    const seen = await pushes();
-    // **The list the landing re-reads is the list the push carries**, or the
-    // mocked read empties the picker under the follow.
+    // **The surface holds a list before the birth arrives**, which is what
+    // makes the popup row new.
+    await vi.waitFor(() => expect(surface.tabs).not.toBeNull());
     const both = list([row({ number: 2 }), row({ number: 5, opener: 2 })]);
     tabs.mockResolvedValue(both);
     show.mockResolvedValueOnce({ profile: 'hunt', tab: 5 });
     seen.tabs(both);
     await vi.waitFor(() => expect(surface.tab).toBe(5));
     expect(show).toHaveBeenLastCalledWith('hunt', seat, 5);
+
+    // **A later push with the same rows does not re-fire.** The list
+    // republishes on its own clock, and a person who picks the opener must
+    // not be yanked back to the popup on the next one.
+    show.mockClear();
+    seen.tabs(both);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(show, 'an unchanged popup row does not move the surface again').not.toHaveBeenCalled();
+    expect(surface.tab).toBe(5);
+  });
+
+  /// **A popup that already existed when the surface opened is not
+  /// followed.** The person chose the opener; the pre-existing popup is not
+  /// a birth this surface witnessed.
+  it('does not follow a popup that was already open when the surface opened', async () => {
+    const seat = { org: 'Busytools', project: 'forge', label: 'lead' };
+    const both = list([row({ number: 2 }), row({ number: 5, opener: 2 })]);
+    const seen = await pushes();
+    tabs.mockResolvedValue(both);
+    show.mockResolvedValueOnce({ profile: 'hunt', tab: 2 });
+    await openSurface('hunt', seat, 2);
+    // The list that lands as the surface's first is the one with the popup
+    // already in it.
+    seen.tabs(both);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(show, 'the pre-existing popup is not followed').toHaveBeenCalledTimes(1);
+    expect(surface.tab).toBe(2);
   });
 
   /// **A popup that closed hands the surface back to the tab that opened

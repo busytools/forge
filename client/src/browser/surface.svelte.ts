@@ -736,9 +736,20 @@ function tabs(list: BrowserTabList): void {
   // **A popup born from the tab this surface shows moves it.** The platform
   // puts the popup in front of its opener; so does this, on the one surface
   // that already exists, and the ask stays parked on the opener's page.
-  if (surface.phase === 'live') {
+  //
+  // **Only a row NEW in this list moves it.** Lists republish on their own
+  // clock, so following every row that names the viewed tab as its opener
+  // would yank the person back each time they picked the opener. A popup
+  // that already existed when this surface opened is not followed either:
+  // the person chose the opener, and that choice stands.
+  if (surface.phase === 'live' && before !== null) {
+    const held = new Set(before.rows.map((row) => row.number));
     const born = list.rows.find(
-      (row) => row.opener === viewed && row.number !== viewed && sameSlot(row.owner, seat),
+      (row) =>
+        row.opener === viewed &&
+        row.number !== viewed &&
+        !held.has(row.number) &&
+        sameSlot(row.owner, seat),
     );
     if (born !== undefined) {
       void selectTab(born.number);
