@@ -156,6 +156,10 @@ function stub() {
     seed(slot: SessionSlot, data: unknown): void {
       stores.open({ session: slot }).set(data);
     },
+    /** A store whose subscription was refused, which holds no snapshot at all. */
+    seedRefused(slot: SessionSlot, why: string): void {
+      stores.open({ session: slot }).refuse(why);
+    },
     /**
      * A frame the connection holds for a seat: folded into the store, not yet
      * painted into any record this page draws - the gap a send reads across.
@@ -2571,7 +2575,7 @@ describe('a list that mounted and drew no rows', () => {
   });
 
   /**
-   * **A measured viewport is not a drawn row** (#2825, 2026-11-04). `virtua`
+   * **A measured viewport is not a drawn row** (#2830, 2026-11-04). `virtua`
    * freezes its range while a scroll correction is parked, and one it cannot
    * scroll to is never cleared - so the mount reports a healthy viewport and
    * computes `[0, -1]` for the life of the list. That is the black first open
@@ -2594,8 +2598,34 @@ describe('a list that mounted and drew no rows', () => {
   });
 
   /**
+   * **No room is no answer** (#2830): a hidden or collapsed pane must not
+   * spend the open's one re-measure - the list is not broken, it has nowhere
+   * to draw. The size that gives it room is the retry, and the re-measure is
+   * still owed then.
+   */
+  it('leaves a list in a pane with no room alone, then re-measures once it has room', async () => {
+    const server = stub();
+    stuckRangeOnce();
+    setMeasured(0, 0);
+    draw({}, server);
+    server.answer([turn('t1')]);
+    await painted();
+    expect(gate.mounts, 'a pane with no room spends no re-measure').toBe(1);
+    expect(document.querySelectorAll('[data-t]'), 'nothing draws with no room').toHaveLength(0);
+
+    // The pane gains its room: the watcher re-arms the question, and the one
+    // re-measure this open is owed fires now.
+    setMeasured(1_005, 1_005);
+    resized();
+    await painted();
+
+    expect(gate.mounts, 'the pane with room got its re-measure').toBe(2);
+    expect(document.querySelector('[data-t]')?.getAttribute('data-t'), 'the rows draw').toBe('t1');
+  });
+
+  /**
    * **A seat the column kept is checked again when the column returns to it**
-   * (#2825). Two seats that both hold rows share one list - the switch hands
+   * (#2830). Two seats that both hold rows share one list - the switch hands
    * it the other conversation - so no mount happens and the viewport's own
    * effect never re-runs; the switch is the only thing that can ask, and a
    * range one seat froze would otherwise follow the next one in.
@@ -2632,7 +2662,9 @@ describe('a list that mounted and drew no rows', () => {
     flushSync();
     await painted();
 
-    expect(gate.mounts, "the returning seat's list was replaced").toBe(3);
+    // The stall arms from a fresh mount count, so one remount is the whole of
+    // what the returning seat pays.
+    expect(gate.mounts, "the returning seat's list was replaced").toBe(1);
     expect(
       document.querySelector('[data-t]')?.getAttribute('data-t'),
       'the returning seat drew its kept row',
@@ -2692,8 +2724,8 @@ describe('a list that mounted and drew no rows', () => {
  * that holds rows is a read that failed or was cut - not a conversation that
  * ended - so it may not replace the rows the store backed.
  *
- * **These pin an ordering that already held**; they are no part of the reason
- * the list's re-measure changed, and they passed before it.
+ * The first two pin an ordering that already held before this cut; the rest
+ * are this fix's own, for the seed's empty and stale answers.
  */
 describe('the store seed and the seat read', () => {
   const turn = (key: string): unknown => ({
@@ -2714,12 +2746,16 @@ describe('the store seed and the seat read', () => {
   it('draws the store-seeded rows, and an empty page does not wipe them', async () => {
     const server = stub();
     setMeasured(1_005, 1_005);
-    server.seed(LEAD, { conversation: { turns: [turn('t1')], cursor: 'c1' } });
+    // Two rows, so the landing's own fill is satisfied: what `server.asks`
+    // holds is then what the seed itself asked, which is nothing.
+    server.seed(LEAD, { conversation: { turns: [turn('t1'), turn('t2')], cursor: 'c1' } });
     draw({}, server);
 
     expect(document.querySelector('[data-t]')?.getAttribute('data-t'), 'the store seed draws').toBe(
       't1',
     );
+    expect(document.querySelectorAll('[data-t]'), 'both seeded rows draw').toHaveLength(2);
+    expect(server.asks, 'the record held the page, so the mount asks nothing').toHaveLength(0);
 
     // The seat's read answers with no rows and no cursor. Against a record
     // that holds rows that is a read that failed or was cut short, so it may
@@ -2729,8 +2765,11 @@ describe('the store seed and the seat read', () => {
 
     expect(
       document.querySelector('[data-t]')?.getAttribute('data-t'),
-      'an empty read leaves the store-backed row drawn',
+      'an empty read leaves the store-backed rows drawn',
     ).toBe('t1');
+    expect(document.querySelectorAll('[data-t]'), 'both rows survive the empty read').toHaveLength(
+      2,
+    );
   });
 
   it('draws a snapshot that arrives after the column mounted', async () => {
@@ -2776,6 +2815,51 @@ describe('the store seed and the seat read', () => {
       document.querySelector('[data-t]')?.getAttribute('data-t'),
       'the page the ask fetched draws',
     ).toBe('t1');
+  });
+
+  /**
+   * **A refused store asks for the page.** The refusal is an answer - no
+   * snapshot is coming - and a column mounted on it has never heard it, so
+   * the seed is the one place that can say so.
+   */
+  it('asks for the page when the store was refused', () => {
+    const server = stub();
+    setMeasured(1_005, 1_005);
+    server.seedRefused(LEAD, 'this forge would not answer');
+    draw({}, server);
+
+    expect(
+      server.asks.filter((ask) => ask.kind === 'more'),
+      'the refused record asks for its page',
+    ).toHaveLength(1);
+  });
+
+  /**
+   * **The frames after the record's page are replayed on top of it.** They
+   * landed while this column did not exist, so no listener folded them, and a
+   * seed that takes only the record draws a page the seat has moved past.
+   */
+  it('replays the frames the store held after its page', async () => {
+    const server = stub();
+    setMeasured(1_005, 1_005);
+    server.seed(LEAD, { conversation: { turns: [turn('t1')], cursor: 'c1' } });
+    server.hold(LEAD, {
+      chat_appended: {
+        key: LEAD,
+        msg: {
+          type: 'assistant',
+          uuid: 'late-1',
+          message: {
+            role: 'assistant',
+            content: [{ type: 'text', text: 'said after the record' }],
+          },
+        },
+      },
+    });
+    draw({}, server);
+    await painted();
+
+    expect(drawn(), 'the frame the record was older than draws').toContain('said after the record');
   });
 });
 

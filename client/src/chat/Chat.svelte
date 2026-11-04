@@ -1164,7 +1164,7 @@
         cancelAnimationFrame(checkFrame);
         checkFrame = null;
       }
-      // **A switch asks the arriving seat's list its own question** (#2825).
+      // **A switch asks the arriving seat's list its own question** (#2830).
       // The column keeps one list across two seats that both hold rows, so
       // the measure is not re-run by a mount - and a range the last seat
       // froze would otherwise follow this one in.
@@ -1491,7 +1491,7 @@
   });
 
   /**
-   * Force the measure when a list mounted over turns drew no rows (#2825),
+   * Force the measure when a list mounted over turns drew no rows (#2830),
    * with room to draw them. One mount per open, so a list still empty after it
    * is not re-mounted on a loop.
    *
@@ -1500,12 +1500,12 @@
    * correction the list cannot scroll to - the content already fits, or the
    * offset is clamped at an end - is never cleared. The range then stays the
    * pre-measure `[0, -1]` for the life of the mount while the viewport reads
-   * healthy, which is the black first open of 2026-11-04: 652.25px reported,
-   * no row drawn, until a seat switch remounted the list.
+   * healthy: on the 2026-11-04 open the record says 0 rows over a 1002px pane
+   * (652.25 in the repro), and nothing drew until a seat switch remounted it.
    */
   function checkMeasured(): void {
     checkFrame = null;
-    if (remeasured || held.turns.length === 0 || viewport === null || list === null) return;
+    if (remeasured || held.turns.length === 0 || viewport === null) return;
     // **No room is no answer.** A hidden or collapsed pane has nothing to draw
     // yet, and the size that gives it room re-arms this check through the
     // watcher below.
