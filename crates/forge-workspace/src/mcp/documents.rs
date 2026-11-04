@@ -66,7 +66,10 @@ pub(crate) fn add_tools(
 /// over, when `reviewable` earns its place, and which moment this answers.
 const DESCRIPTION: &str = "\
 Hand the reader a document from this session's working tree, or from one of \
-the project's document roots, opened in their own viewer. Use it when a \
+the project's document roots, opened in their own viewer. This tool is for \
+documents - Markdown, PDF, plain text; a visual artifact - an HTML mockup, \
+a PNG - goes to the browser instead: navigate to it and hand off that tab \
+with `browser_hand_off`, never this tool. Use it when a \
 document is the thing the reader should see - a plan, a report, a spec - \
 rather than part of the conversation; a document the reader is meant to \
 review goes here with `reviewable: true`, never as a path or link in \
@@ -87,7 +90,10 @@ it answers when they approve, send feedback or say not now.";
 /// paragraphs it shares with `DESCRIPTION` change in both.
 const DESCRIPTION_WITHOUT_REVIEW: &str = "\
 Hand the reader a document from this session's working tree, or from one of \
-the project's document roots, opened in their own viewer. Use it when a \
+the project's document roots, opened in their own viewer. This tool is for \
+documents - Markdown, PDF, plain text; a visual artifact - an HTML mockup, \
+a PNG - goes to the browser instead: navigate to it and hand off that tab \
+with `browser_hand_off`, never this tool. Use it when a \
 document is the thing the reader should see - a plan, a report, a spec - \
 rather than part of the conversation; a document the reader is meant to \
 review goes here with `reviewable: true`, never as a path or link in \
@@ -517,6 +523,28 @@ mod tests {
                  {}",
                 tool.description(),
             );
+        }
+    }
+
+    /// **A visual artifact is not a document.** The description is read
+    /// before the call, and an HTML mockup or a PNG pushed through it opens
+    /// as a file the reader cannot use; both descriptions route those to the
+    /// browser's tab hand-off instead.
+    #[test]
+    fn both_descriptions_route_visual_artifacts_to_the_browser() {
+        for review_available in [true, false] {
+            let tool = tool_with_review(MockDocumentFacade::new().into_arc(), review_available);
+            let description = tool.description();
+            for phrase in [
+                "a visual artifact - an HTML mockup, a PNG - goes to the browser instead",
+                "hand off that tab with `browser_hand_off`, never this tool",
+            ] {
+                assert!(
+                    description.contains(phrase),
+                    "the routing rule is stated (review_available: {review_available}): \
+                     {description}",
+                );
+            }
         }
     }
 

@@ -48,6 +48,13 @@ fn a_second_tab_paints_and_the_first_survives_its_close() {
     let mut host =
         support::Host::start_with_events(&exe, &profile, port, &ring_name, "800x600", &[], &log);
     let first = support::wait_for_page(port, &log, BOUND);
+    // **The host's page id is the shape `browser_hand_off` accepts**: the
+    // printed id is 32 hex characters, so a change to that format fails here
+    // rather than rejecting every hand-off.
+    assert!(
+        first.len() == 32 && first.bytes().all(|byte| byte.is_ascii_hexdigit()),
+        "the page id is the hand-off's page-id shape: {first}",
+    );
 
     // **A host with no viewer is paused**, exactly as the service leaves it.
     let ring = wait_for_ring(&ring_name, &host);
