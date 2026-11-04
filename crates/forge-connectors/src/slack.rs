@@ -463,13 +463,21 @@ fn is_user_id(id: &str) -> bool {
 
 /// The prose a message reads as when a card quotes it: Slack's mrkdwn is
 /// flattened - a mention is `@name` from `names` (the bare id when it
-/// cannot be named), a link its label or its address, and `*text*` its
-/// text. A token this does not understand is left exactly as written.
-pub fn flatten_mrkdwn<S: BuildHasher>(text: &str, names: &HashMap<String, String, S>) -> String {
+/// cannot be named), a link its label or address, and `*text*` its text.
+/// A token this does not understand is left exactly as written. Flattening
+/// stops once `limit` non-space characters have been emitted, which is
+/// enough for the excerpt bound and keeps a long message from being walked
+/// in full.
+pub fn flatten_mrkdwn<S: BuildHasher>(
+    text: &str,
+    names: &HashMap<String, String, S>,
+    limit: usize,
+) -> String {
     let chars: Vec<char> = text.chars().collect();
-    let mut out = String::with_capacity(text.len());
+    let mut out = String::with_capacity(text.len().min(limit.saturating_mul(2)));
+    let mut non_space = 0usize;
     let mut index = 0;
-    while index < chars.len() {
+    while index < chars.len() && non_space <= limit {
         match chars[index] {
             // Only a recognised token is markup; a literal `<` in the text
             // is not a bracket that runs to the next `>` somewhere later.
@@ -477,33 +485,39 @@ pub fn flatten_mrkdwn<S: BuildHasher>(text: &str, names: &HashMap<String, String
                 let token = chars[index + 1..]
                     .iter()
                     .position(|&ch| ch == '>')
-                    .map(|offset| {
-                        let end = index + 1 + offset;
-                        let inner: String = chars[index + 1..end].iter().collect();
-                        (end, inner)
-                    })
-                    .filter(|(_, inner)| is_markup_token(inner));
-                if let Some((end, inner)) = token {
-                    out.push_str(&flatten_token(&inner, names));
+                    .map(|offset| index + 1 + offset)
+                    .filter(|end| is_markup_token(&chars[index + 1..*end]));
+                if let Some(end) = token {
+                    let inner: String = chars[index + 1..end].iter().collect();
+                    let flat = flatten_token(&inner, names);
+                    non_space += flat.chars().filter(|ch| !ch.is_whitespace()).count();
+                    out.push_str(&flat);
                     index = end + 1;
                 } else {
                     out.push('<');
+                    non_space += 1;
                     index += 1;
                 }
             }
-            '*' => match chars[index + 1..].iter().position(|&ch| ch == '*') {
-                Some(offset) if offset > 0 => {
-                    let end = index + 1 + offset;
-                    let inner: String = chars[index + 1..end].iter().collect();
-                    out.push_str(&flatten_mrkdwn(&inner, names));
-                    index = end + 1;
-                }
-                _ => {
+            // A `*` pair is bold only where Slack would read it as bold; a
+            // glob such as `src/*.rs` keeps both stars.
+            '*' if opens_bold(&chars, index) => {
+                if let Some(close) = first_bold_closer(&chars, index) {
+                    let inner: String = chars[index + 1..close].iter().collect();
+                    let flat = flatten_mrkdwn(&inner, names, limit);
+                    non_space += flat.chars().filter(|ch| !ch.is_whitespace()).count();
+                    out.push_str(&flat);
+                    index = close + 1;
+                } else {
                     out.push('*');
+                    non_space += 1;
                     index += 1;
                 }
-            },
+            }
             ch => {
+                if !ch.is_whitespace() {
+                    non_space += 1;
+                }
                 out.push(ch);
                 index += 1;
             }
@@ -512,15 +526,41 @@ pub fn flatten_mrkdwn<S: BuildHasher>(text: &str, names: &HashMap<String, String
     out
 }
 
-/// Whether `<inner>` is one of Slack's markup tokens rather than text that
+/// A `*` opens a bold span only at a word boundary, with text after it and
+/// no doubled marker either side - the `**` of a literal and the `*` of a
+/// glob are literals rather than openers.
+fn opens_bold(chars: &[char], at: usize) -> bool {
+    let before = at.checked_sub(1).and_then(|p| chars.get(p));
+    let after = chars.get(at + 1).copied();
+    before.is_none_or(|p| !p.is_alphanumeric() && *p != '*')
+        && after.is_some_and(|n| !n.is_whitespace() && n != '*')
+}
+
+/// The first `*` after `open` able to close a span opened there: non-space
+/// before it, no word character after it, and no ability to open a span of
+/// its own - otherwise the two stars of a pair of globs would close a span
+/// between them.
+fn first_bold_closer(chars: &[char], open: usize) -> Option<usize> {
+    ((open + 1)..chars.len()).find(|&j| {
+        chars[j] == '*'
+            && chars.get(j - 1).is_some_and(|p| !p.is_whitespace())
+            && chars.get(j + 1).is_none_or(|n| !n.is_alphanumeric())
+            && !opens_bold(chars, j)
+    })
+}
+
+/// Whether `<token>` is one of Slack's markup tokens rather than text that
 /// happens to sit between two brackets.
-fn is_markup_token(inner: &str) -> bool {
-    inner.starts_with('@')
-        || inner.starts_with('#')
-        || inner.starts_with('!')
-        || inner.starts_with("http://")
-        || inner.starts_with("https://")
-        || inner.starts_with("mailto:")
+fn is_markup_token(token: &[char]) -> bool {
+    match token.first().copied() {
+        Some('@' | '#' | '!') => true,
+        Some('h') => {
+            token.starts_with(&['h', 't', 't', 'p', 's', ':', '/', '/'])
+                || token.starts_with(&['h', 't', 't', 'p', ':', '/', '/'])
+        }
+        Some('m') => token.starts_with(&['m', 'a', 'i', 'l', 't', 'o', ':']),
+        _ => false,
+    }
 }
 
 /// One `<...>` token flattened. A mention takes its name from `names`, a
@@ -532,13 +572,15 @@ fn flatten_token<S: BuildHasher>(inner: &str, names: &HashMap<String, String, S>
         if is_user_id(id) {
             return names.get(id).map_or_else(|| id.to_owned(), |name| format!("@{name}"));
         }
+        return format!("<{inner}>");
     }
     if inner.starts_with('#') || inner.starts_with('!') {
         return format!("<{inner}>");
     }
     match inner.split_once('|') {
         Some((_, label)) if !label.is_empty() => label.to_owned(),
-        _ => inner.to_owned(),
+        Some((address, _)) => address.to_owned(),
+        None => inner.to_owned(),
     }
 }
 
@@ -3622,40 +3664,64 @@ mod tests {
 
     /// A quoted parent reads as prose: a mention is the name the tag lookup
     /// resolved (its id when it could not), a link its label or address, and
-    /// bold loses its stars.
+    /// bold loses its stars. Literal asterisks stay literal.
     #[test]
     fn a_quoted_excerpt_flattens_its_slack_markup() {
         let names = HashMap::from([("U2".to_owned(), "bob".to_owned())]);
         assert_eq!(
-            flatten_mrkdwn("<@U2> and <@U2|carol> and <@U9>", &names),
+            flatten_mrkdwn("<@U2> and <@U2|carol> and <@U9>", &names, 80),
             "@bob and @bob and U9",
             "a named mention draws its name; an unnamed one keeps its id",
         );
         assert_eq!(
-            flatten_mrkdwn("<https://example.com/docs|the docs> and <https://example.com>", &names),
+            flatten_mrkdwn(
+                "<https://example.com/docs|the docs> and <https://example.com>",
+                &names,
+                80,
+            ),
             "the docs and https://example.com",
             "a titled link draws its label, and a bare link its address",
         );
         assert_eq!(
-            flatten_mrkdwn("*<https://example.com|the docs>* and *green*", &names),
+            flatten_mrkdwn("<https://example.com|>", &names, 80),
+            "https://example.com",
+            "an empty label draws the address",
+        );
+        assert_eq!(
+            flatten_mrkdwn("*<https://example.com|the docs>* and *green*", &names, 80),
             "the docs and green",
             "a link inside bold flattens too, and bold loses its stars",
         );
         assert_eq!(
-            flatten_mrkdwn("a < b, 2 * 3, and <#C1>", &names),
-            "a < b, 2 * 3, and <#C1>",
-            "an unpaired token and a channel reference are left as they were written",
+            flatten_mrkdwn("src/*.rs and tests/*.rs", &names, 80),
+            "src/*.rs and tests/*.rs",
+            "a glob keeps its stars rather than reading as bold",
+        );
+        assert_eq!(
+            flatten_mrkdwn("2 * 3 * 4 and **bold**", &names, 80),
+            "2 * 3 * 4 and **bold**",
+            "a spaced star and a doubled marker are literals, not bold",
+        );
+        assert_eq!(
+            flatten_mrkdwn("a < b, and <#C1|general> with <!here>", &names, 80),
+            "a < b, and <#C1|general> with <!here>",
+            "a channel reference, a broadcast and a literal bracket keep their own text",
+        );
+        assert_eq!(
+            flatten_mrkdwn("<@|broken> and <@123>", &names, 80),
+            "<@|broken> and <@123>",
+            "an unrecognised mention keeps its brackets",
         );
     }
 
-    /// The bound counts the flattened text, so a long parent is cut as prose
-    /// rather than mid-markup.
+    /// The bound counts characters on the flattened text, so a long parent is
+    /// cut as prose at a word boundary and never mid-glyph.
     #[test]
     fn an_excerpt_is_bounded_after_flattening() {
         let names = HashMap::from([("U2".to_owned(), "bob".to_owned())]);
         let parent = "*<https://example.com|the staging deploy>* is <@U2> and every check is \
                       green while the p99 is still high and the canary holds at one percent";
-        let flat = flatten_mrkdwn(parent, &names);
+        let flat = flatten_mrkdwn(parent, &names, 80);
         let excerpt = one_line_excerpt(&flat, 80);
         assert!(excerpt.ends_with("..."), "the line is cut: {excerpt:?}");
         assert!(excerpt.chars().count() <= 83, "the bound holds after flattening: {excerpt:?}");
@@ -3668,6 +3734,20 @@ mod tests {
             flat.starts_with(kept) && !kept.ends_with(' '),
             "the cut is the flattened opening at a word boundary: {excerpt:?}",
         );
+
+        // Glyphs count as characters, not bytes: a multibyte run is cut at
+        // the same place a Latin one would be.
+        let multibyte = format!("*{}*", "ééé ".repeat(30).trim_end());
+        let flat = flatten_mrkdwn(&multibyte, &names, 80);
+        let excerpt = one_line_excerpt(&flat, 80);
+        assert!(excerpt.ends_with("..."), "the glyph run is cut: {excerpt:?}");
+        assert!(excerpt.chars().count() <= 83, "the char bound holds on multibyte text: {excerpt:?}");
+        let kept = excerpt.strip_suffix("...").expect("the mark is there");
+        assert!(
+            flat.starts_with(kept) && !kept.ends_with(' '),
+            "the cut lands on a word boundary in multibyte text: {excerpt:?}",
+        );
+        assert!(!excerpt.contains('*'), "the bold markers are gone: {excerpt:?}");
     }
 
     /// The card gets one line: the parent's whitespace collapses, and a long
