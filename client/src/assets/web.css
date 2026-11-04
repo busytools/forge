@@ -1430,13 +1430,13 @@ main.chat { display: flex; flex-direction: column; min-width: 0; min-height: 0; 
   border-radius: 8px; padding: 4px 11px;
   background: var(--s3); color: var(--text); font-family: var(--ui); font-size: var(--fs-data); }
 .tb-btn.d { color: var(--muted); background: transparent; }
-/* A finger's targets: the bar's buttons take both axes here, and the feedback
-   row's mic and send take theirs from the shared `.micb`/`.sendb` rule. */
+/* A finger's targets: the bar's buttons take both axes here; the note row's
+   mic takes the shared `.mic` floor, its send the `.sendb` one. */
 @media (pointer: coarse) {
   .tb-btn { min-height: 44px; min-width: 44px; padding: 4px 9px; }
 }
 /* **The wrap is a width's, not a pointer's**: a hand-off's row - back,
-   arrows, title, take control, Done, something's wrong, Not now - is wider
+   arrows, title, take control, Done, send feedback, Not now - is wider
    than a 393-point phone, and a narrow window overflows it the same way. One
    non-wrapping row pushed Not now off the edge where no finger could reach
    it; the actions take a line of their own and stay right-aligned. */
@@ -3548,7 +3548,8 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
   flex-wrap: wrap; }
 .dock .qrow .notes { flex: 1; min-width: 0; width: auto; caret-color: var(--hot); }
 .dock .qrow:focus-within .n { color: var(--hot); }
-/* Bare, because the takeover bar's feedback line draws the same mic and send. */
+/* The dock's own mic box; the takeover bar wears the shared `.mic`. The send
+   stays bare because both rows draw it. */
 .micb { flex: none; width: 26px; height: 26px; border-radius: 8px;
   border: 1px solid var(--ctl); background: none; color: var(--dim);
   display: grid; place-items: center; cursor: pointer; }

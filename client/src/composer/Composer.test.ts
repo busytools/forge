@@ -533,7 +533,7 @@ async function beginBarTake(harness: {
   page: { record: ComposerRecord };
   say: (message: ServerMessage) => void;
 }): Promise<void> {
-  const mic = document.querySelector('.takeover-bar .micb');
+  const mic = document.querySelector('.takeover-bar .mic');
   if (!(mic instanceof HTMLElement)) throw new Error('the bar drew no mic');
   mic.click();
   await opened();
@@ -543,7 +543,7 @@ async function beginBarTake(harness: {
 
 /** Start a take at the bar's mic and leave it recording. */
 async function startBarTake(): Promise<void> {
-  const mic = document.querySelector('.takeover-bar .micb');
+  const mic = document.querySelector('.takeover-bar .mic');
   if (!(mic instanceof HTMLElement)) throw new Error('the bar drew no mic');
   mic.click();
   await opened();
@@ -7480,7 +7480,7 @@ describe('the dock', () => {
 
     expect(barButtons(), 'the wrong tab does not answer').not.toContain('Done');
     expect(barButtons(), 'and the feedback line is not offered for it').not.toContain(
-      "something's wrong…",
+      'send feedback',
     );
     expect(barText(), 'and the ask is still named, with the tab it wants').toContain(
       'browser hand-off · tab 2',
@@ -7521,7 +7521,12 @@ describe('the dock', () => {
       'The sign-in page is showing a CAPTCHA.',
     );
     expect(barButtons(), 'and the person can still answer it').toContain('Done');
-    expect(barButtons(), 'and can say the host died').toContain("something's wrong…");
+    const field = document.querySelector<HTMLTextAreaElement>('.takeover-bar textarea');
+    if (!(field instanceof HTMLTextAreaElement)) throw new Error('the bar drew no note line');
+    field.value = 'the browser host exited';
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    expect(barButtons(), 'and can say the host died').toContain('send feedback');
   });
 
   /**
@@ -7536,7 +7541,6 @@ describe('the dock', () => {
       dictation: true,
       record: record({ pending_asks: [browserHandOffAsk()] }),
     });
-    barAction('something').click();
     flushSync();
 
     await beginBarTake(harness);
@@ -7681,7 +7685,6 @@ describe('the dock', () => {
 
     action('Open browser').click();
     await raised();
-    barAction('something').click();
     flushSync();
 
     const field = document.querySelector<HTMLTextAreaElement>('.takeover-bar textarea');
@@ -7690,9 +7693,7 @@ describe('the dock', () => {
     field.dispatchEvent(new Event('input', { bubbles: true }));
     flushSync();
 
-    const send = document.querySelector('.takeover-bar .sendb');
-    if (!(send instanceof HTMLElement)) throw new Error('the bar drew no send');
-    send.click();
+    barAction('send').click();
     // The ending answers only once the connection says the prompt crossed.
     await vi.waitFor(() => expect(commands(harness)).toHaveLength(2));
     flushSync();
@@ -7710,6 +7711,126 @@ describe('the dock', () => {
     });
   });
 
+  /// **A second press while the first is crossing is not another send**: the
+  /// door and `answering` stay live across the await, and the draft clears
+  /// only after it, so two quick presses would send the same words twice.
+  it('sends the note once when the answer is pressed twice while it crosses', async () => {
+    const shared = wire();
+    const original = shared.connection.dispatch;
+    const heldGate = { release: (): void => undefined };
+    const gate = new Promise<void>((resolve) => {
+      heldGate.release = () => resolve();
+    });
+    let heldPrompt = false;
+    shared.connection.dispatch = (command, slot) => {
+      const isPrompt = typeof command === 'object' && command !== null && 'prompt_under' in command;
+      if (!heldPrompt && isPrompt) {
+        heldPrompt = true;
+        return gate.then(() => original(command, slot));
+      }
+      return original(command, slot);
+    };
+    const harness = open({ record: record({ pending_asks: [browserHandOffAsk()] }) }, shared);
+
+    action('Open browser').click();
+    await raised();
+    flushSync();
+    const field = document.querySelector<HTMLTextAreaElement>('.takeover-bar textarea');
+    if (!(field instanceof HTMLTextAreaElement)) throw new Error('the bar drew no note line');
+    field.value = 'the submit button did nothing';
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+
+    barAction('send').click();
+    flushSync();
+    barAction('send').click();
+    flushSync();
+    heldGate.release();
+    await vi.waitFor(() => expect(commands(harness)).toHaveLength(2));
+
+    expect(
+      commands(harness).map((command) => Object.keys(command)[0]),
+      'one prompt and one ending, not two of each',
+    ).toEqual(['prompt_under', 'respond_browser_hand_off']);
+  });
+
+  /// **A note of spaces is no note**: the feedback ending is not offered and
+  /// Enter sends nothing, so the session is never told to read an empty line.
+  it('answers nothing when the note is only spaces', async () => {
+    const harness = open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
+
+    action('Open browser').click();
+    await raised();
+    flushSync();
+    const field = document.querySelector<HTMLTextAreaElement>('.takeover-bar textarea');
+    if (!(field instanceof HTMLTextAreaElement)) throw new Error('the bar drew no note line');
+    field.value = '   ';
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    field.focus();
+    field.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    flushSync();
+    expect(commands(harness), 'a whitespace-only note answers nothing').toEqual([]);
+  });
+
+  /// **Done carries the note too**, and the ending still reads as approval:
+  /// the words go to the agent as a prompt and the park ends as `done`.
+  it('sends the note with Done and keeps the ending as approval', async () => {
+    const harness = open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
+
+    action('Open browser').click();
+    await raised();
+    flushSync();
+    const field = document.querySelector<HTMLTextAreaElement>('.takeover-bar textarea');
+    if (!(field instanceof HTMLTextAreaElement)) throw new Error('the bar drew no note line');
+    field.value = 'the page looks right now';
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+
+    barAction('Done').click();
+    await vi.waitFor(() => expect(commands(harness)).toHaveLength(2));
+    const [prompt, answer] = commands(harness);
+    expect((prompt?.['prompt_under'] as Record<string, unknown>)['text']).toBe(
+      'the page looks right now',
+    );
+    expect(answer).toEqual({
+      respond_browser_hand_off: {
+        key: { org: 'Busytools', project: 'forge', label: 'lead' },
+        id: '0192e1c0-0000-7000-8000-0000000000aa',
+        answer: { ending: { type: 'done' }, source: 'takeover' },
+      },
+    });
+  });
+
+  /// **Not now carries the note too**, and the ending still reads as a
+  /// deferral rather than a spoken refusal.
+  it('sends the note with Not now and keeps the ending as a deferral', async () => {
+    const harness = open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
+
+    action('Open browser').click();
+    await raised();
+    flushSync();
+    const field = document.querySelector<HTMLTextAreaElement>('.takeover-bar textarea');
+    if (!(field instanceof HTMLTextAreaElement)) throw new Error('the bar drew no note line');
+    field.value = 'come back to this after the deploy';
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+
+    barAction('Not now').click();
+    await vi.waitFor(() => expect(commands(harness)).toHaveLength(2));
+    const [prompt, answer] = commands(harness);
+    expect((prompt?.['prompt_under'] as Record<string, unknown>)['text']).toBe(
+      'come back to this after the deploy',
+    );
+    expect(answer).toEqual({
+      respond_browser_hand_off: {
+        key: { org: 'Busytools', project: 'forge', label: 'lead' },
+        id: '0192e1c0-0000-7000-8000-0000000000aa',
+        answer: { ending: { type: 'not_now' }, source: 'takeover' },
+      },
+    });
+  });
+
   /** **Words that never left are not a message to read.** A send the socket
    *  refused used to answer `feedback` anyway, telling the session to read a
    *  prompt nobody sent and ending the park on nothing; the dock stays live,
@@ -7720,23 +7841,19 @@ describe('the dock', () => {
 
     action('Open browser').click();
     await raised();
-    barAction('something').click();
     flushSync();
     const field = document.querySelector<HTMLTextAreaElement>('.takeover-bar textarea');
     if (!(field instanceof HTMLTextAreaElement)) throw new Error('the bar drew no feedback line');
     field.value = 'the submit button did nothing';
     field.dispatchEvent(new Event('input', { bubbles: true }));
     flushSync();
-    const send = document.querySelector('.takeover-bar .sendb');
-    if (!(send instanceof HTMLElement)) throw new Error('the bar drew no send');
-
     shared.down = true;
-    send.click();
+    barAction('send').click();
     flushSync();
     expect(commands(harness), 'the refused send answers nothing').toEqual([]);
 
     shared.down = false;
-    send.click();
+    barAction('send').click();
     await vi.waitFor(() =>
       expect(
         commands(harness).map((command) => Object.keys(command)[0]),
@@ -7757,18 +7874,14 @@ describe('the dock', () => {
 
     action('Open browser').click();
     await raised();
-    barAction('something').click();
     flushSync();
     const field = document.querySelector<HTMLTextAreaElement>('.takeover-bar textarea');
     if (!(field instanceof HTMLTextAreaElement)) throw new Error('the bar drew no feedback line');
     field.value = 'the submit button did nothing';
     field.dispatchEvent(new Event('input', { bubbles: true }));
     flushSync();
-    const send = document.querySelector('.takeover-bar .sendb');
-    if (!(send instanceof HTMLElement)) throw new Error('the bar drew no send');
-
     shared.dead = true;
-    send.click();
+    barAction('send').click();
     // The bar's own line is what the failure leaves, so once it is drawn the
     // catch has run and the assertions below are safe to make.
     await vi.waitFor(() => expect(drawn()).toContain('Not sent - the connection is down.'));
@@ -7780,7 +7893,7 @@ describe('the dock', () => {
     );
 
     shared.dead = false;
-    send.click();
+    barAction('send').click();
     await vi.waitFor(() =>
       expect(
         commands(harness).map((command) => Object.keys(command)[0]),
@@ -7803,7 +7916,6 @@ describe('the dock', () => {
 
     action('Open browser').click();
     await raised();
-    barAction('something').click();
     flushSync();
 
     const field = document.querySelector<HTMLTextAreaElement>('.takeover-bar textarea');
@@ -7832,10 +7944,9 @@ describe('the dock', () => {
       document.querySelector<HTMLTextAreaElement>('.takeover-bar textarea')?.value,
       'the words are on the line while the retry opens the page',
     ).toBe('the words');
-    expect(
-      document.querySelector('.takeover-bar .sendb'),
-      'a line that cannot answer offers no send',
-    ).toBeNull();
+    expect(barButtons(), 'a line that cannot answer offers no ending').not.toContain(
+      'send feedback',
+    );
 
     // The retry asked for tab null; the shell answers with the ask's own tab,
     // so the page is answerable again and the line stays it.
@@ -7847,10 +7958,9 @@ describe('the dock', () => {
     expect(line.value, 'the words were held for the line the reader spoke them into').toBe(
       'the words',
     );
-    expect(
-      document.querySelector('.takeover-bar .sendb'),
-      'the page answers again, so the send is back',
-    ).not.toBeNull();
+    expect(barButtons(), 'the page answers again, so the ending is back').toContain(
+      'send feedback',
+    );
 
     // The ask resolves: the line goes with it, so the words land in the
     // composer once - and no second copy stays behind.
@@ -7870,7 +7980,6 @@ describe('the dock', () => {
     action('Open browser').click();
     await vi.waitFor(() => expect(surface.phase, 'the page failed').toBe('failed'));
     flushSync();
-    barAction('something').click();
     flushSync();
     await startBarTake();
     return harness;
@@ -7896,10 +8005,9 @@ describe('the dock', () => {
       document.querySelector<HTMLTextAreaElement>('.takeover-bar textarea')?.value,
       'the words are still on the line',
     ).toBe('the words');
-    expect(
-      document.querySelector('.takeover-bar .sendb'),
-      'and the line offers no send it cannot honour',
-    ).toBeNull();
+    expect(barButtons(), 'and the line offers no ending it cannot honour').not.toContain(
+      'send feedback',
+    );
   });
 
   /** The same when the retry lands on a page the ask did not name. */
@@ -7916,10 +8024,9 @@ describe('the dock', () => {
       document.querySelector<HTMLTextAreaElement>('.takeover-bar textarea')?.value,
       'the words are still on the line',
     ).toBe('the words');
-    expect(
-      document.querySelector('.takeover-bar .sendb'),
-      'and the line offers no send it cannot honour',
-    ).toBeNull();
+    expect(barButtons(), 'and the line offers no ending it cannot honour').not.toContain(
+      'send feedback',
+    );
   });
 
   /** **The line is the ask's, not the phase's.** Another view answering the
@@ -7949,7 +8056,6 @@ describe('the dock', () => {
       dictation: true,
       record: record({ pending_asks: [browserHandOffAsk()] }),
     });
-    barAction('something').click();
     flushSync();
     await startBarTake();
 
@@ -7963,10 +8069,9 @@ describe('the dock', () => {
       document.querySelector<HTMLTextAreaElement>('.takeover-bar textarea')?.value,
       'the words are on the line',
     ).toBe('the words');
-    expect(
-      document.querySelector('.takeover-bar .sendb'),
-      'and the line offers no send it cannot honour',
-    ).toBeNull();
+    expect(barButtons(), 'and the line offers no ending it cannot honour').not.toContain(
+      'send feedback',
+    );
   });
 
   /**
@@ -7990,7 +8095,6 @@ describe('the dock', () => {
     action('Open browser').click();
     await vi.waitFor(() => expect(surface.phase, 'the page is up again').toBe('live'));
     flushSync();
-    barAction('something').click();
     flushSync();
     expect(
       document.querySelector<HTMLTextAreaElement>('.takeover-bar textarea')?.value,
@@ -8037,7 +8141,6 @@ describe('the dock', () => {
     action('Open browser').click();
     await vi.waitFor(() => expect(surface.phase, 'the page failed').toBe('failed'));
     flushSync();
-    barAction('something').click();
     flushSync();
     await startBarTake();
     landBarTake(harness);
@@ -8069,7 +8172,6 @@ describe('the dock', () => {
     action('Open browser').click();
     await vi.waitFor(() => expect(surface.phase, 'the page failed').toBe('failed'));
     flushSync();
-    barAction('something').click();
     flushSync();
     await startBarTake();
     landBarTake(harness);
@@ -8826,9 +8928,8 @@ describe("the takeover bar's feedback line", () => {
 
       action('Open browser').click();
       await opened();
-      barAction('something').click();
       flushSync();
-      const micButton = document.querySelector('.takeover-bar .micb');
+      const micButton = document.querySelector('.takeover-bar .mic');
       if (!(micButton instanceof HTMLElement)) throw new Error('the bar drew no mic');
 
       micButton.click();
@@ -8864,7 +8965,6 @@ describe("the takeover bar's feedback line", () => {
 
     action('Open browser').click();
     await opened();
-    barAction('something').click();
     flushSync();
     const line = document.querySelector<HTMLTextAreaElement>('.takeover-bar textarea');
     if (!(line instanceof HTMLTextAreaElement)) throw new Error('the bar drew no feedback line');
@@ -8897,15 +8997,12 @@ describe("the takeover bar's feedback line", () => {
     action('Open browser').click();
     await vi.waitFor(() => expect(surface.phase, 'the page failed').toBe('failed'));
     flushSync();
-    barAction('something').click();
     flushSync();
     await startBarTake();
     landBarTake(harness);
 
-    const send = document.querySelector('.takeover-bar .sendb');
-    if (!(send instanceof HTMLElement)) throw new Error('the bar drew no send');
     const before = commands(harness).length;
-    send.click();
+    barAction('send').click();
     // The ending answers only once the connection says the prompt crossed.
     await vi.waitFor(() =>
       expect(
@@ -8943,17 +9040,14 @@ describe("the takeover bar's feedback line", () => {
     action('Open browser').click();
     await vi.waitFor(() => expect(surface.phase, 'the page failed').toBe('failed'));
     flushSync();
-    barAction('something').click();
     flushSync();
     await startBarTake();
     landBarTake(harness);
 
-    const send = document.querySelector('.takeover-bar .sendb');
-    if (!(send instanceof HTMLElement)) throw new Error('the bar drew no send');
     const before = commands(harness).length;
     shared.down = true;
     try {
-      send.click();
+      barAction('send').click();
       flushSync();
     } finally {
       shared.down = false;
@@ -8988,9 +9082,8 @@ describe("the takeover bar's feedback line", () => {
 
     action('Open browser').click();
     await opened();
-    barAction('something').click();
     flushSync();
-    const button = document.querySelector('.takeover-bar .micb');
+    const button = document.querySelector('.takeover-bar .mic');
     if (!(button instanceof HTMLElement)) throw new Error('the bar drew no mic');
 
     shared.down = true;
@@ -9018,9 +9111,8 @@ describe("the takeover bar's feedback line", () => {
 
     action('Open browser').click();
     await opened();
-    barAction('something').click();
     flushSync();
-    const button = document.querySelector('.takeover-bar .micb');
+    const button = document.querySelector('.takeover-bar .mic');
     if (!(button instanceof HTMLElement)) throw new Error('the bar drew no mic');
 
     mic.held.refuse = true;
@@ -9069,9 +9161,8 @@ describe("the takeover bar's feedback line", () => {
 
       action('Open browser').click();
       await opened();
-      barAction('something').click();
       flushSync();
-      const button = document.querySelector('.takeover-bar .micb');
+      const button = document.querySelector('.takeover-bar .mic');
       if (!(button instanceof HTMLElement)) throw new Error('the bar drew no mic');
 
       button.click();
@@ -9132,8 +9223,8 @@ describe("the takeover bar's feedback line", () => {
       await opened();
       expect(
         document.querySelector('.takeover-bar textarea'),
-        'precondition: the feedback line is shut',
-      ).toBeNull();
+        'precondition: the note line is drawn',
+      ).not.toBeNull();
       (document.activeElement as HTMLElement | null)?.blur();
       expect(document.activeElement, 'precondition: the caret sits on the page').toBe(
         document.body,
@@ -9178,7 +9269,6 @@ describe("the takeover bar's feedback line", () => {
       });
       action('Open browser').click();
       await opened();
-      barAction('something').click();
       flushSync();
       await startBarTake();
       expect(
@@ -9229,7 +9319,6 @@ describe("the takeover bar's feedback line", () => {
     });
     action('Open browser').click();
     await opened();
-    barAction('something').click();
     flushSync();
 
     key('ControlRight', 'keydown');
@@ -9244,7 +9333,7 @@ describe("the takeover bar's feedback line", () => {
   /** **A line the reader cannot close is not a door for the key.** While the
    *  page is still opening the bar draws no toggle, so a press that opened the
    *  feedback line there would leave words in a row with no way to shut it. */
-  it('begins nothing while the page has no line to close', async () => {
+  it('begins nothing while the page has no controls', async () => {
     let land: (answer: { profile: string; tab: number }) => void = () => {};
     vi.mocked(showBrowser).mockReturnValueOnce(
       new Promise((resolve) => {
@@ -9266,8 +9355,8 @@ describe("the takeover bar's feedback line", () => {
     expect(commands(harness), 'the press opens no take under a page with no controls').toEqual([]);
     expect(
       document.querySelector('.takeover-bar textarea'),
-      'and no line is drawn for it',
-    ).toBeNull();
+      'the note line stays drawn, but no take begins under a page with no controls',
+    ).not.toBeNull();
 
     land({ profile: 'job-hunt', tab: 2 });
     await raised();
@@ -9315,7 +9404,6 @@ describe("the takeover bar's feedback line", () => {
       });
       action('Open browser').click();
       await opened();
-      barAction('something').click();
       flushSync();
       await startBarTake();
       const pressed = await modifierRoute();
@@ -9419,7 +9507,6 @@ describe("the takeover bar's feedback line", () => {
     });
     action('Open browser').click();
     await opened();
-    barAction('something').click();
     flushSync();
     await startBarTake();
 
@@ -9521,7 +9608,6 @@ describe("the takeover bar's feedback line", () => {
       });
       action('Open browser').click();
       await opened();
-      barAction('something').click();
       flushSync();
 
       key('ControlRight', 'keydown');

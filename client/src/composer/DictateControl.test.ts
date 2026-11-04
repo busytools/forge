@@ -59,7 +59,7 @@ interface Drawn {
 }
 
 /** The control over a live driver, as a surface draws it. */
-function drawn(shown = false): Drawn {
+function drawn(shown = false, holdable = true): Drawn {
   const shared: Wire = fakeWire();
   let pressed = 0;
   const dictate = new Dictation({
@@ -79,6 +79,7 @@ function drawn(shown = false): Drawn {
     target: document.body,
     props: {
       dictate,
+      holdable,
       onpress: () => {
         pressed += 1;
       },
@@ -186,5 +187,24 @@ describe('the hold', () => {
 
     expect(at.dictate.panel).toBe(true);
     expect(at.shared.sent).toEqual([]);
+  });
+
+  /// **A surface with no panel to draw takes no settings door**: the bar's mic
+  /// stands over the native page, where the composer's panel is behind the
+  /// picture, so a hold there would be a control state that draws nothing.
+  it('takes no settings door where the surface has no panel to draw', () => {
+    vi.useFakeTimers();
+    const at = drawn(false, false);
+    const button = at.button();
+    button.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }));
+    vi.advanceTimersByTime(HOLD_MS + 10);
+    button.dispatchEvent(new MouseEvent('pointerup', { bubbles: true }));
+    button.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Enter', shiftKey: true, bubbles: true }),
+    );
+    flushSync();
+
+    expect(at.dictate.panel, 'the hold and the key open no panel it cannot draw').toBe(false);
+    expect(at.shared.sent, 'and start no take').toEqual([]);
   });
 });

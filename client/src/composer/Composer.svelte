@@ -590,9 +590,6 @@
       if (active instanceof HTMLElement && active.closest('.surf') !== null) {
         active.blur();
       }
-      // The line starts shut on every takeover, as the bar's own state did
-      // when it was mounted per open.
-      barOpen = false;
     }
     surfaceWasClosed = !open;
   });
@@ -1218,9 +1215,8 @@
     barLine: () => barTakesKey,
     onBegin: () => {
       if (barTakesKey) {
-        barOpen = true;
-        // The field is drawn by that state, so it takes the keyboard once
-        // the render lands.
+        // The line is always drawn, so the field takes the keyboard once the
+        // render lands.
         void tick().then(() => barField?.focus({ preventScroll: true }));
         return;
       }
@@ -1450,14 +1446,12 @@
   let barRefused = $state<string | null>(null);
 
   /**
-   * Whether the takeover bar's feedback line is open, and its field.
+   * The takeover bar's note field.
    *
-   * **Held here rather than in the bar** because the push-to-talk key opens
-   * the line: the bar's field is the only text box above the page, so a press
-   * with the caret anywhere on that page begins a take there, and a begin that
-   * needed a click into the field first is the click the key exists to spare.
+   * **Held here rather than in the bar** because the push-to-talk key needs
+   * the bar's field: it is the only text box above the page, so a press with
+   * the caret anywhere on that page begins a take there.
    */
-  let barOpen = $state(false);
   let barField: HTMLElement | null = null;
 
   /** The bar's feedback field, handed over on mount and given back on
@@ -1480,7 +1474,7 @@
   let barRowWas = false;
   $effect(() => {
     const drawn = rowPhase !== null;
-    if (barRowWas && !drawn && barOpen && barLineHolds) {
+    if (barRowWas && !drawn && barLineHolds) {
       // **The field returns with the words**, and a reader who just dictated
       // them is about to type or press Enter; the dock's landing takes the
       // keyboard back the same way.
@@ -1513,46 +1507,56 @@
   }
 
   /**
-   * The feedback line's send: the words go to the session as a prompt, and
-   * the hand-off ends as **feedback** rather than as a decline.
-   *
-   * **A person reporting a problem is still working the page**, so the
-   * recorded ending must say they spoke: `not_now` told the session "the
-   * person declined, decide what to do instead" while they were mid-task
-   * (live, 2026-10-26, twice on one CAPTCHA).
+   * The ask whose answer is crossing. **A second press for the same ask is
+   * not another send**: the door and `answering` stay live across the
+   * dispatch, and the draft clears only after the await, so two quick presses
+   * would send the same words under two uuids.
    */
-  async function takeoverFeedback(text: string): Promise<void> {
-    if (takeoverAsk === null || !answering) return;
+  let answeredFor: string | null = null;
+
+  /** The note goes as a prompt before the ending, so the session reads it beside the answer. */
+  async function takeoverAnswerWithText(
+    ending: 'done' | 'not_now' | 'feedback',
+    text: string,
+  ): Promise<void> {
+    if (takeoverAsk === null || !answering || answeredFor === takeoverAsk.request.id) return;
     // **The ask the words were written for**, read before the wait: a
     // hand-off answered from another view while the frame crosses is not
     // this send's to answer.
     const answered = takeoverAsk.request.id;
-    const uuid = mintPromptId();
-    barRefused = null;
-    try {
-      // **The crossing, not the send.** The dispatch answers once the frame
-      // has left; a socket that went while the page still read open refuses
-      // here rather than after the bar was cleared.
-      await connection.dispatch(
-        { prompt_under: { key: slot, text, attachments: [], uuid, source: 'you' } },
-        slot,
-      );
-    } catch (error) {
-      // **Nothing left, so there is nothing to read.** Answering feedback here
-      // would tell the session to read a message that never went, and the
-      // park would end on words nobody sent; the dock stays live to retry.
-      barRefused = 'Not sent - the connection is down.';
-      report('the feedback was not sent', error);
-      return;
+    const trimmed = text.trim();
+    // **Feedback is the words**: an empty one would name a message nobody sent.
+    if (ending === 'feedback' && trimmed === '') return;
+    answeredFor = answered;
+    if (trimmed !== '') {
+      const uuid = mintPromptId();
+      barRefused = null;
+      try {
+        // **The crossing, not the send.** The dispatch answers once the frame
+        // has left; a socket that went while the page still read open refuses
+        // here rather than after the bar was cleared.
+        await connection.dispatch(
+          { prompt_under: { key: slot, text: trimmed, attachments: [], uuid, source: 'you' } },
+          slot,
+        );
+      } catch (error) {
+        // **Nothing left, so there is nothing to read.** Answering here would
+        // tell the session to read a message that never went, and the park
+        // would end on words nobody sent; the dock stays live to retry.
+        barRefused = 'Not sent - the connection is down.';
+        answeredFor = null;
+        report('the answer was not sent', error);
+        return;
+      }
+      if (takeoverAsk === null || takeoverAsk.request.id !== answered) return;
+      // **The words left, so the line owes the chat nothing.** A dictated line
+      // is a landed take, and the ask resolving runs the carry: left standing,
+      // it wrote the words the agent just read into the composer's draft.
+      box.dockDraft = '';
+      box.barLanded = null;
+      box.carried = null;
     }
-    if (takeoverAsk === null || takeoverAsk.request.id !== answered) return;
-    // **The words left, so the line owes the chat nothing.** A dictated line
-    // is a landed take, and the ask resolving runs the carry: left standing,
-    // it wrote the words the agent just read into the composer's draft.
-    box.dockDraft = '';
-    box.barLanded = null;
-    box.carried = null;
-    takeoverAnswer('feedback');
+    takeoverAnswer(ending);
   }
 
   /** Back to chat answers nothing: the hand-off stays parked for the next Open. */
@@ -1655,11 +1659,10 @@
       silent={silentLine}
       nav={surface.nav}
       onabandon={abandon}
-      onmic={() => dictate.toggle()}
+      {dictate}
       {dictation}
       takeline={barRefused !== null ? { tone: 'bad', text: barRefused } : takeoverLine}
       opening={openingShown}
-      bind:open={barOpen}
       field={keepBarField}
       ondismiss={() => {
         // **Only a line that is there is dismissed.** Typing with no take
@@ -1668,11 +1671,13 @@
         barRefused = null;
         if (box.dictateLine !== null) box.dismissed = box.dictateLine.text;
       }}
-      ondone={answering ? () => takeoverAnswer('done') : null}
-      onnotnow={answering ? () => takeoverAnswer('not_now') : null}
+      ondone={answering ? (text: string) => void takeoverAnswerWithText('done', text) : null}
+      onnotnow={answering ? (text: string) => void takeoverAnswerWithText('not_now', text) : null}
       onback={takeoverBack}
       onnav={takeoverNav}
-      onfeedback={barLineHolds ? takeoverFeedback : null}
+      onfeedback={barLineHolds
+        ? (text: string) => void takeoverAnswerWithText('feedback', text)
+        : null}
       cansend={answering}
       onretry={surface.phase === 'failed' ? takeoverRetry : null}
     />

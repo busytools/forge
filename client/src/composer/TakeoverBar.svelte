@@ -1,29 +1,30 @@
 <script lang="ts">
   /**
    * The browser takeover's bar: back to chat, the parked ask's words, Done,
-   * Not now, and the feedback line for what did not work.
+   * Not now, and the note line for what the person wants to say.
    *
    * **Drawn by the composer, outside its own container** (`.surf` is a
    * `container-type`, which makes it the containing block for fixed children),
    * so the bar sits at the window's top above the native page layer. **The ask
    * rides the bar** because its card is drawn in the chat behind the page: the
-   * words are here whenever the answers are. The feedback line is the dock's
-   * own words row - the same Field, TakeCard and mic - so dictation here is
-   * the composer's, not a second implementation. **What the take is doing is
-   * the bar's to say**: the composer's band and notice rows are behind the
+   * words are here whenever the answers are. The note line is the dock's own
+   * words row - the same Field, TakeCard and mic - so dictation here is the
+   * composer's, not a second implementation. **What the take is doing is the
+   * bar's to say**: the composer's band and notice rows are behind the
    * picture while the takeover is up, so the open and a refusal draw above
    * this row.
    */
   import { onMount } from 'svelte';
 
   import Icon from '../components/Icon.svelte';
+  import DictateControl from './DictateControl.svelte';
   import Field from './Field.svelte';
   import TakeCard from './TakeCard.svelte';
   import { tabRows } from '../browser/host';
   import { focusBar, focusPage, pageHoldsKeyboard } from '../browser/link';
   import { holdsControl, selectTab, surface, takeControl } from '../browser/surface.svelte';
   import type { NavState } from '../browser/surface.svelte';
-  import type { RowPhase } from './dictate.svelte';
+  import type { Dictation, RowPhase } from './dictate.svelte';
   import type { Take } from './wire';
 
   let {
@@ -36,11 +37,10 @@
     silent = null,
     nav = { can_back: false, can_forward: false },
     onabandon = () => {},
-    onmic = () => {},
+    dictate = null,
     dictation = false,
     takeline = null,
     opening = false,
-    open = $bindable(false),
     field = () => {},
     ondismiss = () => {},
     ondone = null,
@@ -76,7 +76,8 @@
     /** What the page's own history allows; the shell pushes it as it moves. */
     nav?: NavState;
     onabandon?: () => void;
-    onmic?: () => void;
+    /** The take the feedback line's shared mic drives, from the composer. */
+    dictate?: Dictation | null;
     dictation?: boolean;
     /**
      * What became of a take this page started, when the line is the bar's to
@@ -97,28 +98,18 @@
      *
      * **Nothing else on this surface says the open is running.** The card
      * draws from this page's own take, which exists only once the capture has
-     * opened; until then the row keeps its field, mic and send and changes in
-     * no way, so the press reads as dead.
+     * opened; until then the row keeps its field and mic and changes in no
+     * way, so the press reads as dead.
      */
     opening?: boolean;
-    /**
-     * Whether the feedback line is open.
-     *
-     * **The composer opens it too**, when the push-to-talk key begins a take
-     * from anywhere under the takeover: the line is the only box on this
-     * surface, so a begin that needed a click first is the click the key exists
-     * to spare.
-     */
-    open?: boolean;
-    /** The feedback field, so the composer can put the keyboard in it when the
-     *  key opens the line. */
+    /** The note field, so the composer can put the keyboard in it. */
     field?: (el: HTMLElement | null) => void;
     /** The reader typed in the row, which dismisses the line above it the way
      *  the same typing dismisses the composer's own notice. */
     ondismiss?: () => void;
     /** The hand-off's answers; null once no ask is parked, leaving back-to-chat. */
-    ondone?: (() => void) | null;
-    onnotnow?: (() => void) | null;
+    ondone?: ((text: string) => void) | null;
+    onnotnow?: ((text: string) => void) | null;
     onback: () => void;
     /** The history arrows' click; their keys are the surface's own. */
     onnav?: ((direction: 'back' | 'forward') => void) | null;
@@ -337,7 +328,7 @@
 
   function send(): void {
     // The click and the Enter agree: a line that cannot answer sends nothing.
-    if (!cansend) return;
+    if (!cansend || opening) return;
     const text = notes.trim();
     if (text === '' || onfeedback === null) return;
     onfeedback(text);
@@ -450,19 +441,14 @@
       {#if onretry !== null}
         <button class="tb-btn" type="button" onclick={onretry}>try again</button>
       {/if}
-      {#if ondone !== null && onnotnow !== null}
-        <button class="tb-btn" type="button" onclick={ondone}>Done</button>
-        {#if onfeedback !== null}
-          <button
-            class="tb-btn d"
-            type="button"
-            aria-expanded={open}
-            onclick={() => (open = !open)}
-          >
-            something's wrong…
-          </button>
+      {#if ondone !== null && onnotnow !== null && phase === null && !opening}
+        <button class="tb-btn" type="button" onclick={() => ondone?.(notes.trim())}>Done</button>
+        {#if onfeedback !== null && notes.trim() !== ''}
+          <button class="tb-btn d" type="button" onclick={send}>send feedback</button>
         {/if}
-        <button class="tb-btn d" type="button" onclick={onnotnow}>Not now</button>
+        <button class="tb-btn d" type="button" onclick={() => onnotnow?.(notes.trim())}>
+          Not now
+        </button>
       {/if}
     </span>
   </div>
@@ -472,7 +458,7 @@
          this is the only place the person can read what is asked. -->
     <div class="tb-ask">{askWords}</div>
   {/if}
-  {#if open && onfeedback !== null}
+  {#if onfeedback !== null}
     {#if opening}
       <!-- The open, in the bar and only past the wait the props doc names:
            until this page's own take exists there is nothing else on the
@@ -496,7 +482,7 @@
           bind:value={notes}
           {field}
           rows={1}
-          placeholder="what did not work? the agent reads this"
+          placeholder="an optional note for the agent"
           oninput={() => ondismiss()}
           onkeydown={(event: KeyboardEvent) => {
             event.stopPropagation();
@@ -504,23 +490,11 @@
           }}
         />
       {/if}
-      {#if dictation}
-        <button
-          class="micb"
-          type="button"
-          aria-label={phase === null ? 'dictate the feedback' : 'stop dictating'}
-          onclick={onmic}
-        >
-          <Icon name="mic" />
-        </button>
+      {#if dictation && dictate !== null}
+        <DictateControl {dictate} holdable={false} />
       {/if}
-      {#if cansend && phase === null && notes.trim() !== ''}
-        <button
-          class="sendb"
-          type="button"
-          aria-label="send the feedback and end the hand-off"
-          onclick={send}
-        >
+      {#if cansend && phase === null && !opening && notes.trim() !== ''}
+        <button class="sendb" type="button" aria-label="send feedback" onclick={send}>
           <Icon name="send" />
         </button>
       {/if}

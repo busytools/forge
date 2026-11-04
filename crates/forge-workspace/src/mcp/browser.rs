@@ -176,18 +176,20 @@ impl BrowserTool {
                     .to_owned(),
             }]),
             HandOffEnding::NotNow => Err(
-                "The person declined to act for now; the browser is as it was - decide what to \
-                 do instead."
+                "The person said not now; the browser is as it was. Ask them again later if you \
+                 still need them on the page."
                     .to_owned(),
             ),
-            // **The person is still on the page**: they sent their words as
-            // a prompt beside this result, so the answer names that rather
-            // than reading as a decline.
-            HandOffEnding::Feedback => Ok(vec![BrowserPart::Text {
-                text: "The person sent you a message about the page instead of Done or Not \
-                       now; read it and carry on - the browser is as it was."
-                    .to_owned(),
-            }]),
+            // **The person says something is off**: their words are the
+            // message beside this result, so the answer is a refusal that
+            // tells the agent to address them and hand the page off again -
+            // never "carry on".
+            HandOffEnding::Feedback => {
+                Err("The person says something is off. This is not approval: their words are the \
+                  message beside this result. Address them and hand the page off again for \
+                  another answer."
+                    .to_owned())
+            }
             // The waiter cannot outlive a drop that sends this, so seeing it
             // here would mean the registry and the waiter disagree.
             HandOffEnding::Abandoned => Err("The hand-off ended without an answer.".to_owned()),
@@ -527,15 +529,16 @@ mod tests {
 
         assert!(out.is_error, "{:?}", out.blocks);
         let text = crate::mcp::test_support::block_text(&out.blocks[0]);
-        assert!(text.contains("declined"), "{text}");
+        assert!(text.contains("said not now"), "{text}");
+        assert!(text.contains("Ask them again later"), "{text}");
     }
 
-    /// **A message from the person is not a refusal**, so it is not a tool
-    /// error and does not tell the model to decide what to do instead: the
-    /// person's words are a prompt riding beside this result, and the answer
-    /// names them as one.
+    /// **A message from the person is a refusal**, not a decline: the agent
+    /// reads it as "the person says something is off", addresses their words,
+    /// and hands the page off again for another answer. It never reads as a
+    /// decline of the page and never tells the agent to carry on.
     #[tokio::test]
-    async fn a_hand_off_feedback_is_not_a_decline() {
+    async fn a_hand_off_feedback_is_a_refusal() {
         let mock = Arc::new(MockBrowserFacade::new());
         *mock.hand_off_answer.lock() = Ok(HandOffEnding::Feedback);
         let tool = BrowserTool {
@@ -547,10 +550,12 @@ mod tests {
         let out =
             tool.call(ToolInput { value: json!({ "reason": "sign in", "tab": PAGE_ID }) }).await;
 
-        assert!(!out.is_error, "{:?}", out.blocks);
+        assert!(out.is_error, "{:?}", out.blocks);
         let text = crate::mcp::test_support::block_text(&out.blocks[0]);
-        assert!(text.contains("sent you a message"), "the person spoke: {text}");
-        assert!(!text.contains("declined"), "and the answer never reads as a decline: {text}");
+        assert!(text.contains("not approval"), "the answer names the refusal: {text}");
+        assert!(text.contains("message beside this result"), "the words are named: {text}");
+        assert!(text.contains("hand the page off again"), "and the next move: {text}");
+        assert!(!text.contains("carry on"), "and never tells the model to carry on: {text}");
     }
 
     /// No tab is the call's own mistake too: the person is asked to look at

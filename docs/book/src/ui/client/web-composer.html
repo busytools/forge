@@ -414,6 +414,12 @@
   .tb-btn.d { color: var(--muted); background: transparent; }
   .tb-ask { padding: 5px 12px 8px; border-top: 1px solid var(--line); background: var(--s2);
     color: var(--text); font-size: var(--fs-data); }
+  .tb-note { display: flex; align-items: center; gap: 8px; padding: 7px 12px;
+    border-top: 1px solid var(--line); background: var(--s2); }
+  .tb-note .fld { flex: 1; font: inherit; font-size: var(--fs-data); padding: 5px 10px;
+    border: 1px solid var(--line); border-radius: 8px; background: var(--s1); color: var(--text); }
+  .tb-note .mic { flex: none; width: 24px; height: 24px; display: grid; place-items: center;
+    color: var(--dim); }
   .tb-page { height: 96px; border: 1px solid var(--line); border-top: 0; display: grid;
     place-items: center; background: repeating-linear-gradient(45deg, #0a0d15, #0a0d15 10px,
       #0c1019 10px, #0c1019 20px); }
@@ -1355,27 +1361,21 @@ stands above it; the order the states are read in is the one a reader has to be 
 
 <h2>The takeover</h2>
 <p class="note"><b>The composer is behind the page and stays there.</b> Full screen, top bar,
-navigation, the ask and the one text field it already has: the something's wrong line. Nothing
-is added below the page.</p>
+navigation, the ask and the one text field it already has: the note line. Nothing is added
+below the page.</p>
 <div class="stage">
   <div class="row">
     <div class="col">
-      <div class="lab">with a hand-off riding the top bar <span class="h">bar 76px</span></div>
+      <div class="lab">with a hand-off riding the top bar <span class="h">bar 116px</span></div>
       <div class="tb">
         <div class="tb-row"><span class="tb-nav"><span class="tb-btn d">&#8592;</span><span class="tb-btn d">&#8594;</span></span>
           <span class="tb-title">browser hand-off &middot; tab 3</span>
           <span class="tb-acts"><span class="tb-btn">Done</span><span class="tb-btn d">Not now</span></span></div>
         <div class="tb-ask">confirm the staging deploy page shows the new rate-limit chip</div>
-      </div>
-      <div class="tb-page"><span>the page the session prepared</span></div>
-    </div>
-    <div class="col">
-      <div class="lab">something's wrong, open <span class="h">bar 116px</span></div>
-      <div class="tb">
-        <div class="tb-row"><span class="tb-nav"><span class="tb-btn d">&#8592;</span><span class="tb-btn d">&#8594;</span></span>
-          <span class="tb-title">browser hand-off &middot; tab 3</span>
-          <span class="tb-acts"><span class="tb-btn">Done</span><span class="tb-btn d">Not now</span></span></div>
-        <div class="tb-ask">the CAPTCHA keeps coming back<span class="caret"></span></div>
+        <div class="tb-note">
+          <input class="fld" value="" placeholder="an optional note for the agent" aria-label="an optional note for the agent">
+          <span class="mic" aria-label="dictate"><svg class="ic"><use href="#i-mic"/></svg></span>
+        </div>
       </div>
       <div class="tb-page"><span>the page the session prepared</span></div>
     </div>
