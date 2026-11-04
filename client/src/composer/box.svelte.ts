@@ -165,7 +165,27 @@ export class Box {
    * otherwise. A prompt arriving or leaving mid-take cannot move words that
    * were spoken for the box the reader was in.
    */
-  tookFrom: 'dock' | 'composer' | null = null;
+  tookFrom: 'dock' | 'composer' | 'feedback' | null = null;
+  /**
+   * The send-back box's words, which the dock binds to its own field.
+   *
+   * Held here rather than in the dock because the landing effect writes into
+   * it: a take begun in the send-back box lands its words in this field, and a
+   * dock unmounted by a prompt answered mid-take would lose a draft it owned.
+   */
+  feedbackDraft = $state('');
+  /**
+   * Whether the send-back box is open, which is what makes it a landing target.
+   *
+   * A box closed before the words land falls back to the composer's draft: the
+   * words are still the reader's, and a closed field has nowhere to put them.
+   */
+  feedbackOpen = $state(false);
+  /**
+   * A take's words that landed in the send-back box, which come with the
+   * keyboard: the dock's own field focuses on the change.
+   */
+  feedbackLanded = $state<string | null>(null);
   /**
    * The dictation axes this seat was last set to, or `null` while it has not
    * been edited - which is what makes the config's own value the default.

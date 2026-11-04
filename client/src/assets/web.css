@@ -3561,13 +3561,12 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
   border: 1px solid var(--ctl); background: none; color: var(--dim);
   display: grid; place-items: center; cursor: pointer; }
 .micb:hover { color: var(--accent); border-color: var(--ctl); }
-.dock .qrow .micb { margin-left: auto; }
+.dock .qrow .mic { margin-left: auto; }
 .sendb { flex: none; width: 26px; height: 26px; border-radius: 8px;
   border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
   background: none; color: var(--accent); display: grid; place-items: center; cursor: pointer; }
 .sendb:hover { border-color: var(--accent); color: var(--hot); }
-.dock .qrow.on .micb { border-color: color-mix(in srgb, var(--accent) 45%, transparent);
-  color: var(--hot); }
+.dock .qrow.on .mic { color: var(--hot); }
 /* A refusal is a row of its own, in the tone of a thing gone wrong. */
 .dock .refusal { border: 1px solid color-mix(in srgb, var(--bad) 45%, transparent);
   border-radius: 10px; padding: 7px 10px; color: var(--bad); font-size: var(--fs-base); }
