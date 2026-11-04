@@ -340,6 +340,10 @@ jobs:
           # The build-tree rpath entry: the release binary finds the staged
           # libraries one directory down.
           env -u LD_LIBRARY_PATH target/release/forge --version
+          # Every bin in the package links the workspace, so every one links
+          # the shared transcribe libraries and boots the same way.
+          cargo build --locked --release -p forge-server --bin forge-protocol-client
+          env -u LD_LIBRARY_PATH target/release/forge-protocol-client --help > /dev/null
           # A second install must land a new inode for the real library:
           # copying over it would rewrite a running forge's mapping. The
           # resolved path is the SONAME symlink, so dereference it.
