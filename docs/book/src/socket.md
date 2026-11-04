@@ -736,7 +736,9 @@ client that captures sends one dictation frame per 20 ms of speech:
 **A terminal output frame (kind `4`) is the server's**: a little-endian `u16`
 terminal id, a `u32` sequence, then the shell's own bytes. The sequence is
 per terminal and monotonic; a gap means the viewer fell behind and the server
-answers the next attach with a fresh screen rather than replaying the bytes.
+sends that attachment a fresh screen rather than replaying the bytes. **A
+resume after a pause is answered the same way** - the frames it missed are
+not replayed.
 **A terminal input frame (kind `5`) is a client's**: the same id and then the
 keystrokes. Both are refused from the wrong direction, as a browser frame is.
 

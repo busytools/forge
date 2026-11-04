@@ -13,9 +13,9 @@ publish = false
 workspace = true
 
 [dependencies]
-# The cut's only terminal dependency: the PTY, the vte parser, Term with
-# reflow and scrollback, and the event types. The event loop is not used -
-# it consumes the raw bytes internally, and forge needs to tap them.
+# The only terminal dependency: the PTY, the vte parser, Term with reflow and
+# scrollback, and the event types. The event loop is not used - it consumes
+# the raw bytes internally, and forge needs to tap them.
 alacritty_terminal = "0.26"
 # Safe wrappers for poll, termios and the process-group kill; the workspace
 # forbids unsafe code.

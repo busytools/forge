@@ -27,7 +27,7 @@ pub const MIN_ROWS: u16 = 2;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TerminalSource {
-    /// The shell's OSC 133 marks.
+    /// The shell's OSC 133 marks, or its own exit once it has died.
     Exact,
     /// The screen's shape, because the shell emitted no marks.
     Heuristic,

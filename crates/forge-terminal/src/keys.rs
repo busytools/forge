@@ -82,7 +82,7 @@ mod tests {
 
     /// **Enter is a carriage return, not a newline.** A terminal's Enter key
     /// sends `\r`; a `\n` is Ctrl-J and a program that reads raw keys sees a
-    /// different key. The spike proved a `\n` does not accept a zsh line.
+    /// different key, and zsh does not accept a line on one.
     #[test]
     fn enter_is_a_carriage_return() {
         assert_eq!(Key::Enter.bytes(), b"\r");
