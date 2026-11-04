@@ -21,6 +21,7 @@ import { FALLBACK_FLOOR_DB, fractionOf } from '../composer/meter';
 import { surfaceFrom } from '../composer/wire';
 import type { SessionUpdate } from '../protocol';
 import { METER_CELLS } from '../wire/limits';
+import { terminalSummaryFrom } from '../wire/terminal';
 import {
   backgroundTaskFrom,
   gitFrom,
@@ -346,6 +347,25 @@ export const HANDLERS: Record<string, Apply> = {
 
   browser_hand_off_pending: (held, payload) => parked(held, 'browser_hand_off', payload['handoff']),
 
+  terminal_hand_off_pending: (held, payload) =>
+    parked(held, 'terminal_hand_off', payload['handoff']),
+
+  terminal_changed: (held, payload) => {
+    // The seat's terminal opened, changed or closed: the record's own field is
+    // what the strip and the surface's bar read, so the update replaces it.
+    return { ...held, terminal: terminalSummaryFrom(payload['terminal']) };
+  },
+
+  terminal_hand_off_resolved: (held, payload) => {
+    // Same shape as the browser hand-off's: the ask left the core's registry
+    // and its own id is what clears a parked one this view never answered.
+    const id = text(payload['id']);
+    if (id === null) return held;
+    const pending_asks = held.pending_asks.filter((ask) => askKey(ask) !== `terminal:${id}`);
+    if (pending_asks.length === held.pending_asks.length) return held;
+    return { ...held, pending_asks };
+  },
+
   document_hand_off_pending: (held, payload) => parked(held, 'document_hand_off', payload),
 
   document_hand_off_resolved: (held, payload) => {
@@ -644,6 +664,10 @@ function askKey(ask: unknown): string | null {
   if (kind === 'browser_hand_off') {
     const id = text(request['id']);
     return id === null ? null : `handoff:${id}`;
+  }
+  if (kind === 'terminal_hand_off') {
+    const id = text(request['id']);
+    return id === null ? null : `terminal:${id}`;
   }
   if (kind === 'document_hand_off') {
     const id = text(request['id']);

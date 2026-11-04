@@ -1,8 +1,8 @@
 <script lang="ts">
   import Icon from '../components/Icon.svelte';
   import { terminalRecord } from '../terminal/record.svelte';
-  import { closeTerminal, onState, openTerminal, surface } from '../terminal/surface.svelte';
-  import { terminalSummaryFrom, type TerminalSummary } from '../wire/terminal';
+  import { closeTerminal, openTerminal, surface } from '../terminal/surface.svelte';
+  import type { TerminalSummary } from '../wire/terminal';
   import type { SessionSlot } from '../wire/types';
 
   /**
@@ -18,45 +18,11 @@
     terminal = null,
   }: { slot?: SessionSlot | null; terminal?: TerminalSummary | null } = $props();
 
-  /** What the session record carried, which a newer push can override. */
-  const fromRecord = $derived(terminal ?? terminalRecord.terminal);
-  /** The last pushed summary; the record clears it when it re-reads. */
-  let pushed = $state<TerminalSummary | null>(null);
-  const live = $derived(pushed ?? fromRecord);
+  /** The seat's terminal as its record carries it, which the update keeps fresh. */
+  const live = $derived(terminal ?? terminalRecord.terminal);
 
   /** The seat the row is for: the one named, else the record's own. */
   const seat = $derived(slot ?? terminalRecord.seat);
-
-  $effect(() => {
-    // A fresh record read outranks the push it followed.
-    void fromRecord;
-    pushed = null;
-  });
-
-  // **The state push is the truth from then on**, so a command starting or a
-  // hand-off parking moves the row without a re-read.
-  $effect(() => {
-    let stop: (() => void) | null = null;
-    let mounted = true;
-    const here = seat;
-    if (here !== null) {
-      stop = onState((state) => {
-        if (!mounted) return;
-        if (
-          state.seat.org !== here.org ||
-          state.seat.project !== here.project ||
-          state.seat.label !== here.label
-        ) {
-          return;
-        }
-        pushed = terminalSummaryFrom(state.terminal);
-      });
-    }
-    return () => {
-      mounted = false;
-      stop?.();
-    };
-  });
 
   /** Whether THIS page is showing the terminal. */
   const fronting = $derived(surface.phase !== 'closed' && live !== null && surface.id === live.id);
@@ -68,7 +34,9 @@
     if (!held.alive) return 'exited';
     if (held.held) return 'waiting for you';
     if (held.state.input_expected?.kind === 'password') return 'a password is wanted';
-    if (held.state.input_expected !== null) return 'waiting for you';
+    // **A `prompt` is the shell's own prompt, not a person's turn**: only a
+    // password or a yes/no question is the terminal waiting for the person.
+    if (held.state.input_expected?.kind === 'confirm') return 'waiting for you';
     if (held.state.running) return 'a command is running';
     return 'idle';
   });
@@ -78,7 +46,9 @@
       ? 'idle'
       : !live.alive
         ? 'bad'
-        : live.held || live.state.input_expected !== null
+        : live.held ||
+            live.state.input_expected?.kind === 'password' ||
+            live.state.input_expected?.kind === 'confirm'
           ? 'held'
           : live.state.running
             ? 'running'

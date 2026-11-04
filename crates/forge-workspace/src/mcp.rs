@@ -903,7 +903,7 @@ mod tests {
                     workspace: MockWorkspaceFacade::new().into_arc(),
                     worker: MockWorkerFacade::new().into_arc(),
                     browser: MockBrowserFacade::new().into_arc(),
-                terminal: crate::mcp::terminal::facade::MockTerminalFacade::new().into_arc(),
+                    terminal: crate::mcp::terminal::facade::MockTerminalFacade::new().into_arc(),
                     documents: documents.into_arc(),
                     review: MockReviewFacade::new().into_arc(),
                     cron: MockCronFacade::new().into_arc(),

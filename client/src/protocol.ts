@@ -663,15 +663,6 @@ export type ServerMessage =
       screen: string;
       viewers: number;
     }
-  /**
-   * A seat's terminal opened, changed or closed, as the strip draws it.
-   * `terminal` is `null` when the terminal is gone.
-   */
-  | {
-      kind: 'terminal_state';
-      seat: SessionSlot;
-      terminal: import('./wire/terminal').TerminalSummary | null;
-    }
   /** A settings save that wrote nothing, and why. */
   | {
       kind: 'settings_refused';

@@ -75,10 +75,18 @@ pub struct ClassifyInput<'a> {
 
 /// Classify the terminal's state.
 pub fn classify(input: ClassifyInput<'_>) -> State {
-    let input_expected = if !input.echo {
+    // **ECHO off is a password only while a command runs.** zsh's line editor
+    // turns ECHO off at every prompt, so an idle prompt with ECHO off is the
+    // shell waiting for the person, not a program reading a secret. With the
+    // marks, a `C` with no `D` is the command that owns the ECHO-off state;
+    // without them the flag is the best signal there is.
+    let password = !input.echo && (!input.marks.seen || input.marks.running);
+    let input_expected = if password {
         Some(InputExpected {
             kind: InputKind::Password,
-            evidence: "the terminal has ECHO off, so the program is reading a secret".to_owned(),
+            evidence: "the terminal has ECHO off while a command runs, so the program is reading \
+                       a secret"
+                .to_owned(),
         })
     } else if let Some(evidence) = confirm_evidence(input.last_line) {
         Some(InputExpected { kind: InputKind::Confirm, evidence })
@@ -152,15 +160,28 @@ mod tests {
         ClassifyInput { marks, echo, quiet, last_line }
     }
 
-    /// **ECHO off is a password, whatever the screen says.** The program is
+    /// **ECHO off while a command runs is a password.** The program is
     /// reading a secret, and the evidence names the termios flag rather than
     /// guessing from the text.
     #[test]
-    fn echo_off_is_a_password() {
-        let state = classify(input(marks(false, false, None), false, true, "Password: "));
+    fn echo_off_while_a_command_runs_is_a_password() {
+        let state = classify(input(marks(true, true, None), false, true, "Password: "));
         let expected = state.input_expected.expect("a password is expected");
         assert_eq!(expected.kind, InputKind::Password);
         assert!(expected.evidence.contains("ECHO off"), "{}", expected.evidence);
+    }
+
+    /// **ECHO off at an idle prompt is not a password.** zsh's line editor
+    /// turns ECHO off at every prompt, so the flag alone would call every
+    /// idle shell a secret read; the marks say no command is running.
+    #[test]
+    fn echo_off_at_an_idle_prompt_is_not_a_password() {
+        let state = classify(input(marks(true, false, Some(0)), false, true, "ved@host:~ $ "));
+        assert_ne!(
+            state.input_expected.map(|expected| expected.kind),
+            Some(InputKind::Password),
+            "an idle prompt is the shell waiting, not a secret",
+        );
     }
 
     /// A yes/no line is a confirm, and the evidence quotes the line.

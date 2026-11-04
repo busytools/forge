@@ -117,6 +117,7 @@ impl Terminal {
             listener,
         );
         let (output, _) = broadcast::channel(OUTPUT_BACKLOG);
+        let (exit_tx, exit_rx) = watch::channel(false);
         let (state_tx, state_rx) = watch::channel(State {
             running: false,
             input_expected: None,
@@ -133,6 +134,8 @@ impl Terminal {
             output,
             state_tx,
             state_rx,
+            exit_tx,
+            exit_rx,
             seq: AtomicU32::new(0),
             child_pid,
             closed: AtomicBool::new(false),
@@ -249,6 +252,11 @@ impl Terminal {
         self.inner.state_rx.clone()
     }
 
+    /// A stream that fires once, when the shell exits.
+    pub fn exit_stream(&self) -> watch::Receiver<bool> {
+        self.inner.exit_rx.clone()
+    }
+
     /// Whether the shell process is alive.
     pub fn is_alive(&self) -> bool {
         self.inner.alive.load(Ordering::Relaxed)
@@ -331,6 +339,8 @@ struct Inner {
     output: broadcast::Sender<OutputChunk>,
     state_tx: watch::Sender<State>,
     state_rx: watch::Receiver<State>,
+    exit_tx: watch::Sender<bool>,
+    exit_rx: watch::Receiver<bool>,
     seq: AtomicU32,
     child_pid: i32,
     closed: AtomicBool,
@@ -434,6 +444,7 @@ fn read_loop(
             *inner.shell_exit.lock() = exit;
             inner.alive.store(false, Ordering::Relaxed);
             inner.publish_state();
+            let _ = inner.exit_tx.send(true);
             tracing::debug!(
                 event_name = "terminal_exited",
                 pid = inner.child_pid,

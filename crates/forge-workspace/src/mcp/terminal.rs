@@ -21,9 +21,7 @@ use forge_sdk::mcp::tool::{Tool, ToolInput, ToolOutput, ToolOutputBlock};
 use forge_terminal::Key;
 use serde_json::Value;
 
-use crate::mcp::terminal::facade::{
-    OpenRequest, TerminalFacade, WaitUntil,
-};
+use crate::mcp::terminal::facade::{OpenRequest, TerminalFacade, WaitUntil};
 
 pub mod facade;
 
@@ -40,7 +38,7 @@ pub(crate) fn add_tools(
     slot: SessionSlot,
 ) -> McpServerBuilder {
     let mut builder = builder;
-    for tool in [
+    let mut tools = [
         TerminalTool::Open,
         TerminalTool::Write,
         TerminalTool::Read,
@@ -49,12 +47,17 @@ pub(crate) fn add_tools(
         TerminalTool::Close,
         TerminalTool::HandOff,
         TerminalTool::Run,
-    ] {
-        builder = builder.tool(Registered {
-            tool,
-            facade: Arc::clone(&facade),
-            slot: slot.clone(),
-        });
+    ]
+    .into_iter()
+    .peekable();
+    while let Some(tool) = tools.next() {
+        // The last tool takes the caller's own handles, so nothing is left
+        // holding the originals once all eight are registered.
+        if tools.peek().is_none() {
+            return builder.tool(Registered { tool, facade, slot });
+        }
+        builder =
+            builder.tool(Registered { tool, facade: Arc::clone(&facade), slot: slot.clone() });
     }
     builder
 }
@@ -309,10 +312,9 @@ impl Tool for Registered {
             "a terminal tool call returned",
         );
         match outcome {
-            Ok(text) => ToolOutput {
-                blocks: vec![ToolOutputBlock::Text { text }],
-                is_error: false,
-            },
+            Ok(text) => {
+                ToolOutput { blocks: vec![ToolOutputBlock::Text { text }], is_error: false }
+            }
             Err(why) => ToolOutput::error(why),
         }
     }
@@ -366,11 +368,10 @@ impl Registered {
         let id = required_u16(&args, "id")?;
         let since = match args.get("since") {
             None | Some(Value::Null) => None,
-            Some(value) => Some(
-                value
-                    .as_u64()
-                    .ok_or_else(|| "terminal__read `since` is the cursor a previous read returned, as an integer".to_owned())?,
-            ),
+            Some(value) => Some(value.as_u64().ok_or_else(|| {
+                "terminal__read `since` is the cursor a previous read returned, as an integer"
+                    .to_owned()
+            })?),
         };
         let max_lines = optional_usize(&args, "max_lines")?.unwrap_or(DEFAULT_MAX_LINES);
         let max_bytes = optional_usize(&args, "max_bytes")?.unwrap_or(DEFAULT_MAX_BYTES);
@@ -431,8 +432,8 @@ impl Registered {
 
     async fn hand_off(&self, args: Value) -> Result<String, String> {
         let id = required_u16(&args, "id")?;
-        let Some(reason) = optional_string(&args, "reason")?
-            .filter(|reason| !reason.trim().is_empty())
+        let Some(reason) =
+            optional_string(&args, "reason")?.filter(|reason| !reason.trim().is_empty())
         else {
             return Err("terminal__hand_off needs `reason`: what the person should do".to_owned());
         };
@@ -447,18 +448,18 @@ impl Registered {
                  do instead."
                     .to_string(),
             ),
-            HandOffEnding::Feedback => Ok(
-                "The person sent you a message about the terminal instead of Done or Not now; \
+            HandOffEnding::Feedback => {
+                Ok("The person sent you a message about the terminal instead of Done or Not now; \
                  read it and carry on - the terminal is as it was."
-                    .to_string(),
-            ),
+                    .to_string())
+            }
             HandOffEnding::Abandoned => Err("The hand-off ended without an answer.".to_string()),
         }
     }
 
     async fn run(&self, args: Value) -> Result<String, String> {
-        let Some(command) = optional_string(&args, "command")?
-            .filter(|command| !command.trim().is_empty())
+        let Some(command) =
+            optional_string(&args, "command")?.filter(|command| !command.trim().is_empty())
         else {
             return Err("terminal__run needs `command`: the command to run".to_owned());
         };
@@ -475,9 +476,9 @@ impl Registered {
 }
 
 fn required_u16(args: &Value, key: &str) -> Result<u16, String> {
-    let value = args
-        .get(key)
-        .ok_or_else(|| format!("this call needs `{key}`, the terminal id terminal__open returned"))?;
+    let value = args.get(key).ok_or_else(|| {
+        format!("this call needs `{key}`, the terminal id terminal__open returned")
+    })?;
     u16::try_from(value.as_u64().ok_or_else(|| format!("`{key}` must be an integer"))?)
         .map_err(|_| format!("`{key}` is out of range"))
 }
@@ -539,8 +540,9 @@ fn parse_keys(args: &Value) -> Result<Vec<Key>, String> {
 
 fn parse_until(args: &Value) -> Result<WaitUntil, String> {
     let Some(until) = args.get("until") else {
-        return Err("terminal__wait needs `until`: \"exit\", \"quiet\", or {pattern: \"text\"}"
-            .to_owned());
+        return Err(
+            "terminal__wait needs `until`: \"exit\", \"quiet\", or {pattern: \"text\"}".to_owned()
+        );
     };
     match until {
         Value::String(word) if word == "exit" => Ok(WaitUntil::Exit),
@@ -558,9 +560,10 @@ fn parse_until(args: &Value) -> Result<WaitUntil, String> {
             }
             Ok(WaitUntil::Pattern(pattern.to_owned()))
         }
-        _ => Err(
-            "terminal__wait needs `until`: \"exit\", \"quiet\", or {pattern: \"text\"}".to_owned(),
-        ),
+        _ => {
+            Err("terminal__wait needs `until`: \"exit\", \"quiet\", or {pattern: \"text\"}"
+                .to_owned())
+        }
     }
 }
 

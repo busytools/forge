@@ -78,6 +78,7 @@ pub enum PendingAsk {
     Question(Box<QuestionRequest>),
     SlackDraft(Box<forge_primitives::slack::SlackDraft>),
     BrowserHandOff(Box<forge_primitives::browser::HandOff>),
+    TerminalHandOff(Box<forge_primitives::terminal::TerminalHandOff>),
     DocumentHandOff(Box<forge_primitives::document::DocumentHandOffAsk>),
     SettingsWrite(Box<forge_primitives::settings::SettingsWriteAsk>),
 }
@@ -93,6 +94,7 @@ impl PendingAsk {
             Self::Question(request) => Some(&request.tool_call.tool_call_id),
             Self::SlackDraft(_)
             | Self::BrowserHandOff(_)
+            | Self::TerminalHandOff(_)
             | Self::DocumentHandOff(_)
             | Self::SettingsWrite(_) => None,
         }

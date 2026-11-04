@@ -838,11 +838,16 @@
    * trims the block's own edges - and is a literal a lint (rightly) calls
    * useless; one template string says it once.
    */
-  const handOffTitle = $derived(
-    ask.kind === 'browser_hand_off' && ask.request.tab !== null
+  const handOffTitle = $derived.by((): string => {
+    if (ask.kind === 'terminal_hand_off') {
+      return ask.request.terminal === null
+        ? 'terminal hand-off'
+        : `terminal hand-off · terminal ${ask.request.terminal}`;
+    }
+    return ask.kind === 'browser_hand_off' && ask.request.tab !== null
       ? `browser hand-off · tab ${ask.request.tab}`
-      : 'browser hand-off',
-  );
+      : 'browser hand-off';
+  });
   /**
    * What a folded bar says: the kind's mark and its subject. **Every kind
    * folds**, not only the question - the body is one slot, so any ask can give
@@ -1485,6 +1490,19 @@
         <div class="desc">would become</div>
         {@render valueBlock('the value this write would leave', ask.request.proposed)}
       {/if}
+    {:else if ask.kind === 'terminal_hand_off'}
+      <div class="d-head">
+        <span class="tag warn">&#9888; needs you</span>
+        <span class="q mono">{handOffTitle}</span>
+        {@render foldButton()}
+      </div>
+      <!-- The reason verbatim: it is what the session needs, in its own words,
+         and a summary of it would be the client guessing at the act. -->
+      <div class="d-q">{ask.request.reason}</div>
+      <div class="desc">
+        {raiseFailed ??
+          "Open terminal raises the seat's terminal, exactly as it stands. The session waits, with no timeout, for your answer, and cannot read or write the terminal while it does."}
+      </div>
     {:else}
       <div class="d-head">
         <span class="tag warn">&#9888; needs you</span>

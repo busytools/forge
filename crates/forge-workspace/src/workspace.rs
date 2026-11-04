@@ -8485,6 +8485,14 @@ impl Workspace {
             ));
         }
         {
+            let parked = self.terminal_handoffs.lock();
+            asks.extend(parked.values().filter(|(owner, _, _)| owner == slot).map(
+                |(_, handoff, _)| {
+                    crate::protocol::PendingAsk::TerminalHandOff(Box::new(handoff.clone()))
+                },
+            ));
+        }
+        {
             let parked = self.document_handoffs.lock();
             asks.extend(parked.values().filter(|held| &held.seat == slot).map(|held| {
                 crate::protocol::PendingAsk::DocumentHandOff(Box::new(held.ask.clone()))

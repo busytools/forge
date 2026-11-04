@@ -392,7 +392,12 @@ mod tests {
             Ok(())
         }
 
-        async fn deliver_terminal(&mut self, id: u16, seq: u32, bytes: &[u8]) -> anyhow::Result<()> {
+        async fn deliver_terminal(
+            &mut self,
+            id: u16,
+            seq: u32,
+            bytes: &[u8],
+        ) -> anyhow::Result<()> {
             self.terminal.push((id, seq, bytes.to_vec()));
             Ok(())
         }
@@ -417,10 +422,7 @@ mod tests {
         let mut bytes = vec![Kind::TerminalInput.tag()];
         bytes.extend_from_slice(&7_u16.to_le_bytes());
         bytes.extend_from_slice(b"ls\r");
-        assert_eq!(
-            decode(&bytes),
-            Ok(Frame::TerminalInput { id: 7, bytes: b"ls\r".to_vec() }),
-        );
+        assert_eq!(decode(&bytes), Ok(Frame::TerminalInput { id: 7, bytes: b"ls\r".to_vec() }),);
         assert_eq!(
             decode(&[Kind::TerminalInput.tag(), 1]),
             Err(Refusal::ShortTerminalInput(1)),
@@ -435,17 +437,7 @@ mod tests {
         let frame = terminal_output_bytes(3, 9, b"hi");
         assert_eq!(
             frame,
-            [
-                Kind::TerminalOutput.tag(),
-                3,
-                0,
-                9,
-                0,
-                0,
-                0,
-                b'h',
-                b'i',
-            ],
+            [Kind::TerminalOutput.tag(), 3, 0, 9, 0, 0, 0, b'h', b'i',],
             "the tag, the id, the sequence and the bytes",
         );
         assert_eq!(decode(&frame), Err(Refusal::ServerOnly(4)));

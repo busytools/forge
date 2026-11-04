@@ -22,8 +22,8 @@ const pushed: {
 
 const link = {
   attachable: true,
-  show: vi.fn(async (_seat: unknown, id: number) => id),
-  hide: vi.fn(async () => {}),
+  show: vi.fn((_seat: unknown, id: number) => Promise.resolve(id)),
+  hide: vi.fn(() => Promise.resolve()),
   input: vi.fn(),
   resize: vi.fn(),
   pause: vi.fn(),

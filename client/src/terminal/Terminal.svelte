@@ -6,14 +6,13 @@
   import { SearchAddon } from '@xterm/addon-search';
   import '@xterm/xterm/css/xterm.css';
 
-  import { terminalSummaryFrom, type TerminalSummary } from '../wire/terminal';
+  import { terminalRecord } from './record.svelte';
   import { terminalLink } from './link';
   import {
     closeTerminal,
-    lastTerminal,
+    handOff,
     onOutput,
     onScreen,
-    onState,
     surface,
     type TerminalPhase,
   } from './surface.svelte';
@@ -30,7 +29,8 @@
   let term: Xterm | null = null;
   let phase = $state<TerminalPhase>('opening');
   let reason = $state<string | null>(null);
-  let summary = $state<TerminalSummary | null>(null);
+  /** The seat's terminal as its record carries it, which the update keeps fresh. */
+  const summary = $derived(terminalRecord.terminal);
   let readOpen = $state(false);
   let readText = $state('');
   let readEl = $state<HTMLElement | null>(null);
@@ -80,7 +80,12 @@
     if (!held.alive) return 'the shell exited';
     if (held.held) return 'waiting for you';
     if (held.state.running) return 'the agent is running a command';
-    if (held.state.input_expected !== null) return 'waiting for you';
+    if (
+      held.state.input_expected?.kind === 'password' ||
+      held.state.input_expected?.kind === 'confirm'
+    ) {
+      return 'waiting for you';
+    }
     return 'live';
   });
 
@@ -169,10 +174,6 @@
       }
     });
     const stopOutput = onOutput((frame) => instance.write(frame.bytes));
-    const stopState = onState((state) => {
-      summary = terminalSummaryFrom(state.terminal);
-    });
-    summary = terminalSummaryFrom(lastTerminal()?.terminal ?? null);
     phase = surface.phase === 'live' ? 'live' : 'opening';
     reason = surface.reason;
     // A surface store that failed before this mount drew already says why.
@@ -198,7 +199,6 @@
       mounted = false;
       stopScreen();
       stopOutput();
-      stopState();
       observer.disconnect();
       instance.dispose();
       term = null;
@@ -294,6 +294,17 @@
     >
       read the screen
     </button>
+    {#if handOff.current !== null}
+      <!-- **The parked ask's answer lives here while the surface is up**: the
+           dock is behind this layer, and a hand-off with no reachable Done
+           would hold the session for ever. -->
+      <button type="button" class="tn-act tn-done" onclick={() => handOff.current?.respond('done')}>
+        Done
+      </button>
+      <button type="button" class="tn-act" onclick={() => handOff.current?.respond('not_now')}>
+        Not now
+      </button>
+    {/if}
     <button
       type="button"
       class="tn-act"

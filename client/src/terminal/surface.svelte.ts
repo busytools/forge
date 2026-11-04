@@ -20,7 +20,6 @@ import {
   installTerminal,
   terminalLink,
   type TerminalOutput,
-  type TerminalStateMessage,
   type TerminalViewMessage,
 } from './link';
 
@@ -55,10 +54,6 @@ let newestScreen: string | null = null;
 /** The listeners the mounted surface draws through. */
 const views = new SvelteSet<(view: TerminalViewMessage) => void>();
 const frames = new SvelteSet<(frame: TerminalOutput) => void>();
-const states = new SvelteSet<(state: TerminalStateMessage) => void>();
-
-/** The last pushed terminal summary, for the strip. */
-let summary: TerminalStateMessage | null = null;
 
 /** Give a mounted surface the newest repaint, then every later one. */
 export function onScreen(listener: (view: TerminalViewMessage) => void): () => void {
@@ -88,19 +83,18 @@ export function onOutput(listener: (frame: TerminalOutput) => void): () => void 
   };
 }
 
-/** Every terminal state push, from now. */
-export function onState(listener: (state: TerminalStateMessage) => void): () => void {
-  states.add(listener);
-  if (summary !== null) listener(summary);
-  return () => {
-    states.delete(listener);
-  };
-}
-
-/** The last terminal summary a push carried, for a row that mounts late. */
-export function lastTerminal(): TerminalStateMessage | null {
-  return summary;
-}
+/**
+ * The terminal hand-off the composer is drawing, so the raised surface's bar
+ * can carry its Done and Not now: the dock is behind the surface while it is
+ * up, and a parked ask with no reachable answer is a session held for ever.
+ */
+export const handOff = $state<{
+  current: {
+    id: string;
+    reason: string;
+    respond: (ending: 'done' | 'not_now') => void;
+  } | null;
+}>({ current: null });
 
 /** Install the link and its pushes for the connection the page draws through. */
 export function installTerminalSurface(connection: Connection): () => void {
@@ -134,20 +128,9 @@ export function installTerminalSurface(connection: Connection): () => void {
       }
     }
   });
-  const stopState = link.onState((state) => {
-    summary = state;
-    for (const listener of states) {
-      try {
-        listener(state);
-      } catch (why) {
-        console.warn('a terminal state listener threw', why);
-      }
-    }
-  });
   return () => {
     stopView();
     stopFrame();
-    stopState();
     clearTerminalLink();
   };
 }

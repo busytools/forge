@@ -630,12 +630,6 @@ pub enum ServerMessage {
         /// How many clients are attached.
         viewers: u32,
     },
-    /// A seat's terminal opened, changed or closed, as the strip draws it.
-    /// `terminal` is `None` when the terminal is gone.
-    TerminalState {
-        seat: SessionSlot,
-        terminal: Option<forge_primitives::terminal::TerminalSummary>,
-    },
     /// Where the viewed tab's history sits: what the bar's arrows may do.
     BrowserNavState {
         id: u16,

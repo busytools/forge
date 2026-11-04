@@ -277,6 +277,17 @@ struct TerminalViewingState {
     viewing: Option<TerminalViewing>,
 }
 
+/// The viewer halves one connection carries: the browser tab it draws and
+/// the terminal it is attached to. **One value rather than four arguments**,
+/// because the read loop already carries the connection's whole mutable
+/// state and the pair would push every handler past the arity a reader can
+/// hold.
+#[derive(Default)]
+struct Viewers {
+    browser: BrowserViewing,
+    terminal: TerminalViewingState,
+}
+
 impl Drop for TerminalViewing {
     fn drop(&mut self) {
         // **The viewer count comes off however the attachment ends**: a
@@ -324,9 +335,7 @@ enum TerminalEvent {
 }
 
 /// The next thing this connection's terminal has for the loop.
-async fn next_terminal_event(
-    viewing: &mut Option<TerminalViewing>,
-) -> Option<TerminalEvent> {
+async fn next_terminal_event(viewing: &mut Option<TerminalViewing>) -> Option<TerminalEvent> {
     let Some(viewing) = viewing.as_mut() else { return std::future::pending().await };
     loop {
         match viewing.output.recv().await {
@@ -730,12 +739,9 @@ where
     // prompt as able to answer it, and the core parks a turn on that reply
     // rather than failing it.
     let mut updates: Option<(mpsc::UnboundedReceiver<SeatUpdate>, bool)> = None;
-    // The tab this connection is viewing and the seat's tab rows it follows,
-    // each once the client asks.
-    let mut browser = BrowserViewing::default();
-    // The terminal this connection is viewing, once it asks; one per terminal
-    // on the seat, and the frames only this viewer is written.
-    let mut terminal = TerminalViewingState::default();
+    // The browser tab this connection is viewing (and the seat's tab rows it
+    // follows) and the terminal it is attached to, each once the client asks.
+    let mut viewers = Viewers::default();
     // Answers the read loop hands off rather than awaiting, so a slow handler
     // holds nothing behind it (#2445): a reply-carrying command's answer, or a
     // subscribe's record when that read ran off the loop.
@@ -755,8 +761,7 @@ where
         &mut holds,
         &mut updates,
         &mut dictate,
-        &mut browser,
-        &mut terminal,
+        &mut viewers,
         AnswerLanes { reads: &mut reads, answers: &mut answers },
         SettingsPush { receiver: settings, sent: sent_settings },
         caller,
@@ -1063,8 +1068,7 @@ async fn run_connection<S>(
     holds: &mut Holds<'_>,
     updates: &mut Option<(mpsc::UnboundedReceiver<SeatUpdate>, bool)>,
     dictate: &mut Streaming,
-    browser: &mut BrowserViewing,
-    terminal: &mut TerminalViewingState,
+    viewers: &mut Viewers,
     lanes: AnswerLanes<'_>,
     settings_push: SettingsPush,
     caller: Caller,
@@ -1116,8 +1120,7 @@ where
                 batch::flush(socket, held.take()).await?;
                 let arrival = Arrival { caller, at: Instant::now() };
                 handle_client(
-                    socket, state, watching, holds, updates, dictate, browser, terminal, reads,
-                    arrival, msg,
+                    socket, state, watching, holds, updates, dictate, viewers, reads, arrival, msg,
                 )
                 .await?;
                 // **An ask that queued behind a read is served as soon as no
@@ -1129,8 +1132,8 @@ where
                     match next {
                         Queued::Ask(at, message) => {
                             handle_message(
-                                socket, state, watching, holds, updates, dictate, browser,
-                                terminal, reads, Arrival { caller, at }, message,
+                                socket, state, watching, holds, updates, dictate, viewers, reads,
+                                Arrival { caller, at }, message,
                             )
                             .await?;
                         }
@@ -1161,8 +1164,8 @@ where
                             match next {
                                 Queued::Ask(at, message) => {
                                     handle_message(
-                                        socket, state, watching, holds, updates, dictate, browser,
-                                        terminal, reads, Arrival { caller, at }, message,
+                                        socket, state, watching, holds, updates, dictate, viewers,
+                                        reads, Arrival { caller, at }, message,
                                     )
                                     .await?;
                                 }
@@ -1279,7 +1282,7 @@ where
             }
             // **The viewed profile's frames and state, raced as one future**
             // because `select!` wants one borrow of the viewer.
-            event = next_view_event(&mut browser.viewing) => {
+            event = next_view_event(&mut viewers.browser.viewing) => {
                 // What the core already said goes out first, the same rule
                 // every send here keeps.
                 batch::flush(socket, held.take()).await?;
@@ -1292,7 +1295,7 @@ where
                         transport.deliver(&frame).await?;
                     }
                     ViewEvent::State(state) => {
-                        let Some(viewing) = browser.viewing.as_ref() else { continue };
+                        let Some(viewing) = viewers.browser.viewing.as_ref() else { continue };
                         send(
                             socket,
                             ServerMessage::BrowserView {
@@ -1309,7 +1312,7 @@ where
                     // **The page navigated on its own**: a link click or a
                     // fragment moves the bar's arrows, and nobody asked.
                     ViewEvent::Nav(nav) => {
-                        let Some(viewing) = browser.viewing.as_ref() else { continue };
+                        let Some(viewing) = viewers.browser.viewing.as_ref() else { continue };
                         send(
                             socket,
                             ServerMessage::BrowserNavState {
@@ -1333,7 +1336,7 @@ where
                     // one case that is cancelled here, once: nothing can
                     // answer it.
                     ViewEvent::File(ask) => {
-                        let Some(viewing) = browser.viewing.as_ref() else { continue };
+                        let Some(viewing) = viewers.browser.viewing.as_ref() else { continue };
                         // **A chooser belongs to its tab's viewer.** A viewer
                         // watching another tab is never asked to pick for it.
                         if ask.tab != viewing.tab {
@@ -1377,7 +1380,7 @@ where
                     // watcher's connection receives the broadcast and drops
                     // it; the save door is the controller's.
                     ViewEvent::Download { download, dropped, lost } => {
-                        let Some(viewing) = browser.viewing.as_ref() else { continue };
+                        let Some(viewing) = viewers.browser.viewing.as_ref() else { continue };
                         // **A save is the tab's too**: a controller watching
                         // another tab is not offered this file. A notice
                         // that names no tab is the profile's, and it is this
@@ -1408,7 +1411,7 @@ where
                     // Only the controller hears; a watcher's connection drops
                     // the packet rather than playing another person's page.
                     ViewEvent::Audio(packet) => {
-                        let Some(viewing) = browser.viewing.as_ref() else { continue };
+                        let Some(viewing) = viewers.browser.viewing.as_ref() else { continue };
                         if viewing.view.borrow().controller != Some(me) {
                             continue;
                         }
@@ -1420,9 +1423,9 @@ where
                     // and the client re-attaches when it opens the surface
                     // again.
                     ViewEvent::Failed(reason) => {
-                        let Some(viewed) = browser.viewing.as_ref() else { continue };
+                        let Some(viewed) = viewers.browser.viewing.as_ref() else { continue };
                         let (id, tab) = (viewed.id, viewed.tab);
-                        browser.viewing = None;
+                        viewers.browser.viewing = None;
                         // **The gone viewer comes off the profile too.** The
                         // connection lives on, so without this the profile
                         // kept a phantom viewer and a role held by a surface
@@ -1438,7 +1441,7 @@ where
             // **The strip's rows, once it asked for them.** A tab that
             // opens, closes or changes hands is pushed as the whole list, so
             // the client never has to poll a read it already subscribed to.
-            changed = next_tab_change(&mut browser.tabs) => {
+            changed = next_tab_change(&mut viewers.browser.tabs) => {
                 let Some(list) = changed else { continue };
                 batch::flush(socket, held.take()).await?;
                 send(
@@ -1457,27 +1460,28 @@ where
             // **The attached terminal's bytes, once a viewer asked.** The
             // frames are this terminal's own stream; a lag past the broadcast
             // resyncs with a fresh screen rather than a lossy read.
-            event = next_terminal_event(&mut terminal.viewing) => {
+            event = next_terminal_event(&mut viewers.terminal.viewing) => {
                 batch::flush(socket, held.take()).await?;
                 let Some(event) = event else { continue };
                 match event {
                     TerminalEvent::Chunk(chunk) => {
-                        let Some(viewing) = terminal.viewing.as_ref() else { continue };
+                        let Some(viewing) = viewers.terminal.viewing.as_ref() else { continue };
                         let mut transport = super::frame::SocketFrames { socket: &mut *socket };
                         transport.deliver_terminal(viewing.id, chunk.seq, &chunk.bytes).await?;
                     }
                     TerminalEvent::Resync => {
-                        let Some(viewing) = terminal.viewing.as_mut() else { continue };
-                        viewing.last_seq = viewing.entry.terminal.seq().saturating_sub(1);
-                        let viewing = terminal.viewing.as_ref().expect("just borrowed");
-                        send_terminal_view(socket, viewing).await?;
+                        if let Some(viewing) = viewers.terminal.viewing.as_mut() {
+                            viewing.last_seq = viewing.entry.terminal.seq().saturating_sub(1);
+                        }
+                        if let Some(viewing) = viewers.terminal.viewing.as_ref() {
+                            send_terminal_view(socket, viewing).await?;
+                        }
                     }
                     TerminalEvent::Gone => {
-                        let Some(viewing) = terminal.viewing.as_ref() else { continue };
-                        let seat = viewing.seat.clone();
-                        terminal.viewing = None;
-                        send(socket, ServerMessage::TerminalState { seat, terminal: None })
-                            .await?;
+                        // The shell exited; the workspace's own `TerminalChanged`
+                        // update is what tells the strip, so the viewer is just
+                        // let go here.
+                        viewers.terminal.viewing = None;
                     }
                 }
             }
@@ -1813,8 +1817,7 @@ async fn handle_client<S>(
     holds: &mut Holds<'_>,
     updates: &mut Option<(mpsc::UnboundedReceiver<SeatUpdate>, bool)>,
     dictate: &mut Streaming,
-    browser: &mut BrowserViewing,
-    terminal: &mut TerminalViewingState,
+    viewers: &mut Viewers,
     reads: &mut Reads,
     arrival: Arrival,
     msg: Message,
@@ -1830,7 +1833,13 @@ where
         // server takes.** Nothing binary comes from a client for the browser:
         // browser frames are the server's to send.
         Message::Binary(bytes) => {
-            take_frame(&state.surface, dictate, terminal, me, frame_route(&bytes, dictate));
+            take_frame(
+                &state.surface,
+                dictate,
+                &mut viewers.terminal,
+                me,
+                frame_route(&bytes, dictate),
+            );
             return Ok(());
         }
         _ => return Ok(()),
@@ -1869,8 +1878,7 @@ where
         .await;
     };
     handle_message(
-        socket, state, watching, holds, updates, dictate, browser, terminal, reads, arrival,
-        client,
+        socket, state, watching, holds, updates, dictate, viewers, reads, arrival, client,
     )
     .await
 }
@@ -2032,16 +2040,10 @@ where
             // chunk still queued from before it is ignored by the client
             // rather than drawn twice.
             let last_seq = entry.terminal.seq().saturating_sub(1);
-            terminal.viewing = Some(TerminalViewing {
-                seat: seat.clone(),
-                id,
-                entry,
-                output,
-                paused: false,
-                last_seq,
-            });
-            let viewing = terminal.viewing.as_ref().expect("just set");
-            send_terminal_view(socket, viewing).await?;
+            let viewing =
+                TerminalViewing { seat: seat.clone(), id, entry, output, paused: false, last_seq };
+            send_terminal_view(socket, &viewing).await?;
+            terminal.viewing = Some(viewing);
             match reply_to {
                 Some(ask) => {
                     send(
@@ -2101,8 +2103,7 @@ async fn handle_message<S>(
     holds: &mut Holds<'_>,
     updates: &mut Option<(mpsc::UnboundedReceiver<SeatUpdate>, bool)>,
     dictate: &mut Streaming,
-    browser: &mut BrowserViewing,
-    terminal: &mut TerminalViewingState,
+    viewers: &mut Viewers,
     reads: &mut Reads,
     arrival: Arrival,
     client: ClientMessage,
@@ -2112,6 +2113,7 @@ where
 {
     let caller = arrival.caller;
     let arrived_at = arrival.at;
+    let Viewers { browser, terminal } = viewers;
     let viewing = &mut browser.viewing;
     let tabs = &mut browser.tabs;
     let me = caller.id;
@@ -2796,9 +2798,10 @@ where
                     // dropped are not replayed, so the client is told where
                     // the screen is now and continues from there.
                     viewing.last_seq = viewing.entry.terminal.seq().saturating_sub(1);
-                    let viewing = terminal.viewing.as_ref().expect("just borrowed");
-                    send_terminal_view(socket, viewing).await?;
                 }
+            }
+            if !paused && let Some(viewing) = terminal.viewing.as_ref() {
+                send_terminal_view(socket, viewing).await?;
             }
             Ok(())
         }

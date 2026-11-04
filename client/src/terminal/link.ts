@@ -41,8 +41,6 @@ export interface TerminalLink {
   onFrame(listener: (frame: TerminalOutput) => void): () => void;
   /** Every attach snapshot: the screen as a VT stream and where it continues. */
   onView(listener: (view: TerminalViewMessage) => void): () => void;
-  /** Every terminal state push, for the strip and a surface's bar. */
-  onState(listener: (state: TerminalStateMessage) => void): () => void;
   /** Whether there is a link to call at all. */
   readonly attachable: boolean;
 }
@@ -56,12 +54,6 @@ export interface TerminalViewMessage {
   seq: number;
   screen: string;
   viewers: number;
-}
-
-/** One terminal state push, as the server writes it. */
-export interface TerminalStateMessage {
-  seat: SessionSlot;
-  terminal: unknown;
 }
 
 function viewOf(value: unknown): TerminalViewMessage | null {
@@ -78,13 +70,6 @@ function viewOf(value: unknown): TerminalViewMessage | null {
     screen: held['screen'],
     viewers: typeof held['viewers'] === 'number' ? held['viewers'] : 0,
   };
-}
-
-function stateOf(value: unknown): TerminalStateMessage | null {
-  if (typeof value !== 'object' || value === null) return null;
-  const held = value as Record<string, unknown>;
-  if (!('seat' in held)) return null;
-  return { seat: held['seat'] as SessionSlot, terminal: held['terminal'] ?? null };
 }
 
 /** The shell's `invoke`, loaded lazily so this module reads outside Tauri. */
@@ -186,25 +171,6 @@ function shellLink(): TerminalLink {
         stop?.();
       };
     },
-    onState(listener) {
-      let stop: (() => void) | null = null;
-      let live = true;
-      void (async () => {
-        const { listen } = await import('@tauri-apps/api/event');
-        const off = await listen<unknown>('terminal_state', (event) => {
-          const state = stateOf(event.payload);
-          if (state !== null) listener(state);
-        });
-        if (live) stop = off;
-        else off();
-      })().catch((why) => {
-        console.warn('the terminal state listener could not start', why);
-      });
-      return () => {
-        live = false;
-        stop?.();
-      };
-    },
   };
 }
 
@@ -236,12 +202,6 @@ function wireLink(connection: Connection & TerminalWire): TerminalLink {
         const view = viewOf(message);
         if (view !== null) listener(view);
       }),
-    onState: (listener) =>
-      connection.onMessage((message) => {
-        if (message.kind !== 'terminal_state') return;
-        const state = stateOf(message);
-        if (state !== null) listener(state);
-      }),
   };
 }
 
@@ -270,7 +230,6 @@ export function terminalLink(): TerminalLink {
       close: () => {},
       onFrame: () => () => {},
       onView: () => () => {},
-      onState: () => () => {},
     }
   );
 }

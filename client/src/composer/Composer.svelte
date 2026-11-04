@@ -6,6 +6,7 @@
   import { runningAt } from '../chat/conversation';
   import { drawsSurface, navigateBrowser } from '../browser/link';
   import { closeSurface, openSurface, surface } from '../browser/surface.svelte';
+  import { closeTerminal, handOff } from '../terminal/surface.svelte';
   import Icon from '../components/Icon.svelte';
   import { slotOf, subjectKey } from '../protocol';
   import { variantOf } from '../session/apply';
@@ -500,6 +501,42 @@
     if (held !== null && held.kind === 'browser_hand_off') {
       box.shownHandOff = held.request.id;
       box.ended = null;
+    }
+  });
+
+  /**
+   * **The raised terminal's bar carries the answer.** The dock is behind the
+   * surface while it is up, so a parked terminal hand-off with no reachable
+   * Done would hold the session for ever; the bar reads this and draws them.
+   */
+  $effect(() => {
+    const held = ask;
+    if (held !== null && held.kind === 'terminal_hand_off') {
+      const id = held.request.id;
+      handOff.current = {
+        id,
+        reason: held.request.reason,
+        respond: (ending) => {
+          remember(id);
+          try {
+            void connection.dispatch(
+              {
+                respond_terminal_hand_off: {
+                  key: slot,
+                  id,
+                  answer: { ending: { type: ending }, source: 'takeover' },
+                },
+              },
+              slot,
+            );
+          } catch (error) {
+            report('the answer was not sent', error);
+          }
+          void closeTerminal();
+        },
+      };
+    } else {
+      handOff.current = null;
     }
   });
 

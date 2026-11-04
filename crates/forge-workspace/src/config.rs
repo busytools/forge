@@ -187,6 +187,7 @@ impl std::fmt::Debug for ForgeToml {
             .field("server", &self.server)
             .field("client", &self.client)
             .field("browser", &self.browser)
+            .field("terminal", &self.terminal)
             .field("documents", &self.documents)
             .field("usage", &self.usage)
             .field("web", &ignored(&self.web))
@@ -286,10 +287,9 @@ impl Default for TerminalSettings {
 /// The shell a terminal runs when `[terminal] shell` names none: the
 /// person's own `$SHELL`, or the platform's login shell.
 fn default_terminal_shell() -> String {
-    std::env::var("SHELL")
-        .ok()
-        .filter(|shell| !shell.trim().is_empty())
-        .unwrap_or_else(|| if cfg!(target_os = "macos") { "/bin/zsh" } else { "/bin/sh" }.to_owned())
+    std::env::var("SHELL").ok().filter(|shell| !shell.trim().is_empty()).unwrap_or_else(|| {
+        if cfg!(target_os = "macos") { "/bin/zsh" } else { "/bin/sh" }.to_owned()
+    })
 }
 
 /// One `[documents]` table. Unknown fields are rejected so a mistyped

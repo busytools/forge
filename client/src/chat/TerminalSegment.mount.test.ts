@@ -7,8 +7,8 @@ vi.mock('../terminal/link', () => ({
   installTerminal: vi.fn(),
   terminalLink: () => ({
     attachable: true,
-    show: vi.fn(async (_seat: unknown, id: number) => id),
-    hide: vi.fn(async () => {}),
+    show: vi.fn((_seat: unknown, id: number) => Promise.resolve(id)),
+    hide: vi.fn(() => Promise.resolve()),
     input: vi.fn(),
     resize: vi.fn(),
     pause: vi.fn(),
@@ -43,7 +43,7 @@ let instance: ReturnType<typeof mount> | null = null;
 let host: HTMLElement;
 
 afterEach(() => {
-  if (instance !== null) unmount(instance);
+  if (instance !== null) void unmount(instance);
   instance = null;
   host.remove();
 });

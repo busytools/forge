@@ -117,6 +117,7 @@ impl Workspace {
         terminals.insert(slot.clone(), Arc::clone(&entry));
         drop(terminals);
         self.ensure_terminal_clock();
+        self.watch_terminal_exit(slot, &entry);
         self.announce_terminal(slot, Some(entry.summary(slot, false)));
         Ok(entry)
     }
@@ -137,6 +138,7 @@ impl Workspace {
         terminals.insert(slot.clone(), Arc::clone(&entry));
         drop(terminals);
         self.ensure_terminal_clock();
+        self.watch_terminal_exit(slot, &entry);
         self.announce_terminal(slot, Some(entry.summary(slot, false)));
         Ok(entry)
     }
@@ -163,16 +165,14 @@ impl Workspace {
         id: u16,
     ) -> Result<Arc<TerminalEntry>, String> {
         let Some(entry) = self.terminal_if_any(slot) else {
-            return Err(format!(
+            return Err(
                 "this seat has no terminal open; run terminal__open first (the id it returns is \
                  what this call takes)"
-            ));
+                    .to_owned(),
+            );
         };
         if entry.id != id {
-            return Err(format!(
-                "terminal {id} is not this seat's; its terminal is {}",
-                entry.id
-            ));
+            return Err(format!("terminal {id} is not this seat's; its terminal is {}", entry.id));
         }
         entry.touch();
         Ok(entry)
@@ -224,11 +224,7 @@ impl Workspace {
     }
 
     /// Tell the views a terminal opened, changed or closed.
-    pub(crate) fn announce_terminal(
-        &self,
-        slot: &SessionSlot,
-        terminal: Option<TerminalSummary>,
-    ) {
+    pub(crate) fn announce_terminal(&self, slot: &SessionSlot, terminal: Option<TerminalSummary>) {
         let _ = self
             .update_sender()
             .send(SessionUpdate::TerminalChanged { key: slot.clone(), terminal });
@@ -241,7 +237,7 @@ impl Workspace {
     /// caller's own drop. The one case answered up front is a stream nobody
     /// can answer on, which fails closed rather than parking the session on a
     /// prompt no view can draw.
-    pub(crate) async fn register_terminal_hand_off(
+    pub(crate) fn register_terminal_hand_off(
         &self,
         caller: &SessionSlot,
         terminal: u16,
@@ -257,12 +253,12 @@ impl Workspace {
         let id = uuid::Uuid::new_v4();
         let handoff = TerminalHandOff { id, reason: reason.to_owned(), terminal, secret };
         self.terminal_handoffs.lock().insert(id, (caller.clone(), handoff.clone(), sender));
+        // **The strip says the input is the person's** while the ask waits,
+        // so a row drawn beside the dock does not read as idle.
+        self.announce_terminal(caller, Some(entry.summary(caller, true)));
         let answerable = self
             .update_sender()
-            .send_answering(SessionUpdate::TerminalHandOffPending {
-                key: caller.clone(),
-                handoff,
-            });
+            .send_answering(SessionUpdate::TerminalHandOffPending { key: caller.clone(), handoff });
         if !answerable {
             self.terminal_handoffs.lock().remove(&id);
             let (_ignored_sender, dead_receiver) = oneshot::channel();
@@ -304,10 +300,14 @@ impl Workspace {
         );
         let _ = sender.send(answer.ending);
         let _ = self.update_sender().send(SessionUpdate::TerminalHandOffResolved {
-            key: owner,
+            key: owner.clone(),
             id,
             answer,
         });
+        // The input is the agent's again: the strip stops saying it waits.
+        if let Some(entry) = self.terminal_if_any(&owner) {
+            self.announce_terminal(&owner, Some(entry.summary(&owner, false)));
+        }
         true
     }
 
@@ -348,17 +348,17 @@ impl Workspace {
                 slot = slot.display()
             ));
         };
-        let account_env = self
-            .pool
-            .lock()
-            .get(slot)
-            .and_then(|pooled| self.accounts.env(&pooled.account))
-            .or_else(|| {
-                project.accounts.first().and_then(|name| {
-                    self.accounts.env(&forge_gateway::AccountKey(name.clone()))
+        let account_env =
+            self.pool
+                .lock()
+                .get(slot)
+                .and_then(|pooled| self.accounts.env(&pooled.account))
+                .or_else(|| {
+                    project.accounts.first().and_then(|name| {
+                        self.accounts.env(&forge_gateway::AccountKey(name.clone()))
+                    })
                 })
-            })
-            .unwrap_or_default();
+                .unwrap_or_default();
         let env = crate::config::session_env(&project, &account_env);
         let cwd = cwd
             .or_else(|| self.cwd_for_session(slot).map(PathBuf::from))
@@ -383,6 +383,24 @@ impl Workspace {
         }))
     }
 
+    /// Tell the strip when the shell exits, so "the shell exited" is drawn
+    /// without waiting for a record read.
+    fn watch_terminal_exit(self: &Arc<Self>, slot: &SessionSlot, entry: &Arc<TerminalEntry>) {
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else { return };
+        let weak = Arc::downgrade(self);
+        let slot = slot.clone();
+        let entry = Arc::clone(entry);
+        let mut exit = entry.terminal.exit_stream();
+        runtime.spawn(async move {
+            if exit.changed().await.is_err() {
+                return;
+            }
+            let Some(workspace) = weak.upgrade() else { return };
+            let held = workspace.terminal_held(&slot);
+            workspace.announce_terminal(&slot, Some(entry.summary(&slot, held)));
+        });
+    }
+
     /// Start the idle clock, once.
     fn ensure_terminal_clock(self: &Arc<Self>) {
         if self.terminal_clock_started.swap(true, Ordering::SeqCst) {
@@ -400,7 +418,6 @@ impl Workspace {
             }
         });
     }
-
 }
 
 #[cfg(test)]
@@ -458,7 +475,6 @@ mod tests {
         let entry = workspace.terminal_for(&slot).expect("a terminal");
         let (_id, _answer) = workspace
             .register_terminal_hand_off(&slot, entry.id, "the sudo password")
-            .await
             .expect("a hand-off parks");
         assert!(workspace.terminal_held(&slot), "the person owns the input");
         let refused = crate::mcp::terminal::facade::ProdTerminalFacade::from_workspace(&workspace);

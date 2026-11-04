@@ -84,11 +84,7 @@ pub struct RunAnswer {
 /// The agent's terminal, as one tool call sees it.
 #[async_trait]
 pub trait TerminalFacade: Send + Sync {
-    async fn open(
-        &self,
-        seat: &SessionSlot,
-        request: OpenRequest,
-    ) -> Result<OpenAnswer, String>;
+    async fn open(&self, seat: &SessionSlot, request: OpenRequest) -> Result<OpenAnswer, String>;
 
     async fn write(
         &self,
@@ -115,13 +111,8 @@ pub trait TerminalFacade: Send + Sync {
         timeout_ms: u64,
     ) -> Result<WaitAnswer, String>;
 
-    async fn resize(
-        &self,
-        seat: &SessionSlot,
-        id: u16,
-        cols: u16,
-        rows: u16,
-    ) -> Result<(), String>;
+    async fn resize(&self, seat: &SessionSlot, id: u16, cols: u16, rows: u16)
+    -> Result<(), String>;
 
     async fn close(&self, seat: &SessionSlot, id: u16) -> Result<Option<TerminalExit>, String>;
 
@@ -160,11 +151,7 @@ impl ProdTerminalFacade {
 
 #[async_trait]
 impl TerminalFacade for ProdTerminalFacade {
-    async fn open(
-        &self,
-        seat: &SessionSlot,
-        request: OpenRequest,
-    ) -> Result<OpenAnswer, String> {
+    async fn open(&self, seat: &SessionSlot, request: OpenRequest) -> Result<OpenAnswer, String> {
         let workspace = self.workspace()?;
         let entry = match request.cwd.as_deref() {
             Some(cwd) if !cwd.trim().is_empty() => {
@@ -295,10 +282,10 @@ impl TerminalFacade for ProdTerminalFacade {
         while Instant::now() < deadline && entry.terminal.is_alive() {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        let exit = entry.terminal.shell_exit().map(|exit| TerminalExit {
-            code: exit.code,
-            signal: exit.signal,
-        });
+        let exit = entry
+            .terminal
+            .shell_exit()
+            .map(|exit| TerminalExit { code: exit.code, signal: exit.signal });
         workspace.close_terminal(seat);
         Ok(exit)
     }
@@ -310,15 +297,12 @@ impl TerminalFacade for ProdTerminalFacade {
         reason: &str,
     ) -> Result<HandOffEnding, String> {
         let workspace = self.workspace()?;
-        let (parked, answer) = workspace.register_terminal_hand_off(seat, id, reason).await?;
-        let guard = ResolveOnDrop {
-            workspace: Arc::clone(&workspace),
-            id: parked,
-            caller: seat.clone(),
-        };
-        let ending = answer.await.map_err(|_| {
-            "no attached client can show the terminal hand-off".to_owned()
-        })?;
+        let (parked, answer) = workspace.register_terminal_hand_off(seat, id, reason)?;
+        let guard =
+            ResolveOnDrop { workspace: Arc::clone(&workspace), id: parked, caller: seat.clone() };
+        let ending = answer
+            .await
+            .map_err(|_| "no attached client can show the terminal hand-off".to_owned())?;
         drop(guard);
         Ok(ending)
     }
@@ -450,7 +434,7 @@ async fn wait_quiet(entry: &TerminalEntry, deadline: Instant) -> bool {
         }
         let window = Duration::from_millis(300);
         match timeout(window.min(left), output.recv()).await {
-            Ok(Ok(_)) => continue,
+            Ok(Ok(_)) => {}
             Ok(Err(_)) => return true,
             Err(_) if left >= window => return true,
             Err(_) => return false,
@@ -473,13 +457,21 @@ async fn wait_pattern(entry: &TerminalEntry, pattern: &str, deadline: Instant) -
     }
 }
 
+/// One captured write: the terminal, the text and the keys.
+#[cfg(test)]
+type WriteCall = (u16, Option<String>, Vec<Key>);
+
+/// One captured read: the terminal, the cursor and the two bounds.
+#[cfg(test)]
+type ReadCall = (u16, Option<u64>, usize, usize);
+
 /// Mock for the tools' unit tests: captures what a call carried and answers
 /// with a preloaded outcome.
 #[cfg(test)]
 pub struct MockTerminalFacade {
     pub opens: parking_lot::Mutex<Vec<OpenRequest>>,
-    pub writes: parking_lot::Mutex<Vec<(u16, Option<String>, Vec<Key>)>>,
-    pub reads: parking_lot::Mutex<Vec<(u16, Option<u64>, usize, usize)>>,
+    pub writes: parking_lot::Mutex<Vec<WriteCall>>,
+    pub reads: parking_lot::Mutex<Vec<ReadCall>>,
     pub waits: parking_lot::Mutex<Vec<(u16, WaitUntil, u64)>>,
     pub resizes: parking_lot::Mutex<Vec<(u16, u16, u16)>>,
     pub closes: parking_lot::Mutex<Vec<u16>>,
