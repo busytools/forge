@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { SessionUpdate } from './protocol';
-import { REPLACES } from './session/apply';
+import { inFlightOf, REPLACES } from './session/apply';
 import { Stores } from './stores';
 
 const LEAD = { org: 'TestOrg', project: 'proj', label: 'lead' } as const;
@@ -24,6 +24,35 @@ describe('the stores one connection holds', () => {
     expect(store.updates().length, 'the list grew with no ceiling').toBeLessThan(900);
     // The newest are the ones a page has not folded, so they are what is kept.
     expect(store.updates().length).toBeGreaterThan(0);
+  });
+
+  /**
+   * A seat's tail has one reader, `runningAt`, and it folds only the frames
+   * that move the in-flight answer. Once no page holds the seat, a frame that
+   * moves nothing can be dropped without changing that answer - and a busy
+   * seat would otherwise keep every tool result until the next whole read.
+   */
+  it('keeps only the seat frames the running answer folds once the page has left', () => {
+    const stores = new Stores();
+    const seat = { session: LEAD };
+    const store = stores.open(seat);
+    store.set({ header: { turn_in_flight: false } });
+    store.compact();
+
+    for (let at = 0; at < 500; at += 1) store.push(spoke(`reading-${at}`, at));
+    expect(store.updates().length, 'the seat tail kept frames nothing reads').toBeLessThan(5);
+    expect(store.dropped(), 'the cap counted frames it did not drop').toBe(0);
+
+    // The retained tail still answers the question `runningAt` asks: the
+    // newest edge wins, whatever the traffic after it.
+    store.push(opening('s'));
+    expect(foldTail(store.updates(), false)).toBe(true);
+    store.push(spoke('still going', 501));
+    expect(foldTail(store.updates(), false)).toBe(true);
+    store.push(resultFrame());
+    store.push(spoke('after the result', 502));
+    expect(foldTail(store.updates(), false)).toBe(false);
+    expect(store.updates().length).toBeLessThan(5);
   });
 
   /** A snapshot supersedes the updates before it, so they go with it. */
@@ -140,6 +169,35 @@ function opening(sessionId = 'the-one-that-left'): SessionUpdate {
       msg: { type: 'system', subtype: 'init', session_id: sessionId, tools: [] },
     },
   };
+}
+
+/** An ordinary assistant frame: traffic the running answer does not fold. */
+function spoke(text: string, at = 0): SessionUpdate {
+  return {
+    chat_appended: {
+      key: LEAD,
+      msg: {
+        type: 'assistant',
+        uuid: `a-${at}`,
+        message: { role: 'assistant', content: [{ type: 'text', text }] },
+      },
+    },
+  };
+}
+
+/** The frame a turn ends on. */
+function resultFrame(): SessionUpdate {
+  return { chat_appended: { key: LEAD, msg: { type: 'result', subtype: 'success' } } };
+}
+
+/** What `runningAt` would answer from a tail, folded the way it folds it. */
+function foldTail(updates: SessionUpdate[], from: boolean): boolean {
+  let held = from;
+  for (const update of updates) {
+    const message = (update as { chat_appended?: { msg?: unknown } }).chat_appended?.msg;
+    if (message !== undefined) held = inFlightOf(held, message);
+  }
+  return held;
 }
 
 /**

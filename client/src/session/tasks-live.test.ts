@@ -85,6 +85,7 @@ function quiet(): Connection {
       dropped: () => 0,
       set: () => {},
       push: () => {},
+      compact: () => {},
       refuse: () => {},
     }),
     unsubscribe: () => {},

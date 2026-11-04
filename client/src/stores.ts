@@ -27,7 +27,7 @@ import { get, writable, type Readable } from 'svelte/store';
 
 import type { Subject, SessionUpdate } from './protocol';
 import { subjectKey } from './protocol';
-import { REPLACES, variantOf } from './session/apply';
+import { movesInFlight, REPLACES, variantOf } from './session/apply';
 
 /**
  * How many updates a store keeps before the oldest are dropped.
@@ -82,6 +82,12 @@ export interface Store {
    */
   push(update: SessionUpdate): void;
   /**
+   * No page is drawing this seat: from here the tail keeps only what the
+   * seat's running answer folds rather than every frame it streams while
+   * nobody reads.
+   */
+  compact(): void;
+  /**
    * The `voice_audio` frames pushed since the last call, drained.
    *
    * A sentence is 0.3-1 MB as a parsed number array, and nothing but the
@@ -110,6 +116,38 @@ function replaces(update: SessionUpdate): boolean {
   return name !== null && REPLACES.includes(name);
 }
 
+/** The frame an update carries, for the seat tail's own question about it. */
+function chatFrame(update: SessionUpdate): unknown {
+  return (update as { chat_appended?: { msg?: unknown } }).chat_appended?.msg;
+}
+
+/** The updates that are not chat frames: the tail's other kinds, in order. */
+function otherUpdates(updates: SessionUpdate[]): SessionUpdate[] {
+  return updates.filter((waiting) => variantOf(waiting)[0] !== 'chat_appended');
+}
+
+/**
+ * A seat's tail while no page holds the seat.
+ *
+ * Its only reader, `runningAt` (`chat/conversation.ts`), moves only on a
+ * turn's edges, so the newest edge is all the chat frames it keeps.
+ */
+function settledTail(updates: SessionUpdate[], update: SessionUpdate): SessionUpdate[] {
+  if (variantOf(update)[0] !== 'chat_appended') return [...updates, update];
+  if (!movesInFlight(chatFrame(update))) return updates;
+  // The newest edge supersedes every one before it.
+  return [...otherUpdates(updates), update];
+}
+
+/** The tail cut to that rule, for a seat whose page has just gone. */
+function compactedTail(updates: SessionUpdate[]): SessionUpdate[] {
+  const chat = updates.filter(
+    (waiting) => variantOf(waiting)[0] === 'chat_appended' && movesInFlight(chatFrame(waiting)),
+  );
+  const newest = chat[chat.length - 1];
+  return newest === undefined ? otherUpdates(updates) : [...otherUpdates(updates), newest];
+}
+
 function createStore(subject: Subject, state: StoreState = { kind: 'loading' }): Store {
   const inner = writable<StoreValue>({ snapshot: null, updates: [], state, dropped: 0 });
   // Audio is drained by the voice reader and never retained: a parsed
@@ -117,6 +155,8 @@ function createStore(subject: Subject, state: StoreState = { kind: 'loading' }):
   // otherwise hold every one it has played.
   let audio: SessionUpdate[] = [];
   const MAX_AUDIO = 8;
+  // Set when the last page drawing the seat goes: see `compact`.
+  let compacted = false;
   return {
     subject,
     value: { subscribe: inner.subscribe },
@@ -125,6 +165,11 @@ function createStore(subject: Subject, state: StoreState = { kind: 'loading' }):
     state: () => get(inner).state,
     dropped: () => get(inner).dropped,
     set: (snapshot) => inner.set({ snapshot, updates: [], state: { kind: 'ready' }, dropped: 0 }),
+    compact: () => {
+      if (!isSeat(subject) || compacted) return;
+      compacted = true;
+      inner.update((held) => ({ ...held, updates: compactedTail(held.updates) }));
+    },
     push: (update) => {
       if (variantOf(update)[0] === 'voice_audio') {
         audio.push(update);
@@ -138,7 +183,10 @@ function createStore(subject: Subject, state: StoreState = { kind: 'loading' }):
         if (isSeat(subject) && replaces(update)) {
           return { snapshot: null, updates: [], state: { kind: 'loading' }, dropped: 0 };
         }
-        const updates = [...held.updates, update];
+        const updates =
+          isSeat(subject) && compacted
+            ? settledTail(held.updates, update)
+            : [...held.updates, update];
         const over = updates.length - MAX_UPDATES;
         return {
           snapshot: held.snapshot,

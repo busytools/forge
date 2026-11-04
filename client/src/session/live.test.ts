@@ -30,12 +30,13 @@ import { get, writable, type Writable } from 'svelte/store';
 
 import { cronNames } from '../chat/cron-names.svelte';
 import { git } from '../chat/git.svelte';
+import { outputs } from '../chat/outputs.svelte';
 import { list, setMeasured } from '../chat/testing/records';
 import { installResizeObserver, resized } from '../chat/testing/viewport';
 import { homeWire } from '../dev/fixture.data';
 import sessionFixture from '../dev/fixtures/session.json';
 import type { ServerMessage, SessionUpdate, Subject } from '../protocol';
-import { PROTOCOL_VERSION, subjectKey } from '../protocol';
+import { MORE_TURNS, PROTOCOL_VERSION, subjectKey } from '../protocol';
 import type { Route } from '../routes';
 import Router from '../shell/Router.svelte';
 import { connect, MAX_RETRY_MS, type Connection, type ConnectionStatus } from '../socket';
@@ -1843,6 +1844,7 @@ function drivable(refusedAtFirst = false, rangeAskFails = false): Driveable {
         snapshot.set(key, next);
       },
       push: () => {},
+      compact: () => {},
       takeAudio: () => [],
       refuse: () => {},
     };
@@ -2684,6 +2686,23 @@ describe('the record a page holds over an update stream', () => {
 
     expect(first.publishes(), 'a released seat kept folding frames').toBe(published);
     expect(spoken(first), 'the released seat folded a successor frame').toEqual([]);
+  });
+
+  /**
+   * **A released seat's opened tool outputs go with it.** They are held by
+   * call id for the client's life, so a seat that ended would keep every
+   * answer its reader had opened.
+   */
+  it('drops the call outputs a released seat had opened', () => {
+    const connection = drivable();
+    const first = watch(connection);
+    first.land(snapshotOf(LEAD));
+    const key = subjectKey({ session: LEAD });
+    outputs.post(key, 'tu-released', { kind: 'no_path' });
+
+    releaseSeat(connection, LEAD);
+
+    expect(outputs.of('tu-released'), 'a released seat kept a call output').toBeUndefined();
   });
 
   /**
@@ -3889,6 +3908,23 @@ describe('the read, and the answer a frame has outrun', () => {
  * the repaired frames fold through the same path a live frame does.
  */
 describe('the seat sequence', () => {
+  /**
+   * A streamed row that joins the turn it lands in.
+   *
+   * The tests that push hundreds of rows use this for the filler: a user frame
+   * opens a turn of its own, and the record keeps only its newest turns
+   * (`SUBSCRIBE_TURNS`), so filler that opened turns would age the rows a test
+   * asserts out of the window.
+   */
+  function joined(text: string, uuid: string): Record<string, unknown> {
+    return {
+      type: 'assistant',
+      uuid,
+      message: { role: 'assistant', content: [{ type: 'text', text }] },
+      session_id: 's',
+    };
+  }
+
   /** One repaired stretch, as the server answers a range ask. */
   function repaired(...frames: { seq: number; text: string }[]): ServerMessage {
     return {
@@ -4011,7 +4047,7 @@ describe('the seat sequence', () => {
 
     // Enough frames above the hole to trip the hold cap: they draw unordered.
     for (let at = 4; at <= 4 + 300; at += 1) {
-      page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke(`row ${at}`, `u${at}`) } }, at));
+      page.land(frameOf({ chat_appended: { key: LEAD, msg: joined(`row ${at}`, `u${at}`) } }, at));
     }
     paint();
 
@@ -4037,7 +4073,9 @@ describe('the seat sequence', () => {
    * vanished.
    */
   it('draws two owed ranges whichever answer lands first', () => {
-    const expected = Array.from({ length: 31 }, (_, at) => `row ${at + 1}`);
+    // Every row is a turn of its own here, so the record keeps the newest
+    // `MORE_TURNS` of them - the window a fresh read sends.
+    const expected = Array.from({ length: 31 }, (_, at) => `row ${at + 1}`).slice(-MORE_TURNS);
     const orders = [
       [
         [2, 10],
@@ -4138,8 +4176,10 @@ describe('the seat sequence', () => {
     page.land(rangeOf(12, 30));
     paint();
 
+    // The record keeps its newest turns, so the rows still inside the window
+    // are the second answer's - which is the one this case is about.
     const words = spoken(page);
-    for (let at = 1; at <= 31; at += 1) {
+    for (let at = 12; at <= 30; at += 1) {
       expect(words, `row ${at} was lost after the cap`).toContain(`row ${at}`);
     }
     expect(

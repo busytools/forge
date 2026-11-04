@@ -18,7 +18,7 @@ const { WebSocketServer, WebSocket: ClientSocket } = createRequire(import.meta.u
 
 import sessionFixture from '../dev/fixtures/session.json';
 import type { ServerMessage, SessionUpdate, Subject } from '../protocol';
-import { PROTOCOL_VERSION, subjectKey } from '../protocol';
+import { MORE_TURNS, PROTOCOL_VERSION, subjectKey } from '../protocol';
 import { connect, MAX_RETRY_MS } from '../socket';
 import { DEFAULT_SETTINGS, type SessionSlot } from '../wire/types';
 import { watchSession, type SessionRead } from './live';
@@ -256,14 +256,21 @@ describe('a first whole record slower than the frames', () => {
 
       const emitted = rig.server.emitted();
       await until(
-        () => streamed(get(rig.view)).length >= emitted,
+        () => streamed(get(rig.view)).includes(`u${emitted}`),
         'the emitted frames to reach the record',
       );
       const words = streamed(get(rig.view));
+      // The record keeps its newest whole turns (`MORE_TURNS`), so the check
+      // is the window it keeps: the streamed rows in it once each, in order.
+      const tail = words.slice(-MORE_TURNS);
+      const first = Number((tail[0] ?? 'u0').slice(1));
       expect(
-        words,
-        'the record is not u1..uN once each: a duplicate, a hole, or a row out of turn',
-      ).toEqual(Array.from({ length: words.length }, (_, at) => `u${at + 1}`));
+        tail,
+        'the record is not the streamed rows once each in its window: a duplicate, a hole, or a row out of turn',
+      ).toEqual(Array.from({ length: tail.length }, (_, at) => `u${first + at}`));
+      expect(words.length, 'the record kept more rows than the read window').toBeLessThanOrEqual(
+        MORE_TURNS,
+      );
     } finally {
       rig.close();
     }
@@ -308,17 +315,21 @@ describe('a whole-record answer slower than the bound', () => {
       // answer's encode point and the record never catches up to the count.
       const emitted = rig.server.emitted();
       await until(
-        () => streamed(get(rig.view)).length >= emitted,
+        () => streamed(get(rig.view)).includes(`u${emitted}`),
         'the emitted frames to reach the record',
       );
       const words = streamed(get(rig.view));
-      expect(words, 'the repaired stretch has a duplicate, a hole, or a row out of turn').toEqual(
-        Array.from({ length: words.length }, (_, at) => `u${at + 1}`),
-      );
+      // The record keeps its newest whole turns (`MORE_TURNS`): the frames
+      // that crossed the answer reach it, and the check is the window it keeps.
+      const tail = words.slice(-MORE_TURNS);
+      const first = Number((tail[0] ?? 'u0').slice(1));
       expect(
-        words.length,
-        "the rows above the answer's encode point never reached the record",
-      ).toBeGreaterThanOrEqual(emitted);
+        tail,
+        'the repaired stretch has a duplicate, a hole, or a row out of turn in its window',
+      ).toEqual(Array.from({ length: tail.length }, (_, at) => `u${first + at}`));
+      expect(words.length, 'the record kept more rows than the read window').toBeLessThanOrEqual(
+        MORE_TURNS,
+      );
     } finally {
       rig.close();
     }

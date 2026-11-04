@@ -258,6 +258,48 @@ describe('applyUpdate', () => {
       expect(next.conversation.turns).toHaveLength(1);
       expect(next.conversation.turns[0]?.messages).toHaveLength(2);
     });
+
+    /**
+     * The record keeps the window a fresh read sends, so a long-lived seat
+     * retains no more than a reload would hand it. The chat draws from its own
+     * fold, not this conversation.
+     */
+    it('keeps the newest whole turns a fresh read would send', () => {
+      const opened = 25;
+      let held = empty();
+      for (let at = 0; at < opened; at += 1) {
+        held = applyUpdate(held, {
+          chat_appended: { key: SLOT, msg: prompt(`turn-${at}`, `u-${at}`) },
+        });
+      }
+
+      expect(held.conversation.turns).toHaveLength(20);
+      // The newest turn is whole, and the window starts at the oldest turn
+      // still inside it.
+      expect(held.conversation.turns[19]?.messages).toHaveLength(1);
+      expect(held.conversation.turns[0]?.messages[0]).toMatchObject({
+        message: { content: [{ text: `turn-${opened - 20}` }] },
+      });
+      expect(
+        JSON.stringify(held.conversation.turns),
+        'a turn older than the window stayed',
+      ).not.toContain('turn-4"');
+    });
+
+    it('keeps the compaction count when the window trims', () => {
+      let held = applyUpdate(empty(), { chat_appended: { key: SLOT, msg: prompt('one', 'u-0') } });
+      held = applyUpdate(held, {
+        chat_appended: { key: SLOT, msg: { type: 'system', subtype: 'compact_boundary' } },
+      });
+      for (let at = 0; at < 25; at += 1) {
+        held = applyUpdate(held, {
+          chat_appended: { key: SLOT, msg: prompt(`turn-${at}`, `u-${at + 1}`) },
+        });
+      }
+
+      expect(held.conversation.turns).toHaveLength(20);
+      expect(held.conversation.compaction_count).toBe(1);
+    });
   });
 
   describe('the turn in flight', () => {
