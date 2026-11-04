@@ -334,6 +334,8 @@ describe('what one update asks of the fleet', () => {
       { browser_hand_off_resolved: { key: LEAD } },
       { settings_write_pending: { key: LEAD } },
       { settings_write_resolved: { key: LEAD } },
+      { vault_ask_pending: { key: LEAD } },
+      { vault_ask_resolved: { key: LEAD } },
       { worker_status_changed: {} },
       // The seat going to sleep (#1930): the row moves to the closing mark,
       // and for a close made elsewhere this frame is the only one that says
@@ -532,11 +534,11 @@ describe('the variant census', () => {
     ).toBe(true);
     expect(
       names.length,
-      'this count and the enum disagree, and `SessionUpdate` held 74 variants when it was last ' +
+      'this count and the enum disagree, and `SessionUpdate` held 76 variants when it was last ' +
         'set. Raise or lower it in the same edit that adds or removes one - the census below names ' +
         'the bucket an added variant belongs in - and if you moved no variant, the parse read a ' +
         'different set of names than the enum holds',
-    ).toBe(74);
+    ).toBe(76);
     expect(news.size, 'the `fleet_news` arms were not read out of live.rs at all').toBeGreaterThan(
       5,
     );

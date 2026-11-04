@@ -746,6 +746,12 @@ interface Frame {
   tool_use_result?: unknown;
   /** The CLI's own mark that a user frame is the harness talking, not the reader (#1543). */
   isSynthetic?: unknown;
+  /**
+   * The same mark in the live wire's spelling, where the read path's
+   * re-synthesized frame says `isSynthetic`; a claim reading only that one
+   * misses the live frame.
+   */
+  isMeta?: unknown;
   state?: unknown;
   timestamp?: unknown;
   message?: {
@@ -937,6 +943,30 @@ export function skillBody(text: string): { name: string; body: string } | null {
 }
 
 /**
+ * A slash command's expanded prompt, which arrives as the reader's own user
+ * frame: ``The user has invoked `/<name>`: <the command's words>``.
+ *
+ * **The mark alone is not the body.** The CLI stamps other harness frames
+ * `isMeta` too - a skill reminder, an image's caption, "Continue from where
+ * you left off." - so a marked frame claimed by position would swallow words
+ * that are not a skill. The opening sentence is what only an expansion
+ * carries, and it names the command, so the body pairs with its own call by
+ * name. The mark is still required: without it the frame is the reader
+ * typing the same words, which stays their turn. Both spellings are read
+ * because the live wire says `isMeta` where the read path says `isSynthetic`.
+ */
+function commandBodyOf(frame: Frame, text: string): { name: string; body: string } | null {
+  if (frame.isMeta !== true && frame.isSynthetic !== true) return null;
+  const held = text.trimStart();
+  const open = 'The user has invoked `';
+  if (!held.startsWith(open)) return null;
+  const close = held.indexOf('`', open.length);
+  if (close === -1) return null;
+  const name = held.slice(open.length, close).replace(/^\//, '').trim();
+  return name === '' ? null : { name, body: text.trim() };
+}
+
+/**
  * Whether a frame is one of the local-command family, which the chat draws
  * nothing for.
  *
@@ -1041,6 +1071,17 @@ export function namesSkill(want: string, name: string): boolean {
   const held = normalizedSkill(want);
   const wanted = normalizedSkill(name);
   return held === wanted || held.includes(wanted) || wanted.includes(held);
+}
+
+/**
+ * Whether a waiting call names the command an expansion names, exactly.
+ *
+ * A heading, a path and a call spell one skill three ways, which is what
+ * `namesSkill` is for; a command names itself, so `/audit-claude` must not
+ * ride a waiting `audit` call that merely contains its name.
+ */
+function namesCommand(want: string, name: string): boolean {
+  return want === name || want.endsWith(`:${name}`);
 }
 
 /**
@@ -2190,12 +2231,18 @@ export function fold(
    * their calls were made - and the row is the leaf itself, so a run that
    * flushed between the two changes nothing. `name` is the body's own evidence
    * where it carries one; `null` is a body whose text names no skill, claimed
-   * by position the way the synthetic mark says it should be (#1543).
+   * by position the way the synthetic mark says it should be (#1543). `exact`
+   * asks for a command's own spelling: an expansion names itself, so the loose
+   * match that serves headings and paths would pair `/audit-claude` with a
+   * waiting `audit` call.
    */
-  const attachSkillBody = (name: string | null, body: string): boolean => {
+  const attachSkillBody = (name: string | null, body: string, exact = false): boolean => {
     for (const held of skillCalls) {
       if (held.leaf.skill !== null) continue;
-      if (name !== null && !namesSkill(held.want, name)) continue;
+      if (name !== null) {
+        const names = exact ? namesCommand(held.want, name) : namesSkill(held.want, name);
+        if (!names) continue;
+      }
       held.leaf.skill = body;
       return true;
     }
@@ -3182,22 +3229,26 @@ export function fold(
             continue;
           }
           // Same rule for the frames nobody typed that arrive as the
-          // reader's: a loaded skill's body and a compaction's continuation
-          // prompt. Each rides the row it belongs to rather than the
-          // reader's own.
+          // reader's: a loaded skill's body, a slash command's expanded
+          // prompt and a compaction's continuation prompt. Each rides the row
+          // it belongs to rather than the reader's own.
           const skill = skillBody(stripped);
-          const carried = skill?.name ?? headingNameOf(stripped);
+          const command = commandBodyOf(frame, stripped);
+          const carrier = skill ?? command;
+          const carried = carrier?.name ?? headingNameOf(stripped);
           if (carried !== null) {
-            if (attachSkillBody(carried, skill?.body ?? stripped.trim())) continue;
-            // Unclaimed: a body with the CLI's plumbing line still gets a row
-            // of its own rather than being dropped; a heading frame is an
-            // ordinary user frame and falls through as it always did.
-            if (skill !== null) {
+            if (attachSkillBody(carried, carrier?.body ?? stripped.trim(), command !== null)) {
+              continue;
+            }
+            // Unclaimed: a body carrying its own name still gets a row of its
+            // own rather than being dropped; a heading frame is an ordinary
+            // user frame and falls through as it always did.
+            if (carrier !== null) {
               push({
                 kind: 'skill',
                 key: keyOf(at, frame, blockAt),
-                name: skill.name,
-                body: skill.body,
+                name: carrier.name,
+                body: carrier.body,
               });
               continue;
             }
@@ -3230,9 +3281,16 @@ export function fold(
           // nor a matching heading, which rides the first call still waiting
           // for one - named by position the way the CLI injects it, right
           // after the call that loaded the skill. With no call waiting it
-          // still draws, as a notice - never as the reader's own turn.
+          // still draws, as a notice - never as the reader's own turn. Both
+          // spellings are one mark - the live wire says `isMeta`, a reloaded
+          // transcript re-synthesizes `isSynthetic` - and reading one renders
+          // the same frame two ways after a reload.
           const body = stripped.trim();
-          if (carried === null && body !== '' && frame.isSynthetic === true) {
+          if (
+            carried === null &&
+            body !== '' &&
+            (frame.isMeta === true || frame.isSynthetic === true)
+          ) {
             if (attachSkillBody(null, body)) continue;
             push({
               kind: 'notice',

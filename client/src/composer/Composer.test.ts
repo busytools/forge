@@ -6,6 +6,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { hideBrowser, onModifier, onModifierChord, showBrowser } from '../browser/link';
 import { openSurface, selectTab, surface } from '../browser/surface.svelte';
 import { repoPath } from '../repo';
+// One frame shared with forge-server's decode test, so the dock's literal and
+// the Rust decoder cannot drift into different nesting.
+import vaultAnswerFrames from './vault-answer-frames.json';
 
 /**
  * The shell's own door, mock-able so both halves of Open's claim are testable
@@ -130,6 +133,7 @@ import {
   SLOT,
   slackDraftAsk,
   take,
+  vaultAsk,
   wire,
   type Wire,
 } from './testing';
@@ -178,6 +182,19 @@ function writeFeedback(text: string): void {
   box.value = text;
   box.dispatchEvent(new Event('input', { bubbles: true }));
   flushSync();
+}
+
+/** The clipboard jsdom does not carry, where a case wants one. */
+function clipboard(write: (text: string) => Promise<void>): ReturnType<typeof vi.fn> {
+  const stub = vi.fn(write);
+  // **The clipboard is added, not the navigator replaced.** The page reads
+  // `navigator.platform` to decide its key substitutions, and a whole-object
+  // stub would take that away with jsdom's clipboard-less one.
+  Object.defineProperty(navigator, 'clipboard', {
+    configurable: true,
+    value: { writeText: stub },
+  });
+  return stub;
 }
 
 /** The verb inside the send-back row, which is not one of the card's acts. */
@@ -275,6 +292,10 @@ afterEach(() => {
   // left in the history would answer the next case's mount.
   vi.mocked(onModifier).mockClear();
   vi.mocked(onModifierChord).mockClear();
+  // A clipboard a case stubbed is jsdom's no longer: the next case's landing
+  // would write into a spy the case before still owns.
+  vi.unstubAllGlobals();
+  delete (navigator as unknown as { clipboard?: unknown }).clipboard;
 });
 
 /** The send a seat is waiting on, which the conversation draws and the box does not. */
@@ -6678,6 +6699,201 @@ describe('the dock', () => {
     ]);
   });
 
+  it('draws a held vault call with the facts it would act on, and no secret value', () => {
+    open({
+      record: record({
+        pending_asks: [
+          vaultAsk({
+            tool: 'vault__update',
+            summary: "change the login for 'bank'",
+            masked_diff: 'password: ********',
+            attachment: { name: 'notes.txt', size: 97, replaces: null },
+            // **A value planted on an unknown key must never reach the card.**
+            // The draft's contract is that it carries no secret, and drawing
+            // only the fields the card names is what keeps that true whatever
+            // a newer server puts beside them.
+            secret: 'hunter2-never-drawn',
+          }),
+        ],
+      }),
+    });
+
+    expect(drawn(), 'the summary leads').toContain("change the login for 'bank'");
+    expect(drawn(), 'the tool is named as its wire spelling').toContain('vault__update');
+    expect(drawn(), 'the item').toContain('bank');
+    expect(drawn(), 'and its id').toContain('cipher-id');
+    expect(drawn(), 'the field').toContain('password');
+    expect(drawn(), 'the masked diff').toContain('password: ********');
+    expect(drawn(), 'the attachment').toContain('notes.txt (97 bytes)');
+    expect(drawn(), 'no secret planted beside the draft is drawn').not.toContain('hunter2');
+    expect(
+      document.querySelector('.dock input[type="password"]'),
+      'an unlocked card draws no unlock field',
+    ).toBeNull();
+  });
+
+  it('approves a vault call by its own id, with no unlock material when the session is open', () => {
+    const harness = open({ record: record({ pending_asks: [vaultAsk()] }) });
+
+    action('Approve').click();
+    flushSync();
+
+    expect(commands(harness)).toEqual([
+      {
+        respond_vault_ask: {
+          key: SLOT,
+          id: '0192e1c0-0000-7000-8000-0000000000cc',
+          answer: { decision: 'approve' },
+        },
+      },
+    ]);
+    expect(document.querySelector('.dock'), 'the dock goes with the answer').toBeNull();
+  });
+
+  it('unlocks before approving a locked vault call, and carries the password and 2FA', () => {
+    const harness = open({
+      record: record({ pending_asks: [vaultAsk({ needs_unlock: true })] }),
+    });
+
+    const password = document.querySelector('.dock input[type="password"]');
+    if (!(password instanceof HTMLInputElement)) {
+      throw new Error('the locked card drew no masked password field');
+    }
+    expect(
+      [...document.querySelectorAll('.dock .unlock input')],
+      'the optional 2FA field is drawn beside it',
+    ).toHaveLength(2);
+    expect(
+      action('Approve').hasAttribute('disabled'),
+      'the approval is what unlocks, so it waits for the password',
+    ).toBe(true);
+
+    password.value = 'open sesame';
+    password.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    expect(action('Approve').hasAttribute('disabled'), 'a password makes it available').toBe(false);
+
+    const twoFactor = [...document.querySelectorAll<HTMLInputElement>('.dock .unlock input')][1];
+    if (twoFactor === undefined) throw new Error('the locked card drew no 2FA field');
+    twoFactor.value = '123456';
+    twoFactor.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+
+    action('Approve').click();
+    flushSync();
+
+    expect(commands(harness)).toEqual([vaultAnswerFrames.approve]);
+  });
+
+  it('declines a locked vault call with Escape in a masked field', () => {
+    const harness = open({
+      record: record({ pending_asks: [vaultAsk({ needs_unlock: true })] }),
+    });
+
+    const password = document.querySelector('.dock input[type="password"]');
+    if (!(password instanceof HTMLInputElement)) {
+      throw new Error('the locked card drew no masked password field');
+    }
+    password.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    flushSync();
+
+    expect(commands(harness)).toEqual([
+      {
+        respond_vault_ask: {
+          key: SLOT,
+          id: '0192e1c0-0000-7000-8000-0000000000cc',
+          answer: { decision: 'decline' },
+        },
+      },
+    ]);
+  });
+
+  it('sends a vault call back with the note the reader writes', () => {
+    const harness = open({ record: record({ pending_asks: [vaultAsk()] }) });
+
+    action('Send back with a note').click();
+    flushSync();
+
+    const note = document.querySelector('.dock .sendback textarea');
+    if (!(note instanceof HTMLTextAreaElement)) throw new Error('the dock drew no note field');
+    expect(document.activeElement, 'the field arrives with the keyboard').toBe(note);
+    expect(sendBackAction().hasAttribute('disabled'), 'no words, no answer').toBe(true);
+
+    note.value = 'ask for the password, not the TOTP';
+    note.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    expect(sendBackAction().hasAttribute('disabled'), 'words make it available').toBe(false);
+
+    sendBackAction().click();
+    flushSync();
+
+    expect(commands(harness)).toEqual([vaultAnswerFrames.send_back]);
+  });
+
+  it('declines a vault call without running it', () => {
+    const harness = open({ record: record({ pending_asks: [vaultAsk()] }) });
+
+    action('Decline').click();
+    flushSync();
+
+    expect(commands(harness)).toEqual([
+      {
+        respond_vault_ask: {
+          key: SLOT,
+          id: '0192e1c0-0000-7000-8000-0000000000cc',
+          answer: { decision: 'decline' },
+        },
+      },
+    ]);
+  });
+
+  it('clears the vault sending line when the call resolves, even for its own answer', () => {
+    const harness = open({ record: record({ pending_asks: [vaultAsk()] }) });
+
+    action('Send back with a note').click();
+    flushSync();
+    const note = document.querySelector('.dock .sendback textarea');
+    if (!(note instanceof HTMLTextAreaElement)) throw new Error('the dock drew no note field');
+    note.value = 'ask for the password, not the TOTP';
+    note.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    sendBackAction().click();
+    flushSync();
+    expect(drawn(), 'the press is acknowledged while it is in flight').toContain(
+      'Sending your note to the agent',
+    );
+
+    harness.say({
+      kind: 'update',
+      update: {
+        vault_ask_resolved: {
+          key: { org: 'Busytools', project: 'forge', label: 'lead' },
+          id: '0192e1c0-0000-7000-8000-0000000000cc',
+          ending: 'sent_back',
+        },
+      },
+    });
+    flushSync();
+    expect(drawn(), 'the sending line goes with the settled call').not.toContain(
+      'Sending your note to the agent',
+    );
+  });
+
+  it('draws a vault refusal where the card stood', () => {
+    const harness = open({ record: record({ pending_asks: [vaultAsk()] }) });
+
+    action('Decline').click();
+    flushSync();
+    harness.say({
+      kind: 'error',
+      what: 'respond_vault_ask',
+      why: 'that vault call is no longer waiting: it has been answered',
+    });
+    flushSync();
+
+    expect(drawn(), 'the reason is not dropped').toContain('no longer waiting');
+  });
+
   it('posts the held draft from the verb the reader picks, addressed by its own id', () => {
     const harness = open({ record: record({ pending_asks: [slackDraftAsk()] }) });
 
@@ -7278,8 +7494,10 @@ describe('the dock', () => {
     action('Open browser').click();
     await raised();
     barAction('Done').click();
-    flushSync();
-    expect(document.querySelector('.dock'), 'the dock stands down for the click').toBeNull();
+    await vi.waitFor(() => {
+      flushSync();
+      expect(document.querySelector('.dock'), 'the dock stands down for the click').toBeNull();
+    });
 
     // The core resolved it elsewhere, so the click's answer is refused: the
     // reason rides the hand-off's own operation name and is drawn where the
@@ -7322,7 +7540,9 @@ describe('the dock', () => {
     action('Open browser').click();
     await raised();
     barAction('Done').click();
-    flushSync();
+    await vi.waitFor(() =>
+      expect(hideBrowser, 'the window comes down with the answer').toHaveBeenCalledTimes(1),
+    );
 
     expect(commands(harness)).toEqual([
       {
@@ -7363,11 +7583,11 @@ describe('the dock', () => {
     );
     await raised();
     barAction('Done').click();
-    flushSync();
-
-    expect(hideBrowser, 'Done carries the seat for the raise it is lowering').toHaveBeenCalledWith(
-      null,
-      SLOT,
+    await vi.waitFor(() =>
+      expect(
+        hideBrowser,
+        'Done carries the seat for the raise it is lowering',
+      ).toHaveBeenCalledWith(null, SLOT),
     );
   });
 
@@ -8319,8 +8539,10 @@ describe('the dock', () => {
     action('Open browser').click();
     await raised();
     barAction('Done').click();
-    flushSync();
-    expect(document.querySelector('.dock'), 'the dock stands down for the click').toBeNull();
+    await vi.waitFor(() => {
+      flushSync();
+      expect(document.querySelector('.dock'), 'the dock stands down for the click').toBeNull();
+    });
 
     // The stand-down for THIS answer lands: the record drops the ask, and the
     // ending must not be read as another view's - that sentence would be
@@ -8472,7 +8694,7 @@ describe('the dock', () => {
 
   /** Press the dock's mic and let the take it starts settle. */
   async function micPress(): Promise<void> {
-    const button = document.querySelector('.dock .micb');
+    const button = document.querySelector('.dock .mic');
     if (!(button instanceof HTMLElement)) throw new Error('the dock drew no mic');
     button.click();
     for (let turn = 0; turn < 4; turn += 1) await Promise.resolve();
@@ -8499,12 +8721,12 @@ describe('the dock', () => {
     for (const held of [questionAsk(), permissionAsk()]) {
       again(held, false);
       expect(
-        document.querySelector('.dock .micb'),
+        document.querySelector('.dock .mic'),
         'a control this install cannot honour is worse than none',
       ).toBeNull();
 
       again(held, true);
-      expect(document.querySelector('.dock .micb'), 'and the door where it can').not.toBeNull();
+      expect(document.querySelector('.dock .mic'), 'and the door where it can').not.toBeNull();
     }
   });
 
@@ -8512,7 +8734,7 @@ describe('the dock', () => {
     open({ record: record({ pending_asks: [slackDraftAsk()] }), dictation: true });
 
     expect(
-      document.querySelector('.dock .micb'),
+      document.querySelector('.dock .mic'),
       'the words are approved, not composed, and the box is where they are edited',
     ).toBeNull();
   });
@@ -11211,5 +11433,427 @@ describe('the voice switch across a body swap', () => {
       (off[0]?.command as { voice_mode: { explicit: boolean } }).voice_mode.explicit,
       'a seat change pauses; only the reader own off tells the agent it stopped',
     ).toBe(false);
+  });
+});
+
+describe('dictation in the send-back box', () => {
+  /**
+   * **The send-back box is a dictation box.** Its words belong to the reader
+   * who is correcting a held post, not to the composer behind the card: a take
+   * begun there lands in the feedback field, and the words are copied so the
+   * reader can carry them elsewhere.
+   */
+  it('lands a take in the send-back box and copies the words to the clipboard', async () => {
+    const write = clipboard(() => Promise.resolve());
+    const harness = open({ dictation: true, record: record({ pending_asks: [slackDraftAsk()] }) });
+
+    action('Send back with feedback').click();
+    flushSync();
+
+    const mic = document.querySelector('.dock .sendback .mic');
+    if (!(mic instanceof HTMLElement)) throw new Error('the send-back box drew no mic');
+    mic.click();
+    flushSync();
+    await opened();
+
+    harness.say({
+      kind: 'update',
+      update: {
+        dictate_ended: {
+          key: SLOT,
+          outcome: { landed: { text: 'say staging, not prod', truncated: false } },
+          generation: 1,
+        },
+      },
+    });
+    // The core's own word releases the take and the seat's record carries the
+    // landing; the page is handed that record, as a re-render hands one over.
+    harness.page.record = record({
+      pending_asks: [slackDraftAsk()],
+      composer: {
+        take: null,
+        notice: { kind: 'landed', text: 'say staging, not prod', truncated: false },
+        machine: null,
+      },
+    });
+    flushSync();
+
+    expect(feedbackBox().value, 'the words land in the send-back box').toBe(
+      'say staging, not prod',
+    );
+    expect(write, 'one write per landing').toHaveBeenCalledTimes(1);
+    expect(write).toHaveBeenCalledWith('say staging, not prod');
+
+    // The prompt is answered, so the composer's field returns. The words did
+    // not go there: the send-back box was the target.
+    harness.page.record = record({
+      composer: { take: null, notice: null, machine: null },
+    });
+    flushSync();
+    expect(field().value, 'the composer draft did not take the words').toBe('');
+  });
+
+  /**
+   * A take begun in the send-back box whose field closes before the words land
+   * keeps them in the composer's draft, which is the box the card leaves
+   * behind. Nothing is lost.
+   */
+  it('falls back to the composer draft when the send-back box closes before landing', async () => {
+    const write = clipboard(() => Promise.resolve());
+    const harness = open({ dictation: true, record: record({ pending_asks: [slackDraftAsk()] }) });
+
+    action('Send back with feedback').click();
+    flushSync();
+
+    const mic = document.querySelector('.dock .sendback .mic');
+    if (!(mic instanceof HTMLElement)) throw new Error('the send-back box drew no mic');
+    mic.click();
+    flushSync();
+    await opened();
+
+    press('Escape');
+    flushSync();
+    expect(document.querySelector('.dock .sendback'), 'the field closed before landing').toBeNull();
+
+    // The take still runs after its box closed - the core's own word ends it,
+    // and the words land behind the card, in the composer's draft.
+    harness.say({
+      kind: 'update',
+      update: {
+        dictate_ended: {
+          key: SLOT,
+          outcome: { landed: { text: 'kept words', truncated: false } },
+          generation: 1,
+        },
+      },
+    });
+    flushSync();
+    harness.page.record = record({
+      pending_asks: [slackDraftAsk()],
+      composer: {
+        take: null,
+        notice: { kind: 'landed', text: 'kept words', truncated: false },
+        machine: null,
+      },
+    });
+    flushSync();
+
+    // The prompt still holds the slot, so the composer's field is not drawn.
+    // The words are in the draft, and the prompt's answer leaves them there.
+    expect(document.querySelector('[data-editor="composer"]')).toBeNull();
+    harness.page.record = record({
+      composer: {
+        take: null,
+        notice: { kind: 'landed', text: 'kept words', truncated: false },
+        machine: null,
+      },
+    });
+    flushSync();
+    expect(field().value, 'the words were kept in the composer draft').toBe('kept words');
+    expect(write).toHaveBeenCalledWith('kept words');
+  });
+
+  /**
+   * **An answered draft takes the send-back box with it.** Posting or
+   * declining while the take still runs unmounts the dock, so the words have
+   * no box there to land in; they fall through to the composer's draft rather
+   * than into state the next prompt clears.
+   */
+  it('falls back to the composer draft when the draft is answered while the take runs', async () => {
+    const write = clipboard(() => Promise.resolve());
+    const harness = open({ dictation: true, record: record({ pending_asks: [slackDraftAsk()] }) });
+
+    action('Send back with feedback').click();
+    flushSync();
+
+    const button = document.querySelector('.dock .sendback .mic');
+    if (!(button instanceof HTMLElement)) throw new Error('the send-back box drew no mic');
+    button.click();
+    flushSync();
+    await opened();
+
+    // The reader answers the draft before the take lands.
+    action('Post').click();
+    flushSync();
+    expect(document.querySelector('.dock'), 'the dock went with the answer').toBeNull();
+
+    // The core's own word ends the take, and the seat's record carries the
+    // landing.
+    harness.say({
+      kind: 'update',
+      update: {
+        dictate_ended: {
+          key: SLOT,
+          outcome: { landed: { text: 'answered mid-take', truncated: false } },
+          generation: 1,
+        },
+      },
+    });
+    flushSync();
+    // The landing arrives while the core still lists the answered draft, so
+    // the prompt-key reset has not run yet and the send-back box's state is
+    // still standing behind the unmounted dock.
+    harness.page.record = record({
+      pending_asks: [slackDraftAsk()],
+      composer: {
+        take: null,
+        notice: { kind: 'landed', text: 'answered mid-take', truncated: false },
+        machine: null,
+      },
+    });
+    flushSync();
+    // The answer settles and the ask leaves; the prompt-key reset clears the
+    // send-back box's state.
+    harness.page.record = record({
+      composer: {
+        take: null,
+        notice: { kind: 'landed', text: 'answered mid-take', truncated: false },
+        machine: null,
+      },
+    });
+    flushSync();
+
+    expect(field().value, 'the words were kept in the composer draft').toBe('answered mid-take');
+    expect(write).toHaveBeenCalledWith('answered mid-take');
+  });
+
+  /**
+   * **The running take draws on the send-back row.** A reader who pressed its
+   * mic sees the card where the words will land, the field stands down under
+   * it, and the card's way out abandons the take.
+   */
+  it('draws the running take on the send-back row, and its cancel abandons it', async () => {
+    const harness = open({ dictation: true, record: record({ pending_asks: [slackDraftAsk()] }) });
+
+    action('Send back with feedback').click();
+    flushSync();
+
+    const button = document.querySelector('.dock .sendback .mic');
+    if (!(button instanceof HTMLElement)) throw new Error('the send-back box drew no mic');
+    button.click();
+    flushSync();
+    await opened();
+    showTake(harness);
+
+    expect(
+      document.querySelector('.dock .sendback .tc'),
+      'the take draws where its words will land',
+    ).not.toBeNull();
+    expect(
+      document.querySelector('.dock .sendback textarea'),
+      'the card stands in the field while it runs',
+    ).toBeNull();
+    expect(
+      document.querySelector('.dock .blip'),
+      'the foot says nothing about the draft while the card holds the send-back row',
+    ).toBeNull();
+
+    const stops = mic.held.stops;
+    const close = document.querySelector('.dock .sendback .tc .x');
+    if (!(close instanceof HTMLElement)) throw new Error('the take card drew no way out');
+    close.click();
+    flushSync();
+
+    expect(harness.sent.at(-1)?.command, 'the stop goes out as an abandon').toEqual({
+      dictate_stop: { key: SLOT, submit: false },
+    });
+    expect(mic.held.stops, 'and the microphone is let go of on this side too').toBe(stops + 1);
+  });
+
+  /**
+   * **The landing stands when the clipboard refuses the write.** A page over a
+   * plain-http origin has no clipboard at all, and a live one can still refuse;
+   * neither may cost the reader the words that just landed.
+   */
+  it('keeps the landing when the clipboard refuses the write', async () => {
+    const write = clipboard(() => Promise.reject(new Error('refused')));
+    const harness = open({ dictation: true });
+    await beginTake(harness);
+    harness.page.record = record({
+      composer: {
+        take: null,
+        notice: { kind: 'landed', text: 'still lands', truncated: false },
+        machine: null,
+      },
+    });
+    flushSync();
+
+    expect(field().value, 'the words land').toBe('still lands');
+    expect(write).toHaveBeenCalledWith('still lands');
+  });
+
+  /**
+   * **The composer's own take still lands in the composer.** The send-back box
+   * is a third destination, not a replacement for the draft.
+   */
+  it("keeps the composer's take landing in the draft", async () => {
+    const write = clipboard(() => Promise.resolve());
+    const harness = open({ dictation: true });
+    await beginTake(harness);
+    harness.page.record = record({
+      composer: {
+        take: null,
+        notice: { kind: 'landed', text: 'fix the flaky test', truncated: false },
+        machine: null,
+      },
+    });
+    flushSync();
+
+    expect(field().value, 'the words land in the draft').toBe('fix the flaky test');
+    expect(write).toHaveBeenCalledWith('fix the flaky test');
+  });
+
+  /**
+   * **The dock's words row still lands in its notes.** The send-back box is a
+   * third destination, not a replacement for the dock's own row.
+   */
+  it("keeps the dock's words row landing in its notes", async () => {
+    const write = clipboard(() => Promise.resolve());
+    const harness = open({ dictation: true, record: record({ pending_asks: [questionAsk()] }) });
+    await beginTake(harness);
+    harness.page.record = record({
+      pending_asks: [questionAsk()],
+      composer: {
+        take: null,
+        notice: { kind: 'landed', text: 'the dock words', truncated: false },
+        machine: null,
+      },
+    });
+    flushSync();
+
+    const dockBox = document.querySelector('.dock [data-editor="dock"]');
+    expect(
+      dockBox instanceof HTMLTextAreaElement ? dockBox.value : null,
+      'the words land in the dock',
+    ).toBe('the dock words');
+    expect(write).toHaveBeenCalledWith('the dock words');
+  });
+
+  /**
+   * **A record hands the same landing over on every write.** The memory places
+   * it once; a later read carrying the same words is the same landing, not a
+   * second one, so the send-back box does not grow the words twice and the
+   * clipboard is written once.
+   */
+  it('does not append or copy the same landing twice when the record hands it over again', async () => {
+    const write = clipboard(() => Promise.resolve());
+    const harness = open({ dictation: true, record: record({ pending_asks: [slackDraftAsk()] }) });
+
+    action('Send back with feedback').click();
+    flushSync();
+
+    const mic = document.querySelector('.dock .sendback .mic');
+    if (!(mic instanceof HTMLElement)) throw new Error('the send-back box drew no mic');
+    mic.click();
+    flushSync();
+    await opened();
+
+    const landed = { kind: 'landed', text: 'say staging, not prod', truncated: false };
+    harness.page.record = record({
+      pending_asks: [slackDraftAsk()],
+      composer: { take: null, notice: landed, machine: null },
+    });
+    flushSync();
+
+    expect(feedbackBox().value, 'the words land once').toBe('say staging, not prod');
+    expect(write, 'and are copied once').toHaveBeenCalledTimes(1);
+
+    // A later write re-hands the same landing. Its words are already here.
+    harness.page.record = record({
+      pending_asks: [slackDraftAsk()],
+      composer: { take: null, notice: { ...landed }, machine: null },
+    });
+    flushSync();
+
+    expect(feedbackBox().value, 'the words are not appended twice').toBe('say staging, not prod');
+    expect(write, 'and not copied twice').toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * **The send-back box belongs to the prompt.** A new held post is a new
+   * prompt, so what was written for the last one does not come back in the box
+   * that replaces it.
+   */
+  it('clears the send-back box when a new held post arrives', () => {
+    const write = clipboard(() => Promise.resolve());
+    const harness = open({ dictation: true, record: record({ pending_asks: [slackDraftAsk()] }) });
+
+    action('Send back with feedback').click();
+    flushSync();
+    writeFeedback('half a thought');
+
+    expect(feedbackBox().value, 'the words are in the box').toBe('half a thought');
+
+    // The next held post arrives, keyed by its own id, so the dock is a fresh
+    // one and the send-back box must be shut and empty behind it.
+    harness.page.record = record({
+      pending_asks: [slackDraftAsk({ id: '0192e1c0-0000-7000-8000-000000000001' })],
+    });
+    flushSync();
+
+    expect(
+      document.querySelector('.dock .sendback'),
+      'the send-back box did not survive the prompt it belonged to',
+    ).toBeNull();
+
+    action('Send back with feedback').click();
+    flushSync();
+    expect(feedbackBox().value, 'and it opens empty for the new post').toBe('');
+    expect(write, 'no landing happened, so nothing was copied').not.toHaveBeenCalled();
+  });
+
+  /**
+   * **A refused press does not decide the next take's destination.** The
+   * send-back box's mic opens the box and records the intent, and a permission
+   * the reader refused leaves both behind: the next press from the composer's
+   * own key must land in the composer's draft, not in the box whose mic was
+   * refused.
+   */
+  it('does not route the next take to the send-back box after its press was refused', async () => {
+    const write = clipboard(() => Promise.resolve());
+    const harness = open({ dictation: true, record: record({ pending_asks: [slackDraftAsk()] }) });
+
+    action('Send back with feedback').click();
+    flushSync();
+
+    const button = document.querySelector('.dock .sendback .mic');
+    if (!(button instanceof HTMLElement)) throw new Error('the send-back box drew no mic');
+    mic.held.refuse = true;
+    try {
+      button.click();
+      await opened();
+      expect(drawn(), 'the refusal draws its line').toContain('the microphone was refused');
+    } finally {
+      mic.held.refuse = false;
+    }
+
+    // The reader tries the key instead. The refused press must not decide
+    // where these words go.
+    key('ControlRight', 'keydown');
+    await opened();
+    key('ControlRight', 'keyup');
+    showTake(harness);
+    endTake(harness);
+    harness.page.record = record({
+      pending_asks: [slackDraftAsk()],
+      composer: {
+        take: null,
+        notice: { kind: 'landed', text: 'key words', truncated: false },
+        machine: null,
+      },
+    });
+    flushSync();
+
+    // The prompt is answered, so the composer's field returns with the words.
+    harness.page.record = record({
+      composer: {
+        take: null,
+        notice: { kind: 'landed', text: 'key words', truncated: false },
+        machine: null,
+      },
+    });
+    flushSync();
+    expect(field().value, 'the key took the words to the composer').toBe('key words');
+    expect(write).toHaveBeenCalledWith('key words');
   });
 });

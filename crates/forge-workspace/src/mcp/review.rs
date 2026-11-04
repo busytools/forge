@@ -1376,7 +1376,7 @@ mod tests {
             env_file: None,
             max_workers: None,
             permission_mode: forge_primitives::permission::PermissionMode::Auto,
-            vault_roots: Vec::new(),
+            document_roots: Vec::new(),
             handoff: None,
             browser_profile: forge_primitives::browser::ProfileKey::of("TestOrg", "default")
                 .expect("a profile key"),

@@ -37,6 +37,7 @@
     silent = null,
     nav = { can_back: false, can_forward: false },
     onabandon = () => {},
+    onpress = () => {},
     dictate = null,
     dictation = false,
     takeline = null,
@@ -76,6 +77,9 @@
     /** What the page's own history allows; the shell pushes it as it moves. */
     nav?: NavState;
     onabandon?: () => void;
+    /** The bar's mic was pressed, which the composer reads to clear the box a
+     *  take would otherwise land in. */
+    onpress?: () => void;
     /** The take the note line's shared mic drives, from the composer. */
     dictate?: Dictation | null;
     dictation?: boolean;
@@ -491,7 +495,7 @@
         />
       {/if}
       {#if dictation && dictate !== null}
-        <DictateControl {dictate} holdable={false} />
+        <DictateControl {dictate} {onpress} holdable={false} />
       {/if}
       {#if cansend && phase === null && !opening && notes.trim() !== ''}
         <button class="sendb" type="button" aria-label="send feedback" onclick={send}>

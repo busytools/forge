@@ -288,7 +288,7 @@ quietly applying nothing.
 | `max_workers`     | integer | `2`     | Cap on this project's concurrently live dynamic workers. The count is per project: workers live in other projects neither consume this project's budget nor raise its cap. A spawn over the cap errors instead of queuing; despawning a worker frees its slot. Workers restored by the boot or lead-reconnect respawn of persisted rows are exempt, but still count toward the cap once live. `0` disables dynamic spawns for the project.                                                                                                                                     |
 | `permission_mode` | string  | `auto`  | Stamps the CLI's permission mode onto every session this project spawns, overriding the session default. Absent means `auto`, not the session default, so a project's sessions run one mode however its org's accounts rotate.                                                                                                                                                                                                                                                                                                                                                 |
 | `model`           | string  |         | The project's model. Fills the CLI's model slots at spawn (`ANTHROPIC_DEFAULT_HAIKU_MODEL`, `_OPUS_MODEL`, `_SONNET_MODEL`, `ANTHROPIC_SMALL_FAST_MODEL`, `CLAUDE_CODE_SUBAGENT_MODEL` all carry it) and is the session default a `/model` change overrides. Must be declared by at least one account in the org, or the load fails - a model no account serves would otherwise stamp every slot and 503 each session's first request. Required: the walk that picks a session's account matches on the model an account serves, so a project without one is refused at spawn. |
-| `vault_roots`     | array   | `[]`    | Extra roots the document read accepts beyond the session's own tree, so a project's documents can live outside its repo (a vault, a shared spec directory). Each entry is an absolute path, `~` or a `~/` path; a relative one fails the load. |
+| `document_roots`  | array   | `[]`    | Extra roots the document read accepts beyond the session's own tree, so a project's documents can live outside its repo (a vault, a shared spec directory). Each entry is an absolute path, `~` or a `~/` path; a relative one fails the load. |
 | `handoff`         | table   | none    | Written as `[orgs.projects.handoff]` under its own entry. Sets this project's handoff trigger; every key is optional and falls back to the top-level `[handoff]` section above. |
 | `browser_profile` | string  | the org's | The browser profile's name inside this project's org: a project setting `work` under `Busytools` drives `Busytools/work`. Absent keeps the org's, and a bad name fails the load naming the key and the value. |
 | `slack`           | table   | the org's | Written as `[orgs.projects.slack]` with `workspace = "<label>"`: the `[[slack]]` this project's sessions act in. Absent keeps the org's binding. |
@@ -306,13 +306,13 @@ the CLI reports back on connect, and the `/mode` picker offers
 `bypassPermissions` only on sessions launched into it; the CLI refuses a
 mid-session switch to bypass.
 
-### `vault_roots`
+### `document_roots`
 
 ```toml
 [[orgs.projects]]
 name = "companies"
 path = "~/Projects/companies"
-vault_roots = ["~/Madness"]
+document_roots = ["~/Madness"]
 ```
 
 Extra roots the document read accepts beyond the session's own tree, so
@@ -331,7 +331,7 @@ the session's tree: <path>`.
 
 Each entry is an absolute path, `~` (your home directory) or a `~/`
 path. Anything else fails the load naming the key and the entry:
-`project 'companies' in forge.toml at ... sets vault_roots entry
+`project 'companies' in forge.toml at ... sets document_roots entry
 'Madness', which is not absolute; every entry must be an absolute path,
 ~ or start with ~/`, because a relative root would resolve against
 whatever directory the read happened in.
@@ -622,6 +622,46 @@ the state kept well inside it. It serves about 100K tokens/s at 80
 requests/s and bills $0.042 per million input tokens, rates upstream
 notes can change without notice; the default 30s `timeout_ms` has ample
 headroom.
+
+## `[vault]`
+
+Optional. Absent means the vault family (`vault__search`, `vault__get`,
+`vault__create`, `vault__update`, `vault__trash`, `vault__restore`,
+`vault__totp_code`, `vault__attachment_get`, `vault__attachment_put` and the
+four `vault__folder_*` tools) is not injected into any session. The family is
+also gated per agent through `mcp_families`, like every other toggleable
+family. Adding the section does not put the family into sessions that are
+already running: a session's tool catalogue is fixed when it spawns, so a
+live session gains the tools only from a new spawn.
+
+| Key     | Type   | Required | Notes                                                           |
+| ------- | ------ | -------- | --------------------------------------------------------------- |
+| `url`   | string | yes      | The Vaultwarden base URL, e.g. `https://vault.example.com`.     |
+| `email` | string | yes      | The account's email; it is the salt the master key derives with. |
+
+Both keys are mandatory once the section is present. A missing one refuses
+the load naming the key: ``[vault] `url` is required when `[vault]` is
+present`` (or the same sentence for `email`). An unknown key in the table
+refuses the load like every other section, and `url` must be an `https://`
+URL: an `http://` one refuses the load with ``[vault] `url` must be an
+https:// URL; http is refused``. There is no built-in default, because
+`forge.toml` is the one source of truth for the account.
+
+One session serves every agent and every session. It holds the derived keys
+in memory only, zeroized, and never stores the master password: the first
+vault call after a forge start parks a card whose masked field carries the
+password over the local answer channel, and one unlock serves every card
+parked behind it. There is no client-side idle timeout and no fixed lifetime;
+a call the server rejects with 401 tries the refresh token, and only a failed
+refresh locks the session and makes the next held call ask again. A reload
+that changes this section rebuilds the session, which locks it; a reload that
+leaves the section alone keeps it unlocked.
+
+Every vault operation is held for the reader's approval and appends one line
+to `<app-support>/vault/audit-<config-dir-store-key>.jsonl` - when, who,
+which tool, which item and field, the decision and the outcome, never a
+value. The file rotates at 10 MB into `.1` through `.6`, so the six most
+recent chunks and the current file are kept.
 
 ## `[[slack]]`
 
@@ -1025,13 +1065,15 @@ accepts has no class.
 | --- | --- |
 | `[[orgs]]` - `name`, `accounts`, `fallback_accounts`, `browser_profile`; `[orgs.slack] workspace`, `[orgs.projects.slack] workspace` | Live. The roster, pins and the next tool call read the new values. A Slack binding to a label already in `[[slack]]` applies to the next tool call. |
 | `[[orgs.projects]]` - `name`, `path` | Live. The roster re-reads them; a removed project leaves it, and sessions already running keep running. |
-| `[[orgs.projects]]` - `resume_lead`, `model`, `permission_mode`, `max_workers`, `env`, `env_file`, `vault_roots`, `browser_profile` | Next session. The next spawn reads them; a running session keeps what it spawned with. Toggling `resume_lead` on a project that already exists applies the next time it starts, and an added project with `resume_lead = true` starts. |
+| `[[orgs.projects]]` - `resume_lead`, `model`, `permission_mode`, `max_workers`, `env`, `env_file`, `browser_profile` | Next session. The next spawn reads them; a running session keeps what it spawned with. Toggling `resume_lead` on a project that already exists applies the next time it starts, and an added project with `resume_lead = true` starts. |
+| `[[orgs.projects]]` - `document_roots` | Live. The next document read or hand-off consults the reloaded list. |
 | `[[accounts]]` - `display_name`, `provider`, `base_url`, `token`, `models`, `model_slugs`, `model_aliases` | Live. The pool gains or changes accounts, and retires a removed one: sessions bound to it keep working, new selections never see it, and usage probes follow the new set. A re-minted token reaches a bound session on its next request. |
 | `[[accounts]]` - `env` | Next session. Folded into each account's env at load, so the next spawn carries it; a running child keeps its own environment. |
 | `[env]` | Next session. Folded into each account's env at load, so the next spawn carries it. |
 | `[models."<name>"]` | Next session. The next spawn stamps the new parameters. |
 | `[handoff]`, `[orgs.projects.handoff]` | Live. The next handoff reads it. |
 | `[systemone]` | Next session. A session's MCP facade captures the client when it spawns, so a session already running keeps the tools it had. |
+| `[vault]` | Live. A reload that changes the section rebuilds the process-wide session, which locks it; a reload that leaves the section alone keeps it unlocked. |
 | `[gateway] streak_count`, `streak_window_secs`, `no_reset_cooldown_secs` | Live. A reload that moved these replaces the rotation numbers; one that did not leaves the live cooldowns and streaks alone. |
 | `[gateway] port` | Restart-only. Stored and named in the log; forge does not move a live listener. |
 | `[server] tool_record_cap_kb`, `first_frame_cap_kb`, `more_page_cap_kb` | Live for pages and `more`: a page read takes the new value at its next read, on a connection already open included. A live frame keeps the cap its connection read when it opened, so a reload reaches the next connection's stream rather than an open one's. |

@@ -17,7 +17,7 @@ use crate::workspace::Workspace;
 #[async_trait]
 pub trait DocumentFacade: Send + Sync {
     /// Read the document out of `seat`'s own tree or its project's
-    /// `vault_roots`, ask the clients drawing that seat to open it, and
+    /// `document_roots`, ask the clients drawing that seat to open it, and
     /// **park until the reader answers** - answering with the resolved
     /// path and the ending the park released on.
     ///

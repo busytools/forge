@@ -3460,6 +3460,14 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
   font-family: var(--mono); font-size: var(--fs-data);
   white-space: pre-wrap; overflow-wrap: anywhere;
   max-height: 180px; overflow-y: auto; }
+/* A locked vault card's unlock fields. They are boxes rather than the
+   borderless notes row: what is typed is a credential the reader is entering,
+   not their own words, and the pair reads as one form on the card. */
+.dock .unlock { display: flex; gap: 8px; flex-wrap: wrap; }
+.dock .unlock .fld { flex: 1 1 160px; min-width: 0; padding: 8px 10px;
+  border: 1px solid var(--line); border-radius: 8px; background: var(--s1);
+  color: var(--text); font-family: var(--mono); font-size: var(--fs-data); }
+.dock .unlock .fld::placeholder { color: var(--dim); }
 /* A long option list scrolls in place rather than pushing the foot off a
    phone: the prompt lane is a lane, not a page, and the words row below it
    must stay reachable however many options the wire sent. */
@@ -3554,13 +3562,12 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
   border: 1px solid var(--ctl); background: none; color: var(--dim);
   display: grid; place-items: center; cursor: pointer; }
 .micb:hover { color: var(--accent); border-color: var(--ctl); }
-.dock .qrow .micb { margin-left: auto; }
+.dock .qrow .mic { margin-left: auto; }
 .sendb { flex: none; width: 26px; height: 26px; border-radius: 8px;
   border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
   background: none; color: var(--accent); display: grid; place-items: center; cursor: pointer; }
 .sendb:hover { border-color: var(--accent); color: var(--hot); }
-.dock .qrow.on .micb { border-color: color-mix(in srgb, var(--accent) 45%, transparent);
-  color: var(--hot); }
+.dock .qrow.on .mic { color: var(--hot); }
 /* A refusal is a row of its own, in the tone of a thing gone wrong. */
 .dock .refusal { border: 1px solid color-mix(in srgb, var(--bad) 45%, transparent);
   border-radius: 10px; padding: 7px 10px; color: var(--bad); font-size: var(--fs-base); }
@@ -3581,6 +3588,8 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
   .sendb { min-height: 44px; min-width: 44px; }
   /* The send-back field is a finger target like every other control. */
   .dock .sendback .notes { min-height: 44px; }
+  /* The vault card's unlock boxes too. */
+  .dock .unlock .fld { min-height: 44px; }
 }
 /* The phase or the batch, for a screen reader only: the marks say nothing. */
 .dock .sr { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
