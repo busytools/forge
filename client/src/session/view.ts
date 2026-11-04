@@ -32,7 +32,7 @@ import {
   stateOf,
   whenOf,
 } from '../home/view';
-import type { Row, RowState } from '../home/view';
+import type { AgeReading, Row, RowState } from '../home/view';
 import { FORGE_COMMANDS } from '../composer/forge-commands';
 import type { ComposerRecord } from '../composer/view';
 import { CLIENT_VERSION, PROTOCOL_VERSION, subjectKey } from '../protocol';
@@ -118,8 +118,9 @@ export interface RailProject {
    * against this and exactly one of them matches.
    */
   shown: string | null;
-  /** How long since it last wrote, drawn only when nothing is running. */
-  age: string;
+  /** The raw stamp of how long since it last wrote, which the Age cell reads
+   *  against the clock; drawn only when nothing is running. */
+  age: AgeReading;
   asleep: boolean;
   row: Row;
   /** The project's decision waits, which its own row's mark lists. */
@@ -816,7 +817,6 @@ export function railGroups(
   home: HomeWire,
   board: BoardWire | null,
   current: SessionSlot,
-  now: number,
   closing: (slot: SessionSlot) => boolean = () => false,
 ): RailGroup[] {
   const groups: RailGroup[] = GROUP_HEADINGS.map((heading, rank) => ({
@@ -854,7 +854,7 @@ export function railGroups(
       name: entry.project.name,
       org: entry.project.org,
       shown,
-      age: whenOf(lead, now),
+      age: whenOf(lead),
       asleep: rank === 2,
       row: lead,
       waits,

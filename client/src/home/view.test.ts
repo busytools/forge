@@ -950,7 +950,7 @@ describe('a row over the fleet', () => {
 
     const lead = leadOf(withSessions([]));
     expect(lead.state).toEqual({ kind: 'never-started' });
-    expect(whenOf(lead, Date.now())).toBe('never');
+    expect(whenOf(lead)).toBe('never');
 
     // The same project with a session behind it is asleep instead: a forge
     // restart leaves every project in that case, so reading the lifecycle
@@ -1622,7 +1622,7 @@ describe('how long ago a row last wrote', () => {
 
   it('reads a live session with no transcript as now rather than an absence', () => {
     const row: Row = { ...LEAD_ROW, lastActivity: null };
-    expect(whenOf(row, Date.now())).toBe('now');
+    expect(whenOf(row)).toBe('now');
   });
 });
 

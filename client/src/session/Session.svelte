@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
+  import { writable } from 'svelte/store';
   import { SvelteSet } from 'svelte/reactivity';
 
   import Brand from '../components/Brand.svelte';
@@ -159,7 +160,7 @@
    * own label's set.
    */
   $effect(() => {
-    schedules.sync(seatScheduleRows(board.wire, slot, now));
+    schedules.sync(seatScheduleRows(board.wire, slot, $now));
   });
 
   /**
@@ -206,10 +207,10 @@
     );
   });
   $effect(() => {
-    monitors.sync(record === null ? null : monitorRows(record.monitors, now));
+    monitors.sync(record === null ? null : monitorRows(record.monitors, $now));
   });
   $effect(() => {
-    review.sync(reviewRows(record), reviewSets(record, now));
+    review.sync(reviewRows(record), reviewSets(record, $now));
   });
   const seat = $derived(seatState(wire, slot));
   /**
@@ -544,14 +545,18 @@
   // same now, so two rows a second apart cannot draw the same age differently.
   // Age is a function of time rather than of data, so a re-read needs an
   // update the fleet may never send.
-  let now = $state(Date.now());
+  //
+  // **A store rather than a state**, because the leaves that draw an age
+  // subscribe to it directly: a tick re-renders the text it changes, not the
+  // row tree the value was handed down through.
+  const now = writable(Date.now());
   $effect(() => {
-    now = Date.now();
+    now.set(Date.now());
     const tick = setInterval(() => {
       // Before the clock moves: the record measures the write, not the
       // timer's delay (#2782).
       noteClockTick(slot);
-      now = Date.now();
+      now.set(Date.now());
     }, 30_000);
     return () => clearInterval(tick);
   });

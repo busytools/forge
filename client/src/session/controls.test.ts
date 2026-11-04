@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { createRawSnippet, flushSync, mount, unmount } from 'svelte';
+import { writable } from 'svelte/store';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { AgentRow, HomeWire } from '../wire/home';
@@ -21,6 +22,11 @@ import { railGroups } from './view';
  */
 
 let app: Record<string, unknown> | null = null;
+
+/** The rail's clock, as the production page hands it down: the fixture's
+ *  stamps are measured from epoch zero, so this stays there to keep the ages
+ *  the assertions name. */
+const NOW = writable(0);
 
 afterEach(async () => {
   if (app !== null) await unmount(app);
@@ -167,12 +173,11 @@ const sleepingRows = () => {
     ...homeWire,
     agents: [row('lead', 'Running'), row('slept-1', 'Sleeping'), row('slept-2', 'Sleeping')],
   };
-  const project = railGroups(
-    home,
-    null,
-    { org: 'TestOrg', project: 'proj', label: 'lead' },
-    0,
-  ).flatMap((group) => group.projects)[0];
+  const project = railGroups(home, null, {
+    org: 'TestOrg',
+    project: 'proj',
+    label: 'lead',
+  }).flatMap((group) => group.projects)[0];
   return project?.sleeping ?? [];
 };
 
@@ -273,7 +278,7 @@ describe("a rail row's close chip", () => {
       props: {
         home: withWorker,
         current: WORKER,
-        now: 0,
+        now: NOW,
         connection: recording(commands),
         onclose: () => undefined,
       },
@@ -312,7 +317,7 @@ describe("a rail row's close chip", () => {
       props: {
         home: homeWire,
         current: LEAD,
-        now: 0,
+        now: NOW,
         connection: recording(commands),
         onclose: () => undefined,
       },
@@ -340,7 +345,7 @@ describe("a rail row's close chip", () => {
       props: {
         home,
         current: LEAD,
-        now: 0,
+        now: NOW,
         connection: recording([]),
         onclose: () => undefined,
       },

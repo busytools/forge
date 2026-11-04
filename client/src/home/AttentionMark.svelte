@@ -1,4 +1,6 @@
 <script lang="ts">
+  import type { Readable } from 'svelte/store';
+
   import { portal } from '../chat/strip-panel';
   import { hrefFor } from '../routes';
   import type { AttentionRow } from '../wire/home';
@@ -27,7 +29,7 @@
     org: string;
     project: string;
     /** The page's clock, for the age of each ask. */
-    now: number;
+    now: Readable<number>;
   } = $props();
 
   /** The panel is portaled, so the button names it rather than preceding it. */
@@ -136,7 +138,7 @@
             >
               <span class="attn-who">
                 <span class="attn-seat">{wait.owner}</span>
-                <span class="attn-age">{elapsedLabel(wait.at, now)}</span>
+                <span class="attn-age">{elapsedLabel(wait.at, $now)}</span>
               </span>
               <span class="attn-subject">{wait.subject}</span>
               <span class="attn-words">{wait.words}</span>
