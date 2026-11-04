@@ -310,10 +310,8 @@
   .dock .qrow .notes { flex: 1; min-width: 0; width: auto; font-size: var(--fs-base);
     color: var(--text); }
   .dock .qrow .notes.ph { color: var(--dim); }
-  .dock .qrow .micb { flex: none; margin-left: auto; width: 26px; height: 26px;
-    border-radius: 8px; border: 1px solid var(--ctl); color: var(--dim);
-    display: grid; place-items: center; }
-  .dock .qrow.on .micb { border-color: rgba(244,118,0,.45); color: var(--hot); }
+  .dock .qrow .mic { flex: none; margin-left: auto; }
+  .dock .qrow.on .mic { border-color: rgba(244,118,0,.45); color: var(--hot); }
   .dock .qrow .sendb { flex: none; width: 26px; height: 26px; border-radius: 8px;
     border: 1px solid rgba(244,118,0,.45); color: var(--accent);
     display: grid; place-items: center; }
@@ -621,7 +619,7 @@ on the folded bar.</p>
           </div>
           <div class="qrow"><span class="n">4</span>
             <span class="notes ph">Tell the agent something else&hellip;</span>
-            <span class="micb"><svg class="ic"><use href="#i-mic"/></svg></span></div>
+            <span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span></div>
           <div class="keys"><span><span class="k">&uarr;&darr;</span> move</span>
             <span><span class="k">1</span>-<span class="k">9</span> pick</span>
             <span><span class="k">&#9166;</span> answer</span>
@@ -658,7 +656,7 @@ on the folded bar.</p>
           </div>
           <div class="qrow"><span class="n">4</span>
             <span class="notes ph">Tell the agent something else&hellip;</span>
-            <span class="micb"><svg class="ic"><use href="#i-mic"/></svg></span></div>
+            <span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span></div>
           <div class="keys"><span><span class="k">&uarr;&darr;</span> move</span>
             <span><span class="k">space</span> toggle</span>
             <span><span class="k">&#9166;</span> submit 2</span>
@@ -778,7 +776,7 @@ on the folded bar.</p>
             <span class="chevb"><svg class="ic"><use href="#i-down"/></svg></span></div>
           <div class="d-q">git push origin polish/rate-limit-chip-softer-34</div>
           <div class="qrow"><span class="notes ph">Tell the agent something else</span>
-            <span class="micb"><svg class="ic"><use href="#i-mic"/></svg></span></div>
+            <span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span></div>
           <div class="acts"><span class="btn p">Allow always</span><span class="btn">Allow once</span>
             <span class="btn d">Deny</span></div>
           <div class="keys"><span><span class="k">tab</span> between the actions</span>
@@ -878,12 +876,13 @@ on the folded bar.</p>
               clear to take the same set.</p></div>
           </div>
           <div class="acts"><span class="btn p">Post</span><span class="btn">Send back with feedback</span><span class="btn d">Do not post</span></div>
-          <div class="sendback"><span class="fld">say staging, not prod</span><span class="btn">Send back</span></div>
+          <div class="sendback"><span class="fld">say staging, not prod</span><span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span><span class="btn">Send back</span></div>
         </div></div></div>
       </div></div>
       <p class="note" style="margin:8px 0 0">Enter sends, Shift+Enter is a newline, Escape closes;
-      the verb is unavailable until the field has words. This draft is a root message, so no
-      thread segment is drawn and the verb says <b>Post to Slack</b>.</p>
+      the verb is unavailable until the field has words. The mic dictates into this box; while a
+      take runs its card replaces the field, and the card's way out abandons the take. This draft
+      is a root message, so no thread segment is drawn and the verb says <b>Post to Slack</b>.</p>
     </div>
   </div>
   <div class="row">
@@ -1443,7 +1442,7 @@ the key hints stand down; the row clips rather than wrapping.</p>
           </div>
           <div class="qrow"><span class="n">3</span>
             <span class="notes ph">Tell the agent something else&hellip;</span>
-            <span class="micb"><svg class="ic"><use href="#i-mic"/></svg></span></div>
+            <span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span></div>
           <div class="acts"><span class="btn p">Answer</span><span class="btn d">Reject</span></div>
         </div></div></div>
       </div></div></div></div>
