@@ -131,7 +131,9 @@ impl VaultSession {
         if let Some(code) = &mut two_factor {
             code.token.zeroize();
         }
-        let token: TokenResponse = login?;
+        // Every failure below drops the token through its `Drop`, which wipes
+        // the access and refresh tokens and the wrapped keys.
+        let mut token: TokenResponse = login?;
         let sync = self.client.sync(&token.access_token).await?;
         let unlocked =
             crypto::unlock(&token, &master_key, &sync.profile).map_err(VaultError::Crypto)?;
@@ -144,7 +146,10 @@ impl VaultSession {
         }
 
         let mut state = self.state.write();
-        state.tokens = Some(Tokens { access: token.access_token, refresh: token.refresh_token });
+        state.tokens = Some(Tokens {
+            access: std::mem::take(&mut token.access_token),
+            refresh: token.refresh_token.take(),
+        });
         state.keys = Some(std::sync::Arc::new(unlocked));
         Ok(())
     }
@@ -186,17 +191,17 @@ impl VaultSession {
             return Err(VaultError::Locked);
         };
         match self.client.refresh(&refresh).await {
-            Ok(token) => {
+            Ok(mut token) => {
                 let access = Zeroizing::new(token.access_token.clone());
                 let next_refresh =
-                    token.refresh_token.or_else(|| Some(std::mem::take(&mut refresh)));
+                    token.refresh_token.take().or_else(|| Some(std::mem::take(&mut refresh)));
                 refresh.zeroize();
                 if let Some(tokens) = self.state.write().tokens.as_mut() {
                     tokens.access.zeroize();
                     if let Some(mut old) = tokens.refresh.take() {
                         old.zeroize();
                     }
-                    tokens.access = token.access_token;
+                    tokens.access = std::mem::take(&mut token.access_token);
                     tokens.refresh = next_refresh;
                 }
                 Ok(access)
@@ -219,9 +224,12 @@ impl VaultSession {
     /// A decryption failure under a key that has not changed means the account
     /// rotated its keys: drop them, so the next held call asks for the master
     /// password rather than repeating a failure against stale keys.
-    pub(crate) fn note_decrypt_failure(&self) {
+    pub(crate) fn note_decrypt_failure(&self, caller: &SessionSlot, item: Option<&str>) {
         tracing::warn!(
             event_name = "vault_decrypt_failed",
+            caller = %caller.display(),
+            item = item,
+            vault = %self.client.base(),
             "a vault decryption failed; the session's keys are dropped and the next call will unlock"
         );
         self.lock();
@@ -425,10 +433,10 @@ impl VaultSession {
         &self,
         cipher_id: &str,
         attachment_id: &str,
-        data: Vec<u8>,
+        data: &[u8],
     ) -> Result<Value, VaultError> {
         let token = self.access_token()?;
-        match self.client.upload_attachment(&token, cipher_id, attachment_id, data.clone()).await {
+        match self.client.upload_attachment(&token, cipher_id, attachment_id, data).await {
             Err(VaultError::Unauthorized) => {
                 let token = self.refresh(&token).await?;
                 match self.client.upload_attachment(&token, cipher_id, attachment_id, data).await {
@@ -538,6 +546,14 @@ impl VaultSession {
             );
         }
     }
+}
+
+/// Install an unlocked state on a test session without the login round-trip.
+#[cfg(test)]
+pub(crate) fn test_install_unlocked(session: &VaultSession, unlocked: Unlocked) {
+    let mut state = session.state.write();
+    state.tokens = Some(Tokens { access: "test-access".to_owned(), refresh: None });
+    state.keys = Some(std::sync::Arc::new(unlocked));
 }
 
 /// A session over the connector's own client, for local test servers. The
@@ -915,7 +931,7 @@ mod tests {
         }));
         assert!(!session.is_locked());
 
-        session.note_decrypt_failure();
+        session.note_decrypt_failure(&SessionSlot::lead("Default", "forge"), None);
 
         assert!(session.is_locked(), "the stale keys are dropped");
         assert!(matches!(session.keys(), Err(VaultError::Locked)));
@@ -923,6 +939,7 @@ mod tests {
 
     #[test]
     fn the_audit_rotates_through_six_files() {
+        use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().expect("tempdir");
         let audit = VaultAudit::new(dir.path(), "store").expect("audit");
         // Write enough lines to force one rotation.
@@ -932,5 +949,29 @@ mod tests {
         }
         let base = dir.path().join("vault");
         assert!(base.join("audit-store.jsonl.1").exists(), "the first rotation made .1");
+        for name in ["audit-store.jsonl", "audit-store.jsonl.1"] {
+            assert_eq!(
+                std::fs::metadata(base.join(name)).expect("metadata").permissions().mode() & 0o777,
+                0o600,
+                "{name} is private",
+            );
+        }
+    }
+
+    /// The production clients are the ones the vault session uses, and they
+    /// refuse a plaintext URL before touching the network.
+    #[tokio::test]
+    async fn production_client_is_https_only() {
+        use std::time::Duration;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let address = listener.local_addr().expect("addr");
+        let client = production_client(&format!("http://{address}")).expect("clients build");
+        let error = client.prelogin("hi@example.com").await.expect_err("https only");
+        assert!(matches!(error, VaultError::Http(_)), "{error}");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), listener.accept()).await.is_err(),
+            "no plaintext request was made",
+        );
     }
 }

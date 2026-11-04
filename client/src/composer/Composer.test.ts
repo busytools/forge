@@ -6768,6 +6768,29 @@ describe('the dock', () => {
     expect(commands(harness)).toEqual([vaultAnswerFrames.approve]);
   });
 
+  it('declines a locked vault call with Escape in a masked field', () => {
+    const harness = open({
+      record: record({ pending_asks: [vaultAsk({ needs_unlock: true })] }),
+    });
+
+    const password = document.querySelector('.dock input[type="password"]');
+    if (!(password instanceof HTMLInputElement)) {
+      throw new Error('the locked card drew no masked password field');
+    }
+    password.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    flushSync();
+
+    expect(commands(harness)).toEqual([
+      {
+        respond_vault_ask: {
+          key: SLOT,
+          id: '0192e1c0-0000-7000-8000-0000000000cc',
+          answer: { decision: 'decline' },
+        },
+      },
+    ]);
+  });
+
   it('sends a vault call back with the note the reader writes', () => {
     const harness = open({ record: record({ pending_asks: [vaultAsk()] }) });
 

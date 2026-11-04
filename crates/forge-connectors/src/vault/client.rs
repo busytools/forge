@@ -284,9 +284,9 @@ impl VaultClient {
         token: &str,
         cipher_id: &str,
         attachment_id: &str,
-        data: Vec<u8>,
+        data: &[u8],
     ) -> Result<Value, VaultError> {
-        let part = reqwest::multipart::Part::bytes(data)
+        let part = reqwest::multipart::Part::bytes(data.to_vec())
             .file_name("blob")
             .mime_str("application/octet-stream")?;
         let form = reqwest::multipart::Form::new().part("data", part);
@@ -406,6 +406,11 @@ fn path_segment(id: &str) -> Result<String, VaultError> {
     if id.trim().is_empty() {
         return Err(VaultError::InvalidInput("an empty id was passed".to_owned()));
     }
+    // `byte_serialize` leaves dots alone, and a `.` or `..` segment is a
+    // traversal rather than an id once a router normalizes the path.
+    if id == "." || id == ".." {
+        return Err(VaultError::InvalidInput(format!("'{id}' is not an id")));
+    }
     Ok(url::form_urlencoded::byte_serialize(id.as_bytes()).collect::<String>().replace('+', "%20"))
 }
 
@@ -478,6 +483,18 @@ mod tests {
             }
         }
         buf
+    }
+
+    async fn serve_raw(response: Vec<u8>) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let _request = read_request(&mut socket).await;
+            let _ = socket.write_all(&response).await;
+            let _ = socket.shutdown().await;
+        });
+        (address, handle)
     }
 
     async fn serve_once(
@@ -617,22 +634,22 @@ mod tests {
     #[tokio::test]
     async fn a_download_to_another_host_is_refused() {
         let (address, _server) = serve_once("200 OK", "bytes", "").await;
-        let elsewhere = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let other = elsewhere.local_addr().unwrap();
+        // A port that was bound and released refuses quickly if the guard is
+        // gone, so this fails on its own assertion rather than hanging.
+        let closed = {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            listener.local_addr().unwrap()
+        };
         let client = VaultClient::new(&format!("http://{address}")).unwrap();
 
+        // Same host as the base, different port: `Url::join` accepts it, so
+        // only the client's own host/port check can refuse it.
         let error = client
-            .download_attachment("token", &format!("http://{other}/x"), 1024)
+            .download_attachment("token", &format!("http://{closed}/x"), 1024)
             .await
             .unwrap_err();
 
         assert!(matches!(error, VaultError::InvalidUrl(_)), "{error}");
-        assert!(
-            tokio::time::timeout(std::time::Duration::from_millis(100), elsewhere.accept())
-                .await
-                .is_err(),
-            "no request reached the foreign host",
-        );
     }
 
     /// The declared length is checked before the body is read, and the stream
@@ -649,6 +666,54 @@ mod tests {
             "{error}"
         );
         server.await.unwrap();
+    }
+
+    /// A response that declares no length is bounded as it arrives, which is
+    /// the property the pre-check cannot provide.
+    #[tokio::test]
+    async fn a_chunked_download_over_the_cap_is_refused_while_streaming() {
+        let response =
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n8\r\nxxxxxxxx\r\n0\r\n\r\n"
+                .to_vec();
+        let (address, server) = serve_raw(response).await;
+        let client = VaultClient::new(&format!("http://{address}")).unwrap();
+
+        let error = client.download_attachment("token", "/a", 4).await.unwrap_err();
+
+        assert!(matches!(error, VaultError::AttachmentTooLarge { .. }), "{error}");
+        server.await.unwrap();
+    }
+
+    /// A body that fails mid-read carries the failure class and not the URL.
+    #[tokio::test]
+    async fn a_body_error_does_not_carry_the_url() {
+        let response =
+            b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\nContent-Type: application/json\r\n\r\n{\"a\":"
+                .to_vec();
+        let (address, server) = serve_raw(response).await;
+        let client = VaultClient::new(&format!("http://{address}")).unwrap();
+
+        let error = client.sync("token").await.unwrap_err();
+        let text = error.to_string();
+
+        assert!(matches!(&error, VaultError::Http(_)), "{error}");
+        assert!(!text.contains("127.0.0.1"), "the URL reached the error: {text}");
+        server.await.unwrap();
+    }
+
+    /// A `.` or `..` segment is a traversal once a router normalizes it, not
+    /// an id, and `byte_serialize` would leave it untouched.
+    #[tokio::test]
+    async fn a_dot_segment_id_is_refused() {
+        let client = VaultClient::new("http://127.0.0.1:1").unwrap();
+
+        for id in [".", ".."] {
+            let error = client.get_cipher("token", id).await.unwrap_err();
+            assert!(
+                matches!(error, VaultError::InvalidInput(_)),
+                "'{id}' must be refused: {error}"
+            );
+        }
     }
 
     /// A signed URL's token lives in its query string, so no transport error
@@ -712,10 +777,7 @@ mod tests {
         let client = VaultClient::new(&format!("http://{address}")).unwrap();
         let blob: Vec<u8> = (0u8..97).collect();
 
-        client
-            .upload_attachment("token", "cipher-id", "attachment-id", blob.clone())
-            .await
-            .unwrap();
+        client.upload_attachment("token", "cipher-id", "attachment-id", &blob).await.unwrap();
 
         let request = server.await.unwrap();
         let text = String::from_utf8_lossy(&request);

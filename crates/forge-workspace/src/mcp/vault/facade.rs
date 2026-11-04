@@ -29,6 +29,11 @@ use crate::workspace::Workspace;
 /// or write buffers more than the vault accepts.
 const MAX_ATTACHMENT_BYTES: u64 = 525 * 1024 * 1024;
 
+/// What a call settles with when the `[vault]` section reloaded while it was
+/// parked or reading: the account it was drawn against is gone.
+const SESSION_CHANGED: &str =
+    "the vault configuration changed while the call was parked; nothing ran";
+
 /// Why a vault tool call did not return a result.
 #[derive(Debug, thiserror::Error)]
 pub enum VaultToolError {
@@ -271,6 +276,60 @@ impl ProdVaultFacade {
         self.workspace()?.vault.read().clone().ok_or(VaultToolError::NotConfigured)
     }
 
+    /// A decryption failure under a known key means the account rotated its
+    /// keys: drop them and restamp every other parked card as needing the
+    /// password again. Other error kinds pass through untouched.
+    fn decrypt_failed(
+        &self,
+        session: &VaultSession,
+        caller: &SessionSlot,
+        item: Option<&str>,
+        error: VaultToolError,
+    ) -> VaultToolError {
+        if matches!(
+            &error,
+            VaultToolError::Vault(VaultError::Crypto(_)) | VaultToolError::Crypto(_)
+        ) {
+            session.note_decrypt_failure(caller, item);
+            if let Ok(workspace) = self.workspace() {
+                workspace.rebase_vault_asks(true);
+            }
+        }
+        error
+    }
+
+    /// A card may draw `(unreadable)` for a field it has no key for, but a
+    /// crypto failure means the keys are stale and must lock the session.
+    fn fallback_or_lock<T>(
+        &self,
+        session: &VaultSession,
+        caller: &SessionSlot,
+        item: Option<&str>,
+        result: Result<T, VaultToolError>,
+        fallback: T,
+    ) -> Result<T, VaultToolError> {
+        match result {
+            Ok(value) => Ok(value),
+            Err(error) => match self.decrypt_failed(session, caller, item, error) {
+                error @ (VaultToolError::Vault(VaultError::Crypto(_))
+                | VaultToolError::Crypto(_)) => Err(error),
+                _ => Ok(fallback),
+            },
+        }
+    }
+
+    /// A call that read the account before its gate must not run against a
+    /// session a `[vault]` reload swapped in: settle it as changed instead.
+    fn guard_reload(
+        approved: &Approved,
+        session: &Arc<VaultSession>,
+    ) -> Result<(), VaultToolError> {
+        if Arc::ptr_eq(&approved.session, session) {
+            return Ok(());
+        }
+        approved.fail(VaultToolError::Message(SESSION_CHANGED.to_owned()))
+    }
+
     /// Park the draft, await one answer, settle it, and unlock the shared
     /// session when the card asked for the password. Decline and send-back
     /// are audited here and returned as the tool's refusal; an approval
@@ -347,9 +406,7 @@ impl ProdVaultFacade {
                 "approve",
                 "failed: the vault configuration changed",
             );
-            return Err(VaultToolError::Message(
-                "the vault configuration changed while the call was parked; nothing ran".to_owned(),
-            ));
+            return Err(VaultToolError::Message(SESSION_CHANGED.to_owned()));
         }
 
         if session.is_locked() {
@@ -445,7 +502,13 @@ impl ProdVaultFacade {
         } else {
             let cipher = session.get_cipher(id).await?;
             let keys = session.keys()?;
-            let name = decrypt_name(&keys, &cipher).ok();
+            let name = self.fallback_or_lock(
+                &session,
+                caller,
+                Some(id),
+                decrypt_name(&keys, &cipher).map(Some),
+                None,
+            )?;
             (Some(cipher), name)
         };
         let mut draft = VaultDraft::new(tool, String::new());
@@ -457,11 +520,7 @@ impl ProdVaultFacade {
         // A reload between the pre-gate read and the gate's own read leaves
         // `cipher` from the old account; the approval names it, so it must not
         // be read by the new session.
-        if !Arc::ptr_eq(&approved.session, &session) {
-            return approved.fail(VaultToolError::Message(
-                "the vault configuration changed while the call was parked; nothing ran".to_owned(),
-            ));
-        }
+        Self::guard_reload(&approved, &session)?;
         let cipher = match cipher {
             Some(cipher) => cipher,
             None => match approved.session.get_cipher(id).await {
@@ -513,7 +572,7 @@ impl Approved {
             &result,
             Err(VaultToolError::Vault(VaultError::Crypto(_)) | VaultToolError::Crypto(_))
         ) {
-            self.session.note_decrypt_failure();
+            self.session.note_decrypt_failure(&self.caller, self.item_id.as_deref());
         }
         // A call's own 401 path may have locked the session (a failed refresh),
         // so every card still parked asks for the password again.
@@ -558,7 +617,7 @@ impl VaultFacade for ProdVaultFacade {
         } else {
             let sync = session.sync().await?;
             let keys = session.keys()?;
-            let items = search_items(&keys, &sync, query, limit);
+            let items = self.search_items(&session, caller, &keys, &sync, query, limit)?;
             let hits = items.len();
             (Some(items), Some(hits))
         };
@@ -572,6 +631,7 @@ impl VaultFacade for ProdVaultFacade {
             },
         );
         let approved = self.gate(caller, draft.clone(), VaultTool::Search, None).await?;
+        Self::guard_reload(&approved, &session)?;
         let session = Arc::clone(&approved.session);
         let result = async move {
             let items = if let Some(items) = items {
@@ -579,7 +639,7 @@ impl VaultFacade for ProdVaultFacade {
             } else {
                 let sync = session.sync().await?;
                 let keys = session.keys()?;
-                search_items(&keys, &sync, query, limit)
+                self.search_items(&session, caller, &keys, &sync, query, limit)?
             };
             Ok(json!({ "items": items }))
         }
@@ -606,8 +666,8 @@ impl VaultFacade for ProdVaultFacade {
             })
             .await?;
         let keys = Arc::clone(&approved.keys);
-        let result = async move {
-            let mut result = item_metadata(&keys, &cipher)?;
+        let result = async {
+            let mut result = self.item_metadata(&approved, &keys, &cipher)?;
             if let Some(reveal) = reveal {
                 let value = reveal_value(&keys, &cipher, reveal)?;
                 result["revealed"] = json!({ "field": reveal, "value": value });
@@ -760,10 +820,10 @@ impl VaultFacade for ProdVaultFacade {
         } else {
             let cipher = session.get_cipher(item_id).await?;
             let keys = session.keys()?;
-            let name =
-                decrypt_name(&keys, &cipher).map_err(|error| decrypt_failed(&session, error))?;
+            let name = decrypt_name(&keys, &cipher)
+                .map_err(|error| self.decrypt_failed(&session, caller, Some(item_id), error))?;
             let (file_name, size) = attachment_named(&keys, &cipher, attachment_id)
-                .map_err(|error| decrypt_failed(&session, error))?;
+                .map_err(|error| self.decrypt_failed(&session, caller, Some(item_id), error))?;
             (Some(cipher), Some(name), Some(file_name), Some(size))
         };
         let destination_shown = path.display().to_string();
@@ -785,7 +845,12 @@ impl VaultFacade for ProdVaultFacade {
                 Some(VaultAttachmentDraft { name: file_name.clone(), size, replaces: None });
         }
         let approved = self.gate(caller, draft.clone(), VaultTool::AttachmentGet, None).await?;
+        Self::guard_reload(&approved, &session)?;
         let result = async {
+            // The parent can be swapped while the card waits, so the path is
+            // resolved and containment-checked again immediately before the
+            // write rather than trusting the path the card named.
+            let write_path = recheck_destination(&workspace, caller, destination, &path)?;
             let cipher = match cipher {
                 Some(cipher) => cipher,
                 None => approved.session.get_cipher(item_id).await?,
@@ -801,8 +866,7 @@ impl VaultFacade for ProdVaultFacade {
             let plain = approved.keys.open_attachment(&cipher, &wrapped, &blob)?;
             let size = plain.len();
             let sha256 = forge_connectors::vault::crypto::sha256_hex(&plain);
-            let written = path.clone();
-            tokio::task::spawn_blocking(move || write_private(&written, &plain))
+            tokio::task::spawn_blocking(move || write_private(&write_path, &plain))
                 .await
                 .map_err(|error| VaultToolError::Io(format!("the attachment write: {error}")))??;
             Ok(json!({
@@ -824,6 +888,7 @@ impl VaultFacade for ProdVaultFacade {
         replace_attachment_id: Option<&str>,
     ) -> Result<Value, VaultToolError> {
         let workspace = self.workspace()?;
+        let session = self.session()?;
         let source = resolve_source(&workspace, caller, path)?;
         // The size is checked from metadata before a byte is read, and the
         // read itself runs off the async thread.
@@ -840,13 +905,14 @@ impl VaultFacade for ProdVaultFacade {
         // The card names the file being replaced, which needs the keys. A locked
         // session parks with the id instead, and says only that it replaces one.
         let replaced_name = if let Some(old) = replace_attachment_id {
-            let session = self.session()?;
             if session.is_locked() {
                 None
             } else {
                 let cipher = session.get_cipher(item_id).await?;
                 let keys = session.keys()?;
-                attachment_named(&keys, &cipher, old).ok().map(|(name, _)| name)
+                let (name, _) = attachment_named(&keys, &cipher, old)
+                    .map_err(|error| self.decrypt_failed(&session, caller, Some(item_id), error))?;
+                Some(name)
             }
         } else {
             None
@@ -870,6 +936,7 @@ impl VaultFacade for ProdVaultFacade {
                 }
             })
             .await?;
+        Self::guard_reload(&approved, &session)?;
         let result = async {
             let (wrapped, encrypted_name, blob) =
                 approved.keys.prepare_attachment(&cipher, &file_name, &data)?;
@@ -893,9 +960,10 @@ impl VaultFacade for ProdVaultFacade {
                         "the vault did not return the new attachment id".to_owned(),
                     )
                 })?;
-            approved.session.upload_attachment(item_id, attachment_id, blob.clone()).await?;
+            let blob_len = blob.len();
+            approved.session.upload_attachment(item_id, attachment_id, &blob).await?;
             let meta = approved.session.get_attachment_meta(item_id, attachment_id).await?;
-            check_stored_size(meta.size, blob.len())?;
+            check_stored_size(meta.size, blob_len)?;
             // The replace's old attachment is deleted only after the new one
             // is stored and its size checked; a failed upload leaves the old
             // there.
@@ -905,7 +973,7 @@ impl VaultFacade for ProdVaultFacade {
             Ok(json!({
                 "id": attachment_id,
                 "name": file_name,
-                "size": blob.len(),
+                "size": blob_len,
                 "sha256": forge_connectors::vault::crypto::sha256_hex(&data),
                 "replaced": replace_attachment_id,
             }))
@@ -919,15 +987,17 @@ impl VaultFacade for ProdVaultFacade {
         let approved = self.gate(caller, draft.clone(), VaultTool::FolderList, None).await?;
         let result = async {
             let folders = approved.session.list_folders().await?;
-            let rows: Vec<Value> = folders
-                .iter()
-                .map(|folder| {
-                    json!({
-                        "id": folder.id,
-                        "name": approved.keys.decrypt_user_str(&folder.name).unwrap_or_else(|_| "(unreadable)".to_owned()),
-                    })
-                })
-                .collect();
+            let mut rows = Vec::new();
+            for folder in &folders {
+                let name = self.fallback_or_lock(
+                    &approved.session,
+                    &approved.caller,
+                    Some(&folder.id),
+                    approved.keys.decrypt_user_str(&folder.name).map_err(VaultToolError::Crypto),
+                    "(unreadable)".to_owned(),
+                )?;
+                rows.push(json!({ "id": folder.id, "name": name }));
+            }
             Ok(json!({ "folders": rows }))
         }
         .await;
@@ -980,9 +1050,16 @@ impl VaultFacade for ProdVaultFacade {
         } else {
             let keys = session.keys()?;
             let folders = session.list_folders().await?;
-            folders.iter().find(|folder| folder.id == id).map(|folder| {
-                keys.decrypt_user_str(&folder.name).unwrap_or_else(|_| "(unreadable)".to_owned())
-            })
+            match folders.iter().find(|folder| folder.id == id) {
+                Some(folder) => Some(self.fallback_or_lock(
+                    &session,
+                    caller,
+                    Some(id),
+                    keys.decrypt_user_str(&folder.name).map_err(VaultToolError::Crypto),
+                    "(unreadable)".to_owned(),
+                )?),
+                None => None,
+            }
         };
         let mut draft = VaultDraft::new(
             VaultTool::FolderDelete,
@@ -994,6 +1071,7 @@ impl VaultFacade for ProdVaultFacade {
         draft.item_id = Some(id.to_owned());
         draft.item_name = name;
         let approved = self.gate(caller, draft.clone(), VaultTool::FolderDelete, None).await?;
+        Self::guard_reload(&approved, &session)?;
         let result = async {
             approved.session.delete_folder(id).await?;
             let name = draft.item_name.clone().unwrap_or_else(|| id.to_owned());
@@ -1004,40 +1082,221 @@ impl VaultFacade for ProdVaultFacade {
     }
 }
 
-/// The metadata hits for one query: name, username and URIs are decrypted,
-/// and nothing else is. Trashed items are skipped, as a vault search does.
-fn search_items(keys: &Unlocked, sync: &SyncData, query: &str, limit: usize) -> Vec<Value> {
-    let needle = query.trim().to_lowercase();
-    let mut items = Vec::new();
-    for cipher in &sync.ciphers {
-        if cipher.get("deletedDate").and_then(Value::as_str).is_some() {
-            continue;
+impl ProdVaultFacade {
+    /// The metadata hits for one query: name, username and URIs are decrypted,
+    /// and nothing else is. Trashed items are skipped, as a vault search does.
+    /// A field the item's key cannot decrypt draws `(unreadable)`; a stale
+    /// key lock the session instead.
+    fn search_items(
+        &self,
+        session: &VaultSession,
+        caller: &SessionSlot,
+        keys: &Unlocked,
+        sync: &SyncData,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<Value>, VaultToolError> {
+        let needle = query.trim().to_lowercase();
+        let mut items = Vec::new();
+        for cipher in &sync.ciphers {
+            if cipher.get("deletedDate").and_then(Value::as_str).is_some() {
+                continue;
+            }
+            let item = cipher.get("id").and_then(Value::as_str);
+            let name = self.fallback_or_lock(
+                session,
+                caller,
+                item,
+                decrypt_name(keys, cipher),
+                "(unreadable)".to_owned(),
+            )?;
+            let username = self.decrypt_username(session, caller, item, keys, cipher)?;
+            let uris = self.decrypt_uris(session, caller, item, keys, cipher)?;
+            let hit = needle.is_empty()
+                || name.to_lowercase().contains(&needle)
+                || username.as_deref().is_some_and(|u| u.to_lowercase().contains(&needle))
+                || uris.iter().any(|uri| uri.to_lowercase().contains(&needle));
+            if !hit {
+                continue;
+            }
+            let folder = self.folder_name(session, caller, item, keys, sync, cipher)?;
+            items.push(json!({
+                "id": cipher.get("id").and_then(Value::as_str),
+                "name": name,
+                "username": username,
+                "uris": uris,
+                "folder": folder,
+                "collection": Value::Null,
+                "updated_at": cipher.get("revisionDate").and_then(Value::as_str),
+            }));
+            if items.len() >= limit {
+                break;
+            }
         }
-        let name = decrypt_name(keys, cipher).unwrap_or_else(|_| "(unreadable)".to_owned());
-        let username = decrypt_username(keys, cipher);
-        let uris = decrypt_uris(keys, cipher);
-        let hit = needle.is_empty()
-            || name.to_lowercase().contains(&needle)
-            || username.as_deref().is_some_and(|u| u.to_lowercase().contains(&needle))
-            || uris.iter().any(|uri| uri.to_lowercase().contains(&needle));
-        if !hit {
-            continue;
-        }
-        let folder = folder_name(keys, sync, cipher);
-        items.push(json!({
-            "id": cipher.get("id").and_then(Value::as_str),
-            "name": name,
-            "username": username,
-            "uris": uris,
-            "folder": folder,
-            "collection": Value::Null,
-            "updated_at": cipher.get("revisionDate").and_then(Value::as_str),
-        }));
-        if items.len() >= limit {
-            break;
-        }
+        Ok(items)
     }
-    items
+
+    fn decrypt_username(
+        &self,
+        session: &VaultSession,
+        caller: &SessionSlot,
+        item: Option<&str>,
+        keys: &Unlocked,
+        cipher: &Value,
+    ) -> Result<Option<String>, VaultToolError> {
+        let Some(enc) = cipher.pointer("/login/username").and_then(Value::as_str) else {
+            return Ok(None);
+        };
+        let value = self.fallback_or_lock(
+            session,
+            caller,
+            item,
+            keys.decrypt_item_str(cipher, enc).map_err(VaultToolError::Vault),
+            String::new(),
+        )?;
+        Ok((!value.is_empty()).then_some(value))
+    }
+
+    fn decrypt_uris(
+        &self,
+        session: &VaultSession,
+        caller: &SessionSlot,
+        item: Option<&str>,
+        keys: &Unlocked,
+        cipher: &Value,
+    ) -> Result<Vec<String>, VaultToolError> {
+        let mut uris = Vec::new();
+        if let Some(list) = cipher.pointer("/login/uris").and_then(Value::as_array) {
+            for entry in list {
+                if let Some(enc) = entry.get("uri").and_then(Value::as_str) {
+                    let uri = self.fallback_or_lock(
+                        session,
+                        caller,
+                        item,
+                        keys.decrypt_item_str(cipher, enc).map_err(VaultToolError::Vault),
+                        String::new(),
+                    )?;
+                    if !uri.is_empty() {
+                        uris.push(uri);
+                    }
+                }
+            }
+        }
+        if uris.is_empty()
+            && let Some(enc) = cipher.pointer("/login/uri").and_then(Value::as_str)
+        {
+            let uri = self.fallback_or_lock(
+                session,
+                caller,
+                item,
+                keys.decrypt_item_str(cipher, enc).map_err(VaultToolError::Vault),
+                String::new(),
+            )?;
+            if !uri.is_empty() {
+                uris.push(uri);
+            }
+        }
+        Ok(uris)
+    }
+
+    fn folder_name(
+        &self,
+        session: &VaultSession,
+        caller: &SessionSlot,
+        item: Option<&str>,
+        keys: &Unlocked,
+        sync: &SyncData,
+        cipher: &Value,
+    ) -> Result<Option<String>, VaultToolError> {
+        let Some(id) = cipher.get("folderId").and_then(Value::as_str) else {
+            return Ok(None);
+        };
+        let Some(folder) = sync.folders.iter().find(|folder| folder.id == id) else {
+            return Ok(None);
+        };
+        let name = self.fallback_or_lock(
+            session,
+            caller,
+            item,
+            keys.decrypt_user_str(&folder.name).map_err(VaultToolError::Crypto),
+            String::new(),
+        )?;
+        Ok((!name.is_empty()).then_some(name))
+    }
+
+    fn item_metadata(
+        &self,
+        approved: &Approved,
+        keys: &Unlocked,
+        cipher: &Value,
+    ) -> Result<Value, VaultToolError> {
+        let session = approved.session.as_ref();
+        let caller = &approved.caller;
+        let item = cipher.get("id").and_then(Value::as_str);
+        let mut metadata = json!({
+            "id": item,
+            "name": decrypt_name(keys, cipher)?,
+            "type": cipher.get("type").and_then(Value::as_u64),
+            "folder_id": cipher.get("folderId").and_then(Value::as_str),
+            "collection_ids": cipher.get("collectionIds").cloned().unwrap_or(Value::Null),
+            "favorite": cipher.get("favorite").and_then(Value::as_bool).unwrap_or(false),
+            "revision_date": cipher.get("revisionDate").and_then(Value::as_str),
+            "deleted_date": cipher.get("deletedDate").and_then(Value::as_str),
+            "attachments": self.attachment_rows(session, caller, item, keys, cipher)?,
+        });
+        if let Some(username) = self.decrypt_username(session, caller, item, keys, cipher)? {
+            metadata["username"] = json!(username);
+        }
+        let uris = self.decrypt_uris(session, caller, item, keys, cipher)?;
+        if !uris.is_empty() {
+            metadata["uris"] = json!(uris);
+        }
+        if let Some(brand) = cipher.pointer("/card/brand").and_then(Value::as_str) {
+            let brand = self.fallback_or_lock(
+                session,
+                caller,
+                item,
+                keys.decrypt_item_str(cipher, brand).map_err(VaultToolError::Vault),
+                String::new(),
+            )?;
+            if !brand.is_empty() {
+                metadata["card_brand"] = json!(brand);
+            }
+        }
+        Ok(metadata)
+    }
+
+    fn attachment_rows(
+        &self,
+        session: &VaultSession,
+        caller: &SessionSlot,
+        item: Option<&str>,
+        keys: &Unlocked,
+        cipher: &Value,
+    ) -> Result<Value, VaultToolError> {
+        let Some(list) = cipher.get("attachments").and_then(Value::as_array) else {
+            return Ok(Value::Array(Vec::new()));
+        };
+        let mut rows = Vec::new();
+        for attachment in list {
+            let name = match attachment.get("fileName").and_then(Value::as_str) {
+                Some(enc) => self.fallback_or_lock(
+                    session,
+                    caller,
+                    item,
+                    keys.decrypt_item_str(cipher, enc).map_err(VaultToolError::Vault),
+                    "(unreadable)".to_owned(),
+                )?,
+                None => "(unreadable)".to_owned(),
+            };
+            rows.push(json!({
+                "id": attachment.get("id").and_then(Value::as_str),
+                "file_name": name,
+                "size": attachment.get("size").and_then(Value::as_u64),
+            }));
+        }
+        Ok(Value::Array(rows))
+    }
 }
 
 fn decrypt_name(keys: &Unlocked, cipher: &Value) -> Result<String, VaultToolError> {
@@ -1046,93 +1305,6 @@ fn decrypt_name(keys: &Unlocked, cipher: &Value) -> Result<String, VaultToolErro
         .and_then(Value::as_str)
         .ok_or_else(|| VaultToolError::Message("the item has no name".to_owned()))?;
     Ok(keys.decrypt_item_str(cipher, enc)?)
-}
-
-fn decrypt_username(keys: &Unlocked, cipher: &Value) -> Option<String> {
-    cipher
-        .pointer("/login/username")
-        .and_then(Value::as_str)
-        .and_then(|enc| keys.decrypt_item_str(cipher, enc).ok())
-        .filter(|value| !value.is_empty())
-}
-
-fn decrypt_uris(keys: &Unlocked, cipher: &Value) -> Vec<String> {
-    let mut uris = Vec::new();
-    if let Some(list) = cipher.pointer("/login/uris").and_then(Value::as_array) {
-        for entry in list {
-            if let Some(enc) = entry.get("uri").and_then(Value::as_str)
-                && let Ok(uri) = keys.decrypt_item_str(cipher, enc)
-            {
-                uris.push(uri);
-            }
-        }
-    }
-    if uris.is_empty()
-        && let Some(enc) = cipher.pointer("/login/uri").and_then(Value::as_str)
-        && let Ok(uri) = keys.decrypt_item_str(cipher, enc)
-    {
-        uris.push(uri);
-    }
-    uris
-}
-
-fn folder_name(keys: &Unlocked, sync: &SyncData, cipher: &Value) -> Option<String> {
-    let id = cipher.get("folderId").and_then(Value::as_str)?;
-    sync.folders
-        .iter()
-        .find(|folder| folder.id == id)
-        .and_then(|folder| keys.decrypt_user_str(&folder.name).ok())
-}
-
-fn item_metadata(keys: &Unlocked, cipher: &Value) -> Result<Value, VaultToolError> {
-    let mut metadata = json!({
-        "id": cipher.get("id").and_then(Value::as_str),
-        "name": decrypt_name(keys, cipher)?,
-        "type": cipher.get("type").and_then(Value::as_u64),
-        "folder_id": cipher.get("folderId").and_then(Value::as_str),
-        "collection_ids": cipher.get("collectionIds").cloned().unwrap_or(Value::Null),
-        "favorite": cipher.get("favorite").and_then(Value::as_bool).unwrap_or(false),
-        "revision_date": cipher.get("revisionDate").and_then(Value::as_str),
-        "deleted_date": cipher.get("deletedDate").and_then(Value::as_str),
-        "attachments": attachment_rows(keys, cipher),
-    });
-    if let Some(username) = decrypt_username(keys, cipher) {
-        metadata["username"] = json!(username);
-    }
-    let uris = decrypt_uris(keys, cipher);
-    if !uris.is_empty() {
-        metadata["uris"] = json!(uris);
-    }
-    if let Some(brand) = cipher
-        .pointer("/card/brand")
-        .and_then(Value::as_str)
-        .and_then(|enc| keys.decrypt_item_str(cipher, enc).ok())
-    {
-        metadata["card_brand"] = json!(brand);
-    }
-    Ok(metadata)
-}
-
-fn attachment_rows(keys: &Unlocked, cipher: &Value) -> Value {
-    let Some(list) = cipher.get("attachments").and_then(Value::as_array) else {
-        return Value::Array(Vec::new());
-    };
-    Value::Array(
-        list.iter()
-            .map(|attachment| {
-                let name = attachment
-                    .get("fileName")
-                    .and_then(Value::as_str)
-                    .and_then(|enc| keys.decrypt_item_str(cipher, enc).ok())
-                    .unwrap_or_else(|| "(unreadable)".to_owned());
-                json!({
-                    "id": attachment.get("id").and_then(Value::as_str),
-                    "file_name": name,
-                    "size": attachment.get("size").and_then(Value::as_u64),
-                })
-            })
-            .collect(),
-    )
 }
 
 fn attachment_named(
@@ -1510,13 +1682,21 @@ fn check_stored_size(stored: Option<u64>, blob_len: usize) -> Result<(), VaultTo
     Ok(())
 }
 
-/// A decryption failure outside an approved call still means the keys are
-/// stale: drop them before handing the error back.
-fn decrypt_failed(session: &VaultSession, error: VaultToolError) -> VaultToolError {
-    if matches!(&error, VaultToolError::Vault(VaultError::Crypto(_)) | VaultToolError::Crypto(_)) {
-        session.note_decrypt_failure();
+/// Re-resolve the destination immediately before a write: a parent swapped to
+/// a symlink while the card waited must not redirect the write.
+fn recheck_destination(
+    workspace: &Workspace,
+    caller: &SessionSlot,
+    destination: &str,
+    expected: &Path,
+) -> Result<PathBuf, VaultToolError> {
+    let current = resolve_destination(workspace, caller, destination)?;
+    if current != expected {
+        return Err(VaultToolError::Message(
+            "the destination changed while the call was parked; nothing was written".to_owned(),
+        ));
     }
-    error
+    Ok(current)
 }
 
 /// The name a replace card draws for the attachment it would remove: the
@@ -1546,17 +1726,26 @@ fn read_attachment(path: &Path, cap: u64) -> Result<Vec<u8>, VaultToolError> {
 
 fn write_private(path: &Path, bytes: &[u8]) -> Result<(), VaultToolError> {
     use std::io::Write;
-    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
     // `O_NOFOLLOW` refuses a final-component symlink, and set_permissions on
     // the held fd fixes an existing looser mode, which `mode` only applies at
     // creation.
     let mut file = std::fs::OpenOptions::new()
         .write(true)
         .create(true)
-        .truncate(true)
+        .truncate(false)
         .mode(0o600)
         .custom_flags(libc::O_NOFOLLOW)
         .open(path)?;
+    // A hard link names bytes outside this tree; truncating through one would
+    // write another file's contents. The truncate waits until the link count
+    // has been checked.
+    if file.metadata()?.nlink() > 1 {
+        return Err(VaultToolError::Message(
+            "the destination is a hard link; refusing to write through it".to_owned(),
+        ));
+    }
+    file.set_len(0)?;
     file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
     file.write_all(bytes)?;
     file.flush()?;
@@ -1693,7 +1882,7 @@ mod tests {
     use super::*;
     use crate::config::VaultConfig;
     use crate::protocol::Command;
-    use crate::vault::test_session;
+    use crate::vault::{test_install_unlocked, test_session};
     use forge_primitives::vault::{VaultAskAnswer, VaultAskDecision};
 
     fn audit_text(dir: &tempfile::TempDir) -> String {
@@ -1728,6 +1917,43 @@ mod tests {
             }
         }
         String::from_utf8_lossy(&buf).into_owned()
+    }
+
+    /// One cipher read that pauses after the request arrives, so a test can
+    /// swap the session while the pre-gate read is held.
+    async fn serve_paused_cipher(
+        name: String,
+    ) -> (std::net::SocketAddr, tokio::sync::oneshot::Receiver<()>, tokio::sync::oneshot::Sender<()>)
+    {
+        use tokio::io::AsyncWriteExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let address = listener.local_addr().expect("addr");
+        let (seen_tx, seen_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept");
+            let request = read_test_request(&mut socket).await;
+            assert!(
+                request.split_whitespace().nth(1) == Some("/api/ciphers/item-1"),
+                "unexpected request: {}",
+                request.lines().next().unwrap_or_default(),
+            );
+            let _ = seen_tx.send(());
+            let _ = release_rx.await;
+            let body = serde_json::json!({
+                "id": "item-1",
+                "type": 1,
+                "name": name,
+                "login": {},
+            })
+            .to_string();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = socket.write_all(response.as_bytes()).await;
+        });
+        (address, seen_rx, release_tx)
     }
 
     /// Serve one response per expected `(path, body)` in order, asserting the
@@ -2437,6 +2663,226 @@ mod tests {
             .expect("the answer routes");
         let decoded = second.await.expect("the second call finishes").expect("the second read");
         assert_eq!(decoded["name"], "bank");
+    }
+
+    /// The command inputs carry secret values, so their Debug lines must not.
+    #[test]
+    fn the_vault_inputs_redact_their_secret_values() {
+        let field = CustomFieldInput {
+            name: "pin".to_owned(),
+            value: "1234-secret".to_owned(),
+            kind: None,
+        };
+        let create = CreateInput {
+            name: "bank".to_owned(),
+            password: Some("password-secret".to_owned()),
+            number: Some("4111111111111111".to_owned()),
+            code: Some("999".to_owned()),
+            custom_fields: Some(vec![field.clone()]),
+            ..Default::default()
+        };
+        let patch = PatchInput { password: Some("patch-secret".to_owned()), ..Default::default() };
+
+        for text in [format!("{field:?}"), format!("{create:?}"), format!("{patch:?}")] {
+            for secret in ["1234-secret", "password-secret", "4111111111111111", "patch-secret"] {
+                assert!(!text.contains(secret), "a secret reached Debug: {text}");
+            }
+        }
+    }
+
+    /// A hard link names bytes outside this tree; writing through one would
+    /// truncate another file.
+    #[test]
+    fn write_private_refuses_a_hard_link() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target = dir.path().join("target");
+        std::fs::write(&target, b"keep").expect("target");
+        let link = dir.path().join("link");
+        std::fs::hard_link(&target, &link).expect("hard link");
+
+        assert!(write_private(&link, b"overwrite").is_err(), "the hard link is refused");
+        assert_eq!(std::fs::read(&target).expect("target read"), b"keep");
+    }
+
+    /// A destination whose parent is swapped while the card waits is refused
+    /// before the write.
+    #[test]
+    fn a_swapped_destination_parent_is_refused_at_write_time() {
+        let (workspace, _facade, caller, dir, _rx) = locked_worker_workspace();
+        std::fs::create_dir(dir.path().join("sub")).expect("sub");
+        let expected = resolve_destination(&workspace, &caller, "sub/out.txt").expect("the path");
+        let outside = tempfile::tempdir().expect("outside");
+        std::fs::remove_dir(dir.path().join("sub")).expect("remove sub");
+        std::os::unix::fs::symlink(outside.path(), dir.path().join("sub")).expect("symlink");
+
+        let error = recheck_destination(&workspace, &caller, "sub/out.txt", &expected)
+            .expect_err("the swapped parent is refused");
+
+        assert!(error.to_string().contains("outside"), "{error}");
+        assert!(!outside.path().join("out.txt").exists());
+    }
+
+    /// The metadata pre-check sees an empty FIFO; the post-read check is what
+    /// refuses a stream that grows past the cap.
+    #[test]
+    fn an_attachment_that_grows_past_the_cap_is_refused_after_the_read() {
+        use std::io::Write;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let fifo = dir.path().join("fifo");
+        let created = std::process::Command::new("mkfifo")
+            .arg(fifo.as_os_str())
+            .status()
+            .expect("mkfifo runs");
+        assert!(created.success(), "mkfifo failed");
+        let writer_path = fifo.clone();
+        let writer = std::thread::spawn(move || {
+            let mut file =
+                std::fs::OpenOptions::new().write(true).open(&writer_path).expect("fifo write");
+            file.write_all(&[b'x'; 8]).expect("write");
+        });
+
+        let error = read_attachment(&fifo, 4).expect_err("the post-read cap refuses it");
+        writer.join().expect("writer");
+
+        assert!(error.to_string().contains("over the 4 byte cap"), "{error}");
+    }
+
+    /// A `[vault]` reload while the pre-gate read is in flight makes the
+    /// approved call fail rather than run against the new account.
+    #[tokio::test]
+    async fn a_reload_during_the_pre_gate_read_fails_the_call() {
+        use forge_connectors::vault::crypto::{encrypt_str, make_symmetric_key};
+
+        let user_key = make_symmetric_key();
+        let name = encrypt_str("bank", &user_key).expect("encrypt the name");
+        let (address, seen, release) = serve_paused_cipher(name).await;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config =
+            VaultConfig { url: format!("http://{address}"), email: "hi@vedhavyas.dev".to_owned() };
+        let old =
+            Arc::new(test_session(&config, Some(dir.path()), dir.path()).expect("the old session"));
+        test_install_unlocked(
+            &old,
+            Unlocked {
+                user_key,
+                private_key: None,
+                org_keys: std::collections::HashMap::new(),
+                failed_orgs: Vec::new(),
+            },
+        );
+        let (workspace, mut rx) = Workspace::testing_stub();
+        *workspace.vault.write() = Some(Arc::clone(&old));
+        let facade = Arc::new(ProdVaultFacade::from_arc(&workspace));
+        let caller = SessionSlot::lead("Default", "forge");
+
+        let asked = caller.clone();
+        let call = {
+            let facade = Arc::clone(&facade);
+            tokio::spawn(async move { facade.get(&asked, "item-1", None).await })
+        };
+        seen.await.expect("the pre-gate read reached the server");
+
+        let next =
+            Arc::new(test_session(&config, Some(dir.path()), dir.path()).expect("the new session"));
+        test_install_unlocked(
+            &next,
+            Unlocked {
+                user_key: make_symmetric_key(),
+                private_key: None,
+                org_keys: std::collections::HashMap::new(),
+                failed_orgs: Vec::new(),
+            },
+        );
+        *workspace.vault.write() = Some(Arc::clone(&next));
+        release.send(()).expect("the server responds");
+
+        let draft = parked_draft(&mut rx).await;
+        workspace
+            .dispatch(Command::RespondVaultAsk {
+                key: caller.clone(),
+                id: draft.id,
+                answer: VaultAskAnswer {
+                    decision: VaultAskDecision::Approve,
+                    master_password: None,
+                    two_factor: None,
+                },
+            })
+            .expect("the answer routes");
+
+        let result = call.await.expect("the call finishes");
+        assert!(
+            matches!(&result, Err(VaultToolError::Message(message)) if message.contains("configuration changed")),
+            "{result:?}",
+        );
+        assert!(audit_text(&dir).contains("failed: the vault configuration changed"));
+    }
+
+    /// A decryption failure inside an approved call drops the keys and
+    /// restamps every other parked card as needing the password.
+    #[tokio::test]
+    async fn a_decryption_failure_locks_and_restamps_the_parked_cards() {
+        use forge_connectors::vault::crypto::make_symmetric_key;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = VaultConfig {
+            url: "http://127.0.0.1:1".to_owned(),
+            email: "hi@vedhavyas.dev".to_owned(),
+        };
+        let session =
+            Arc::new(test_session(&config, Some(dir.path()), dir.path()).expect("a session"));
+        test_install_unlocked(
+            &session,
+            Unlocked {
+                user_key: make_symmetric_key(),
+                private_key: None,
+                org_keys: std::collections::HashMap::new(),
+                failed_orgs: Vec::new(),
+            },
+        );
+        let (workspace, mut rx) = Workspace::testing_stub();
+        *workspace.vault.write() = Some(Arc::clone(&session));
+        let caller = SessionSlot::lead("Default", "forge");
+        let (other, _held, _) = workspace.register_vault_ask(
+            &caller,
+            VaultDraft::new(VaultTool::Search, "another call"),
+            false,
+        );
+        while rx.try_recv().is_ok() {}
+
+        let approved = Approved {
+            workspace: Arc::clone(&workspace),
+            session: Arc::clone(&session),
+            keys: session.keys().expect("the installed keys"),
+            caller: caller.clone(),
+            tool: VaultTool::Get,
+            item_id: Some("item-1".to_owned()),
+            item_name: Some("bank".to_owned()),
+            field: None,
+        };
+        let error = approved
+            .done::<()>(Err(VaultToolError::Vault(VaultError::Crypto(anyhow::anyhow!(
+                "keys rotated"
+            )))))
+            .expect_err("the crypto failure is returned");
+
+        assert!(session.is_locked(), "the stale keys are dropped: {error}");
+        let mut restamped = None;
+        while let Ok(frame) = rx.try_recv() {
+            if let crate::protocol::SessionUpdate::VaultAskPending { draft, .. } =
+                std::sync::Arc::unwrap_or_clone(frame.update)
+                && draft.id == other
+            {
+                restamped = Some(draft);
+            }
+        }
+        let restamped = restamped.expect("the other card is restamped");
+        assert!(restamped.needs_unlock, "the other card asks for the password again");
+        assert!(
+            audit_text(&dir).contains("failed: vault request failed: crypto error: keys rotated"),
+            "{}",
+            audit_text(&dir),
+        );
     }
 
     /// A locked search parks the query rather than failing on the sync.

@@ -4425,6 +4425,21 @@ base_url = "http://localhost:18765"
         );
     }
 
+    /// The account's email is the salt the master key derives with, so it is
+    /// not printed in a Debug line about the section.
+    #[test]
+    fn the_vault_config_debug_redacts_the_email() {
+        let config = VaultConfig {
+            url: "https://vault.example.com".to_owned(),
+            email: "me@example.com".to_owned(),
+        };
+
+        let text = format!("{config:?}");
+
+        assert!(!text.contains("me@example.com"), "{text}");
+        assert!(text.contains("https://vault.example.com"), "{text}");
+    }
+
     #[test]
     fn parses_a_vault_block() {
         let dir = tempdir().expect("tempdir");

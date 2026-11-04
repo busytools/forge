@@ -30,34 +30,67 @@ pub fn with_extra_roots(mut b: reqwest::ClientBuilder) -> reqwest::ClientBuilder
         if path.trim().is_empty() {
             continue;
         }
-        let pem = match fs::read(&path) {
-            Ok(p) => p,
-            Err(e) => {
-                tracing::warn!(path = %path, var, error = %e, "extra CA bundle unreadable");
-                continue;
-            }
-        };
-        match reqwest::Certificate::from_pem_bundle(&pem) {
-            Ok(certs) => {
-                let n = certs.len();
-                for c in certs {
-                    b = b.add_root_certificate(c);
-                }
-                tracing::info!(
-                    path = %path,
-                    var,
-                    added = n,
-                    "loaded extra CA roots into reqwest"
-                );
-                // First env var that yields certs wins; don't double-
-                // load if both NODE_EXTRA_CA_CERTS and SSL_CERT_FILE
-                // are set to the same bundle.
-                break;
-            }
-            Err(e) => {
-                tracing::warn!(path = %path, var, error = %e, "failed to parse CA bundle");
-            }
+        let (next, added) = with_roots_from(b, &path, var);
+        b = next;
+        // First env var that yields certs wins; don't double-load if both
+        // NODE_EXTRA_CA_CERTS and SSL_CERT_FILE name the same bundle.
+        if added > 0 {
+            break;
         }
     }
     b
+}
+
+/// Load one bundle into `b`, returning the builder and how many certificates
+/// it added. Unreadable or unparseable bundles add nothing.
+fn with_roots_from(
+    mut b: reqwest::ClientBuilder,
+    path: &str,
+    var: &str,
+) -> (reqwest::ClientBuilder, usize) {
+    let pem = match fs::read(path) {
+        Ok(pem) => pem,
+        Err(error) => {
+            tracing::warn!(path = %path, var, %error, "extra CA bundle unreadable");
+            return (b, 0);
+        }
+    };
+    match reqwest::Certificate::from_pem_bundle(&pem) {
+        Ok(certs) => {
+            let added = certs.len();
+            for cert in certs {
+                b = b.add_root_certificate(cert);
+            }
+            tracing::info!(path = %path, var, added, "loaded extra CA roots into reqwest");
+            (b, added)
+        }
+        Err(error) => {
+            tracing::warn!(path = %path, var, %error, "failed to parse CA bundle");
+            (b, 0)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The loader the production clients use adds the bundle's certificates.
+    #[test]
+    fn a_valid_bundle_adds_its_certificates() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/extra-root.pem");
+
+        let (_, added) = with_roots_from(reqwest::Client::builder(), path, "NODE_EXTRA_CA_CERTS");
+
+        assert_eq!(added, 1);
+    }
+
+    /// An unreadable bundle is best-effort, like Node's own handling.
+    #[test]
+    fn an_unreadable_bundle_adds_nothing() {
+        let (_, added) =
+            with_roots_from(reqwest::Client::builder(), "/nonexistent/ca.pem", "SSL_CERT_FILE");
+
+        assert_eq!(added, 0);
+    }
 }

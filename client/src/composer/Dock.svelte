@@ -889,7 +889,7 @@
     }
     if (event.key === 'Escape') {
       event.preventDefault();
-      root?.focus();
+      answerVault('decline');
     }
   }
 

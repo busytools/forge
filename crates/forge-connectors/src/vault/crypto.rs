@@ -186,14 +186,21 @@ pub fn unlock(
         user_key_enc.parse().map_err(|e| anyhow!("wrapped user key did not parse: {e}"))?;
     let user_key = master_key.decrypt_user_key(user_key_enc)?;
 
-    let private_key = match token.private_key.clone().or_else(|| profile.private_key.clone()) {
-        Some(enc) if !enc.is_empty() => {
+    // An empty `PrivateKey` is a client's unset value, not a wrapped key; it
+    // must not shadow the profile's real one either.
+    let private_key_enc = token
+        .private_key
+        .clone()
+        .filter(|key| !key.is_empty())
+        .or_else(|| profile.private_key.clone().filter(|key| !key.is_empty()));
+    let private_key = match private_key_enc {
+        Some(enc) => {
             let der = Zeroizing::new(
                 decrypt_bytes(&enc, &user_key).context("decrypting the private key")?,
             );
             Some(parse_private_key(&der)?)
         }
-        _ => None,
+        None => None,
     };
 
     let (org_keys, failed_orgs) = org_keys(private_key.as_ref(), profile);
@@ -602,6 +609,34 @@ mod tests {
         assert!(unlocked.private_key.is_some());
     }
 
+    /// An empty `PrivateKey` on the token is a client's unset value, not a
+    /// wrapped key; it must not hide the profile's real one.
+    #[test]
+    fn an_empty_token_private_key_falls_back_to_the_profile_key() {
+        let pre =
+            Prelogin { kdf: 0, kdf_iterations: 100_000, kdf_memory: None, kdf_parallelism: None };
+        let master_key = derive_master_key("asdfasdf", "test@bitwarden.com", &pre).unwrap();
+        let (user_key, wrapped_user_key) = master_key.make_user_key().unwrap();
+        let user_key = user_key.0;
+
+        let rsa_key = rsa::RsaPrivateKey::new(&mut bitwarden_random::rng(), 1024).unwrap();
+        let der = rsa_key.to_pkcs8_der().unwrap();
+        let der_bytes = BitwardenLegacyKeyBytes::from(der.as_bytes().to_vec());
+        let wrapped_private_key = (&der_bytes).encrypt_with_key(&user_key).unwrap().to_string();
+
+        let token = TokenResponse {
+            access_token: "token".to_owned(),
+            refresh_token: None,
+            key: Some(wrapped_user_key.to_string()),
+            private_key: Some(String::new()),
+        };
+        let profile = Profile { private_key: Some(wrapped_private_key), ..Profile::default() };
+
+        let unlocked = unlock(&token, &master_key, &profile).expect("the profile key is used");
+
+        assert!(unlocked.private_key.is_some(), "the profile private key was unwrapped");
+    }
+
     /// The org-key unwrap is the one hand-rolled crypto path; round-trip it the
     /// way Vaultwarden stores `profile.organizations[].key` (EncString type 4).
     #[test]
@@ -656,7 +691,11 @@ mod tests {
         let uri = |digits: u32| {
             format!("otpauth://totp/x?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ&digits={digits}")
         };
-        assert!(totp_from_uri(&uri(10), at).is_err(), "ten digits must not overflow");
+        let overflow = totp_from_uri(&uri(10), at).err().expect("ten digits must not overflow");
+        assert!(
+            overflow.to_string().contains("digits out of range"),
+            "the refusal names the bound: {overflow}"
+        );
         assert!(totp_from_uri(&uri(5), at).is_err());
         assert!(totp_from_uri(&uri(6), at).is_ok());
         assert!(totp_from_uri(&uri(8), at).is_ok());

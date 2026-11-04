@@ -7,6 +7,7 @@
 //! connector only moves it.
 
 use serde::{Deserialize, Serialize};
+use zeroize::Zeroize;
 
 /// The prelogin answer: which KDF the account uses and its parameters.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
@@ -34,6 +35,23 @@ pub struct TokenResponse {
     /// The wrapped account private key, in the same two spellings.
     #[serde(default, rename = "PrivateKey", alias = "privateKey")]
     pub private_key: Option<String>,
+}
+
+/// Every field is a credential, so dropping the token wipes it even on an
+/// error path that never stored it.
+impl Drop for TokenResponse {
+    fn drop(&mut self) {
+        self.access_token.zeroize();
+        if let Some(refresh) = &mut self.refresh_token {
+            refresh.zeroize();
+        }
+        if let Some(key) = &mut self.key {
+            key.zeroize();
+        }
+        if let Some(private_key) = &mut self.private_key {
+            private_key.zeroize();
+        }
+    }
 }
 
 /// Hand-written because every field is a credential: the access and refresh
@@ -158,5 +176,29 @@ impl std::fmt::Debug for TwoFactorCode {
             .field("token", &"[redacted]")
             .field("provider", &self.provider)
             .finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The signed URL carries its own token and the key is a wrapped
+    /// credential, so neither may appear in a Debug line.
+    #[test]
+    fn attachment_meta_debug_redacts_the_url_and_key() {
+        let meta = AttachmentMeta {
+            id: "attachment-id".to_owned(),
+            file_name: "file".to_owned(),
+            size: Some(97),
+            size_name: None,
+            url: Some("https://vault.example.com/signed?token=secret".to_owned()),
+            key: Some("2.c2VjcmV0".to_owned()),
+        };
+
+        let text = format!("{meta:?}");
+
+        assert!(!text.contains("secret"), "{text}");
+        assert!(!text.contains("2.c2VjcmV0"), "{text}");
     }
 }
