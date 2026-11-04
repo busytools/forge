@@ -254,7 +254,10 @@ async fn opener_title(auto_attach: bool) -> String {
             "every attached target was resumed",
         );
         let urls = attached.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
-        assert!(urls.len() >= 2, "the driver attached to the opener and the popup: {urls:?}");
+        assert!(
+            urls.iter().any(|(id, _)| id == &popup),
+            "the driver attached to the popup's target too: {urls:?}",
+        );
     }
     assert!(host.terminate(Duration::from_secs(10)).success(), "the host ends on SIGTERM");
     Ring::unlink(&ring_name);
@@ -443,7 +446,10 @@ async fn a_cross_site_popup_relays_post_message_both_ways() {
         "every attached target was resumed",
     );
     let urls = attached.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
-    assert!(urls.len() >= 2, "the driver attached to the opener and the popup: {urls:?}");
+    assert!(
+        urls.iter().any(|(id, _)| id == &popup),
+        "the driver attached to the popup's target too: {urls:?}",
+    );
 
     assert!(host.terminate(Duration::from_secs(10)).success(), "the host ends on SIGTERM");
     Ring::unlink(&ring_name);
@@ -671,31 +677,7 @@ async fn an_about_blank_popup_navigated_cross_site_leaves_the_opener_answering()
         support::Host::start_with_events(&exe, &profile, port, &ring_name, "800x600", &[], &log);
     let opener = support::wait_for_page(port, &log, BOUND);
 
-    let path = browser_path(port).expect("the host answers its browser endpoint");
-    let (mut root, mut root_events) = connect(port, &path).await.expect("the browser root accepts");
-    root.call(
-        "Target.setAutoAttach",
-        json!({ "autoAttach": true, "waitForDebuggerOnStart": true, "flatten": true }),
-        None,
-    )
-    .await
-    .expect("the root session auto-attaches");
-    let resumer = tokio::spawn(async move {
-        while let Some(event) = root_events.recv().await {
-            if event["method"] != "Target.attachedToTarget" {
-                continue;
-            }
-            let session = event["params"]["sessionId"].as_str().unwrap_or_default().to_owned();
-            if session.is_empty() {
-                continue;
-            }
-            let _ = tokio::time::timeout(
-                Duration::from_secs(5),
-                root.call("Runtime.runIfWaitingForDebugger", json!({}), Some(&session)),
-            )
-            .await;
-        }
-    });
+    let (resumer, attached, failures) = attach_and_resume(port).await;
 
     let (mut cdp, _events) = connect(port, &format!("/devtools/page/{opener}"))
         .await
@@ -753,7 +735,20 @@ async fn an_about_blank_popup_navigated_cross_site_leaves_the_opener_answering()
         ),
     }
 
+    // **The driver attached to the popup's address and every pause was
+    // resumed.** A resumer that swallowed both would read a popup the driver
+    // paused and never resumed as a pass.
     resumer.abort();
+    assert_eq!(
+        failures.load(std::sync::atomic::Ordering::Acquire),
+        0,
+        "every attached target was resumed",
+    );
+    let urls = attached.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+    assert!(
+        urls.iter().any(|(id, _)| id == &popup),
+        "the driver attached to the popup's target too: {urls:?}",
+    );
     assert!(host.terminate(Duration::from_secs(10)).success(), "the host ends on SIGTERM");
     Ring::unlink(&ring_name);
 }
@@ -782,11 +777,18 @@ async fn a_cross_origin_iframe_cannot_reach_the_bridge_or_open_a_popup() {
 
     let frame = format!(
         "<!doctype html><meta charset=utf-8><title>frame</title>\
+         <style>html,body{{margin:0;padding:0}}\
+         button{{width:300px;height:150px;font-size:24px}}</style>\
+         <button id=open>Open</button>\
          <script>\
          var native = typeof window.__forgeBridgeNative;\
-         var opened = window.open(location.href, 'frame-popup');\
-         parent.postMessage({{native: native, \
-           opened: opened === null ? 'null' : 'object'}}, '{app_origin}');\
+         document.getElementById('open').onclick = function () {{\
+           if (window.__opened) return;\
+           window.__opened = true;\
+           var opened = window.open(location.href, 'frame-popup');\
+           parent.postMessage({{native: native, \
+             opened: opened === null ? 'null' : 'object'}}, '{app_origin}');\
+         }};\
          </script>"
     );
     let app = format!(
@@ -815,9 +817,14 @@ async fn a_cross_origin_iframe_cannot_reach_the_bridge_or_open_a_popup() {
         .expect("the app navigates");
     wait_for_title(&mut cdp, &["ready"], BOUND).await;
 
+    // **The open is a real click inside the frame.** An ungestured open is
+    // answered null by the engine's popup blocker even with the shim gone, so
+    // only a gestured one proves the shim refused: without it, this click
+    // would create a page.
     let wanted = format!("frame:undefined:null:{frame_origin}");
     let deadline = Instant::now() + BOUND;
     loop {
+        support::click(&mut host, 60, 60);
         let title = evaluate(&mut cdp, "document.title").await;
         if title.as_str() == Some(wanted.as_str()) {
             break;
@@ -828,7 +835,7 @@ async fn a_cross_origin_iframe_cannot_reach_the_bridge_or_open_a_popup() {
              (wanted {wanted:?}, log: {})",
             host.log_tail(),
         );
-        tokio::time::sleep(POLL).await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
     }
     // **No page was created**: the iframe's refused open did not fall back to
     // CEF's popup.
@@ -1041,7 +1048,7 @@ async fn attach_and_resume(
     port: u16,
 ) -> (
     tokio::task::JoinHandle<()>,
-    std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>>,
     std::sync::Arc<std::sync::atomic::AtomicUsize>,
 ) {
     let path = browser_path(port).expect("the host answers its browser endpoint");
@@ -1063,11 +1070,16 @@ async fn attach_and_resume(
                 continue;
             }
             let session = event["params"]["sessionId"].as_str().unwrap_or_default().to_owned();
-            let url = event["params"]["targetInfo"]["url"].as_str().unwrap_or_default().to_owned();
+            let info = &event["params"]["targetInfo"];
+            let id = info["targetId"].as_str().unwrap_or_default().to_owned();
+            // **The URL at attach is the one the target was created at**, which
+            // for a bridged popup is `about:blank`; the test names the popup by
+            // the target id the browser lists.
+            let url = info["url"].as_str().unwrap_or_default().to_owned();
             if session.is_empty() {
                 continue;
             }
-            record.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(url);
+            record.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push((id, url));
             let resumed = tokio::time::timeout(
                 Duration::from_secs(5),
                 root.call("Runtime.runIfWaitingForDebugger", json!({}), Some(&session)),
