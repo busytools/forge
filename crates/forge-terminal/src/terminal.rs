@@ -173,6 +173,12 @@ impl Terminal {
         self.inner.write(text.as_bytes())
     }
 
+    /// Type raw bytes as-is: a client's own keystrokes, which are already the
+    /// bytes the PTY wants.
+    pub fn write_bytes(&self, bytes: &[u8]) -> Result<(), Error> {
+        self.inner.write(bytes)
+    }
+
     /// Press named keys, in order.
     pub fn write_keys(&self, keys: &[crate::keys::Key]) -> Result<(), Error> {
         for key in keys {
@@ -230,6 +236,12 @@ impl Terminal {
     /// The output stream, from the next chunk.
     pub fn subscribe(&self) -> broadcast::Receiver<OutputChunk> {
         self.inner.output.subscribe()
+    }
+
+    /// The sequence the next output chunk carries. A repaint taken now
+    /// reflects every chunk below it.
+    pub fn seq(&self) -> u32 {
+        self.inner.seq.load(Ordering::Relaxed)
     }
 
     /// The state stream, from the current value.

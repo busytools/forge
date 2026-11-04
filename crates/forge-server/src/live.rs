@@ -282,6 +282,11 @@ pub fn fleet_news(update: &SessionUpdate) -> FleetNews<'_> {
         | SessionUpdate::SlackDraftResolved { .. }
         | SessionUpdate::BrowserHandOffPending { .. }
         | SessionUpdate::BrowserHandOffResolved { .. }
+        // A terminal hand-off is the same shape again, and a terminal that
+        // opened, exited or was closed moves the row's strip.
+        | SessionUpdate::TerminalHandOffPending { .. }
+        | SessionUpdate::TerminalHandOffResolved { .. }
+        | SessionUpdate::TerminalChanged { .. }
         // **A hand-off has to reach the client wherever the reader is.** The
         // viewer opens on the raise, and the home subscription is the one
         // every client holds - a seat-keyed raise a reader sitting on the

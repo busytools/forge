@@ -1634,6 +1634,7 @@
     if (
       current.kind === 'slack_draft' ||
       current.kind === 'browser_hand_off' ||
+      current.kind === 'terminal_hand_off' ||
       current.kind === 'document_hand_off' ||
       current.kind === 'settings_write'
     ) {

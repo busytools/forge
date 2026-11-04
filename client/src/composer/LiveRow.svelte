@@ -14,6 +14,7 @@
   import Strip from '../chat/Strip.svelte';
   import SubagentSegment from '../chat/SubagentSegment.svelte';
   import TasksSegment from '../chat/TasksSegment.svelte';
+  import TerminalSegment from '../chat/TerminalSegment.svelte';
   import { connectors } from '../chat/connectors.svelte';
   import { files } from '../chat/files.svelte';
   import { git } from '../chat/git.svelte';
@@ -281,6 +282,8 @@
 {#snippet segment(name: string)}
   {#if name === 'browser'}
     <BrowserSegment {slot} />
+  {:else if name === 'terminal'}
+    <TerminalSegment {slot} />
   {:else if name === 'subagents'}
     <SubagentSegment />
   {:else if name === 'processes'}
@@ -338,6 +341,14 @@
         role="listitem"
       >
         {@render segment('browser')}
+      </span>
+      <span
+        class="live-chip"
+        class:off={hidden.includes('terminal')}
+        data-chip="terminal"
+        role="listitem"
+      >
+        {@render segment('terminal')}
       </span>
       <span
         class="live-chip"

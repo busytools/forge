@@ -30,6 +30,7 @@ import {
 import { noteSnapshot, noteSubscribe, type PerfRecord } from './perf';
 import { Stores, type Store } from './stores';
 import { coversHome } from './wire/fleet';
+import { terminalInputFrame, terminalOutputFrame, type TerminalOutputFrame } from './wire/terminal';
 import { settingsFrom } from './wire/types';
 import { takeSettings } from './settings/frame';
 import type { SettingsEditWire } from './wire/settings';
@@ -570,6 +571,38 @@ export interface BrowserWire {
   browserResize(width: number, height: number, scale: number): boolean;
 }
 
+/**
+ * The terminal's own client messages, as a page that draws the server's
+ * terminal sends them.
+ *
+ * **These are not core commands.** `terminal_view` answers through a reply of
+ * its own, and the rest are assertions about what this viewer is doing. The
+ * typed input is a binary frame ([`terminalInput`]), not JSON: keystrokes go
+ * to the PTY as the bytes a person's keyboard would send.
+ */
+export interface TerminalWire {
+  /**
+   * Attach this connection to a seat's terminal, as a viewer.
+   *
+   * Answers the terminal it attached, or rejects with the server's own
+   * sentence; the screen arrives as a `terminal_view` message first, then the
+   * output frames.
+   */
+  terminalView(seat: SessionSlot, id: number): Promise<number>;
+  /** Give the attached terminal up: the surface lowered. */
+  terminalDetach(): boolean;
+  /** The attached surface changed size, in columns and rows. */
+  terminalResize(seat: SessionSlot, id: number, cols: number, rows: number): boolean;
+  /** Stop or resume the byte stream; a resume repaints. */
+  terminalPause(paused: boolean): boolean;
+  /** The person's close door. */
+  terminalClose(seat: SessionSlot, id: number): boolean;
+  /** One client input frame: the keystrokes, as bytes. */
+  terminalInput(id: number, bytes: Uint8Array): boolean;
+  /** Every terminal output frame, with the id it belongs to. */
+  onTerminalFrame(listener: (frame: TerminalOutputFrame) => void): () => void;
+}
+
 /** The attach a `browser_view` answered with. */
 export interface BrowserAttach {
   profile: string;
@@ -635,7 +668,7 @@ export function connect(
   url: string,
   boundMs: number = READ_BOUND_MS,
   replyBoundMs: number = REPLY_BOUND_MS,
-): Connection & BrowserWire {
+): Connection & BrowserWire & TerminalWire {
   const stores = new Stores();
   const settingsOwner: object = {};
   /**
@@ -657,6 +690,8 @@ export function connect(
   const statuses = new Set<(status: ConnectionStatus) => void>();
   /** The page's viewers of the relayed frames: the phone's canvas. */
   const frameListeners = new Set<(frame: BrowserFrame) => void>();
+  /** The page's terminal surfaces: one listener per open terminal. */
+  const terminalListeners = new Set<(frame: TerminalOutputFrame) => void>();
   const pending = new Map<number, PendingReply>();
   /**
    * The subscribes that have gone and not been answered, oldest first, which
@@ -1207,9 +1242,20 @@ export function connect(
             },
           );
         }
-        // **A binary message is a relayed browser frame.** The phone's canvas
-        // draws it; a page with no viewer ignores it, which is the desktop,
-        // where the shell took the same bytes off its own socket.
+        // **A binary message is a terminal's output or a relayed browser
+        // frame.** The kind tag decides, and a frame of neither kind is
+        // reported rather than dropped.
+        const terminal = terminalOutputFrame(bytes);
+        if (terminal !== null) {
+          for (const fn of terminalListeners) {
+            try {
+              fn(terminal);
+            } catch (why) {
+              report('a terminal frame listener threw', why);
+            }
+          }
+          return;
+        }
         const frame = browserFrame(bytes);
         if (frame === null) {
           // **A binary frame this page cannot read is said**, not dropped:
@@ -1590,6 +1636,49 @@ export function connect(
     browserNav: (back) => sendClient({ kind: 'browser_nav', back }),
     browserResize: (width, height, scale) =>
       sendClient({ kind: 'browser_resize', width, height, scale }),
+    terminalView(seat, id) {
+      if (!isOpen()) return Promise.reject(new Error('the socket is not open'));
+      const { replyTo, answer } = asked(ATTACH_BOUND_MS, 'terminal attach');
+      sendNow({ kind: 'terminal_view', seat, id, reply_to: replyTo });
+      return answer.then((body) => {
+        if (typeof body !== 'object' || body === null) {
+          throw new Error('the terminal attach answered nothing this page can read');
+        }
+        const held = body as Record<string, unknown>;
+        if (held['ok'] !== true) {
+          throw new Error(
+            typeof held['why'] === 'string' && held['why'] !== ''
+              ? held['why']
+              : 'the terminal could not be opened',
+          );
+        }
+        if (typeof held['id'] !== 'number') {
+          throw new Error('the attach named no terminal');
+        }
+        return held['id'];
+      });
+    },
+    terminalDetach: () => sendClient({ kind: 'terminal_detach' }),
+    terminalResize: (seat, id, cols, rows) =>
+      sendClient({ kind: 'terminal_resize', seat, id, cols, rows }),
+    terminalPause: (paused) => sendClient({ kind: 'terminal_pause', paused }),
+    terminalClose: (seat, id) => sendClient({ kind: 'terminal_close', seat, id }),
+    terminalInput(id, bytes) {
+      if (!isOpen()) return false;
+      try {
+        socket?.send(terminalInputFrame(id, bytes) as Uint8Array<ArrayBuffer>);
+      } catch (why) {
+        report('a terminal input frame could not be sent', why);
+        return false;
+      }
+      return true;
+    },
+    onTerminalFrame(listener) {
+      terminalListeners.add(listener);
+      return () => {
+        terminalListeners.delete(listener);
+      };
+    },
     clientPerf: (records) => sendClient({ kind: 'client_perf', records }),
     more(conversation, before = null, turns = MORE_TURNS) {
       if (!isOpen()) return false;

@@ -25,7 +25,7 @@ import type { ClientSettings, SessionSlot } from './wire/types';
  * rail footer carries both halves' build and socket numbers, and a mismatch
  * raises the notice beside it. Nothing refuses a connection over it.
  */
-export const PROTOCOL_VERSION = 27;
+export const PROTOCOL_VERSION = 28;
 
 /**
  * The release this client was built from, baked in by the build.
@@ -420,6 +420,32 @@ export type ClientMessage =
    */
   | { kind: 'browser_resize'; width: number; height: number; scale: number }
   /**
+   * Attach this connection to one of a seat's terminals, as a viewer. The
+   * answer is a `terminal_view` carrying the screen as a VT stream, then
+   * output frames as the shell writes them.
+   */
+  | {
+      kind: 'terminal_view';
+      seat: SessionSlot;
+      id: number;
+      /** Answers the attach when the sender waits; the surface's open does. */
+      reply_to?: number | null;
+    }
+  /** Stop viewing the attached terminal: the surface lowered. */
+  | { kind: 'terminal_detach' }
+  /**
+   * The attached surface changed size, in columns and rows. The PTY and the
+   * model resize.
+   */
+  | { kind: 'terminal_resize'; seat: SessionSlot; id: number; cols: number; rows: number }
+  /**
+   * Client-driven flow control. A resume is answered with a fresh
+   * `terminal_view`; the frames a pause dropped are not replayed.
+   */
+  | { kind: 'terminal_pause'; paused: boolean }
+  /** The person's close door: end the terminal's process group. */
+  | { kind: 'terminal_close'; seat: SessionSlot; id: number }
+  /**
    * One page's own perf records, for a client with no shell to write them.
    *
    * **The records stay as the page serialised them**: the server's part is
@@ -622,6 +648,30 @@ export type ServerMessage =
    * `browser_tabs` and then once per change.
    */
   | ({ kind: 'browser_tabs' } & BrowserTabList)
+  /**
+   * One terminal's screen, as a VT stream a client can draw, and where the
+   * byte stream continues from. `seq` is the last sequence the repaint
+   * reflects, so a chunk at or below it is one the screen already carries.
+   */
+  | {
+      kind: 'terminal_view';
+      seat: SessionSlot;
+      id: number;
+      cols: number;
+      rows: number;
+      seq: number;
+      screen: string;
+      viewers: number;
+    }
+  /**
+   * A seat's terminal opened, changed or closed, as the strip draws it.
+   * `terminal` is `null` when the terminal is gone.
+   */
+  | {
+      kind: 'terminal_state';
+      seat: SessionSlot;
+      terminal: import('./wire/terminal').TerminalSummary | null;
+    }
   /** A settings save that wrote nothing, and why. */
   | {
       kind: 'settings_refused';

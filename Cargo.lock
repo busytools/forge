@@ -1575,6 +1575,7 @@ dependencies = [
  "forge-primitives",
  "forge-sdk",
  "forge-system-one",
+ "forge-terminal",
  "forge-tts",
  "forge-workspace",
  "hex",

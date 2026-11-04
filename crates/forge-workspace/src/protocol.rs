@@ -366,6 +366,16 @@ pub enum Command {
         id: uuid::Uuid,
         answer: forge_primitives::browser::HandOffAnswer,
     },
+    /// Answer a parked terminal hand-off. The blocked `terminal__hand_off`
+    /// handler is awaiting this answer: what it means, the door in the client
+    /// that sent it, and - stamped by the server - the connection that carried
+    /// it. App-level like `RespondBrowserHandOff`: the registry is workspace
+    /// state, and `key` names the owner the answer is checked against.
+    RespondTerminalHandOff {
+        key: SessionSlot,
+        id: uuid::Uuid,
+        answer: forge_primitives::terminal::TerminalHandOffAnswer,
+    },
     /// Answer a parked document hand-off: `NotNow` declines it, `Approve`
     /// and `Feedback` release it with the reader's decision, note and the
     /// review the finish filed. The blocked `hand_off_document` call is
@@ -930,6 +940,7 @@ impl Command {
             | Self::DeleteReviewThread { .. }
             | Self::RespondSlackPost { .. }
             | Self::RespondBrowserHandOff { .. }
+            | Self::RespondTerminalHandOff { .. }
             | Self::AnswerDocumentHandOff { .. }
             | Self::RespondSettingsWrite { .. }
             | Self::SubmitReview { .. }
@@ -1026,6 +1037,12 @@ impl std::fmt::Debug for Command {
                 .finish_non_exhaustive(),
             Self::RespondBrowserHandOff { key, id, answer } => f
                 .debug_struct("RespondBrowserHandOff")
+                .field("key", key)
+                .field("id", id)
+                .field("answer", answer)
+                .finish_non_exhaustive(),
+            Self::RespondTerminalHandOff { key, id, answer } => f
+                .debug_struct("RespondTerminalHandOff")
                 .field("key", key)
                 .field("id", id)
                 .field("answer", answer)
@@ -1964,6 +1981,30 @@ pub enum SessionUpdate {
         id: Uuid,
         answer: forge_primitives::browser::HandOffAnswer,
     },
+    /// A terminal hand-off waits for the person at a client: the session asked
+    /// them to type into the seat's terminal, and its tool handler is blocked
+    /// on a oneshot until `Command::RespondTerminalHandOff` answers it.
+    ///
+    /// **No timeout rides this one**, and the agent is blind while it is
+    /// parked: `terminal__read` and `terminal__write` are refused.
+    TerminalHandOffPending {
+        key: SessionSlot,
+        handoff: forge_primitives::terminal::TerminalHandOff,
+    },
+    /// A terminal hand-off left the core's registry: answered in some view, or
+    /// its asking session gone. `answer` is the ending, the door that sent it
+    /// and the connection that carried it.
+    TerminalHandOffResolved {
+        key: SessionSlot,
+        id: Uuid,
+        answer: forge_primitives::terminal::TerminalHandOffAnswer,
+    },
+    /// A seat's terminal opened, changed or closed, as the strip and the
+    /// session record read it. `None` means the terminal is gone.
+    TerminalChanged {
+        key: SessionSlot,
+        terminal: Option<forge_primitives::terminal::TerminalSummary>,
+    },
     /// A prompt entered the CLI's queue: the row a view draws as waiting,
     /// with the words and the sender the lifecycle frames do not carry.
     ///
@@ -2220,6 +2261,9 @@ impl SessionUpdate {
             | Self::SlackDraftResolved { key, .. }
             | Self::BrowserHandOffPending { key, .. }
             | Self::BrowserHandOffResolved { key, .. }
+            | Self::TerminalHandOffPending { key, .. }
+            | Self::TerminalHandOffResolved { key, .. }
+            | Self::TerminalChanged { key, .. }
             | Self::DocumentHandOffPending { key, .. }
             | Self::DocumentHandOffResolved { key, .. }
             | Self::SettingsWritePending { key, .. }
@@ -2500,6 +2544,23 @@ impl std::fmt::Debug for SessionUpdate {
                 .field("id", id)
                 .field("answer", answer)
                 .finish(),
+            Self::TerminalHandOffPending { key, handoff } => f
+                .debug_struct("TerminalHandOffPending")
+                .field("key", key)
+                .field("id", &handoff.id)
+                .field("terminal", &handoff.terminal)
+                .finish_non_exhaustive(),
+            Self::TerminalHandOffResolved { key, id, answer } => f
+                .debug_struct("TerminalHandOffResolved")
+                .field("key", key)
+                .field("id", id)
+                .field("answer", answer)
+                .finish(),
+            Self::TerminalChanged { key, terminal } => f
+                .debug_struct("TerminalChanged")
+                .field("key", key)
+                .field("terminal", &terminal.as_ref().map(|summary| summary.id))
+                .finish_non_exhaustive(),
             Self::PromptQueued { key, uuid, .. } => f
                 .debug_struct("PromptQueued")
                 .field("key", key)
@@ -2632,6 +2693,12 @@ pub enum DispatchError {
         "that browser hand-off is no longer waiting: it has been answered, or its asking session went away"
     )]
     NoBrowserHandOffWaiting { key: SessionSlot, id: Uuid },
+    /// A terminal hand-off answer named a hand-off the registry does not
+    /// hold: answered in another view, or its asking session went away.
+    #[error(
+        "that terminal hand-off is no longer waiting: it has been answered, or its asking session went away"
+    )]
+    NoTerminalHandOffWaiting { key: SessionSlot, id: Uuid },
     /// A document hand-off answer named a hand-off the registry does not
     /// hold: finished in another view, declined, or its asking session went
     /// away. Its own word for the same reason [`Self::NoDraftWaiting`] has

@@ -13,6 +13,7 @@
  */
 
 import type { WireTime, WorkState } from '../wire/home';
+import { terminalSummaryFrom, type TerminalSummary } from '../wire/terminal';
 import type { SessionSlot } from '../wire/types';
 
 /** The model the CLI resolved, of which a header draws one name. */
@@ -347,6 +348,12 @@ export interface SessionRecord {
   mcp: McpServers | null;
   processes: ProcessSnapshot | null;
   monitors: MonitorRecord[];
+  /**
+   * The seat's terminal, when it has one: the strip's row and the state it
+   * draws. `null` until a terminal is opened, which is what makes an
+   * unopened seat cost no strip row.
+   */
+  terminal: TerminalSummary | null;
   /** The seat's live tasks: what it has running, backgrounded or a long
    *  foreground call the CLI tracks while it runs. */
   background_tasks: BackgroundTask[];
@@ -638,6 +645,7 @@ export function sessionFrom(data: unknown): SessionRecord {
     mcp_operation_error: null,
     processes: processesFrom(held['processes']),
     monitors: list(held['monitors']).map(monitorFrom),
+    terminal: terminalSummaryFrom(held['terminal']),
     background_tasks: list(held['background_tasks']).flatMap(backgroundTaskFrom),
     slash_commands: list(held['slash_commands']),
     subagents: list(held['subagents']),

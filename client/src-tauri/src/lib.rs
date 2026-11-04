@@ -45,6 +45,7 @@ pub mod notify;
 pub mod perf;
 pub mod records;
 pub mod socket;
+pub mod terminal;
 
 /// The webview's commands: the page reaches the socket and the records
 /// through these, and hears their moves as `client://*` events. Thin by
@@ -457,6 +458,53 @@ mod commands {
         bridge.browser_input(event);
     }
 
+    /// Attach this connection to a seat's terminal as a viewer, answering the
+    /// terminal it attached.
+    #[tauri::command]
+    pub async fn client_terminal_view(
+        bridge: tauri::State<'_, Arc<Bridge>>,
+        seat: Value,
+        id: u16,
+    ) -> Result<Value, String> {
+        bridge.terminal_view(seat, id).await
+    }
+
+    /// Stop viewing the attached terminal.
+    #[tauri::command]
+    pub fn client_terminal_detach(bridge: tauri::State<'_, Arc<Bridge>>) {
+        bridge.terminal_detach();
+    }
+
+    /// The attached surface changed size, in columns and rows.
+    #[tauri::command]
+    pub fn client_terminal_resize(
+        bridge: tauri::State<'_, Arc<Bridge>>,
+        seat: Value,
+        id: u16,
+        cols: u16,
+        rows: u16,
+    ) {
+        bridge.terminal_resize(seat, id, cols, rows);
+    }
+
+    /// Stop or resume the byte stream.
+    #[tauri::command]
+    pub fn client_terminal_pause(bridge: tauri::State<'_, Arc<Bridge>>, paused: bool) {
+        bridge.terminal_pause(paused);
+    }
+
+    /// The person's close door.
+    #[tauri::command]
+    pub fn client_terminal_close(bridge: tauri::State<'_, Arc<Bridge>>, seat: Value, id: u16) {
+        bridge.terminal_close(seat, id);
+    }
+
+    /// One client input frame: the keystrokes, as bytes.
+    #[tauri::command]
+    pub fn client_terminal_input(bridge: tauri::State<'_, Arc<Bridge>>, id: u16, bytes: Vec<u8>) {
+        bridge.terminal_input(id, bytes);
+    }
+
     #[tauri::command]
     pub fn client_heartbeat(bridge: tauri::State<'_, Arc<Bridge>>) {
         bridge.heartbeat();
@@ -602,6 +650,12 @@ pub fn run() -> u8 {
             commands::client_browser_nav,
             commands::client_browser_resize,
             commands::client_browser_input,
+            commands::client_terminal_view,
+            commands::client_terminal_detach,
+            commands::client_terminal_resize,
+            commands::client_terminal_pause,
+            commands::client_terminal_close,
+            commands::client_terminal_input,
             check_update,
             install_update,
             commands::restart_app,
@@ -665,6 +719,12 @@ pub fn run() -> u8 {
             commands::client_browser_nav,
             commands::client_browser_resize,
             commands::client_browser_input,
+            commands::client_terminal_view,
+            commands::client_terminal_detach,
+            commands::client_terminal_resize,
+            commands::client_terminal_pause,
+            commands::client_terminal_close,
+            commands::client_terminal_input,
             check_update,
             install_update,
             commands::client_connect,

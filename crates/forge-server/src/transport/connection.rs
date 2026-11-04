@@ -257,6 +257,103 @@ struct BrowserViewing {
     tabs: Option<tokio::sync::watch::Receiver<BrowserTabList>>,
 }
 
+/// The terminal this connection is viewing.
+struct TerminalViewing {
+    seat: forge_primitives::SessionSlot,
+    id: u16,
+    entry: std::sync::Arc<forge_workspace::terminal::TerminalEntry>,
+    output: tokio::sync::broadcast::Receiver<forge_workspace::terminal::OutputChunk>,
+    /// Set by `terminal_pause`: frames keep arriving from the terminal, and
+    /// the loop drops them until a resume sends a fresh repaint.
+    paused: bool,
+    /// The last sequence written, so a resume can tell the client where the
+    /// stream continues.
+    last_seq: u32,
+}
+
+/// This connection's terminal half.
+#[derive(Default)]
+struct TerminalViewingState {
+    viewing: Option<TerminalViewing>,
+}
+
+impl Drop for TerminalViewing {
+    fn drop(&mut self) {
+        // **The viewer count comes off however the attachment ends**: a
+        // lowered surface, a dropped socket and a re-attach all pass here.
+        self.entry.attached.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// Send the attached terminal's screen as a VT stream, and where the stream
+/// continues from.
+async fn send_terminal_view<S>(
+    socket: &mut ClientSocket<S>,
+    viewing: &TerminalViewing,
+) -> anyhow::Result<()>
+where
+    S: futures_util::Sink<Message, Error = axum::Error> + Unpin + Send,
+{
+    let repaint = viewing.entry.terminal.repaint();
+    send(
+        socket,
+        ServerMessage::TerminalView {
+            seat: viewing.seat.clone(),
+            id: viewing.id,
+            cols: viewing.entry.terminal.cols(),
+            rows: viewing.entry.terminal.rows(),
+            seq: viewing.last_seq,
+            screen: String::from_utf8_lossy(&repaint).into_owned(),
+            viewers: u32::try_from(
+                viewing.entry.attached.load(std::sync::atomic::Ordering::Relaxed),
+            )
+            .unwrap_or(u32::MAX),
+        },
+    )
+    .await
+}
+
+/// What the terminal has for the loop.
+enum TerminalEvent {
+    Chunk(forge_workspace::terminal::OutputChunk),
+    /// The viewer fell further behind than the broadcast holds: the next
+    /// thing it hears is a fresh screen, not a lossy byte stream.
+    Resync,
+    /// The terminal went away.
+    Gone,
+}
+
+/// The next thing this connection's terminal has for the loop.
+async fn next_terminal_event(
+    viewing: &mut Option<TerminalViewing>,
+) -> Option<TerminalEvent> {
+    let Some(viewing) = viewing.as_mut() else { return std::future::pending().await };
+    loop {
+        match viewing.output.recv().await {
+            Ok(chunk) => {
+                if viewing.paused {
+                    viewing.last_seq = chunk.seq;
+                    continue;
+                }
+                viewing.last_seq = chunk.seq;
+                return Some(TerminalEvent::Chunk(chunk));
+            }
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(lost)) => {
+                tracing::debug!(
+                    event_name = "terminal_viewer_lagged",
+                    id = viewing.id,
+                    lost,
+                    "a terminal viewer fell behind and is being resynced"
+                );
+                return Some(TerminalEvent::Resync);
+            }
+            Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                return Some(TerminalEvent::Gone);
+            }
+        }
+    }
+}
+
 /// What a viewer has to say to the loop.
 enum ViewEvent {
     Frame(BrowserFrame),
@@ -636,6 +733,9 @@ where
     // The tab this connection is viewing and the seat's tab rows it follows,
     // each once the client asks.
     let mut browser = BrowserViewing::default();
+    // The terminal this connection is viewing, once it asks; one per terminal
+    // on the seat, and the frames only this viewer is written.
+    let mut terminal = TerminalViewingState::default();
     // Answers the read loop hands off rather than awaiting, so a slow handler
     // holds nothing behind it (#2445): a reply-carrying command's answer, or a
     // subscribe's record when that read ran off the loop.
@@ -656,6 +756,7 @@ where
         &mut updates,
         &mut dictate,
         &mut browser,
+        &mut terminal,
         AnswerLanes { reads: &mut reads, answers: &mut answers },
         SettingsPush { receiver: settings, sent: sent_settings },
         caller,
@@ -963,6 +1064,7 @@ async fn run_connection<S>(
     updates: &mut Option<(mpsc::UnboundedReceiver<SeatUpdate>, bool)>,
     dictate: &mut Streaming,
     browser: &mut BrowserViewing,
+    terminal: &mut TerminalViewingState,
     lanes: AnswerLanes<'_>,
     settings_push: SettingsPush,
     caller: Caller,
@@ -1014,7 +1116,8 @@ where
                 batch::flush(socket, held.take()).await?;
                 let arrival = Arrival { caller, at: Instant::now() };
                 handle_client(
-                    socket, state, watching, holds, updates, dictate, browser, reads, arrival, msg,
+                    socket, state, watching, holds, updates, dictate, browser, terminal, reads,
+                    arrival, msg,
                 )
                 .await?;
                 // **An ask that queued behind a read is served as soon as no
@@ -1026,9 +1129,8 @@ where
                     match next {
                         Queued::Ask(at, message) => {
                             handle_message(
-                                socket, state, watching, holds, updates, dictate, browser, reads,
-                                Arrival { caller, at },
-                                message,
+                                socket, state, watching, holds, updates, dictate, browser,
+                                terminal, reads, Arrival { caller, at }, message,
                             )
                             .await?;
                         }
@@ -1060,7 +1162,7 @@ where
                                 Queued::Ask(at, message) => {
                                     handle_message(
                                         socket, state, watching, holds, updates, dictate, browser,
-                                        reads, Arrival { caller, at }, message,
+                                        terminal, reads, Arrival { caller, at }, message,
                                     )
                                     .await?;
                                 }
@@ -1351,6 +1453,33 @@ where
                     },
                 )
                 .await?;
+            }
+            // **The attached terminal's bytes, once a viewer asked.** The
+            // frames are this terminal's own stream; a lag past the broadcast
+            // resyncs with a fresh screen rather than a lossy read.
+            event = next_terminal_event(&mut terminal.viewing) => {
+                batch::flush(socket, held.take()).await?;
+                let Some(event) = event else { continue };
+                match event {
+                    TerminalEvent::Chunk(chunk) => {
+                        let Some(viewing) = terminal.viewing.as_ref() else { continue };
+                        let mut transport = super::frame::SocketFrames { socket: &mut *socket };
+                        transport.deliver_terminal(viewing.id, chunk.seq, &chunk.bytes).await?;
+                    }
+                    TerminalEvent::Resync => {
+                        let Some(viewing) = terminal.viewing.as_mut() else { continue };
+                        viewing.last_seq = viewing.entry.terminal.seq().saturating_sub(1);
+                        let viewing = terminal.viewing.as_ref().expect("just borrowed");
+                        send_terminal_view(socket, viewing).await?;
+                    }
+                    TerminalEvent::Gone => {
+                        let Some(viewing) = terminal.viewing.as_ref() else { continue };
+                        let seat = viewing.seat.clone();
+                        terminal.viewing = None;
+                        send(socket, ServerMessage::TerminalState { seat, terminal: None })
+                            .await?;
+                    }
+                }
             }
             // **The keepalive's beat.** A ping that went unanswered past the
             // bound is the evidence, never a quiet read: a busy connection
@@ -1685,6 +1814,7 @@ async fn handle_client<S>(
     updates: &mut Option<(mpsc::UnboundedReceiver<SeatUpdate>, bool)>,
     dictate: &mut Streaming,
     browser: &mut BrowserViewing,
+    terminal: &mut TerminalViewingState,
     reads: &mut Reads,
     arrival: Arrival,
     msg: Message,
@@ -1700,7 +1830,7 @@ where
         // server takes.** Nothing binary comes from a client for the browser:
         // browser frames are the server's to send.
         Message::Binary(bytes) => {
-            take_frame(&state.surface, dictate, me, frame_route(&bytes, dictate));
+            take_frame(&state.surface, dictate, terminal, me, frame_route(&bytes, dictate));
             return Ok(());
         }
         _ => return Ok(()),
@@ -1739,7 +1869,8 @@ where
         .await;
     };
     handle_message(
-        socket, state, watching, holds, updates, dictate, browser, reads, arrival, client,
+        socket, state, watching, holds, updates, dictate, browser, terminal, reads, arrival,
+        client,
     )
     .await
 }
@@ -1876,6 +2007,91 @@ where
     }
 }
 
+/// Attach this connection to a seat's terminal as a viewer.
+///
+/// **The answer is the screen as a VT stream**, so a page that opens a
+/// terminal nobody has drawn yet has content immediately; frames follow.
+async fn attach_terminal<S>(
+    socket: &mut ClientSocket<S>,
+    state: &Arc<TransportState>,
+    terminal: &mut TerminalViewingState,
+    seat: forge_primitives::SessionSlot,
+    id: u16,
+    reply_to: Option<u64>,
+) -> anyhow::Result<()>
+where
+    S: futures_util::Sink<Message, Error = axum::Error> + Unpin + Send,
+{
+    // A re-attach replaces what this connection was viewing; the old
+    // attachment's drop takes its viewer count off.
+    terminal.viewing = None;
+    match state.surface.terminal_attach(&seat, id) {
+        Ok(entry) => {
+            let output = entry.terminal.subscribe();
+            // **The repaint reflects every chunk below this sequence**, so a
+            // chunk still queued from before it is ignored by the client
+            // rather than drawn twice.
+            let last_seq = entry.terminal.seq().saturating_sub(1);
+            terminal.viewing = Some(TerminalViewing {
+                seat: seat.clone(),
+                id,
+                entry,
+                output,
+                paused: false,
+                last_seq,
+            });
+            let viewing = terminal.viewing.as_ref().expect("just set");
+            send_terminal_view(socket, viewing).await?;
+            match reply_to {
+                Some(ask) => {
+                    send(
+                        socket,
+                        ServerMessage::Reply {
+                            reply_to: ask,
+                            body: json!({ "ok": true, "id": id }),
+                        },
+                    )
+                    .await
+                }
+                None => Ok(()),
+            }
+        }
+        Err(why) => {
+            tracing::debug!(
+                event_name = "terminal_attach_refused",
+                seat = %seat.display(),
+                id,
+                reason = %why,
+                "a terminal attach was refused",
+            );
+            match reply_to {
+                Some(ask) => {
+                    send(
+                        socket,
+                        ServerMessage::Reply {
+                            reply_to: ask,
+                            body: json!({ "ok": false, "why": why }),
+                        },
+                    )
+                    .await
+                }
+                None => {
+                    send(
+                        socket,
+                        ServerMessage::Error {
+                            what: "terminal_view".to_owned(),
+                            why,
+                            seat: Some(seat),
+                            dispatch_id: None,
+                        },
+                    )
+                    .await
+                }
+            }
+        }
+    }
+}
+
 /// [`handle_client`] with the message already read, so a subscribe that
 /// queued behind a read off the loop takes the same path the socket's own did.
 async fn handle_message<S>(
@@ -1886,6 +2102,7 @@ async fn handle_message<S>(
     updates: &mut Option<(mpsc::UnboundedReceiver<SeatUpdate>, bool)>,
     dictate: &mut Streaming,
     browser: &mut BrowserViewing,
+    terminal: &mut TerminalViewingState,
     reads: &mut Reads,
     arrival: Arrival,
     client: ClientMessage,
@@ -2544,6 +2761,66 @@ where
         }
         ClientMessage::BrowserViewPage { seat, target, reply_to } => {
             attach_view(socket, state, viewing, me, seat, reply_to, None, Some(target)).await
+        }
+        ClientMessage::TerminalView { seat, id, reply_to } => {
+            attach_terminal(socket, state, terminal, seat, id, reply_to).await
+        }
+        ClientMessage::TerminalDetach => {
+            // **Lowering is a detach**: the drop takes this viewer's count off
+            // the terminal, so the idle clock sees the truth.
+            terminal.viewing = None;
+            Ok(())
+        }
+        ClientMessage::TerminalResize { seat, id, cols, rows } => {
+            match state.surface.terminal_resize(&seat, id, cols, rows) {
+                Ok(()) => Ok(()),
+                Err(why) => {
+                    send(
+                        socket,
+                        ServerMessage::Error {
+                            what: "terminal_resize".to_owned(),
+                            why,
+                            seat: Some(seat),
+                            dispatch_id: None,
+                        },
+                    )
+                    .await
+                }
+            }
+        }
+        ClientMessage::TerminalPause { paused } => {
+            if let Some(viewing) = terminal.viewing.as_mut() {
+                viewing.paused = paused;
+                if !paused {
+                    // **A resume is a fresh repaint**: the frames the pause
+                    // dropped are not replayed, so the client is told where
+                    // the screen is now and continues from there.
+                    viewing.last_seq = viewing.entry.terminal.seq().saturating_sub(1);
+                    let viewing = terminal.viewing.as_ref().expect("just borrowed");
+                    send_terminal_view(socket, viewing).await?;
+                }
+            }
+            Ok(())
+        }
+        ClientMessage::TerminalClose { seat, id } => {
+            match state.surface.terminal_close(&seat, id) {
+                Ok(()) => {
+                    terminal.viewing = None;
+                    Ok(())
+                }
+                Err(why) => {
+                    send(
+                        socket,
+                        ServerMessage::Error {
+                            what: "terminal_close".to_owned(),
+                            why,
+                            seat: Some(seat),
+                            dispatch_id: None,
+                        },
+                    )
+                    .await
+                }
+            }
         }
         ClientMessage::BrowserDetach => {
             // **Lowering is a detach.** It takes this viewer's count off the
@@ -3225,6 +3502,8 @@ enum FrameRoute {
     /// The samples of a dictation frame, for the seats this connection
     /// started.
     Audio(Vec<f32>),
+    /// One client's terminal input, for the terminal this connection views.
+    TerminalInput { id: u16, bytes: Vec<u8> },
     /// A binary message that is not a frame this server takes.
     Refused(super::frame::Refusal),
     /// A dictation frame, but this connection has not started a take to give
@@ -3253,6 +3532,7 @@ fn frame_route(bytes: &[u8], dictate: &Streaming) -> FrameRoute {
             }
             FrameRoute::Audio(samples)
         }
+        super::frame::Frame::TerminalInput { id, bytes } => FrameRoute::TerminalInput { id, bytes },
     }
 }
 
@@ -3263,8 +3543,45 @@ fn frame_route(bytes: &[u8], dictate: &Streaming) -> FrameRoute {
 /// streaming into a server that cannot take it is information about that
 /// client, not a problem forge has, and the record is what makes it
 /// legible either way.
-fn take_frame(surface: &ViewSurface, dictate: &Streaming, me: u64, route: FrameRoute) {
+fn take_frame(
+    surface: &ViewSurface,
+    dictate: &Streaming,
+    terminal: &mut TerminalViewingState,
+    me: u64,
+    route: FrameRoute,
+) {
     match route {
+        FrameRoute::TerminalInput { id, bytes } => {
+            // **Only the connection viewing the terminal may type into it.**
+            // The person's keystrokes go client to server to the PTY master
+            // and no further: they are not a command, an update or a log
+            // line, and nothing the agent reads ever carries them.
+            let Some(viewing) = terminal.viewing.as_ref() else {
+                tracing::debug!(
+                    event_name = "terminal_input_unattached",
+                    id,
+                    "a terminal input frame arrived on a connection viewing no terminal",
+                );
+                return;
+            };
+            if viewing.id != id {
+                tracing::debug!(
+                    event_name = "terminal_input_wrong_terminal",
+                    id,
+                    attached = viewing.id,
+                    "a terminal input frame named a terminal this connection is not viewing",
+                );
+                return;
+            }
+            if let Err(why) = surface.terminal_write(&viewing.seat, id, &bytes) {
+                tracing::debug!(
+                    event_name = "terminal_input_failed",
+                    id,
+                    reason = %why,
+                    "a terminal input frame could not be written",
+                );
+            }
+        }
         FrameRoute::Audio(samples) => {
             // Offered to each seat this connection started, kept only where
             // the live take is THIS connection's - a seat's take can be

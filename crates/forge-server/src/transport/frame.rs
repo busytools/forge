@@ -61,6 +61,11 @@ pub enum Kind {
     /// client: the profile id, sequence, sample rate and channels, then
     /// interleaved 16-bit samples.
     BrowserAudio,
+    /// One terminal's output: the terminal id, its sequence, then the raw
+    /// bytes the shell wrote.
+    TerminalOutput,
+    /// One client's terminal input: the terminal id, then the raw bytes.
+    TerminalInput,
 }
 
 impl Kind {
@@ -70,6 +75,8 @@ impl Kind {
             Self::Dictation => 0,
             Self::BrowserFrame => 1,
             Self::BrowserAudio => 2,
+            Self::TerminalOutput => forge_primitives::terminal::TERMINAL_OUTPUT_TAG,
+            Self::TerminalInput => forge_primitives::terminal::TERMINAL_INPUT_TAG,
         }
     }
 
@@ -78,6 +85,8 @@ impl Kind {
             0 => Some(Self::Dictation),
             1 => Some(Self::BrowserFrame),
             2 => Some(Self::BrowserAudio),
+            forge_primitives::terminal::TERMINAL_OUTPUT_TAG => Some(Self::TerminalOutput),
+            forge_primitives::terminal::TERMINAL_INPUT_TAG => Some(Self::TerminalInput),
             _ => None,
         }
     }
@@ -96,6 +105,10 @@ pub trait FrameTransport: Send {
 
     /// Deliver one packet of the page's audio to this viewer.
     async fn deliver_audio(&mut self, audio: &BrowserAudio) -> anyhow::Result<()>;
+
+    /// Deliver one terminal's output to this viewer: the id, the sequence and
+    /// the shell's own bytes.
+    async fn deliver_terminal(&mut self, id: u16, seq: u32, bytes: &[u8]) -> anyhow::Result<()>;
 }
 
 /// The socket's own transport: one tagged binary message per frame.
@@ -122,6 +135,14 @@ where
         let bytes = audio_bytes(audio);
         write_within(WRITE_BOUND, async {
             self.socket.send(Message::Binary(bytes.into())).await.map_err(anyhow::Error::from)
+        })
+        .await
+    }
+
+    async fn deliver_terminal(&mut self, id: u16, seq: u32, bytes: &[u8]) -> anyhow::Result<()> {
+        let frame = terminal_output_bytes(id, seq, bytes);
+        write_within(WRITE_BOUND, async {
+            self.socket.send(Message::Binary(frame.into())).await.map_err(anyhow::Error::from)
         })
         .await
     }
@@ -155,8 +176,10 @@ pub enum Refusal {
     Oversized(usize),
     /// A dictation payload that is not a whole number of samples.
     UnevenPayload(usize),
-    /// A browser frame, which only the server sends.
+    /// A browser or terminal output frame, which only the server sends.
     ServerOnly(u8),
+    /// A terminal input frame shorter than its two-byte id.
+    ShortTerminalInput(usize),
 }
 
 impl Refusal {
@@ -172,6 +195,9 @@ impl Refusal {
             Self::ServerOnly(tag) => {
                 format!("kind tag {tag} is a frame the server sends, not one a client does")
             }
+            Self::ShortTerminalInput(bytes) => {
+                format!("{bytes} bytes is shorter than a terminal input frame's two-byte id")
+            }
         }
     }
 }
@@ -181,6 +207,8 @@ impl Refusal {
 pub enum Frame {
     /// A dictation frame: the samples its bytes carry.
     Audio(Vec<f32>),
+    /// One client's terminal input: the terminal id and the bytes.
+    TerminalInput { id: u16, bytes: Vec<u8> },
 }
 
 /// Decode one binary message a client sent.
@@ -207,8 +235,30 @@ pub fn decode(bytes: &[u8]) -> Result<Frame, Refusal> {
                 .collect();
             Ok(Frame::Audio(samples))
         }
-        Kind::BrowserFrame | Kind::BrowserAudio => Err(Refusal::ServerOnly(tag)),
+        Kind::TerminalInput => {
+            let Some((header, bytes)) = payload.split_at_checked(2) else {
+                return Err(Refusal::ShortTerminalInput(payload.len()));
+            };
+            Ok(Frame::TerminalInput {
+                id: u16::from_le_bytes([header[0], header[1]]),
+                bytes: bytes.to_vec(),
+            })
+        }
+        Kind::BrowserFrame | Kind::BrowserAudio | Kind::TerminalOutput => {
+            Err(Refusal::ServerOnly(tag))
+        }
     }
+}
+
+/// One terminal output frame's bytes: the tag, the id, the sequence, then the
+/// shell's own bytes.
+pub fn terminal_output_bytes(id: u16, seq: u32, bytes: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(7 + bytes.len());
+    out.push(Kind::TerminalOutput.tag());
+    out.extend_from_slice(&id.to_le_bytes());
+    out.extend_from_slice(&seq.to_le_bytes());
+    out.extend_from_slice(bytes);
+    out
 }
 
 #[cfg(test)]
@@ -327,6 +377,7 @@ mod tests {
     struct Memory {
         frames: Vec<BrowserFrame>,
         audio: Vec<BrowserAudio>,
+        terminal: Vec<(u16, u32, Vec<u8>)>,
     }
 
     #[async_trait::async_trait]
@@ -340,11 +391,16 @@ mod tests {
             self.audio.push(audio.clone());
             Ok(())
         }
+
+        async fn deliver_terminal(&mut self, id: u16, seq: u32, bytes: &[u8]) -> anyhow::Result<()> {
+            self.terminal.push((id, seq, bytes.to_vec()));
+            Ok(())
+        }
     }
 
     #[tokio::test]
     async fn a_frame_crosses_the_transport_seam_whole() {
-        let mut transport = Memory { frames: Vec::new(), audio: Vec::new() };
+        let mut transport = Memory { frames: Vec::new(), audio: Vec::new(), terminal: Vec::new() };
         let frame = BrowserFrame { profile: 5, tab: 2, seq: 3, encoded: vec![9, 8, 7] };
         transport.deliver(&frame).await.expect("a memory transport never fails");
         assert_eq!(
@@ -352,6 +408,47 @@ mod tests {
             vec![frame],
             "the transport receives the whole frame: the profile id, sequence and the host's own bytes"
         );
+    }
+
+    /// **A terminal input frame is the id, then the bytes, and nothing
+    /// else**: a client's keystrokes reach the PTY untouched.
+    #[test]
+    fn a_terminal_input_frame_carries_its_id_and_bytes() {
+        let mut bytes = vec![Kind::TerminalInput.tag()];
+        bytes.extend_from_slice(&7_u16.to_le_bytes());
+        bytes.extend_from_slice(b"ls\r");
+        assert_eq!(
+            decode(&bytes),
+            Ok(Frame::TerminalInput { id: 7, bytes: b"ls\r".to_vec() }),
+        );
+        assert_eq!(
+            decode(&[Kind::TerminalInput.tag(), 1]),
+            Err(Refusal::ShortTerminalInput(1)),
+            "an id cut in half is refused rather than read as a terminal",
+        );
+    }
+
+    /// A terminal output frame is the server's: the id, the sequence and the
+    /// shell's own bytes, and a client sending one is refused.
+    #[test]
+    fn a_terminal_output_frame_is_the_servers() {
+        let frame = terminal_output_bytes(3, 9, b"hi");
+        assert_eq!(
+            frame,
+            [
+                Kind::TerminalOutput.tag(),
+                3,
+                0,
+                9,
+                0,
+                0,
+                0,
+                b'h',
+                b'i',
+            ],
+            "the tag, the id, the sequence and the bytes",
+        );
+        assert_eq!(decode(&frame), Err(Refusal::ServerOnly(4)));
     }
 
     /// Every refusal has its own sentence, so a log line says what the

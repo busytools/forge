@@ -87,7 +87,7 @@ for anything:
 ```json
 {
   "kind": "greeting",
-  "version": 27,
+  "version": 28,
   "forge_version": "1.1.25 · abc1234",
   "forge_version_short": "1.1.25+abc1234",
   "settings": {
@@ -320,14 +320,14 @@ variant's own name rather than on `kind`:
 }
 ```
 
-A command's variant is its name around its field bag - `Command` has 62
-variants, 56 of them struct variants; the six unit variants,
+A command's variant is its name around its field bag - `Command` has 63
+variants, 57 of them struct variants; the six unit variants,
 `dictate_catalogue_check`, `dictate_bench_stop`, `voice_bench_start`,
 `voice_bench_stop`, `plugin_update_all` and `plugin_check_updates`, cross as
 the name alone. An update is the same
 shape one level in,
 `{"kind": "update", "update": {"chat_appended": {"key": ..., "msg": ...}}}`,
-and 71 of `SessionUpdate`'s 74 variants are struct variants too. The other
+and 74 of `SessionUpdate`'s 77 variants are struct variants too. The other
 three are why the payload is not one shape: they are unit variants and cross
 as the name alone - `"catalog_loaded"`, `"cli_version_changed"` and
 `"dictate_availability"`.
@@ -534,6 +534,27 @@ list from then on, and every change is pushed as a `browser_tabs` frame. A
 refusal answers `{"ok": false, "why": ...}`; with no `reply_to`, a refusal is
 an `error` frame and a success is silent.
 
+**`terminal_view {seat, id, reply_to}`** - attach this connection to a
+seat's terminal as a viewer. The answer is a `terminal_view` frame carrying
+the screen as a VT stream and the sequence the byte stream continues from,
+then output frames as the shell writes them. A terminal that is not open is
+refused with `{"ok": false, "why": ...}` rather than spawned: the strip's row
+exists only while a terminal does.
+
+**`terminal_detach`** - stop viewing the attached terminal. Lowering the
+surface sends this, so the idle clock and the viewer count see the truth.
+
+**`terminal_resize {seat, id, cols, rows}`** - the attached surface's size.
+The PTY and the server's screen model resize together.
+
+**`terminal_pause {paused}`** - client-driven flow control, so a phone that
+backgrounded stops being written to rather than being dropped. **A resume is
+answered with a fresh `terminal_view`**: the frames a pause missed are not
+replayed.
+
+**`terminal_close {seat, id}`** - the person's close door: the terminal's
+process group is killed and the seat's next open starts a fresh shell.
+
 **There is no profile verb on the socket.** A profile is `forge.toml`'s -
 its org's `browser_profile`, or the project's override - so no client names,
 closes or deletes one, and a tab is the calls' rather than the strip's: it
@@ -687,10 +708,17 @@ a broken file.
 **Binary messages are frames, and a frame's first byte says which kind.** A
 client that captures sends one dictation frame per 20 ms of speech:
 
-| bytes | field   | value                                                   |
-| ----- | ------- | ------------------------------------------------------- |
-| 1     | kind    | `0` = dictation; `1` = browser frame; `2` = browser audio |
-| rest  | samples | i16 little-endian, mono, 16 kHz (kind `0`)              |
+| bytes | field   | value                                                                       |
+| ----- | ------- | --------------------------------------------------------------------------- |
+| 1     | kind    | `0` = dictation; `1` = browser frame; `2` = browser audio; `4` = terminal output; `5` = terminal input |
+| rest  | samples | i16 little-endian, mono, 16 kHz (kind `0`)                                  |
+
+**A terminal output frame (kind `4`) is the server's**: a little-endian `u16`
+terminal id, a `u32` sequence, then the shell's own bytes. The sequence is
+per terminal and monotonic; a gap means the viewer fell behind and the server
+answers the next attach with a fresh screen rather than replaying the bytes.
+**A terminal input frame (kind `5`) is a client's**: the same id and then the
+keystrokes. Both are refused from the wrong direction, as a browser frame is.
 
 A dictation frame carries no seat. It addresses the take its own CONNECTION
 started: one connection streams one take at a time and its messages are
@@ -968,6 +996,17 @@ content_hash, threads, reviews}`** - in answer to `document_read`: the
 - **`browser_surface_failed {id, tab, reason}`** - the viewed tab's browser
   stopped. **Said out loud**, because a frozen last frame reads as a slow
   page and the person has no way to tell the two apart.
+- **`terminal_view {seat, id, cols, rows, seq, screen, viewers}`** - one
+  terminal's screen as a VT stream a client can draw, and where the byte
+  stream continues from: `seq` is the last sequence the repaint reflects, so
+  a chunk at or below it is one the screen already carries. Sent on attach
+  and on a resume, never as a reply: the attach's `reply` is its own
+  `{"ok": true, "id": ...}`.
+- **`terminal_state {seat, terminal}`** - a seat's terminal opened, changed
+  or closed, as the strip draws it: the summary carries the id, the shell,
+  the cwd, the size, whether the shell is alive, the state (with its
+  `source`), the title and whether a hand-off holds it. `terminal` is `null`
+  when the terminal is gone.
 - **`browser_file_dialog {id, tab, multiple}`** - a page asked for a file.
   The shell opens this machine's picker and answers `browser_file_answer`
   under the same id; `multiple` is whether the page accepts more than one

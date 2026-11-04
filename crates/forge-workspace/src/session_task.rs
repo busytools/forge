@@ -2980,6 +2980,7 @@ pub(crate) fn execute_command_via_handle(
         | Command::DeliverGotifyMessage { .. }
         | Command::RespondSlackPost { .. }
         | Command::RespondBrowserHandOff { .. }
+        | Command::RespondTerminalHandOff { .. }
         | Command::AnswerDocumentHandOff { .. }
         | Command::DictateCatalogueCheck
         | Command::DictateInstall { .. }

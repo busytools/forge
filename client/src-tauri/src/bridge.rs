@@ -680,6 +680,47 @@ impl Bridge {
         socket.browser_tabs(seat).await
     }
 
+    /// Attach this connection to a seat's terminal, as a viewer.
+    pub async fn terminal_view(&self, seat: Value, id: u16) -> Result<Value, String> {
+        let socket = self.socket().ok_or_else(|| "the socket is not open".to_owned())?;
+        socket.terminal_view(seat, id).await
+    }
+
+    /// Stop viewing the attached terminal.
+    pub fn terminal_detach(&self) {
+        if let Some(socket) = self.socket() {
+            socket.terminal_detach();
+        }
+    }
+
+    /// The attached surface changed size, in columns and rows.
+    pub fn terminal_resize(&self, seat: Value, id: u16, cols: u16, rows: u16) {
+        if let Some(socket) = self.socket() {
+            socket.terminal_resize(seat, id, cols, rows);
+        }
+    }
+
+    /// Stop or resume the byte stream.
+    pub fn terminal_pause(&self, paused: bool) {
+        if let Some(socket) = self.socket() {
+            socket.terminal_pause(paused);
+        }
+    }
+
+    /// The person's close door.
+    pub fn terminal_close(&self, seat: Value, id: u16) {
+        if let Some(socket) = self.socket() {
+            socket.terminal_close(seat, id);
+        }
+    }
+
+    /// One client input frame: the keystrokes, as bytes.
+    pub fn terminal_input(&self, id: u16, bytes: Vec<u8>) {
+        if let Some(socket) = self.socket() {
+            socket.terminal_input(id, bytes);
+        }
+    }
+
     /// Dial the server, replacing any connection this bridge had. Whatever
     /// the page already watches is re-asked on the new socket, so a
     /// reconnect from the connect screen lands the subscriptions it had.
@@ -695,6 +736,10 @@ impl Bridge {
                 let app = app.clone();
                 let bridge = Arc::clone(self);
                 Arc::new(move |bytes: &[u8]| {
+                    // **The kind tag decides which surface the frame is for.**
+                    // A terminal's output is not a browser paint, and a
+                    // browser frame must not reach the terminal's canvas.
+                    crate::terminal::frame(&app, bytes);
                     crate::browser::frame(&app, bytes);
                     bridge.browser_painted(bytes);
                 })

@@ -321,6 +321,39 @@ pub enum ClientMessage {
     /// connection that switched profiles must not leave a phantom viewer on
     /// the old one.
     BrowserDetach,
+    /// Attach this connection to one of a seat's terminals, as a viewer. The
+    /// answer is a `terminal_view` carrying the screen as a VT stream, then
+    /// output frames as the shell writes them.
+    TerminalView {
+        seat: SessionSlot,
+        /// The terminal id. One per seat today, so the open's id is the one.
+        id: u16,
+        /// Answers the attach: `{"ok": true, "id": <the one attached>}` or
+        /// `{"ok": false, "why": ...}`. A raise that cannot be answered is a
+        /// dark surface, so a client that can wait sends one.
+        reply_to: Option<u64>,
+    },
+    /// Stop viewing the attached terminal: the idle clock and the resize
+    /// arbitration both read the truth from it.
+    TerminalDetach,
+    /// The attached surface changed size: the PTY and the model resize.
+    TerminalResize {
+        seat: SessionSlot,
+        id: u16,
+        cols: u16,
+        rows: u16,
+    },
+    /// Client-driven flow control, so a phone that backgrounded stops being
+    /// written to rather than being dropped. A resume is answered with a
+    /// fresh `terminal_view`, because the frames it missed are not replayed.
+    TerminalPause {
+        paused: bool,
+    },
+    /// The person's close door: end the terminal's process group.
+    TerminalClose {
+        seat: SessionSlot,
+        id: u16,
+    },
     /// One input event from the controlling viewer.
     ///
     /// `seq` is the viewer's own ordering: the server drops an event at or
@@ -582,6 +615,26 @@ pub enum ServerMessage {
         controller: Option<u64>,
         viewers: u32,
         viewer: u64,
+    },
+    /// One terminal's screen, as a VT stream a client can draw, and where the
+    /// byte stream continues from.
+    TerminalView {
+        seat: SessionSlot,
+        id: u16,
+        cols: u16,
+        rows: u16,
+        /// The sequence the next output frame carries.
+        seq: u32,
+        /// The visible screen as a VT stream, valid UTF-8.
+        screen: String,
+        /// How many clients are attached.
+        viewers: u32,
+    },
+    /// A seat's terminal opened, changed or closed, as the strip draws it.
+    /// `terminal` is `None` when the terminal is gone.
+    TerminalState {
+        seat: SessionSlot,
+        terminal: Option<forge_primitives::terminal::TerminalSummary>,
     },
     /// Where the viewed tab's history sits: what the bar's arrows may do.
     BrowserNavState {

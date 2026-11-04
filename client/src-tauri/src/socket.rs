@@ -533,6 +533,39 @@ enum Outbound {
         height: u32,
         scale: f64,
     },
+    /// Attach this connection to a seat's terminal as a viewer. The server's
+    /// answer rides a reply: a raise it refused must fail the surface rather
+    /// than leave it dark.
+    TerminalView {
+        seat: Value,
+        id: u16,
+        reply: Option<u64>,
+        answered: Option<oneshot::Sender<Result<Value, String>>>,
+    },
+    /// Stop viewing the attached terminal: the surface lowered.
+    TerminalDetach,
+    /// The attached surface changed size, in columns and rows.
+    TerminalResize {
+        seat: Value,
+        id: u16,
+        cols: u16,
+        rows: u16,
+    },
+    /// Stop or resume the byte stream.
+    TerminalPause {
+        paused: bool,
+    },
+    /// The person's close door.
+    TerminalClose {
+        seat: Value,
+        id: u16,
+    },
+    /// One client input frame: the terminal id and the keystrokes, already at
+    /// the wire's shape (the kind tag is prepended here).
+    TerminalInput {
+        id: u16,
+        bytes: Vec<u8>,
+    },
     /// One of the strip's asks - the profile's tab list - as the wire's own
     /// object with `reply_to` added. The answer is the reply body.
     StripAsk {
@@ -794,6 +827,48 @@ impl Socket {
         let _ = self.tx.send(Outbound::BrowserResize { width, height, scale });
     }
 
+    /// Attach this connection to a seat's terminal, as a viewer.
+    pub async fn terminal_view(&self, seat: Value, id: u16) -> Result<Value, String> {
+        let reply = self.next_reply.fetch_add(1, Ordering::Relaxed);
+        let (answered, answer) = oneshot::channel();
+        self.tx
+            .send(Outbound::TerminalView { seat, id, reply: Some(reply), answered: Some(answered) })
+            .map_err(|_| "the socket is closed".to_owned())?;
+        match tokio::time::timeout(ATTACH_BOUND, answer).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(_)) => Err("the socket dropped before answering the attach".to_owned()),
+            Err(_) => {
+                let _ = self.tx.send(Outbound::ForgetAttach { id: reply });
+                Err("the server did not answer the attach".to_owned())
+            }
+        }
+    }
+
+    /// Stop viewing the attached terminal: the surface lowered.
+    pub fn terminal_detach(&self) {
+        let _ = self.tx.send(Outbound::TerminalDetach);
+    }
+
+    /// The attached surface changed size, in columns and rows.
+    pub fn terminal_resize(&self, seat: Value, id: u16, cols: u16, rows: u16) {
+        let _ = self.tx.send(Outbound::TerminalResize { seat, id, cols, rows });
+    }
+
+    /// Stop or resume the byte stream.
+    pub fn terminal_pause(&self, paused: bool) {
+        let _ = self.tx.send(Outbound::TerminalPause { paused });
+    }
+
+    /// The person's close door.
+    pub fn terminal_close(&self, seat: Value, id: u16) {
+        let _ = self.tx.send(Outbound::TerminalClose { seat, id });
+    }
+
+    /// One client input frame: the keystrokes, as bytes.
+    pub fn terminal_input(&self, id: u16, bytes: Vec<u8>) {
+        let _ = self.tx.send(Outbound::TerminalInput { id, bytes });
+    }
+
     /// The tabs of this seat's profile, as the strip's rows: the reply body
     /// holds the [`forge_primitives::browser::BrowserTabList`] under `tabs`.
     pub async fn browser_tabs(&self, seat: Value) -> Result<Value, String> {
@@ -912,7 +987,8 @@ fn apply_offline(next: Outbound, held: &mut Vec<Held>, awaiting: &mut Vec<String
         // A raise over a down socket fails by name rather than waiting out
         // its bound: no answer is coming. So does a strip ask.
         Outbound::BrowserView { answered: Some(answered), .. }
-        | Outbound::BrowserViewPage { answered: Some(answered), .. } => {
+        | Outbound::BrowserViewPage { answered: Some(answered), .. }
+        | Outbound::TerminalView { answered: Some(answered), .. } => {
             let _ = answered.send(Err("the socket is not open".to_owned()));
             false
         }
@@ -940,6 +1016,12 @@ fn apply_offline(next: Outbound, held: &mut Vec<Held>, awaiting: &mut Vec<String
         | Outbound::BrowserNav { .. }
         | Outbound::BrowserFileAnswer { .. }
         | Outbound::BrowserResize { .. }
+        | Outbound::TerminalView { .. }
+        | Outbound::TerminalDetach
+        | Outbound::TerminalResize { .. }
+        | Outbound::TerminalPause { .. }
+        | Outbound::TerminalClose { .. }
+        | Outbound::TerminalInput { .. }
         | Outbound::StripAsk { replied: None, .. }
         // Nothing to probe while there is no connection: the redial's own
         // open is what the page is waiting for.
@@ -1483,6 +1565,86 @@ async fn run(
                                     .into(),
                                 ))
                                 .await;
+                        }
+                        Outbound::TerminalView { seat, id, reply, answered } => {
+                            let ok = writer
+                                .send(Message::Text(
+                                    json!({
+                                        "kind": "terminal_view",
+                                        "seat": seat,
+                                        "id": id,
+                                        "reply_to": reply,
+                                    })
+                                        .to_string()
+                                        .into(),
+                                ))
+                                .await
+                                .is_ok();
+                            match (ok, reply, answered) {
+                                (true, Some(id), Some(tx)) => {
+                                    attaches.insert(id, tx);
+                                }
+                                (_, _, Some(tx)) => {
+                                    let _ = tx.send(Err(
+                                        "the socket is open but the frame did not go".to_owned()
+                                    ));
+                                }
+                                (_, _, None) => {}
+                            }
+                        }
+                        Outbound::TerminalDetach => {
+                            let _ = writer
+                                .send(Message::Text(
+                                    json!({ "kind": "terminal_detach" }).to_string().into(),
+                                ))
+                                .await;
+                        }
+                        Outbound::TerminalResize { seat, id, cols, rows } => {
+                            let _ = writer
+                                .send(Message::Text(
+                                    json!({
+                                        "kind": "terminal_resize",
+                                        "seat": seat,
+                                        "id": id,
+                                        "cols": cols,
+                                        "rows": rows,
+                                    })
+                                    .to_string()
+                                    .into(),
+                                ))
+                                .await;
+                        }
+                        Outbound::TerminalPause { paused } => {
+                            let _ = writer
+                                .send(Message::Text(
+                                    json!({ "kind": "terminal_pause", "paused": paused })
+                                        .to_string()
+                                        .into(),
+                                ))
+                                .await;
+                        }
+                        Outbound::TerminalClose { seat, id } => {
+                            let _ = writer
+                                .send(Message::Text(
+                                    json!({ "kind": "terminal_close", "seat": seat, "id": id })
+                                        .to_string()
+                                        .into(),
+                                ))
+                                .await;
+                        }
+                        Outbound::TerminalInput { id, bytes } => {
+                            // **The keystrokes cross as their own binary kind**:
+                            // the tag, the terminal id, then the bytes.
+                            let mut frame =
+                                Vec::with_capacity(3 + bytes.len());
+                            frame.push(forge_primitives::terminal::TERMINAL_INPUT_TAG);
+                            frame.extend_from_slice(&id.to_le_bytes());
+                            frame.extend_from_slice(&bytes);
+                            if let Err(why) = writer.send(Message::Binary(frame.into())).await {
+                                tauri_plugin_log::log::debug!(
+                                    "terminal_input_not_sent: {why}"
+                                );
+                            }
                         }
                         Outbound::StripAsk { mut body, reply, replied } => {
                             if let Some(map) = body.as_object_mut() {

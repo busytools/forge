@@ -266,7 +266,8 @@ census!(ServerMessage,
         Greeting struct, Snapshot struct, Update struct, Page struct,
         SeatFrames struct,
         CommitDiff struct, FileContent struct, Reply struct,
-        BrowserView struct, BrowserNavState struct, BrowserSurfaceFailed struct,
+        BrowserView struct, TerminalView struct, TerminalState struct,
+        BrowserNavState struct, BrowserSurfaceFailed struct,
         BrowserTabs struct,
         BrowserFileDialog struct, BrowserDownload struct,
         Error struct,
@@ -324,6 +325,7 @@ census!(SessionUpdate,
         GotifyNotificationAppended struct, CronPromptAppended struct,
         SlackMessageAppended struct, SlackPostPending struct, SlackDraftResolved struct,
         BrowserHandOffPending struct, BrowserHandOffResolved struct,
+        TerminalHandOffPending struct, TerminalHandOffResolved struct, TerminalChanged struct,
         PromptQueued struct, PromptLifecycle struct,
         PromptCancelResolved struct,
         ReviewActivityNotice struct, DictateAvailability struct,
@@ -343,6 +345,7 @@ census!(Command,
         NewSession struct,
         ResumeSession struct, Handoff struct, RespondPermission struct, RespondSlackPost struct,
         RespondBrowserHandOff struct,
+        RespondTerminalHandOff struct,
         AnswerDocumentHandOff struct,
         RespondSettingsWrite struct,
         RespondQuestion struct, SetDictateOverride struct, ResetDictateOverrides struct,
@@ -381,6 +384,11 @@ census!(ClientMessage,
         BrowserViewPage struct,
         BrowserFileAnswer struct,
         BrowserDetach unit,
+        TerminalView struct,
+        TerminalDetach unit,
+        TerminalResize struct,
+        TerminalPause struct,
+        TerminalClose struct,
         BrowserInput struct,
         BrowserControl struct,
         BrowserNav struct,
@@ -1999,18 +2007,25 @@ fn binary_frame_record() -> Value {
     // Every kind, one list expanded twice: the `match` has no wildcard arm,
     // so a kind added or removed is a compile error here before it is a
     // failing record.
-    let kinds: Vec<Value> =
-        [frame::Kind::Dictation, frame::Kind::BrowserFrame, frame::Kind::BrowserAudio]
-            .into_iter()
-            .map(|kind| {
-                let name = match kind {
-                    frame::Kind::Dictation => "Dictation",
-                    frame::Kind::BrowserFrame => "BrowserFrame",
-                    frame::Kind::BrowserAudio => "BrowserAudio",
-                };
-                json!({ "name": name, "tag": kind.tag() })
-            })
-            .collect();
+    let kinds: Vec<Value> = [
+        frame::Kind::Dictation,
+        frame::Kind::BrowserFrame,
+        frame::Kind::BrowserAudio,
+        frame::Kind::TerminalOutput,
+        frame::Kind::TerminalInput,
+    ]
+    .into_iter()
+    .map(|kind| {
+        let name = match kind {
+            frame::Kind::Dictation => "Dictation",
+            frame::Kind::BrowserFrame => "BrowserFrame",
+            frame::Kind::BrowserAudio => "BrowserAudio",
+            frame::Kind::TerminalOutput => "TerminalOutput",
+            frame::Kind::TerminalInput => "TerminalInput",
+        };
+        json!({ "name": name, "tag": kind.tag() })
+    })
+    .collect();
 
     let mut dictation = vec![frame::Kind::Dictation.tag()];
     for sample in AUDIO {

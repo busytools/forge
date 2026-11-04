@@ -1,0 +1,511 @@
+//! The per-seat terminals: the registry, the hand-off that parks on the
+//! person, and the idle clock.
+//!
+//! **The terminal belongs to the seat, not the occupant.** It is keyed by the
+//! slot and created lazily on first use; `/new`, `/resume`, a handoff and a
+//! release/resume leave the PTY, its shell and its scrollback exactly where
+//! they were. Only the seat ending, an explicit close, the shell exiting or
+//! forge exiting ends it.
+//!
+//! **No approval gate.** Bash through the CLI already reaches the shell here,
+//! so the terminal adds no capability a session does not have. The one thing
+//! that is gated is the person's own input, through the hand-off.
+
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
+
+use forge_primitives::SessionSlot;
+use forge_primitives::browser::HandOffEnding;
+use forge_primitives::terminal::{
+    TerminalExit, TerminalHandOff, TerminalHandOffAnswer, TerminalInputExpected, TerminalInputKind,
+    TerminalSource, TerminalState, TerminalSummary,
+};
+use parking_lot::Mutex;
+use tokio::sync::oneshot;
+
+use crate::protocol::SessionUpdate;
+use crate::workspace::Workspace;
+
+/// One chunk of a terminal's output, re-exported so a server half can name
+/// the type its stream carries without depending on the crate directly.
+pub use forge_terminal::OutputChunk;
+
+/// The size a terminal opens at before a client's attach resizes it.
+pub(crate) const DEFAULT_COLS: u16 = 120;
+pub(crate) const DEFAULT_ROWS: u16 = 30;
+
+/// How often the idle clock looks at the registry.
+const CLOCK_TICK: Duration = Duration::from_secs(30);
+
+/// One seat's terminal, as the registry holds it.
+pub struct TerminalEntry {
+    /// The id the binary frames carry.
+    pub id: u16,
+    pub terminal: Arc<forge_terminal::Terminal>,
+    /// When an agent call or a viewer last touched it, for the idle clock.
+    pub last_used: Mutex<Instant>,
+    /// How many clients are attached.
+    pub attached: AtomicUsize,
+    /// Whether the attached viewer asked the server to stop writing bytes.
+    pub paused: AtomicBool,
+}
+
+impl TerminalEntry {
+    fn touch(&self) {
+        *self.last_used.lock() = Instant::now();
+    }
+
+    fn idle_for(&self) -> Duration {
+        self.last_used.lock().elapsed()
+    }
+
+    /// The summary the strip and the session record draw.
+    pub fn summary(&self, slot: &SessionSlot, held: bool) -> TerminalSummary {
+        TerminalSummary {
+            id: self.id,
+            seat: slot.clone(),
+            shell: self.terminal.shell().to_owned(),
+            cwd: self.terminal.cwd().display().to_string(),
+            cols: self.terminal.cols(),
+            rows: self.terminal.rows(),
+            alive: self.terminal.is_alive(),
+            state: wire_state(self.terminal.state()),
+            title: self.terminal.title(),
+            held,
+        }
+    }
+}
+
+/// The wire state, from the crate's own.
+pub(crate) fn wire_state(state: forge_terminal::State) -> TerminalState {
+    TerminalState {
+        running: state.running,
+        input_expected: state.input_expected.map(|expected| TerminalInputExpected {
+            kind: match expected.kind {
+                forge_terminal::InputKind::Password => TerminalInputKind::Password,
+                forge_terminal::InputKind::Confirm => TerminalInputKind::Confirm,
+                forge_terminal::InputKind::Prompt => TerminalInputKind::Prompt,
+            },
+            evidence: expected.evidence,
+        }),
+        exit: state.exit.map(|exit| TerminalExit { code: exit.code, signal: exit.signal }),
+        source: match state.source {
+            forge_terminal::Source::Exact => TerminalSource::Exact,
+            forge_terminal::Source::Heuristic => TerminalSource::Heuristic,
+        },
+    }
+}
+
+impl Workspace {
+    /// The seat's terminal, spawned on first use.
+    ///
+    /// **One per seat, and the slot is the key.** A `/new` or `/resume`
+    /// swapping the occupant never reaches here, which is what makes the PTY
+    /// outlive it.
+    pub(crate) fn terminal_for(
+        self: &Arc<Self>,
+        slot: &SessionSlot,
+    ) -> Result<Arc<TerminalEntry>, String> {
+        let mut terminals = self.terminals.lock();
+        if let Some(entry) = terminals.get(slot).cloned() {
+            entry.touch();
+            return Ok(entry);
+        }
+        let entry = self.spawn_terminal(slot, None)?;
+        terminals.insert(slot.clone(), Arc::clone(&entry));
+        drop(terminals);
+        self.ensure_terminal_clock();
+        self.announce_terminal(slot, Some(entry.summary(slot, false)));
+        Ok(entry)
+    }
+
+    /// The seat's terminal, spawned in `cwd` the first time; an existing
+    /// terminal is returned as it is.
+    pub(crate) fn spawn_terminal_at(
+        self: &Arc<Self>,
+        slot: &SessionSlot,
+        cwd: Option<PathBuf>,
+    ) -> Result<Arc<TerminalEntry>, String> {
+        let mut terminals = self.terminals.lock();
+        if let Some(entry) = terminals.get(slot).cloned() {
+            entry.touch();
+            return Ok(entry);
+        }
+        let entry = self.spawn_terminal(slot, cwd)?;
+        terminals.insert(slot.clone(), Arc::clone(&entry));
+        drop(terminals);
+        self.ensure_terminal_clock();
+        self.announce_terminal(slot, Some(entry.summary(slot, false)));
+        Ok(entry)
+    }
+
+    /// A fresh terminal for `terminal__run`, not registered: the command's
+    /// own terminal, closed when the call returns.
+    pub(crate) fn spawn_terminal_for_run(
+        &self,
+        slot: &SessionSlot,
+        cwd: Option<PathBuf>,
+    ) -> Result<Arc<TerminalEntry>, String> {
+        self.spawn_terminal(slot, cwd)
+    }
+
+    /// The seat's terminal, when it has one.
+    pub fn terminal_if_any(&self, slot: &SessionSlot) -> Option<Arc<TerminalEntry>> {
+        self.terminals.lock().get(slot).cloned()
+    }
+
+    /// The seat's terminal, refused unless `id` names it.
+    pub fn terminal_by_id(
+        &self,
+        slot: &SessionSlot,
+        id: u16,
+    ) -> Result<Arc<TerminalEntry>, String> {
+        let Some(entry) = self.terminal_if_any(slot) else {
+            return Err(format!(
+                "this seat has no terminal open; run terminal__open first (the id it returns is \
+                 what this call takes)"
+            ));
+        };
+        if entry.id != id {
+            return Err(format!(
+                "terminal {id} is not this seat's; its terminal is {}",
+                entry.id
+            ));
+        }
+        entry.touch();
+        Ok(entry)
+    }
+
+    /// Whether a terminal hand-off is parked on the seat.
+    pub fn terminal_held(&self, slot: &SessionSlot) -> bool {
+        self.terminal_handoffs.lock().values().any(|(owner, _, _)| owner == slot)
+    }
+
+    /// Close the seat's terminal, if it has one.
+    pub fn close_terminal(&self, slot: &SessionSlot) {
+        let removed = self.terminals.lock().remove(slot);
+        if let Some(entry) = removed {
+            entry.terminal.close();
+            self.announce_terminal(slot, None);
+        }
+        self.abandon_terminal_hand_offs(slot);
+    }
+
+    /// Close every terminal an idle clock may close: untouched by any agent
+    /// call, unattached, and unheld by a hand-off.
+    pub(crate) fn sweep_idle_terminals(&self) {
+        let idle_minutes = self.config_arc().terminal.idle_minutes;
+        if idle_minutes == 0 {
+            return;
+        }
+        let idle = Duration::from_secs(idle_minutes.saturating_mul(60));
+        let victims: Vec<SessionSlot> = self
+            .terminals
+            .lock()
+            .iter()
+            .filter(|(slot, entry)| {
+                entry.attached.load(Ordering::Relaxed) == 0
+                    && !self.terminal_held(slot)
+                    && entry.idle_for() >= idle
+            })
+            .map(|(slot, _)| slot.clone())
+            .collect();
+        for slot in victims {
+            tracing::debug!(
+                event_name = "terminal_idle_closed",
+                slot = %slot.display(),
+                idle_minutes,
+                "an idle terminal was closed"
+            );
+            self.close_terminal(&slot);
+        }
+    }
+
+    /// Tell the views a terminal opened, changed or closed.
+    pub(crate) fn announce_terminal(
+        &self,
+        slot: &SessionSlot,
+        terminal: Option<TerminalSummary>,
+    ) {
+        let _ = self
+            .update_sender()
+            .send(SessionUpdate::TerminalChanged { key: slot.clone(), terminal });
+    }
+
+    /// Hold a terminal hand-off for the person at a client, and hand back its
+    /// id plus the receiver the caller awaits.
+    ///
+    /// **No timeout rides the wait.** The ask sits until an answer or the
+    /// caller's own drop. The one case answered up front is a stream nobody
+    /// can answer on, which fails closed rather than parking the session on a
+    /// prompt no view can draw.
+    pub(crate) async fn register_terminal_hand_off(
+        &self,
+        caller: &SessionSlot,
+        terminal: u16,
+        reason: &str,
+    ) -> Result<(uuid::Uuid, oneshot::Receiver<HandOffEnding>), String> {
+        let entry = self.terminal_by_id(caller, terminal)?;
+        let state = wire_state(entry.terminal.state());
+        let secret = state
+            .input_expected
+            .as_ref()
+            .is_some_and(|expected| expected.kind == TerminalInputKind::Password);
+        let (sender, receiver) = oneshot::channel();
+        let id = uuid::Uuid::new_v4();
+        let handoff = TerminalHandOff { id, reason: reason.to_owned(), terminal, secret };
+        self.terminal_handoffs.lock().insert(id, (caller.clone(), handoff.clone(), sender));
+        let answerable = self
+            .update_sender()
+            .send_answering(SessionUpdate::TerminalHandOffPending {
+                key: caller.clone(),
+                handoff,
+            });
+        if !answerable {
+            self.terminal_handoffs.lock().remove(&id);
+            let (_ignored_sender, dead_receiver) = oneshot::channel();
+            return Ok((id, dead_receiver));
+        }
+        self.note_ask(caller);
+        Ok((id, receiver))
+    }
+
+    /// Whether a hand-off with this id is still registered to `caller`, without
+    /// removing it.
+    pub(crate) fn terminal_handoff_waiting(&self, id: uuid::Uuid, caller: &SessionSlot) -> bool {
+        self.terminal_handoffs.lock().get(&id).is_some_and(|(owner, _, _)| owner == caller)
+    }
+
+    /// Remove a parked hand-off, answer its waiter, and tell every view it is
+    /// gone. `false` when the id is not this caller's to resolve.
+    pub(crate) fn resolve_terminal_hand_off(
+        &self,
+        id: uuid::Uuid,
+        caller: &SessionSlot,
+        answer: TerminalHandOffAnswer,
+    ) -> bool {
+        let mut parked = self.terminal_handoffs.lock();
+        if !parked.get(&id).is_some_and(|(owner, _, _)| owner == caller) {
+            return false;
+        }
+        let Some((owner, handoff, sender)) = parked.remove(&id) else { return false };
+        drop(parked);
+        tracing::debug!(
+            event_name = "terminal_hand_off_resolved",
+            id = %id,
+            ending = ?answer.ending,
+            source = ?answer.source,
+            client = answer.client,
+            seat = %owner.display(),
+            terminal = handoff.terminal,
+            "a parked terminal hand-off left the registry"
+        );
+        let _ = sender.send(answer.ending);
+        let _ = self.update_sender().send(SessionUpdate::TerminalHandOffResolved {
+            key: owner,
+            id,
+            answer,
+        });
+        true
+    }
+
+    /// A seat ended with a hand-off still parked: resolve it as abandoned so
+    /// no dock outlives its asker.
+    fn abandon_terminal_hand_offs(&self, slot: &SessionSlot) {
+        let ids: Vec<uuid::Uuid> = self
+            .terminal_handoffs
+            .lock()
+            .iter()
+            .filter(|(_, (owner, _, _))| owner == slot)
+            .map(|(id, _)| *id)
+            .collect();
+        for id in ids {
+            let _ = self.resolve_terminal_hand_off(
+                id,
+                slot,
+                TerminalHandOffAnswer {
+                    ending: HandOffEnding::Abandoned,
+                    source: forge_primitives::browser::HandOffSource::Abandoned,
+                    client: None,
+                },
+            );
+        }
+    }
+
+    /// Spawn a terminal for `slot`, with its cwd and the environment its
+    /// `claude` child gets.
+    fn spawn_terminal(
+        &self,
+        slot: &SessionSlot,
+        cwd: Option<PathBuf>,
+    ) -> Result<Arc<TerminalEntry>, String> {
+        let Some(project) = self.project_for_slot(slot) else {
+            return Err(format!(
+                "{slot} names no configured project, so it has no cwd or environment to give a \
+                 terminal",
+                slot = slot.display()
+            ));
+        };
+        let account_env = self
+            .pool
+            .lock()
+            .get(slot)
+            .and_then(|pooled| self.accounts.env(&pooled.account))
+            .or_else(|| {
+                project.accounts.first().and_then(|name| {
+                    self.accounts.env(&forge_gateway::AccountKey(name.clone()))
+                })
+            })
+            .unwrap_or_default();
+        let env = crate::config::session_env(&project, &account_env);
+        let cwd = cwd
+            .or_else(|| self.cwd_for_session(slot).map(PathBuf::from))
+            .unwrap_or_else(|| project.path.clone());
+        let config = self.config_arc();
+        let terminal = forge_terminal::Terminal::spawn(&forge_terminal::TerminalConfig {
+            shell: config.terminal.shell.clone(),
+            cwd,
+            env,
+            cols: DEFAULT_COLS,
+            rows: DEFAULT_ROWS,
+            scrollback_lines: config.terminal.scrollback_lines,
+        })
+        .map_err(|error| format!("the terminal could not start: {error}"))?;
+        let id = self.next_terminal_id.fetch_add(1, Ordering::Relaxed);
+        Ok(Arc::new(TerminalEntry {
+            id,
+            terminal: Arc::new(terminal),
+            last_used: Mutex::new(Instant::now()),
+            attached: AtomicUsize::new(0),
+            paused: AtomicBool::new(false),
+        }))
+    }
+
+    /// Start the idle clock, once.
+    fn ensure_terminal_clock(self: &Arc<Self>) {
+        if self.terminal_clock_started.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        if tokio::runtime::Handle::try_current().is_err() {
+            return;
+        }
+        let weak = Arc::downgrade(self);
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(CLOCK_TICK).await;
+                let Some(workspace) = weak.upgrade() else { return };
+                workspace.sweep_idle_terminals();
+            }
+        });
+    }
+
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// ECHO off is the password signal, and it makes the hand-off's card say
+    /// the typing is hidden.
+    #[test]
+    fn a_password_terminal_hand_off_is_secret() {
+        let state = TerminalState {
+            running: false,
+            input_expected: Some(TerminalInputExpected {
+                kind: TerminalInputKind::Password,
+                evidence: "ECHO off".to_owned(),
+            }),
+            exit: None,
+            source: TerminalSource::Exact,
+        };
+        let secret = state
+            .input_expected
+            .as_ref()
+            .is_some_and(|expected| expected.kind == TerminalInputKind::Password);
+        assert!(secret);
+    }
+
+    /// **The terminal belongs to the slot, not the occupant.** `/new` and
+    /// `/resume` swap the session id and leave the slot alone, so a second
+    /// `terminal_for` on the same slot finds the same PTY - which is what
+    /// makes the shell and its scrollback outlive both.
+    #[tokio::test]
+    async fn the_terminal_belongs_to_the_slot_across_occupants() {
+        let (workspace, _rx) = Workspace::testing_stub();
+        workspace.seed_test_project("proj", "/tmp");
+        let slot = SessionSlot::lead("TestOrg", "proj");
+        let first = workspace.terminal_for(&slot).expect("a terminal");
+        // A `/new` or `/resume` is a new occupant on the same slot; the
+        // registry is keyed by the slot, so the next read is the same value.
+        let again = workspace.terminal_for(&slot).expect("the same terminal");
+        assert_eq!(again.id, first.id, "the terminal id is the slot's terminal");
+        assert!(
+            Arc::ptr_eq(&first.terminal, &again.terminal),
+            "the same PTY, shell and scrollback are what a new occupant finds",
+        );
+        workspace.close_terminal(&slot);
+    }
+
+    /// **A hand-off parks on the terminal and blinds the agent**: while one is
+    /// held, the write and read tools refuse before touching the screen.
+    #[tokio::test]
+    async fn a_parked_hand_off_blinds_the_agent() {
+        let (workspace, _rx) = Workspace::testing_stub();
+        workspace.seed_test_project("proj", "/tmp");
+        let slot = SessionSlot::lead("TestOrg", "proj");
+        let entry = workspace.terminal_for(&slot).expect("a terminal");
+        let (_id, _answer) = workspace
+            .register_terminal_hand_off(&slot, entry.id, "the sudo password")
+            .await
+            .expect("a hand-off parks");
+        assert!(workspace.terminal_held(&slot), "the person owns the input");
+        let refused = crate::mcp::terminal::facade::ProdTerminalFacade::from_workspace(&workspace);
+        assert!(
+            refused.read(&slot, entry.id, None, 200, 32 * 1024).await.is_err(),
+            "a read while parked is refused",
+        );
+        assert!(
+            refused.write(&slot, entry.id, Some("x".to_owned()), Vec::new()).await.is_err(),
+            "a write while parked is refused",
+        );
+        workspace.close_terminal(&slot);
+    }
+
+    /// **The seat ending ends its terminal.** The release path is the one
+    /// place teardown happens; a `/new` or `/resume` never reaches it.
+    #[tokio::test]
+    async fn ending_the_seat_closes_its_terminal() {
+        let (workspace, _rx) = Workspace::testing_stub();
+        workspace.seed_test_project("proj", "/tmp");
+        let slot = SessionSlot::lead("TestOrg", "proj");
+        let entry = workspace.terminal_for(&slot).expect("a terminal");
+        workspace.release_session(&slot);
+        assert!(
+            workspace.terminal_if_any(&slot).is_none(),
+            "the seat ended, so its terminal left the registry with it",
+        );
+        entry.terminal.close();
+    }
+
+    /// The crate's state crosses to the wire unchanged, so a model reading the
+    /// tool result sees the same evidence the classifier wrote.
+    #[test]
+    fn the_crates_state_crosses_verbatim() {
+        let state = forge_terminal::State {
+            running: true,
+            input_expected: Some(forge_terminal::InputExpected {
+                kind: forge_terminal::InputKind::Prompt,
+                evidence: "quiet at a prompt".to_owned(),
+            }),
+            exit: Some(forge_terminal::Exit { code: Some(3), signal: None }),
+            source: forge_terminal::Source::Heuristic,
+        };
+        let wire = wire_state(state);
+        assert!(wire.running);
+        assert_eq!(wire.exit, Some(TerminalExit { code: Some(3), signal: None }));
+        assert_eq!(wire.source, TerminalSource::Heuristic);
+        assert_eq!(wire.input_expected.expect("an input").kind, TerminalInputKind::Prompt);
+    }
+}

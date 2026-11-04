@@ -106,6 +106,64 @@ impl ViewSurface {
         }
     }
 
+    /// The terminal a client asked to view, with this connection counted as
+    /// a viewer. **Refused when the seat has none**: the strip row only
+    /// exists while a terminal does, so a page attaching to a gone one is a
+    /// dark surface, not a reason to spawn a shell.
+    pub fn terminal_attach(
+        &self,
+        seat: &SessionSlot,
+        id: u16,
+    ) -> Result<Arc<forge_workspace::terminal::TerminalEntry>, String> {
+        let entry = self.workspace.terminal_by_id(seat, id)?;
+        entry.attached.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(entry)
+    }
+
+    /// This connection stopped viewing the terminal.
+    pub fn terminal_detach(&self, entry: &forge_workspace::terminal::TerminalEntry) {
+        entry.attached.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// The person's close door: end the terminal's process group.
+    pub fn terminal_close(&self, seat: &SessionSlot, id: u16) -> Result<(), String> {
+        self.workspace.terminal_by_id(seat, id)?;
+        self.workspace.close_terminal(seat);
+        Ok(())
+    }
+
+    /// The attached surface changed size.
+    pub fn terminal_resize(
+        &self,
+        seat: &SessionSlot,
+        id: u16,
+        cols: u16,
+        rows: u16,
+    ) -> Result<(), String> {
+        let entry = self.workspace.terminal_by_id(seat, id)?;
+        entry.terminal.resize(cols, rows).map_err(|error| error.to_string())
+    }
+
+    /// The person's own keystrokes, written to the PTY and nowhere else.
+    pub fn terminal_write(&self, seat: &SessionSlot, id: u16, bytes: &[u8]) -> Result<(), String> {
+        let entry = self.workspace.terminal_by_id(seat, id)?;
+        entry.terminal.write_bytes(bytes).map_err(|error| error.to_string())
+    }
+
+    /// Whether a hand-off parked on the seat's terminal owns its input.
+    pub fn terminal_held(&self, seat: &SessionSlot) -> bool {
+        self.workspace.terminal_held(seat)
+    }
+
+    /// The seat's terminal as the record draws it, when it has one.
+    pub fn terminal(
+        &self,
+        seat: &SessionSlot,
+    ) -> Option<forge_primitives::terminal::TerminalSummary> {
+        let held = self.workspace.terminal_held(seat);
+        self.workspace.terminal_if_any(seat).map(|entry| entry.summary(seat, held))
+    }
+
     /// How many pool scans this surface started. Test-only: the single-flight
     /// guard's whole claim is that two concurrent misses start one.
     #[cfg(any(test, feature = "testing"))]

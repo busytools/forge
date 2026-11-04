@@ -400,6 +400,11 @@ pub struct SessionWire {
     /// names it while it runs.
     pub background_tasks: Vec<forge_workspace::BackgroundTask>,
     pub monitors: Vec<MonitorRecord>,
+    /// The seat's terminal, when it has one: the strip's row and the state
+    /// it draws. Absent until the terminal is opened, which is what makes
+    /// "a seat the person never opens a terminal on costs a strip row that
+    /// is not there" true.
+    pub terminal: Option<forge_primitives::terminal::TerminalSummary>,
     /// The prompt a one-ask dock draws: the front of `pending_asks`.
     ///
     /// **Derived from the same list at serialisation**, so the two cannot
@@ -2628,6 +2633,7 @@ async fn session(
         processes,
         background_tasks: surface.background_tasks(slot),
         monitors: surface.monitors(slot),
+        terminal: surface.terminal(slot),
         pending_ask: asks.first().map(PendingAskWire::from),
         pending_asks: asks.iter().map(PendingAskWire::from).collect(),
         conversation: ConversationWire { turns, cursor, compaction_count, cron_names },

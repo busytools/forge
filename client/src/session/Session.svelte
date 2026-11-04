@@ -8,6 +8,9 @@
   import BrowserSurface from '../browser/BrowserSurface.svelte';
   import { drawsSurface } from '../browser/link';
   import { surface } from '../browser/surface.svelte';
+  import TerminalSurface from '../terminal/Terminal.svelte';
+  import { setTerminalRecord } from '../terminal/record.svelte';
+  import { surface as terminalSurface } from '../terminal/surface.svelte';
   import { subjectKey } from '../protocol';
   import { report, type Connection } from '../socket';
   import type { BoardRead } from '../wire/board';
@@ -118,6 +121,17 @@
   });
 
   const record: SessionRecord | null = $derived(read.wire);
+
+  /**
+   * The terminal row reads the record's own half.
+   *
+   * **The strip and the surface read one store**, so a page whose record has
+   * not re-read still draws the terminal it was told about, and a record with
+   * none draws no row at all.
+   */
+  $effect(() => {
+    setTerminalRecord(slot, record?.terminal ?? null);
+  });
 
   /**
    * The dispatch join follows the record: the chat's rows read their cards
@@ -615,6 +629,13 @@
          canvas and its keyboard field unreachable on every client that
          paints them (#2726). -->
     <BrowserSurface {connection} />
+  {/if}
+
+  {#if terminalSurface.phase !== 'closed'}
+    <!-- The terminal's own surface, the browser takeover's sibling: a
+         full-window layer with the terminal under a slim bar. It is hidden by
+         default and raised by the strip row or a hand-off's Open. -->
+    <TerminalSurface />
   {/if}
 
   <main class="chat">

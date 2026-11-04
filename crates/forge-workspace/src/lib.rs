@@ -92,6 +92,7 @@ pub mod subagent_cards;
 mod systemone;
 mod target;
 mod tasks;
+pub mod terminal;
 pub mod tts;
 mod update_fanout;
 mod views;
