@@ -3828,11 +3828,17 @@ describe('the read, and the answer a frame has outrun', () => {
       updateOf({ connection_failed: { key: LEAD, message: 'the process exited', fatal: false } }),
     );
     paint();
-    expect(page.read().wire?.queue_ended, 'precondition: the death wrote the ending').not.toBeNull();
+    expect(
+      page.read().wire?.queue_ended,
+      'precondition: the death wrote the ending',
+    ).not.toBeNull();
 
     page.land(
       snapshotOf(LEAD, {
-        state: { scan_cwd: '/returned', queue: [{ uuid: 'p2', text: 'next words', source: 'you' }] },
+        state: {
+          scan_cwd: '/returned',
+          queue: [{ uuid: 'p2', text: 'next words', source: 'you' }],
+        },
       }),
     );
 
