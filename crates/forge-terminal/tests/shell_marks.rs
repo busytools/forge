@@ -11,6 +11,12 @@ use std::time::{Duration, Instant};
 
 use forge_terminal::{Terminal, TerminalConfig};
 
+/// Whether this machine has `shell` at all: the Linux CI runner has no zsh,
+/// and a test that cannot start its shell is not a failure of the marks.
+fn installed(shell: &str) -> bool {
+    std::path::Path::new(shell).exists()
+}
+
 /// A terminal on `shell`, with a home of its own so the person's rc does not
 /// decide what the test sees.
 fn terminal_for(shell: &str) -> (Terminal, tempfile::TempDir) {
@@ -112,6 +118,10 @@ fn assert_exit(found: &[String], code: &str, shell: &str) {
 
 #[test]
 fn zsh_reports_the_command_and_its_exit() {
+    if !installed("/bin/zsh") {
+        eprintln!("skipping the zsh marks: /bin/zsh is not installed here");
+        return;
+    }
     let (terminal, _home) = terminal_for("/bin/zsh");
     assert_prompt_only(&settle(&terminal), "zsh");
     assert_exit(&command_marks(&terminal, b"false\r"), "1", "zsh");
@@ -129,6 +139,10 @@ fn zsh_reports_the_command_and_its_exit() {
 
 #[test]
 fn bash_reports_the_command_and_its_exit() {
+    if !installed("/bin/bash") {
+        eprintln!("skipping the bash marks: /bin/bash is not installed here");
+        return;
+    }
     let (terminal, _home) = terminal_for("/bin/bash");
     assert_prompt_only(&settle(&terminal), "bash");
     assert_exit(&command_marks(&terminal, b"false\r"), "1", "bash");
