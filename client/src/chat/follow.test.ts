@@ -1,4 +1,6 @@
 // @vitest-environment jsdom
+import { readFileSync } from 'node:fs';
+
 import { flushSync, mount, unmount } from 'svelte';
 import { get, writable } from 'svelte/store';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -43,7 +45,7 @@ const {
   setMeasured,
   setModel,
 } = await import('./testing/records');
-const { conversationsFor } = await import('./conversations');
+const { conversationsFor, places } = await import('./conversations');
 const { subjectKey } = await import('../protocol');
 const { default: Chat } = await import('./Chat.svelte');
 const { default: Seats } = await import('./testing/Seats.svelte');
@@ -163,6 +165,8 @@ function stub() {
   const watchers = new Set<(status: 'closed' | 'open') => void>();
   /** Every ask for older turns the column made, by the cursor it asked from. */
   const asks: Array<string | null> = [];
+  /** How many results this seat has sent, so each settles its own turn. */
+  let results = 0;
   const connection = {
     subscribe: () => ({ state: () => ({ kind: 'ready' as const }) }),
     unsubscribe: () => undefined,
@@ -250,6 +254,19 @@ function stub() {
     /** One frame arriving on the seat, the way a running turn's do. */
     frame(): void {
       send(frameMessage());
+    },
+    /** The turn's own result, which ends the row a prompt opened. */
+    result(): void {
+      results += 1;
+      send({
+        kind: 'update',
+        update: {
+          chat_appended: {
+            key: LEAD,
+            msg: { type: 'result', uuid: `result-${results}` },
+          },
+        },
+      });
     },
     /**
      * A prompt the reader sends, as the dispatch forges it on the seat.
@@ -465,6 +482,16 @@ beforeEach(() => {
   clear();
   clearObservers();
   rectReads = 0;
+  // **The saved places outlive the connection**, so they outlive a test too.
+  // Every case starts from no place of its own: a place is a fact about a
+  // conversation, and two tests are two app runs.
+  for (const which of [LEAD, OTHER]) places.forget(subjectKey({ session: which }));
+  // **The suite runs as a reader who asked for less motion.** The glide has
+  // its own cases, which turn the query off; every other case is about where
+  // the column lands and reads the one write that landing is.
+  vi.stubGlobal('matchMedia', (query: string) => ({
+    matches: query === '(prefers-reduced-motion: reduce)',
+  }));
 });
 
 describe('whether the column follows the newest end', () => {
@@ -1714,15 +1741,12 @@ describe('whether the column follows the newest end', () => {
     expect(pinned(), 'the new conversation opens at its foot').toEqual([PIN]);
   });
 
-  it('lands back at the foot when the reader returns to a seat they left scrolled up', async () => {
-    // **A place belongs to the visit, not to the seat** (#1673). A seat's
-    // conversation is kept, and its follow flag was kept with it - so a seat
-    // left scrolled up came back with `following: false`, the follow pass
-    // returned early, and the reader landed wherever the old offset fell in
-    // the history. Every entry lands at the latest. The view this client
-    // replaced deliberately did the other thing - its own per-session
-    // `auto_scroll` restored where the reader was - and that divergence is
-    // named in the PR.
+  it('goes back to the place a seat was left at when the reader switches to it', async () => {
+    // **A saved place belongs to the conversation, not to the visit** (the
+    // rule this cut reverses: `#1673` used to land every entry at the latest
+    // and delete the place). A reader who parks on a seat and moves to
+    // another one comes back to the row they left, the way the view this
+    // client replaced did with its per-session `auto_scroll`.
     const seat = writable(LEAD);
     const server = stub();
     clear();
@@ -1733,12 +1757,14 @@ describe('whether the column follows the newest end', () => {
       props: { seat, connection: server.connection },
     });
     flushSync();
-    server.page([turn('t1'), turn('t2')]);
+    server.page([spoken('t1'), spoken('t2')]);
     await settle();
+    layOut(40);
 
     // The reader scrolls up on the seat they are on, then leaves it.
-    readerAt(0);
+    readerAt(50);
     await settle();
+    expect(element.offset, 'precondition: the reader parked').toBe(50);
     clear();
 
     seat.set(OTHER);
@@ -1747,20 +1773,26 @@ describe('whether the column follows the newest end', () => {
     await settle();
     clear();
 
-    // And comes back: the kept conversation lands at ITS foot, following.
+    // And comes back: the kept conversation opens at the row they left. The
+    // rows this seat's conversation draws are new elements, and jsdom lays
+    // nothing out.
     seat.set(LEAD);
     flushSync();
+    layOut(40);
+    await settle();
     await settle();
 
     expect(list(), 'the kept conversation is drawn again').not.toBeNull();
-    expect(pinned(), 'the return lands at the foot, not where it was left').toEqual([PIN]);
+    expect(element.offset, 'the switch back reopened the place the seat was left at').toBe(50);
+    expect(
+      pinned().filter((pin) => pin.landed === Math.floor(TOTAL) - VIEWPORT),
+      'a restored place is not a foot to pin',
+    ).toEqual([]);
 
     // **And a seat left AT its foot still re-pins on the way back.** This leg
     // is that path's own regression guard: the conversation's follow is
     // already on, so the re-arm writes the same record, and the arriving
-    // record's publish is what re-runs the pass - measured, this leg stands
-    // green against the pre-fix code too, so it is the guard for the
-    // return-at-foot path rather than a witness for the key.
+    // record's publish is what re-runs the pass.
     await settle();
     clear();
     readerAt(FOOT);
@@ -3336,13 +3368,12 @@ describe('a return to the seat the reader left', () => {
 
     // The place keeps a turn this conversation still holds, but names a row it
     // no longer draws - the re-key a fold can make in place.
-    const store = conversationsFor(server.connection);
     const which = subjectKey({ session: LEAD });
-    const place = store.places.get(which);
+    const place = places.of(which);
     expect(place, 'precondition: the column recorded a place').toBeDefined();
     if (place !== undefined) {
-      const turn = place.key.slice(0, place.key.indexOf(':'));
-      store.places.set(which, { key: `${turn}:gone`, into: place.into });
+      const turn = place.anchor.key.slice(0, place.anchor.key.indexOf(':'));
+      places.keep(which, place.session, { key: `${turn}:gone`, into: place.anchor.into });
     }
 
     await ontoDocument();
@@ -3358,11 +3389,12 @@ describe('a return to the seat the reader left', () => {
   });
 
   /**
-   * The guard on the other side: a seat SWITCH still lands at the latest,
-   * whatever a seat was left holding (#1673). The switch is the same mounted
-   * column taking a different slot, which is what the app does.
+   * The guard on the other side: a seat the reader has never parked on opens
+   * at the latest, and a seat that holds a place reopens it. The switch is
+   * the same mounted column taking a different slot, which is what the app
+   * does.
    */
-  it('still lands a seat switch at the foot', async () => {
+  it('opens an unvisited seat at the foot and a parked one at its place', async () => {
     const server = stub();
     const seat = writable(LEAD);
     clear();
@@ -3389,15 +3421,358 @@ describe('a return to the seat the reader left', () => {
       Math.floor(TOTAL) - VIEWPORT,
     );
 
-    // **And back to the seat that holds a place.** A switch is not a return
-    // however recently the seat was left, so the place recorded on `LEAD`
-    // above is not taken back here - the way back is the only door to it.
+    // **And back to the seat that holds a place.** A seat switch is an entry
+    // like any other now: the conversation was parked at `PLACE`, so the
+    // switch back puts the reader there rather than at the foot. The rows
+    // this seat's conversation draws are new elements, and jsdom lays nothing
+    // out.
     seat.set(LEAD);
     flushSync();
+    layOut(40);
+    await settle();
     await settle();
 
-    expect(element.offset, 'the switch back reopened the place the seat was left at').toBe(
+    expect(element.offset, 'the switch back reopened the place the seat was left at').toBe(PLACE);
+  });
+});
+
+/**
+ * A conversation parked mid-history, over a column the test can then drive.
+ *
+ * Three turns with words, so the rows the anchor names exist, and a 40px row
+ * the place arithmetic is read against.
+ */
+async function parkedColumn(server: ReturnType<typeof stub>): Promise<void> {
+  clear();
+  clearObservers();
+  setMeasured(TOTAL, VIEWPORT);
+  app = mount(Chat, {
+    target: document.body,
+    props: { slot: LEAD, connection: server.connection },
+  });
+  flushSync();
+  server.page([spoken('t1'), spoken('t2'), spoken('t3')]);
+  await settle();
+  layOut(40);
+  readerAt(50);
+  await settle();
+  expect(list(), 'the column is mounted with rows to hold').not.toBeNull();
+  expect(element.offset, 'precondition: the reader is parked').toBe(50);
+}
+
+/** The viewport offset of the row the reader's top edge is on. */
+function topRowTop(): number | null {
+  const root = document.querySelector('.conv');
+  const live = root === null ? [] : [...root.querySelectorAll('.turn [data-k]')];
+  for (const row of live) {
+    const box = row.getBoundingClientRect();
+    if (box.bottom > 0) return box.top;
+  }
+  return null;
+}
+
+describe('a saved place outliving the connection', () => {
+  it('keeps the place a conversation was left at across a new connection', async () => {
+    const first = stub();
+    await parkedColumn(first);
+    expect(
+      places.of(subjectKey({ session: LEAD })),
+      'the place is recorded while the reader is parked',
+    ).toBeDefined();
+
+    // The document goes, and the socket comes back as a NEW connection: the
+    // conversation it held went with the old one, and so did every map the
+    // connection owned.
+    if (app !== null) await unmount(app);
+    app = null;
+    document.body.innerHTML = '';
+    element.offset = 0;
+    clear();
+
+    const second = stub();
+    setMeasured(TOTAL, VIEWPORT);
+    app = mount(Chat, {
+      target: document.body,
+      props: { slot: LEAD, connection: second.connection },
+    });
+    flushSync();
+    second.page([spoken('t1'), spoken('t2'), spoken('t3')]);
+    layOut(40);
+    await settle();
+    await settle();
+
+    expect(element.offset, 'the reconnect dropped the reader at the foot').toBe(50);
+  });
+
+  it('opens a different claude session at the latest, whatever the slot was left holding', async () => {
+    const server = stub();
+    await parkedColumn(server);
+
+    // `/resume` to another claude session id: the same slot, a new
+    // conversation. The place belonged to the occupant that left.
+    server.replaced('another-session');
+    await settle();
+    expect(places.of(subjectKey({ session: LEAD })), 'the old place is gone').toBeUndefined();
+
+    clear();
+    server.page([spoken('t1'), spoken('t2'), spoken('t3')]);
+    layOut(40);
+    await settle();
+
+    expect(element.offset, 'the new session opened at the old place').toBe(
       Math.floor(TOTAL) - VIEWPORT,
     );
+  });
+});
+
+describe('the badge on the way back', () => {
+  /** The count drawn on the circle, or null while it draws none. */
+  function badge(): string | null {
+    return document.querySelector('button.follow .n')?.textContent?.trim() ?? null;
+  }
+
+  it('counts the turns appended since parking once each, and clears on the way back', async () => {
+    const server = stub();
+    await parkedColumn(server);
+    expect(badge(), 'nothing has been appended yet').toBeNull();
+
+    // A turn appended while the reader is parked.
+    server.forged('cron');
+    await settle();
+    expect(badge(), 'the appended turn is counted').toBe('1');
+
+    // A chunk joining the turn that opened is not a second turn.
+    server.frame();
+    await settle();
+    expect(badge(), 'a streamed chunk is not a turn of its own').toBe('1');
+
+    // A prompt opens the next turn only once the one before it settled.
+    server.result();
+    server.forged('peer');
+    await settle();
+    expect(badge(), 'the second turn is counted').toBe('2');
+
+    // Nine or more reads as 9+, which is the cap the circle draws.
+    for (const source of ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h']) {
+      server.result();
+      server.forged(source);
+      await settle();
+    }
+    expect(badge(), 'the count caps at nine or more').toBe('9+');
+
+    const back = document.querySelector('button.follow');
+    expect(back, 'precondition: the way back is drawn').not.toBeNull();
+    back?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await settle();
+
+    expect(badge(), 'following clears the badge').toBeNull();
+    expect(element.offset, 'and the circle lands the foot').toBe(FOOT);
+
+    // **A count that was cleared does not come back with the next park.**
+    // The circle is gone at the foot, so reading its absence there proves
+    // nothing; the park after it is what says the count itself was reset.
+    readerAt(50);
+    await settle();
+    expect(badge(), 'the cleared count reopened with the next park').toBeNull();
+  });
+});
+
+describe('the motion of a following column', () => {
+  /**
+   * A manual animation clock, so a glide is observed frame by frame rather
+   * than waited out in real time. The column publishes on a frame as well,
+   * so pumping is what runs the follow's own pass.
+   */
+  function clock(): { pump: (ms: number) => void; stop: () => void } {
+    let now = 0;
+    const queue = new Map<number, FrameRequestCallback>();
+    let next = 1;
+    const realRaf = globalThis.requestAnimationFrame;
+    const realCancel = globalThis.cancelAnimationFrame;
+    const nowSpy = vi.spyOn(performance, 'now').mockImplementation(() => now);
+    vi.stubGlobal('requestAnimationFrame', (fn: FrameRequestCallback) => {
+      const id = next;
+      next += 1;
+      queue.set(id, fn);
+      return id;
+    });
+    vi.stubGlobal('cancelAnimationFrame', (id: number) => {
+      queue.delete(id);
+    });
+    return {
+      pump: (ms: number) => {
+        now += ms;
+        for (const [id, fn] of [...queue]) {
+          queue.delete(id);
+          fn(now);
+        }
+        flushSync();
+      },
+      stop: () => {
+        nowSpy.mockRestore();
+        vi.stubGlobal('requestAnimationFrame', realRaf);
+        vi.stubGlobal('cancelAnimationFrame', realCancel);
+      },
+    };
+  }
+
+  it('glides toward the moving foot on an append and on a stream growth', async () => {
+    // The landing that opens the column is the suite's instant one; the
+    // motion starts with the append this case is about.
+    const server = stub();
+    clear();
+    clearObservers();
+    setMeasured(TOTAL, VIEWPORT);
+    app = mount(Chat, {
+      target: document.body,
+      props: { slot: LEAD, connection: server.connection },
+    });
+    flushSync();
+    server.page([spoken('t1'), spoken('t2'), spoken('t3')]);
+    await settle();
+    layOut(40);
+    expect(element.offset, 'precondition: the landing is at the foot').toBe(FOOT);
+    clear();
+
+    // No reduced-motion preference: this is the reader the glide is for.
+    vi.stubGlobal('matchMedia', () => ({ matches: false }));
+    const hand = clock();
+    try {
+      // The turn appends and the column's own foot moves with it. The element
+      // reports whole pixels, so that is the foot the landing reaches.
+      const moved = Math.floor(TOTAL + 200) - VIEWPORT;
+      reported.size = TOTAL + 200;
+      setElement(TOTAL + 200, VIEWPORT);
+      server.forged('one');
+      hand.pump(0);
+      hand.pump(16);
+      const first = element.offset;
+      expect(first, 'the column jumped to the foot instead of gliding').toBeLessThan(moved);
+      expect(first, 'and it did move toward it').toBeGreaterThan(FOOT);
+      for (let at = 0; at < 10; at += 1) hand.pump(16);
+      expect(element.offset, 'the glide lands the measured foot').toBe(moved);
+
+      // A row that grows under the finger during a stream is the same glide.
+      clear();
+      const grown = Math.floor(TOTAL + 400) - VIEWPORT;
+      reported.size = TOTAL + 400;
+      setElement(TOTAL + 400, VIEWPORT);
+      resized(60);
+      flushSync();
+      hand.pump(0);
+      hand.pump(16);
+      expect(element.offset, 'the stream growth glided rather than jumped').toBeLessThan(grown);
+      expect(element.offset, 'and it glided to the foot it measured').toBeGreaterThan(moved);
+    } finally {
+      hand.stop();
+    }
+  });
+
+  it('lands at once when the reader asked for less motion', async () => {
+    // The suite's own preference is `reduce`, and the landing is one write.
+    const server = stub();
+    await draw(server);
+    clear();
+
+    reported.size = TOTAL + 200;
+    setElement(TOTAL + 200, VIEWPORT);
+    server.forged('one');
+    await settle();
+
+    expect(pinned().at(-1), 'the landing wrote the foot directly').toEqual({
+      asked: Math.floor(TOTAL + 200),
+      landed: Math.floor(TOTAL + 200) - VIEWPORT,
+    });
+    expect(element.offset, 'and the reader is there').toBe(Math.floor(TOTAL + 200) - VIEWPORT);
+  });
+
+  it('keeps the circle an instant jump', async () => {
+    vi.stubGlobal('matchMedia', () => ({ matches: false }));
+    const server = stub();
+    await parkedColumn(server);
+    clear();
+
+    document
+      .querySelector('button.follow')
+      ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    flushSync();
+
+    expect(element.offset, 'the circle glided instead of jumping').toBe(FOOT);
+  });
+});
+
+describe('the freeze a parked column keeps', () => {
+  it('leaves the anchored row at the same sub-pixel offset through a reflow above it', async () => {
+    const server = stub();
+    clear();
+    clearObservers();
+    setMeasured(TOTAL, VIEWPORT);
+    app = mount(Chat, {
+      target: document.body,
+      props: { slot: LEAD, connection: server.connection },
+    });
+    flushSync();
+    server.page([spoken('t1'), spoken('t2'), spoken('t3')]);
+    await settle();
+
+    // Fractional rows and a fractional offset: the drift a rounding anchor
+    // throws away is exactly the half pixel a reader sees.
+    layOut(40.5);
+    readerAt(50.25);
+    await settle();
+    const before = topRowTop();
+    expect(before, 'precondition: a row holds the top edge').not.toBeNull();
+    clear();
+
+    // A row above grows by three quarters of a pixel, and a turn appends
+    // below it; neither may move the words under the reader's eye.
+    layOut(41.25);
+    resized();
+    server.forged('below');
+    await settle();
+
+    expect(topRowTop(), 'the reflow moved the row under the reader').toBe(before);
+  });
+
+  it('keeps the same row at the top when the column is resized under a parked reader', async () => {
+    const server = stub();
+    clear();
+    clearObservers();
+    setMeasured(TOTAL, VIEWPORT);
+    app = mount(Chat, {
+      target: document.body,
+      props: { slot: LEAD, connection: server.connection },
+    });
+    flushSync();
+    server.page([spoken('t1'), spoken('t2'), spoken('t3')]);
+    await settle();
+
+    layOut(40);
+    readerAt(50);
+    await settle();
+    const before = topRowTop();
+    clear();
+
+    // The phone turns: a shorter viewport, and the rows reflow a little.
+    setElement(TOTAL, 260);
+    layOut(41);
+    resized();
+    await settle();
+
+    expect(topRowTop(), 'the rotate moved the row under the reader').toBe(before);
+    expect(element.offset, 'and the reader is still parked, not carried to the foot').toBe(51);
+  });
+});
+
+describe('the circle itself', () => {
+  it('is a 44px square on every client, not the oval a raised height makes', () => {
+    // The touch rules raise every button's MIN-HEIGHT to 44, which left this
+    // one 34 wide: the folded Z Fold drew an oval. The base rule carries both
+    // axes, so the circle is a finger's target on the pointer and the phone
+    // alike.
+    const sheet = readFileSync('src/assets/web.css', 'utf8');
+    const body = /\.follow \{([^}]*)\}/.exec(sheet)?.[1] ?? '';
+    expect(body, 'the follow button draws a width').toMatch(/width:\s*44px/);
+    expect(body, 'the follow button draws a height').toMatch(/height:\s*44px/);
   });
 });

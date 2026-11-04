@@ -2462,13 +2462,21 @@ details.leaf.running > summary { color: var(--text); }
   font-family: var(--mono); font-size: var(--fs-label); white-space: nowrap; }
 
 /* The way back to the foot, over the column's corner while the reader is away
-   from it: a request, not a status - the state is that it is there at all. */
+   from it: a request, not a status - the state is that it is there at all.
+   **44 square everywhere.** The touch rules raise every button's height, which
+   left this one 34 wide and 44 tall - an oval a finger has to find the middle
+   of; a circle that is a finger's target on one axis is one on both. */
 .follow { position: absolute; right: 18px; bottom: 14px; z-index: 6;
-  width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center;
+  width: 44px; height: 44px; border-radius: 50%; display: grid; place-items: center;
   background: var(--s2); border: 1px solid var(--ctl); color: var(--muted);
   cursor: pointer; }
 .follow:hover { color: var(--text); border-color: var(--text); }
 .follow .ic { width: 16px; height: 16px; }
+/* The turns that landed while the reader was parked, capped at 9+. */
+.follow .n { position: absolute; top: -5px; right: -5px; min-width: 18px; height: 18px;
+  padding: 0 4px; border-radius: 9px; display: grid; place-items: center;
+  background: var(--accent); color: var(--bg); font-family: var(--mono);
+  font-size: var(--fs-label); line-height: 1; font-variant-numeric: tabular-nums; }
 
 /* The header's compaction count, which is a way in rather than a label: it
    takes the reader to the latest cut. */

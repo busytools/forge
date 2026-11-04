@@ -29,8 +29,9 @@
     type Conversation,
     type Turn as HeldTurn,
   } from './conversation';
-  import { conversationsFor } from './conversations';
+  import { conversationsFor, places, type Place } from './conversations';
   import Echo from './Echo.svelte';
+  import { glideTo as glideToward, wantsMotion } from './glide';
   import { echoes, ownWords } from './echoes.svelte';
   import { pinnedRow } from './pinnedRow.svelte';
   import Turn from './Turn.svelte';
@@ -207,8 +208,13 @@
    * window while this is set: the captures and the parked passes stand aside
    * until the scroll to its turn has drawn it, or the column would take the
    * top of the window as the reader's place.
+   *
+   * It carries the session the place was recorded in as well as the row: a
+   * connection that opens a conversation before its occupant's id is known
+   * still takes the saved place, and the id that arrives decides whether it
+   * was this conversation's.
    */
-  let restoring = $state<Anchor | null>(null);
+  let restoring = $state<Place | null>(null);
   /** The frame the return's own scroll waits on, held so one schedule is outstanding. */
   let restoreFrame: number | null = null;
   /** How many frames a restored place has waited for its row to draw. */
@@ -594,6 +600,94 @@
    * follow is on but whose pin cannot fire needs the door back.
    */
   let footHeld = $state(true);
+  /**
+   * How many turns have landed since the reader parked, which the circle
+   * carries while it is drawn.
+   *
+   * **Counted against the turn the reader parked after**, not against a
+   * length: a prepend above them moves the length without moving their foot,
+   * and a page that merges repeated turns shrinks it again. A turn is counted
+   * once however many frames stream it, because only a new TURN moves the
+   * index, never a frame joining the one already there.
+   */
+  let badge = $state(0);
+  /** The newest turn's key at the moment the reader parked; null when following. */
+  let badgeFrom: string | null = null;
+  /** What cancels the glide in flight, the foot it aims at, and its last write. */
+  let glideStop: (() => void) | null = null;
+  let glideTarget: number | null = null;
+  let glideAt = 0;
+  /**
+   * Whether the reader is away from the foot, which is what the circle and
+   * its badge answer to.
+   *
+   * **Not the follow flag alone.** An arrival can arm the follow while the
+   * reader stays exactly where they are, and that reader is still parked:
+   * the foot moves for the next arrival, and they are owed the count of what
+   * landed while they read.
+   */
+  const parked = $derived(!held.following || !pinning());
+
+  /** Stop the glide in flight, if any, without touching where it reached. */
+  function stopGlide(): void {
+    if (glideStop !== null) glideStop();
+    glideStop = null;
+    glideTarget = null;
+  }
+
+  /**
+   * Glide the viewport to `target`, a foot of `reachable`, and settle the
+   * landing when it arrives.
+   *
+   * **The completion owns everything the instant write's read-back owns**:
+   * where the reader ended, whether that is the foot, the pin's own echo
+   * token, and the place a landed foot gives up. A glide already heading for
+   * the same target is left alone - the frames a stream delivers retarget it
+   * only when the foot actually moved.
+   */
+  function startGlide(target: number, reachable: number): void {
+    const box = viewport;
+    if (box === null) return;
+    if (glideStop !== null && glideTarget === target) return;
+    stopGlide();
+    glideTarget = target;
+    glideAt = box.scrollTop;
+    /** The offset the last glide write found, so a write that moved is known. */
+    let before = box.scrollTop;
+    glideStop = glideToward(
+      {
+        get scrollTop(): number {
+          return box.scrollTop;
+        },
+        set scrollTop(value: number) {
+          before = box.scrollTop;
+          box.scrollTop = value;
+          glideAt = value;
+        },
+      },
+      target,
+      () => {
+        glideStop = null;
+        glideTarget = null;
+        const landed = box.scrollTop;
+        placed = landed;
+        const at = landed >= reachable - FOOT_QUANTUM;
+        // **Only a write that moved comes back as an event.** A tween whose
+        // last frame lands on the value the frame before it already wrote
+        // must not arm the token: no echo is coming, and the next event would
+        // be read as one.
+        if (landed !== before) pinEcho = { at: landed, foot: at };
+        footHeld = at;
+        // A pin that lands at the foot is the reader leaving their place, the
+        // same rule the instant landing keeps.
+        if (at) {
+          anchor = null;
+          rememberPlace();
+        }
+      },
+    );
+  }
+
   /** How many layout passes the observer has already put a parked reader back for. */
   let restored = 0;
   /**
@@ -753,10 +847,15 @@
     // a reader heading for the foot lands there through a clamp whose offset
     // never rose. A touch and a press on the scrollbar arm whole: neither
     // carries a direction.
+    // **A hand on the column takes the viewport from the glide.** The reader's
+    // own gesture wins over the finish the follow was making: the glide is
+    // the column moving on their behalf, and they are moving themselves now.
     const arm = () => {
+      stopGlide();
       readerAt = performance.now();
     };
     const aim = () => {
+      stopGlide();
       aimedAt = performance.now();
     };
     const onWheel = (event: WheelEvent) => {
@@ -930,6 +1029,8 @@
       // - an empty or unloaded conversation draws no list - and the release
       // that would have cleared the flag lands after the listener is gone.
       readerHeld = false;
+      // A glide aimed at the element that is going must not write into it.
+      stopGlide();
       viewport = null;
     };
   }
@@ -995,14 +1096,32 @@
   function restoreAnchor(): boolean {
     // The return's own placer owns the scroll until its row is drawn.
     if (restoring !== null) return true;
-    const held = anchor;
-    if (held === null || viewport === null) return true;
-    const row = viewport.querySelector(`[data-k="${CSS.escape(held.key)}"]`);
-    if (row === null) return captureAnchor();
+    const place = anchor;
+    if (place === null || viewport === null) return true;
+    const row = viewport.querySelector(`[data-k="${CSS.escape(place.key)}"]`);
+    if (row === null) {
+      // **A row the list has not drawn is not the reader's place.** The turn
+      // may be outside the drawn window, where the viewport's top edge belongs
+      // to whatever happens to be there - a capture from it would move the
+      // reader's place to a row they never chose. Only a turn the list has
+      // DRAWN but a row it no longer carries is the re-key a capture heals.
+      const turn = held.turns.find((one) => place.key.startsWith(`${one.key}:`));
+      const drawn =
+        turn !== undefined && viewport.querySelector(`[data-t="${CSS.escape(turn.key)}"]`) !== null;
+      if (!drawn) {
+        owedUnplaced = true;
+        return false;
+      }
+      return captureAnchor();
+    }
     const box = viewport.getBoundingClientRect();
     const top = row.getBoundingClientRect().top - box.top + viewport.scrollTop;
-    const want = anchoredScroll(held, top);
-    if (Math.abs(want - viewport.scrollTop) >= 1) viewport.scrollTop = want;
+    const want = anchoredScroll(place, top);
+    // **Exact, not to the nearest pixel.** A device pixel ratio above 1 draws
+    // and scrolls in fractions, so a half-pixel drift is a real move of the
+    // words under the reader's eye; the guard is only what stops a write of
+    // the value the element already holds.
+    if (Math.abs(want - viewport.scrollTop) > 0.001) viewport.scrollTop = want;
     owedUnplaced = false;
     return true;
   }
@@ -1069,10 +1188,7 @@
     const which = seat;
     const open = connection;
     const store = conversations();
-    const { kept, live, places } = store;
-    // The seat this connection's column drew last, read before this run
-    // overwrites it: a mount onto that seat is a return, any other is an entry.
-    const shownBefore = store.shown;
+    const { kept, live } = store;
     let entry = untrack(() => live.get(which));
     /** Whether this run carries a conversation the column did not already hold. */
     let fresh = false;
@@ -1176,24 +1292,37 @@
       }
       restoring = null;
       restoreTries = 0;
+      // A glide aimed at the seat that is going is the same debt.
+      stopGlide();
       // The place a reader held was a row of the conversation that is going.
       anchor = null;
       // And so were the sizes and the last event, which read that element.
       lastSeen = { content: 0, room: 0 };
       movedFrom = 0;
-      // **A return to the seat this connection was last on keeps the
-      // reader's place; every other entry follows the latest** (#1673,
-      // #2834). A document unmounts the column while the connection keeps
-      // its conversation, so the mount that follows is a return rather than
-      // a switch - and the row it recorded is the reader's place, as long as
-      // the conversation still holds it. A fresh open, a seat switch and a
-      // `/new` (whose conversation no longer holds the row) all land at the
-      // latest. The window is settled by the follow effect below, which runs
-      // on the arriving conversation's own publish - this call would hand
-      // the outgoing seat's row key to the incoming chat's trim.
-      const turning = untrack(() => kept.get(which))?.turns ?? [];
-      const place = shownBefore === which ? (places.get(which) ?? null) : null;
-      if (place !== null && turning.some((turn) => place.key.startsWith(`${turn.key}:`))) {
+      // **A conversation with a saved place opens at it; every other entry
+      // follows the latest** (the rule this cut reverses: a place used to
+      // belong to one visit, and a seat switch back dropped it). A place is
+      // the reader's row for the conversation, wherever the entry came from -
+      // a document return, a seat switch back, or a reconnect that built a new
+      // connection around the same occupant. Two things are not that
+      // conversation's place: one its claude session id has moved on from
+      // (`/new`, `/resume`), and one whose row the conversation no longer
+      // holds (a compaction or a trim ate it) - both land at the latest.
+      const arriving = untrack(() => kept.get(which));
+      const turning = arriving?.turns ?? [];
+      const place = places.of(which) ?? null;
+      const moved =
+        place !== null &&
+        place.session !== null &&
+        arriving?.sessionId != null &&
+        place.session !== arriving.sessionId;
+      // **A conversation still loading may hold the row in the page on its
+      // way**, so only a loaded one that lacks it is a stale place.
+      const holdsRow =
+        place !== null && turning.some((turn) => place.anchor.key.startsWith(`${turn.key}:`));
+      const open =
+        place !== null && !moved && (holdsRow || arriving === undefined || !arriving.loaded);
+      if (open && place !== null) {
         // A returning reader is parked where they left, not at the foot, so
         // the pin's own condition must not carry them down while the row is
         // being drawn back. The follow flag goes off with it, as it was when
@@ -1202,23 +1331,19 @@
         restoring = place;
         working?.following(false);
       } else {
-        // **Every other entry lands at the latest** - a seat switch, a fresh
-        // open, and a `/new` whose conversation no longer holds the row - so
-        // the reader is at the foot before the first pin rather than an
-        // arrival moving them to one. **And so is the follow, which is why the
-        // entry re-arms it** (#1673): a seat's conversation is kept, and its
-        // follow flag was kept with it - so a seat left scrolled up came back
-        // with the pass returning early and the reader landing wherever the
-        // old offset fell. **A place belongs to the visit that recorded it**,
-        // so only a return to that visit takes it back. The window is settled
-        // by the follow effect below, which runs on the arriving
-        // conversation's own publish - this call would hand the outgoing
-        // seat's row key to the incoming chat's trim.
+        // **A fresh open and a place the conversation has outlived land at the
+        // latest**, so the reader is at the foot before the first pin rather
+        // than an arrival moving them to one. **And so is the follow**: a
+        // seat's conversation is kept, and its follow flag was kept with it -
+        // so an entry that did not take a place must re-arm it. A place the
+        // conversation has outlived is dropped: its row is gone, and a later
+        // entry must not reopen it. The window is settled by the follow
+        // effect below, which runs on the arriving conversation's own publish
+        // - this call would hand the outgoing seat's row key to the incoming
+        // chat's trim.
         footHeld = true;
         working?.following(true);
-        // The entry lands at the latest, so a place a previous visit left is
-        // done - and a `/new` emptied the row it named.
-        places.delete(which);
+        if (place !== null) places.forget(which);
       }
       // **And so were the asks this column is holding.** They belong to the
       // conversation that is going, and their pages are not coming here.
@@ -1280,9 +1405,6 @@
     if (switched) {
       noteConversationOpened(slot);
     }
-    // The seat this column has drawn, for the next mount to tell the seat it
-    // left from one it never showed.
-    store.shown = which;
     // Leaving the seat: its store notifications stop with its frames.
     return () => {
       unsubscribe();
@@ -1307,20 +1429,23 @@
    * over one.
    */
   function rememberPlace(): void {
-    const places = conversations().places;
     const here = anchor;
     if (here === null) {
-      places.delete(seat);
+      places.forget(seat);
       return;
     }
     // The membership scan runs when the row changes, not on every pixel of a
     // scroll within the same one. Untracked, because a caller is an effect
     // whose pin must not re-run on the dependency this read would add.
-    if (places.get(seat)?.key !== here.key) {
+    if (places.of(seat)?.anchor.key !== here.key) {
       const mine = untrack(() => held.turns.some((turn) => here.key.startsWith(`${turn.key}:`)));
       if (!mine) return;
     }
-    places.set(seat, here);
+    places.keep(
+      seat,
+      untrack(() => held.sessionId),
+      here,
+    );
   }
 
   /**
@@ -1338,7 +1463,16 @@
     const handle = list;
     const turns = held.turns;
     if (place === null || handle === null || turns.length === 0 || restoreFrame !== null) return;
-    if (!turns.some((turn) => place.key.startsWith(`${turn.key}:`))) {
+    // **A conversation whose occupant has moved on is not this place's.**
+    // The place is taken before the id is known on a fresh connection, so the
+    // id that arrives is what confirms or drops it; the same check covers a
+    // `/resume` landing under a return.
+    const session = held.sessionId;
+    if (session !== null && place.session !== null && session !== place.session) {
+      giveUpRestore();
+      return;
+    }
+    if (!turns.some((turn) => place.anchor.key.startsWith(`${turn.key}:`))) {
       giveUpRestore();
       return;
     }
@@ -1346,7 +1480,7 @@
       // **The turn is read again in the frame it is scrolled in**: a prepend
       // can land between this schedule and its frame, and an index from the
       // earlier read would name a different turn.
-      const at = held.turns.findIndex((turn) => place.key.startsWith(`${turn.key}:`));
+      const at = held.turns.findIndex((turn) => place.anchor.key.startsWith(`${turn.key}:`));
       if (at < 0) {
         giveUpRestore();
         return;
@@ -1365,7 +1499,7 @@
       giveUpRestore();
       return;
     }
-    if (viewport.querySelector(`[data-k="${CSS.escape(place.key)}"]`) === null) {
+    if (viewport.querySelector(`[data-k="${CSS.escape(place.anchor.key)}"]`) === null) {
       restoreTries += 1;
       restoreFrame = restoreTries < RESTORE_TRIES ? requestAnimationFrame(placeRestored) : null;
       if (restoreFrame === null) giveUpRestore();
@@ -1373,7 +1507,11 @@
     }
     restoring = null;
     restoreTries = 0;
-    anchor = place;
+    anchor = place.anchor;
+    // **The place is taken in the frame its row is drawn.** A switch back has
+    // no landing behind it to wake the parked pass, so waiting for the next
+    // publish would leave the reader at the turn's start until one came.
+    restoreAnchor();
   }
 
   /**
@@ -1882,6 +2020,26 @@
     }
     // The furthest end this pin may reach, in the element's own offsets.
     const reachable = model !== null && max > model ? model : max;
+    // **A following column glides to the foot; a jump is the reader's own.**
+    // The button's press (`force`) and a reader who asked for less motion
+    // take the same number in one write - both ARE the landing, and there is
+    // nothing to watch move. **So does an open**: the first pin of an open,
+    // a switch's or a return's, places the reader rather than following a
+    // foot that moved, and `placed` is null until one has landed. Every later
+    // pass travels there, so a streamed line and a row measuring taller read
+    // as the column following rather than as the page snapping.
+    // **A pass that has nowhere to travel takes the write below**, which is
+    // one offset already at its end rather than 160ms of frames writing it.
+    const want = Math.min(target, max);
+    if (
+      !force &&
+      placed !== null &&
+      wantsMotion() &&
+      Math.abs(want - viewport.scrollTop) > FOOT_QUANTUM
+    ) {
+      startGlide(target, reachable);
+      return foot;
+    }
     // **The write is unconditional, and the token comes from the read-back.**
     // `scrollTop` clamps to `scrollHeight - clientHeight`, so what the write
     // lands on is not what it asked for, and only the read-back knows whether
@@ -2089,6 +2247,36 @@
   });
 
   /**
+   * The badge: every turn appended since the reader parked, capped at nine.
+   *
+   * The mark is the turn the reader parked after, taken on the first parked
+   * run. A reader who returns to the foot is following again, so the mark
+   * goes and the next park starts from the turn that is newest then.
+   */
+  $effect(() => {
+    const turns = held.turns;
+    if (!parked) {
+      badgeFrom = null;
+      badge = 0;
+      return;
+    }
+    if (badgeFrom === null) {
+      badgeFrom = turns[turns.length - 1]?.key ?? null;
+      badge = 0;
+      return;
+    }
+    const at = turns.findIndex((turn) => turn.key === badgeFrom);
+    if (at < 0) {
+      // The turn the reader parked after is no longer held, so the stretch
+      // they missed cannot be counted from it; the next park starts fresh.
+      badgeFrom = null;
+      badge = 0;
+      return;
+    }
+    badge = turns.length - 1 - at;
+  });
+
+  /**
    * **A conversation that does not fill the column has no top to scroll to.**
    * The reach ask rides a scroll event, and a column whose whole held window
    * fits its room never fires one - so a seat that opens on a page with
@@ -2215,6 +2403,23 @@
     // pass runs again when the place is taken or dropped, so nothing is owed
     // for the frames it stands aside on.
     if (restoring !== null) return;
+    // **A conversation that no longer holds the anchored row goes to the
+    // latest** (the rule a compaction or a trim is written for). The pass
+    // below would retry a lookup for a row nothing holds, and a parked reader
+    // would sit on a place that no longer exists; the latest is the one place
+    // that does. Not a clamp to whatever row is left - that is a place the
+    // reader never chose.
+    if (
+      anchor !== null &&
+      !park.turns.some((turn) => anchor !== null && anchor.key.startsWith(`${turn.key}:`))
+    ) {
+      anchor = null;
+      rememberPlace();
+      footHeld = true;
+      working?.following(true);
+      land();
+      return;
+    }
     // **A follow that cannot pin is a parked reader here too.** The gate can
     // refuse a follow that is on (the third state the way-back and the
     // observer's restore already serve), and skipping the pass on the flag
@@ -2284,6 +2489,26 @@
     const towardFoot = offset > movedFrom;
     const was = movedFrom;
     movedFrom = offset;
+    // **The column's own glide is not the reader moving.** Every frame of it
+    // comes back as a scroll event, and reading those as a hand would disarm
+    // the follow partway through the landing the follow asked for. The last
+    // frame's completion plants the pin token, so that event is the echo it
+    // already knows how to read.
+    if (glideStop !== null) {
+      // **A write the glide did not make is someone else's move.** The
+      // reader's own gesture is heard separately, but a programmatic move -
+      // the list's own correction, a restore, a click on a dispatch - arrives
+      // as an event with no hand; and wherever the viewport is not where the
+      // glide last put it, whatever moved it wins.
+      if (Math.abs(offset - glideAt) > FOOT_QUANTUM) stopGlide();
+      else {
+        lastSeen = {
+          content: viewport?.scrollHeight ?? 0,
+          room: viewport?.clientHeight ?? 0,
+        };
+        return;
+      }
+    }
     // **An event at the pin's own landing spot is its echo, and reading the
     // layout back for it is the per-frame cost issue #1710 measured.** A
     // write is a scroll, so every pin comes back as an event the reader did
@@ -2637,12 +2862,20 @@
        a reader parked with the follow still on has no other door, and the
        click is the whole way back - at the foot and following again, in one
        move. -->
-  {#if !held.following || !pinning()}
+  {#if parked}
     <button
       class="follow"
       type="button"
       title="back to the latest"
+      aria-label={badge === 0
+        ? 'back to the latest'
+        : `back to the latest, ${badge >= 9 ? '9 or more' : badge} new ${
+            badge === 1 ? 'turn' : 'turns'
+          }`}
       onclick={() => {
+        // The press is a jump, so the finish the column was gliding to is not
+        // the reader's: the write below takes the viewport at once.
+        stopGlide();
         working?.following(true);
         settleWindow();
         anchor = null;
@@ -2652,6 +2885,9 @@
       }}
     >
       <Icon name="down" />
+      {#if badge > 0}
+        <span class="n" aria-hidden="true">{badge >= 9 ? '9+' : badge}</span>
+      {/if}
     </button>
   {/if}
 {/if}

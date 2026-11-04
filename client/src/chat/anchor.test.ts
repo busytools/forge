@@ -30,9 +30,9 @@ describe("the reader's anchor", () => {
     expect(anchoredScroll(held, 40), 'where the row was').toBe(60);
     expect(anchoredScroll(held, 140), 'a row pushed down 100').toBe(160);
     expect(anchoredScroll(held, 4), 'a row pulled up 36').toBe(24);
-    // Fractional rows are laid out by the browser; the answer is whole pixels,
-    // which is what a scroll offset is.
-    expect(anchoredScroll(held, 40.6), 'a fractional row top').toBe(61);
+    // Fractional rows are laid out by the browser, and a frozen column keeps
+    // the fraction: rounding it away moves the row under the reader's eye.
+    expect(anchoredScroll(held, 40.6), 'a fractional row top').toBe(60.6);
   });
 
   /**
@@ -78,7 +78,7 @@ describe("the reader's anchor", () => {
         expect(
           anchoredScroll(held, top),
           `the capture at ${viewTop} over a row at ${top} comes back`,
-        ).toBe(Math.round(viewTop));
+        ).toBe(viewTop);
       }
     }
   });

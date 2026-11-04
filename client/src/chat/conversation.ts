@@ -30,6 +30,7 @@ import { inFlightOf } from '../session/apply';
 import { takeReturn } from '../session/returns';
 import type { Connection } from '../socket';
 import type { SessionSlot } from '../wire/types';
+import { places } from './conversations';
 import { cronNames } from './cron-names.svelte';
 import { echoes } from './echoes.svelte';
 import { outputs } from './outputs.svelte';
@@ -286,6 +287,17 @@ export interface Conversation {
    */
   following: boolean;
   /**
+   * The claude session id this conversation runs as, once the wire says.
+   *
+   * **A saved place is the seat's AND the occupant's.** The id names the
+   * conversation behind the slot: a `/new` or a `/resume` swaps the occupant
+   * and leaves the slot alone, so a place recorded under the id that left is
+   * not the successor's - and a place recorded before any id was known is
+   * the arriving one's, which is why the id is carried here rather than
+   * assumed at the entry. `null` until a frame or a snapshot names it.
+   */
+  sessionId: string | null;
+  /**
    * Whether the reader's OWN send is what armed the follow.
    *
    * **The one arm that may move a reader who is not at the foot**: a send puts
@@ -333,6 +345,7 @@ export const NOTHING: Conversation = {
   pages: 0,
   refused: null,
   following: true,
+  sessionId: null,
   send_armed: false,
   prepends: 0,
   dropped: 0,
@@ -1679,6 +1692,22 @@ export class Chat {
   }
 
   /**
+   * The claude session id the conversation runs as, from whichever frame
+   * first names it.
+   *
+   * Three carriers, and the first one wins in all but a swap: the snapshot's
+   * header on a subscribe, a `connected` update on a new process, and
+   * `session_replaced` on `/new` or `/resume`. A frame with no id, or the id
+   * this record already holds, changes nothing - so this is a no-op on the
+   * frames that are not an occupant announcement.
+   */
+  private noteSession(id: unknown): void {
+    if (typeof id !== 'string' || id === '') return;
+    if (this.held.sessionId === id) return;
+    this.fold((held) => ({ ...held, sessionId: id }));
+  }
+
+  /**
    * The seat's own store, which is how a seat already visited answers.
    *
    * A return subscribes nothing - the subscription is the client's, kept for
@@ -1714,7 +1743,8 @@ export class Chat {
       if (store.state().kind === 'refused') this.askedBySeed();
       return;
     }
-    const data = snapshot as { conversation?: unknown };
+    const data = snapshot as { header?: { session_id?: unknown }; conversation?: unknown };
+    this.noteSession(data.header?.session_id);
     const conversation = (data.conversation ?? {}) as {
       turns?: unknown;
       cursor?: unknown;
@@ -2265,6 +2295,8 @@ export class Chat {
           // (#2420). A reconnect asks a page for itself (the status handler),
           // so its snapshot cannot steal an older ask's in-flight bookkeeping.
           const fresh = !this.held.loaded;
+          const header = (message.data as { header?: { session_id?: unknown } } | null)?.header;
+          this.noteSession(header?.session_id);
           this.heard(runningOf(message.data));
           const data = (message.data ?? {}) as { conversation?: unknown };
           const conversation = (data.conversation ?? {}) as {
@@ -3036,6 +3068,11 @@ export class Chat {
    * new chat the same way: the successor's transcript is its own.
    */
   private replaced(): void {
+    // **The successor is a new conversation, and the old place goes with the
+    // occupant that left.** The column does not re-run its entry on a swap -
+    // the slot is unchanged - so nothing else would drop it, and a later
+    // return would open the successor at a row it never wrote.
+    places.forget(this.key);
     const held = this.inFlight !== null;
     if (held) this.abandoned += 1;
     this.inFlight = null;
@@ -3213,6 +3250,7 @@ export class Chat {
     // login or a logout - so what is drawn is another session's conversation.
     if (variant === 'session_replaced') {
       this.replaced();
+      this.noteSession(textIn(update, 'session_replaced', 'session_id'));
       return;
     }
     // A process that is gone takes its queue with it: no lifecycle frame is
@@ -3228,6 +3266,7 @@ export class Chat {
       this.drained.clear();
       this.emptied.clear();
       this.plainDrawn.clear();
+      this.noteSession(textIn(update, 'connected', 'session_id'));
       return;
     }
     // The answer to the row's own ask, kept where the row reads it: by the

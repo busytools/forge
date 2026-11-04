@@ -13,7 +13,13 @@
 export interface Anchor {
   /** The fold's own key for the row, which the row draws in `data-k`. */
   key: string;
-  /** How far into the row the viewport's top sits, in whole pixels. */
+  /**
+   * How far into the row the viewport's top sits, in pixels.
+   *
+   * **Not rounded.** A frozen column holds the row at the offset it had, and
+   * a device pixel ratio above 1 draws in fractions: rounding a half pixel
+   * away moves the words under the reader's eye on every layout pass.
+   */
   into: number;
 }
 
@@ -39,7 +45,7 @@ export interface RowBox {
 export function anchorAt(rows: Iterable<RowBox>, viewportTop: number): Anchor | null {
   for (const row of rows) {
     if (row.bottom > viewportTop) {
-      return { key: row.key, into: Math.round(viewportTop - row.top) };
+      return { key: row.key, into: viewportTop - row.top };
     }
   }
   return null;
@@ -57,5 +63,5 @@ export function anchorAt(rows: Iterable<RowBox>, viewportTop: number): Anchor | 
  * the column holds, the way it does for every other pin.
  */
 export function anchoredScroll(anchor: Anchor, top: number): number {
-  return Math.round(top + anchor.into);
+  return top + anchor.into;
 }
