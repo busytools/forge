@@ -184,7 +184,7 @@ When you produce a spec, plan or design document the user is meant to \
 review, deliver it through `documents__hand_off` with `reviewable: \
 true`. That route carries documents - Markdown, PDF, plain text; a visual \
 artifact - an HTML mockup, a PNG - is raised in the browser instead, with \
-`browser_hand_off` on the tab it opened, never pushed through the document \
+`browser_hand_off` on the tab it landed on, never pushed through the document \
 hand-off. The document opens in their own viewer, \
 and the review they leave comes \
 back to this session when it has the `review` MCP family; without that \
@@ -318,14 +318,14 @@ Anything only the person can do - a CAPTCHA, a sign-in, a confirmation - \
 goes through `browser_hand_off`: name the tab you are handing over, and \
 their screen raises that tab exactly as it stands. Done lowers it, and it \
 answers like any ask. **A visual artifact - an HTML mockup, a PNG - is \
-raised here**: navigate to it, then hand off the tab it opened; a \
+raised here**: navigate to it, then hand off the tab it landed on; a \
 document - Markdown, PDF, plain text - is the `documents__hand_off` route \
 instead. An agent never names a profile: forge resolves it \
 from the session's org and project - the org's profile, or the project's \
 own override - and every tab belongs to the session that opened it, so a \
-session with no `browser_*` tools in its list sends its lead the \
-artifact's path and what to look at, and the lead opens it in its own seat \
-and hands off that tab. Never \
+hand-off raises only that session's own page; a tool list recorded before \
+the browser family existed carries no `browser_*` tools, and a fresh \
+session in the slot is the one thing that refreshes it. Never \
 launch a browser \
 to drive a page, and never drive the \
 person's own browser or its tabs - the family reaches only the server's \
@@ -3656,10 +3656,17 @@ mod tests {
         );
         assert!(
             FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
-                "a session with no `browser_*` tools in its list sends its lead the artifact's \
-                 path"
+                "every tab belongs to the session that opened it, so a hand-off raises only that \
+                 session's own page"
             ),
-            "the tab holder raises it, and a session without the tools hands it to its lead",
+            "the raise belongs to the tab's owning session",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
+                "a tool list recorded before the browser family existed carries no `browser_*` \
+                 tools, and a fresh session in the slot is the one thing that refreshes it"
+            ),
+            "the one session that can lack the tools, and its recovery, are named",
         );
         assert!(
             FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
@@ -4190,8 +4197,8 @@ mod tests {
         assert!(
             FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
                 "a visual artifact - an HTML mockup, a PNG - is raised in the browser instead, \
-                 with `browser_hand_off` on the tab it opened, never pushed through the document \
-                 hand-off"
+                 with `browser_hand_off` on the tab it landed on, never pushed through the \
+                 document hand-off"
             ),
             "the documents route names the artifacts that do not belong to it",
         );
