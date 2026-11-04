@@ -5,12 +5,13 @@
 //! tests can assert argument handling and error surfacing without a real
 //! workspace.
 
+use std::collections::HashMap;
 use std::sync::{Arc, Weak};
 use std::time::SystemTime;
 
 use forge_connectors::slack::{
-    AuthTest, MENTION_CURSOR, SlackApi, SlackError, SlackHistoryMessage, mention_ids,
-    one_line_excerpt, read_thread, shared_messages, thread_parent, user_display_name,
+    AuthTest, MENTION_CURSOR, SlackApi, SlackError, SlackHistoryMessage, flatten_mrkdwn,
+    mention_ids, one_line_excerpt, read_thread, shared_messages, thread_parent, user_display_name,
 };
 use forge_primitives::slack::{
     SlackBookmark, SlackConversation, SlackDraft, SlackPerson, SlackPin, SlackSearchMatch,
@@ -572,30 +573,23 @@ impl ProdSlackFacade {
     ) {
         let host = Arc::new(crate::slack::SlackSubsystemHost::new(ws));
         // A tag lookup is a Slack call, so they run beside the thread read
-        // rather than one after another in front of the park. `tagged` is
-        // rebuilt in mention order once they land.
+        // rather than one after another in front of the park. The parent's
+        // own mentions join the same set once it lands, so one lookup names
+        // a person whether the draft tags them or the quoted parent does.
         let mut lookups = Vec::new();
+        let mut looked_up: Vec<String> = Vec::new();
         for id in mention_ids(&draft.text) {
-            let host = Arc::clone(&host);
-            let api = Arc::clone(api);
-            let workspace = label.to_owned();
-            let user = id.clone();
-            lookups.push((
-                id,
-                tokio::spawn(async move {
-                    user_display_name(host.as_ref(), api.as_ref(), &workspace, &user).await
-                }),
-            ));
+            lookups.push((id.clone(), Self::look_up_user(&host, api, label, id.clone())));
+            looked_up.push(id);
         }
+        let mut parent = None;
         if let Some(ts) = draft.thread_ts.clone() {
-            draft.thread = match thread_parent(api.as_ref(), conversation, &ts).await {
+            parent = match thread_parent(api.as_ref(), conversation, &ts).await {
                 // A read anchored at a message inside a thread answers the
                 // thread's parent instead. Naming it would label an edit or
                 // a delete with the wrong message, so only an exact ts is
                 // the message the card is about; anything else draws the ts.
-                Ok(Some(parent)) if parent.ts == ts => {
-                    Self::thread_name(host.as_ref(), api.as_ref(), label, &parent).await
-                }
+                Ok(Some(parent)) if parent.ts == ts => Some(parent),
                 Ok(_) => None,
                 Err(error) => {
                     // A raw ts on the card is the only other symptom, so a
@@ -631,36 +625,78 @@ impl ProdSlackFacade {
                 }
             };
         }
-        let mut tagged = Vec::with_capacity(lookups.len());
-        for (id, lookup) in lookups {
-            let name = lookup.await.unwrap_or(None);
-            tagged.push(SlackPerson { id, name });
+        if let Some(parent) = &parent {
+            for id in mention_ids(&parent.text) {
+                if !looked_up.contains(&id) {
+                    lookups.push((id.clone(), Self::look_up_user(&host, api, label, id.clone())));
+                    looked_up.push(id);
+                }
+            }
+            // The author's name joins the same batch, so naming the thread
+            // does not cost a Slack call of its own. A bot already names
+            // itself in the payload, so only a user author is looked up.
+            let bot_named = parent.bot_name.as_deref().is_some_and(|name| !name.is_empty());
+            if !bot_named
+                && let Some(user) = parent.user.as_deref().filter(|user| !user.is_empty())
+                && !looked_up.iter().any(|seen| seen.as_str() == user)
+            {
+                lookups.push((
+                    user.to_owned(),
+                    Self::look_up_user(&host, api, label, user.to_owned()),
+                ));
+                looked_up.push(user.to_owned());
+            }
         }
-        draft.tagged = tagged;
+        let mut names = HashMap::new();
+        for (id, lookup) in lookups {
+            if let Some(name) = lookup.await.unwrap_or(None) {
+                names.insert(id, name);
+            }
+        }
+        draft.tagged = mention_ids(&draft.text)
+            .into_iter()
+            .map(|id| SlackPerson { name: names.get(&id).cloned(), id })
+            .collect();
+        draft.thread = parent.as_ref().and_then(|parent| Self::thread_name(parent, &names));
+    }
+
+    /// One user-name lookup on its own task, so a batch of them overlaps the
+    /// thread read in front of the park.
+    fn look_up_user(
+        host: &Arc<crate::slack::SlackSubsystemHost>,
+        api: &Arc<dyn SlackApi>,
+        label: &str,
+        user: String,
+    ) -> tokio::task::JoinHandle<Option<String>> {
+        let host = Arc::clone(host);
+        let api = Arc::clone(api);
+        let workspace = label.to_owned();
+        tokio::spawn(async move {
+            user_display_name(host.as_ref(), api.as_ref(), &workspace, &user).await
+        })
     }
 
     /// The thread name drawn for `parent`: its author and one line of its
-    /// text. `None` when the parent names no author at all, which leaves the
-    /// raw ts as the honest thing to draw.
-    async fn thread_name(
-        host: &crate::slack::SlackSubsystemHost,
-        api: &dyn SlackApi,
-        label: &str,
+    /// text flattened to prose. `None` when the parent names no author at
+    /// all, which leaves the raw ts as the honest thing to draw.
+    fn thread_name(
         parent: &SlackHistoryMessage,
+        names: &HashMap<String, String>,
     ) -> Option<SlackThreadName> {
-        let author = match parent.bot_name.as_deref().filter(|name| !name.is_empty()) {
+        let author = if let Some(name) = parent.bot_name.as_deref().filter(|name| !name.is_empty())
+        {
             // A bot names itself in the payload; that is its display name.
-            Some(name) => name.to_owned(),
-            None => match parent.user.as_deref().filter(|user| !user.is_empty()) {
-                Some(user) => user_display_name(host, api, label, user)
-                    .await
-                    .unwrap_or_else(|| user.to_owned()),
-                None => return None,
-            },
+            name.to_owned()
+        } else {
+            let user = parent.user.as_deref().filter(|user| !user.is_empty())?;
+            names.get(user).cloned().unwrap_or_else(|| user.to_owned())
         };
         Some(SlackThreadName {
             author,
-            excerpt: one_line_excerpt(&parent.text, Self::THREAD_EXCERPT_CHARS),
+            excerpt: one_line_excerpt(
+                &flatten_mrkdwn(&parent.text, names, Self::THREAD_EXCERPT_CHARS),
+                Self::THREAD_EXCERPT_CHARS,
+            ),
         })
     }
 
@@ -2586,6 +2622,138 @@ token = "y"
             }],
             "the tagged person is named, not left as an id",
         );
+
+        let id = wait_for_draft(&ws).await;
+        ws.resolve_slack_draft(id, &caller(), answered(false));
+        let _ = task.await;
+    }
+
+    /// A mention inside the quoted parent is named by the same lookup the
+    /// draft's own tags use, so the line reads as prose rather than markup.
+    #[tokio::test]
+    async fn a_parents_mention_reads_as_its_name_in_the_excerpt() {
+        let (facade, ws, api, _rx) = facade_with_recording_slack();
+        api.seed_conversation("C1", "ops");
+        api.seed_replies(
+            "C1",
+            "100.0",
+            vec![parent_message("100.0", "U2", "<@U9> the deploy is green")],
+        );
+
+        let task = tokio::spawn({
+            let facade = facade.clone();
+            async move { facade.post(&caller(), threaded_post("C1", "100.0", "hello")).await }
+        });
+
+        assert_eq!(
+            parked_draft(&ws).await.thread.map(|thread| thread.excerpt),
+            Some("@tester the deploy is green".to_owned()),
+            "the parent's mention draws its name, not the raw id",
+        );
+        let id = wait_for_draft(&ws).await;
+        ws.resolve_slack_draft(id, &caller(), answered(false));
+        let _ = task.await;
+    }
+
+    /// A mention the lookup cannot name keeps its id, exactly as a tag does,
+    /// so nothing is invented.
+    #[tokio::test]
+    async fn a_parents_mention_keeps_its_id_when_the_lookup_fails() {
+        let (facade, ws, api, _rx) = facade_with_recording_slack();
+        api.seed_conversation("C1", "ops");
+        api.fail_user_info("U9");
+        api.seed_replies(
+            "C1",
+            "100.0",
+            vec![parent_message("100.0", "U2", "<@U9> the deploy is green")],
+        );
+
+        let task = tokio::spawn({
+            let facade = facade.clone();
+            async move { facade.post(&caller(), threaded_post("C1", "100.0", "hello")).await }
+        });
+
+        assert_eq!(
+            parked_draft(&ws).await.thread.map(|thread| thread.excerpt),
+            Some("U9 the deploy is green".to_owned()),
+            "an unnamed mention keeps its id rather than a guessed name",
+        );
+        let id = wait_for_draft(&ws).await;
+        ws.resolve_slack_draft(id, &caller(), answered(false));
+        let _ = task.await;
+    }
+
+    /// Only the draft's own text tags people: a mention in the quoted parent
+    /// is named in the excerpt but is not added to `tagged`.
+    #[tokio::test]
+    async fn only_the_drafts_own_mentions_are_tagged() {
+        let (facade, ws, api, _rx) = facade_with_recording_slack();
+        api.seed_conversation("C1", "ops");
+        api.seed_replies(
+            "C1",
+            "100.0",
+            vec![parent_message("100.0", "U2", "<@U8> the deploy is green")],
+        );
+
+        let task = tokio::spawn({
+            let facade = facade.clone();
+            async move { facade.post(&caller(), threaded_post("C1", "100.0", "hello <@U9>")).await }
+        });
+
+        let draft = parked_draft(&ws).await;
+        assert_eq!(
+            draft.tagged,
+            vec![SlackPerson { id: "U9".to_owned(), name: Some("tester".to_owned()) }],
+            "a parent's mention is named in the excerpt, not tagged on the draft",
+        );
+        assert_eq!(
+            draft.thread.map(|thread| thread.excerpt),
+            Some("@tester the deploy is green".to_owned()),
+            "the parent's mention still reads as its name",
+        );
+        let id = wait_for_draft(&ws).await;
+        ws.resolve_slack_draft(id, &caller(), answered(false));
+        let _ = task.await;
+    }
+
+    /// The quote is bounded after its markup is flattened, so the bound is a
+    /// budget of prose and the cut lands on a word.
+    #[tokio::test]
+    async fn a_quoted_parent_is_bounded_after_its_markup_is_flattened() {
+        let (facade, ws, api, _rx) = facade_with_recording_slack();
+        api.seed_conversation("C1", "ops");
+        api.seed_replies(
+            "C1",
+            "100.0",
+            vec![parent_message(
+                "100.0",
+                "U2",
+                "*<https://example.com|the staging deploy>* is <@U9> and every check is green \
+                 while the p99 is still high and the canary holds at one percent",
+            )],
+        );
+
+        let task = tokio::spawn({
+            let facade = facade.clone();
+            async move { facade.post(&caller(), threaded_post("C1", "100.0", "hello")).await }
+        });
+
+        let excerpt = parked_draft(&ws).await.thread.expect("the thread is named").excerpt;
+        assert!(excerpt.ends_with("..."), "the flattened line is cut: {excerpt:?}");
+        assert!(
+            excerpt.chars().count() <= ProdSlackFacade::THREAD_EXCERPT_CHARS + 3,
+            "the bound holds after flattening: {excerpt:?}",
+        );
+        assert!(
+            excerpt.chars().count() > ProdSlackFacade::THREAD_EXCERPT_CHARS - 5,
+            "the budget counts prose, so markup did not consume the cut: {excerpt:?}",
+        );
+        assert!(
+            !excerpt.contains('<') && !excerpt.contains('*'),
+            "the bound is counted on prose, not raw markup: {excerpt:?}",
+        );
+        let kept = excerpt.strip_suffix("...").expect("the mark is there");
+        assert!(!kept.ends_with(' '), "the cut lands at a word boundary: {excerpt:?}");
 
         let id = wait_for_draft(&ws).await;
         ws.resolve_slack_draft(id, &caller(), answered(false));

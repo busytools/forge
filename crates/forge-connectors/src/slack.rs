@@ -7,6 +7,7 @@
 //! status, and it carries `Retry-After`.
 
 use std::collections::{HashMap, HashSet};
+use std::hash::BuildHasher;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -446,15 +447,142 @@ pub fn mention_ids(text: &str) -> Vec<String> {
         let after = &rest[start + 2..];
         let Some(end) = after.find('>') else { break };
         let id = after[..end].split('|').next().unwrap_or_default();
-        if id.chars().next().is_some_and(|first| first.is_ascii_alphabetic())
-            && id.chars().all(|ch| ch.is_ascii_alphanumeric())
-            && !ids.iter().any(|seen| seen == id)
-        {
+        if is_user_id(id) && !ids.iter().any(|seen| seen == id) {
             ids.push(id.to_owned());
         }
         rest = &after[end + 1..];
     }
     ids
+}
+
+/// Whether a token is a Slack user id rather than some other `<@...>` text.
+fn is_user_id(id: &str) -> bool {
+    id.chars().next().is_some_and(|first| first.is_ascii_alphabetic())
+        && id.chars().all(|ch| ch.is_ascii_alphanumeric())
+}
+
+/// The prose a message reads as when a card quotes it: Slack's mrkdwn is
+/// flattened - a mention is `@name` from `names` (the bare id when it
+/// cannot be named), a link its label or address, and `*text*` its text.
+/// A token this does not understand is left exactly as written. Flattening
+/// stops once `limit` non-space characters have been emitted, which is
+/// enough for the excerpt bound; a single long token still scans the text
+/// after the bound.
+pub fn flatten_mrkdwn<S: BuildHasher>(
+    text: &str,
+    names: &HashMap<String, String, S>,
+    limit: usize,
+) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len().min(limit.saturating_mul(2)));
+    let mut non_space = 0usize;
+    let mut index = 0;
+    while index < chars.len() && non_space <= limit {
+        match chars[index] {
+            // Only a recognised token is markup; a literal `<` in the text
+            // is not a bracket that runs to the next `>` somewhere later.
+            '<' => {
+                let token = chars[index + 1..]
+                    .iter()
+                    .position(|&ch| ch == '>')
+                    .map(|offset| index + 1 + offset)
+                    .filter(|end| is_markup_token(&chars[index + 1..*end]));
+                if let Some(end) = token {
+                    let inner: String = chars[index + 1..end].iter().collect();
+                    let flat = flatten_token(&inner, names);
+                    non_space += flat.chars().filter(|ch| !ch.is_whitespace()).count();
+                    out.push_str(&flat);
+                    index = end + 1;
+                } else {
+                    out.push('<');
+                    non_space += 1;
+                    index += 1;
+                }
+            }
+            // A `*` pair is bold only where Slack would read it as bold; a
+            // glob such as `src/*.rs` keeps both stars.
+            '*' if opens_bold(&chars, index) => {
+                if let Some(close) = first_bold_closer(&chars, index) {
+                    let inner: String = chars[index + 1..close].iter().collect();
+                    let flat = flatten_mrkdwn(&inner, names, limit);
+                    non_space += flat.chars().filter(|ch| !ch.is_whitespace()).count();
+                    out.push_str(&flat);
+                    index = close + 1;
+                } else {
+                    out.push('*');
+                    non_space += 1;
+                    index += 1;
+                }
+            }
+            ch => {
+                if !ch.is_whitespace() {
+                    non_space += 1;
+                }
+                out.push(ch);
+                index += 1;
+            }
+        }
+    }
+    out
+}
+
+/// A `*` opens a bold span only at a word boundary, with text after it and
+/// no doubled marker either side - the `**` of a literal and the `*` of a
+/// glob are literals rather than openers. The rule mirrors `strip_emphasis`
+/// in `forge-server`'s `envelope.rs`; a change there should move here.
+fn opens_bold(chars: &[char], at: usize) -> bool {
+    let before = at.checked_sub(1).and_then(|p| chars.get(p));
+    let after = chars.get(at + 1).copied();
+    before.is_none_or(|p| !p.is_alphanumeric() && *p != '*')
+        && after.is_some_and(|n| !n.is_whitespace() && n != '*')
+}
+
+/// The first `*` after `open` able to close a span opened there: non-space
+/// before it, no word character after it, and no ability to open a span of
+/// its own - otherwise the two stars of a pair of globs would close a span
+/// between them.
+fn first_bold_closer(chars: &[char], open: usize) -> Option<usize> {
+    ((open + 1)..chars.len()).find(|&j| {
+        chars[j] == '*'
+            && chars.get(j - 1).is_some_and(|p| !p.is_whitespace())
+            && chars.get(j + 1).is_none_or(|n| !n.is_alphanumeric())
+            && !opens_bold(chars, j)
+    })
+}
+
+/// Whether `<token>` is one of Slack's markup tokens rather than text that
+/// happens to sit between two brackets.
+fn is_markup_token(token: &[char]) -> bool {
+    match token.first().copied() {
+        Some('@' | '#' | '!') => true,
+        Some('h') => {
+            token.starts_with(&['h', 't', 't', 'p', 's', ':', '/', '/'])
+                || token.starts_with(&['h', 't', 't', 'p', ':', '/', '/'])
+        }
+        Some('m') => token.starts_with(&['m', 'a', 'i', 'l', 't', 'o', ':']),
+        _ => false,
+    }
+}
+
+/// One `<...>` token flattened. A mention takes its name from `names`, a
+/// link its label or address; a channel reference, a broadcast and any
+/// token this does not recognise keep their own text.
+fn flatten_token<S: BuildHasher>(inner: &str, names: &HashMap<String, String, S>) -> String {
+    if let Some(rest) = inner.strip_prefix('@') {
+        let id = rest.split('|').next().unwrap_or_default();
+        if is_user_id(id) {
+            return names.get(id).map_or_else(|| id.to_owned(), |name| format!("@{name}"));
+        }
+        return format!("<{inner}>");
+    }
+    if inner.starts_with('#') || inner.starts_with('!') {
+        return format!("<{inner}>");
+    }
+    match inner.split_once('|') {
+        Some((_, label)) if !label.is_empty() => label.to_owned(),
+        Some((address, _)) => address.to_owned(),
+        None => inner.to_owned(),
+    }
 }
 
 /// One flattened line of a message's text, for a card that quotes it: the
@@ -3532,6 +3660,123 @@ mod tests {
         assert!(
             mention_ids("<#C1> <https://example.com|the doc> <@> <@123>").is_empty(),
             "a channel, a link, an empty mention and a non-user token tag nobody",
+        );
+    }
+
+    /// A quoted parent reads as prose: a mention is the name the tag lookup
+    /// resolved (its id when it could not), a link its label or address, and
+    /// bold loses its stars. Literal asterisks stay literal.
+    #[test]
+    fn a_quoted_excerpt_flattens_its_slack_markup() {
+        let names = HashMap::from([("U2".to_owned(), "bob".to_owned())]);
+        assert_eq!(
+            flatten_mrkdwn("<@U2> and <@U2|carol> and <@U9>", &names, 80),
+            "@bob and @bob and U9",
+            "a named mention draws its name; an unnamed one keeps its id",
+        );
+        assert_eq!(
+            flatten_mrkdwn(
+                "<https://example.com/docs|the docs> and <https://example.com>",
+                &names,
+                80,
+            ),
+            "the docs and https://example.com",
+            "a titled link draws its label, and a bare link its address",
+        );
+        assert_eq!(
+            flatten_mrkdwn("<https://example.com|>", &names, 80),
+            "https://example.com",
+            "an empty label draws the address",
+        );
+        assert_eq!(
+            flatten_mrkdwn("*<https://example.com|the docs>* and *green*", &names, 80),
+            "the docs and green",
+            "a link inside bold flattens too, and bold loses its stars",
+        );
+        assert_eq!(
+            flatten_mrkdwn("src/*.rs and tests/*.rs", &names, 80),
+            "src/*.rs and tests/*.rs",
+            "a glob keeps its stars rather than reading as bold",
+        );
+        assert_eq!(
+            flatten_mrkdwn("2 * 3 * 4 and **bold**", &names, 80),
+            "2 * 3 * 4 and **bold**",
+            "a spaced star and a doubled marker are literals, not bold",
+        );
+        assert_eq!(
+            flatten_mrkdwn("a < b, and <#C1|general> with <!here>", &names, 80),
+            "a < b, and <#C1|general> with <!here>",
+            "a channel reference, a broadcast and a literal bracket keep their own text",
+        );
+        assert_eq!(
+            flatten_mrkdwn("<!here|*x*>", &names, 80),
+            "<!here|*x*>",
+            "a labelled broadcast is left whole, markup and all",
+        );
+        assert_eq!(
+            flatten_mrkdwn("<@|broken> and <@123>", &names, 80),
+            "<@|broken> and <@123>",
+            "an unrecognised mention keeps its brackets",
+        );
+    }
+
+    /// The bound counts characters on the flattened text, so a long parent is
+    /// cut as prose at a word boundary and never mid-glyph.
+    #[test]
+    fn an_excerpt_is_bounded_after_flattening() {
+        let names = HashMap::from([("U2".to_owned(), "bob".to_owned())]);
+        let parent = "*<https://example.com|the staging deploy>* is <@U2> and every check is \
+                      green while the p99 is still high and the canary holds at one percent";
+        let flat = flatten_mrkdwn(parent, &names, 80);
+        let excerpt = one_line_excerpt(&flat, 80);
+        assert!(excerpt.ends_with("..."), "the line is cut: {excerpt:?}");
+        assert!(excerpt.chars().count() <= 83, "the bound holds after flattening: {excerpt:?}");
+        assert!(
+            !excerpt.contains('<') && !excerpt.contains('*'),
+            "no markup survives the flattening: {excerpt:?}",
+        );
+        let kept = excerpt.strip_suffix("...").expect("the mark is there");
+        assert!(
+            flat.starts_with(kept) && !kept.ends_with(' '),
+            "the cut is the flattened opening at a word boundary: {excerpt:?}",
+        );
+
+        // Glyphs count as characters, not bytes: a multibyte run is cut at
+        // the same place a Latin one would be.
+        let multibyte = format!("*{}*", "ééé ".repeat(30).trim_end());
+        let flat = flatten_mrkdwn(&multibyte, &names, 80);
+        let excerpt = one_line_excerpt(&flat, 80);
+        assert!(excerpt.ends_with("..."), "the glyph run is cut: {excerpt:?}");
+        assert!(
+            excerpt.chars().count() <= 83,
+            "the char bound holds on multibyte text: {excerpt:?}"
+        );
+        let kept = excerpt.strip_suffix("...").expect("the mark is there");
+        assert!(
+            flat.starts_with(kept) && !kept.ends_with(' '),
+            "the cut lands on a word boundary in multibyte text: {excerpt:?}",
+        );
+        assert!(
+            kept.chars().count() >= 76,
+            "the cut keeps the character budget rather than a byte count: {excerpt:?}",
+        );
+        assert!(!excerpt.contains('*'), "the bold markers are gone: {excerpt:?}");
+    }
+
+    /// The early stop counts characters, not bytes: a multibyte span inside
+    /// the budget still lets the prose after it through.
+    #[test]
+    fn the_early_stop_counts_characters_not_bytes() {
+        let names: HashMap<String, String> = HashMap::new();
+        let bold = format!("*{}* and more words", "é".repeat(50));
+        assert!(
+            flatten_mrkdwn(&bold, &names, 80).ends_with(" and more words"),
+            "a multibyte bold span that fits the budget does not end the walk",
+        );
+        let link = format!("<https://example.com|{}> and more words", "é".repeat(50));
+        assert!(
+            flatten_mrkdwn(&link, &names, 80).ends_with(" and more words"),
+            "a multibyte link label that fits the budget does not end the walk",
         );
     }
 
