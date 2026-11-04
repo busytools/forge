@@ -3775,6 +3775,76 @@ describe('the read, and the answer a frame has outrun', () => {
   });
 
   /**
+   * **An ending is this view's own observation, and a read carries none.**
+   * A prompt queued when its process died leaves one dim line where its card
+   * was - and the seat's own resume answers with a record whose queue is
+   * empty, which states the same fact through a carrier that never saw the
+   * ending. Dropped there, the words reach no surface at all: the card went
+   * with the process, and the line goes with the read.
+   */
+  it('keeps the ending this view watched leave across a whole-record answer', () => {
+    const connection = drivable();
+    const page = watch(connection);
+    page.land(snapshotOf(LEAD, {}));
+    page.land(
+      updateOf({ prompt_queued: { key: LEAD, uuid: 'p1', source: 'you', text: 'doomed words' } }),
+    );
+    page.land(
+      updateOf({ connection_failed: { key: LEAD, message: 'the process exited', fatal: false } }),
+    );
+    paint();
+    expect(page.read().wire?.queue_ended, 'precondition: the death wrote the ending').toEqual({
+      text: 'doomed words',
+      state: 'discarded',
+    });
+
+    // The seat resumes: the answer carries what is waiting, which is nothing,
+    // and an ending is not on it. A field of its own moves, so "the ending was
+    // carried" and "the answer was ignored" cannot read alike.
+    page.land(snapshotOf(LEAD, { state: { scan_cwd: '/returned' } }));
+
+    expect(page.read().wire?.state.scan_cwd, 'the answer itself was not taken').toBe('/returned');
+    expect(
+      page.read().wire?.queue_ended,
+      'the ending vanished from the record, and its words draw nowhere',
+    ).toEqual({ text: 'doomed words', state: 'discarded' });
+    page.stop();
+  });
+
+  /**
+   * **A read whose queue has rows is a queue that has moved on**, so the
+   * ending it carries from before belongs to a card no longer on the record.
+   * Carried anyway, the dim line stands beside a fresh row it has nothing to
+   * do with.
+   */
+  it('drops the ending when the answer carries a queue', () => {
+    const connection = drivable();
+    const page = watch(connection);
+    page.land(snapshotOf(LEAD, {}));
+    page.land(
+      updateOf({ prompt_queued: { key: LEAD, uuid: 'p1', source: 'you', text: 'doomed words' } }),
+    );
+    page.land(
+      updateOf({ connection_failed: { key: LEAD, message: 'the process exited', fatal: false } }),
+    );
+    paint();
+    expect(page.read().wire?.queue_ended, 'precondition: the death wrote the ending').not.toBeNull();
+
+    page.land(
+      snapshotOf(LEAD, {
+        state: { scan_cwd: '/returned', queue: [{ uuid: 'p2', text: 'next words', source: 'you' }] },
+      }),
+    );
+
+    expect(page.read().wire?.queue, 'the answer itself was not taken').toHaveLength(1);
+    expect(
+      page.read().wire?.queue_ended,
+      'an ending stood beside the queue that replaced it',
+    ).toBeNull();
+    page.stop();
+  });
+
+  /**
    * A socket that leaves `open` takes its take with it: the core drops a take
    * whose reader went away, so a record that kept drawing one would be a
    * recording whose only offer is a refusal - and one no later answer clears,
