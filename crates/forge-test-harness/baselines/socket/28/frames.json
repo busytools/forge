@@ -19,7 +19,6 @@
     "SettingsRefused": "settings_refused",
     "SettingsSaved": "settings_saved",
     "Snapshot": "snapshot",
-    "TerminalView": "terminal_view",
     "Update": "update"
   },
   "session_update": {
@@ -90,12 +89,11 @@
     "SubagentCardsChanged": "subagent_cards_changed",
     "SubagentsChanged": "subagents_changed",
     "TasksChanged": "tasks_changed",
-    "TerminalChanged": "terminal_changed",
-    "TerminalHandOffPending": "terminal_hand_off_pending",
-    "TerminalHandOffResolved": "terminal_hand_off_resolved",
     "TurnCancelled": "turn_cancelled",
     "TurnComplete": "turn_complete",
     "TurnError": "turn_error",
+    "VaultAskPending": "vault_ask_pending",
+    "VaultAskResolved": "vault_ask_resolved",
     "VoiceAudio": "voice_audio",
     "VoiceModeState": "voice_mode_state",
     "WorkChanged": "work_changed",
@@ -151,7 +149,7 @@
     "RespondQuestion": "respond_question",
     "RespondSettingsWrite": "respond_settings_write",
     "RespondSlackPost": "respond_slack_post",
-    "RespondTerminalHandOff": "respond_terminal_hand_off",
+    "RespondVaultAsk": "respond_vault_ask",
     "ResumeSession": "resume_session",
     "SetDictateOverride": "set_dictate_override",
     "SetMode": "set_mode",
@@ -195,11 +193,6 @@
     "SettingsEdit": "settings_edit",
     "Showing": "showing",
     "Subscribe": "subscribe",
-    "TerminalClose": "terminal_close",
-    "TerminalDetach": "terminal_detach",
-    "TerminalPause": "terminal_pause",
-    "TerminalResize": "terminal_resize",
-    "TerminalView": "terminal_view",
     "Unsubscribe": "unsubscribe"
   },
   "payload_sampled": {
@@ -1300,6 +1293,62 @@
         "enabled",
         "models_dir"
       ]
+    },
+    "VaultAskPending": {
+      "": [
+        "kind",
+        "seq",
+        "span",
+        "update"
+      ],
+      "/update": [
+        "vault_ask_pending"
+      ],
+      "/update/vault_ask_pending": [
+        "draft",
+        "key"
+      ],
+      "/update/vault_ask_pending/draft": [
+        "attachment",
+        "field",
+        "id",
+        "item_id",
+        "item_name",
+        "masked_diff",
+        "needs_unlock",
+        "summary",
+        "tool"
+      ],
+      "/update/vault_ask_pending/draft/attachment": [
+        "name",
+        "size"
+      ],
+      "/update/vault_ask_pending/key": [
+        "label",
+        "org",
+        "project"
+      ]
+    },
+    "VaultAskResolved": {
+      "": [
+        "kind",
+        "seq",
+        "span",
+        "update"
+      ],
+      "/update": [
+        "vault_ask_resolved"
+      ],
+      "/update/vault_ask_resolved": [
+        "ending",
+        "id",
+        "key"
+      ],
+      "/update/vault_ask_resolved/key": [
+        "label",
+        "org",
+        "project"
+      ]
     }
   },
   "client_sampled": {
@@ -1534,6 +1583,26 @@
         "project"
       ]
     },
+    "RespondVaultAsk": {
+      "": [
+        "respond_vault_ask"
+      ],
+      "/respond_vault_ask": [
+        "answer",
+        "id",
+        "key"
+      ],
+      "/respond_vault_ask/answer": [
+        "decision",
+        "master_password",
+        "two_factor"
+      ],
+      "/respond_vault_ask/key": [
+        "label",
+        "org",
+        "project"
+      ]
+    },
     "TaskReopen": {
       "": [
         "task_reopen"
@@ -1603,14 +1672,6 @@
       {
         "name": "BrowserAudio",
         "tag": 2
-      },
-      {
-        "name": "TerminalOutput",
-        "tag": 4
-      },
-      {
-        "name": "TerminalInput",
-        "tag": 5
       }
     ],
     "fixtures": {

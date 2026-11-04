@@ -4449,6 +4449,7 @@ fn refusal_tag(refusal: &DispatchError) -> &'static str {
         DispatchError::NoBrowserHandOffWaiting { .. } => "respond_browser_hand_off",
         DispatchError::NoTerminalHandOffWaiting { .. } => "respond_terminal_hand_off",
         DispatchError::NoSettingsWriteWaiting { .. } => "respond_settings_write",
+        DispatchError::NoVaultAskWaiting { .. } => "respond_vault_ask",
         DispatchError::NoDocumentHandOffWaiting { .. } => "respond_document_hand_off",
         _ => "dispatch",
     }
@@ -4669,9 +4670,10 @@ mod tests {
             "respond_browser_hand_off",
         );
         assert_eq!(
-            refusal_tag(&DispatchError::NoSettingsWriteWaiting { key, id }),
+            refusal_tag(&DispatchError::NoSettingsWriteWaiting { key: key.clone(), id }),
             "respond_settings_write",
         );
+        assert_eq!(refusal_tag(&DispatchError::NoVaultAskWaiting { key, id }), "respond_vault_ask",);
         assert_eq!(refusal_tag(&DispatchError::NoActiveSession), "dispatch");
     }
 

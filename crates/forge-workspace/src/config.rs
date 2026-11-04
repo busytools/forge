@@ -51,6 +51,53 @@ impl std::fmt::Debug for HuggingfaceSettings {
     }
 }
 
+/// Optional `[vault]` section: the Vaultwarden account the vault family
+/// talks to. Both `url` and `email` are required when the section is
+/// present; there is no built-in default, because `forge.toml` is the one
+/// source of truth for the account.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct VaultSection {
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub email: Option<String>,
+}
+
+/// The validated `[vault]` section.
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct VaultConfig {
+    pub url: String,
+    pub email: String,
+}
+
+/// Hand-written because the email is the account's identity and the salt the
+/// master key derives with.
+impl std::fmt::Debug for VaultConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VaultConfig").field("url", &self.url).field("email", &"[redacted]").finish()
+    }
+}
+
+impl VaultSection {
+    /// Validate the section, naming the first missing key by name so a
+    /// half-written table fails the load rather than a tool call.
+    pub(crate) fn into_config(self) -> Result<Option<VaultConfig>, String> {
+        let url = self.url.unwrap_or_default().trim().to_owned();
+        let email = self.email.unwrap_or_default().trim().to_owned();
+        if url.is_empty() {
+            return Err("`url` is required when `[vault]` is present".to_owned());
+        }
+        if !url.starts_with("https://") {
+            return Err("`url` must be an https:// URL; http is refused".to_owned());
+        }
+        if email.is_empty() {
+            return Err("`email` is required when `[vault]` is present".to_owned());
+        }
+        Ok(Some(VaultConfig { url, email }))
+    }
+}
+
 /// The whole `forge.toml`. Unknown keys are rejected so a mistyped
 /// section name fails the load instead of being ignored.
 #[derive(Deserialize)]
@@ -92,6 +139,10 @@ struct ForgeToml {
     /// tools are never injected.
     #[serde(default)]
     systemone: Option<forge_system_one::SystemOneSection>,
+    /// Optional `[vault]` section - the Vaultwarden account the vault
+    /// family talks to. Absent -> the family is not injected.
+    #[serde(default)]
+    vault: Option<VaultSection>,
     /// Optional `[[slack]]` sections - one entry per workspace. Absent or
     /// empty → the connector stays dormant.
     #[serde(default)]
@@ -181,6 +232,7 @@ impl std::fmt::Debug for ForgeToml {
             .field("huggingface", &self.huggingface)
             .field("gotify", &self.gotify)
             .field("systemone", &self.systemone)
+            .field("vault", &self.vault)
             .field("slack", &self.slack)
             .field("plugins", &self.plugins)
             .field("gateway", &self.gateway)
@@ -518,7 +570,7 @@ struct ProjectEntry {
     /// starts with `~`; a relative one is a load error. Absent ->
     /// empty.
     #[serde(default)]
-    vault_roots: Vec<String>,
+    document_roots: Vec<String>,
     /// This project's handoff trigger, layered over the top-level table.
     /// Every key is optional, so a project sets the one it disagrees on.
     #[serde(default)]
@@ -548,7 +600,7 @@ impl std::fmt::Debug for ProjectEntry {
             .field("max_workers", &self.max_workers)
             .field("env", &env)
             .field("env_file", &self.env_file)
-            .field("vault_roots", &self.vault_roots)
+            .field("document_roots", &self.document_roots)
             .field("handoff", &self.handoff)
             .field("browser_profile", &self.browser_profile)
             .field("slack", &self.slack)
@@ -787,6 +839,9 @@ pub(crate) struct LoadedConfig {
     /// `[systemone]` decision-model endpoint, or `None` when the
     /// section is absent or disabled (the tools are not injected).
     pub systemone: Option<forge_system_one::SystemOneConfig>,
+    /// `[vault]` account, or `None` when the section is absent (the family
+    /// is not injected).
+    pub vault: Option<VaultConfig>,
     /// `[[slack]]` workspaces. An absent or empty list leaves the
     /// connector dormant, the way an absent `[gotify]` does.
     pub slack: Vec<SlackConfig>,
@@ -844,6 +899,7 @@ impl std::fmt::Debug for LoadedConfig {
             .field("huggingface", &self.huggingface)
             .field("gotify", &self.gotify)
             .field("systemone", &self.systemone)
+            .field("vault", &self.vault)
             .field("slack", &self.slack)
             .field("plugins", &self.plugins)
             .field("gateway_port", &self.gateway_port)
@@ -961,9 +1017,9 @@ pub(crate) struct LoadedProject {
     /// spawns. Resolved once at load; absent key resolves to `auto`.
     pub permission_mode: PermissionMode,
     /// The extra roots the document read accepts beyond a session's own
-    /// tree: the entry's `vault_roots` with `~` expanded. Empty for a
+    /// tree: the entry's `document_roots` with `~` expanded. Empty for a
     /// project that declares none.
-    pub vault_roots: Vec<PathBuf>,
+    pub document_roots: Vec<PathBuf>,
     /// This project's handoff table, unresolved; `None` inherits the
     /// top-level one entirely.
     pub handoff: Option<HandoffSettings>,
@@ -996,7 +1052,7 @@ impl std::fmt::Debug for LoadedProject {
             .field("env_file", &self.env_file)
             .field("max_workers", &self.max_workers)
             .field("permission_mode", &self.permission_mode)
-            .field("vault_roots", &self.vault_roots)
+            .field("document_roots", &self.document_roots)
             .field("handoff", &self.handoff)
             .field("browser_profile", &self.browser_profile)
             .field("slack_workspace", &self.slack_workspace)
@@ -1057,6 +1113,7 @@ impl LoadedConfig {
             tts: crate::tts::TtsSettings::default(),
             huggingface: HuggingfaceSettings::default(),
             gotify: None,
+            vault: None,
             systemone: None,
             slack: Vec::new(),
             plugins: PluginSettings::default(),
@@ -1509,8 +1566,8 @@ pub(crate) fn load_from_text(path: PathBuf, raw: &str) -> Result<LoadedConfig, W
                 return Err(WorkspaceError::DuplicateProject { path, name: project_entry.name });
             }
             let permission_mode = project_entry.permission_mode(&path, &project_entry.name)?;
-            let vault_roots = project_entry
-                .vault_roots
+            let document_roots = project_entry
+                .document_roots
                 .iter()
                 .map(|root| {
                     // A bare `~` is home, the same intent as `~/`; anything
@@ -1520,7 +1577,7 @@ pub(crate) fn load_from_text(path: PathBuf, raw: &str) -> Result<LoadedConfig, W
                     } else {
                         Some(expand_home(root)).filter(|path| path.is_absolute())
                     };
-                    expanded.ok_or_else(|| WorkspaceError::ProjectVaultRootRelative {
+                    expanded.ok_or_else(|| WorkspaceError::ProjectDocumentRootRelative {
                         path: path.clone(),
                         name: project_entry.name.clone(),
                         root: root.clone(),
@@ -1567,7 +1624,7 @@ pub(crate) fn load_from_text(path: PathBuf, raw: &str) -> Result<LoadedConfig, W
                 env_file: project_entry.env_file.clone(),
                 max_workers: project_entry.max_workers,
                 permission_mode,
-                vault_roots,
+                document_roots,
                 handoff: project_entry.handoff,
                 browser_profile,
                 slack_workspace,
@@ -1663,6 +1720,15 @@ pub(crate) fn load_from_text(path: PathBuf, raw: &str) -> Result<LoadedConfig, W
         }
         None => None,
     };
+    let vault = match parsed.vault {
+        Some(section) => {
+            section.into_config().map_err(|message| WorkspaceError::ConfigInvalid {
+                path: path.clone(),
+                message: format!("[vault] {message}"),
+            })?
+        }
+        None => None,
+    };
 
     // Per-model parameters are read by the exact spelling a project's
     // `model` pins - not by what accounts declare - so a name no project
@@ -1711,6 +1777,7 @@ pub(crate) fn load_from_text(path: PathBuf, raw: &str) -> Result<LoadedConfig, W
         huggingface: parsed.huggingface,
         gotify: parsed.gotify,
         systemone,
+        vault,
         slack: parsed.slack,
         plugins: parsed.plugins,
         gateway_port,
@@ -4409,6 +4476,81 @@ base_url = "http://localhost:18765"
         );
     }
 
+    /// The account's email is the salt the master key derives with, so it is
+    /// not printed in a Debug line about the section.
+    #[test]
+    fn the_vault_config_debug_redacts_the_email() {
+        let config = VaultConfig {
+            url: "https://vault.example.com".to_owned(),
+            email: "me@example.com".to_owned(),
+        };
+
+        let text = format!("{config:?}");
+
+        assert!(!text.contains("me@example.com"), "{text}");
+        assert!(text.contains("https://vault.example.com"), "{text}");
+    }
+
+    #[test]
+    fn parses_a_vault_block() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            &format!(
+                "{}\n[vault]\nurl = \"https://bitwarden.hub\"\nemail = \"hi@vedhavyas.dev\"\n",
+                minimal_config()
+            ),
+        );
+        let config = load_from_dir(dir.path()).expect("a complete section loads");
+        let vault = config.vault.expect("the section reaches the loaded config");
+        assert_eq!(vault.url, "https://bitwarden.hub");
+        assert_eq!(vault.email, "hi@vedhavyas.dev");
+    }
+
+    #[test]
+    fn absent_vault_block_is_none() {
+        let dir = tempdir().expect("tempdir");
+        write_config(dir.path(), minimal_config());
+        let config = load_from_dir(dir.path()).expect("happy path");
+        assert_eq!(config.vault, None, "an absent section injects no vault tools");
+    }
+
+    #[test]
+    fn a_plain_http_vault_url_is_refused() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            &format!(
+                "{}\n[vault]\nurl = \"http://bitwarden.hub\"\nemail = \"hi@vedhavyas.dev\"\n",
+                minimal_config()
+            ),
+        );
+        let err = load_from_dir(dir.path()).expect_err("http is refused");
+        assert!(err.to_string().contains("https://"), "{err}");
+    }
+
+    #[test]
+    fn vault_without_url_is_refused() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            &format!("{}\n[vault]\nemail = \"hi@vedhavyas.dev\"\n", minimal_config()),
+        );
+        let err = load_from_dir(dir.path()).expect_err("a section needs a url");
+        assert!(err.to_string().contains("[vault] `url` is required"), "{err}");
+    }
+
+    #[test]
+    fn vault_without_email_is_refused() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            &format!("{}\n[vault]\nurl = \"https://bitwarden.hub\"\n", minimal_config()),
+        );
+        let err = load_from_dir(dir.path()).expect_err("a section needs an email");
+        assert!(err.to_string().contains("[vault] `email` is required"), "{err}");
+    }
+
     #[test]
     fn the_plugins_section_reaches_the_loaded_config() {
         let dir = tempdir().expect("tempdir");
@@ -5402,13 +5544,13 @@ auto_compact_windows = 983040
         );
     }
 
-    /// A relative `vault_roots` entry is refused at load, naming the key
+    /// A relative `document_roots` entry is refused at load, naming the key
     /// and the entry: a relative root would resolve against whatever
     /// working directory the read happened in, which is nobody's answer.
     /// `~user/Madness` is the same refusal, and the sentence names the
     /// remedy it accepts (`~` and `~/`).
     #[test]
-    fn a_relative_vault_root_is_refused_at_load_naming_key_and_entry() {
+    fn a_relative_document_root_is_refused_at_load_naming_key_and_entry() {
         for entry in ["Madness", "~user/Madness"] {
             let dir = tempdir().expect("tempdir");
             write_config(
@@ -5422,7 +5564,7 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-vault_roots = ["~/Madness", "{entry}"]
+document_roots = ["~/Madness", "{entry}"]
 
 [[accounts]]
 display_name = "Stargate"
@@ -5435,25 +5577,25 @@ provider = "anthropic"
 
             let refusal = load_from_dir(dir.path()).expect_err("a relative entry is a load error");
             assert!(
-                matches!(refusal, WorkspaceError::ProjectVaultRootRelative { .. }),
+                matches!(refusal, WorkspaceError::ProjectDocumentRootRelative { .. }),
                 "{entry}: {refusal:?}"
             );
             let why = refusal.to_string();
-            assert!(why.contains("vault_roots"), "{entry}: names the key: {why}");
+            assert!(why.contains("document_roots"), "{entry}: names the key: {why}");
             assert!(why.contains(&format!("'{entry}'")), "{entry}: names the entry: {why}");
             assert!(why.contains("'forge'"), "{entry}: and the project it sits on: {why}");
             assert!(why.contains("start with ~/"), "{entry}: and the remedy it accepts: {why}");
         }
     }
 
-    /// `vault_roots` defaults to empty; an entry expands `~` and a bare
+    /// `document_roots` defaults to empty; an entry expands `~` and a bare
     /// `~` is home, while an absolute one stays as itself.
     #[test]
-    fn vault_roots_default_to_empty_and_expand_home() {
+    fn document_roots_default_to_empty_and_expand_home() {
         let dir = tempdir().expect("tempdir");
         write_config(dir.path(), minimal_config());
         let config = load_from_dir(dir.path()).expect("loads");
-        assert!(named(&config, "forge").vault_roots.is_empty(), "absent key, no roots");
+        assert!(named(&config, "forge").document_roots.is_empty(), "absent key, no roots");
 
         let dir = tempdir().expect("tempdir");
         write_config(
@@ -5466,7 +5608,7 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-vault_roots = ["~/Madness", "/opt/vault", "~"]
+document_roots = ["~/Madness", "/opt/vault", "~"]
 
 [[accounts]]
 display_name = "Stargate"
@@ -5478,7 +5620,7 @@ provider = "anthropic"
         let config = load_from_dir(dir.path()).expect("loads");
         let home = dirs::home_dir().expect("home");
         assert_eq!(
-            named(&config, "forge").vault_roots,
+            named(&config, "forge").document_roots,
             vec![home.join("Madness"), PathBuf::from("/opt/vault"), home],
             "entries expand ~ and ~/, and keep absolutes as themselves",
         );

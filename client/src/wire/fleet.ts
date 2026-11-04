@@ -109,6 +109,10 @@ export const REDRAWS = new Set([
   // when the reader answers.
   'settings_write_pending',
   'settings_write_resolved',
+  // A held vault call parks the same way: its seat moves into the needs-you
+  // group while the card waits, and back out when the reader answers.
+  'vault_ask_pending',
+  'vault_ask_resolved',
   'worker_status_changed',
   // The project's task set, its schedules and its connector subscriptions
   // moved. Since #2517 the schedules and connector sets ride the board's

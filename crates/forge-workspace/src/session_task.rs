@@ -2903,8 +2903,9 @@ pub(crate) fn execute_command_via_handle(
     cmd: Command,
 ) -> Result<(), forge_agent::AgentError> {
     match cmd {
-        // A handoff runs the task's own state machine, before it reaches here.
-        Command::Handoff { .. } => Ok(()),
+        // A handoff runs the task's own state machine, before it reaches here;
+        // a vault answer is workspace state, handled before the agent path.
+        Command::Handoff { .. } | Command::RespondVaultAsk { .. } => Ok(()),
         Command::Prompt { key: _, text, attachments } => {
             let Some(sid) = session_id else {
                 return Err(warn_no_session(key, "Prompt"));

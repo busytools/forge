@@ -232,6 +232,49 @@ export interface SettingsWriteAsk {
   unset: boolean;
 }
 
+/**
+ * One attachment a held vault call names, as its card draws it: the file and
+ * its size, and the attachment a replace would remove. The bytes never ride
+ * the draft.
+ */
+export interface VaultAttachment {
+  name: string;
+  /** The file's size in bytes, as the card draws it. */
+  size: number;
+  /** The attachment id a replace would remove, when the call replaces one. */
+  replaces: string | null;
+}
+
+/**
+ * A held vault call, as the core sends it.
+ *
+ * **No secret value is a field here.** The draft carries only what a card
+ * draws - the tool, the item, the field being revealed or changed, a masked
+ * diff, and an attachment's name and size - so nothing this client narrows
+ * can put a value on screen. The value itself reaches the tool's own result
+ * after an approval.
+ */
+export interface VaultDraft {
+  /** The call's own id, which is what an answer is addressed by. */
+  id: string;
+  /** The MCP tool the call names, drawn as its wire spelling. */
+  tool: string;
+  /** The one-line summary the core wrote for the card. */
+  summary: string;
+  /** The item the call reads or changes, when it names one. */
+  itemId: string | null;
+  /** The item's name, so the card names what it is about without a second read. */
+  itemName: string | null;
+  /** The field a reveal names, or the field set a change touches. */
+  field: string | null;
+  /** A diff with every secret value masked, when the call changes fields. */
+  maskedDiff: string | null;
+  /** The attachment a call gets or puts, when it names one. */
+  attachment: VaultAttachment | null;
+  /** Whether the shared session is locked as this card is drawn. */
+  needsUnlock: boolean;
+}
+
 /** A document hand-off: a session offering the person a document to open. */
 export interface DocumentHandOff {
   /** The hand-off's own id, which is what an answer is addressed by. */
@@ -265,7 +308,8 @@ export type Ask =
   | { kind: 'browser_hand_off'; request: BrowserHandOff }
   | { kind: 'terminal_hand_off'; request: TerminalHandOff }
   | { kind: 'document_hand_off'; request: DocumentHandOff }
-  | { kind: 'settings_write'; request: SettingsWriteAsk };
+  | { kind: 'settings_write'; request: SettingsWriteAsk }
+  | { kind: 'vault'; request: VaultDraft };
 
 const OPTION_KINDS: PermissionOption['kind'][] = ['allow', 'deny', 'edit', 'notes'];
 const PHASES: TakePhase[] = ['recording', 'transcribing'];
@@ -371,6 +415,8 @@ export function askFrom(value: unknown): Ask | null {
       return documentHandOffFrom(request);
     case 'settings_write':
       return settingsWriteFrom(request);
+    case 'vault':
+      return vaultFrom(request);
     default:
       return null;
   }
@@ -504,6 +550,38 @@ function settingsWriteFrom(value: unknown): Ask {
       current: held['current'],
       proposed: held['proposed'],
       unset: held['unset'] === true,
+    },
+  };
+}
+
+/** An attachment a held vault call names, or none when it names none. */
+function vaultAttachmentFrom(value: unknown): VaultAttachment | null {
+  const held = record(value);
+  const name = line(held['name']);
+  if (name === null) return null;
+  return {
+    name,
+    size: number(held['size']) ?? 0,
+    replaces: line(held['replaces']),
+  };
+}
+
+/** A held vault call: the id is what an answer names, and every field here is
+ *  safe to draw by the draft's own contract - no secret value rides it. */
+function vaultFrom(value: unknown): Ask {
+  const held = record(value);
+  return {
+    kind: 'vault',
+    request: {
+      id: text(held['id']) ?? '',
+      tool: text(held['tool']) ?? '',
+      summary: text(held['summary']) ?? '',
+      itemId: line(held['item_id']),
+      itemName: line(held['item_name']),
+      field: line(held['field']),
+      maskedDiff: line(held['masked_diff']),
+      attachment: vaultAttachmentFrom(held['attachment']),
+      needsUnlock: held['needs_unlock'] === true,
     },
   };
 }

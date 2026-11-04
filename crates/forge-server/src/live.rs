@@ -299,6 +299,11 @@ pub fn fleet_news(update: &SessionUpdate) -> FleetNews<'_> {
         // reader's answer and back out when it resolves.
         | SessionUpdate::SettingsWritePending { .. }
         | SessionUpdate::SettingsWriteResolved { .. }
+        // A held vault call is the same shape again: the seat moves into
+        // the needs-you group while its card waits on the reader's answer
+        // and back out when it resolves.
+        | SessionUpdate::VaultAskPending { .. }
+        | SessionUpdate::VaultAskResolved { .. }
         | SessionUpdate::WorkerStatusChanged { .. }
         // The seat's release has begun: its row says where it is going until
         // the roster lands it asleep or gone. Announced at the start of the

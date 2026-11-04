@@ -86,8 +86,8 @@ impl Roster {
 
     /// The extra document roots `slot`'s project declares in
     /// `forge.toml`; empty when it declares none.
-    pub fn vault_roots_for(&self, slot: &SessionSlot) -> Vec<PathBuf> {
-        self.workspace.vault_roots_for_session(slot)
+    pub fn document_roots_for(&self, slot: &SessionSlot) -> Vec<PathBuf> {
+        self.workspace.document_roots_for_session(slot)
     }
 
     /// The task rows declared under the project named `project`.

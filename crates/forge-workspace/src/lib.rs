@@ -95,6 +95,8 @@ mod tasks;
 pub mod terminal;
 pub mod tts;
 mod update_fanout;
+mod vault;
+mod vault_ask;
 mod views;
 pub mod voice;
 pub mod work;

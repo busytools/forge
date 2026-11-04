@@ -289,6 +289,25 @@ watcher's reload push follows; declining writes nothing. A
 `settings_write_resolved` names the ending, so a view that did not answer
 it can close the dock.
 
+**A vault call parks the same way.** Every `vault__*` call parks as
+`vault_ask_pending` on the seat, carrying a draft that draws no secret: the
+tool, the item, the field or masked diff, an attachment's name and size,
+and whether the shared session is locked. The blocked tool call waits for
+`respond_vault_ask { key, id, answer }`; the answer is `approve`,
+`send_back` with a note, or `decline`, plus the master password and 2FA
+code when the card asked for them. An approval unlocks the one shared
+session and runs the call; `needs_unlock` is stamped from the live session
+on every read, so the other parked cards re-base to ordinary approve cards.
+The unlock pushes a restamped `vault_ask_pending` for each card still
+parked, so a dock that already drew one merges the frame by id; a call that
+then re-locks the session (a failed refresh, or a decryption that means the
+keys rotated) pushes the restamped frame the other way. `vault_ask_resolved`
+names the ending. **The
+answer is a local channel**: it travels the same connection the card came
+over, and the password's privacy is the socket's - `[server] bind` is the
+boundary, so a vault answer is only meaningful over loopback or the private
+network the config names.
+
 ## Subjects
 
 Everything a client reads is addressed by a subject, and there are six:
@@ -327,7 +346,7 @@ variants, 57 of them struct variants; the six unit variants,
 the name alone. An update is the same
 shape one level in,
 `{"kind": "update", "update": {"chat_appended": {"key": ..., "msg": ...}}}`,
-and 74 of `SessionUpdate`'s 77 variants are struct variants too. The other
+and 76 of `SessionUpdate`'s 79 variants are struct variants too. The other
 three are why the payload is not one shape: they are unit variants and cross
 as the name alone - `"catalog_loaded"`, `"cli_version_changed"` and
 `"dictate_availability"`.
@@ -661,7 +680,7 @@ that row starts at, and what either is made of is the server's business.
 a walk backwards ends.
 
 **`document_read {session, path, reviewable}`** - one document out of a
-seat's own working tree or its project's `vault_roots` in `forge.toml`,
+seat's own working tree or its project's `document_roots` in `forge.toml`,
 for the client's viewer. `path` resolves against that tree, and nothing
 outside the tree or those roots reads, however the path is spelled: a
 `..` walk, an absolute path elsewhere and a symlink pointing out are each
@@ -1102,7 +1121,7 @@ conversation, and what the composer is doing.
 | `background_tasks`            | The seat's live tasks: the CLI's background registry plus the long foreground calls it announces on `task_started` and ends with a `task_notification`, a terminal `task_updated`, or the turn the call ran in, each entry saying whether the CLI backgrounded it (`is_backgrounded`), with the line the row leads with, the command its own call carried and the call that began it. The processes feed leads its rows with these, because a backgrounded bash is detached from claude's tree and the OS walk cannot see it for itself.                                                                                                                                                                                                                                                                                                                                                                                      |
 | `monitors`                    | The watches the session has running.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | `terminal`                    | The seat's terminal as the strip draws it, `null` until one is opened: the id, shell, cwd, size, whether the shell is alive, the state (with its `source`), the title and whether a hand-off holds it. Pushed as `terminal_changed` on every real state change, so the strip's words never wait for a record re-read.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| `pending_asks`                | Every prompt the seat is holding, oldest first, the held kinds leading (a Slack draft, a browser hand-off, a document hand-off, a terminal hand-off, a held configuration write). Two questions of one batch or two calls that ran in parallel park several at once, so this is what a client that attached mid-batch reads.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `pending_asks`                | Every prompt the seat is holding, oldest first within each kind that keeps arrival order, the held kinds leading (a Slack draft, a browser hand-off, a document hand-off, a terminal hand-off, a held vault call, a held configuration write); the vault registry keeps no arrival order, so its own cards have none to offer. Two questions of one batch or two calls that ran in parallel park several at once, so this is what a client that attached mid-batch reads.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | `pending_ask`                 | The front of `pending_asks` - the prompt a client that draws a single ask waits on, `null` when there is none. Kept beside the list so a client reading only this one still draws the oldest ask.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | `reviews`                     | The review threads and the submitted reviews, each read separately so an unreadable one is not reported as empty.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | `slash_commands`, `subagents` | What the CLI last advertised: its commands and its agent-type catalogue, pushed as `slash_commands_changed` / `subagents_changed` when a turn's init (or a plugin reload, for the commands) moves them.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |

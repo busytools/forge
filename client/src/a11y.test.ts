@@ -30,6 +30,7 @@ import {
   slackDraftAsk,
   SLOT,
   take,
+  vaultAsk,
   wire,
 } from './composer/testing';
 import Turn from './chat/Turn.svelte';
@@ -299,6 +300,13 @@ describe('axe over the rendered pages', () => {
     expect(await idsOf(draw(record({ pending_asks: [slackDraftAsk()] }))), 'a held post').toEqual(
       [],
     );
+    expect(await idsOf(draw(record({ pending_asks: [vaultAsk()] }))), 'a held vault call').toEqual(
+      [],
+    );
+    expect(
+      await idsOf(draw(record({ pending_asks: [vaultAsk({ needs_unlock: true })] }))),
+      'a locked vault call with its masked fields',
+    ).toEqual([]);
     expect(
       await idsOf(
         draw(

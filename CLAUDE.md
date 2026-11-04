@@ -61,15 +61,17 @@ forge-test-harness ─→ primitives + sdk + workspace + server
   and the TLS-trust client arrive through the `ProviderHost` port
   forge-agent implements, so the crate stays HTTP + mapping and never
   spawns the CLI.
-- **`forge-connectors`** - one module per inbound connector: the
-  stream client, REST lookups, subscription matching and subsystem
-  pump for one external integration (Gotify and Slack today). Depends
-  on forge-primitives only. Gotify's subscription set, app index and
-  message dispatch into sessions arrive through the `GotifyHost` port
-  forge-workspace implements; Slack's client is called by workspace
-  code directly. Either way the crate stays stream + mapping and holds
-  no workspace state. No generic connector trait: the variety is still
-  two, and a trait waits until it is real.
+- **`forge-connectors`** - one module per external integration: the
+  Gotify and Slack connectors and the outbound Vaultwarden client
+  behind the vault family. Depends on forge-primitives only. Gotify's
+  subscription set, app index and message dispatch into sessions
+  arrive through the `GotifyHost` port forge-workspace implements;
+  Slack's client is polled by workspace code directly, and the vault
+  module is HTTP, crypto and mapping with the session, its tokens and
+  the unlocked account in forge-workspace. Either way the crate stays
+  transport + mapping and holds no workspace state. No generic
+  connector trait: the variety is still small, and a trait waits until
+  it is real.
 - **`forge-sdk`** - owns the `claude` subprocess: stream-json codec,
   transport, control dispatch, in-process MCP host, Options.
 - **`forge-agent`** - drives one SDK Client behind a channel-based
@@ -191,12 +193,13 @@ Work top-down; first match wins.
    failure allows), or is it which account a session spawns under,
    whether an account is healthy, or when it is next probed? ->
    `forge-gateway`, one backend per token and the account pool.
-7. **Inbound connector I/O for an external integration?** (its stream
-   client, REST lookups, subscription matching, reconnecting
-   subsystem pump) -> `forge-connectors`, one module per connector.
-   The connector holds no workspace state: Gotify reaches the
-   workspace through the `GotifyHost` port forge-workspace implements,
-   and Slack holds only its Web API client.
+7. **I/O for an external integration, inbound or outbound?** (its
+   stream client, REST lookups, subscription matching, reconnecting
+   subsystem pump, a provider's client and crypto) -> `forge-connectors`,
+   one module per integration. The connector holds no workspace state:
+   Gotify reaches the workspace through the `GotifyHost` port
+   forge-workspace implements, Slack holds only its Web API client, and
+   the vault module carries no session or keys.
 8. **Speaks stream-json to the `claude` subprocess?** (decoder,
    control_request subtype, transport, MCP host, OptionsBuilder)
    -> `forge-sdk`. Pair with a wire-conformance scenario.

@@ -28,7 +28,7 @@ forge-test-harness->  primitives + sdk
 | `forge-system-one`   | The System One decision-model client: the `[systemone]` config shape, the wire question/answer types and their validation, the HTTP call with its timeout and error mapping. A leaf: depends on no forge-* crate, and its types stay there for consumers to import.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | `forge-terminal`     | One terminal per seat: the PTY, the screen model and the read loop, the OSC 133 scanner and the shell integration scripts, the text extractor, the attach repaint, and the state classifier. `alacritty_terminal` is its only terminal dependency; the event loop is forge's own because the client's stream is the raw bytes and that loop consumes them. A leaf: it depends on no forge-* crate and knows nothing about a seat, a socket or a session - the workspace keys it by the slot, the server carries its bytes, the client draws them. |
 | `forge-gateway`      | The account pool: one backend per provider token (credential resolution, the usage probe's HTTP and payload mapping, billing shape), plus account selection by declared models, account health, probe scheduling and backoff. Depends on forge-primitives only; the `claude --version` user agent and TLS-trust plumbing arrive through the host port forge-agent implements.                                                                                                                                                                                                                                                                                                                                                                                                          |
-| `forge-connectors`   | One module per inbound connector: the stream client, REST lookups, subscription matching and subsystem pump for one external integration (Gotify and Slack today). Depends on forge-primitives only; Gotify's workspace state and message dispatch arrive through the host port forge-workspace implements.                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `forge-connectors`   | One module per external integration: the Gotify and Slack connectors and the outbound Vaultwarden client behind the vault family. Depends on forge-primitives only; Gotify's workspace state and message dispatch arrive through the host port forge-workspace implements, and the vault's session, tokens and unlocked account live there.                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | `forge-sdk`          | The `claude` subprocess. Stream-json codec, transport, control dispatch, the in-process MCP host, and the options builder.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | `forge-agent`        | Drives one SDK client behind a channel-based `Agent` and `AgentHandle`. Owns user-data reads, cloud calls, environment probes, event translation and tooling. Async, may shell out.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | `forge-workspace`    | The multi-session orchestrator and the server's single point of contact. Owns `forge.toml` loading, `DomainSession`, per-session actors, the machine-local state store, the in-process MCP server forge exposes to every spawned session, and the output-tail reader a call's own read answers from. The browser tools it carries reach the fleet through the `BrowserHost` port this crate defines.                                                                                                                                                                                                                                                                                                                                                                                   |
@@ -73,12 +73,13 @@ Work top-down; the first match wins.
    as one backend per provider token. **Account selection, account
    health, probe scheduling or backoff** goes there as well: the gateway
    owns the account pool, and the workspace drives it.
-6. **Inbound connector work for an external integration** (its stream
-   client, REST lookups, subscription matching) goes in
-   `forge-connectors`, one module per connector. The connector holds no
-   workspace state; Gotify reaches the workspace through the
-   `GotifyHost` port that forge-workspace implements, and Slack holds
-   only its Web API client.
+6. **I/O for an external integration, inbound or outbound** (its stream
+   client, REST lookups, subscription matching, a provider's client and
+   crypto) goes in `forge-connectors`, one module per integration. The
+   connector holds no workspace state; Gotify reaches the workspace
+   through the `GotifyHost` port that forge-workspace implements, Slack
+   holds only its Web API client, and the vault module carries no
+   session or keys.
 7. **Anything that speaks stream-json to the subprocess** (a decoder, a
    new control-request subtype, transport, the MCP host, the options
    builder) goes in `forge-sdk`, and ships with a wire-conformance
@@ -267,9 +268,9 @@ name. Do not read an isolation guarantee into it.
 forge exposes one MCP server, named `forge`, to every spawned session.
 It is not a subprocess: it is hosted inside forge and reached over the
 CLI's own MCP transport. Its tools are grouped by submodule and render
-to the model as `mcp__forge__<group>__<tool>`, with twelve groups today:
+to the model as `mcp__forge__<group>__<tool>`, with thirteen groups today:
 `agents`, `browser`, `documents`, `review`, `cron`, `tasks`, `gotify`,
-`slack`, `settings`, `systemone`, `terminal` and `voice`.
+`slack`, `settings`, `systemone`, `terminal`, `voice` and `vault`.
 
 `browser` is the exception to the render pattern, crossing unprefixed:
 its tools are upstream `@playwright/mcp`'s own -
@@ -281,8 +282,11 @@ document hand-off included: `documents__hand_off` crosses as
 
 `browser`, `documents`, `review`, `cron`, `tasks`, `gotify`, `slack`,
 `settings` and `terminal` are registered for every session; `systemone`
-joins them when `[systemone]` is configured and enabled, and `voice` joins
-them when `[tts]` is on. A worker's families can be
+joins them when `[systemone]` is configured and enabled, `voice` joins them
+when `[tts]` is on, and `vault` joins them when `[vault]` is configured.
+Every `vault__*` call is held for the reader's approval, and the shared
+session asks for the master password in the dock's masked field on the
+first call after a start. A worker's families can be
 narrowed at spawn - `agents__spawn`'s `mcp_families` list, revised by
 `agents__update` and stored on the worker's durable record - and each
 withheld family is named in that worker's own prompt. The `agents` group
@@ -290,8 +294,8 @@ is always on, and so are `browser`, `documents`, `settings` and `terminal`:
 the browser
 is the server's own - a session drives a host the server runs, whether or
 not any client is watching - a hand-off reads the caller's own tree or its
-project's `vault_roots`, so there is nothing a project could withhold of
-either, the config is every session's own environment, read through the
+project's `document_roots`, so there is nothing a project could withhold of
+either, and the config is every session's own environment, read through the
 same document the settings page draws and written only through a held,
 catalogue-validated edit the reader approves, and the terminal is the seat's
 own PTY - a shell the seat already reaches through Bash, so there is nothing
