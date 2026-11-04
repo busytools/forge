@@ -1702,11 +1702,12 @@ export class Chat {
    * The claude session id the conversation runs as, from whichever frame
    * first names it.
    *
-   * Three carriers, and the first one wins in all but a swap: the snapshot's
-   * header on a subscribe, a `connected` update on a new process, and
-   * `session_replaced` on `/new` or `/resume`. A frame with no id, or the id
-   * this record already holds, changes nothing - so this is a no-op on the
-   * frames that are not an occupant announcement.
+   * Three carriers - the snapshot's header on a subscribe, a `connected`
+   * update on a new process, and `session_replaced` - and **the newest naming
+   * wins**: they agree except at a replacement, where the announcement is the
+   * one that says which occupant is now on the seat. A frame with no id, or
+   * the id this record already holds, changes nothing, so this is a no-op on
+   * every frame that is not an occupant announcement.
    */
   private noteSession(id: unknown): void {
     if (typeof id !== 'string' || id === '') return;
@@ -3083,18 +3084,21 @@ export class Chat {
   /**
    * Start over for the occupant that just arrived.
    *
-   * The turns go rather than being replaced in place, because a page that
-   * answered before the swap is the OLD occupant's and nothing in a page says
-   * which occupant it came from - so what is held has to be nothing, and the
-   * ask has to go out after the swap rather than before it. A handoff opens a
-   * new chat the same way: the successor's transcript is its own.
+   * **The occupant may be the same conversation.** A re-spawn that resumes
+   * the same claude session id keeps the transcript, and the reader's place
+   * with it; only an id that moved is a different conversation. The turns are
+   * dropped either way, because a page that answered before the announcement
+   * is the OLD occupant's and nothing in a page says which occupant it came
+   * from - so what is held is nothing, and the ask goes out after it.
    */
-  private replaced(): void {
-    // **The successor is a new conversation, and the old place goes with the
-    // occupant that left.** The column does not re-run its entry on a swap -
-    // the slot is unchanged - so nothing else would drop it, and a later
-    // return would open the successor at a row it never wrote.
-    places.forget(this.key);
+  private replaced(next: unknown): void {
+    // **A replacement is not proof the conversation changed.** A re-spawn that
+    // resumes the same claude session announces one with the SAME id, and the
+    // transcript the reader's place belongs to is still its own - so only an
+    // id that moved takes the place, and `settle` is what tells the two
+    // apart. (The column's entry and its restore compare the ids too, for a
+    // place taken before the record named one.)
+    places.settle(this.key, typeof next === 'string' && next !== '' ? next : null);
     const held = this.inFlight !== null;
     if (held) this.abandoned += 1;
     this.inFlight = null;
@@ -3282,8 +3286,9 @@ export class Chat {
     // The seat changed occupant under this column - a `/new`, a `/resume`, a
     // login or a logout - so what is drawn is another session's conversation.
     if (variant === 'session_replaced') {
-      this.replaced();
-      this.noteSession(textIn(update, 'session_replaced', 'session_id'));
+      const next = textIn(update, 'session_replaced', 'session_id');
+      this.replaced(next);
+      this.noteSession(next);
       return;
     }
     // A process that is gone takes its queue with it: no lifecycle frame is

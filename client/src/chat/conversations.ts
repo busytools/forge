@@ -81,12 +81,29 @@ export class Places {
   /**
    * The seat is at its foot, or holds no row its reader does: no place.
    *
-   * **An occupant swap is the third case**, and it is not a foot: a `/new` or
-   * a `/resume` replaces the conversation the place belonged to, and the
-   * successor must open at its latest.
+   * **An occupant swap is not this one**: it goes through [`settle`], because
+   * only an id that actually moved is a different conversation.
    */
   forget(seat: string): void {
     this.#held.delete(seat);
+  }
+
+  /**
+   * An occupant announcement, which is not proof the conversation changed.
+   *
+   * **A re-spawn that resumes the same claude session announces a
+   * replacement with the SAME id**, and its transcript is the very
+   * conversation the reader's place belongs to - so only an id that actually
+   * moved takes the place. An announcement that names no id cannot tell the
+   * two apart and keeps it; a place recorded before any id was known goes
+   * with the replacement, because the successor's transcript is then the only
+   * word either way.
+   */
+  settle(seat: string, session: string | null): void {
+    if (session === null) return;
+    const held = this.#held.get(seat);
+    if (held === undefined) return;
+    if (held.session !== session) this.#held.delete(seat);
   }
 }
 

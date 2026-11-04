@@ -297,7 +297,7 @@ with what lands below. Coming back within the 48px notch of the bottom, by
 any means, follows again; the circle in the corner is the instant jump
 there, and it is a 44px target on every client, finger or pointer. **The
 circle counts what was missed**: every turn appended since the reader
-parked rides a small badge that reads `9+` past nine, and following clears
+parked rides a small badge that reads `9+` from nine, and following clears
 it. Sending from this client's composer while parked is the reader asking
 for the latest, so it goes there and follows; a message the reader sends
 from another client lands where they are and joins the count.

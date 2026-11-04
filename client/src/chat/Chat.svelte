@@ -217,6 +217,17 @@
   let restoring = $state<Place | null>(null);
   /** The frame the return's own scroll waits on, held so one schedule is outstanding. */
   let restoreFrame: number | null = null;
+  /**
+   * The claude session this column last saw on its seat, or null until one is
+   * named.
+   *
+   * **A different id is a different conversation**, and the column stays
+   * mounted across a `/new` or a `/resume`: the reader's row and their parked
+   * state belong to the occupant that left, and the successor opens at its
+   * latest the way a fresh entry does. A replacement that names the SAME id
+   * is the same conversation reloading, and nothing is reset for it.
+   */
+  let shownSession: string | null = null;
   /** How many frames a restored place has waited for its row to draw. */
   let restoreTries = 0;
   let working: Chat | null = null;
@@ -621,9 +632,9 @@
    * Whether the reader is away from the foot, which is what the circle and
    * its badge answer to.
    *
-   * **Not the follow flag alone.** An arrival can arm the follow while the
-   * reader stays exactly where they are, and that reader is still parked:
-   * the foot moves for the next arrival, and they are owed the count of what
+   * **Not the follow flag alone.** The follow can be on with its pin unable
+   * to fire (the third state the way back and the observer's restore already
+   * serve), and that reader is still parked: they are owed the count of what
    * landed while they read.
    */
   const parked = $derived(!held.following || !pinning());
@@ -844,8 +855,14 @@
     // A fresh list mounts at its start and opens following, so its first pin
     // is the column putting the reader at the foot rather than an arrival
     // moving one. A return's list is placed by its restore before any pin can
-    // move it.
-    footHeld = true;
+    // move it. **Unless the reader holds a place**: a replacement reloads the
+    // conversation with the same occupant, the list remounts, and the anchor
+    // is what the loaded page must be held to - not the new element's start.
+    footHeld = anchor === null;
+    // **This mount is its own layout.** Whatever order the last element was
+    // paid for says nothing about this one, so a parked reader is owed a pass.
+    owed = null;
+    owedUnplaced = anchor !== null;
     // The sizes and the last event belong to the element a previous conversation scrolled.
     lastSeen = { content: 0, room: 0 };
     movedFrom = 0;
@@ -1306,18 +1323,20 @@
       stopGlide();
       // The place a reader held was a row of the conversation that is going.
       anchor = null;
+      // The occupant this column has seen belongs to the seat that is going
+      // too, so the arriving seat's first id is an adoption, not a change.
+      shownSession = null;
       // And so were the sizes and the last event, which read that element.
       lastSeen = { content: 0, room: 0 };
       movedFrom = 0;
       // **A conversation with a saved place opens at it; every other entry
-      // follows the latest** (the rule this cut reverses: a place used to
-      // belong to one visit, and a seat switch back dropped it). A place is
-      // the reader's row for the conversation, wherever the entry came from -
-      // a document return, a seat switch back, or a reconnect that built a new
-      // connection around the same occupant. Two things are not that
-      // conversation's place: one its claude session id has moved on from
-      // (`/new`, `/resume`), and one whose row the conversation no longer
-      // holds (a compaction or a trim ate it) - both land at the latest.
+      // follows the latest.** A place is the reader's row for the
+      // conversation, wherever the entry came from - a document return, a
+      // seat switch back, or a reconnect that built a new connection around
+      // the same occupant. Two things are not that conversation's place: one
+      // its claude session id has moved on from (`/new`, `/resume`), and one
+      // whose row the conversation no longer holds (a compaction or a trim
+      // ate it) - both land at the latest.
       const arriving = untrack(() => kept.get(which));
       const turning = arriving?.turns ?? [];
       const place = places.of(which) ?? null;
@@ -1419,6 +1438,29 @@
     return () => {
       unsubscribe();
     };
+  });
+
+  /**
+   * The occupant changed under the column, which is a different conversation.
+   *
+   * **The column does not remount for a `/new` or a `/resume`**, so the row
+   * the reader held and the parked state around it survive a swap that has
+   * nothing to do with them; the successor opens at its latest, the way an
+   * entry does. A replacement naming the SAME id is the conversation
+   * reloading, and keeps both.
+   */
+  $effect(() => {
+    const id = held.sessionId;
+    if (id === null) return;
+    const before = shownSession;
+    shownSession = id;
+    if (before === null || before === id) return;
+    restoring = null;
+    anchor = null;
+    rememberPlace();
+    footHeld = true;
+    stopGlide();
+    working?.following(true);
   });
 
   // A hold that outlived its column must not ask for a seat nothing draws.
@@ -2418,8 +2460,12 @@
     // below would retry a lookup for a row nothing holds, and a parked reader
     // would sit on a place that no longer exists; the latest is the one place
     // that does. Not a clamp to whatever row is left - that is a place the
-    // reader never chose.
+    // reader never chose. **Only over a conversation that has loaded**: a
+    // replacement empties the record until its successor's page arrives, and
+    // that transient is not rows gone - a re-spawn onto the same claude
+    // session must keep the place it is about to draw again.
     if (
+      park.loaded &&
       anchor !== null &&
       !park.turns.some((turn) => anchor !== null && anchor.key.startsWith(`${turn.key}:`))
     ) {
@@ -2681,14 +2727,16 @@
       // the column's own gate is concerned (`footHeld` above), and leaving the
       // follow off there strands them: the next append could not land and the
       // badge would keep counting over a reader who is all but at the foot.
-      // The same three things make the move theirs as the exact-foot arm
-      // below: a hand heard, or the offset moving toward the foot. **And it
-      // has to be a move**: a fresh list reports its own start as an event at
-      // zero, which is neither a reader arriving nor a foot to re-arm from.
+      // **The move has to be the READER'S**: a hand heard, or a gesture
+      // aiming at the foot. A machine move that happens to land there - the
+      // pin's own echo, a layout correction - is the column's, and re-arming
+      // on it would turn a reader away from the foot back into a follower.
+      // **And it has to be a move**: a fresh list reports its own start as an
+      // event at zero, which is neither a reader arriving nor a foot.
       offset !== was &&
       footHeld &&
       !held.following &&
-      (!rose || byReader || aimed || towardFoot)
+      (byReader || aimed)
     ) {
       working?.following(true);
       settleWindow();

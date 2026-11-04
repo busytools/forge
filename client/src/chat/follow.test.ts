@@ -380,6 +380,14 @@ function stub() {
         update: { prompt_lifecycle: { key: LEAD, uuid, state: 'started' } },
       });
     },
+    /** The seat's own record naming its occupant, the way a subscribe does. */
+    session(id: string): void {
+      send({
+        kind: 'snapshot',
+        subject: { session: LEAD },
+        data: { header: { session_id: id } },
+      });
+    },
     /** The core's answer on whether a turn is in flight, which a page alone cannot say. */
     inflight(on = true): void {
       send({
@@ -1164,7 +1172,8 @@ describe('whether the column follows the newest end', () => {
     await settle();
     clear();
 
-    // Four pixels short: inside the notch.
+    // Four pixels short, on the reader's own down-wheel: inside the notch.
+    document.querySelector('.conv')?.dispatchEvent(new WheelEvent('wheel', { deltaY: 120 }));
     readerAt(FOOT - 4);
     await settle();
 
@@ -1827,11 +1836,10 @@ describe('whether the column follows the newest end', () => {
   });
 
   it('goes back to the place a seat was left at when the reader switches to it', async () => {
-    // **A saved place belongs to the conversation, not to the visit** (the
-    // rule this cut reverses: `#1673` used to land every entry at the latest
-    // and delete the place). A reader who parks on a seat and moves to
-    // another one comes back to the row they left, the way the view this
-    // client replaced did with its per-session `auto_scroll`.
+    // **A saved place belongs to the conversation, not to the visit.** A
+    // reader who parks on a seat and moves to another one comes back to the
+    // row they left, the way the view this client replaced did with its
+    // per-session `auto_scroll`.
     const seat = writable(LEAD);
     const server = stub();
     clear();
@@ -3265,9 +3273,10 @@ describe('a return to the seat the reader left', () => {
    */
   it('lands a /new at the foot on the next document return', async () => {
     const server = stub();
-    await parked(server);
+    await parkedWith(server, 's1');
 
-    server.replaced();
+    // `/new` on the seat: a different claude session.
+    server.replaced('s2');
     await settle();
     clear();
 
@@ -3559,6 +3568,29 @@ async function parkedColumn(server: ReturnType<typeof stub>): Promise<void> {
   expect(element.offset, 'precondition: the reader is parked').toBe(50);
 }
 
+/** A column parked mid-history with its occupant's id already known. */
+async function parkedWith(server: ReturnType<typeof stub>, session: string): Promise<void> {
+  clear();
+  clearObservers();
+  setMeasured(TOTAL, VIEWPORT);
+  app = mount(Chat, {
+    target: document.body,
+    props: { slot: LEAD, connection: server.connection },
+  });
+  flushSync();
+  server.session(session);
+  server.page([spoken('t1'), spoken('t2'), spoken('t3')]);
+  await settle();
+  layOut(40);
+  readerAt(50);
+  await settle();
+  expect(element.offset, 'precondition: the reader is parked').toBe(50);
+  expect(
+    places.of(subjectKey({ session: LEAD }))?.session,
+    'precondition: the place is tagged with the occupant',
+  ).toBe(session);
+}
+
 /** The seat's follow flag, which the entry, a send and a notch return change. */
 function following(server: ReturnType<typeof stub>): boolean | undefined {
   const chat = conversationsFor(server.connection).live.get(subjectKey({ session: LEAD }))?.chat;
@@ -3611,7 +3643,7 @@ describe('a saved place outliving the connection', () => {
 
   it('opens a different claude session at the latest, whatever the slot was left holding', async () => {
     const server = stub();
-    await parkedColumn(server);
+    await parkedWith(server, 's1');
 
     // `/resume` to another claude session id: the same slot, a new
     // conversation. The place belonged to the occupant that left.
@@ -3627,6 +3659,93 @@ describe('a saved place outliving the connection', () => {
     expect(element.offset, 'the new session opened at the old place').toBe(
       Math.floor(TOTAL) - VIEWPORT,
     );
+  });
+
+  it('keeps the place through a re-spawn that resumes the same claude session', async () => {
+    const server = stub();
+    await parkedWith(server, 's1');
+
+    // A replacement with the SAME claude session is the same conversation,
+    // so the place is not the outgoing occupant's to lose.
+    server.replaced('s1');
+    await settle();
+    expect(places.of(subjectKey({ session: LEAD })), 'the place survived its own').toBeDefined();
+
+    // The successor's page, then a document return: the row is owed back.
+    server.page([spoken('t1'), spoken('t2'), spoken('t3')]);
+    await settle();
+    if (app !== null) await unmount(app);
+    app = null;
+    document.body.innerHTML = '';
+    element.offset = 0;
+    clear();
+    app = mount(Chat, {
+      target: document.body,
+      props: { slot: LEAD, connection: server.connection },
+    });
+    flushSync();
+    layOut(40);
+    await settle();
+    await settle();
+
+    expect(element.offset, 'the return reopened the place it kept').toBe(50);
+  });
+
+  it('keeps a place when a reconnect names the same claude session', async () => {
+    const first = stub();
+    await parkedWith(first, 's1');
+    if (app !== null) await unmount(app);
+    app = null;
+    document.body.innerHTML = '';
+    element.offset = 0;
+    clear();
+
+    const second = stub();
+    setMeasured(TOTAL, VIEWPORT);
+    app = mount(Chat, {
+      target: document.body,
+      props: { slot: LEAD, connection: second.connection },
+    });
+    flushSync();
+    // The occupant first, as a subscribe answers, then the page.
+    second.session('s1');
+    second.page([spoken('t1'), spoken('t2'), spoken('t3')]);
+    layOut(40);
+    await settle();
+    await settle();
+
+    expect(element.offset, 'the same occupant took its place back').toBe(50);
+  });
+
+  it('drops a place when a reconnect names a different claude session', async () => {
+    const first = stub();
+    await parkedWith(first, 's1');
+    if (app !== null) await unmount(app);
+    app = null;
+    document.body.innerHTML = '';
+    element.offset = 0;
+    clear();
+
+    const second = stub();
+    setMeasured(TOTAL, VIEWPORT);
+    app = mount(Chat, {
+      target: document.body,
+      props: { slot: LEAD, connection: second.connection },
+    });
+    flushSync();
+    second.session('s2');
+    second.page([spoken('t1'), spoken('t2'), spoken('t3')]);
+    layOut(40);
+    await settle();
+    await settle();
+
+    expect(element.offset, 'a different occupant opened at the latest').toBe(
+      Math.floor(TOTAL) - VIEWPORT,
+    );
+    expect(
+      places.of(subjectKey({ session: LEAD })),
+      'and the place went with the occupant that left',
+    ).toBeUndefined();
   });
 });
 
@@ -3962,10 +4081,9 @@ describe('the freeze a parked column keeps', () => {
 
 describe('the circle itself', () => {
   it('is a 44px square on every client, not the oval a raised height makes', () => {
-    // The touch rules raise every button's MIN-HEIGHT to 44, which left this
-    // one 34 wide: the folded Z Fold drew an oval. The base rule carries both
-    // axes, so the circle is a finger's target on the pointer and the phone
-    // alike.
+    // The touch rules raise every button's MIN-HEIGHT to 44, which on its own
+    // leaves a 34-wide control as an oval. The base rule carries both axes,
+    // so the circle is a finger's target whatever raises the height.
     const sheet = readFileSync('src/assets/web.css', 'utf8');
     const body = /\.follow \{([^}]*)\}/.exec(sheet)?.[1] ?? '';
     expect(body, 'the follow button draws a width').toMatch(/width:\s*44px/);
