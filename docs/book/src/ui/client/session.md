@@ -276,16 +276,37 @@ through fresh history reads as moving content instead of a black column.
 The correction is the list's, and the column's foot and parked anchor
 absorb it, so the place the reader holds does not move under the reader.
 
-**A return to the seat the reader was last on puts them back where they
-were.** Any page that unmounts the session, such as a document, the review,
-the files, the home or the settings, leaves the connection keeping the
-conversation - so the mount that comes back to the seat it was last showing
-restores the row the reader held rather than landing at the foot. A place the
-reader gave up, by sending or by scrolling back to the latest, is not
-restored, and a restore that cannot land falls back to the foot. A seat
-switch, a fresh open and a `/new` still open at the latest: a place belongs
-to the visit that recorded it, and only a return to that visit takes it back
-(#1673, #2834).
+**A conversation with a saved place opens at it; everything else opens at
+the latest.** A place is the row the reader held and how far into it they
+were, kept per conversation - the seat plus the claude session id it runs as
+- in memory for the app run. Any page that unmounts the session, such as a
+document, the review, the files, the home or the settings, leaves the
+connection keeping the conversation, so the mount that comes back puts the
+reader on their row; switching away to another seat and back does the same,
+and so does a socket that reconnects as a new connection. A place the reader
+gave up, by sending or by scrolling back to the latest, is not restored; a
+`/new` or a `/resume` to a different claude session id is a different
+conversation and opens at its latest; and a place whose row a compaction or
+a trim has taken goes to the latest rather than clamping to whatever row is
+left (#1673, #2834).
+
+**A parked column is frozen.** The moment the reader scrolls up, the row
+under their eye holds its exact offset - sub-pixel included, so a reflow
+above does not move the words they are reading - while the scrollbar grows
+with what lands below. Coming back within the 48px notch of the bottom, by
+any means, follows again; the circle in the corner is the instant jump
+there, and it is a 44px target on every client, finger or pointer. **The
+circle counts what was missed**: every turn appended since the reader
+parked rides a small badge that reads `9+` past nine, and following clears
+it. Sending while parked is the reader asking for the latest, so it goes
+there and follows.
+
+**A following column glides to the foot.** Every append - a row, a card,
+the reader's own message - lands the measured bottom over a short ease of
+about 160ms, a streamed line and a row that measures taller included, with
+the glide repeated until the content settles. A first pin, a switch's or a
+return's, lands at once, and so does the circle's jump;
+`prefers-reduced-motion: reduce` makes every landing instant.
 
 **The column's top edge says when it is fetching.** An older page is
 asked for as the reader nears the top and answered a moment later;

@@ -508,6 +508,17 @@
     z-index: 6; pointer-events: none; padding: 3px 10px; border-radius: var(--r);
     border: 1px solid var(--line); background: var(--s2); color: var(--muted);
     font-family: var(--mono); font-size: var(--fs-label); white-space: nowrap; }
+  /* The way back to the foot while the reader is parked: a 44px circle on every
+     client, carrying the turns that landed since they stopped. */
+  .follow { position: absolute; right: 18px; bottom: 14px; z-index: 6;
+    width: 44px; height: 44px; border-radius: 50%; display: grid; place-items: center;
+    background: var(--s2); border: 1px solid var(--ctl); color: var(--muted);
+    cursor: pointer; }
+  .follow .ic { width: 16px; height: 16px; }
+  .follow .n { position: absolute; top: -5px; right: -5px; min-width: 18px; height: 18px;
+    padding: 0 4px; border-radius: 9px; display: grid; place-items: center;
+    background: var(--accent); color: var(--bg); font-family: var(--mono);
+    font-size: var(--fs-label); line-height: 1; font-variant-numeric: tabular-nums; }
 
   /* One blank line between blocks, the terminal's whole spacing policy, read
      the same on both sides of a work block: the turn's margin and the block's
@@ -1941,6 +1952,12 @@
            is waiting for rather than reading as dead scroll. Shown here over
            the rows it will join. -->
       <div class="older-loading" role="status">Loading older messages&#8230;</div>
+      <!-- The way back to the foot: a parked reader's circle, carrying the
+           turns that landed since they stopped. Pressing it jumps to the
+           latest and follows; the count clears with the jump. -->
+      <button class="follow" type="button" title="back to the latest" aria-label="back to the latest, 3 new turns">
+        <svg class="ic"><use href="#i-down"/></svg><span class="n" aria-hidden="true">3</span>
+      </button>
     <div class="conv">
 
       <!-- The successor's own first turn: the brief forge delivered, drawn as
