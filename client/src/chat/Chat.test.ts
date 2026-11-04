@@ -24,9 +24,10 @@ import {
   measured as listMeasured,
   setElement,
   setMeasured,
+  stallNextSwap,
   stuckEveryMount,
   stuckOnce,
-  stuckRowsOnce,
+  stuckRangeOnce,
 } from './testing/records';
 
 installResizeObserver();
@@ -64,6 +65,9 @@ vi.mock('../perf', () => ({
 }));
 
 const LEAD: SessionSlot = { org: 'Busytools', project: 'forge', label: 'lead' };
+
+/** A second seat in the same project, which a switch moves the column to. */
+const W1: SessionSlot = { ...LEAD, label: 'w1' };
 
 /** The column's own measure, as the drawn mark carries it. */
 interface ColumnMeasure {
@@ -2567,24 +2571,72 @@ describe('a list that mounted and drew no rows', () => {
   });
 
   /**
-   * **A measured viewport is not a drawn row** (#2752, 2026-11-04): the black
-   * first open held its turns, its list reported a viewport, and the list drew
-   * no rows - until a seat switch remounted it. The one forced re-measure
-   * exists for exactly that state, so it must ask whether a row drew, not
-   * whether the list measured.
+   * **A measured viewport is not a drawn row** (#2825, 2026-11-04). `virtua`
+   * freezes its range while a scroll correction is parked, and one it cannot
+   * scroll to is never cleared - so the mount reports a healthy viewport and
+   * computes `[0, -1]` for the life of the list. That is the black first open
+   * of 2026-11-04, and the one forced re-measure exists for it, so it must ask
+   * whether a row drew rather than whether the list measured.
    */
   it('forces a re-measure when the list measured its viewport and drew no rows', async () => {
     const server = stub();
-    stuckRowsOnce();
+    stuckRangeOnce();
     setMeasured(1_005, 1_005);
     draw({}, server);
     server.answer([turn('t1')]);
     await painted();
 
     expect(gate.mounts, 'a mount that reported a viewport and drew nothing was replaced').toBe(2);
-    expect(document.querySelectorAll('[data-t]'), 'the rows the seat held now draw').toHaveLength(
-      1,
+    expect(
+      document.querySelector('[data-t]')?.getAttribute('data-t'),
+      'the row it holds drew',
+    ).toBe('t1');
+  });
+
+  /**
+   * **A seat the column kept is checked again when the column returns to it**
+   * (#2825). Two seats that both hold rows share one list - the switch hands
+   * it the other conversation - so no mount happens and the viewport's own
+   * effect never re-runs; the switch is the only thing that can ask, and a
+   * range one seat froze would otherwise follow the next one in.
+   */
+  it('re-checks the list when a seat the column kept comes back', async () => {
+    const server = stub();
+    setMeasured(1_005, 1_005);
+    const column = mount(SeatSwitch, {
+      target: document.body,
+      props: { connection: server.connection, first: LEAD, second: W1 },
+    }) as unknown as { flip: () => void };
+    app = column;
+    flushSync();
+
+    // Both seats drawn, so the column holds each: the return moves the list's
+    // data rather than mounting a new one.
+    server.answer([turn('a1')]);
+    await painted();
+    expect(document.querySelector('[data-t]')?.getAttribute('data-t'), 'the first seat drew').toBe(
+      'a1',
     );
+    column.flip();
+    flushSync();
+    server.send({ kind: 'page', conversation: W1, turns: [turn('b1')], cursor: null });
+    await painted();
+    expect(document.querySelector('[data-t]')?.getAttribute('data-t'), 'the other seat drew').toBe(
+      'b1',
+    );
+
+    // Back to the first seat, and this time the list draws nothing of it: the
+    // switch's own check is what has to notice.
+    stallNextSwap();
+    column.flip();
+    flushSync();
+    await painted();
+
+    expect(gate.mounts, "the returning seat's list was replaced").toBe(3);
+    expect(
+      document.querySelector('[data-t]')?.getAttribute('data-t'),
+      'the returning seat drew its kept row',
+    ).toBe('a1');
   });
 
   /**
@@ -2636,9 +2688,12 @@ describe('a list that mounted and drew no rows', () => {
  * **The store and the seat's read are two answers to one question.**
  *
  * A column mounting on a seat the client already holds seeds from the store,
- * and the seat's own read answers separately. Neither answer may leave the
- * column holding nothing while the other holds rows: an empty read is a read
- * that failed or was cut, not the conversation ending.
+ * and the seat's own read answers separately. An empty page against a record
+ * that holds rows is a read that failed or was cut - not a conversation that
+ * ended - so it may not replace the rows the store backed.
+ *
+ * **These pin an ordering that already held**; they are no part of the reason
+ * the list's re-measure changed, and they passed before it.
  */
 describe('the store seed and the seat read', () => {
   const turn = (key: string): unknown => ({
@@ -2662,17 +2717,20 @@ describe('the store seed and the seat read', () => {
     server.seed(LEAD, { conversation: { turns: [turn('t1')], cursor: 'c1' } });
     draw({}, server);
 
-    expect(document.querySelectorAll('[data-t]'), 'the store seed draws').toHaveLength(1);
+    expect(document.querySelector('[data-t]')?.getAttribute('data-t'), 'the store seed draws').toBe(
+      't1',
+    );
 
-    // The seat's read answers with no rows and no cursor: a read that failed
-    // or was cut short, which must not empty a conversation the store backed.
+    // The seat's read answers with no rows and no cursor. Against a record
+    // that holds rows that is a read that failed or was cut short, so it may
+    // not empty the conversation the store backed.
     server.answer([], null);
     await painted();
 
     expect(
-      document.querySelectorAll('[data-t]'),
-      'an empty read leaves the store-backed rows drawn',
-    ).toHaveLength(1);
+      document.querySelector('[data-t]')?.getAttribute('data-t'),
+      'an empty read leaves the store-backed row drawn',
+    ).toBe('t1');
   });
 
   it('draws a snapshot that arrives after the column mounted', async () => {
@@ -2689,9 +2747,35 @@ describe('the store seed and the seat read', () => {
     await painted();
 
     expect(
-      document.querySelectorAll('[data-t]'),
+      document.querySelector('[data-t]')?.getAttribute('data-t'),
       'the snapshot that landed after the mount reaches the column',
+    ).toBe('t1');
+  });
+
+  /**
+   * **A record whose page holds nothing is answered by asking for the page.**
+   * A visited seat keeps its subscription, so a return gets no snapshot; a
+   * seed that gave up on an empty record left the column on the band's read
+   * wait for good even when the transcript still had history to name.
+   */
+  it('asks for the page when the store record holds no turns', async () => {
+    const server = stub();
+    setMeasured(1_005, 1_005);
+    server.seed(LEAD, { conversation: { turns: [], cursor: null } });
+    draw({}, server);
+
+    expect(
+      server.asks.filter((ask) => ask.kind === 'more'),
+      'the empty record asks for its page',
     ).toHaveLength(1);
+
+    server.answer([turn('t1')]);
+    await painted();
+
+    expect(
+      document.querySelector('[data-t]')?.getAttribute('data-t'),
+      'the page the ask fetched draws',
+    ).toBe('t1');
   });
 });
 

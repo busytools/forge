@@ -74,7 +74,8 @@ export function clear(): void {
   boxes.items = [];
   element.quantise = 0;
   gate.misses = 0;
-  gate.rowsMisses = 0;
+  gate.rangeMisses = 0;
+  gate.stalls = 0;
   gate.mounts = 0;
 }
 
@@ -87,12 +88,13 @@ export function clear(): void {
  * the store holds turns. `misses` is how many upcoming mounts miss it;
  * `Infinity` makes every mount miss, which is what pins the column's bound.
  *
- * **A measured viewport is not a drawn row.** `virtua` can report a viewport
- * and still compute an empty range - the black first open of 2026-11-04 - so
- * `rowsMisses` is the other mount failure, and the two are separate facts: a
- * mount can miss the rows having measured its viewport.
+ * **A measured viewport is not a drawn row** (#2825's other state, measured
+ * 2026-11-04). `virtua` freezes its range while a scroll correction is parked,
+ * and one it cannot scroll to is never cleared - so a mount can report a
+ * healthy viewport and draw nothing. `rangeMisses` is that mount; the two
+ * failures are separate facts, and a mount can draw no rows having measured.
  */
-export const gate = { misses: 0, rowsMisses: 0, mounts: 0 };
+export const gate = { misses: 0, rangeMisses: 0, stalls: 0, mounts: 0 };
 
 /** Make the next list mount miss its viewport measurement, as #2825's did. */
 export function stuckOnce(): void {
@@ -107,13 +109,22 @@ export function stuckEveryMount(): void {
 }
 
 /**
- * Make the next list mount report its viewport and draw no rows: the empty
- * range over a measured viewport that leaves the column black while its
- * conversation holds turns.
+ * Make the next list mount draw no rows while reporting its viewport: the
+ * frozen range `virtua` leaves when a parked scroll correction can never be
+ * applied, which leaves the column black over turns it holds.
  */
-export function stuckRowsOnce(): void {
-  gate.rowsMisses = 1;
+export function stuckRangeOnce(): void {
+  gate.rangeMisses = 1;
   gate.mounts = 0;
+}
+
+/**
+ * Arm the next change of rows this list is handed to leave it drawing nothing:
+ * a seat's kept conversation swapped onto a list whose range the seat before
+ * it froze. The mount itself is healthy; the range is not.
+ */
+export function stallNextSwap(): void {
+  gate.stalls += 1;
 }
 
 /** The last pair the list was handed. */

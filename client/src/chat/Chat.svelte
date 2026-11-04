@@ -1164,6 +1164,11 @@
         cancelAnimationFrame(checkFrame);
         checkFrame = null;
       }
+      // **A switch asks the arriving seat's list its own question** (#2825).
+      // The column keeps one list across two seats that both hold rows, so
+      // the measure is not re-run by a mount - and a range the last seat
+      // froze would otherwise follow this one in.
+      scheduleMeasureCheck();
       // A restore still on its way belongs to the seat that is going.
       if (restoreFrame !== null) {
         cancelAnimationFrame(restoreFrame);
@@ -1490,12 +1495,13 @@
    * with room to draw them. One mount per open, so a list still empty after it
    * is not re-mounted on a loop.
    *
-   * **A drawn row is the only healthy answer.** A viewport the list reports is
-   * not one: a list that measured its own viewport can still compute an empty
-   * range, which is the black first open of 2026-11-04 - the column held its
-   * turns, the list reported a size, and nothing drew until a seat switch
-   * remounted it. Asking the rows is what tells that state from a list that
-   * has measured and is drawing next frame.
+   * **A drawn row is the only healthy answer, not a reported viewport.**
+   * `virtua` answers its last range while a scroll correction is parked, and a
+   * correction the list cannot scroll to - the content already fits, or the
+   * offset is clamped at an end - is never cleared. The range then stays the
+   * pre-measure `[0, -1]` for the life of the mount while the viewport reads
+   * healthy, which is the black first open of 2026-11-04: 652.25px reported,
+   * no row drawn, until a seat switch remounted the list.
    */
   function checkMeasured(): void {
     checkFrame = null;

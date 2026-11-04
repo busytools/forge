@@ -1695,7 +1695,9 @@ export class Chat {
    */
   private seedFromStore(): void {
     if (this.held.loaded) return;
-    const snapshot = this.connection.store({ session: this.slot })?.snapshot();
+    const store = this.connection.store({ session: this.slot });
+    if (store === undefined) return;
+    const snapshot = store.snapshot();
     if (snapshot === null || snapshot === undefined) return;
     const data = snapshot as { conversation?: unknown };
     const conversation = (data.conversation ?? {}) as {
@@ -1705,9 +1707,14 @@ export class Chat {
     };
     cronNames.seed(conversation.cron_names);
     const rows = pageTurns(conversation.turns);
-    // A store record with no turns seeds nothing; the page's own subscribe
-    // answers it.
-    if (rows.length === 0) return;
+    // **A record whose page holds nothing is an answer, and it is asked about
+    // the way the subscribe's own is.** Seeding nothing here left a return to
+    // an empty seat on the band's read wait for good: a visited seat keeps its
+    // subscription, so no later snapshot would say anything else.
+    if (rows.length === 0) {
+      this.ask(null);
+      return;
+    }
     const cursor = typeof conversation.cursor === 'string' ? conversation.cursor : null;
     this.takePage(rows, cursor, 'newest');
   }
