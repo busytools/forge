@@ -82,9 +82,9 @@ export interface Store {
    */
   push(update: SessionUpdate): void;
   /**
-   * No page is drawing this seat: from here the tail keeps only what the
-   * seat's running answer folds rather than every frame it streams while
-   * nobody reads.
+   * No page is drawing this seat: from here the tail keeps only what its two
+   * readers fold - the newest chat edge and the voice states - rather than
+   * every frame a busy seat streams while nobody reads.
    */
   compact(): void;
   /**
@@ -121,31 +121,44 @@ function chatFrame(update: SessionUpdate): unknown {
   return (update as { chat_appended?: { msg?: unknown } }).chat_appended?.msg;
 }
 
-/** The updates that are not chat frames: the tail's other kinds, in order. */
-function otherUpdates(updates: SessionUpdate[]): SessionUpdate[] {
-  return updates.filter((waiting) => variantOf(waiting)[0] !== 'chat_appended');
+/**
+ * What a seat's store is read for once no page holds the seat.
+ *
+ * `runningAt` (`chat/conversation.ts`) folds a turn's edges out of the chat
+ * frames, and the voice control reads the listener count off `voice_mode_state`.
+ * Nothing else has a reader: the chat draws from its own conversation.
+ */
+function keptVariant(update: SessionUpdate): 'chat' | 'voice' | null {
+  const [name] = variantOf(update);
+  if (name === 'chat_appended') return movesInFlight(chatFrame(update)) ? 'chat' : null;
+  return name === 'voice_mode_state' ? 'voice' : null;
 }
 
 /**
  * A seat's tail while no page holds the seat.
  *
- * Its only reader, `runningAt` (`chat/conversation.ts`), moves only on a
- * turn's edges, so the newest edge is all the chat frames it keeps.
+ * **The chat edge is appended last and the voice states only ever grow.** The
+ * voice reader's cursor reads a front drop or a reset; replacing the edge can
+ * shift its index by one and replay a voice state, never skip one, and a new
+ * voice state always lengthens the list.
  */
 function settledTail(updates: SessionUpdate[], update: SessionUpdate): SessionUpdate[] {
-  if (variantOf(update)[0] !== 'chat_appended') return [...updates, update];
-  if (!movesInFlight(chatFrame(update))) return updates;
-  // The newest edge supersedes every one before it.
-  return [...otherUpdates(updates), update];
+  const kept = keptVariant(update);
+  if (kept === 'voice') return [...updates, update];
+  if (kept === null) return updates;
+  // The newest edge supersedes every one before it; the voice states stay.
+  const withoutChat = updates.filter((waiting) => variantOf(waiting)[0] !== 'chat_appended');
+  return [...withoutChat, update];
 }
 
 /** The tail cut to that rule, for a seat whose page has just gone. */
 function compactedTail(updates: SessionUpdate[]): SessionUpdate[] {
+  const voice = updates.filter((waiting) => variantOf(waiting)[0] === 'voice_mode_state');
   const chat = updates.filter(
     (waiting) => variantOf(waiting)[0] === 'chat_appended' && movesInFlight(chatFrame(waiting)),
   );
   const newest = chat[chat.length - 1];
-  return newest === undefined ? otherUpdates(updates) : [...otherUpdates(updates), newest];
+  return newest === undefined ? voice : [...voice, newest];
 }
 
 function createStore(subject: Subject, state: StoreState = { kind: 'loading' }): Store {
@@ -168,7 +181,14 @@ function createStore(subject: Subject, state: StoreState = { kind: 'loading' }):
     compact: () => {
       if (!isSeat(subject) || compacted) return;
       compacted = true;
-      inner.update((held) => ({ ...held, updates: compactedTail(held.updates) }));
+      inner.update((held) => ({
+        ...held,
+        updates: compactedTail(held.updates),
+        // The tail is complete for its readers now. Keeping the ceiling's
+        // count would make `runningAt` refuse the tail it can still answer
+        // from and read a stale snapshot instead.
+        dropped: 0,
+      }));
     },
     push: (update) => {
       if (variantOf(update)[0] === 'voice_audio') {

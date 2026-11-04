@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
+import { runningAt } from './chat/conversation';
 import type { SessionUpdate } from './protocol';
-import { inFlightOf, REPLACES } from './session/apply';
+import { inFlightOf, REPLACES, variantOf } from './session/apply';
 import { Stores } from './stores';
 
 const LEAD = { org: 'TestOrg', project: 'proj', label: 'lead' } as const;
@@ -53,6 +54,59 @@ describe('the stores one connection holds', () => {
     store.push(spoke('after the result', 502));
     expect(foldTail(store.updates(), false)).toBe(false);
     expect(store.updates().length).toBeLessThan(5);
+  });
+
+  /**
+   * **A busy seat is the one whose ceiling has dropped.** The drain must leave
+   * a tail `runningAt` still reads: the ceiling's count describes a list that
+   * is gone, and a stale snapshot would answer in its place.
+   */
+  it('compacts a busy tail to the frames its readers fold, and runningAt answers from it', () => {
+    const stores = new Stores();
+    const seat = { session: LEAD };
+    const store = stores.open(seat);
+    // A stale whole read: the snapshot says nothing is running.
+    store.set({ header: { turn_in_flight: false } });
+    // A busy seat overflows the ceiling, so the tail alone is incomplete.
+    for (let at = 0; at < 600; at += 1) store.push(spoke(`busy-${at}`, at));
+    expect(store.dropped(), 'precondition: the tail overflowed the ceiling').toBeGreaterThan(0);
+
+    // The page leaves mid-turn; the newest edge is the turn opening.
+    store.push(opening('s'));
+    store.compact();
+
+    expect(store.dropped(), 'the compacted tail still read as incomplete').toBe(0);
+    expect(store.updates().length, 'a left seat kept frames nothing reads').toBeLessThan(5);
+    const connection = { store: () => store };
+    expect(runningAt(connection, LEAD, false), 'runningAt read the stale snapshot').toBe(true);
+  });
+
+  /**
+   * The tail's two readers fold two variants: `runningAt` the newest chat
+   * edge, the voice control its listener state. Everything else - a file
+   * index amongst it - is no reader's and goes.
+   */
+  it('keeps only the variants its readers fold after the page has left', () => {
+    const stores = new Stores();
+    const seat = { session: LEAD };
+    const store = stores.open(seat);
+    store.set({ header: { turn_in_flight: false } });
+    store.push(fileIndexFrame());
+    store.push(voiceState(1));
+    store.push(spoke('busy', 1));
+    store.push(opening('s'));
+    store.compact();
+
+    for (let at = 0; at < 100; at += 1) store.push(spoke(`after-${at}`, at));
+    store.push(fileIndexFrame());
+    store.push(voiceState(2));
+    store.push(resultFrame());
+
+    const names = store.updates().map((update) => variantOf(update)[0]);
+    expect(names, 'a file index was kept').not.toContain('file_index_changed');
+    expect(names, 'the voice state was dropped').toContain('voice_mode_state');
+    expect(store.updates().length, 'the mixed tail grew').toBeLessThan(5);
+    expect(foldTail(store.updates(), false), 'the newest edge did not answer').toBe(false);
   });
 
   /** A snapshot supersedes the updates before it, so they go with it. */
@@ -188,6 +242,28 @@ function spoke(text: string, at = 0): SessionUpdate {
 /** The frame a turn ends on. */
 function resultFrame(): SessionUpdate {
   return { chat_appended: { key: LEAD, msg: { type: 'result', subtype: 'success' } } };
+}
+
+/** A file-index push, far larger than anything either reader folds. */
+function fileIndexFrame(): SessionUpdate {
+  return {
+    file_index_changed: {
+      key: LEAD,
+      index: {
+        root: '/tmp',
+        files: Array.from({ length: 5_000 }, (_, at) => ({
+          path: `crates/file-${at}.rs`,
+          size: 1_000 + at,
+          mtime: at,
+        })),
+      },
+    },
+  };
+}
+
+/** The voice control's listener count, which its reader folds. */
+function voiceState(listeners: number): SessionUpdate {
+  return { voice_mode_state: { key: LEAD, listeners } };
 }
 
 /** What `runningAt` would answer from a tail, folded the way it folds it. */
