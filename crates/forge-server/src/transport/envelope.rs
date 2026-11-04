@@ -1198,6 +1198,54 @@ mod tests {
         assert!(answering, "and so does the capability the client declared");
     }
 
+    /// **The exact frames Dock.svelte writes for a vault answer decode.** The
+    /// fixture is the same file the client test asserts the dock writes, so
+    /// neither side can drift into a different nesting on its own.
+    #[test]
+    fn the_docks_vault_answer_frames_decode() {
+        use forge_primitives::vault::VaultAskDecision;
+
+        let frames: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../client/src/composer/vault-answer-frames.json"
+        ))
+        .expect("the shared frames are json");
+
+        for name in ["approve", "send_back"] {
+            let frame = frames.get(name).expect("the shared frame exists");
+            let json = serde_json::json!({
+                "kind": "command",
+                "command": frame,
+                "reply_to": null,
+            })
+            .to_string();
+            let ClientMessage::Command { command, reply_to } =
+                serde_json::from_str(&json).expect("the dock's answer decodes")
+            else {
+                panic!("the dock's answer decoded into another message");
+            };
+            assert!(reply_to.is_none());
+            let Command::RespondVaultAsk { answer, .. } = *command else {
+                panic!("the dock's answer carries another command");
+            };
+            match name {
+                "approve" => {
+                    assert_eq!(answer.decision, VaultAskDecision::Approve);
+                    assert_eq!(answer.master_password.as_deref(), Some("open sesame"));
+                    assert_eq!(answer.two_factor.as_deref(), Some("123456"));
+                }
+                _ => assert!(
+                    matches!(
+                        &answer.decision,
+                        VaultAskDecision::SendBack { note }
+                            if note == "ask for the password, not the TOTP"
+                    ),
+                    "the send-back variant survives: {:?}",
+                    answer.decision,
+                ),
+            }
+        }
+    }
+
     /// The models subject hears its own landing and the load's signal -
     /// the only push that says the models finished loading - and nothing
     /// else. It is the whole live half of that page: a subscriber that

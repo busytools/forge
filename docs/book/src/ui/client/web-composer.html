@@ -282,6 +282,13 @@
     background: var(--s1); color: var(--text); font-family: var(--mono);
     font-size: var(--fs-data); white-space: pre-wrap; overflow-wrap: anywhere;
     max-height: 180px; overflow-y: auto; }
+  /* A locked vault card's unlock fields: boxes, because what is typed is a
+     credential, not the reader's own words. */
+  .dock .unlock { display: flex; gap: 8px; flex-wrap: wrap; }
+  .dock .unlock .fld { flex: 1 1 160px; min-width: 0; padding: 8px 10px;
+    border: 1px solid var(--line); border-radius: 8px; background: var(--s1);
+    color: var(--text); font-family: var(--mono); font-size: var(--fs-data); }
+  .dock .unlock .fld .ph { color: var(--dim); }
   .dock .opts { display: flex; flex-direction: column; gap: 1px; }
   .opt { display: flex; align-items: flex-start; gap: 10px; padding: 6px 9px;
     border-radius: 9px; font-size: var(--fs-base); }
@@ -336,6 +343,8 @@
   .dock .btn.p { border-color: rgba(244,118,0,.5); color: var(--hot);
     background: rgba(244,118,0,.1); }
   .dock .btn.d { border-color: rgba(224,104,62,.45); color: var(--bad); }
+  /* An action that waits on the card's own field: drawn, but not available. */
+  .dock .btn.off { opacity: .45; }
   /* The send-back's words, in the row the card opens under its verbs. */
   .dock .sendback { display: flex; align-items: flex-start; gap: 8px; }
   .dock .sendback .fld { flex: 1; min-width: 0; color: var(--text);
@@ -433,6 +442,7 @@
   <symbol id="i-stop" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="12" height="12" x="6" y="6" rx="2.5" fill="currentColor" stroke="none"/></symbol>
   <symbol id="i-file" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></symbol>
   <symbol id="i-bell" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 6 2 7 2 7H4s2-1 2-7"/><path d="M10.5 20a2 2 0 0 0 3 0"/></symbol>
+  <symbol id="i-decide" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v6"/><path d="M12 9 7.5 12.5V17"/><path d="M12 9l4.5 3.5V17"/><circle cx="7.5" cy="19" r="1.6"/><circle cx="16.5" cy="19" r="1.6"/></symbol>
   <symbol id="i-mic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="10" height="12" x="7" y="3" rx="5"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v3"/></symbol>
   <symbol id="i-mic-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 2l20 20"/><path d="M9 9v3a3 3 0 0 0 5.12 2.12"/><path d="M15 9.34V5a3 3 0 0 0-5.94-.6"/><path d="M17 16.95A7 7 0 0 1 5 12v-2"/><path d="M19 10v2a7 7 0 0 1-.11 1.23"/><path d="M12 19v3"/></symbol>
   <symbol id="i-sound" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M19 5a10 10 0 0 1 0 14"/></symbol>
@@ -720,9 +730,15 @@ on the folded bar.</p>
             <span class="t">orgs.Default.projects.forge.max_workers</span>
             <svg class="chevc" width="13" height="13" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M7.823 1.677 4.927 4.573A.25.25 0 0 0 5.104 5H7.25v3.236a.75.75 0 1 0 1.5 0V5h2.146a.25.25 0 0 0 .177-.427L8.177 1.677a.25.25 0 0 0-.354 0Z"/></svg></div>
         </div></div></div></div>
+        <div class="surf" style="margin-top:8px"><div class="slot"><div class="ask-body"><div class="dock">
+          <div class="qbar"><span class="qm"><svg class="ic"><use href="#i-decide"/></svg></span>
+            <span class="t">read the password for 'bank'</span>
+            <svg class="chevc" width="13" height="13" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M7.823 1.677 4.927 4.573A.25.25 0 0 0 5.104 5H7.25v3.236a.75.75 0 1 0 1.5 0V5h2.146a.25.25 0 0 0 .177-.427L8.177 1.677a.25.25 0 0 0-.354 0Z"/></svg></div>
+        </div></div></div></div>
       </div>
       <p class="note" style="margin:8px 0 0">Question, permission, held post, document hand-off,
-      browser hand-off and a held configuration write: one line each, the kind's mark leading.</p>
+      browser hand-off, a held configuration write and a held vault call: one line each, the
+      kind's mark leading.</p>
     </div>
   </div>
   <div class="row">
@@ -754,7 +770,40 @@ on the folded bar.</p>
       <p class="note" style="margin:8px 0 0">A held write shows the key and both values verbatim,
       because the reader approves the edit itself rather than a summary of it.</p>
     </div>
-    <div class="col"></div>
+    <div class="col">
+      <div class="lab">held vault call, locked <span class="h">386px</span></div>
+      <div class="comp"><div class="surf">
+        <div class="live-row">
+          <span class="live-door att"><svg class="ic"><use href="#i-decide"/></svg>vault waiting</span>
+          <span class="live-fig"><span class="ring"></span><span>0:42</span>
+            <span class="sep">&middot;</span><span>thinking 1.2k</span></span>
+          <span class="div"></span>
+          <span class="live-more">+8</span>
+        </div>
+        <div class="slot"><div class="ask-body"><div class="dock">
+          <div class="d-head"><span class="tag warn">&#9888; needs you</span>
+            <span class="q mono">vault &middot; vault_update</span>
+            <span class="chevb"><svg class="ic"><use href="#i-down"/></svg></span></div>
+          <div class="d-q">change the login for 'bank'</div>
+          <div class="desc mono">id: cipher-id</div>
+          <div class="desc">the change, with every secret value masked</div>
+          <div class="wv mono">password: ********</div>
+          <div class="unlock">
+            <span class="fld"><span class="ph">master password</span></span>
+            <span class="fld"><span class="ph">2FA code (optional)</span></span>
+          </div>
+          <div class="acts"><span class="btn p off">Approve</span>
+            <span class="btn">Send back with a note</span><span class="btn d">Decline</span></div>
+          <div class="keys"><span><span class="k">tab</span> between the fields and the verbs</span>
+            <span><span class="k">&#9166;</span> activates</span>
+            <span><span class="k">esc</span> declines</span></div>
+        </div></div></div>
+      </div></div>
+      <p class="note" style="margin:8px 0 0">A locked card cannot name the item - naming it needs
+      the keys - so it draws the id, the masked diff and an attachment's name, then the masked
+      master-password field and the optional 2FA code. Approve waits, drawn unavailable, until the
+      password is entered. The draft carries no secret value; the password rides only the approval.</p>
+    </div>
   </div>
   <div class="row">
     <div class="col">

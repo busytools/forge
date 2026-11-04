@@ -6,6 +6,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { hideBrowser, onModifier, onModifierChord, showBrowser } from '../browser/link';
 import { openSurface, selectTab, surface } from '../browser/surface.svelte';
 import { repoPath } from '../repo';
+// One frame shared with forge-server's decode test, so the dock's literal and
+// the Rust decoder cannot drift into different nesting.
+import vaultAnswerFrames from './vault-answer-frames.json';
 
 /**
  * The shell's own door, mock-able so both halves of Open's claim are testable
@@ -130,6 +133,7 @@ import {
   SLOT,
   slackDraftAsk,
   take,
+  vaultAsk,
   wire,
   type Wire,
 } from './testing';
@@ -6693,6 +6697,201 @@ describe('the dock', () => {
         },
       },
     ]);
+  });
+
+  it('draws a held vault call with the facts it would act on, and no secret value', () => {
+    open({
+      record: record({
+        pending_asks: [
+          vaultAsk({
+            tool: 'vault__update',
+            summary: "change the login for 'bank'",
+            masked_diff: 'password: ********',
+            attachment: { name: 'notes.txt', size: 97, replaces: null },
+            // **A value planted on an unknown key must never reach the card.**
+            // The draft's contract is that it carries no secret, and drawing
+            // only the fields the card names is what keeps that true whatever
+            // a newer server puts beside them.
+            secret: 'hunter2-never-drawn',
+          }),
+        ],
+      }),
+    });
+
+    expect(drawn(), 'the summary leads').toContain("change the login for 'bank'");
+    expect(drawn(), 'the tool is named as its wire spelling').toContain('vault__update');
+    expect(drawn(), 'the item').toContain('bank');
+    expect(drawn(), 'and its id').toContain('cipher-id');
+    expect(drawn(), 'the field').toContain('password');
+    expect(drawn(), 'the masked diff').toContain('password: ********');
+    expect(drawn(), 'the attachment').toContain('notes.txt (97 bytes)');
+    expect(drawn(), 'no secret planted beside the draft is drawn').not.toContain('hunter2');
+    expect(
+      document.querySelector('.dock input[type="password"]'),
+      'an unlocked card draws no unlock field',
+    ).toBeNull();
+  });
+
+  it('approves a vault call by its own id, with no unlock material when the session is open', () => {
+    const harness = open({ record: record({ pending_asks: [vaultAsk()] }) });
+
+    action('Approve').click();
+    flushSync();
+
+    expect(commands(harness)).toEqual([
+      {
+        respond_vault_ask: {
+          key: SLOT,
+          id: '0192e1c0-0000-7000-8000-0000000000cc',
+          answer: { decision: 'approve' },
+        },
+      },
+    ]);
+    expect(document.querySelector('.dock'), 'the dock goes with the answer').toBeNull();
+  });
+
+  it('unlocks before approving a locked vault call, and carries the password and 2FA', () => {
+    const harness = open({
+      record: record({ pending_asks: [vaultAsk({ needs_unlock: true })] }),
+    });
+
+    const password = document.querySelector('.dock input[type="password"]');
+    if (!(password instanceof HTMLInputElement)) {
+      throw new Error('the locked card drew no masked password field');
+    }
+    expect(
+      [...document.querySelectorAll('.dock .unlock input')],
+      'the optional 2FA field is drawn beside it',
+    ).toHaveLength(2);
+    expect(
+      action('Approve').hasAttribute('disabled'),
+      'the approval is what unlocks, so it waits for the password',
+    ).toBe(true);
+
+    password.value = 'open sesame';
+    password.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    expect(action('Approve').hasAttribute('disabled'), 'a password makes it available').toBe(false);
+
+    const twoFactor = [...document.querySelectorAll<HTMLInputElement>('.dock .unlock input')][1];
+    if (twoFactor === undefined) throw new Error('the locked card drew no 2FA field');
+    twoFactor.value = '123456';
+    twoFactor.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+
+    action('Approve').click();
+    flushSync();
+
+    expect(commands(harness)).toEqual([vaultAnswerFrames.approve]);
+  });
+
+  it('declines a locked vault call with Escape in a masked field', () => {
+    const harness = open({
+      record: record({ pending_asks: [vaultAsk({ needs_unlock: true })] }),
+    });
+
+    const password = document.querySelector('.dock input[type="password"]');
+    if (!(password instanceof HTMLInputElement)) {
+      throw new Error('the locked card drew no masked password field');
+    }
+    password.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    flushSync();
+
+    expect(commands(harness)).toEqual([
+      {
+        respond_vault_ask: {
+          key: SLOT,
+          id: '0192e1c0-0000-7000-8000-0000000000cc',
+          answer: { decision: 'decline' },
+        },
+      },
+    ]);
+  });
+
+  it('sends a vault call back with the note the reader writes', () => {
+    const harness = open({ record: record({ pending_asks: [vaultAsk()] }) });
+
+    action('Send back with a note').click();
+    flushSync();
+
+    const note = document.querySelector('.dock .sendback textarea');
+    if (!(note instanceof HTMLTextAreaElement)) throw new Error('the dock drew no note field');
+    expect(document.activeElement, 'the field arrives with the keyboard').toBe(note);
+    expect(sendBackAction().hasAttribute('disabled'), 'no words, no answer').toBe(true);
+
+    note.value = 'ask for the password, not the TOTP';
+    note.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    expect(sendBackAction().hasAttribute('disabled'), 'words make it available').toBe(false);
+
+    sendBackAction().click();
+    flushSync();
+
+    expect(commands(harness)).toEqual([vaultAnswerFrames.send_back]);
+  });
+
+  it('declines a vault call without running it', () => {
+    const harness = open({ record: record({ pending_asks: [vaultAsk()] }) });
+
+    action('Decline').click();
+    flushSync();
+
+    expect(commands(harness)).toEqual([
+      {
+        respond_vault_ask: {
+          key: SLOT,
+          id: '0192e1c0-0000-7000-8000-0000000000cc',
+          answer: { decision: 'decline' },
+        },
+      },
+    ]);
+  });
+
+  it('clears the vault sending line when the call resolves, even for its own answer', () => {
+    const harness = open({ record: record({ pending_asks: [vaultAsk()] }) });
+
+    action('Send back with a note').click();
+    flushSync();
+    const note = document.querySelector('.dock .sendback textarea');
+    if (!(note instanceof HTMLTextAreaElement)) throw new Error('the dock drew no note field');
+    note.value = 'ask for the password, not the TOTP';
+    note.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    sendBackAction().click();
+    flushSync();
+    expect(drawn(), 'the press is acknowledged while it is in flight').toContain(
+      'Sending your note to the agent',
+    );
+
+    harness.say({
+      kind: 'update',
+      update: {
+        vault_ask_resolved: {
+          key: { org: 'Busytools', project: 'forge', label: 'lead' },
+          id: '0192e1c0-0000-7000-8000-0000000000cc',
+          ending: 'sent_back',
+        },
+      },
+    });
+    flushSync();
+    expect(drawn(), 'the sending line goes with the settled call').not.toContain(
+      'Sending your note to the agent',
+    );
+  });
+
+  it('draws a vault refusal where the card stood', () => {
+    const harness = open({ record: record({ pending_asks: [vaultAsk()] }) });
+
+    action('Decline').click();
+    flushSync();
+    harness.say({
+      kind: 'error',
+      what: 'respond_vault_ask',
+      why: 'that vault call is no longer waiting: it has been answered',
+    });
+    flushSync();
+
+    expect(drawn(), 'the reason is not dropped').toContain('no longer waiting');
   });
 
   it('posts the held draft from the verb the reader picks, addressed by its own id', () => {

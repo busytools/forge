@@ -997,6 +997,66 @@ describe('applyUpdate', () => {
         'a resolution naming another write leaves this one parked',
       ).toBe(parked);
     });
+
+    it('parks a held vault call ahead of the asks already waiting, and clears it by its own id', () => {
+      const kinds = (held: SessionRecord): unknown[] =>
+        held.pending_asks.map((ask) => (ask as Record<string, unknown>)['kind']);
+
+      const asked = applyUpdate(empty(), {
+        question_request: {
+          key: SLOT,
+          tool_id: 'toolu_q',
+          request: { tool_call: { tool_call_id: 'toolu_q' }, prompt: { question: 'which?' } },
+        },
+      });
+      const draft = {
+        id: 'v1',
+        tool: 'vault__get',
+        summary: "read the password for 'bank'",
+        needs_unlock: true,
+      };
+      const parked = applyUpdate(asked, { vault_ask_pending: { key: SLOT, draft } });
+
+      expect(kinds(parked), 'the call leads the question that was already waiting').toEqual([
+        'vault',
+        'question',
+      ]);
+      expect(
+        kinds(applyUpdate(parked, { vault_ask_resolved: { key: SLOT, id: 'v1' } })),
+        'and its resolution falls back to the question',
+      ).toEqual(['question']);
+      expect(
+        applyUpdate(parked, { vault_ask_resolved: { key: SLOT, id: 'v2' } }),
+        'a resolution naming another call leaves this one parked',
+      ).toBe(parked);
+    });
+
+    it('merges a restamped vault call in place when another call unlocks', () => {
+      const draft = {
+        id: 'v1',
+        tool: 'vault__get',
+        summary: "read the password for 'bank'",
+        needs_unlock: true,
+      };
+      const first = applyUpdate(empty(), { vault_ask_pending: { key: SLOT, draft } });
+      const both = applyUpdate(first, {
+        vault_ask_pending: { key: SLOT, draft: { ...draft, id: 'v2' } },
+      });
+      const rebased = applyUpdate(both, {
+        vault_ask_pending: { key: SLOT, draft: { ...draft, needs_unlock: false } },
+      });
+
+      const held = (asked: SessionRecord): { id: string; needsUnlock: boolean }[] =>
+        asked.pending_asks.map((ask) => {
+          const request = (ask as Record<string, unknown>)['request'] as Record<string, unknown>;
+          return { id: request['id'] as string, needsUnlock: request['needs_unlock'] as boolean };
+        });
+
+      expect(held(rebased), 'the restamp updates the call and keeps its place').toEqual([
+        { id: 'v1', needsUnlock: false },
+        { id: 'v2', needsUnlock: true },
+      ]);
+    });
   });
 
   describe('the composer', () => {
@@ -1425,7 +1485,7 @@ describe('applyUpdate', () => {
 });
 
 /**
- * Every variant `SessionUpdate` carries - 72 of them - read off the enum in
+ * Every variant `SessionUpdate` carries - 76 of them - read off the enum in
  * `crates/forge-workspace/src/protocol.rs` and held here as a set rather than
  * in any order: the assertions below filter over it, and the test beside the
  * enum reads it back to check the two carry the same names.
@@ -1511,6 +1571,8 @@ const EVERY_VARIANT = [
   'document_hand_off_resolved',
   'settings_write_pending',
   'settings_write_resolved',
+  'vault_ask_pending',
+  'vault_ask_resolved',
   'voice_audio',
   'voice_mode_state',
 ] as const;
@@ -1573,9 +1635,9 @@ describe('the variant list', () => {
     // raise it in the same edit that adds a variant, as the plan says.
     expect(
       EVERY_VARIANT.length,
-      'the census no longer carries every variant the enum declares (74 of them): a truncated ' +
+      'the census no longer carries every variant the enum declares (76 of them): a truncated ' +
         'census leaves the assertions below checking only the names it still has',
-    ).toBe(74);
+    ).toBe(76);
   });
 
   it('classifies every variant the core can send', () => {

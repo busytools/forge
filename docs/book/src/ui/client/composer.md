@@ -28,8 +28,8 @@ or scrolling sideways. A segment with something waiting - the review answer, a f
 takes its tone: the accent for attention, red for a failure.
 
 **The row carries the ask too.** While an ask holds the body, a chip at the row's front names it
-(the question's position, an approval, a held post, a document, a browser hand-off or a held
-configuration write) in the
+(the question's position, an approval, a held post, a document, a browser hand-off, a held
+configuration write or a held vault call) in the
 attention tone. When the reader has words in their draft, a `draft N lines · show` chip sits on
 the row: one click swaps the field into the body, the ask stays mounted and hidden behind it, and
 the ask's chip brings it back. Nothing the reader had chosen in the ask - a toggled set, the
@@ -77,6 +77,19 @@ at its foot, because the box's own notice row is not on screen while a prompt ho
 `settings__unset` call parks its key, what the key holds now and what the write would leave;
 the two verbs are `Write it` and `Don't write`, and the dock stands down on the answer the way
 a post's does. Every write is held, whether the key belongs to this project or another.
+
+**A held vault call draws the act, never a secret.** The card leads with the tool's own name
+and the core's one-line summary, then names the item and its id, the field the call reveals or
+changes, the diff with every secret value masked, and the attachment's name and size when the
+call moves one. The draft carries no secret value at all, so nothing the card draws can reveal
+one; the value reaches the tool's result only after an approval. A card parked while the
+session is locked carries only what the call's arguments already say - the item's id, the field
+or the masked diff, an attachment's name and size - because naming the item needs the keys; the
+name appears on a card parked after an unlock. A locked session adds a masked
+master-password field and an optional 2FA code, and `Approve` stays unavailable until the
+password is entered, because the approval is what performs the unlock. The two ride only an
+approval: a send-back or a decline runs nothing. Its verbs are `Approve`, `Send back with a
+note` and `Decline`, and the send-back opens the same words field a held post's does.
 
 ## The five lists
 

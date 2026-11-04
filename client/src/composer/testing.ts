@@ -188,6 +188,30 @@ export function settingsWriteAsk(over: Record<string, unknown> = {}): unknown {
   };
 }
 
+/**
+ * A held vault call as the core offers one, with whatever the test overrides.
+ *
+ * The request is the draft itself: the core sends it beside `kind`, and every
+ * field on it is safe to draw - no secret value has a key here.
+ */
+export function vaultAsk(over: Record<string, unknown> = {}): unknown {
+  return {
+    kind: 'vault',
+    request: {
+      id: '0192e1c0-0000-7000-8000-0000000000cc',
+      tool: 'vault__get',
+      summary: "read the password for 'bank'",
+      item_id: 'cipher-id',
+      item_name: 'bank',
+      field: 'password',
+      masked_diff: null,
+      attachment: null,
+      needs_unlock: false,
+      ...over,
+    },
+  };
+}
+
 /** A browser hand-off as the core offers one, with whatever the test overrides. */
 export function browserHandOffAsk(over: Record<string, unknown> = {}): unknown {
   return {

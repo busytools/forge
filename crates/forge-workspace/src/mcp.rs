@@ -24,6 +24,10 @@
 //!   enabled.
 //! - `voice` - `say`: one utterance spoken aloud to the person listening to
 //!   the seat. Renders as `mcp__forge__voice__say`.
+//! - `vault` - the Vaultwarden family: search, read with a reveal, create,
+//!   update, soft-delete and restore items, compute TOTP codes, move
+//!   attachments, and manage folders. Every call is held for the reader's
+//!   approval. Renders as `mcp__forge__vault__<name>`.
 //!
 //! Tool surface depends on the calling session's kind:
 //!
@@ -58,6 +62,7 @@ use crate::mcp::settings::facade::SettingsFacade;
 use crate::mcp::slack::facade::SlackFacade;
 use crate::mcp::systemone::facade::SystemOneFacade;
 use crate::mcp::tasks::facade::TasksFacade;
+use crate::mcp::vault::facade::VaultFacade;
 use crate::mcp::workers::facade::WorkerFacade;
 
 pub mod agents;
@@ -75,6 +80,7 @@ pub mod systemone;
 pub mod tasks;
 #[cfg(test)]
 pub(crate) mod test_support;
+pub mod vault;
 pub mod voice;
 pub mod workers;
 
@@ -101,11 +107,12 @@ pub enum McpFamily {
     Slack,
     Systemone,
     Voice,
+    Vault,
 }
 
 impl McpFamily {
     /// Every toggleable family, in wire order.
-    pub const ALL: [McpFamily; 7] = [
+    pub const ALL: [McpFamily; 8] = [
         McpFamily::Review,
         McpFamily::Cron,
         McpFamily::Tasks,
@@ -113,6 +120,7 @@ impl McpFamily {
         McpFamily::Slack,
         McpFamily::Systemone,
         McpFamily::Voice,
+        McpFamily::Vault,
     ];
 
     /// The default set: a worker whose row names none gets everything.
@@ -130,6 +138,7 @@ impl McpFamily {
             McpFamily::Slack => "slack",
             McpFamily::Systemone => "systemone",
             McpFamily::Voice => "voice",
+            McpFamily::Vault => "vault",
         }
     }
 
@@ -189,6 +198,7 @@ pub(crate) fn effective_mcp_families(
     stored: Option<&[String]>,
     systemone_available: bool,
     voice_available: bool,
+    vault_available: bool,
 ) -> BTreeSet<McpFamily> {
     let mut families = resolve_mcp_families(stored);
     if !systemone_available {
@@ -196,6 +206,9 @@ pub(crate) fn effective_mcp_families(
     }
     if !voice_available {
         families.remove(&McpFamily::Voice);
+    }
+    if !vault_available {
+        families.remove(&McpFamily::Vault);
     }
     families
 }
@@ -268,6 +281,10 @@ pub(crate) fn withheld_family_lines(families: &BTreeSet<McpFamily>) -> Vec<&'sta
                 "This session has no `voice__*` tools. The person listening cannot hear this \
                  session; put anything they should know in your message to your lead."
             }
+            McpFamily::Vault => {
+                "This session has no `vault__*` tools. Credentials in the vault are not \
+                 reachable from this session; ask your lead to read or change them."
+            }
         })
         .collect()
 }
@@ -287,6 +304,10 @@ pub struct ForgeServerFacades {
     pub tasks: Arc<dyn TasksFacade>,
     pub systemone: Option<Arc<dyn SystemOneFacade>>,
     pub voice: Arc<crate::voice::VoiceService>,
+    /// The vault family's facade, `None` when `[vault]` is absent. The tools
+    /// are doubly gated like systemone's: the family must be selected and a
+    /// session must exist.
+    pub vault: Option<Arc<dyn VaultFacade>>,
 }
 
 /// Build the per-session `forge` MCP server. ONE McpServer named
@@ -326,7 +347,7 @@ pub struct ForgeServerFacades {
 pub fn build_forge_server(
     facades: ForgeServerFacades,
     families: &BTreeSet<McpFamily>,
-    slot: SessionSlot,
+    slot: &SessionSlot,
     kind: SessionKind,
 ) -> McpServer {
     let ForgeServerFacades {
@@ -342,6 +363,7 @@ pub fn build_forge_server(
         tasks,
         systemone,
         voice,
+        vault,
     } = facades;
     let mut builder = McpServerBuilder::new("forge", env!("CARGO_PKG_VERSION"));
     let dispatcher = Arc::new(AgentDispatcher::new(workspace, worker.clone()));
@@ -390,7 +412,14 @@ pub fn build_forge_server(
     // Doubly gated like `systemone`: a switched-off `[tts]` leaves no tool a
     // session could try, even when the family is selected.
     if families.contains(&McpFamily::Voice) && voice.enabled() {
-        builder = voice::add_tools(builder, voice, slot);
+        builder = voice::add_tools(builder, voice, slot.clone());
+    }
+    // Doubly gated like `systemone`: an absent `[vault]` leaves no tool a
+    // session could try, even when the family is selected.
+    if families.contains(&McpFamily::Vault)
+        && let Some(vault) = vault
+    {
+        builder = vault::add_tools(builder, &vault, slot);
     }
     builder.instructions(TASK_BOARD_INSTRUCTIONS).build()
 }
@@ -637,9 +666,10 @@ mod tests {
                 tasks: MockTasksFacade::new().into_arc(),
                 systemone: systemone_facade,
                 voice: silent_voice(),
+                vault: Some(crate::mcp::vault::facade::MockVaultFacade::new().into_arc()),
             },
             families,
-            fake_key("test"),
+            &fake_key("test"),
             kind,
         )
     }
@@ -693,7 +723,7 @@ mod tests {
     /// manage their own project's reviews, crons, tasks, subscriptions and
     /// decisions. The browser's own names are read off its table instead -
     /// one list per family, so a tool added there cannot leave this behind.
-    const ANY_CALLER_TOOLS: [&str; 39] = [
+    const ANY_CALLER_TOOLS: [&str; 52] = [
         "review__list",
         "review__get",
         "review__reply",
@@ -733,6 +763,19 @@ mod tests {
         "systemone__ask_choice",
         "systemone__ask_score",
         "voice__say",
+        "vault__search",
+        "vault__get",
+        "vault__create",
+        "vault__update",
+        "vault__trash",
+        "vault__restore",
+        "vault__totp_code",
+        "vault__attachment_get",
+        "vault__attachment_put",
+        "vault__folder_list",
+        "vault__folder_create",
+        "vault__folder_update",
+        "vault__folder_delete",
     ];
 
     #[test]
@@ -904,9 +947,10 @@ mod tests {
                     tasks: MockTasksFacade::new().into_arc(),
                     systemone: None,
                     voice: silent_voice(),
+                    vault: None,
                 },
                 &families,
-                fake_key("test"),
+                &fake_key("test"),
                 SessionKind::Worker,
             );
             let answer = server
@@ -1001,6 +1045,7 @@ mod tests {
                 "This session has no `slack__*` tools. Channel reads and posts go through your lead.",
                 "This session has no `systemone__*` decision tools. When a decision is material and not obvious, route it to your lead instead of guessing.",
                 "This session has no `voice__*` tools. The person listening cannot hear this session; put anything they should know in your message to your lead.",
+                "This session has no `vault__*` tools. Credentials in the vault are not reachable from this session; ask your lead to read or change them.",
             ],
         );
 
@@ -1024,16 +1069,16 @@ mod tests {
     fn the_config_gate_reaches_the_effective_set() {
         let selected = vec!["systemone".to_owned(), "tasks".to_owned()];
         assert_eq!(
-            effective_mcp_families(Some(&selected), true, true),
+            effective_mcp_families(Some(&selected), true, true, true),
             [McpFamily::Tasks, McpFamily::Systemone].into_iter().collect(),
         );
         assert_eq!(
-            effective_mcp_families(Some(&selected), false, true),
+            effective_mcp_families(Some(&selected), false, true, true),
             [McpFamily::Tasks].into_iter().collect(),
             "a disabled [systemone] cannot be part of the effective set",
         );
 
-        let all_without_config = effective_mcp_families(None, false, true);
+        let all_without_config = effective_mcp_families(None, false, true, true);
         assert!(!all_without_config.contains(&McpFamily::Systemone));
         assert_eq!(
             all_without_config.len(),
@@ -1046,7 +1091,7 @@ mod tests {
     /// the prompt's withheld line and the tools agree.
     #[test]
     fn a_disabled_tts_removes_voice_from_the_effective_set() {
-        let all_without_voice = effective_mcp_families(None, true, false);
+        let all_without_voice = effective_mcp_families(None, true, false, true);
         assert!(!all_without_voice.contains(&McpFamily::Voice));
         assert_eq!(
             all_without_voice.len(),
@@ -1059,6 +1104,23 @@ mod tests {
         );
     }
 
+    /// `[vault]` absent removes the vault family from the effective set too,
+    /// so the tools and the worker's prompt agree on the double gate.
+    #[test]
+    fn an_absent_vault_removes_it_from_the_effective_set() {
+        let all_without_vault = effective_mcp_families(None, true, true, false);
+        assert!(!all_without_vault.contains(&McpFamily::Vault));
+        assert_eq!(
+            all_without_vault.len(),
+            McpFamily::ALL.len() - 1,
+            "vault is the only family this gate removes",
+        );
+        assert!(
+            withheld_family_lines(&all_without_vault).iter().any(|line| line.contains("vault__")),
+            "the prompt says the family is absent",
+        );
+    }
+
     /// The config gate reaches the COMPOSER too: a selected-but-disabled
     /// systemone produces its withheld line, which is what the spawn
     /// description promises a worker it was not given.
@@ -1067,12 +1129,12 @@ mod tests {
         let selected = vec!["systemone".to_owned()];
         let line = "This session has no `systemone__*` decision tools. When a decision is material and not obvious, route it to your lead instead of guessing.";
         assert!(
-            !withheld_family_lines(&effective_mcp_families(Some(&selected), true, true))
+            !withheld_family_lines(&effective_mcp_families(Some(&selected), true, true, true))
                 .contains(&line),
             "with the section on, the family is present and gets no line",
         );
         assert!(
-            withheld_family_lines(&effective_mcp_families(Some(&selected), false, true))
+            withheld_family_lines(&effective_mcp_families(Some(&selected), false, true, true))
                 .contains(&line),
             "[systemone] off is withheld for the worker's prompt as well as its tools",
         );

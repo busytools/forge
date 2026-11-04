@@ -47,3 +47,7 @@ sysinfo = { workspace = true }
 tempfile = { workspace = true }
 tracing-subscriber = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
+# The extra-roots test runs a real TLS handshake so the root has to reach the
+# client, not merely parse.
+tokio-rustls = "0.26"
+rustls-pemfile = "2"

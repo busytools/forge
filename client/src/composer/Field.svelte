@@ -1,4 +1,5 @@
 <script lang="ts">
+  import type { FullAutoFill } from 'svelte/elements';
   import type { Editor } from './editors';
 
   /**
@@ -18,12 +19,15 @@
     value = $bindable(),
     placeholder,
     element = 'textarea',
+    type = 'text',
     class: className = '',
     aria = {},
     rows,
     id,
     name,
     autocapitalize,
+    autocomplete = 'off',
+    inputmode,
     oninput,
     onkeydown,
     field,
@@ -32,6 +36,8 @@
     value: string;
     placeholder?: string;
     element?: 'textarea' | 'input';
+    /** A single-line box's input type, for a field whose value is a secret. */
+    type?: 'text' | 'password' | undefined;
     class?: string;
     aria?: {
       controls?: string | undefined;
@@ -46,6 +52,10 @@
     id?: string;
     name?: string;
     autocapitalize?: 'off' | 'none' | 'on' | 'characters' | 'sentences' | 'words' | undefined;
+    /** The browser's autofill hint; `off` unless the box names its own. */
+    autocomplete?: FullAutoFill;
+    /** The soft keyboard a phone shows: `numeric` for a one-time code. */
+    inputmode?: 'none' | 'text' | 'tel' | 'url' | 'email' | 'numeric' | 'decimal' | 'search';
     oninput?: (event: Event) => void;
     onkeydown?: (event: KeyboardEvent) => void;
     field?: (el: HTMLElement | null) => void;
@@ -71,12 +81,13 @@
   <input
     class={className}
     data-editor={editor}
-    type="text"
+    {type}
     {placeholder}
     {id}
     {name}
     {autocapitalize}
-    autocomplete="off"
+    {autocomplete}
+    {inputmode}
     spellcheck="false"
     aria-label={aria.label}
     aria-autocomplete={aria.autocomplete}
@@ -97,7 +108,7 @@
     {id}
     {name}
     {rows}
-    autocomplete="off"
+    {autocomplete}
     spellcheck="false"
     aria-label={aria.label}
     aria-autocomplete={aria.autocomplete}

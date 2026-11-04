@@ -1,0 +1,23 @@
+{
+  "approve": {
+    "respond_vault_ask": {
+      "key": { "org": "Busytools", "project": "forge", "label": "lead" },
+      "id": "0192e1c0-0000-7000-8000-0000000000cc",
+      "answer": {
+        "decision": "approve",
+        "master_password": "open sesame",
+        "two_factor": "123456"
+      }
+    }
+  },
+  "send_back": {
+    "respond_vault_ask": {
+      "key": { "org": "Busytools", "project": "forge", "label": "lead" },
+      "id": "0192e1c0-0000-7000-8000-0000000000cc",
+      "answer": {
+        "decision": "send_back",
+        "note": "ask for the password, not the TOTP"
+      }
+    }
+  }
+}

@@ -167,6 +167,12 @@ assert_is_empty = "allow"           # Its rewrite, `assert_eq!(v, [] as [T; 0])`
 print_stdout = "allow"
 print_stderr = "allow"
 
+[workspace.metadata]
+# bitwarden-crypto 4.0.0 is GPL-3.0-only OR LicenseRef-Bitwarden-SDK. forge is
+# used privately and not distributed, so the vault family links it under that
+# allowance; re-check before any distribution of a binary carrying this crate.
+licenses = { "bitwarden-crypto@4.0.0" = "GPL-3.0-only OR LicenseRef-Bitwarden-SDK (private use)" }
+
 [profile.release]
 opt-level = 3
 lto = "thin"

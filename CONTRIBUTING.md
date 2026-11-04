@@ -219,7 +219,8 @@ decision-model I/O goes in `forge-system-one`,
 cross-crate types go in `forge-primitives`,
 provider credentials, probes, billing, account selection and account
 health go in `forge-gateway`,
-inbound connector clients and matching go in `forge-connectors`,
+external-integration clients and matching, inbound or outbound, go in
+`forge-connectors`,
 anything speaking stream-json goes in `forge-sdk`, environment and I/O
 go in `forge-agent`, multi-session orchestration goes in
 `forge-workspace`, the browser the sessions drive goes in
