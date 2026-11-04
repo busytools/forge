@@ -893,6 +893,9 @@ async fn a_noopener_popup_whose_renderer_dies_is_reaped() {
     let (mut popup_cdp, _popup_events) = connect(port, &format!("/devtools/page/{popup}"))
         .await
         .expect("the popup's devtools endpoint accepts");
+    // **The noopener popup starts at its address**, with no blank first
+    // document: it has no opener role to wait for.
+    wait_for_title(&mut popup_cdp, &["provider"], BOUND).await;
     // **Crash its renderer.** The call itself may not answer once the renderer
     // is gone, so it is bounded and its failure is expected.
     let _ =
@@ -1033,11 +1036,14 @@ async fn a_popup_whose_opener_closes_first_sees_it_closed_and_survives() {
 /// message from the first arrives with the first proxy as its source, the
 /// second with the second, and closing one leaves the other live.
 ///
-/// **Ignored: a second concurrent host start times out CEF's browser-info
-/// response** in this host, so the rig's second popup never commits. The
-/// routing itself is pinned in `bridge.rs`'s channel tests; this rig is kept
-/// for the engine fix that makes two starts safe together.
-#[ignore = "a second concurrent bridged start times out CEF's browser-info response"]
+/// **Ignored: a second bridged start while one popup is live times out CEF's
+/// browser-info response** (`Timeout of new browser info response for frame
+/// ..., has_rfh=0`), so the second popup never commits. Measured with the
+/// second `window.open` sequenced after the first popup has posted, so the
+/// starts are not concurrent; the timeout is the engine's, not the rig's.
+/// The routing itself is pinned in `bridge.rs`'s channel tests; this rig is
+/// kept for the engine fix that makes a second start safe.
+#[ignore = "a second bridged start while a popup is live times out CEF's browser-info response"]
 #[tokio::test(flavor = "multi_thread")]
 async fn two_popups_from_one_opener_route_independently() {
     let scratch = tempfile::tempdir().expect("a temp dir");

@@ -1222,9 +1222,10 @@ impl PopupGate {
         let mut extra = bridged.and_then(|(id, _)| bridge_extra(*id));
         // **A bridged popup's browser starts blank**, and the host starts the
         // requested address only once a document has acknowledged the role.
-        // The birth still carries the requested address, which is what the
-        // service pairs and lists.
-        let start = if opener.is_some() { "about:blank" } else { url };
+        // A `noopener` popup has no role to wait for and starts at the address
+        // itself, so it takes no second navigation. The birth still carries
+        // the requested address, which is what the service pairs and lists.
+        let start = if bridged.is_some() { "about:blank" } else { url };
         let browser = browser_host_create_browser_sync(
             Some(&window_info),
             Some(&mut client),
@@ -1351,10 +1352,7 @@ impl PopupGate {
             self.release(&place);
             return Err("the popup's browser could not be created".to_owned());
         };
-        if noopener {
-            // **No channel and no role to establish**: the address starts now.
-            self.navigate_tab(tab, url);
-        } else {
+        if !noopener {
             // **The address waits for the role.** The renderer acknowledges
             // once `window.opener` is installed in its document; only then
             // can the popup's own scripts safely see it. An ack that landed
