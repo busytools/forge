@@ -10295,11 +10295,11 @@ mod lead_charter_tests {
         }
     }
 
-    /// A lead knows the board rules from the bullets above but is never
-    /// told the cadence or how a waiting row leaves: without the sweep
-    /// the board only moves when the user nags. Pinned so a rewrite
-    /// cannot drop the schedule, the four doors, the epic close or the
-    /// dispatch - each a duty no `tasks__*` description states.
+    /// The board bullets above say how a row is worked, but never that a
+    /// sweep is a standing duty. What no bullet or `tasks__*` description
+    /// supplies is the cadence, the schedule, `wake: false`, the prompt
+    /// carrying the sweep's steps, and the one-line report - pinned here
+    /// so a rewrite cannot drop them.
     #[test]
     fn the_charter_carries_the_board_sweep() {
         for (clause, why) in [
@@ -10309,43 +10309,35 @@ mod lead_charter_tests {
                 "the cadence and its two triggers",
             ),
             (
-                "`cron__create` with `*/30 * * * *` and `wake: false`",
-                "the schedule, and the flag that leaves a sleeping lead asleep",
+                "`cron__list` first, then a `cron__create` with `*/30 * * * *` and `wake: false` \
+                 only when no sweep entry exists",
+                "one standing entry, never a new one each session",
             ),
             (
                 "the sweep runs only on an awake session, never waking a sleeping one",
                 "the rule, stated rather than left to the parameter's default",
             ),
             (
-                "Carry the sweep's steps in the cron's prompt rather than a path - a fresh \
-                 install has no such file",
-                "the prompt carries the sweep, so no machine-local file is needed",
+                "settle every row waiting on the user through one door",
+                "the sweep's scope: a dependency or resource wait has no door here",
             ),
+            ("attest a look the user already gave", "the look door"),
             (
-                "a look the user already gave is attested with `tasks__approve` and their words \
-                 quoted, never a decision, which is theirs to answer",
-                "the look door and the decision exclusion",
+                "withdraw a moot ask (`tasks__update` canceled, its `detail` a reason the row \
+                 does not already carry)",
+                "the withdraw door, and the new-reason requirement",
             ),
+            ("park a wait the user deferred (`parked: true`)", "the park door"),
             (
-                "an ask that went moot is withdrawn with `tasks__update` canceled and the \
-                 reason in its `detail`",
-                "the withdraw door and its required reason",
-            ),
-            ("a wait the user deferred is marked `parked: true`", "the park door"),
-            (
-                "a genuine decision stays for the user and is named in your line",
+                "leave a genuine decision for the user and name it in your line",
                 "the decision door",
             ),
             (
-                "Close every epic reading `to_close` - a root with a `verify: user` gate is \
-                 completed first, which parks it on the look, then approved with the recorded \
-                 approval",
-                "the epic close, including the gate's park-then-approve order",
+                "close every epic reading `to_close`, a `verify: user` root parking on the look \
+                 first and then being attested",
+                "the epic close, including the gate's park-then-attest order",
             ),
-            (
-                "dispatch the next ready, unowned, unreserved row",
-                "the dispatch pick and its two exclusions",
-            ),
+            ("dispatch the next ready and unowned row", "the dispatch pick"),
             (
                 "report one line: attested, withdrawn, parked, closed, dispatched, and the \
                  decisions still waiting on the user",
