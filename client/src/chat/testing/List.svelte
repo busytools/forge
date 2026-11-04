@@ -61,9 +61,34 @@
    * its ResizeObserver never reports (#2825): mounted with rows, drawing none,
    * and reporting no viewport until something forces a fresh mount.
    */
-  const unmeasured = gate.mounts < gate.misses;
+  const mount = gate.mounts;
+  const unmeasured = mount < gate.misses;
+  /**
+   * Whether THIS mount drew no rows while reporting its viewport, which is the
+   * other shape of the same black column: `virtua` freezes its range while a
+   * parked scroll correction waits for a scroll it cannot make.
+   */
+  const rangeStuck = mount < gate.rangeMisses;
   gate.mounts += 1;
   if (unmeasured && Number.isFinite(gate.misses)) gate.misses -= 1;
+  if (rangeStuck && Number.isFinite(gate.rangeMisses)) gate.rangeMisses -= 1;
+
+  /**
+   * A mount that drew its rows and froze later, when a seat's kept
+   * conversation was swapped onto it (`stallNextSwap`). The first row's key is
+   * what tells one conversation from another: a switch can hand the list the
+   * other seat's turns without the count changing at all.
+   */
+  let stalled = $state(false);
+  let handed: string | null = null;
+  $effect(() => {
+    const first = data.length > 0 ? keyOf(data[0], 0) : null;
+    if (first === handed) return;
+    handed = first;
+    if (gate.stalls <= 0) return;
+    gate.stalls -= 1;
+    stalled = true;
+  });
 
   /** What a row is keyed by: the list's own keyer, or its position without one. */
   function keyOf(row: unknown, at: number): string {
@@ -297,7 +322,7 @@
 </script>
 
 <div class="conv" data-item-size={itemSize} {@attach container} {...rest}>
-  {#each unmeasured ? [] : data as row, at (keyOf(row, at))}
+  {#each unmeasured || rangeStuck || stalled ? [] : data as row, at (keyOf(row, at))}
     {@const itemKey = keyOf(row, at)}
     {@const attrs = itemProps?.({ item: row, index: at }) ?? {}}
     <!-- The base class is the stub's own and every test's selector, so an

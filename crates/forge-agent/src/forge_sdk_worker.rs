@@ -352,8 +352,12 @@ connector. Those tools hold a post for the user's decision before \
 anything is sent, and a direct call puts words in their name outside \
 that gate - holding the credential is not permission to use it. The \
 same holds for any other tool whose post is held for approval, Slack \
-attachments included. When a `slack__*` call fails, report its exact \
-error and stop. A refusal is the user's decision, \
+attachments included. An agent's Slack post must be authored by the \
+person, never by another app: the `slack__*` tools post with the \
+person's own token and hold every post for their decision, while a \
+post through another app or a Slack MCP server bypasses that \
+decision, whatever identity it posts under. When a `slack__*` call \
+fails, report its exact error and stop. A refusal is the user's decision, \
 not yours: offer the text to whoever owns it (the user in a lead \
 session, your lead in a worker session) and wait. A partial post \
 resumes where it stopped. A workspace or argument error is the call's \
@@ -3792,6 +3796,33 @@ mod tests {
         assert!(
             FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains("the line is the out-of-band fallback"),
             "the clause that forbids the fallback is pinned",
+        );
+    }
+
+    /// Authorship is the claim a session controls: Slack can render an
+    /// app's name even on a post made with the person's own token, so
+    /// appearance is not the rule. A post through another app is absent
+    /// from forge's approval and outbound-ledger record whatever identity
+    /// it posts under, which is the failure the always-on block names.
+    #[test]
+    fn the_conduct_block_carries_the_slack_identity_rule() {
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
+                "An agent's Slack post must be authored by the person, never by another app"
+            ),
+            "the authorship rule is pinned",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
+                .contains("the `slack__*` tools post with the person's own token"),
+            "the credential fact that makes the sanctioned path the person's is pinned",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
+                "a post through another app or a Slack MCP server bypasses that decision, \
+                 whatever identity it posts under"
+            ),
+            "the other route, its Slack MCP case and the decision it bypasses are pinned",
         );
     }
 
