@@ -264,6 +264,7 @@
     },
   };
 
+  /** A root post that tags two people: the thread segment is absent. */
   const slackDraft = {
     kind: 'slack_draft',
     request: {
@@ -273,9 +274,15 @@
       thread_ts: null,
       text: 'The staging deploy is green. Rolling to production once the 14:30 window closes.',
       operation: 'post',
+      thread: null,
+      tagged: [
+        { id: 'U2', name: 'bob' },
+        { id: 'U3', name: 'carol' },
+      ],
     },
   };
 
+  /** The chosen shape: a reply whose thread and tags the core named. */
   const slackReply = {
     kind: 'slack_draft',
     request: {
@@ -283,6 +290,49 @@
       id: 'draft-2',
       thread_ts: '1790956000.969469',
       text: 'Confirmed - the replica caught the bad statement, so production is clear to take the same set.',
+      thread: { author: 'alice', excerpt: 'the staging deploy is green...' },
+      tagged: [
+        { id: 'U2', name: 'bob' },
+        { id: 'U3', name: 'carol' },
+      ],
+    },
+  };
+
+  /** A long excerpt and a long tag list: the measured crowded state. */
+  const slackLong = {
+    kind: 'slack_draft',
+    request: {
+      ...slackDraft.request,
+      id: 'draft-4',
+      conversation_label: '#incident-2026-11-03',
+      thread_ts: '1790956000.969469',
+      text: 'Holding the promotion until the p99 settles. Next read in an hour.',
+      thread: {
+        author: 'priya.raman',
+        excerpt: 'the canary is holding at 1% and every check is green, but the p99 on the read...',
+      },
+      tagged: [
+        { id: 'U2', name: 'oncall' },
+        { id: 'U3', name: 'dmitri' },
+        { id: 'U4', name: 'alice' },
+        { id: 'U5', name: 'bob' },
+        { id: 'U6', name: 'carol' },
+        { id: 'U7', name: 'marco' },
+        { id: 'U8', name: 'priya' },
+      ],
+    },
+  };
+
+  /** A parent the core could not read, and a tag it could not name. */
+  const slackUnresolved = {
+    kind: 'slack_draft',
+    request: {
+      ...slackDraft.request,
+      id: 'draft-5',
+      thread_ts: '1790956000.969469',
+      text: 'Confirmed <@U9>.',
+      thread: null,
+      tagged: [{ id: 'U9', name: null }],
     },
   };
 
@@ -293,8 +343,14 @@
     request: {
       ...slackDraft.request,
       id: 'draft-3',
+      thread_ts: '1790956000.969469',
       text: '[delete] message 1790956000.969469',
       operation: 'delete',
+      thread: {
+        author: 'ved',
+        excerpt: 'the replica caught the bad statement, so production is...',
+      },
+      tagged: [],
     },
   };
 
@@ -436,6 +492,8 @@
     send?: boolean;
     click?: string;
     rising?: { draft: string; later: Partial<ComposerProps> };
+    /** A specimen the line's own width is judged at: it takes the whole row. */
+    wide?: boolean;
   }[] = [
     { label: 'idle', props: {} },
     {
@@ -613,7 +671,20 @@
       props: { record: { ...blank(), pending_asks: [readOutside] } },
     },
     { label: 'dock · slack draft', props: { record: { ...blank(), pending_asks: [slackDraft] } } },
-    { label: 'dock · slack reply', props: { record: { ...blank(), pending_asks: [slackReply] } } },
+    {
+      label: 'dock · slack reply',
+      props: { record: { ...blank(), pending_asks: [slackReply] } },
+      wide: true,
+    },
+    {
+      label: 'dock · slack reply, crowded',
+      props: { record: { ...blank(), pending_asks: [slackLong] } },
+      wide: true,
+    },
+    {
+      label: 'dock · slack unresolved',
+      props: { record: { ...blank(), pending_asks: [slackUnresolved] } },
+    },
     {
       label: 'dock · slack delete',
       props: { record: { ...blank(), pending_asks: [slackDelete] } },
@@ -705,7 +776,7 @@
 
 <div class="states">
   {#each specimens as specimen (specimen.label)}
-    <section>
+    <section class:wide={specimen.wide}>
       <h3>{specimen.label}</h3>
       {#if specimen.driven !== undefined}
         <Driven
@@ -743,6 +814,10 @@
   /* The specimen page's own framing, which is not the client's theme: the
      composer's slot in a real page is the session column's foot, and what is
      being looked at here is the box, not the page around it. */
+  /* The specimens whose whole point is the line's width take the full row. */
+  .states section.wide {
+    grid-column: 1 / -1;
+  }
   .states {
     display: grid;
     /* `min()` so a phone gets one column the width of the screen rather than a

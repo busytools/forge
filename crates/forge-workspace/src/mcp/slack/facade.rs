@@ -1668,6 +1668,9 @@ mod tests {
         bookmark_reads: parking_lot::Mutex<Vec<String>>,
         /// Seeded conversation and thread reads.
         history_rows: parking_lot::Mutex<HashMap<String, Vec<SlackHistoryMessage>>>,
+        /// Make `conversations.list` fail, so the draft's fallback label is
+        /// the one tested.
+        list_failure: parking_lot::Mutex<bool>,
         reply_rows: parking_lot::Mutex<HashMap<String, Vec<SlackHistoryMessage>>>,
         /// Thread reads that fail, keyed `channel/ts`.
         reply_failures: parking_lot::Mutex<std::collections::HashSet<String>>,
@@ -1724,6 +1727,9 @@ mod tests {
         }
         fn seed_history(&self, channel: &str, rows: Vec<SlackHistoryMessage>) {
             self.history_rows.lock().insert(channel.to_owned(), rows);
+        }
+        fn fail_list(&self) {
+            *self.list_failure.lock() = true;
         }
         fn seed_replies(&self, channel: &str, ts: &str, rows: Vec<SlackHistoryMessage>) {
             self.reply_rows.lock().insert(format!("{channel}/{ts}"), rows);
@@ -1872,6 +1878,12 @@ mod tests {
         }
 
         async fn list_conversations(&self) -> Result<Vec<SlackConversation>, SlackError> {
+            if *self.list_failure.lock() {
+                return Err(SlackError::Transport {
+                    method: "conversations.list".to_owned(),
+                    detail: "connection reset".to_owned(),
+                });
+            }
             Ok(self.conversations.lock().clone())
         }
 
@@ -2660,6 +2672,26 @@ token = "y"
             ProdSlackFacade::resolve_conversation(&api, "acme", "#ops").await,
             ("C1".to_owned(), "#ops".to_owned()),
             "the card's own label resolves when an agent echoes it back",
+        );
+    }
+
+    /// When the directory cannot be read, the id stays the bare form Slack
+    /// can address and the label keeps the caller's own spelling.
+    #[tokio::test]
+    async fn a_list_failure_keeps_the_callers_spelling_and_a_bare_id() {
+        let recording = Arc::new(RecordingApi::default());
+        recording.fail_list();
+        let api: Arc<dyn SlackApi> = Arc::clone(&recording) as Arc<dyn SlackApi>;
+
+        assert_eq!(
+            ProdSlackFacade::resolve_conversation(&api, "acme", "#ops").await,
+            ("ops".to_owned(), "#ops".to_owned()),
+            "the id is addressable; the label keeps what the caller said",
+        );
+        assert_eq!(
+            ProdSlackFacade::resolve_conversation(&api, "acme", "U9").await,
+            ("U9".to_owned(), "U9".to_owned()),
+            "a partner id carries no `#` either way",
         );
     }
 

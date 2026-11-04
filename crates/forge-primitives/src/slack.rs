@@ -364,8 +364,9 @@ pub struct SlackThreadName {
     /// else the resolved display name, else the raw user id when that lookup
     /// fails. Never invented.
     pub author: String,
-    /// The parent's text flattened to one line and truncated at a word
-    /// boundary. Empty when the parent carried no text.
+    /// The parent's text flattened to one line and cut at the last space
+    /// before the bound where there is one. Empty when the parent carried no
+    /// text.
     pub excerpt: String,
 }
 

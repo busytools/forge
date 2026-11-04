@@ -180,6 +180,32 @@ describe('the ask as the composer reads it', () => {
     ]);
   });
 
+  it('reads whitespace-only names and ids as nothing to draw', () => {
+    const held = askFrom({
+      kind: 'slack_draft',
+      request: {
+        id: '0192e1c0-0000-7000-8000-000000000000',
+        workspace: 'Trust Machines',
+        conversation: 'C0123',
+        conversation_label: '#granite-staging-alerts',
+        thread_ts: '1758901234.482910',
+        text: 'Deploy finished <@U2>.',
+        operation: 'post',
+        thread: { author: '   ', excerpt: 'a line with no author' },
+        tagged: [
+          { id: '  ', name: 'nobody' },
+          { id: 'U2', name: '   ' },
+        ],
+      },
+    });
+    if (held?.kind !== 'slack_draft') throw new Error('the held post did not narrow');
+
+    expect(held.request.thread, 'a blank author is not a name').toBeNull();
+    expect(held.request.tagged, 'a blank id is not a person and a blank name is none').toEqual([
+      { id: 'U2', name: null },
+    ]);
+  });
+
   it('narrows an operation this client is older than to neutral, not a post', () => {
     const held = askFrom({
       kind: 'slack_draft',

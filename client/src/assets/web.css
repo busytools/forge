@@ -3447,8 +3447,12 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
   min-width: 0; }
 /* Crowded: the thread takes the row and the tags move below it, which is the
    mock's `tags-below`. Decided from the measured line, since a fixed width
-   cannot know how long the excerpt or the tag list is. */
-.dock .dest.tags-below .thr { flex: 1 1 0; }
+   cannot know how long the excerpt or the tag list is. The thread's own rule
+   sits above the narrow breakpoint only: below 980 the thread already has a
+   row of its own, and a four-class selector must not outrank that block. */
+@container (min-width: 981px) {
+  .dock .dest.tags-below .thr { flex: 1 1 0; }
+}
 .dock .dest.tags-below .tgs { flex-basis: 100%; }
 .dock .dest.tags-below .tsep { display: none; }
 .dock .thr::before { content: "\00b7" / ""; flex: none; color: var(--dim); opacity: .6;

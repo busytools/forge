@@ -240,6 +240,19 @@
     const children = [...segment.children];
     const width = children.reduce((sum, child) => {
       if (!(child instanceof HTMLElement)) return sum;
+      if (child.classList.contains('ex')) {
+        // The excerpt shares the thread's free space, so its laid-out width is
+        // whatever the row gave it - not what the words need. Probe it at zero
+        // width so the measurement does not read its own fill back.
+        const maxWidth = child.style.maxWidth;
+        const minWidth = child.style.minWidth;
+        child.style.maxWidth = '0px';
+        child.style.minWidth = '0px';
+        const content = child.scrollWidth;
+        child.style.maxWidth = maxWidth;
+        child.style.minWidth = minWidth;
+        return sum + content;
+      }
       const clipped = child.scrollWidth > child.clientWidth;
       return sum + (clipped ? child.scrollWidth : child.offsetWidth);
     }, 0);

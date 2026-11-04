@@ -240,6 +240,11 @@ pub mod wire;
 /// a dock nobody draws. `baselines/socket/25/` is the record a v25 server
 /// emitted.
 ///
+/// **The held Slack draft's new fields kept v26.** `thread` and `tagged` are
+/// additive under the rule below: a v26 client ignores them and draws the raw
+/// ts it always drew, so `baselines/socket/26/` is re-recorded in place rather
+/// than a v27 directory being cut.
+///
 /// **Additive fields do not bump.** `diff.base_error` is one, carried on the
 /// v16-era record: a client older than the field draws the vaguer line it
 /// always drew, and nothing it sends changes.

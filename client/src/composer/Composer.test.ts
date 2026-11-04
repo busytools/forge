@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { hideBrowser, onModifier, onModifierChord, showBrowser } from '../browser/link';
 import { openSurface, selectTab, surface } from '../browser/surface.svelte';
+import { repoPath } from '../repo';
 
 /**
  * The shell's own door, mock-able so both halves of Open's claim are testable
@@ -6343,6 +6344,147 @@ describe('the dock', () => {
     expect(dest(), 'no excerpt means no quote marks and no empty pair').toBe(
       `Trust Machines · #granite-staging-alerts thread: @alice`,
     );
+  });
+
+  it('names the channel with its `#` on the folded bar too', () => {
+    open({ record: record({ pending_asks: [slackDraftAsk()] }) });
+
+    const fold = document.querySelector<HTMLElement>('.dock .chevb');
+    expect(fold, 'the dock draws its fold control').not.toBeNull();
+    fold?.click();
+    flushSync();
+
+    expect(document.querySelector('.qbar .t')?.textContent).toBe(
+      'Trust Machines · #granite-staging-alerts',
+    );
+  });
+
+  /**
+   * The line's two measured classes, driven through the same fake observer the
+   * panel's cap test uses: jsdom lays nothing out, so the widths are supplied
+   * as own properties and the observer's callback is fired by hand. The
+   * `tags-below` and `pill-stacked` decisions are the whole of what the layout
+   * resting under the mock depends on.
+   */
+  it('measures the line and lets the tags and the chip yield in order', () => {
+    const callbacks: (() => void)[] = [];
+    const original: unknown = Reflect.get(globalThis, 'ResizeObserver');
+    class Watching {
+      run: () => void;
+      constructor(run: () => void) {
+        this.run = run;
+      }
+      observe(): void {
+        callbacks.push(this.run);
+      }
+      disconnect(): void {}
+    }
+    const widths = (el: Element | null, value: number): void => {
+      if (!(el instanceof HTMLElement)) return;
+      for (const key of ['offsetWidth', 'scrollWidth', 'clientWidth']) {
+        Object.defineProperty(el, key, { configurable: true, value });
+      }
+    };
+    Reflect.set(globalThis, 'ResizeObserver', Watching);
+    try {
+      open({
+        record: record({
+          pending_asks: [
+            slackDraftAsk({
+              thread_ts: STAMP,
+              thread: { author: 'alice', excerpt: 'the deploy is green' },
+              tagged: [{ id: 'U2', name: 'bob' }],
+            }),
+          ],
+        }),
+      });
+
+      const dest = document.querySelector('.dock .dest');
+      expect(dest, 'the dock draws its destination line').not.toBeNull();
+      if (!(dest instanceof HTMLElement)) throw new Error('no destination line');
+
+      widths(dest.querySelector('.pin'), 100);
+      widths(dest.querySelector('.pin .ws'), 70);
+      widths(dest.querySelector('.pin .ch'), 30);
+      widths(dest.querySelector('.thr'), 120);
+      widths(dest.querySelector('.thr .lbl'), 40);
+      widths(dest.querySelector('.thr .who'), 20);
+      widths(dest.querySelector('.thr .ex'), 60);
+      widths(dest.querySelector('.tgs'), 90);
+      widths(dest.querySelector('.tgs .lbl'), 40);
+      for (const name of dest.querySelectorAll('.tgs .nm')) widths(name, 25);
+      const measured = callbacks.at(-1);
+      expect(measured, 'the line is measured when the dock arrives').toBeDefined();
+
+      widths(dest, 1000);
+      measured?.();
+      flushSync();
+      expect(dest.classList.contains('tags-below'), 'a wide line holds pill, thread and tags').toBe(
+        false,
+      );
+      expect(dest.classList.contains('pill-stacked'), 'and the chip has room').toBe(false);
+
+      widths(dest, 220);
+      measured?.();
+      flushSync();
+      expect(dest.classList.contains('tags-below'), 'a crowded line moves the tags below').toBe(
+        true,
+      );
+      expect(dest.classList.contains('pill-stacked'), 'while the chip still shares its line').toBe(
+        false,
+      );
+
+      widths(dest, 100);
+      measured?.();
+      flushSync();
+      expect(dest.classList.contains('pill-stacked'), 'a chip with no room stacks its halves').toBe(
+        true,
+      );
+    } finally {
+      Reflect.set(globalThis, 'ResizeObserver', original);
+    }
+  });
+
+  /**
+   * H1's shape, pinned where jsdom cannot see it: a container query adds no
+   * specificity, so the crowded thread's four-class rule must live ABOVE the
+   * narrow breakpoint or it outranks the 980 block's one-row thread and the
+   * narrow layout never happens. The stylesheet is the only place this can be
+   * checked without a browser.
+   */
+  it('keeps the crowded thread rule above the narrow breakpoint', () => {
+    const css = readFileSync(repoPath('client/src/assets/web.css'), 'utf8');
+
+    /** The first `@container (header)` block, braces balanced. */
+    function container(header: string): string {
+      const start = css.indexOf(header);
+      if (start === -1) return '';
+      let depth = 0;
+      let out = '';
+      for (let at = start; at < css.length; at += 1) {
+        const char = css[at];
+        if (char === '{') depth += 1;
+        if (depth > 0 && char !== undefined) out += char;
+        if (char === '}') {
+          depth -= 1;
+          if (depth === 0) break;
+        }
+      }
+      return out;
+    }
+
+    expect(
+      container('@container (min-width: 981px)'),
+      'the crowded thread fills its row only above the narrow breakpoint',
+    ).toContain('.dock .dest.tags-below .thr');
+    expect(
+      container('@container (max-width: 980px)'),
+      'and below it the narrow block still gives the thread its own row',
+    ).toContain('.dock .thr { flex: 0 0 100%; }');
+    expect(
+      css.match(/\.dock \.dest\.tags-below \.thr/g)?.length,
+      'one rule, in the min-width block, so nothing outranks the narrow block',
+    ).toBe(1);
   });
 
   it('draws a held config write with its key and both values', () => {
