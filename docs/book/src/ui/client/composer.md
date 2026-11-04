@@ -50,7 +50,9 @@ draws `React` and `Do not react`, and removing one draws `Unreact` and `Do not u
 upload draws `Upload` and `Do not upload`. The destination line follows the same rule: the pill
 carries the workspace and the conversation, and the segment beside it names the thread a post or
 an upload replies into, or the message every other operation acts on, by its author and its
-opening words. The people the draft tags follow as their names. A parent the core could not read
+opening words, with the quoted message's Slack markup read as prose: a mention as its name (its
+id when the lookup fails), a link as its label or address, and emphasis without its markers. The
+people the draft tags follow as their names. A parent the core could not read
 draws its raw `ts` and a tag it could not resolve draws its id, so a failed lookup is drawn as
 itself rather than as a missing segment. A message that itself sits inside a thread is not named:
 the read answers its thread's parent, so that card draws the raw `ts` rather than the wrong

@@ -7,6 +7,7 @@
 //! status, and it carries `Retry-After`.
 
 use std::collections::{HashMap, HashSet};
+use std::hash::BuildHasher;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -446,15 +447,99 @@ pub fn mention_ids(text: &str) -> Vec<String> {
         let after = &rest[start + 2..];
         let Some(end) = after.find('>') else { break };
         let id = after[..end].split('|').next().unwrap_or_default();
-        if id.chars().next().is_some_and(|first| first.is_ascii_alphabetic())
-            && id.chars().all(|ch| ch.is_ascii_alphanumeric())
-            && !ids.iter().any(|seen| seen == id)
-        {
+        if is_user_id(id) && !ids.iter().any(|seen| seen == id) {
             ids.push(id.to_owned());
         }
         rest = &after[end + 1..];
     }
     ids
+}
+
+/// Whether a token is a Slack user id rather than some other `<@...>` text.
+fn is_user_id(id: &str) -> bool {
+    id.chars().next().is_some_and(|first| first.is_ascii_alphabetic())
+        && id.chars().all(|ch| ch.is_ascii_alphanumeric())
+}
+
+/// The prose a message reads as when a card quotes it: Slack's mrkdwn is
+/// flattened - a mention is `@name` from `names` (the bare id when it
+/// cannot be named), a link its label or its address, and `*text*` its
+/// text. A token this does not understand is left exactly as written.
+pub fn flatten_mrkdwn<S: BuildHasher>(text: &str, names: &HashMap<String, String, S>) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    let mut index = 0;
+    while index < chars.len() {
+        match chars[index] {
+            // Only a recognised token is markup; a literal `<` in the text
+            // is not a bracket that runs to the next `>` somewhere later.
+            '<' => {
+                let token = chars[index + 1..]
+                    .iter()
+                    .position(|&ch| ch == '>')
+                    .map(|offset| {
+                        let end = index + 1 + offset;
+                        let inner: String = chars[index + 1..end].iter().collect();
+                        (end, inner)
+                    })
+                    .filter(|(_, inner)| is_markup_token(inner));
+                if let Some((end, inner)) = token {
+                    out.push_str(&flatten_token(&inner, names));
+                    index = end + 1;
+                } else {
+                    out.push('<');
+                    index += 1;
+                }
+            }
+            '*' => match chars[index + 1..].iter().position(|&ch| ch == '*') {
+                Some(offset) if offset > 0 => {
+                    let end = index + 1 + offset;
+                    let inner: String = chars[index + 1..end].iter().collect();
+                    out.push_str(&flatten_mrkdwn(&inner, names));
+                    index = end + 1;
+                }
+                _ => {
+                    out.push('*');
+                    index += 1;
+                }
+            },
+            ch => {
+                out.push(ch);
+                index += 1;
+            }
+        }
+    }
+    out
+}
+
+/// Whether `<inner>` is one of Slack's markup tokens rather than text that
+/// happens to sit between two brackets.
+fn is_markup_token(inner: &str) -> bool {
+    inner.starts_with('@')
+        || inner.starts_with('#')
+        || inner.starts_with('!')
+        || inner.starts_with("http://")
+        || inner.starts_with("https://")
+        || inner.starts_with("mailto:")
+}
+
+/// One `<...>` token flattened. A mention takes its name from `names`, a
+/// link its label or address; a channel reference, a broadcast and any
+/// token this does not recognise keep their own text.
+fn flatten_token<S: BuildHasher>(inner: &str, names: &HashMap<String, String, S>) -> String {
+    if let Some(rest) = inner.strip_prefix('@') {
+        let id = rest.split('|').next().unwrap_or_default();
+        if is_user_id(id) {
+            return names.get(id).map_or_else(|| id.to_owned(), |name| format!("@{name}"));
+        }
+    }
+    if inner.starts_with('#') || inner.starts_with('!') {
+        return format!("<{inner}>");
+    }
+    match inner.split_once('|') {
+        Some((_, label)) if !label.is_empty() => label.to_owned(),
+        _ => inner.to_owned(),
+    }
 }
 
 /// One flattened line of a message's text, for a card that quotes it: the
@@ -3532,6 +3617,56 @@ mod tests {
         assert!(
             mention_ids("<#C1> <https://example.com|the doc> <@> <@123>").is_empty(),
             "a channel, a link, an empty mention and a non-user token tag nobody",
+        );
+    }
+
+    /// A quoted parent reads as prose: a mention is the name the tag lookup
+    /// resolved (its id when it could not), a link its label or address, and
+    /// bold loses its stars.
+    #[test]
+    fn a_quoted_excerpt_flattens_its_slack_markup() {
+        let names = HashMap::from([("U2".to_owned(), "bob".to_owned())]);
+        assert_eq!(
+            flatten_mrkdwn("<@U2> and <@U2|carol> and <@U9>", &names),
+            "@bob and @bob and U9",
+            "a named mention draws its name; an unnamed one keeps its id",
+        );
+        assert_eq!(
+            flatten_mrkdwn("<https://example.com/docs|the docs> and <https://example.com>", &names),
+            "the docs and https://example.com",
+            "a titled link draws its label, and a bare link its address",
+        );
+        assert_eq!(
+            flatten_mrkdwn("*<https://example.com|the docs>* and *green*", &names),
+            "the docs and green",
+            "a link inside bold flattens too, and bold loses its stars",
+        );
+        assert_eq!(
+            flatten_mrkdwn("a < b, 2 * 3, and <#C1>", &names),
+            "a < b, 2 * 3, and <#C1>",
+            "an unpaired token and a channel reference are left as they were written",
+        );
+    }
+
+    /// The bound counts the flattened text, so a long parent is cut as prose
+    /// rather than mid-markup.
+    #[test]
+    fn an_excerpt_is_bounded_after_flattening() {
+        let names = HashMap::from([("U2".to_owned(), "bob".to_owned())]);
+        let parent = "*<https://example.com|the staging deploy>* is <@U2> and every check is \
+                      green while the p99 is still high and the canary holds at one percent";
+        let flat = flatten_mrkdwn(parent, &names);
+        let excerpt = one_line_excerpt(&flat, 80);
+        assert!(excerpt.ends_with("..."), "the line is cut: {excerpt:?}");
+        assert!(excerpt.chars().count() <= 83, "the bound holds after flattening: {excerpt:?}");
+        assert!(
+            !excerpt.contains('<') && !excerpt.contains('*'),
+            "no markup survives the flattening: {excerpt:?}",
+        );
+        let kept = excerpt.strip_suffix("...").expect("the mark is there");
+        assert!(
+            flat.starts_with(kept) && !kept.ends_with(' '),
+            "the cut is the flattened opening at a word boundary: {excerpt:?}",
         );
     }
 
