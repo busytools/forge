@@ -10328,10 +10328,7 @@ mod lead_charter_tests {
                 "the withdraw door, and the new-reason requirement",
             ),
             ("park a wait the user deferred (`parked: true`)", "the park door"),
-            (
-                "leave a genuine decision for the user and name it in your line",
-                "the decision door",
-            ),
+            ("leave a genuine decision for the user and name it in your line", "the decision door"),
             (
                 "close every epic reading `to_close`, a `verify: user` root parking on the look \
                  first and then being attested",
