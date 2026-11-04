@@ -1934,11 +1934,34 @@ impl BrowserService {
             let mut tabs = profile.tabs.lock().unwrap_or_else(PoisonError::into_inner);
             pair_tab_events(&mut tabs, &listing, events, generation)
         };
+        // **A popup the driver never listed is still a tab.** A CEF popup
+        // created after the driver attached is not reported to that driver's
+        // context, so the host's own page list is the only source that names
+        // it. That read touches no renderer, and pairing here is what keeps a
+        // healthy host out of the driver replacement below.
+        if unmatched
+            .iter()
+            .any(|(_, event)| matches!(event, HostEvent::TabCreated { opener: Some(_), .. }))
+            && let Some(pages) = spawn::page_list_of(port).await
+        {
+            let host_rows: Vec<crate::tabs::DriverTab> = pages
+                .into_iter()
+                .enumerate()
+                .map(|(index, page)| crate::tabs::DriverTab {
+                    index,
+                    target: page.id,
+                    title: page.title,
+                    url: page.url,
+                    current: false,
+                })
+                .collect();
+            let mut tabs = profile.tabs.lock().unwrap_or_else(PoisonError::into_inner);
+            unmatched = pair_tab_events(&mut tabs, &host_rows, unmatched, generation);
+        }
         if unmatched.iter().any(|(_, event)| matches!(event, HostEvent::TabCreated { .. })) {
-            // **A CEF browser the host created after the driver attached is
-            // not reported to that driver's context**, so a popup is only a
-            // tab to a driver that attached after it existed. A fresh one
-            // enumerates the context's pages.
+            // **A birth neither list names yet**: the page has not appeared
+            // in the driver's context or the host's page list, and a fresh
+            // driver enumerates the context's pages once more.
             //
             // **A re-pair needs a driver start's worth of budget left**: the
             // start alone would overrun the call's one budget, and the pairing
@@ -11821,6 +11844,35 @@ mod server_guards {
         (port, seen)
     }
 
+    /// One loopback endpoint answering `/json/list` with `pages` (target id,
+    /// title, url), for a pass's read of the host's own page list.
+    fn json_list_endpoint(pages: &[(&str, &str, &str)]) -> u16 {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("a test port");
+        let port = listener.local_addr().expect("an address").port();
+        let rows: Vec<serde_json::Value> = pages
+            .iter()
+            .map(|(id, title, url)| json!({ "id": id, "type": "page", "title": title, "url": url }))
+            .collect();
+        let body = serde_json::to_string(&rows).expect("the page list");
+        std::thread::spawn(move || {
+            for _ in 0..8 {
+                let Ok((mut stream, _)) = listener.accept() else { return };
+                let mut buf = [0_u8; 1024];
+                let _ = std::io::Read::read(&mut stream, &mut buf);
+                let _ = std::io::Write::write_all(
+                    &mut stream,
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: \
+                         {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                    .as_bytes(),
+                );
+            }
+        });
+        port
+    }
+
     /// A driver whose listing is fixed, with an optional one-shot generation
     /// bump: what a host death during the pass looks like to `reconcile`.
     struct ListingDriver {
@@ -11966,6 +12018,86 @@ mod server_guards {
             !deferred.iter().any(|(_, event)| matches!(event, HostEvent::TabClosed { tab: 99 })),
             "a stable pass kept an event it did not pair: {deferred:?}"
         );
+    }
+
+    /// **A popup the driver never listed is paired from the host's own page
+    /// list.** A CEF popup created after the driver attached is not reported
+    /// to that driver's context, so a pass that trusted the driver alone
+    /// replaces the driver to see it - and a replacement initializing against
+    /// the popup target times out, which ends the host. The host's page list
+    /// names the popup without touching a renderer.
+    #[tokio::test]
+    async fn a_popup_the_driver_never_listed_pairs_from_the_hosts_own_pages() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let seat = SessionSlot::lead("O", "p");
+        let opener = crate::tabs::DriverTab {
+            index: 0,
+            target: "opener".to_owned(),
+            title: "Sign in".to_owned(),
+            url: "https://opener/".to_owned(),
+            current: true,
+        };
+        let popup = crate::tabs::DriverTab {
+            index: 1,
+            target: "popup".to_owned(),
+            title: "Auth".to_owned(),
+            url: "https://auth/".to_owned(),
+            current: false,
+        };
+        let replaced = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&replaced);
+        let successor_popup = popup.clone();
+        let first = ListingDriver {
+            listing: vec![opener.clone()],
+            bump: None,
+            bumped: AtomicBool::new(false),
+        };
+        service
+            .install_fake_with_successor(&seat, first, move || {
+                flag.store(true, Ordering::Release);
+                driver(vec![successor_popup.clone()], None)
+            })
+            .await;
+        let profile = service.find("O/default").await.expect("the profile");
+        profile
+            .tabs
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .adopt(1, seat, "opener", "Sign in", "https://opener/")
+            .expect("the opener's row");
+        let generation = profile.host_generation.load(Ordering::Acquire);
+        profile.deferred_tab_events.lock().unwrap_or_else(PoisonError::into_inner).push((
+            generation,
+            HostEvent::TabCreated {
+                tab: 2,
+                opener: Some(1),
+                url: "https://auth/".to_owned(),
+                request: None,
+            },
+        ));
+        let port = json_list_endpoint(&[
+            ("opener", "Sign in", "https://opener/"),
+            ("popup", "Auth", "https://auth/"),
+        ]);
+        let first_listing = driver(vec![opener], None);
+        let paired = service
+            .reconcile(
+                &profile,
+                &first_listing,
+                port,
+                tokio::time::Instant::now() + super::PAIR_BOUND,
+                ReconcilePass { first: true },
+            )
+            .await;
+
+        assert!(paired, "the pass listed");
+        assert_eq!(
+            profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).target(2),
+            Some("popup"),
+            "the popup's birth took the page the host named",
+        );
+        assert!(!replaced.load(Ordering::Acquire), "the popup paired without replacing the driver");
     }
 
     /// **A pairing pass that cannot list warns once and retries quietly.** The
