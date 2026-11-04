@@ -9,12 +9,12 @@ use std::sync::{Arc, Weak};
 use std::time::SystemTime;
 
 use forge_connectors::slack::{
-    AuthTest, MENTION_CURSOR, SlackApi, SlackError, SlackHistoryMessage, read_thread,
-    shared_messages,
+    AuthTest, MENTION_CURSOR, SlackApi, SlackError, SlackHistoryMessage, mention_ids,
+    one_line_excerpt, read_thread, shared_messages, thread_parent, user_display_name,
 };
 use forge_primitives::slack::{
-    SlackBookmark, SlackConversation, SlackDraft, SlackPin, SlackSearchMatch, SlackSubscription,
-    SlackSubscriptionTarget, SlackUser, SlackWatchMode,
+    SlackBookmark, SlackConversation, SlackDraft, SlackPerson, SlackPin, SlackSearchMatch,
+    SlackSubscription, SlackSubscriptionTarget, SlackThreadName, SlackUser, SlackWatchMode,
 };
 use uuid::Uuid;
 
@@ -510,15 +510,20 @@ impl ProdSlackFacade {
     /// `conversation` may be an id, a channel name or a DM's partner, and
     /// the id is what the ledger and the in-flight mark key on - a post or
     /// an edit addressed one way lands in the same conversation the sweep
-    /// reads. The label is what the approval prompt shows: a DM is named
-    /// after its partner, and Slack's own name for it is empty. A failed
-    /// lookup is not a reason to refuse the action - but it IS why the
-    /// prompt would show an id, so it says so.
+    /// reads. The label is what the approval prompt shows: a channel's name
+    /// carries the `#` the card draws, a DM is named after its partner - the
+    /// partner's id when Slack names none. A failed lookup is not a reason to
+    /// refuse the action - but it IS why the prompt would show an id, so it
+    /// says so.
     async fn resolve_conversation(
         api: &Arc<dyn SlackApi>,
         workspace: &str,
         conversation: &str,
     ) -> (String, String) {
+        // A caller may echo the card's own `#channel` label back at a tool.
+        // Slack's directory keys on the bare name, so the `#` is not part of
+        // the match - a channel has one spelling across every tool.
+        let wanted = conversation.strip_prefix('#').unwrap_or(conversation);
         let conversations = match api.list_conversations().await {
             Ok(conversations) => conversations,
             Err(error) => {
@@ -530,21 +535,133 @@ impl ProdSlackFacade {
                     %error,
                     "listing conversations failed; the approval prompt names the id instead",
                 );
-                return (conversation.to_owned(), conversation.to_owned());
+                return (wanted.to_owned(), conversation.to_owned());
             }
         };
         match conversations.iter().find(|known| {
-            known.id == conversation
-                || known.name.as_deref() == Some(conversation)
-                || known.user.as_deref() == Some(conversation)
+            known.id == wanted
+                || known.name.as_deref() == Some(wanted)
+                || known.user.as_deref() == Some(wanted)
         }) {
             Some(known) => {
-                let label = known.name.clone().or_else(|| known.user.clone()).unwrap_or_default();
-                let label = if label.is_empty() { known.id.clone() } else { label };
+                let label = match known.name.as_deref().filter(|name| !name.is_empty()) {
+                    // A group DM's generated name is Slack's own label, not a
+                    // channel's, so only a channel carries the `#`.
+                    Some(name) if !known.is_im && !known.is_mpim => format!("#{name}"),
+                    Some(name) => name.to_owned(),
+                    None => known.user.clone().unwrap_or_else(|| known.id.clone()),
+                };
                 (known.id.clone(), label)
             }
-            None => (conversation.to_owned(), conversation.to_owned()),
+            None => (wanted.to_owned(), conversation.to_owned()),
         }
+    }
+
+    /// How much of a thread's parent the card's line quotes.
+    const THREAD_EXCERPT_CHARS: usize = 80;
+
+    /// Name the draft's thread and the people its text tags, at the moment
+    /// it is parked. Never fails the park: whatever resolves rides the
+    /// draft, and what does not is drawn as its raw ts or id.
+    async fn name_draft(
+        ws: &Arc<Workspace>,
+        api: &Arc<dyn SlackApi>,
+        label: &str,
+        conversation: &str,
+        draft: &mut SlackDraft,
+    ) {
+        let host = Arc::new(crate::slack::SlackSubsystemHost::new(ws));
+        // A tag lookup is a Slack call, so they run beside the thread read
+        // rather than one after another in front of the park. `tagged` is
+        // rebuilt in mention order once they land.
+        let mut lookups = Vec::new();
+        for id in mention_ids(&draft.text) {
+            let host = Arc::clone(&host);
+            let api = Arc::clone(api);
+            let workspace = label.to_owned();
+            let user = id.clone();
+            lookups.push((
+                id,
+                tokio::spawn(async move {
+                    user_display_name(host.as_ref(), api.as_ref(), &workspace, &user).await
+                }),
+            ));
+        }
+        if let Some(ts) = draft.thread_ts.clone() {
+            draft.thread = match thread_parent(api.as_ref(), conversation, &ts).await {
+                // A read anchored at a message inside a thread answers the
+                // thread's parent instead. Naming it would label an edit or
+                // a delete with the wrong message, so only an exact ts is
+                // the message the card is about; anything else draws the ts.
+                Ok(Some(parent)) if parent.ts == ts => {
+                    Self::thread_name(host.as_ref(), api.as_ref(), label, &parent).await
+                }
+                Ok(_) => None,
+                Err(error) => {
+                    // A raw ts on the card is the only other symptom, so a
+                    // persistent failure must not live at debug, where no
+                    // shipped directive reaches it.
+                    let first = ws.slack_thread_failures.lock().insert((
+                        label.to_owned(),
+                        conversation.to_owned(),
+                        ts.clone(),
+                    ));
+                    if first {
+                        tracing::warn!(
+                            target: "forge_workspace::slack",
+                            event_name = "slack_draft_thread_unreadable",
+                            workspace = label,
+                            conversation,
+                            parent = %ts,
+                            %error,
+                            "reading a held draft's thread parent failed; the card draws the ts",
+                        );
+                    } else {
+                        tracing::debug!(
+                            target: "forge_workspace::slack",
+                            event_name = "slack_draft_thread_unreadable",
+                            workspace = label,
+                            conversation,
+                            parent = %ts,
+                            %error,
+                            "reading a held draft's thread parent failed again",
+                        );
+                    }
+                    None
+                }
+            };
+        }
+        let mut tagged = Vec::with_capacity(lookups.len());
+        for (id, lookup) in lookups {
+            let name = lookup.await.unwrap_or(None);
+            tagged.push(SlackPerson { id, name });
+        }
+        draft.tagged = tagged;
+    }
+
+    /// The thread name drawn for `parent`: its author and one line of its
+    /// text. `None` when the parent names no author at all, which leaves the
+    /// raw ts as the honest thing to draw.
+    async fn thread_name(
+        host: &crate::slack::SlackSubsystemHost,
+        api: &dyn SlackApi,
+        label: &str,
+        parent: &SlackHistoryMessage,
+    ) -> Option<SlackThreadName> {
+        let author = match parent.bot_name.as_deref().filter(|name| !name.is_empty()) {
+            // A bot names itself in the payload; that is its display name.
+            Some(name) => name.to_owned(),
+            None => match parent.user.as_deref().filter(|user| !user.is_empty()) {
+                Some(user) => user_display_name(host, api, label, user)
+                    .await
+                    .unwrap_or_else(|| user.to_owned()),
+                None => return None,
+            },
+        };
+        Some(SlackThreadName {
+            author,
+            excerpt: one_line_excerpt(&parent.text, Self::THREAD_EXCERPT_CHARS),
+        })
     }
 
     /// Register a draft for the user's decision and wait for it. The one
@@ -607,7 +724,7 @@ impl SlackFacade for ProdSlackFacade {
         let (label, api) = resolve_in(&ws, caller).map_err(SlackPostError::Workspace)?;
         let (conversation, conversation_label) =
             Self::resolve_conversation(&api, &label, &request.conversation).await;
-        let draft = SlackDraft {
+        let mut draft = SlackDraft {
             id: Uuid::new_v4(),
             workspace: label,
             conversation: request.conversation,
@@ -615,13 +732,23 @@ impl SlackFacade for ProdSlackFacade {
             thread_ts: request.thread_ts,
             text: request.text,
             operation: forge_primitives::slack::SlackDraftOperation::Post,
+            thread: None,
+            tagged: Vec::new(),
         };
+        let workspace = draft.workspace.clone();
+        Self::name_draft(&ws, &api, &workspace, &conversation, &mut draft).await;
         match Self::await_approval(&ws, caller, draft.clone()).await {
             GateDecision::Approved => {}
             GateDecision::Rejected => return Err(SlackPostError::Rejected),
             GateDecision::SentBack { note } => return Err(SlackPostError::SentBack { note }),
         }
-        let conversation_name = draft.conversation_label.clone();
+        // The agent-facing result names the channel the bare way every other
+        // tool does; the `#` is the card's spelling, not the tool's.
+        let conversation_name = draft
+            .conversation_label
+            .strip_prefix('#')
+            .unwrap_or(&draft.conversation_label)
+            .to_owned();
         let parts = forge_connectors::slack::split_for_post(&draft.text);
         let mut ts: Vec<String> = Vec::new();
         for part in &parts {
@@ -693,7 +820,7 @@ impl SlackFacade for ProdSlackFacade {
         // go through the same gate a post does.
         let (conversation, conversation_label) =
             Self::resolve_conversation(&api, &label, &request.conversation).await;
-        let draft = SlackDraft {
+        let mut draft = SlackDraft {
             id: Uuid::new_v4(),
             workspace: label.clone(),
             conversation: request.conversation.clone(),
@@ -707,7 +834,11 @@ impl SlackFacade for ProdSlackFacade {
                 Some(_) => forge_primitives::slack::SlackDraftOperation::Edit,
                 None => forge_primitives::slack::SlackDraftOperation::Delete,
             },
+            thread: None,
+            tagged: Vec::new(),
         };
+        let workspace = draft.workspace.clone();
+        Self::name_draft(&ws, &api, &workspace, &conversation, &mut draft).await;
         match Self::await_approval(&ws, caller, draft).await {
             GateDecision::Approved => {}
             GateDecision::Rejected => return Err(SlackEditError::Rejected),
@@ -753,9 +884,9 @@ impl SlackFacade for ProdSlackFacade {
         // A reaction is authored content in the user's name, so it goes
         // through the same gate a post does.
         let verb = if request.add { "react" } else { "unreact" };
-        let (_, conversation_label) =
+        let (conversation, conversation_label) =
             Self::resolve_conversation(&api, &label, &request.conversation).await;
-        let draft = SlackDraft {
+        let mut draft = SlackDraft {
             id: Uuid::new_v4(),
             workspace: label,
             conversation: request.conversation.clone(),
@@ -767,7 +898,11 @@ impl SlackFacade for ProdSlackFacade {
             } else {
                 forge_primitives::slack::SlackDraftOperation::Unreact
             },
+            thread: None,
+            tagged: Vec::new(),
         };
+        let workspace = draft.workspace.clone();
+        Self::name_draft(&ws, &api, &workspace, &conversation, &mut draft).await;
         match Self::await_approval(&ws, caller, draft).await {
             GateDecision::Approved => {}
             GateDecision::Rejected => return Err(SlackReactError::Rejected),
@@ -995,7 +1130,7 @@ impl SlackFacade for ProdSlackFacade {
         // approving something the user has not seen.
         let (conversation, conversation_label) =
             Self::resolve_conversation(&api, &label, &request.conversation).await;
-        let draft = SlackDraft {
+        let mut draft = SlackDraft {
             id: Uuid::new_v4(),
             workspace: label.clone(),
             conversation: request.conversation.clone(),
@@ -1003,7 +1138,11 @@ impl SlackFacade for ProdSlackFacade {
             thread_ts: request.thread_ts.clone(),
             text: format!("[file] {name}\nfrom {}", request.path.display()),
             operation: forge_primitives::slack::SlackDraftOperation::Upload,
+            thread: None,
+            tagged: Vec::new(),
         };
+        let workspace = draft.workspace.clone();
+        Self::name_draft(&ws, &api, &workspace, &conversation, &mut draft).await;
         match Self::await_approval(&ws, caller, draft).await {
             GateDecision::Approved => {}
             GateDecision::Rejected => return Err(SlackAttachmentError::Rejected),
@@ -1529,7 +1668,14 @@ mod tests {
         bookmark_reads: parking_lot::Mutex<Vec<String>>,
         /// Seeded conversation and thread reads.
         history_rows: parking_lot::Mutex<HashMap<String, Vec<SlackHistoryMessage>>>,
+        /// Make `conversations.list` fail, so the draft's fallback label is
+        /// the one tested.
+        list_failure: parking_lot::Mutex<bool>,
         reply_rows: parking_lot::Mutex<HashMap<String, Vec<SlackHistoryMessage>>>,
+        /// Thread reads that fail, keyed `channel/ts`.
+        reply_failures: parking_lot::Mutex<std::collections::HashSet<String>>,
+        /// User ids whose lookup fails, so a tag stays unnamed.
+        user_failures: parking_lot::Mutex<std::collections::HashSet<String>>,
         history_reads: parking_lot::Mutex<Vec<HistoryRead>>,
         reply_reads: parking_lot::Mutex<Vec<(String, String)>>,
         /// Search answers page by page; the queries are recorded so a test
@@ -1582,8 +1728,17 @@ mod tests {
         fn seed_history(&self, channel: &str, rows: Vec<SlackHistoryMessage>) {
             self.history_rows.lock().insert(channel.to_owned(), rows);
         }
+        fn fail_list(&self) {
+            *self.list_failure.lock() = true;
+        }
         fn seed_replies(&self, channel: &str, ts: &str, rows: Vec<SlackHistoryMessage>) {
             self.reply_rows.lock().insert(format!("{channel}/{ts}"), rows);
+        }
+        fn fail_replies(&self, channel: &str, ts: &str) {
+            self.reply_failures.lock().insert(format!("{channel}/{ts}"));
+        }
+        fn fail_user_info(&self, user: &str) {
+            self.user_failures.lock().insert(user.to_owned());
         }
         fn seed_search(&self, rows: Vec<SlackSearchMatch>) {
             self.search_pages.lock().push(rows);
@@ -1723,6 +1878,12 @@ mod tests {
         }
 
         async fn list_conversations(&self) -> Result<Vec<SlackConversation>, SlackError> {
+            if *self.list_failure.lock() {
+                return Err(SlackError::Transport {
+                    method: "conversations.list".to_owned(),
+                    detail: "connection reset".to_owned(),
+                });
+            }
             Ok(self.conversations.lock().clone())
         }
 
@@ -1755,6 +1916,12 @@ mod tests {
             _cursor: Option<&str>,
         ) -> Result<MessagePage, SlackError> {
             self.reply_reads.lock().push((channel.to_owned(), ts.to_owned()));
+            if self.reply_failures.lock().contains(&format!("{channel}/{ts}")) {
+                return Err(SlackError::RateLimited {
+                    method: "conversations.replies".to_owned(),
+                    retry_after: std::time::Duration::from_secs(5),
+                });
+            }
             Ok(MessagePage {
                 messages: self
                     .reply_rows
@@ -1928,6 +2095,12 @@ mod tests {
         }
 
         async fn user_info(&self, user: &str) -> Result<SlackUser, SlackError> {
+            if self.user_failures.lock().contains(user) {
+                return Err(SlackError::RateLimited {
+                    method: "users.info".to_owned(),
+                    retry_after: std::time::Duration::from_secs(5),
+                });
+            }
             Ok(SlackUser {
                 id: user.to_owned(),
                 name: "tester".to_owned(),
@@ -2333,8 +2506,465 @@ token = "y"
         }
         assert_eq!(
             seen.expect("the draft reaches the prompt"),
-            "ops",
-            "the prompt names the channel the message goes to",
+            "#ops",
+            "the prompt names the channel the message goes to, as a channel",
+        );
+
+        let id = wait_for_draft(&ws).await;
+        ws.resolve_slack_draft(id, &caller(), answered(false));
+        let _ = task.await;
+    }
+
+    /// The draft the facade has parked, which is the copy the pending update
+    /// carries.
+    async fn parked_draft(ws: &Arc<Workspace>) -> forge_primitives::slack::SlackDraft {
+        for _ in 0..200 {
+            let draft = ws.slack_drafts.lock().values().next().map(|(_, draft, _)| draft.clone());
+            if let Some(draft) = draft {
+                return draft;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        panic!("no draft was registered");
+    }
+
+    /// A thread read that answers one parent message.
+    fn parent_message(ts: &str, user: &str, text: &str) -> SlackHistoryMessage {
+        SlackHistoryMessage {
+            ts: ts.to_owned(),
+            user: Some(user.to_owned()),
+            text: text.to_owned(),
+            thread_ts: Some(ts.to_owned()),
+            reply_count: 0,
+            bot_name: None,
+            parent_user_id: None,
+            latest_reply: None,
+            edited: None,
+            files: Vec::new(),
+        }
+    }
+
+    fn threaded_post(conversation: &str, ts: &str, text: &str) -> SlackPostRequest {
+        SlackPostRequest {
+            conversation: conversation.to_owned(),
+            thread_ts: Some(ts.to_owned()),
+            text: text.to_owned(),
+        }
+    }
+
+    /// The card names the thread it replies into and the people it tags, so
+    /// the reader is not shown a ts and raw ids.
+    #[tokio::test]
+    async fn a_held_draft_names_its_thread_and_the_people_it_tags() {
+        let (facade, ws, api, _rx) = facade_with_recording_slack();
+        api.seed_conversation("C1", "ops");
+        api.seed_replies(
+            "C1",
+            "100.0",
+            vec![parent_message("100.0", "U2", "the deploy\nis green")],
+        );
+
+        let task = tokio::spawn({
+            let facade = facade.clone();
+            async move { facade.post(&caller(), threaded_post("C1", "100.0", "confirmed <@U9>")).await }
+        });
+
+        let draft = parked_draft(&ws).await;
+        assert_eq!(
+            draft.thread,
+            Some(forge_primitives::slack::SlackThreadName {
+                author: "tester".to_owned(),
+                excerpt: "the deploy is green".to_owned(),
+            }),
+            "the thread is named by its author and one flattened line",
+        );
+        assert_eq!(
+            draft.tagged,
+            vec![forge_primitives::slack::SlackPerson {
+                id: "U9".to_owned(),
+                name: Some("tester".to_owned()),
+            }],
+            "the tagged person is named, not left as an id",
+        );
+
+        let id = wait_for_draft(&ws).await;
+        ws.resolve_slack_draft(id, &caller(), answered(false));
+        let _ = task.await;
+    }
+
+    /// A root post has no thread to name, and its tags still resolve.
+    #[tokio::test]
+    async fn a_root_post_names_no_thread_but_still_names_its_tags() {
+        let (facade, ws, api, _rx) = facade_with_recording_slack();
+        api.seed_conversation("C1", "ops");
+
+        let task = tokio::spawn({
+            let facade = facade.clone();
+            async move { facade.post(&caller(), post_request("C1", "ping <@U9>")).await }
+        });
+
+        let draft = parked_draft(&ws).await;
+        assert_eq!(draft.thread, None, "a root message has no thread segment");
+        assert_eq!(
+            draft.tagged,
+            vec![forge_primitives::slack::SlackPerson {
+                id: "U9".to_owned(),
+                name: Some("tester".to_owned()),
+            }],
+            "the tags resolve whether or not the message replies into a thread",
+        );
+
+        let id = wait_for_draft(&ws).await;
+        ws.resolve_slack_draft(id, &caller(), answered(false));
+        let _ = task.await;
+    }
+
+    /// A parent Slack no longer returns leaves the thread unnamed, and the
+    /// draft still parks: the card draws the raw ts rather than nothing.
+    #[tokio::test]
+    async fn a_parent_slack_no_longer_returns_leaves_the_thread_unnamed() {
+        let (facade, ws, api, _rx) = facade_with_recording_slack();
+        api.seed_conversation("C1", "ops");
+
+        let task = tokio::spawn({
+            let facade = facade.clone();
+            async move { facade.post(&caller(), threaded_post("C1", "100.0", "hello")).await }
+        });
+
+        assert_eq!(parked_draft(&ws).await.thread, None, "no parent means no name to draw");
+        assert_eq!(
+            api.reply_reads(),
+            vec![("C1".to_owned(), "100.0".to_owned())],
+            "the read was attempted against the conversation, not skipped",
+        );
+        let id = wait_for_draft(&ws).await;
+        ws.resolve_slack_draft(id, &caller(), answered(false));
+        let _ = task.await;
+    }
+
+    /// The card names a channel the one way, and a DM by its partner: only a
+    /// channel carries a `#`. A caller echoing the card's own label back
+    /// still resolves, so a tool result can be fed into the next tool.
+    #[tokio::test]
+    async fn a_channel_is_prefixed_and_a_dm_and_a_group_dm_are_not() {
+        let recording = Arc::new(RecordingApi::default());
+        recording.seed_conversation("C1", "ops");
+        recording.seed_dm("D1", "U9");
+        recording.seed_mpim("G1", "mpdm-ved-alice-1");
+        let api: Arc<dyn SlackApi> = Arc::clone(&recording) as Arc<dyn SlackApi>;
+
+        assert_eq!(
+            ProdSlackFacade::resolve_conversation(&api, "acme", "C1").await,
+            ("C1".to_owned(), "#ops".to_owned()),
+            "a channel's label is the card's spelling",
+        );
+        assert_eq!(
+            ProdSlackFacade::resolve_conversation(&api, "acme", "D1").await,
+            ("D1".to_owned(), "U9".to_owned()),
+            "a DM is named after its partner, never with a `#`",
+        );
+        assert_eq!(
+            ProdSlackFacade::resolve_conversation(&api, "acme", "G1").await,
+            ("G1".to_owned(), "mpdm-ved-alice-1".to_owned()),
+            "a group DM keeps Slack's own generated name",
+        );
+        assert_eq!(
+            ProdSlackFacade::resolve_conversation(&api, "acme", "#ops").await,
+            ("C1".to_owned(), "#ops".to_owned()),
+            "the card's own label resolves when an agent echoes it back",
+        );
+    }
+
+    /// When the directory cannot be read, the id stays the bare form Slack
+    /// can address and the label keeps the caller's own spelling.
+    #[tokio::test]
+    async fn a_list_failure_keeps_the_callers_spelling_and_a_bare_id() {
+        let recording = Arc::new(RecordingApi::default());
+        recording.fail_list();
+        let api: Arc<dyn SlackApi> = Arc::clone(&recording) as Arc<dyn SlackApi>;
+
+        assert_eq!(
+            ProdSlackFacade::resolve_conversation(&api, "acme", "#ops").await,
+            ("ops".to_owned(), "#ops".to_owned()),
+            "the id is addressable; the label keeps what the caller said",
+        );
+        assert_eq!(
+            ProdSlackFacade::resolve_conversation(&api, "acme", "U9").await,
+            ("U9".to_owned(), "U9".to_owned()),
+            "a partner id carries no `#` either way",
+        );
+    }
+
+    /// An edit addressed by a DM partner reads the thread from the id Slack
+    /// knows, exactly as a post does.
+    #[tokio::test]
+    async fn an_edit_addressed_by_a_dm_partner_reads_the_resolved_id() {
+        let (facade, ws, api, _rx) = facade_with_recording_slack();
+        api.seed_dm("D1", "U9");
+        api.seed_replies("D1", "100.0", vec![parent_message("100.0", "U2", "the message")]);
+
+        let task = tokio::spawn({
+            let facade = facade.clone();
+            async move { facade.edit(&caller(), edit_request("U9", "100.0", Some("rewritten"))).await }
+        });
+
+        let draft = parked_draft(&ws).await;
+        assert_eq!(
+            draft.thread.map(|thread| thread.excerpt),
+            Some("the message".to_owned()),
+            "the edit names the message it acts on",
+        );
+        assert_eq!(
+            api.reply_reads(),
+            vec![("D1".to_owned(), "100.0".to_owned())],
+            "the read names the conversation Slack knows",
+        );
+        let id = wait_for_draft(&ws).await;
+        ws.resolve_slack_draft(id, &caller(), answered(false));
+        let _ = task.await;
+    }
+
+    /// An upload addressed by a DM partner reads its thread from the
+    /// resolved id too: the fix covers every path that builds a draft.
+    #[tokio::test]
+    async fn an_upload_addressed_by_a_dm_partner_reads_the_resolved_id() {
+        let (facade, ws, api, _rx) = facade_with_recording_slack();
+        api.seed_dm("D1", "U9");
+        api.seed_replies("D1", "100.0", vec![parent_message("100.0", "U2", "the parent")]);
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("notes.txt");
+        std::fs::write(&path, b"body").expect("write the file");
+        let mut request = upload_request("U9", &path);
+        request.thread_ts = Some("100.0".to_owned());
+
+        let task = tokio::spawn({
+            let facade = facade.clone();
+            async move { facade.post_attachment(&caller(), request).await }
+        });
+
+        assert!(parked_draft(&ws).await.thread.is_some(), "the upload names its thread");
+        assert_eq!(
+            api.reply_reads(),
+            vec![("D1".to_owned(), "100.0".to_owned())],
+            "the read names the conversation Slack knows",
+        );
+        let id = wait_for_draft(&ws).await;
+        ws.resolve_slack_draft(id, &caller(), answered(false));
+        let _ = task.await;
+    }
+
+    /// A parent with no author at all cannot be named without inventing one,
+    /// so the card keeps its raw ts.
+    #[tokio::test]
+    async fn a_parent_with_no_author_leaves_the_thread_unnamed() {
+        let (facade, ws, api, _rx) = facade_with_recording_slack();
+        api.seed_conversation("C1", "ops");
+        api.seed_replies(
+            "C1",
+            "100.0",
+            vec![SlackHistoryMessage {
+                user: None,
+                bot_name: None,
+                ..parent_message("100.0", "U2", "the parent")
+            }],
+        );
+
+        let task = tokio::spawn({
+            let facade = facade.clone();
+            async move { facade.post(&caller(), threaded_post("C1", "100.0", "hello")).await }
+        });
+
+        assert_eq!(parked_draft(&ws).await.thread, None, "no author means no name to draw");
+        let id = wait_for_draft(&ws).await;
+        ws.resolve_slack_draft(id, &caller(), answered(false));
+        let _ = task.await;
+    }
+
+    /// The bound counts characters, not bytes: a parent of two-byte glyphs
+    /// is cut at the same place a Latin one would be.
+    #[tokio::test]
+    async fn a_multibyte_parent_is_cut_by_characters_not_bytes() {
+        let (facade, ws, api, _rx) = facade_with_recording_slack();
+        api.seed_conversation("C1", "ops");
+        let text = "é".repeat(100);
+        api.seed_replies("C1", "100.0", vec![parent_message("100.0", "U2", &text)]);
+
+        let task = tokio::spawn({
+            let facade = facade.clone();
+            async move { facade.post(&caller(), threaded_post("C1", "100.0", "hello")).await }
+        });
+
+        let excerpt = parked_draft(&ws).await.thread.expect("the thread is named").excerpt;
+        assert_eq!(
+            excerpt.chars().count(),
+            ProdSlackFacade::THREAD_EXCERPT_CHARS + 3,
+            "the bound is characters plus the mark, not bytes",
+        );
+        assert!(excerpt.starts_with('é'), "the glyph survives whole: {excerpt:?}");
+        let id = wait_for_draft(&ws).await;
+        ws.resolve_slack_draft(id, &caller(), answered(false));
+        let _ = task.await;
+    }
+
+    /// A read anchored at a reply answers the thread's parent. Naming that
+    /// would label an edit with a different message, so a ts that is not the
+    /// one asked for leaves the card drawing the raw stamp.
+    #[tokio::test]
+    async fn a_message_inside_a_thread_is_not_named_as_the_thread_parent() {
+        let (facade, ws, api, _rx) = facade_with_recording_slack();
+        api.seed_conversation("C1", "ops");
+        api.seed_replies("C1", "200.0", vec![parent_message("100.0", "U2", "the thread parent")]);
+
+        let task = tokio::spawn({
+            let facade = facade.clone();
+            async move { facade.edit(&caller(), edit_request("C1", "200.0", Some("rewritten"))).await }
+        });
+
+        assert_eq!(
+            parked_draft(&ws).await.thread,
+            None,
+            "the thread parent is not the message a reply's edit acts on",
+        );
+        let id = wait_for_draft(&ws).await;
+        ws.resolve_slack_draft(id, &caller(), answered(false));
+        let _ = task.await;
+    }
+
+    /// A draft addressed the way the schema tells agents to address a DM -
+    /// by the partner's user id - still names its thread: the read uses the
+    /// resolved conversation id while the wire keeps what the caller named.
+    #[tokio::test]
+    async fn a_draft_addressed_by_a_dm_partner_names_the_thread_by_its_resolved_id() {
+        let (facade, ws, api, _rx) = facade_with_recording_slack();
+        api.seed_dm("D1", "U9");
+        api.seed_replies("D1", "100.0", vec![parent_message("100.0", "U2", "the parent")]);
+
+        let task = tokio::spawn({
+            let facade = facade.clone();
+            async move { facade.post(&caller(), threaded_post("U9", "100.0", "hello")).await }
+        });
+
+        let draft = parked_draft(&ws).await;
+        assert_eq!(draft.conversation, "U9", "the wire keeps what the caller addressed");
+        assert!(
+            draft.thread.is_some(),
+            "the thread is read from the resolved id, not the partner's"
+        );
+        assert_eq!(
+            api.reply_reads(),
+            vec![("D1".to_owned(), "100.0".to_owned())],
+            "the read names the conversation Slack knows",
+        );
+
+        let id = wait_for_draft(&ws).await;
+        ws.resolve_slack_draft(id, &caller(), answered(false));
+        let _ = task.await;
+    }
+
+    /// A top-level message is named for the edit or the delete that acts on
+    /// it: the read returns the message itself, so its author and opening
+    /// words are the card's.
+    #[tokio::test]
+    async fn an_edit_or_a_delete_of_a_top_level_message_names_it() {
+        for text in [Some("rewritten"), None] {
+            let (facade, ws, api, _rx) = facade_with_recording_slack();
+            api.seed_conversation("C1", "ops");
+            api.seed_replies("C1", "100.0", vec![parent_message("100.0", "U2", "the message")]);
+
+            let task = tokio::spawn({
+                let facade = facade.clone();
+                async move { facade.edit(&caller(), edit_request("C1", "100.0", text)).await }
+            });
+
+            let draft = parked_draft(&ws).await;
+            assert_eq!(
+                draft.thread.map(|thread| thread.excerpt),
+                Some("the message".to_owned()),
+                "the operation names the message it acts on",
+            );
+            let id = wait_for_draft(&ws).await;
+            ws.resolve_slack_draft(id, &caller(), answered(false));
+            let _ = task.await;
+        }
+    }
+
+    /// A failed name lookup still names the author by the id Slack sent -
+    /// never an empty author, which would draw a bare `@`.
+    #[tokio::test]
+    async fn a_failed_author_lookup_draws_the_raw_id_as_the_author() {
+        let (facade, ws, api, _rx) = facade_with_recording_slack();
+        api.seed_conversation("C1", "ops");
+        api.seed_replies("C1", "100.0", vec![parent_message("100.0", "U2", "the parent")]);
+        api.fail_user_info("U2");
+
+        let task = tokio::spawn({
+            let facade = facade.clone();
+            async move { facade.post(&caller(), threaded_post("C1", "100.0", "hello")).await }
+        });
+
+        let draft = parked_draft(&ws).await;
+        assert_eq!(
+            draft.thread.map(|thread| thread.author),
+            Some("U2".to_owned()),
+            "the raw id is drawn rather than an invented or empty name",
+        );
+        let id = wait_for_draft(&ws).await;
+        ws.resolve_slack_draft(id, &caller(), answered(false));
+        let _ = task.await;
+    }
+
+    /// A bot names itself on the parent, so the card draws that name without
+    /// spending a users.info call on the bot's id.
+    #[tokio::test]
+    async fn a_bot_parent_is_named_by_its_own_name() {
+        let (facade, ws, api, _rx) = facade_with_recording_slack();
+        api.seed_conversation("C1", "ops");
+        api.seed_replies(
+            "C1",
+            "100.0",
+            vec![SlackHistoryMessage {
+                bot_name: Some("Deploy Bot".to_owned()),
+                ..parent_message("100.0", "U3", "the deploy is green")
+            }],
+        );
+        api.fail_user_info("U3");
+
+        let task = tokio::spawn({
+            let facade = facade.clone();
+            async move { facade.post(&caller(), threaded_post("C1", "100.0", "hello")).await }
+        });
+
+        let draft = parked_draft(&ws).await;
+        assert_eq!(
+            draft.thread.map(|thread| thread.author),
+            Some("Deploy Bot".to_owned()),
+            "the bot's own name wins over a lookup",
+        );
+        let id = wait_for_draft(&ws).await;
+        ws.resolve_slack_draft(id, &caller(), answered(false));
+        let _ = task.await;
+    }
+
+    /// When both lookups fail the draft is still held and drawable: no
+    /// thread name, and the tag keeps its id instead of being dropped.
+    #[tokio::test]
+    async fn a_draft_still_parks_when_the_parent_and_a_tag_lookup_fail() {
+        let (facade, ws, api, _rx) = facade_with_recording_slack();
+        api.seed_conversation("C1", "ops");
+        api.fail_replies("C1", "100.0");
+        api.fail_user_info("U9");
+
+        let task = tokio::spawn({
+            let facade = facade.clone();
+            async move { facade.post(&caller(), threaded_post("C1", "100.0", "confirmed <@U9>")).await }
+        });
+
+        let draft = parked_draft(&ws).await;
+        assert_eq!(draft.thread, None, "a failed parent read is not invented over");
+        assert_eq!(
+            draft.tagged,
+            vec![forge_primitives::slack::SlackPerson { id: "U9".to_owned(), name: None }],
+            "an unresolved tag keeps its id, never dropped",
         );
 
         let id = wait_for_draft(&ws).await;
@@ -3042,7 +3672,10 @@ token = "y"
         let outcome = task.await.expect("no panic").expect("an approved draft posts");
         assert_eq!(api.posts().len(), 1, "exactly one message goes out");
         assert_eq!(outcome.ts, vec!["1.0".to_owned()], "the ts the wire minted");
-        assert_eq!(outcome.conversation_name, "ops", "the channel's name, not the id it was sent");
+        assert_eq!(
+            outcome.conversation_name, "ops",
+            "the agent-facing name is the bare one every other tool reports",
+        );
         assert_eq!(outcome.parts, 1, "a short draft is one part");
     }
 

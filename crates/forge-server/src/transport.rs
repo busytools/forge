@@ -255,6 +255,11 @@ pub mod wire;
 /// because that client has no answered-command set.
 /// `baselines/socket/26/` is the record a v26 server emitted.
 ///
+/// **The held Slack draft's new fields did not need a v28.** `thread` and
+/// `tagged` are additive under the rule below: a v27 client ignores them and
+/// draws the raw ts it always drew, so `baselines/socket/27/` is re-recorded
+/// in place rather than a v28 directory being cut.
+///
 /// **Additive fields do not bump.** `diff.base_error` is one, carried on the
 /// v16-era record: a client older than the field draws the vaguer line it
 /// always drew, and nothing it sends changes.

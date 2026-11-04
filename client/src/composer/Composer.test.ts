@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { hideBrowser, onModifier, onModifierChord, showBrowser } from '../browser/link';
 import { openSurface, selectTab, surface } from '../browser/surface.svelte';
+import { repoPath } from '../repo';
 
 /**
  * The shell's own door, mock-able so both halves of Open's claim are testable
@@ -4540,6 +4541,9 @@ describe('the one body slot', () => {
  * what happens to a take that is still running behind it.
  */
 describe('the dock', () => {
+  /** A message stamp as the wire sends it, read by every Slack card below. */
+  const STAMP = '1758901234.482910';
+
   /** Every command the composer sent, in order. */
   const commands = (harness: { sent: { command: Record<string, unknown> }[] }) =>
     harness.sent.map((entry) => entry.command);
@@ -6339,7 +6343,7 @@ describe('the dock', () => {
     open({ record: record({ pending_asks: [slackDraftAsk()] }) });
 
     expect(drawn()).toContain('Post to Slack');
-    expect(drawn()).toContain('Trust Machines · granite-staging-alerts');
+    expect(drawn()).toContain('Trust Machines · #granite-staging-alerts');
     expect(drawn(), 'the words being approved are shown in full').toContain(
       'Deploy finished on staging.',
     );
@@ -6348,14 +6352,258 @@ describe('the dock', () => {
     );
   });
 
-  it('names the thread a reply goes into, rather than the tool that composed it', () => {
-    open({ record: record({ pending_asks: [slackDraftAsk({ thread_ts: '1758901234.482910' })] }) });
+  /** The card's destination line, with its whitespace collapsed for a read. */
+  function dest(): string {
+    return (document.querySelector('.dock .dest')?.textContent ?? '').replace(/\s+/g, ' ').trim();
+  }
+
+  it('names the thread a reply goes into and the people it tags', () => {
+    open({
+      record: record({
+        pending_asks: [
+          slackDraftAsk({
+            thread_ts: STAMP,
+            thread: { author: 'alice', excerpt: 'the staging deploy is green...' },
+            tagged: [
+              { id: 'U2', name: 'bob' },
+              { id: 'U3', name: 'carol' },
+            ],
+          }),
+        ],
+      }),
+    });
 
     expect(drawn()).toContain('Reply in Slack');
-    expect(drawn()).toContain('thread 1758901234.482910');
+    // The `·` before the thread is CSS; the one before the tags is a DOM item
+    // (`.tsep`) so a wrapped tag row never opens with it. The gaps are the
+    // layout's, which is why the names carry commas but no spaces.
+    expect(dest(), 'the thread is named by its author and its opening words').toBe(
+      `Trust Machines · #granite-staging-alerts thread: @alice "the staging deploy is green..." · tags: @bob,@carol`,
+    );
     expect(drawn(), 'the dock says where it goes, not which tool asked').not.toContain(
       'slack__post',
     );
+  });
+
+  it("names a root post's tags with no thread segment to leave behind", () => {
+    open({
+      record: record({
+        pending_asks: [slackDraftAsk({ tagged: [{ id: 'U2', name: 'bob' }] })],
+      }),
+    });
+
+    expect(dest(), 'no thread means no segment and no leftover separator').toBe(
+      'Trust Machines · #granite-staging-alerts · tags: @bob',
+    );
+    expect(dest(), 'and no empty thread label is drawn').not.toContain('thread:');
+  });
+
+  it('draws no tag segment when the draft tags nobody', () => {
+    open({
+      record: record({
+        pending_asks: [
+          slackDraftAsk({
+            thread_ts: STAMP,
+            thread: { author: 'alice', excerpt: 'should we roll the rest of the fleet now?' },
+          }),
+        ],
+      }),
+    });
+
+    expect(dest(), 'a label with no names behind it would read as a failed read').toBe(
+      `Trust Machines · #granite-staging-alerts thread: @alice "should we roll the rest of the fleet now?"`,
+    );
+    expect(dest()).not.toContain('tags:');
+  });
+
+  it('draws an unresolved tag as its id and an unnamed thread as its stamp', () => {
+    open({
+      record: record({
+        pending_asks: [
+          slackDraftAsk({
+            thread_ts: STAMP,
+            thread: null,
+            tagged: [{ id: 'U3', name: null }],
+          }),
+        ],
+      }),
+    });
+
+    expect(dest(), 'an id is drawn as the id, never dropped and never invented over').toBe(
+      `Trust Machines · #granite-staging-alerts thread: ${STAMP} · tags: U3`,
+    );
+  });
+
+  it('draws the server-cut excerpt with the same line in its title', () => {
+    // The core bounds an excerpt to ~80 characters at a word boundary and
+    // marks the cut, so nothing longer than this can arrive on the wire.
+    const excerpt = 'the canary is holding at 1% and every check is green, but the p99 is still...';
+    open({
+      record: record({
+        pending_asks: [
+          slackDraftAsk({ thread_ts: STAMP, thread: { author: 'priya.raman', excerpt } }),
+        ],
+      }),
+    });
+
+    const ex = document.querySelector('.dock .dest .ex');
+    expect(ex?.textContent, 'the card draws the excerpt the core resolved').toBe(`"${excerpt}"`);
+    expect(ex?.getAttribute('title'), 'and the whole excerpt is reachable from it').toBe(excerpt);
+  });
+
+  it('draws a named thread whose parent carried no text without an empty quote', () => {
+    open({
+      record: record({
+        pending_asks: [
+          slackDraftAsk({ thread_ts: STAMP, thread: { author: 'alice', excerpt: '' } }),
+        ],
+      }),
+    });
+
+    expect(dest(), 'no excerpt means no quote marks and no empty pair').toBe(
+      `Trust Machines · #granite-staging-alerts thread: @alice`,
+    );
+  });
+
+  it('names the channel with its `#` on the folded bar too', () => {
+    open({ record: record({ pending_asks: [slackDraftAsk()] }) });
+
+    const fold = document.querySelector<HTMLElement>('.dock .chevb');
+    expect(fold, 'the dock draws its fold control').not.toBeNull();
+    fold?.click();
+    flushSync();
+
+    expect(document.querySelector('.qbar .t')?.textContent).toBe(
+      'Trust Machines · #granite-staging-alerts',
+    );
+  });
+
+  /**
+   * The line's two measured classes, driven through the same fake observer the
+   * panel's cap test uses: jsdom lays nothing out, so the widths are supplied
+   * as own properties and the observer's callback is fired by hand. The
+   * `tags-below` and `pill-stacked` decisions are the whole of what the layout
+   * resting under the mock depends on.
+   */
+  it('measures the line and lets the tags and the chip yield in order', () => {
+    const callbacks: (() => void)[] = [];
+    const original: unknown = Reflect.get(globalThis, 'ResizeObserver');
+    class Watching {
+      run: () => void;
+      constructor(run: () => void) {
+        this.run = run;
+      }
+      observe(): void {
+        callbacks.push(this.run);
+      }
+      disconnect(): void {}
+    }
+    const widths = (el: Element | null, value: number): void => {
+      if (!(el instanceof HTMLElement)) return;
+      for (const key of ['offsetWidth', 'scrollWidth', 'clientWidth']) {
+        Object.defineProperty(el, key, { configurable: true, value });
+      }
+    };
+    Reflect.set(globalThis, 'ResizeObserver', Watching);
+    try {
+      open({
+        record: record({
+          pending_asks: [
+            slackDraftAsk({
+              thread_ts: STAMP,
+              thread: { author: 'alice', excerpt: 'the deploy is green' },
+              tagged: [{ id: 'U2', name: 'bob' }],
+            }),
+          ],
+        }),
+      });
+
+      const dest = document.querySelector('.dock .dest');
+      expect(dest, 'the dock draws its destination line').not.toBeNull();
+      if (!(dest instanceof HTMLElement)) throw new Error('no destination line');
+
+      widths(dest.querySelector('.pin'), 100);
+      widths(dest.querySelector('.pin .ws'), 70);
+      widths(dest.querySelector('.pin .ch'), 30);
+      widths(dest.querySelector('.thr'), 120);
+      widths(dest.querySelector('.thr .lbl'), 40);
+      widths(dest.querySelector('.thr .who'), 20);
+      widths(dest.querySelector('.thr .ex'), 60);
+      widths(dest.querySelector('.tgs'), 90);
+      widths(dest.querySelector('.tgs .lbl'), 40);
+      for (const name of dest.querySelectorAll('.tgs .nm')) widths(name, 25);
+      const measured = callbacks.at(-1);
+      expect(measured, 'the line is measured when the dock arrives').toBeDefined();
+
+      widths(dest, 1000);
+      measured?.();
+      flushSync();
+      expect(dest.classList.contains('tags-below'), 'a wide line holds pill, thread and tags').toBe(
+        false,
+      );
+      expect(dest.classList.contains('pill-stacked'), 'and the chip has room').toBe(false);
+
+      widths(dest, 220);
+      measured?.();
+      flushSync();
+      expect(dest.classList.contains('tags-below'), 'a crowded line moves the tags below').toBe(
+        true,
+      );
+      expect(dest.classList.contains('pill-stacked'), 'while the chip still shares its line').toBe(
+        false,
+      );
+
+      widths(dest, 100);
+      measured?.();
+      flushSync();
+      expect(dest.classList.contains('pill-stacked'), 'a chip with no room stacks its halves').toBe(
+        true,
+      );
+    } finally {
+      Reflect.set(globalThis, 'ResizeObserver', original);
+    }
+  });
+
+  /**
+   * H1's shape, pinned where jsdom cannot see it: a container query adds no
+   * specificity, so the crowded thread's four-class rule must live ABOVE the
+   * narrow breakpoint or it outranks the 980 block's one-row thread and the
+   * narrow layout never happens. The stylesheet is the only place this can be
+   * checked without a browser.
+   */
+  it('keeps the crowded thread rule above the narrow breakpoint', () => {
+    const css = readFileSync(repoPath('client/src/assets/web.css'), 'utf8');
+
+    /** The first `@container (header)` block, braces balanced. */
+    function container(header: string): string {
+      const start = css.indexOf(header);
+      if (start === -1) return '';
+      let depth = 0;
+      let out = '';
+      for (let at = start; at < css.length; at += 1) {
+        const char = css[at];
+        if (char === '{') depth += 1;
+        if (depth > 0 && char !== undefined) out += char;
+        if (char === '}') {
+          depth -= 1;
+          if (depth === 0) break;
+        }
+      }
+      return out;
+    }
+
+    expect(
+      container('@container (min-width: 981px)'),
+      'the crowded thread fills its row only above the narrow breakpoint',
+    ).toContain('.dock .dest.tags-below .thr');
+    expect(
+      container('@container (max-width: 980px)'),
+      'and below it the narrow block still gives the thread its own row',
+    ).toContain('.dock .thr { flex: 0 0 100%; }');
+    expect(
+      css.match(/\.dock \.dest\.tags-below \.thr/g)?.length,
+      'one rule, in the min-width block, so nothing outranks the narrow block',
+    ).toBe(1);
   });
 
   it('draws a held config write with its key and both values', () => {
@@ -6728,18 +6976,17 @@ describe('the dock', () => {
   // The server sets `thread_ts` to the target MESSAGE's ts on every non-post
   // operation - the field is a reply thread only for a post or an upload - so
   // these rows carry the shape a real server sends, not a null.
-  const STAMP = '1758901234.482910';
   const OPERATION_CARDS: [string, string | null, string, string, string, string | null][] = [
     ['post', null, 'Post to Slack', 'Post', 'Do not post', null],
-    ['post', STAMP, 'Reply in Slack', 'Post', 'Do not post', `thread ${STAMP}`],
-    ['edit', STAMP, 'Edit in Slack', 'Apply edit', 'Do not apply', `message ${STAMP}`],
-    ['delete', STAMP, 'Delete in Slack', 'Delete', 'Keep it', `message ${STAMP}`],
-    ['react', STAMP, 'React in Slack', 'React', 'Do not react', `message ${STAMP}`],
-    ['unreact', STAMP, 'Unreact in Slack', 'Unreact', 'Do not unreact', `message ${STAMP}`],
+    ['post', STAMP, 'Reply in Slack', 'Post', 'Do not post', `thread: ${STAMP}`],
+    ['edit', STAMP, 'Edit in Slack', 'Apply edit', 'Do not apply', `message: ${STAMP}`],
+    ['delete', STAMP, 'Delete in Slack', 'Delete', 'Keep it', `message: ${STAMP}`],
+    ['react', STAMP, 'React in Slack', 'React', 'Do not react', `message: ${STAMP}`],
+    ['unreact', STAMP, 'Unreact in Slack', 'Unreact', 'Do not unreact', `message: ${STAMP}`],
     ['upload', null, 'Upload to Slack', 'Upload', 'Do not upload', null],
-    ['upload', STAMP, 'Upload to Slack', 'Upload', 'Do not upload', `thread ${STAMP}`],
+    ['upload', STAMP, 'Upload to Slack', 'Upload', 'Do not upload', `thread: ${STAMP}`],
     // A value from a newer server draws neutral words, never a post's.
-    ['unknown', STAMP, 'Slack draft', 'Approve', 'Do not send', `message ${STAMP}`],
+    ['unknown', STAMP, 'Slack draft', 'Approve', 'Do not send', `message: ${STAMP}`],
   ];
 
   it.each(OPERATION_CARDS)(
@@ -6766,7 +7013,7 @@ describe('the dock', () => {
       expect(
         dest.replace(/\s+/g, ' ').trim(),
         'a message stamp and a thread stamp are different facts',
-      ).toBe(`Trust Machines · granite-staging-alerts${stamp === null ? '' : ` · ${stamp}`}`);
+      ).toBe(`Trust Machines · #granite-staging-alerts${stamp === null ? '' : ` ${stamp}`}`);
     },
   );
 

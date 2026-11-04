@@ -101,6 +101,111 @@ describe('the ask as the composer reads it', () => {
     ).toBe('delete');
   });
 
+  it('reads the thread and the tagged people a held draft was resolved with', () => {
+    const held = askFrom({
+      kind: 'slack_draft',
+      request: {
+        id: '0192e1c0-0000-7000-8000-000000000000',
+        workspace: 'Trust Machines',
+        conversation: 'C0123',
+        conversation_label: 'granite-staging-alerts',
+        thread_ts: '1758901234.482910',
+        text: 'Deploy finished <@U2>.',
+        operation: 'post',
+        thread: { author: 'alice', excerpt: 'the staging deploy is green...' },
+        tagged: [
+          { id: 'U2', name: 'bob' },
+          { id: 'U3', name: null },
+        ],
+      },
+    });
+    if (held?.kind !== 'slack_draft') throw new Error('the held post did not narrow');
+
+    expect(held.request.thread, 'the thread is named core-side, not by this page').toEqual({
+      author: 'alice',
+      excerpt: 'the staging deploy is green...',
+    });
+    expect(held.request.tagged, 'an unresolved tag keeps its id rather than being dropped').toEqual(
+      [
+        { id: 'U2', name: 'bob' },
+        { id: 'U3', name: null },
+      ],
+    );
+  });
+
+  it('reads a draft from a server that predates the thread and tag fields', () => {
+    const held = askFrom({
+      kind: 'slack_draft',
+      request: {
+        id: '0192e1c0-0000-7000-8000-000000000000',
+        workspace: 'Trust Machines',
+        conversation: 'C0123',
+        conversation_label: 'granite-staging-alerts',
+        thread_ts: '1758901234.482910',
+        text: 'Deploy finished on staging.',
+        operation: 'post',
+      },
+    });
+    if (held?.kind !== 'slack_draft') throw new Error('the held post did not narrow');
+
+    expect(
+      held.request.thread,
+      'no thread name reads as none, so the card draws the ts',
+    ).toBeNull();
+    expect(held.request.tagged, 'and no tags reads as none, not as a placeholder').toEqual([]);
+  });
+
+  it('reads a malformed thread or tag row as nothing it can draw', () => {
+    const held = askFrom({
+      kind: 'slack_draft',
+      request: {
+        id: '0192e1c0-0000-7000-8000-000000000000',
+        workspace: 'Trust Machines',
+        conversation: 'C0123',
+        conversation_label: '#granite-staging-alerts',
+        thread_ts: '1758901234.482910',
+        text: 'Deploy finished <@U2>.',
+        operation: 'post',
+        // A thread with no author cannot be drawn without inventing one.
+        thread: { excerpt: 'no author here' },
+        // A tag with no id is not a person; a row that names one survives.
+        tagged: [{ name: 'no id' }, { id: 'U2', name: 'bob' }, 'junk'],
+      },
+    });
+    if (held?.kind !== 'slack_draft') throw new Error('the held post did not narrow');
+
+    expect(held.request.thread, 'an authorless thread is no thread name').toBeNull();
+    expect(held.request.tagged, 'only rows that name a person are tags').toEqual([
+      { id: 'U2', name: 'bob' },
+    ]);
+  });
+
+  it('reads whitespace-only names and ids as nothing to draw', () => {
+    const held = askFrom({
+      kind: 'slack_draft',
+      request: {
+        id: '0192e1c0-0000-7000-8000-000000000000',
+        workspace: 'Trust Machines',
+        conversation: 'C0123',
+        conversation_label: '#granite-staging-alerts',
+        thread_ts: '1758901234.482910',
+        text: 'Deploy finished <@U2>.',
+        operation: 'post',
+        thread: { author: '   ', excerpt: 'a line with no author' },
+        tagged: [
+          { id: '  ', name: 'nobody' },
+          { id: 'U2', name: '   ' },
+        ],
+      },
+    });
+    if (held?.kind !== 'slack_draft') throw new Error('the held post did not narrow');
+
+    expect(held.request.thread, 'a blank author is not a name').toBeNull();
+    expect(held.request.tagged, 'a blank id is not a person and a blank name is none').toEqual([
+      { id: 'U2', name: null },
+    ]);
+  });
+
   it('narrows an operation this client is older than to neutral, not a post', () => {
     const held = askFrom({
       kind: 'slack_draft',

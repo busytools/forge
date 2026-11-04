@@ -3349,6 +3349,10 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
 .dock .d-head .q { color: var(--dim); font-family: var(--mono); font-size: var(--fs-data);
   margin-left: auto;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The destination line takes the room left over, so the verb on the head that
+   carries it is fixed and never shrinks. Scoped: every other head's `.q` keeps
+   shrinking, because an approval's title can be longer than its card. */
+.dock .d-head .q.dest-verb { flex: 0 0 auto; }
 .dock .d-head .q.mono { font-weight: 400; }
 .dock .d-q { font-size: 16px; font-weight: 500; letter-spacing: -.01em;
   color: var(--text); overflow-wrap: anywhere; }
@@ -3382,9 +3386,70 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
   font-family: var(--mono); font-size: var(--fs-label); border-radius: 999px;
   padding: 3px 10px; }
 .dock .tag.warn { color: var(--warn); border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent); }
-.dock .dest { display: inline-flex; align-items: center; gap: 7px;
-  font-family: var(--mono); font-size: var(--fs-label); color: var(--muted);
-  border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px; }
+/* The destination line: the pill that says where a draft goes, the thread
+   named beside it, and the people it tags. Thread first - it takes every
+   pixel the pill leaves and the excerpt truncates only inside that space.
+   Tags never take width from the thread: where it needs the row they move
+   below it. Absence is silence: no thread and no tags mean no segment and no
+   separator. */
+.dock .dest { flex: 1 1 0; min-width: 0; display: inline-flex; flex-wrap: wrap;
+  align-items: baseline; column-gap: 10px; row-gap: 4px;
+  font-family: var(--mono); font-size: var(--fs-label); color: var(--muted); }
+.dock .pin { display: inline-flex; align-items: baseline; gap: 7px; flex: 0 1 auto;
+  min-width: 0; overflow: hidden; border: 1px solid var(--line);
+  border-radius: 999px; padding: 3px 10px; color: var(--muted); }
+.dock .pin .ws { min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; }
+.dock .pin .sp { flex: none; color: var(--dim); opacity: .6; }
+.dock .pin .ch { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  color: var(--text); font-weight: 500; white-space: nowrap; }
+.dock .thr { display: inline-flex; align-items: baseline; gap: 6px; flex: 0 1 auto;
+  min-width: 0; }
+/* Crowded: the thread takes the row and the tags move below it, which is the
+   mock's `tags-below`. Decided from the measured line, since a fixed width
+   cannot know how long the excerpt or the tag list is. The thread's own rule
+   sits above the narrow breakpoint only: below 980 the thread already has a
+   row of its own, and a four-class selector must not outrank that block. */
+@container (min-width: 981px) {
+  .dock .dest.tags-below .thr { flex: 1 1 0; }
+}
+.dock .dest.tags-below .tgs { flex-basis: 100%; }
+.dock .dest.tags-below .tsep { display: none; }
+.dock .thr::before { content: "\00b7" / ""; flex: none; color: var(--dim); opacity: .6;
+  margin-right: 2px; }
+.dock .thr .lbl { flex: none; color: var(--dim); }
+.dock .thr .who { flex: none; color: var(--text); font-weight: 500; white-space: nowrap; }
+.dock .thr .ex { flex: 1 1 auto; min-width: 12ch; color: var(--muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The separator is its own item so a tag list that takes the next row leaves
+   it at the end of the row above, never as that row's opening glyph. */
+.dock .tsep { flex: none; color: var(--dim); opacity: .6; }
+.dock .tgs { display: inline-flex; align-items: baseline; gap: 5px;
+  flex: 0 1 auto; min-width: 0; flex-wrap: wrap; }
+.dock .tgs .nm { color: var(--muted); white-space: nowrap; }
+/* Below 980 the pill cannot share a row with the thread, so the thread and
+   the tags each take a row of their own and the chip stacks its halves rather
+   than cutting either to a few letters. */
+@container (max-width: 980px) {
+  .dock .thr { flex: 0 0 100%; }
+  .dock .thr::before { content: none; }
+  .dock .tsep { display: none; }
+  .dock .tgs { flex-basis: 100%; }
+  /* The chip stacks its halves only when they cannot share a line; a dot
+     between them would otherwise lead the second line. */
+  .dock .dest.pill-stacked .pin { flex-shrink: 1; flex-wrap: wrap; row-gap: 0;
+    border-radius: 12px; }
+  .dock .dest.pill-stacked .pin .sp { display: none; }
+}
+/* Below 620 the author's opening words take a line of their own rather than
+   the ten characters left beside the name. */
+@container (max-width: 620px) {
+  .dock .d-head { gap: 7px; }
+  .dock .dest { column-gap: 8px; }
+  .dock .thr { flex-wrap: wrap; row-gap: 0; }
+  .dock .thr .ex { flex: 1 1 100%; min-width: 0; }
+  .dock .d-head .q { font-size: var(--fs-label); }
+}
 .dock .reason { color: var(--warn); font-size: var(--fs-base); }
 .dock .desc { color: var(--dim); font-size: var(--fs-base); }
 /* A held write's values, verbatim: a config value can be a number, a list or

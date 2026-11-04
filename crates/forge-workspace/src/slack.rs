@@ -1669,6 +1669,11 @@ impl SlackHost for SlackSubsystemHost {
         ws.slack_author_failures.lock().insert((workspace.to_owned(), user.to_owned()))
     }
 
+    fn first_draft_user_failure(&self, workspace: &str, user: &str) -> bool {
+        let Some(ws) = self.0.upgrade() else { return true };
+        ws.slack_draft_user_failures.lock().insert((workspace.to_owned(), user.to_owned()))
+    }
+
     fn follow_thread(
         &self,
         workspace: &str,
@@ -1792,6 +1797,8 @@ mod tests {
             thread_ts: None,
             text: "hello".to_owned(),
             operation: forge_primitives::slack::SlackDraftOperation::Post,
+            thread: None,
+            tagged: Vec::new(),
         }
     }
 

@@ -144,6 +144,11 @@ pub trait SlackHost: Send + Sync {
     /// report itself for every author on every tick.
     fn first_author_failure(&self, workspace: &str, user: &str) -> bool;
 
+    /// The same once-per-user line for a held draft's tag lookup. Kept apart
+    /// from [`Self::first_author_failure`] so a draft's miss does not spend
+    /// the line the sweep relies on, and the sweep's does not hide the draft's.
+    fn first_draft_user_failure(&self, workspace: &str, user: &str) -> bool;
+
     /// Track a thread, owned by the matching subscription. A new row's cursor
     /// starts at `since`, which the caller picks to be recent enough to
     /// survive the idle window and below everything still worth delivering.
@@ -430,6 +435,41 @@ pub fn mentions(text: &str, user_id: &str) -> bool {
     text.contains(&format!("<@{user_id}>"))
 }
 
+/// Every user id a message's text tags, once each, in order of appearance.
+/// Slack writes a mention as `<@U...>`, optionally carrying a display label
+/// after a `|`; a channel reference and a link start with a different sigil
+/// and are not people.
+pub fn mention_ids(text: &str) -> Vec<String> {
+    let mut ids: Vec<String> = Vec::new();
+    let mut rest = text;
+    while let Some(start) = rest.find("<@") {
+        let after = &rest[start + 2..];
+        let Some(end) = after.find('>') else { break };
+        let id = after[..end].split('|').next().unwrap_or_default();
+        if id.chars().next().is_some_and(|first| first.is_ascii_alphabetic())
+            && id.chars().all(|ch| ch.is_ascii_alphanumeric())
+            && !ids.iter().any(|seen| seen == id)
+        {
+            ids.push(id.to_owned());
+        }
+        rest = &after[end + 1..];
+    }
+    ids
+}
+
+/// One flattened line of a message's text, for a card that quotes it: the
+/// whitespace collapses, and a line past `limit` characters stops at the
+/// last space before the bound where there is one, marked with an ellipsis.
+pub fn one_line_excerpt(text: &str, limit: usize) -> String {
+    let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.chars().count() <= limit {
+        return flat;
+    }
+    let prefix: String = flat.chars().take(limit).collect();
+    let kept = prefix.rfind(' ').map_or(prefix.as_str(), |at| &prefix[..at]);
+    format!("{}...", kept.trim_end())
+}
+
 /// Every message a file was shared as, as `(conversation, ts)`. The
 /// conversation is the share's own - the channel Slack posted into, which
 /// need not be the string the upload was addressed with. Both the upload's
@@ -710,6 +750,56 @@ async fn resolve_author(
     };
     host.set_user_name(workspace, user, name.as_deref().unwrap_or_default());
     Ok(name)
+}
+
+/// The display name for a user id, from the host's cache or a `users.info`
+/// lookup that is then remembered. `None` when the id cannot be named - the
+/// caller draws the id rather than a guess. A failure that is not settled is
+/// not remembered, so a later ask tries again.
+pub async fn user_display_name(
+    host: &dyn SlackHost,
+    api: &dyn SlackApi,
+    workspace: &str,
+    user: &str,
+) -> Option<String> {
+    if let Some(known) = host.user_name(workspace, user) {
+        return (!known.is_empty()).then_some(known);
+    }
+    match api.user_info(user).await {
+        Ok(found) => {
+            let name = Some(found.name).filter(|name| !name.is_empty());
+            host.set_user_name(workspace, user, name.as_deref().unwrap_or_default());
+            name
+        }
+        // Slack says there is no such user, which is settled: remember the
+        // miss so every later draft does not spend a call on it.
+        Err(SlackError::Api { error, .. }) if error == "user_not_found" => {
+            host.set_user_name(workspace, user, "");
+            None
+        }
+        Err(error) => {
+            if host.first_draft_user_failure(workspace, user) {
+                tracing::warn!(
+                    target: "forge_connectors::slack",
+                    event_name = "slack_draft_user_unreadable",
+                    workspace,
+                    user,
+                    %error,
+                    "resolving a slack user for a held draft failed; the card draws the id",
+                );
+            } else {
+                tracing::debug!(
+                    target: "forge_connectors::slack",
+                    event_name = "slack_draft_user_unreadable",
+                    workspace,
+                    user,
+                    %error,
+                    "resolving a slack user for a held draft failed again",
+                );
+            }
+            None
+        }
+    }
 }
 
 const API_ROOT: &str = "https://slack.com/api";
@@ -1103,6 +1193,18 @@ pub async fn read_thread(
             None => return Ok(out),
         }
     }
+}
+
+/// The parent message of the thread `ts` starts, which is the message a
+/// draft's card names. An error is the caller's to draw around: the card
+/// falls back to the raw ts rather than inventing a name.
+pub async fn thread_parent(
+    api: &dyn SlackApi,
+    channel: &str,
+    ts: &str,
+) -> Result<Option<SlackHistoryMessage>, SlackError> {
+    let page = api.replies(channel, ts, None, 1, None).await?;
+    Ok(page.messages.into_iter().next())
 }
 
 /// Which conversations one pass reads. The DM class covers every DM rather
@@ -3418,6 +3520,162 @@ mod tests {
         );
     }
 
+    /// The draft's tag list is the user ids its text mentions, once each and
+    /// in order; a channel reference or a link is not a person.
+    #[test]
+    fn the_ids_a_draft_tags_are_its_user_mentions_once_each() {
+        assert_eq!(
+            mention_ids("thanks <@U2>, <@U3|carol> and <@U2> again"),
+            vec!["U2", "U3"],
+            "a labelled mention is its id, and a repeated tag is one person",
+        );
+        assert!(
+            mention_ids("<#C1> <https://example.com|the doc> <@> <@123>").is_empty(),
+            "a channel, a link, an empty mention and a non-user token tag nobody",
+        );
+    }
+
+    /// The card gets one line: the parent's whitespace collapses, and a long
+    /// parent stops at a word rather than mid-word.
+    #[test]
+    fn an_excerpt_is_one_line_cut_at_a_word_boundary() {
+        assert_eq!(one_line_excerpt("the deploy\n is   green", 80), "the deploy is green");
+        let long = "the canary is holding at 1% and every check is green but the p99 is still high";
+        let cut = one_line_excerpt(long, 40);
+        assert!(cut.ends_with("..."), "the cut is marked: {cut:?}");
+        assert!(cut.chars().count() <= 43, "the cut keeps the bound: {cut:?}");
+        let kept = cut.strip_suffix("...").expect("the mark is there");
+        assert!(!kept.ends_with(' '), "no trailing space before the mark: {cut:?}");
+        assert!(long.starts_with(kept), "the excerpt is the parent's opening words: {cut:?}");
+        assert_eq!(
+            one_line_excerpt("abcdefghij", 4),
+            "abcd...",
+            "a word with no boundary is cut at the bound",
+        );
+        assert_eq!(
+            one_line_excerpt("one two three four five six", 20),
+            "one two three four...",
+            "the cut lands on the word boundary inside the bound",
+        );
+    }
+
+    /// The first message `conversations.replies` returns for a thread's ts is
+    /// the parent, which is what a draft's card names.
+    #[tokio::test]
+    async fn a_thread_parent_is_the_first_message_of_the_replies_read() {
+        let fake = Arc::new(FakeHost::default());
+        FakeHost::set_api_self(&fake);
+        fake.seed_replies(
+            "C1",
+            "100.0",
+            vec![
+                history_message("100.0", "U2", "the parent"),
+                history_message("200.0", "U3", "a reply"),
+            ],
+        );
+        let api = Arc::clone(&fake) as Arc<dyn SlackApi>;
+
+        let parent = thread_parent(api.as_ref(), "C1", "100.0")
+            .await
+            .expect("the read lands")
+            .expect("the thread has a parent");
+        assert_eq!(parent.ts, "100.0", "the parent is the message the thread starts at");
+        assert_eq!(parent.text, "the parent");
+        assert_eq!(parent.user.as_deref(), Some("U2"), "the author id rides the parent");
+        assert_eq!(
+            *fake.replies_limits.lock().expect("lock"),
+            vec![1],
+            "the card needs the parent alone, so the read asks for one message",
+        );
+    }
+
+    /// A failed thread read is surfaced rather than turned into a blank
+    /// thread: the card falls back to the raw ts, never to an invented name.
+    #[tokio::test]
+    async fn a_thread_parent_read_that_fails_is_not_a_guess() {
+        let fake = Arc::new(FakeHost::default());
+        FakeHost::set_api_self(&fake);
+        fake.rate_limit_replies_at(0);
+        let api = Arc::clone(&fake) as Arc<dyn SlackApi>;
+        assert!(
+            thread_parent(api.as_ref(), "C1", "100.0").await.is_err(),
+            "the caller decides what a failed read draws; the connector does not guess",
+        );
+    }
+
+    /// A name the host already resolved costs no call.
+    #[tokio::test]
+    async fn a_cached_user_name_answers_without_a_lookup() {
+        let fake = Arc::new(FakeHost::default());
+        FakeHost::set_api_self(&fake);
+        fake.set_user_name("acme", "U2", "bob");
+        let api = Arc::clone(&fake) as Arc<dyn SlackApi>;
+
+        let name = user_display_name(fake.as_ref(), api.as_ref(), "acme", "U2").await;
+        assert_eq!(name.as_deref(), Some("bob"));
+        assert_eq!(*fake.user_info_calls.lock().expect("lock"), 0, "the cache is the point");
+        assert_eq!(
+            *fake.cache_workspaces.lock().expect("lock"),
+            vec!["acme".to_owned(), "acme".to_owned()],
+            "the seeding write and the read both name the draft's workspace",
+        );
+    }
+
+    /// A miss asks once, hands the name back, and remembers it.
+    #[tokio::test]
+    async fn a_user_lookup_names_the_person_and_is_remembered() {
+        let fake = Arc::new(FakeHost::default());
+        FakeHost::set_api_self(&fake);
+        fake.seed_user_name("U2", "bob");
+        let api = Arc::clone(&fake) as Arc<dyn SlackApi>;
+
+        assert_eq!(
+            user_display_name(fake.as_ref(), api.as_ref(), "acme", "U2").await.as_deref(),
+            Some("bob"),
+        );
+        assert_eq!(
+            user_display_name(fake.as_ref(), api.as_ref(), "acme", "U2").await.as_deref(),
+            Some("bob"),
+        );
+        assert_eq!(*fake.user_info_calls.lock().expect("lock"), 1, "a resolved name is cached");
+    }
+
+    /// A failed lookup leaves the person unnamed and remembers nothing: the
+    /// card draws the id, and the next draft asks again rather than pinning
+    /// the miss forever.
+    #[tokio::test]
+    async fn a_failed_user_lookup_is_none_and_remembers_nothing() {
+        let fake = Arc::new(FakeHost::default());
+        FakeHost::set_api_self(&fake);
+        fake.fail_user_info_transiently();
+        let api = Arc::clone(&fake) as Arc<dyn SlackApi>;
+
+        assert_eq!(user_display_name(fake.as_ref(), api.as_ref(), "acme", "U2").await, None);
+        assert!(
+            fake.resolved_names().is_empty(),
+            "a failure is not a name to remember: {:?}",
+            fake.resolved_names(),
+        );
+    }
+
+    /// Slack answering `user_not_found` is settled: the miss is remembered as
+    /// no name, so a second draft does not spend another call on it.
+    #[tokio::test]
+    async fn a_settled_miss_is_remembered_as_no_name() {
+        let fake = Arc::new(FakeHost::default());
+        FakeHost::set_api_self(&fake);
+        let api = Arc::clone(&fake) as Arc<dyn SlackApi>;
+
+        assert_eq!(user_display_name(fake.as_ref(), api.as_ref(), "acme", "U404").await, None);
+        assert_eq!(user_display_name(fake.as_ref(), api.as_ref(), "acme", "U404").await, None);
+        assert_eq!(*fake.user_info_calls.lock().expect("lock"), 1, "a settled miss costs one call");
+        assert_eq!(
+            fake.resolved_names().get("U404").map(String::as_str),
+            Some(""),
+            "the empty name is the record that the miss is settled",
+        );
+    }
+
     /// The decoder keeps the repeat: Slack returns the parent on every page
     /// of `conversations.replies`, and deduping is the sweep's job.
     #[test]
@@ -3519,6 +3777,11 @@ mod tests {
         replies_calls: std::sync::Mutex<usize>,
         /// The 0-based `conversations.replies` call that answers 429.
         replies_rate_limit_at: std::sync::Mutex<Option<usize>>,
+        /// The `limit` each `conversations.replies` call carried.
+        replies_limits: std::sync::Mutex<Vec<u32>>,
+        /// The workspace every user-name cache call carried, so a test can
+        /// prove the cache is keyed per workspace.
+        cache_workspaces: std::sync::Mutex<Vec<String>>,
         /// How many `conversations.history` calls were made, so a test can
         /// assert which clock read a conversation and how often.
         history_calls: std::sync::Mutex<usize>,
@@ -3808,15 +4071,21 @@ mod tests {
             self.user_id_slot.lock().expect("lock").clone()
         }
 
-        fn user_name(&self, _workspace: &str, user: &str) -> Option<String> {
+        fn user_name(&self, workspace: &str, user: &str) -> Option<String> {
+            self.cache_workspaces.lock().expect("lock").push(workspace.to_owned());
             self.resolved_names.lock().expect("lock").get(user).cloned()
         }
 
-        fn set_user_name(&self, _workspace: &str, user: &str, name: &str) {
+        fn set_user_name(&self, workspace: &str, user: &str, name: &str) {
+            self.cache_workspaces.lock().expect("lock").push(workspace.to_owned());
             self.resolved_names.lock().expect("lock").insert(user.to_owned(), name.to_owned());
         }
 
         fn first_author_failure(&self, _workspace: &str, user: &str) -> bool {
+            self.reported_failures.lock().expect("lock").insert(user.to_owned())
+        }
+
+        fn first_draft_user_failure(&self, _workspace: &str, user: &str) -> bool {
             self.reported_failures.lock().expect("lock").insert(user.to_owned())
         }
 
@@ -4187,9 +4456,10 @@ mod tests {
             channel: &str,
             ts: &str,
             oldest: Option<&str>,
-            _limit: u32,
+            limit: u32,
             cursor: Option<&str>,
         ) -> Result<MessagePage, SlackError> {
+            self.replies_limits.lock().expect("lock").push(limit);
             let call = {
                 let mut calls = self.replies_calls.lock().expect("lock");
                 let call = *calls;

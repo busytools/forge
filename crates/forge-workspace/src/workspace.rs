@@ -1050,6 +1050,13 @@ pub struct Workspace {
     /// `(workspace, user id)` pairs whose failed lookup has been reported, so
     /// a persistent failure says so once rather than on every tick.
     pub(crate) slack_author_failures: Mutex<std::collections::HashSet<(String, String)>>,
+    /// `(workspace, user id)` pairs whose failed DRAFT tag lookup has been
+    /// reported. Kept apart from the author set so a draft's miss does not
+    /// spend the once-per-author line the sweep relies on.
+    pub(crate) slack_draft_user_failures: Mutex<std::collections::HashSet<(String, String)>>,
+    /// `(workspace, conversation, parent ts)` whose failed thread read has
+    /// been reported: a raw ts on the card is the only other symptom.
+    pub(crate) slack_thread_failures: Mutex<std::collections::HashSet<(String, String, String)>>,
     /// When each followed thread was last read whole, keyed
     /// `(workspace, conversation, parent ts)`. In memory: a restart costs one
     /// extra whole read per thread, which is cheaper than a schema.
@@ -2535,6 +2542,8 @@ impl Workspace {
             slack_user_ids: Mutex::new(std::collections::BTreeMap::new()),
             slack_user_names: Mutex::new(std::collections::BTreeMap::new()),
             slack_author_failures: Mutex::new(std::collections::HashSet::new()),
+            slack_draft_user_failures: Mutex::new(std::collections::HashSet::new()),
+            slack_thread_failures: Mutex::new(std::collections::HashSet::new()),
             slack_thread_full_reads: Mutex::new(std::collections::HashMap::new()),
             slack_thread_first_walks: Mutex::new(std::collections::HashSet::new()),
             slack_thread_edit_watermarks: Mutex::new(std::collections::HashMap::new()),
@@ -17975,6 +17984,8 @@ mod worker_activity_tests {
             thread_ts: None,
             text: "hello".to_owned(),
             operation: forge_primitives::slack::SlackDraftOperation::Post,
+            thread: None,
+            tagged: Vec::new(),
         };
         let (_id, _decision) = ws.register_slack_draft(&seat, draft);
 
@@ -18234,6 +18245,8 @@ mod worker_activity_tests {
             thread_ts: None,
             text: "hello".to_owned(),
             operation: forge_primitives::slack::SlackDraftOperation::Post,
+            thread: None,
+            tagged: Vec::new(),
         };
         let (_id, _decision) = ws.register_slack_draft(&seat, draft);
 
