@@ -861,6 +861,21 @@ mod tests {
                     .into_iter()
                     .map(str::to_owned),
                 )
+                // The terminal is any-caller and always on, like the browser.
+                .chain(
+                    [
+                        "terminal__open",
+                        "terminal__write",
+                        "terminal__read",
+                        "terminal__wait",
+                        "terminal__resize",
+                        "terminal__close",
+                        "terminal__hand_off",
+                        "terminal__run",
+                    ]
+                    .into_iter()
+                    .map(str::to_owned),
+                )
                 .collect();
         expected.sort();
         assert_eq!(
