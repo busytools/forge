@@ -10295,6 +10295,70 @@ mod lead_charter_tests {
         }
     }
 
+    /// A lead knows the board rules from the bullets above but is never
+    /// told the cadence or how a waiting row leaves: without the sweep
+    /// the board only moves when the user nags. Pinned so a rewrite
+    /// cannot drop the schedule, the four doors, the epic close or the
+    /// dispatch - each a duty no `tasks__*` description states.
+    #[test]
+    fn the_charter_carries_the_board_sweep() {
+        for (clause, why) in [
+            (
+                "Sweep the board at the start of every session, and on a standing sweep you \
+                 create yourself",
+                "the cadence and its two triggers",
+            ),
+            (
+                "`cron__create` with `*/30 * * * *` and `wake: false`",
+                "the schedule, and the flag that leaves a sleeping lead asleep",
+            ),
+            (
+                "the sweep runs only on an awake session, never waking a sleeping one",
+                "the rule, stated rather than left to the parameter's default",
+            ),
+            (
+                "Carry the sweep's steps in the cron's prompt rather than a path - a fresh \
+                 install has no such file",
+                "the prompt carries the sweep, so no machine-local file is needed",
+            ),
+            (
+                "a look the user already gave is attested with `tasks__approve` and their words \
+                 quoted, never a decision, which is theirs to answer",
+                "the look door and the decision exclusion",
+            ),
+            (
+                "an ask that went moot is withdrawn with `tasks__update` canceled and the \
+                 reason in its `detail`",
+                "the withdraw door and its required reason",
+            ),
+            ("a wait the user deferred is marked `parked: true`", "the park door"),
+            (
+                "a genuine decision stays for the user and is named in your line",
+                "the decision door",
+            ),
+            (
+                "Close every epic reading `to_close` - a root with a `verify: user` gate is \
+                 completed first, which parks it on the look, then approved with the recorded \
+                 approval",
+                "the epic close, including the gate's park-then-approve order",
+            ),
+            (
+                "dispatch the next ready, unowned, unreserved row",
+                "the dispatch pick and its two exclusions",
+            ),
+            (
+                "report one line: attested, withdrawn, parked, closed, dispatched, and the \
+                 decisions still waiting on the user",
+                "the sweep answers in one line",
+            ),
+        ] {
+            assert!(
+                DEFAULT_LEAD_CHARTER.contains(clause),
+                "the lead charter does not carry the board sweep ({why}): {clause}",
+            );
+        }
+    }
+
     /// #1494: the parallelism rule reads the project's own `max_workers`
     /// rather than a figure in the prose, and a slot held below the cap
     /// is held by a guardrail the lead names.
