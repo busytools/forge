@@ -283,19 +283,22 @@ were, kept per conversation - the seat plus the claude session id it runs as
 document, the review, the files, the home or the settings, leaves the
 connection keeping the conversation, so the mount that comes back puts the
 reader on their row; switching away to another seat and back does the same,
-and so does a socket that reconnects as a new connection. A place the reader
-gave up, by sending or by scrolling back to the latest, is not restored; a
-`/new` or a `/resume` to a different claude session id is a different
-conversation and opens at its latest; and a place whose row a compaction or
-a trim has taken goes to the latest rather than clamping to whatever row is
-left (#1673, #2834).
+and so does a socket that reconnects as a new connection. A replacement that
+names the SAME claude session id is that conversation reloading, so the place
+survives it. A place the reader gave up, by sending or by scrolling back to
+the latest, is not restored; a `/new` or a `/resume` to a different claude
+session id is a different conversation and opens at its latest; and a place
+whose row a compaction or a trim has taken goes to the latest rather than
+clamping to whatever row is left (#1673, #2834).
 
 **A parked column is frozen.** The moment the reader scrolls up, the row
 under their eye holds its exact offset - sub-pixel included, so a reflow
 above does not move the words they are reading - while the scrollbar grows
-with what lands below. Coming back within the 48px notch of the bottom, by
-any means, follows again; the circle in the corner is the instant jump
-there, and it is a 44px target on every client, finger or pointer. **The
+with what lands below. Coming back within the 48px notch of the bottom on a
+hand or a gesture aiming at the foot follows again; a layout move that
+happens to land inside the notch counts as standing at the foot and re-arms
+nothing. The circle in the corner is the instant jump there, and it is a
+44px target on every client, finger or pointer. **The
 circle counts what was missed**: every turn appended since the reader
 parked rides a small badge that reads `9+` from nine, and following clears
 it. Sending from this client's composer while parked is the reader asking

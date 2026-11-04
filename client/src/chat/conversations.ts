@@ -47,10 +47,11 @@ export interface Conversations {
  *
  * The row is `Anchor`'s - the row the reader's eye was on and how far into it
  * they were - and `session` is the claude session id the conversation ran as
- * when it was recorded. A place recorded before any id was known is the seat's
- * whatever occupant arrives, because there was no other conversation to
- * confuse it with; one whose id disagrees with the conversation now on the
- * seat is not that conversation's.
+ * when it was recorded. A place recorded before any id was known belongs to
+ * the seat until an occupant announcement names one, which [`settle`]s it: the
+ * same id keeps it, and a place with no id to match goes with the
+ * announcement. One whose id disagrees with the conversation now on the seat
+ * is not that conversation's.
  */
 export interface Place {
   session: string | null;
@@ -81,8 +82,9 @@ export class Places {
   /**
    * The seat is at its foot, or holds no row its reader does: no place.
    *
-   * **An occupant swap is not this one**: it goes through [`settle`], because
-   * only an id that actually moved is a different conversation.
+   * **The occupant reset takes this path too**: [`settle`] decides whether
+   * the announced id is a different conversation, and the reset then drops the
+   * place through here.
    */
   forget(seat: string): void {
     this.#held.delete(seat);
