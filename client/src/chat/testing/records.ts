@@ -74,19 +74,27 @@ export function clear(): void {
   boxes.items = [];
   element.quantise = 0;
   gate.misses = 0;
+  gate.rangeMisses = 0;
+  gate.stalls = 0;
   gate.mounts = 0;
 }
 
 /**
  * Whether a list mount measured its own viewport, which is the gate a mounted
- * conversation can die on (#2825).
+ * conversation can die on (the re-measure is #2830's).
  *
  * `virtua` renders no item until its ResizeObserver reports the viewport, so a
  * mount whose delivery never lands is a mounted list drawing zero rows while
  * the store holds turns. `misses` is how many upcoming mounts miss it;
  * `Infinity` makes every mount miss, which is what pins the column's bound.
+ *
+ * **A measured viewport is not a drawn row** (measured 2026-11-04).
+ * `virtua` freezes its range while a scroll correction is parked, and one it
+ * cannot scroll to is never cleared - so a mount can report a healthy viewport
+ * and draw nothing. `rangeMisses` is that mount; the two failures are separate
+ * facts, and a mount can draw no rows having measured.
  */
-export const gate = { misses: 0, mounts: 0 };
+export const gate = { misses: 0, rangeMisses: 0, stalls: 0, mounts: 0 };
 
 /** Make the next list mount miss its viewport measurement, as #2825's did. */
 export function stuckOnce(): void {
@@ -97,6 +105,27 @@ export function stuckOnce(): void {
 /** Make every list mount miss it, so a re-measure that loops can be counted. */
 export function stuckEveryMount(): void {
   gate.misses = Number.POSITIVE_INFINITY;
+  gate.mounts = 0;
+}
+
+/**
+ * Make the next list mount draw no rows while reporting its viewport: the
+ * frozen range `virtua` leaves when a parked scroll correction can never be
+ * applied, which leaves the column black over turns it holds.
+ */
+export function stuckRangeOnce(): void {
+  gate.rangeMisses = 1;
+  gate.mounts = 0;
+}
+
+/**
+ * Arm the next change of rows this list is handed to leave it drawing nothing:
+ * a seat's kept conversation swapped onto a list whose range the seat before
+ * it froze. The mount itself is healthy; the range is not, so this arms no
+ * mount and only the mount count it starts from is reset, like its siblings'.
+ */
+export function stallNextSwap(): void {
+  gate.stalls += 1;
   gate.mounts = 0;
 }
 

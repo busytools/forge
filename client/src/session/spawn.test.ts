@@ -38,6 +38,9 @@ function held(): Store {
     dropped: () => 0,
     set: () => {},
     push: () => {},
+    compact: () => {},
+    compacted: () => false,
+    generation: () => 0,
     takeAudio: () => [],
     refuse: () => {},
   };

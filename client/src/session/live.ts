@@ -32,6 +32,7 @@ import { writable, type Readable, type Writable } from 'svelte/store';
 import { releaseConversation } from '../chat/conversations';
 import { cronNames } from '../chat/cron-names.svelte';
 import { changeLine } from '../chat/change';
+import { outputs } from '../chat/outputs.svelte';
 import { git, vcsLine } from '../chat/git.svelte';
 import { cannotPaint } from '../paint';
 import { slotOf, subjectKey, type SessionUpdate, type Subject } from '../protocol';
@@ -527,6 +528,9 @@ function createSeat(
   /** This page has gone; the seat and its subscription stay. */
   function leaving(): void {
     shown = false;
+    // Nothing draws the seat until a page returns, and a return draws its own
+    // conversation, so the store keeps only what its readers fold.
+    seat.held?.compact();
     // No frame paints for a page that has gone, so a record still waiting for
     // one is written now: it is what a return draws.
     if (queued !== null) flush();
@@ -768,6 +772,8 @@ function createSeat(
     // stop, so a same-slot successor's frames are not folded into a
     // conversation nothing draws. The rest of the connection's are kept.
     releaseConversation(connection, key);
+    // The answers its calls were opened with are the same conversation's.
+    outputs.clear(key);
     pageReturns?.release();
     visited.delete(key);
   }

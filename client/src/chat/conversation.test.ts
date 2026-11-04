@@ -605,12 +605,94 @@ describe('the conversation the chat draws', () => {
         },
       }),
       dropped: () => 0,
+      compacted: () => false,
       updates: () => [],
     }));
     const chat = new Chat(server.connection, LEAD);
     const stop = chat.start();
 
     expect(cronNames.nameFor(uuid), 'the held record seeds the schedule').toBe('Morning summary');
+    stop();
+  });
+
+  /**
+   * **Only the conversation's own frames replay from the store's tail.** A
+   * held queue or roster frame is not conversation; folding one would arm the
+   * follow off words nobody just sent.
+   */
+  it('replays only conversation frames from the store tail', () => {
+    const late = 'said after the record';
+    const server = fakeConnection(() => ({
+      snapshot: () => ({
+        conversation: {
+          turns: [turn('t1', 'one'), turn('t2', 'two')],
+          cursor: null,
+          handoff: null,
+        },
+      }),
+      dropped: () => 0,
+      updates: () => [
+        { chat_appended: { key: LEAD, msg: said(late) } },
+        { prompt_queued: { key: LEAD, uuid: 'queued-1', text: 'a queued prompt', source: 'you' } },
+        { connected: { key: LEAD } },
+      ],
+    }));
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    const held = get(chat.value);
+
+    expect(JSON.stringify(held.turns), 'the conversation frame replays').toContain(late);
+    expect(held.send_armed, 'the queue frame did not arm the follow').toBe(false);
+    stop();
+  });
+
+  /**
+   * **A held send is not the reader's own any more.** The frame was written
+   * before this column existed, so drawing it must not carry a reader back to
+   * the foot - the same frame delivered live is the control that arms it.
+   */
+  it('does not arm the follow from a held send, and does from a live one', () => {
+    const heldSend = {
+      chat_appended: {
+        key: LEAD,
+        source: 'you',
+        msg: {
+          type: 'user',
+          uuid: 'held-send',
+          message: { role: 'user', content: [{ type: 'text', text: 'my own held words' }] },
+        },
+      },
+    };
+    const server = fakeConnection(() => ({
+      snapshot: () => ({
+        conversation: {
+          turns: [turn('t1', 'one'), turn('t2', 'two')],
+          cursor: null,
+          handoff: null,
+        },
+      }),
+      dropped: () => 0,
+      updates: () => [heldSend],
+    }));
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+
+    expect(get(chat.value).send_armed, 'a held send does not arm the follow').toBe(false);
+
+    // The control: the same kind of frame arriving live is the reader's own
+    // send, and only its new id keeps it from being the held copy again.
+    server.update({
+      chat_appended: {
+        key: LEAD,
+        source: 'you',
+        msg: {
+          type: 'user',
+          uuid: 'live-send',
+          message: { role: 'user', content: [{ type: 'text', text: 'said now' }] },
+        },
+      },
+    });
+    expect(get(chat.value).send_armed, 'a live send arms the follow').toBe(true);
     stop();
   });
 

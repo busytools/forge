@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { outcomesFrom } from '../chat/outcomes';
 import { machineInForce } from '../composer/wire';
 import { applyUpdate, HANDLERS, IGNORED, REPLACES } from './apply';
 import { sessionFrom, type SessionRecord } from './wire';
@@ -257,6 +258,123 @@ describe('applyUpdate', () => {
 
       expect(next.conversation.turns).toHaveLength(1);
       expect(next.conversation.turns[0]?.messages).toHaveLength(2);
+    });
+
+    /**
+     * The record keeps the window a fresh read sends, so a long-lived seat
+     * retains no more than a reload would hand it. The chat draws from its own
+     * fold, not this conversation.
+     */
+    it('keeps the newest whole turns a fresh read would send', () => {
+      const opened = 25;
+      let held = empty();
+      for (let at = 0; at < opened; at += 1) {
+        held = applyUpdate(held, {
+          chat_appended: { key: SLOT, msg: prompt(`turn-${at}`, `u-${at}`) },
+        });
+      }
+
+      expect(held.conversation.turns).toHaveLength(20);
+      // The newest turn is whole, and the window starts at the oldest turn
+      // still inside it.
+      expect(held.conversation.turns[19]?.messages).toHaveLength(1);
+      expect(held.conversation.turns[0]?.messages[0]).toMatchObject({
+        message: { content: [{ text: `turn-${opened - 20}` }] },
+      });
+      expect(
+        JSON.stringify(held.conversation.turns),
+        'a turn older than the window stayed',
+      ).not.toContain('turn-4"');
+    });
+
+    /** A turn is kept whole: the window never cuts one message short. */
+    it('keeps every message of the turns the window holds', () => {
+      let held = empty();
+      for (let turn = 0; turn < 25; turn += 1) {
+        held = applyUpdate(held, {
+          chat_appended: { key: SLOT, msg: prompt(`turn-${turn}`, `p-${turn}`) },
+        });
+        for (let part = 0; part < 2; part += 1) {
+          held = applyUpdate(held, {
+            chat_appended: {
+              key: SLOT,
+              msg: {
+                type: 'assistant',
+                uuid: `a-${turn}-${part}`,
+                message: {
+                  role: 'assistant',
+                  content: [{ type: 'text', text: `turn-${turn}-${part}` }],
+                },
+              },
+            },
+          });
+        }
+      }
+
+      expect(held.conversation.turns).toHaveLength(20);
+      for (const turn of held.conversation.turns) {
+        expect(turn.messages, 'the window kept a turn without its messages').toHaveLength(3);
+      }
+      expect(held.conversation.turns[0]?.messages[0]).toMatchObject({
+        message: { content: [{ text: 'turn-5' }] },
+      });
+    });
+
+    it('keeps the compaction count when the window trims', () => {
+      let held = applyUpdate(empty(), { chat_appended: { key: SLOT, msg: prompt('one', 'u-0') } });
+      held = applyUpdate(held, {
+        chat_appended: { key: SLOT, msg: { type: 'system', subtype: 'compact_boundary' } },
+      });
+      for (let at = 0; at < 25; at += 1) {
+        held = applyUpdate(held, {
+          chat_appended: { key: SLOT, msg: prompt(`turn-${at}`, `u-${at + 1}`) },
+        });
+      }
+
+      expect(held.conversation.turns).toHaveLength(20);
+      expect(held.conversation.compaction_count).toBe(1);
+    });
+
+    /**
+     * The strip's outcomes read the record's own turns, so the window's risk
+     * is pinned here: an ending inside it still lands, one whose turn left is
+     * gone - the same loss a reload takes.
+     */
+    it('loses an ending only when its turn leaves the window, as a reload does', () => {
+      let held = applyUpdate(empty(), {
+        chat_appended: { key: SLOT, msg: prompt('opening', 'p-0') },
+      });
+      held = applyUpdate(held, {
+        chat_appended: {
+          key: SLOT,
+          msg: {
+            type: 'system',
+            subtype: 'task_notification',
+            tool_use_id: 'call-window',
+            status: 'failed',
+            patch: { status: 'failed', end_time: 1_793_700_000_000 },
+          },
+        },
+      });
+      // Nineteen turns after it leaves the ending's turn still inside the window.
+      for (let turn = 1; turn <= 19; turn += 1) {
+        held = applyUpdate(held, {
+          chat_appended: { key: SLOT, msg: prompt(`turn-${turn}`, `p-${turn}`) },
+        });
+      }
+      expect(
+        outcomesFrom(held.conversation.turns).calls.get('call-window')?.failed,
+        'the newest ending did not reach outcomesFrom',
+      ).toBe(true);
+
+      // One more turn and the ending's turn is the first the window drops.
+      held = applyUpdate(held, {
+        chat_appended: { key: SLOT, msg: prompt('turn-20', 'p-20') },
+      });
+      expect(
+        outcomesFrom(held.conversation.turns).calls.get('call-window'),
+        'an ending older than the window outlived it',
+      ).toBeUndefined();
     });
   });
 

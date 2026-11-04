@@ -196,8 +196,9 @@ export function runningAt(
   // the OLDEST off the front, and the `init` that opens a turn is the front of
   // it - so replaying an incomplete tail can miss the frame that opened the
   // turn and answer from a snapshot the frames since have left behind. The
-  // snapshot's own answer is the honest one there.
-  if (store.dropped() > 0) return held;
+  // snapshot's own answer is the honest one there. A tail compacted to what
+  // this fold reads is not that case: it is complete for its reader.
+  if (store.dropped() > 0 && !store.compacted()) return held;
   for (const update of store.updates()) {
     const message = (update as { chat_appended?: { msg?: unknown } }).chat_appended?.msg;
     if (message !== undefined) held = inFlightOf(held, message);
@@ -1692,11 +1693,27 @@ export class Chat {
    * Take the newest page the seat's store holds, for a column mounting where
    * nothing answered: a visited seat keeps its subscription, so a return gets
    * no snapshot and a fresh column draws what the frames have kept current.
+   *
+   * **The store's answer and the frames after it are both taken.** The store's
+   * snapshot was folded before this column existed, so the frames that landed
+   * between the two are replayed on top of the page - without them a mount
+   * draws a stale page and folds nothing the seat has said since.
    */
   private seedFromStore(): void {
     if (this.held.loaded) return;
-    const snapshot = this.connection.store({ session: this.slot })?.snapshot();
-    if (snapshot === null || snapshot === undefined) return;
+    const store = this.connection.store({ session: this.slot });
+    if (store === undefined) return;
+    const snapshot = store.snapshot();
+    if (snapshot === null || snapshot === undefined) {
+      // **A store with no answer is not a seat with nothing.** A refused
+      // subscription is answered - no snapshot is coming - so the page is
+      // asked, which is what the live refusal arm would have done had this
+      // column been alive to hear it. A loading one is a read still on its
+      // way, and asking there would ask a second time for the page already in
+      // flight.
+      if (store.state().kind === 'refused') this.askedBySeed();
+      return;
+    }
     const data = snapshot as { conversation?: unknown };
     const conversation = (data.conversation ?? {}) as {
       turns?: unknown;
@@ -1705,11 +1722,37 @@ export class Chat {
     };
     cronNames.seed(conversation.cron_names);
     const rows = pageTurns(conversation.turns);
-    // A store record with no turns seeds nothing; the page's own subscribe
-    // answers it.
-    if (rows.length === 0) return;
+    // **A record whose page holds nothing is an answer, and it is asked about
+    // the way the subscribe's own is.** Seeding nothing here left a return to
+    // an empty seat on the band's read wait for good: a visited seat keeps its
+    // subscription, so no later snapshot would say anything else.
+    if (rows.length === 0) {
+      this.askedBySeed();
+      return;
+    }
     const cursor = typeof conversation.cursor === 'string' ? conversation.cursor : null;
     this.takePage(rows, cursor, 'newest');
+    // **A tail the store dropped the head of is not replayed**, the rule
+    // `runningAt` reads too: the frames left are not the whole story, and only
+    // a page is. The frames the page already carries are dropped by the same
+    // identity every other replay is.
+    if (store.dropped() > 0) return;
+    for (const update of store.updates()) {
+      if (variantOf(update) !== 'chat_appended') continue;
+      // **Not the reader's own send**: these were written before this column
+      // existed, so they must not carry the reader to the foot.
+      this.takeUpdate(update, true);
+    }
+  }
+
+  /**
+   * Ask for the seat's page from the seed, naming what happens when the ask
+   * cannot be made: a closed socket answers nothing, and the reconnect's own
+   * subscribe is this column's next answer - its snapshot seeds or asks again
+   * through `receive`.
+   */
+  private askedBySeed(): void {
+    if (!this.ask(null)) this.missed = true;
   }
 
   /** The newest row carries the running row while the core says a turn is running. */

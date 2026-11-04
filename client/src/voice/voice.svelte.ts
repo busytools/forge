@@ -209,6 +209,7 @@ export function connectionPort(
   // can arrive, because the store's own subscribe fires synchronously.
   let seen: number | null = null;
   let dropped = 0;
+  let generation = 0;
   return {
     send(command, body) {
       void connection.dispatch({ [command]: { key: slot, ...body } });
@@ -224,14 +225,25 @@ export function connectionPort(
       if (store === undefined) return [];
       const held = store.updates();
       const lost = store.dropped();
+      const now = store.generation();
       if (seen === null) {
         // Seed at the end of what is there, and drop the audio history: a
         // remount over an old seat store must not replay speech it already
         // heard, and no other reader takes these frames.
         seen = held.length;
         dropped = lost;
+        generation = now;
         store.takeAudio();
         return [];
+      }
+      if (now !== generation) {
+        // The tail was reshaped under this cursor - a compaction, or the
+        // newest state replacing the one before it - so the index it holds
+        // names nothing. Replay the retained tail: the voice states are
+        // idempotent and the chat edge is another reader's.
+        generation = now;
+        dropped = lost;
+        seen = 0;
       }
       if (lost > dropped) {
         // The store's ceiling took the oldest frames; the cursor moves back

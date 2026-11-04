@@ -167,6 +167,7 @@ const seatStore = (held: Holding) => ({
   snapshot: () => ({ header: { turn_in_flight: held.running } }),
   updates: () => held.updates ?? [],
   dropped: () => held.dropped ?? 0,
+  compacted: () => false,
 });
 
 const page = (turns: PageTurn[], cursor: string | null): ServerMessage => ({
