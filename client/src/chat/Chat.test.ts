@@ -9,7 +9,7 @@ import { freeze } from './testing/frozen';
 import { subjectKey } from '../protocol';
 import type { ClientMessage, ServerMessage, SessionUpdate } from '../protocol';
 import type { Connection } from '../socket';
-import { Stores } from '../stores';
+import { Stores, type Store } from '../stores';
 import type { SessionSlot } from '../wire/types';
 import Chat from './Chat.svelte';
 import { pinnedRow } from './pinnedRow.svelte';
@@ -114,6 +114,11 @@ function stub() {
   const asks: ClientMessage[] = [];
   const dispatched: ClientMessage[] = [];
   const stores = new Stores();
+  /**
+   * Stores a test hands the column directly, for the states `Stores` cannot
+   * reach on its own - a tail the ceiling dropped, a record never answered.
+   */
+  const seeded = new Map<string, Store>();
   const connection = {
     subscribe: () => ({ state: () => ({ kind: 'loading' }) }),
     unsubscribe: () => undefined,
@@ -131,7 +136,8 @@ function stub() {
       return () => listeners.delete(fn);
     },
     onStatus: () => () => undefined,
-    store: (what: Parameters<Connection['store']>[0]) => stores.get(what),
+    store: (what: Parameters<Connection['store']>[0]) =>
+      seeded.get(subjectKey(what)) ?? stores.get(what),
     settings: () => null,
     status: () => 'open' as const,
     close: () => undefined,
@@ -159,6 +165,30 @@ function stub() {
     /** A store whose subscription was refused, which holds no snapshot at all. */
     seedRefused(slot: SessionSlot, why: string): void {
       stores.open({ session: slot }).refuse(why);
+    },
+    /** A store whose subscription has not been answered yet: loading, no page. */
+    openStore(slot: SessionSlot): void {
+      stores.open({ session: slot });
+    },
+    /**
+     * A store holding `data` and `updates` as `Stores` would, with a head the
+     * ceiling dropped when `dropped` says so - the states a real store reaches
+     * only through its bound.
+     */
+    seedStore(slot: SessionSlot, data: unknown, updates: SessionUpdate[], dropped = 0): void {
+      const held = {
+        subject: { session: slot },
+        value: { subscribe: () => () => undefined },
+        snapshot: () => data,
+        updates: () => updates,
+        state: () => ({ kind: 'ready' as const }),
+        dropped: () => dropped,
+        set: () => undefined,
+        push: () => undefined,
+        takeAudio: () => [],
+        refuse: () => undefined,
+      } as unknown as Store;
+      seeded.set(subjectKey({ session: slot }), held);
     },
     /**
      * A frame the connection holds for a seat: folded into the store, not yet
@@ -2743,6 +2773,18 @@ describe('the store seed and the seat read', () => {
     ],
   });
 
+  /** One conversation frame as the store holds it, which is what a replay reads. */
+  const held = (text: string): SessionUpdate => ({
+    chat_appended: {
+      key: LEAD,
+      msg: {
+        type: 'assistant',
+        uuid: `held-${text}`,
+        message: { role: 'assistant', content: [{ type: 'text', text }] },
+      },
+    },
+  });
+
   it('draws the store-seeded rows, and an empty page does not wipe them', async () => {
     const server = stub();
     setMeasured(1_005, 1_005);
@@ -2807,6 +2849,11 @@ describe('the store seed and the seat read', () => {
       server.asks.filter((ask) => ask.kind === 'more'),
       'the empty record asks for its page',
     ).toHaveLength(1);
+    expect(server.asks[0], 'and the ask is the newest page of this seat').toMatchObject({
+      kind: 'more',
+      conversation: LEAD,
+      before: null,
+    });
 
     server.answer([turn('t1')]);
     await painted();
@@ -2832,6 +2879,25 @@ describe('the store seed and the seat read', () => {
       server.asks.filter((ask) => ask.kind === 'more'),
       'the refused record asks for its page',
     ).toHaveLength(1);
+    expect(server.asks[0], 'and the ask is the newest page of this seat').toMatchObject({
+      kind: 'more',
+      conversation: LEAD,
+      before: null,
+    });
+  });
+
+  /**
+   * **A store still waiting on its read is not asked twice** (#2420): the
+   * subscribe's own answer is the page, and a seed ask beside it would fetch
+   * the same window a second time.
+   */
+  it('asks nothing for a store whose read has not answered', () => {
+    const server = stub();
+    setMeasured(1_005, 1_005);
+    server.openStore(LEAD);
+    draw({}, server);
+
+    expect(server.asks, 'the read in flight is the answer').toHaveLength(0);
   });
 
   /**
@@ -2843,23 +2909,34 @@ describe('the store seed and the seat read', () => {
     const server = stub();
     setMeasured(1_005, 1_005);
     server.seed(LEAD, { conversation: { turns: [turn('t1')], cursor: 'c1' } });
-    server.hold(LEAD, {
-      chat_appended: {
-        key: LEAD,
-        msg: {
-          type: 'assistant',
-          uuid: 'late-1',
-          message: {
-            role: 'assistant',
-            content: [{ type: 'text', text: 'said after the record' }],
-          },
-        },
-      },
-    });
+    server.hold(LEAD, held('said after the record'));
     draw({}, server);
     await painted();
 
     expect(drawn(), 'the frame the record was older than draws').toContain('said after the record');
+  });
+
+  /**
+   * **A tail whose head the ceiling dropped is not the whole story**, so it is
+   * not replayed: only a page answers a gap. The record draws; the frames the
+   * store still holds say nothing.
+   */
+  it('does not replay a tail the store dropped the head of', async () => {
+    const server = stub();
+    setMeasured(1_005, 1_005);
+    server.seedStore(
+      LEAD,
+      { conversation: { turns: [turn('t1'), turn('t2')], cursor: 'c1' } },
+      [held('the dropped stretch')],
+      1,
+    );
+    draw({}, server);
+    await painted();
+
+    expect(document.querySelector('[data-t]')?.getAttribute('data-t'), 'the record draws').toBe(
+      't1',
+    );
+    expect(drawn(), 'a tail whose head is gone is not folded').not.toContain('the dropped stretch');
   });
 });
 
