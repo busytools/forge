@@ -5023,15 +5023,10 @@ impl Profile {
                                 .lock()
                                 .unwrap_or_else(PoisonError::into_inner)
                                 .remove(&tab);
-                            // **The strip hears it before the viewer hears
-                            // the tab closed.** A surface showing a popup
-                            // hands back to its opener from this row removal;
-                            // publishing it after the per-tab senders drop
-                            // would race that hand-back against a failure for
-                            // the same tab, and the failure wins the screen.
-                            // A popup that closes itself, or a tab the host
-                            // gave up, has no call behind it, so this push is
-                            // the only thing that moves the strip.
+                            // **The strip hears it before the viewer does.**
+                            // A surface showing a popup hands back from this
+                            // row removal; a later push races the tab-closed
+                            // failure, and the failure wins the screen.
                             profile.rows.send_modify(|list| {
                                 list.rows.retain(|row| row.number != tab);
                             });
