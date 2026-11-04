@@ -1248,7 +1248,7 @@ checksum = "00b0228411908ca8685dba7fc2cdd70ec9990a6e753e89b6ac91a84c40fbaf4b"
 
 [[package]]
 name = "forge-agent"
-version = "1.1.41"
+version = "1.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1278,7 +1278,7 @@ dependencies = [
 
 [[package]]
 name = "forge-browser"
-version = "1.1.41"
+version = "1.2.0"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -1308,7 +1308,7 @@ dependencies = [
 
 [[package]]
 name = "forge-capture"
-version = "1.1.41"
+version = "1.2.0"
 dependencies = [
  "cpal",
  "rubato",
@@ -1319,7 +1319,7 @@ dependencies = [
 
 [[package]]
 name = "forge-connectors"
-version = "1.1.41"
+version = "1.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1338,7 +1338,7 @@ dependencies = [
 
 [[package]]
 name = "forge-dictate"
-version = "1.1.41"
+version = "1.2.0"
 dependencies = [
  "dirs",
  "encoding_rs",
@@ -1359,7 +1359,7 @@ dependencies = [
 
 [[package]]
 name = "forge-gateway"
-version = "1.1.41"
+version = "1.2.0"
 dependencies = [
  "async-trait",
  "bytes",
@@ -1381,7 +1381,7 @@ dependencies = [
 
 [[package]]
 name = "forge-primitives"
-version = "1.1.41"
+version = "1.2.0"
 dependencies = [
  "base64 0.23.1",
  "serde",
@@ -1393,7 +1393,7 @@ dependencies = [
 
 [[package]]
 name = "forge-sdk"
-version = "1.1.41"
+version = "1.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1416,7 +1416,7 @@ dependencies = [
 
 [[package]]
 name = "forge-server"
-version = "1.1.41"
+version = "1.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1450,7 +1450,7 @@ dependencies = [
 
 [[package]]
 name = "forge-system-one"
-version = "1.1.41"
+version = "1.2.0"
 dependencies = [
  "axum",
  "reqwest",
@@ -1463,7 +1463,7 @@ dependencies = [
 
 [[package]]
 name = "forge-test-harness"
-version = "1.1.41"
+version = "1.2.0"
 dependencies = [
  "async-trait",
  "forge-dictate",
@@ -1482,7 +1482,7 @@ dependencies = [
 
 [[package]]
 name = "forge-tts"
-version = "1.1.41"
+version = "1.2.0"
 dependencies = [
  "hex",
  "kokoro-en",
@@ -1498,7 +1498,7 @@ dependencies = [
 
 [[package]]
 name = "forge-workspace"
-version = "1.1.41"
+version = "1.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
