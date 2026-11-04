@@ -15,7 +15,7 @@ use crate::osc::Marks;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Source {
-    /// The shell's OSC 133 marks.
+    /// The shell's OSC 133 marks, or its own exit once it has died.
     Exact,
     /// The screen's shape, because the shell emitted no marks.
     Heuristic,
@@ -25,7 +25,8 @@ pub enum Source {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum InputKind {
-    /// The terminal has ECHO off: a program is reading a secret.
+    /// The terminal has ECHO off while a marked command runs: a program is
+    /// reading a secret.
     Password,
     /// The last line asks a yes/no question.
     Confirm,

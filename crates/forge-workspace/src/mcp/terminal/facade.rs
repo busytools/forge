@@ -161,7 +161,7 @@ impl TerminalFacade for ProdTerminalFacade {
             Some(cwd) if !cwd.trim().is_empty() => {
                 // A cwd names where the terminal is spawned, and a terminal is
                 // per seat: a different cwd on an open terminal would need a
-                // second one, which this cut does not have.
+                // second one, and a seat has one.
                 if workspace.terminal_if_any(seat).is_some() {
                     workspace.terminal_for(seat)?
                 } else {

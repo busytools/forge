@@ -2,10 +2,10 @@
 //! person, and the idle clock.
 //!
 //! **The terminal belongs to the seat, not the occupant.** It is keyed by the
-//! slot and created lazily on first use; `/new`, `/resume`, a handoff and a
-//! release/resume leave the PTY, its shell and its scrollback exactly where
-//! they were. Only the seat ending, an explicit close, the shell exiting or
-//! forge exiting ends it.
+//! slot and created lazily on first use; `/new`, `/resume` and a handoff
+//! leave the PTY, its shell and its scrollback exactly where they were. It
+//! lives as long as the seat: a release ends the seat and its terminal, and
+//! an explicit close, the shell exiting or forge exiting also ends it.
 //!
 //! **No approval gate.** Bash through the CLI already reaches the shell here,
 //! so the terminal adds no capability a session does not have. The one thing

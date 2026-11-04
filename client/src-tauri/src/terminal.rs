@@ -6,9 +6,6 @@
 //! the browser takes on every target but macOS: a kind-4 frame becomes an
 //! event carrying the terminal id, the sequence and the bytes base64, and the
 //! page decodes them into xterm.
-//!
-//! The batching that keeps 60 fps of small writes from becoming 60 IPC calls
-//! is the page's, where the animation frame is.
 
 use base64::Engine as _;
 use tauri::Emitter as _;

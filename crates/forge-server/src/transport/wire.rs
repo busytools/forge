@@ -401,9 +401,9 @@ pub struct SessionWire {
     pub background_tasks: Vec<forge_workspace::BackgroundTask>,
     pub monitors: Vec<MonitorRecord>,
     /// The seat's terminal, when it has one: the strip's row and the state
-    /// it draws. Absent until the terminal is opened, which is what makes
-    /// "a seat the person never opens a terminal on costs a strip row that
-    /// is not there" true.
+    /// it draws. Absent until the terminal is opened; the strip draws its
+    /// row for every seat and reads this for the state, so a seat with none
+    /// draws **off** and **start**.
     pub terminal: Option<forge_primitives::terminal::TerminalSummary>,
     /// The prompt a one-ask dock draws: the front of `pending_asks`.
     ///

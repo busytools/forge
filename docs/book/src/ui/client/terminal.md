@@ -10,28 +10,32 @@ the browser takeover's sibling. The drawing it is held against is
 **The terminal belongs to the seat, not the occupant.** It is created lazily
 on first use and carries the seat's own cwd and environment - a worker's
 terminal runs in its worktree, the lead's in its checkout - and `/new`,
-`/resume`, a handoff and a release/resume leave the PTY, its shell and its
-scrollback untouched. Only the seat ending, an explicit close, the shell
-exiting or forge exiting ends it. `[terminal] idle_minutes` closes one nobody
-is attached to or has called after that long, and the strip says why. **A
-raised surface belongs to the seat it was opened on**: switching seats lowers
-it, and the old terminal keeps running.
+`/resume` and a handoff leave the PTY, its shell and its scrollback
+untouched. It lives as long as the seat: releasing the seat ends it, and an
+explicit close, the shell exiting, an idle close or forge exiting also ends
+it. `[terminal] idle_minutes` closes one nobody is attached to or has called
+after that long, and the strip's row goes back to **off**. **A raised surface
+belongs to the seat it was opened on**: switching seats lowers it, and the
+old terminal keeps running.
 
 **The agent drives it like a human.** There is no agent mode, no wrapper and
 no environment flag of its own: the agent types bytes and named keys through
-`terminal__write`/`terminal__run`, reads the screen through `terminal__read`,
-and waits with `terminal__wait` (exact through the shell's OSC 133 marks, or
-the heuristic with `source: heuristic`). The person's own input is gated by
-the hand-off, and only that: the agent is blind while it is parked, their
-keystrokes go client to server to the PTY master and nowhere else, and the
-tool gets the ending rather than the screen.
+`terminal__write`, runs a command through `terminal__run`, reads the screen
+through `terminal__read`, and waits with `terminal__wait` (exact through the
+shell's OSC 133 marks, or the heuristic with `source: heuristic`). The
+person's own input is gated by the hand-off: while it is parked the terminal
+tools are refused and the
+agent gets the ending rather than the screen. The keystrokes themselves go
+from the client to the server to the PTY master, not into the agent's turn;
+the shell may echo them, so a read after the hand-off resolves can carry
+what was typed.
 
 ## What it draws
 
 | Region | Shows | Read from |
 |---|---|---|
 | The hand-off's card | `terminal hand-off · terminal N`, the agent's reason, **Open terminal**, **Done** and **Not now** before the surface is up, and `typing is hidden: the program is reading a secret` when the PTY has ECHO off. While the surface is up the card leaves the actions to its bar | the `terminal_hand_off` ask, and the page's own surface state |
-| The surface's bar | **back to chat**, `terminal N · <shell> · <cwd>`, the state line - `the agent is running a command`, `waiting for you`, `the agent is waiting for input`, `the shell exited`, `view only`, `opening the terminal…`, or the server's sentence when it failed - and, while a hand-off is parked, its reason and `typing is hidden`; then **read the screen** and **close** | the terminals state push, the record's `terminal`, the page's own surface state and the parked ask |
+| The surface's bar | **back to chat**, `terminal N · <shell> · <cwd>`, the state line - `the agent is running a command`, `waiting for you`, `the agent is waiting for input`, `the shell exited`, `the terminal closed`, `view only`, `opening the terminal`, or the server's sentence when it failed - and, while a hand-off is parked, its reason, `typing is hidden`, **Done** and **Not now**; then **read the screen** and **close** | the terminals state push, the record's `terminal`, the page's own surface state and the parked ask |
 | The surface | the terminal under the bar, filling the rest: the shell's screen, its colours and its cursor | the attach's `terminal_view` repaint, then the kind-4 output frames |
 | The strip's row | `terminal` with the state in words - `a command is running`, `waiting for you`, `a password is wanted`, `exited`, `idle`, `off` - and **show** / **hide**, or **start** on a seat with no terminal. **The row is the person's door even before an agent opens one** | the session record's `terminal`, and the pushed `terminal_changed` update |
 | The touch key bar | under `pointer: coarse`: Esc, Tab, Ctrl-C, the four arrows, Enter, `/`, `-`, `\|` and `~`, each at a 44px target | the page's pointer capability |

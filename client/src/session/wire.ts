@@ -350,8 +350,8 @@ export interface SessionRecord {
   monitors: MonitorRecord[];
   /**
    * The seat's terminal, when it has one: the strip's row and the state it
-   * draws. `null` until a terminal is opened, which is what makes an
-   * unopened seat cost no strip row.
+   * draws. `null` until a terminal is opened; the row is drawn for every
+   * seat, and with none it reads **off** and offers **start**.
    */
   terminal: TerminalSummary | null;
   /** The seat's live tasks: what it has running, backgrounded or a long

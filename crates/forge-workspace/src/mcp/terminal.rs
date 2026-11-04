@@ -144,9 +144,11 @@ impl TerminalTool {
             Self::HandOff => {
                 "Hand this seat's terminal to the person at a client for the one thing only they \
                  can do: a password, a sudo confirmation, a Y/N prompt, a device sign-in. The \
-                 ask raises the terminal surface and parks, with no timeout, until they answer. \
+                 ask draws a card on the seat's strip and parks, with no timeout, until they \
+                 answer; if the surface is not up, the card's Open terminal button raises it. \
                  **You are blind while it is parked**: terminal__read and terminal__write are \
-                 refused, and their keystrokes never reach you or the transcript. `reason` is \
+                 refused. Their keystrokes go to the PTY rather than to you, but the shell may \
+                 echo them, so a read after the hand-off can carry what was typed. `reason` is \
                  what they should do. The answer is the ending only - done means carry on; \
                  not_now means decide what to do instead; feedback means they sent you a message \
                  about it. Verify the outcome by reading the artifact or the terminal, never by \
@@ -599,8 +601,8 @@ mod tests {
         crate::mcp::test_support::block_text(&out.blocks[0]).to_owned()
     }
 
-    /// **The family is the eight tools the spec names.** A missing one is a
-    /// prompt that does not resolve; an extra one is a surface no test drives.
+    /// **The family is the eight terminal tools.** A missing one is a prompt
+    /// that does not resolve; an extra one is a surface no test drives.
     #[test]
     fn the_family_is_the_eight_tools() {
         let names: Vec<&str> = [

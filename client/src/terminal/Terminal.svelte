@@ -45,7 +45,8 @@
     return value === '' ? fallback : value;
   }
 
-  /** The palette from the one token set, never a palette inside this file. */
+  /** The palette from the one token set; the hex values are its fallbacks for
+   *  a token the theme does not set. */
   function palette() {
     return {
       background: token('--bg', '#04050a'),

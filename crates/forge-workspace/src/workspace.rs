@@ -1096,8 +1096,9 @@ pub struct Workspace {
     /// for as long as the person takes.
     pub(crate) browser_handoffs: Mutex<HashMap<uuid::Uuid, ParkedBrowserHandOff>>,
     /// The per-seat terminals, created lazily on first use and living as long
-    /// as the seat: `/new`, `/resume`, a handoff and a release/resume leave
-    /// the PTY, its shell and its scrollback untouched.
+    /// as the seat: `/new`, `/resume` and a handoff leave the PTY, its shell
+    /// and its scrollback untouched; a release ends the seat and its
+    /// terminal.
     pub(crate) terminals: Mutex<HashMap<SessionSlot, Arc<crate::terminal::TerminalEntry>>>,
     /// Terminal hand-offs parked for the person at a client, keyed by their
     /// id and carrying the session that asked. The blocked `terminal__hand_off`

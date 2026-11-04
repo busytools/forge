@@ -3574,10 +3574,11 @@ fn take_frame(
 ) {
     match route {
         FrameRoute::TerminalInput { id, bytes } => {
-            // **Only the connection viewing the terminal may type into it.**
-            // The person's keystrokes go client to server to the PTY master
-            // and no further: they are not a command, an update or a log
-            // line, and nothing the agent reads ever carries them.
+            // **Only the answering connection viewing the terminal may type
+            // into it, and only while a hand-off is parked.** The keystrokes
+            // go client to server to the PTY master and are not a command, an
+            // update or a log line; the shell may echo them, so a read after
+            // the hand-off resolves can carry what was typed.
             let Some(viewing) = terminal.viewing.as_ref() else {
                 tracing::debug!(
                     event_name = "terminal_input_unattached",

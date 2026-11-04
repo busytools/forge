@@ -626,7 +626,8 @@ pub enum ServerMessage {
         id: u16,
         cols: u16,
         rows: u16,
-        /// The last sequence the screen reflects; the next frame is higher.
+        /// The last sequence the repaint reflects; the next frame carries
+        /// one above it.
         seq: u32,
         /// The visible screen as a VT stream, valid UTF-8.
         screen: String,

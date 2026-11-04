@@ -875,7 +875,7 @@ fallbacks". That covers the top level, `[[orgs]]`, `[[orgs.projects]]`,
 `[[accounts]]`, `[models."<name>"]`, `[handoff]` and
 `[orgs.projects.handoff]`, `[[slack]]`, `[gotify]`, `[systemone]`,
 `[gateway]`, `[dictate]`, `[tts]`, `[huggingface]`, `[plugins]`, `[server]`,
-`[browser]` and `[client]`.
+`[browser]`, `[terminal]` and `[client]`.
 
 A key forge itself retired is a declared ghost rather than an unknown
 key, so a stale `forge.toml` still boots and warns instead of failing:
@@ -1050,6 +1050,8 @@ accepts has no class.
 | `[server] allowed_origins` | Live. The next socket upgrade reads the new list; connections already open are untouched. |
 | `[browser]` `idle_minutes` | Live. The service reads the idle clock on every pass. |
 | `[browser]` `fps`, `quality` | Next session: applies to the next browser host. A host already running keeps the encoding it was created with. |
+| `[terminal]` `shell`, `scrollback_lines` | Next session: applies to the next terminal a seat opens; a terminal already running keeps the shell and screen model it was built with. |
+| `[terminal]` `idle_minutes` | Live. The idle clock reads it on every pass. |
 | `[client] mark`, `theme`, `font` | Live. The server pushes the whole effective config on every applied reload, and an open client re-themes, re-fonts and re-marks itself from it without a reconnect. |
 | `[documents] max_size_mib` | Live. The next document read uses the new ceiling. |
 | `[usage] poll_seconds` | Live. The poller adopts the new interval on its next tick. |

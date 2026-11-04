@@ -568,16 +568,9 @@
   $effect(() => {
     const onkey = (event: KeyboardEvent) => {
       if (event.defaultPrevented) return;
-      // **A live surface owns the keyboard**: Cmd+K belongs to the page
-      // under the bar while the browser or the terminal is up, not to this
-      // page's palette.
-      if (surface.phase !== 'closed' || terminalSurface.phase !== 'closed') return;
-      const target = event.target;
-      const typing =
-        target instanceof HTMLInputElement ||
-        target instanceof HTMLTextAreaElement ||
-        (target instanceof HTMLElement && target.isContentEditable);
-      // **Cmd+J is the terminal pane's chord**, the way Cmd+K is the palette's.
+      // **Cmd+J is the terminal pane's chord**, the way Cmd+K is the
+      // palette's - and it is a toggle, so it is read above the surface gate
+      // that stands the rest of the page's chords down while one is up.
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'j') {
         event.preventDefault();
         if (terminalSurface.phase !== 'closed') {
@@ -587,6 +580,15 @@
         }
         return;
       }
+      // **A live surface owns the keyboard**: Cmd+K belongs to the page
+      // under the bar while the browser or the terminal is up, not to this
+      // page's palette.
+      if (surface.phase !== 'closed' || terminalSurface.phase !== 'closed') return;
+      const target = event.target;
+      const typing =
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        (target instanceof HTMLElement && target.isContentEditable);
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
         event.preventDefault();
         if (paletteOpen) closePalette();

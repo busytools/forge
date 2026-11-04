@@ -107,9 +107,9 @@ impl ViewSurface {
     }
 
     /// The terminal a client asked to view, with this connection counted as
-    /// a viewer. **Refused when the seat has none**: the strip row only
-    /// exists while a terminal does, so a page attaching to a gone one is a
-    /// dark surface, not a reason to spawn a shell.
+    /// a viewer. **An attach naming a terminal the seat no longer has is
+    /// refused**; an attach naming none opens the seat's terminal, which is
+    /// the person's door on a seat no agent has touched.
     pub fn terminal_attach_or_open(
         &self,
         seat: &SessionSlot,
@@ -144,7 +144,9 @@ impl ViewSurface {
         entry.terminal.resize(cols, rows).map_err(|error| error.to_string())
     }
 
-    /// The person's own keystrokes, written to the PTY and nowhere else.
+    /// The person's own keystrokes, written to the PTY. They are not logged
+    /// or forwarded, but the shell may echo them onto the screen the terminal
+    /// tools read once the hand-off resolves.
     pub fn terminal_write(&self, seat: &SessionSlot, id: u16, bytes: &[u8]) -> Result<(), String> {
         let entry = self.workspace.terminal_by_id(seat, id)?;
         entry.terminal.write_bytes(bytes).map_err(|error| error.to_string())

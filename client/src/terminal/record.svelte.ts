@@ -2,8 +2,8 @@
  * The seat's terminal as its session record carried it.
  *
  * **One place the strip and the surface both read**, so a page whose record
- * has not re-read still draws the terminal it was told about, and a page
- * whose record carried none draws no row at all.
+ * has not re-read still draws the terminal it was told about, and a record
+ * that carried none draws the strip's row as **off** with **start**.
  */
 
 import type { TerminalSummary } from '../wire/terminal';
