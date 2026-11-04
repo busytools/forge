@@ -38,9 +38,9 @@ pub enum DocumentHandOffEnding {
     /// scope, null when nothing was commented; `note` is the reader's
     /// own words, carried verbatim.
     Approve { review_id: Option<String>, note: Option<String> },
-    /// The reader says something is off. The document is to be revised and
-    /// handed off again - this is never approval, whatever it carries.
-    /// `review_id` and `note` mean what `Approve`'s do.
+    /// The reader sent feedback. The document is to be revised and handed
+    /// off again - this is never approval, whatever it carries. `review_id`
+    /// and `note` mean what `Approve`'s do.
     Feedback { review_id: Option<String>, note: Option<String> },
     /// The reader chose not to open it.
     NotNow,
