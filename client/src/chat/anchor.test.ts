@@ -57,6 +57,19 @@ describe("the reader's anchor", () => {
   });
 
   /**
+   * **The capture keeps the fraction too, not only the restore.** The pair's
+   * round trip comes out integral on whole rows, so a rounded capture and a
+   * rounded restore agree there; a fractional edge over a fractional row is
+   * where the capture's own rounding shows.
+   */
+  it('keeps the fraction of the distance into the row', () => {
+    expect(anchorAt([row('a', 40.5, 90)], 50.25), 'a fractional edge').toEqual({
+      key: 'a',
+      into: 9.75,
+    });
+  });
+
+  /**
    * **The pair is a capture and its inverse.** What `anchorAt` reads off a row
    * has to be put back by `anchoredScroll` exactly where it was: capture at a
    * viewport top, then ask where to scroll for the same row top, and the answer

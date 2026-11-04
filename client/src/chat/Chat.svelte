@@ -2552,18 +2552,29 @@
     // already knows how to read.
     if (glideStop !== null) {
       // **A write the glide did not make is someone else's move.** The
-      // reader's own gesture is heard separately, but a programmatic move -
-      // the list's own correction, a restore, a click on a dispatch - arrives
-      // as an event with no hand; and wherever the viewport is not where the
-      // glide last put it, whatever moved it wins.
-      if (Math.abs(offset - glideAt) > FOOT_QUANTUM) stopGlide();
-      else {
+      // reader's own gesture is heard separately - `arm` and `aim` stop the
+      // glide before their own event arrives - so a foreign write here is a
+      // machine move: the list's own correction, a restore, a click on a
+      // dispatch. **It is still the column's landing, though**: the reader
+      // asked to come back, and a layout correction half way through does not
+      // take that back. The glide stops, the move's offset stands, and a
+      // column still standing to land takes the foot again from there - the
+      // alternative strands a reader mid-travel with the follow switched off
+      // by a correction they never made.
+      if (Math.abs(offset - glideAt) > FOOT_QUANTUM) {
+        stopGlide();
+        if (pinning()) land();
         lastSeen = {
           content: viewport?.scrollHeight ?? 0,
           room: viewport?.clientHeight ?? 0,
         };
         return;
       }
+      lastSeen = {
+        content: viewport?.scrollHeight ?? 0,
+        room: viewport?.clientHeight ?? 0,
+      };
+      return;
     }
     // **An event at the pin's own landing spot is its echo, and reading the
     // layout back for it is the per-frame cost issue #1710 measured.** A

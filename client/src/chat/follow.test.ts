@@ -1198,6 +1198,25 @@ describe('whether the column follows the newest end', () => {
     expect(following(server), 'and the follow stays off').toBe(false);
   });
 
+  it('does not re-arm on a machine move that lands inside the notch', async () => {
+    // **The notch re-arm is the READER's, not the layout's.** A correction
+    // that happens to land inside the notch leaves the column standing at the
+    // foot (`footHeld`), and that must not turn a parked reader into a
+    // follower: there is no returning hand behind it.
+    const server = stub();
+    await draw(server);
+    readerAt(0);
+    await settle();
+    clear();
+
+    // No wheel, no touch, no key: the column itself moved.
+    list()?.scrolledTo(FOOT - 20, TOTAL, VIEWPORT);
+    await settle();
+
+    expect(following(server), 'a layout move does not re-arm the follow').toBe(false);
+    expect(pinned(), 'and nothing lands the foot').toEqual([]);
+  });
+
   it('leaves a reader who just scrolled away alone, for the frame in their own breath', async () => {
     // **The disarm is a decision, and it publishes at once.** The reader's
     // scroll away and the frame land in ONE task, with no paint between them;
@@ -2625,10 +2644,15 @@ describe('whether the column follows the newest end', () => {
 
     server.readQueue([{ uuid: 'phone-queued', source: 'you', text: 'from the phone' }]);
     await settle();
+    // The turn that held the queue ends, and the CLI takes the next prompt:
+    // that started prompt opens the row the reader was away for.
+    server.inflight(false);
+    await settle();
     server.startedFor('phone-queued');
     await settle();
 
     expect(pinned(), "the phone's queued words may not carry the reader").toEqual([]);
+    expect(badge(), 'and they ride the badge, as every turn they missed does').toBe('1');
   });
 
   it('re-pins when the content changes size under a reader at the foot', async () => {
@@ -3591,6 +3615,11 @@ async function parkedWith(server: ReturnType<typeof stub>, session: string): Pro
   ).toBe(session);
 }
 
+/** The count drawn on the circle, or null while it draws none. */
+function badge(): string | null {
+  return document.querySelector('button.follow .n')?.textContent?.trim() ?? null;
+}
+
 /** The seat's follow flag, which the entry, a send and a notch return change. */
 function following(server: ReturnType<typeof stub>): boolean | undefined {
   const chat = conversationsFor(server.connection).live.get(subjectKey({ session: LEAD }))?.chat;
@@ -3750,11 +3779,6 @@ describe('a saved place outliving the connection', () => {
 });
 
 describe('the badge on the way back', () => {
-  /** The count drawn on the circle, or null while it draws none. */
-  function badge(): string | null {
-    return document.querySelector('button.follow .n')?.textContent?.trim() ?? null;
-  }
-
   it('counts the turns appended since parking once each, and clears on the way back', async () => {
     const server = stub();
     await parkedColumn(server);
@@ -3919,6 +3943,41 @@ describe('the motion of a following column', () => {
       await hand.pump(16);
       expect(element.offset, 'the stream growth glided rather than jumped').toBeLessThan(grown);
       expect(element.offset, 'and it glided to the foot it measured').toBeGreaterThan(moved);
+    } finally {
+      hand.stop();
+    }
+  });
+
+  it("keeps the follow when a layout move interrupts a send's glide", async () => {
+    // **A correction half way through the landing is not the reader leaving.**
+    // The send armed the follow and the column is gliding to the foot; a
+    // hand-less layout move lands mid-travel. Stopping the glide there is
+    // right, but reading the stop as the reader would strand them with the
+    // follow switched off by a move they never made.
+    const server = stub();
+    await draw(server);
+    layOut(40);
+    readerAt(50);
+    await settle();
+    expect(element.offset, 'precondition: the reader is parked').toBe(50);
+
+    vi.stubGlobal('matchMedia', () => ({ matches: false }));
+    const hand = clock();
+    try {
+      server.prompt();
+      await hand.pump(0);
+      await hand.pump(16);
+      const mid = element.offset;
+      expect(mid, 'precondition: the send is gliding to the foot').toBeGreaterThan(50);
+      expect(mid, 'precondition: and it has not arrived').toBeLessThan(FOOT);
+
+      // A layout move the glide did not write, with no hand behind it.
+      list()?.scrolledTo(mid - 100, TOTAL, VIEWPORT);
+      flushSync();
+      expect(following(server), 'the layout move switched the follow off').toBe(true);
+
+      for (let at = 0; at < 12; at += 1) await hand.pump(16);
+      expect(element.offset, 'the column still carried the reader to the foot').toBe(FOOT);
     } finally {
       hand.stop();
     }

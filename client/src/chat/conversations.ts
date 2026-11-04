@@ -100,6 +100,11 @@ export class Places {
    * two apart and keeps it; a place recorded before any id was known goes
    * with the replacement, because the successor's transcript is then the only
    * word either way.
+   *
+   * **A seat the reader is not drawing has no column to drop it**, which is
+   * why this lives on the store rather than only in the column's occupant
+   * effect: a background conversation still folds its own replacement, and
+   * this is that seat's only word on the place.
    */
   settle(seat: string, session: string | null): void {
     if (session === null) return;
