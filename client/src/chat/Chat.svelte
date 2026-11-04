@@ -2396,8 +2396,9 @@
     // (`wasFoot`), the follow is on, and no hand made the move. `!footHeld`
     // is this event's landing: a move that already holds the foot needs no
     // re-land, and writing the same value again would only cost the write.
-    // No shrink term: a shrink cannot carry a foot-standing reader's offset
-    // further down, so the shape cannot be one.
+    // No shrink term: a net shrink with an anchoring shift can still leave a
+    // following column short - a pin held at the model end does - and landing
+    // the foot again is the right recovery there.
     // `restoring` is a return still placing its reader, not a foot to land.
     if (
       wasFoot &&

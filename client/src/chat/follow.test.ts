@@ -527,11 +527,12 @@ describe('whether the column follows the newest end', () => {
   /**
    * A layout move that carries a following column toward the foot, short of
    * it: the content grows and the offset moves down with the rows above.
+   * `shortBy` is how far past the move the new foot sits.
    */
-  function layoutMovesShort(): number {
+  function layoutMovesShort(shortBy = 300): number {
     const grown = Math.floor(TOTAL + 400);
     setElement(grown, VIEWPORT);
-    list()?.scrolledTo(FOOT + 100, grown, VIEWPORT);
+    list()?.scrolledTo(grown - VIEWPORT - shortBy, grown, VIEWPORT);
     flushSync();
     return grown;
   }
@@ -594,6 +595,22 @@ describe('whether the column follows the newest end', () => {
     layoutMovesShort();
 
     expect(pinned(), 'their own wheel made the move').toEqual([]);
+  });
+
+  it('leaves a reader inside the notch alone, where a re-land would move them', async () => {
+    // **The foot's own nearness.** A landing inside `FOOT_NEAR` counts as
+    // standing at the foot, so there is nothing for the re-land to correct -
+    // and without its own check the branch would write the foot for a move
+    // the column already treats as the end.
+    const server = stub();
+    await draw(server);
+    readerAt(FOOT);
+    await settle();
+    clear();
+
+    layoutMovesShort(24);
+
+    expect(pinned(), 'inside the notch is the foot').toEqual([]);
   });
 
   it("holds the pin at the list's own end while the browser counts a row it has not measured", async () => {
