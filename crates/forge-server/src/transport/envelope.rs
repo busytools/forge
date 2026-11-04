@@ -326,8 +326,11 @@ pub enum ClientMessage {
     /// output frames as the shell writes them.
     TerminalView {
         seat: SessionSlot,
-        /// The terminal id. One per seat today, so the open's id is the one.
-        id: u16,
+        /// The terminal id, or `None` to open the seat's terminal - creating
+        /// it when the seat has none - and attach to it. **The person's door
+        /// on a seat every agent has left alone.**
+        #[serde(default)]
+        id: Option<u16>,
         /// Answers the attach: `{"ok": true, "id": <the one attached>}` or
         /// `{"ok": false, "why": ...}`. A raise that cannot be answered is a
         /// dark surface, so a client that can wait sends one.

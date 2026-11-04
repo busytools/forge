@@ -301,11 +301,11 @@ impl Drop for TerminalViewing {
 async fn send_terminal_view<S>(
     socket: &mut ClientSocket<S>,
     viewing: &TerminalViewing,
+    repaint: &[u8],
 ) -> anyhow::Result<()>
 where
     S: futures_util::Sink<Message, Error = axum::Error> + Unpin + Send,
 {
-    let repaint = viewing.entry.terminal.repaint();
     send(
         socket,
         ServerMessage::TerminalView {
@@ -314,7 +314,7 @@ where
             cols: viewing.entry.terminal.cols(),
             rows: viewing.entry.terminal.rows(),
             seq: viewing.last_seq,
-            screen: String::from_utf8_lossy(&repaint).into_owned(),
+            screen: String::from_utf8_lossy(repaint).into_owned(),
             viewers: u32::try_from(
                 viewing.entry.attached.load(std::sync::atomic::Ordering::Relaxed),
             )
@@ -337,8 +337,19 @@ enum TerminalEvent {
 /// The next thing this connection's terminal has for the loop.
 async fn next_terminal_event(viewing: &mut Option<TerminalViewing>) -> Option<TerminalEvent> {
     let Some(viewing) = viewing.as_mut() else { return std::future::pending().await };
+    // **The exit is watched beside the stream.** The connection holds the
+    // terminal, so the broadcast never closes while a viewer is attached; the
+    // shell's own exit is what says the viewer is drawing a dead screen.
+    let mut exit = viewing.entry.terminal.exit_stream();
+    if !viewing.entry.terminal.is_alive() {
+        return Some(TerminalEvent::Gone);
+    }
     loop {
-        match viewing.output.recv().await {
+        let chunk = tokio::select! {
+            chunk = viewing.output.recv() => chunk,
+            _ = exit.changed() => return Some(TerminalEvent::Gone),
+        };
+        match chunk {
             Ok(chunk) => {
                 if viewing.paused {
                     viewing.last_seq = chunk.seq;
@@ -1471,10 +1482,9 @@ where
                     }
                     TerminalEvent::Resync => {
                         if let Some(viewing) = viewers.terminal.viewing.as_mut() {
-                            viewing.last_seq = viewing.entry.terminal.seq().saturating_sub(1);
-                        }
-                        if let Some(viewing) = viewers.terminal.viewing.as_ref() {
-                            send_terminal_view(socket, viewing).await?;
+                            let (repaint, seq) = viewing.entry.terminal.repaint_and_seq();
+                            viewing.last_seq = seq.saturating_sub(1);
+                            send_terminal_view(socket, viewing, &repaint).await?;
                         }
                     }
                     TerminalEvent::Gone => {
@@ -1605,6 +1615,10 @@ fn stamp(command: Command, me: u64) -> Command {
         Command::RespondBrowserHandOff { key, id, mut answer } => {
             answer.client = Some(me);
             Command::RespondBrowserHandOff { key, id, answer }
+        }
+        Command::RespondTerminalHandOff { key, id, mut answer } => {
+            answer.client = Some(me);
+            Command::RespondTerminalHandOff { key, id, answer }
         }
         other => other,
     }
@@ -1838,6 +1852,7 @@ where
                 dictate,
                 &mut viewers.terminal,
                 me,
+                updates.as_ref().is_some_and(|(_, answering)| *answering),
                 frame_route(&bytes, dictate),
             );
             return Ok(());
@@ -2024,7 +2039,7 @@ async fn attach_terminal<S>(
     state: &Arc<TransportState>,
     terminal: &mut TerminalViewingState,
     seat: forge_primitives::SessionSlot,
-    id: u16,
+    id: Option<u16>,
     reply_to: Option<u64>,
 ) -> anyhow::Result<()>
 where
@@ -2033,16 +2048,20 @@ where
     // A re-attach replaces what this connection was viewing; the old
     // attachment's drop takes its viewer count off.
     terminal.viewing = None;
-    match state.surface.terminal_attach(&seat, id) {
+    match state.surface.terminal_attach_or_open(&seat, id) {
         Ok(entry) => {
             let output = entry.terminal.subscribe();
             // **The repaint reflects every chunk below this sequence**, so a
             // chunk still queued from before it is ignored by the client
             // rather than drawn twice.
-            let last_seq = entry.terminal.seq().saturating_sub(1);
+            let (repaint, seq) = entry.terminal.repaint_and_seq();
+            let last_seq = seq.saturating_sub(1);
+            // The attach may have opened the terminal, so the id is the
+            // entry's own; the answer names what was attached.
+            let id = entry.id;
             let viewing =
                 TerminalViewing { seat: seat.clone(), id, entry, output, paused: false, last_seq };
-            send_terminal_view(socket, &viewing).await?;
+            send_terminal_view(socket, &viewing, &repaint).await?;
             terminal.viewing = Some(viewing);
             match reply_to {
                 Some(ask) => {
@@ -2797,11 +2816,10 @@ where
                     // **A resume is a fresh repaint**: the frames the pause
                     // dropped are not replayed, so the client is told where
                     // the screen is now and continues from there.
-                    viewing.last_seq = viewing.entry.terminal.seq().saturating_sub(1);
+                    let (repaint, seq) = viewing.entry.terminal.repaint_and_seq();
+                    viewing.last_seq = seq.saturating_sub(1);
+                    send_terminal_view(socket, viewing, &repaint).await?;
                 }
-            }
-            if !paused && let Some(viewing) = terminal.viewing.as_ref() {
-                send_terminal_view(socket, viewing).await?;
             }
             Ok(())
         }
@@ -3551,6 +3569,7 @@ fn take_frame(
     dictate: &Streaming,
     terminal: &mut TerminalViewingState,
     me: u64,
+    answering: bool,
     route: FrameRoute,
 ) {
     match route {
@@ -3573,6 +3592,19 @@ fn take_frame(
                     id,
                     attached = viewing.id,
                     "a terminal input frame named a terminal this connection is not viewing",
+                );
+                return;
+            }
+            // **The person types only through the hand-off's door.** Outside
+            // one the surface is a viewer: the agent owns the terminal, and
+            // an observer's keystrokes would join a command they did not ask
+            // for.
+            if !answering || !surface.terminal_held(&viewing.seat) {
+                tracing::debug!(
+                    event_name = "terminal_input_outside_handoff",
+                    id,
+                    answering,
+                    "a terminal input frame arrived outside the hand-off that owns the keyboard",
                 );
                 return;
             }
@@ -4414,6 +4446,7 @@ fn refusal_tag(refusal: &DispatchError) -> &'static str {
         // tag, because one tag cannot route two opposite outcomes.
         DispatchError::EmptySlackFeedback { .. } => "empty_slack_feedback",
         DispatchError::NoBrowserHandOffWaiting { .. } => "respond_browser_hand_off",
+        DispatchError::NoTerminalHandOffWaiting { .. } => "respond_terminal_hand_off",
         DispatchError::NoSettingsWriteWaiting { .. } => "respond_settings_write",
         DispatchError::NoDocumentHandOffWaiting { .. } => "respond_document_hand_off",
         _ => "dispatch",

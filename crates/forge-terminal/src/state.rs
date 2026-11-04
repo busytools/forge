@@ -75,12 +75,13 @@ pub struct ClassifyInput<'a> {
 
 /// Classify the terminal's state.
 pub fn classify(input: ClassifyInput<'_>) -> State {
-    // **ECHO off is a password only while a command runs.** zsh's line editor
-    // turns ECHO off at every prompt, so an idle prompt with ECHO off is the
-    // shell waiting for the person, not a program reading a secret. With the
-    // marks, a `C` with no `D` is the command that owns the ECHO-off state;
-    // without them the flag is the best signal there is.
-    let password = !input.echo && (!input.marks.seen || input.marks.running);
+    // **ECHO off is a password only while a marked command runs.** zsh's line
+    // editor turns ECHO off at every prompt, so the flag alone would call the
+    // shell's idle prompt a secret read; a `C` with no `D` is the command that
+    // owns the ECHO-off state. A shell with no marks is degraded: it cannot
+    // say a secret is being read, and guessing one from the flag alone would
+    // name an idle prompt a password on any shell whose editor turns ECHO off.
+    let password = !input.echo && input.marks.running;
     let input_expected = if password {
         Some(InputExpected {
             kind: InputKind::Password,

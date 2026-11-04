@@ -309,7 +309,7 @@
   {/if}
 {/snippet}
 
-{#if info !== null || rows || ask !== null || draft !== null}
+{#if info !== null || rows || ask !== null || draft !== null || slot !== null}
   <div class="live-row" bind:this={rowEl}>
     <!-- What waits sorts to the front and takes its tone: an ask the body is
          parked on is the first thing a reader needs to see. -->
@@ -342,14 +342,16 @@
       >
         {@render segment('browser')}
       </span>
-      <span
-        class="live-chip"
-        class:off={hidden.includes('terminal')}
-        data-chip="terminal"
-        role="listitem"
-      >
-        {@render segment('terminal')}
-      </span>
+      {#if slot !== null}
+        <span
+          class="live-chip"
+          class:off={hidden.includes('terminal')}
+          data-chip="terminal"
+          role="listitem"
+        >
+          {@render segment('terminal')}
+        </span>
+      {/if}
       <span
         class="live-chip"
         class:off={hidden.includes('subagents')}

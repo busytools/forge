@@ -6541,6 +6541,13 @@ impl Workspace {
                 _ => {}
             }
             let key = key.clone();
+            // **A hand-off parked by the outgoing occupant cannot outlive
+            // it.** `/new` and `/resume` replace the session that is waiting,
+            // and a park left behind would blind the new occupant's first
+            // terminal call with an ask nobody owns.
+            if matches!(&cmd, Command::NewSession { .. } | Command::ResumeSession { .. }) {
+                self.abandon_terminal_hand_offs(&key);
+            }
             // /new and /resume re-spawn on the already-pooled handle, where
             // get_agent_handle_at_key's stamp never runs.
             let resuming = matches!(&cmd, Command::ResumeSession { .. });

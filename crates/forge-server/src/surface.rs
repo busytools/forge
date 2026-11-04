@@ -110,12 +110,17 @@ impl ViewSurface {
     /// a viewer. **Refused when the seat has none**: the strip row only
     /// exists while a terminal does, so a page attaching to a gone one is a
     /// dark surface, not a reason to spawn a shell.
-    pub fn terminal_attach(
+    pub fn terminal_attach_or_open(
         &self,
         seat: &SessionSlot,
-        id: u16,
+        id: Option<u16>,
     ) -> Result<Arc<forge_workspace::terminal::TerminalEntry>, String> {
-        let entry = self.workspace.terminal_by_id(seat, id)?;
+        let entry = match id {
+            Some(id) => self.workspace.terminal_by_id(seat, id)?,
+            // **The person's door on an untouched seat.** An attach that
+            // names no terminal opens the seat's, creating it on first use.
+            None => self.workspace.open_terminal(seat)?,
+        };
         entry.attached.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Ok(entry)
     }

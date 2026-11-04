@@ -886,12 +886,16 @@
   /** Why the raise failed, in the shell's own words - a machine with no
    *  browser to drive is told which one to install. */
   let raiseWhy = $state<string | null>(null);
-  const raiseFailed = $derived(
-    ask.kind === 'browser_hand_off' && raiseFailedFor === ask.request.id
-      ? (raiseWhy ??
-          'The browser could not be opened - act where the browser is up, then press Done.')
-      : null,
-  );
+  const raiseFailed = $derived.by((): string | null => {
+    if (raiseFailedFor === null) return null;
+    const id =
+      ask.kind === 'browser_hand_off' || ask.kind === 'terminal_hand_off' ? ask.request.id : null;
+    if (id === null || raiseFailedFor !== id) return null;
+    if (raiseWhy !== null) return raiseWhy;
+    return ask.kind === 'browser_hand_off'
+      ? 'The browser could not be opened - act where the browser is up, then press Done.'
+      : 'The terminal could not be opened - read the screen from the session and try again.';
+  });
 
   /**
    * Raise the browser surface, which is the client's own act rather than the

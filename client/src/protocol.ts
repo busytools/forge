@@ -427,7 +427,11 @@ export type ClientMessage =
   | {
       kind: 'terminal_view';
       seat: SessionSlot;
-      id: number;
+      /**
+       * The terminal to attach to, or null to open the seat's terminal - the
+       * person's door on a seat no agent has touched.
+       */
+      id: number | null;
       /** Answers the attach when the sender waits; the surface's open does. */
       reply_to?: number | null;
     }

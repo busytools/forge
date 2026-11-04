@@ -8,9 +8,13 @@
   import BrowserSurface from '../browser/BrowserSurface.svelte';
   import { drawsSurface } from '../browser/link';
   import { surface } from '../browser/surface.svelte';
-  import TerminalSurface from '../terminal/Terminal.svelte';
+  import type { Component } from 'svelte';
   import { setTerminalRecord } from '../terminal/record.svelte';
-  import { surface as terminalSurface } from '../terminal/surface.svelte';
+  import {
+    closeTerminal,
+    openTerminal,
+    surface as terminalSurface,
+  } from '../terminal/surface.svelte';
   import { subjectKey } from '../protocol';
   import { report, type Connection } from '../socket';
   import type { BoardRead } from '../wire/board';
@@ -128,9 +132,44 @@
    * **The strip and the surface read one store**, so a page whose record has
    * not re-read still draws the terminal it was told about, and a record with
    * none draws no row at all.
+   *
+   * **A terminal that leaves the record has closed**, so a surface still
+   * drawing it is lowered rather than left under a live bar. Only the Some to
+   * None transition closes: a fresh record that has not read the terminal yet
+   * must not lower a surface that is still opening.
    */
+  let heldTerminal: number | null = null;
   $effect(() => {
-    setTerminalRecord(slot, record?.terminal ?? null);
+    const held = record?.terminal ?? null;
+    setTerminalRecord(slot, held);
+    if (held !== null) {
+      heldTerminal = held.id;
+      return;
+    }
+    if (heldTerminal === null) return;
+    heldTerminal = null;
+    const at = terminalSurface.seat;
+    if (
+      at !== null &&
+      at.org === slot.org &&
+      at.project === slot.project &&
+      at.label === slot.label
+    ) {
+      void closeTerminal();
+    }
+  });
+
+  /**
+   * **The terminal surface is its own chunk.** xterm.js and its addons are
+   * the terminal's renderer, not the page's, and a session that never raises
+   * the terminal should not download them.
+   */
+  let TerminalSurface = $state<Component | null>(null);
+  $effect(() => {
+    if (terminalSurface.phase === 'closed' || TerminalSurface !== null) return;
+    void import('../terminal/Terminal.svelte').then((module) => {
+      TerminalSurface = module.default;
+    });
   });
 
   /**
@@ -519,14 +558,25 @@
   $effect(() => {
     const onkey = (event: KeyboardEvent) => {
       if (event.defaultPrevented) return;
-      // **A live takeover owns the keyboard**: Cmd+K belongs to the page
-      // under the bar while the surface is up, not to this page's palette.
-      if (surface.phase !== 'closed') return;
+      // **A live surface owns the keyboard**: Cmd+K belongs to the page
+      // under the bar while the browser or the terminal is up, not to this
+      // page's palette.
+      if (surface.phase !== 'closed' || terminalSurface.phase !== 'closed') return;
       const target = event.target;
       const typing =
         target instanceof HTMLInputElement ||
         target instanceof HTMLTextAreaElement ||
         (target instanceof HTMLElement && target.isContentEditable);
+      // **Cmd+J is the terminal pane's chord**, the way Cmd+K is the palette's.
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'j') {
+        event.preventDefault();
+        if (terminalSurface.phase !== 'closed') {
+          void closeTerminal();
+        } else {
+          void openTerminal(slot, record?.terminal?.id ?? null);
+        }
+        return;
+      }
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
         event.preventDefault();
         if (paletteOpen) closePalette();
@@ -634,8 +684,12 @@
   {#if terminalSurface.phase !== 'closed'}
     <!-- The terminal's own surface, the browser takeover's sibling: a
          full-window layer with the terminal under a slim bar. It is hidden by
-         default and raised by the strip row or a hand-off's Open. -->
-    <TerminalSurface />
+         default and raised by the strip row or a hand-off's Open.
+         **xterm.js is its own chunk**: a session that never raises the
+         terminal does not pay for the renderer. -->
+    {#if TerminalSurface !== null}
+      <TerminalSurface />
+    {/if}
   {/if}
 
   <main class="chat">

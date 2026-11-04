@@ -588,7 +588,7 @@ export interface TerminalWire {
    * sentence; the screen arrives as a `terminal_view` message first, then the
    * output frames.
    */
-  terminalView(seat: SessionSlot, id: number): Promise<number>;
+  terminalView(seat: SessionSlot, id: number | null): Promise<number>;
   /** Give the attached terminal up: the surface lowered. */
   terminalDetach(): boolean;
   /** The attached surface changed size, in columns and rows. */
@@ -1056,6 +1056,11 @@ export function connect(
       // as a frame the client could not draw - which is exactly what the
       // report below is for.
       case 'seat_frames':
+        return;
+      // **The terminal surface's own subscriber draws the repaint.** The
+      // switch knows the frame so it is not reported as one the client cannot
+      // draw - a false report on every attach and resume.
+      case 'terminal_view':
         return;
       // A frame whose kind this client does not know is REPORTED rather than
       // dropped in silence: a message that arrived and drew nothing is

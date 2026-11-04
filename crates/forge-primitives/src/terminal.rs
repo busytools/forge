@@ -23,10 +23,6 @@ pub const MAX_ROWS: u16 = 300;
 pub const MIN_COLS: u16 = 2;
 pub const MIN_ROWS: u16 = 2;
 
-/// One terminal's id, as the binary frames carry it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
-pub struct TerminalId(pub u16);
-
 /// Where a state answer came from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -104,21 +100,6 @@ pub struct TerminalHandOff {
 /// One answer to a parked terminal hand-off: the ending, the door that sent
 /// it and the connection that carried it.
 pub type TerminalHandOffAnswer = crate::browser::HandOffAnswer;
-
-/// The attach snapshot: the screen as a VT stream, and where the byte stream
-/// continues from.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TerminalView {
-    pub id: u16,
-    pub cols: u16,
-    pub rows: u16,
-    /// The sequence the next output frame carries.
-    pub seq: u32,
-    /// The visible screen as a VT stream a client can draw.
-    pub screen: String,
-    /// How many clients are attached.
-    pub viewers: u32,
-}
 
 #[cfg(test)]
 mod tests {

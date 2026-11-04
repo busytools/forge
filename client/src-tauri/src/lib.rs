@@ -464,7 +464,7 @@ mod commands {
     pub async fn client_terminal_view(
         bridge: tauri::State<'_, Arc<Bridge>>,
         seat: Value,
-        id: u16,
+        id: Option<u16>,
     ) -> Result<Value, String> {
         bridge.terminal_view(seat, id).await
     }

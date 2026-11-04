@@ -13,13 +13,12 @@
 use base64::Engine as _;
 use tauri::Emitter as _;
 
-/// One relayed terminal output frame, as the socket reader hands it over: the
-/// kind tag, a little-endian id and sequence, then the shell's bytes.
+/// One relayed terminal output frame, as the socket reader hands it over: a
+/// little-endian id and sequence, then the shell's bytes. **The kind tag is
+/// already stripped by the socket's dispatch**, which is what tells this
+/// sink apart from the browser's.
 pub fn frame(app: &tauri::AppHandle, bytes: &[u8]) {
-    if bytes.first() != Some(&forge_primitives::terminal::TERMINAL_OUTPUT_TAG) {
-        return;
-    }
-    if bytes.len() < 7 {
+    if bytes.len() < 6 {
         // **A frame this half cannot read is said**, not dropped quietly: the
         // page's stream has no other trace of a missing one.
         tauri_plugin_log::log::info!(
@@ -29,14 +28,14 @@ pub fn frame(app: &tauri::AppHandle, bytes: &[u8]) {
         );
         return;
     }
-    let id = u16::from_le_bytes([bytes[1], bytes[2]]);
-    let seq = u32::from_le_bytes([bytes[3], bytes[4], bytes[5], bytes[6]]);
+    let id = u16::from_le_bytes([bytes[0], bytes[1]]);
+    let seq = u32::from_le_bytes([bytes[2], bytes[3], bytes[4], bytes[5]]);
     let _ = app.emit(
         "client://terminal-frame",
         serde_json::json!({
             "id": id,
             "seq": seq,
-            "bytes": base64::engine::general_purpose::STANDARD.encode(&bytes[7..]),
+            "bytes": base64::engine::general_purpose::STANDARD.encode(&bytes[6..]),
         }),
     );
 }

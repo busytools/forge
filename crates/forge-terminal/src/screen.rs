@@ -66,12 +66,18 @@ pub fn extract<T: EventListener>(term: &Term<T>) -> Screen {
 /// A bounded read of the buffer from `since`, or the tail when `since` is
 /// absent or older than the buffer.
 ///
-/// **The cursor is the buffer's line count, not a lifetime total.** The
-/// scrollback is bounded, so a caller that falls further behind than the
-/// buffer gets the tail and `truncated` says so rather than pretending it
-/// read everything.
+/// **The cursor is a lifetime line number, not a buffer position.** The
+/// scrollback is bounded, so the buffer's own count stops advancing once it
+/// fills; `appended` is how many lines have ever entered it, and the buffer's
+/// first line is `appended - total`. A caller that falls further behind than
+/// the buffer gets the tail and `truncated` says so.
+///
+/// A read that reaches the buffer's last line hands back that line's index,
+/// so the next read repeats it: the last line can still change while a
+/// program is writing.
 pub fn read<T: EventListener>(
     term: &Term<T>,
+    appended: u64,
     since: Option<u64>,
     max_lines: usize,
     max_bytes: usize,
@@ -80,17 +86,19 @@ pub fn read<T: EventListener>(
     let top = grid.topmost_line().0;
     let bottom = grid.bottommost_line().0;
     let total = u64::try_from(bottom - top + 1).unwrap_or(0);
+    let first = appended.saturating_sub(total);
     let tail = total.saturating_sub(u64::try_from(max_lines).unwrap_or(u64::MAX));
-    // A cursor inside the buffer reads forward; a cursor past it means the
-    // caller fell further behind than the scrollback holds, and the tail is
-    // what it gets, reported as truncated.
-    let (start, fell_behind) = match since {
-        Some(since) if since <= total => (since, false),
-        _ => (tail, since.is_some_and(|since| since > total)),
+    // A cursor inside the buffer reads forward; a cursor the buffer has
+    // already dropped means the caller fell behind, and the tail is what it
+    // gets, reported as truncated. A cursor at the lifetime end is caught up.
+    let (start, mut truncated) = match since {
+        Some(since) if since >= first => (since - first, false),
+        Some(_) => (0, true),
+        None => (tail, tail > 0),
     };
+    let start = start.min(total);
     let mut lines = Vec::new();
     let mut bytes = 0usize;
-    let mut truncated = fell_behind || start > 0;
     for index in start..total {
         let Ok(offset) = i32::try_from(index) else { break };
         let text = line_text(grid, Line(top + offset));
@@ -102,9 +110,11 @@ pub fn read<T: EventListener>(
         bytes += len;
         lines.push(text);
     }
+    let end = start.saturating_add(u64::try_from(lines.len()).unwrap_or(u64::MAX));
+    let cursor = if end >= total && total > 0 { appended.saturating_sub(1) } else { first + end };
     ReadResult {
         text: lines.join("\n"),
-        cursor: total,
+        cursor,
         cols: u16::try_from(grid.columns()).unwrap_or(u16::MAX),
         rows: u16::try_from(grid.screen_lines()).unwrap_or(u16::MAX),
         truncated,
@@ -150,14 +160,31 @@ mod tests {
     }
 
     fn term_with(bytes: &[u8], cols: usize, rows: usize) -> Term<VoidListener> {
+        driven(bytes, cols, rows, 100).0
+    }
+
+    /// A term fed `bytes`, and the lifetime line count a read cursor is
+    /// measured against.
+    fn driven(bytes: &[u8], cols: usize, rows: usize, history: usize) -> (Term<VoidListener>, u64) {
         let mut term = Term::new(
-            Config { scrolling_history: 100, ..Default::default() },
+            Config { scrolling_history: history, ..Default::default() },
             &Size { cols, rows },
             VoidListener,
         );
+        let mut appended = u64::try_from(term.grid().total_lines()).unwrap_or(0);
         let mut parser: Processor = Processor::new();
-        parser.advance(&mut term, bytes);
-        term
+        crate::parser::advance(&mut parser, &mut term, bytes, history, &mut appended);
+        (term, appended)
+    }
+
+    fn feed(
+        term: &mut Term<VoidListener>,
+        parser: &mut Processor,
+        bytes: &[u8],
+        history: usize,
+        appended: &mut u64,
+    ) {
+        crate::parser::advance(parser, term, bytes, history, appended);
     }
 
     /// The extractor returns the characters a person sees, with trailing
@@ -176,22 +203,93 @@ mod tests {
     /// moves to the end.
     #[test]
     fn a_read_from_a_cursor_returns_the_new_lines() {
-        let term = term_with(b"one\r\ntwo\r\nthree", 20, 5);
-        let all = read(&term, None, 200, 32 * 1024);
+        let (term, appended) = driven(b"one\r\ntwo\r\nthree", 20, 5, 100);
+        let all = read(&term, appended, None, 200, 32 * 1024);
         assert!(all.text.contains("one"));
         assert!(all.text.contains("three"));
-        let after = read(&term, Some(all.cursor), 200, 32 * 1024);
+        let after = read(&term, appended, Some(all.cursor), 200, 32 * 1024);
         assert!(after.text.is_empty(), "nothing new after the cursor: {:?}", after.text);
+        assert!(!after.truncated, "caught up is not truncated");
     }
 
     /// The bounds are honoured and `truncated` says so, so a read never
     /// floods the model.
     #[test]
     fn a_read_is_bounded_and_says_when_it_truncated() {
-        let term = term_with(b"a\r\nb\r\nc\r\nd\r\ne", 20, 5);
-        let bounded = read(&term, None, 2, 32 * 1024);
+        let (term, appended) = driven(b"a\r\nb\r\nc\r\nd\r\ne", 20, 5, 100);
+        let bounded = read(&term, appended, None, 2, 32 * 1024);
         assert!(bounded.truncated, "two lines of five is truncated");
         assert_eq!(bounded.text.lines().count(), 2);
+    }
+
+    /// A bound that cuts a read leaves the cursor on the last line it
+    /// returned, so the lines it did not return are still reachable.
+    #[test]
+    fn a_bounded_read_leaves_the_cursor_at_the_last_line_it_returned() {
+        let (term, appended) = driven(b"a\r\nb\r\nc\r\nd\r\ne", 20, 5, 100);
+        let first = read(&term, appended, Some(0), 2, 32 * 1024);
+        assert_eq!(first.text.lines().collect::<Vec<_>>(), ["a", "b"]);
+        assert!(first.truncated, "the bound cut the read");
+        let next = read(&term, appended, Some(first.cursor), 10, 32 * 1024);
+        assert_eq!(next.text.lines().collect::<Vec<_>>(), ["c", "d", "e"]);
+        assert!(!next.truncated, "the second read reached the end");
+    }
+
+    /// Once the scrollback is full the buffer's line count stops growing;
+    /// the cursor is a lifetime line number, so it keeps advancing and a
+    /// read still returns what was written after it.
+    #[test]
+    fn a_read_cursor_advances_after_the_scrollback_is_full() {
+        let mut term = Term::new(
+            Config { scrolling_history: 2, ..Default::default() },
+            &Size { cols: 20, rows: 2 },
+            VoidListener,
+        );
+        let mut appended = u64::try_from(term.grid().total_lines()).unwrap_or(0);
+        let mut parser: Processor = Processor::new();
+        feed(&mut term, &mut parser, b"1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7\r\n8\r\n", 2, &mut appended);
+        let caught = read(&term, appended, None, 10, 32 * 1024);
+        assert_eq!(caught.text.lines().collect::<Vec<_>>(), ["6", "7", "8"]);
+        let bound = caught.cursor;
+        feed(&mut term, &mut parser, b"9\r\n10\r\n", 2, &mut appended);
+        let next = read(&term, appended, Some(bound), 10, 32 * 1024);
+        assert_eq!(next.text.lines().collect::<Vec<_>>(), ["9", "10"]);
+        assert!(!next.truncated, "nothing fell out of the buffer behind the cursor");
+    }
+
+    /// **A wrapped line reflows, and its characters survive.** A terminal
+    /// narrowed under a running program re-lays the line rather than
+    /// truncating it, which is what a person's own terminal does.
+    #[test]
+    fn a_wrapped_line_reflows_when_the_terminal_narrows() {
+        let mut term = Term::new(
+            Config { scrolling_history: 100, ..Default::default() },
+            &Size { cols: 20, rows: 12 },
+            VoidListener,
+        );
+        let mut appended = 12u64;
+        let mut parser: Processor = Processor::new();
+        feed(
+            &mut term,
+            &mut parser,
+            b"\x1b[32mok\x1b[0m aaaaaaaaaaaaaaaaaaaaaaaa\r\n\x1b[1mbold\x1b[0m done",
+            100,
+            &mut appended,
+        );
+        let wide = read(&term, 10_000, None, 500, 1 << 20);
+        let wide_flat: String = wide.text.chars().filter(|c| !c.is_whitespace()).collect();
+        assert!(wide_flat.contains("okaaaaaaaaaaaaaaaaaaaaaaaa"), "{:?}", wide.text);
+        term.resize(Size { cols: 10, rows: 12 });
+        // The buffer, not the viewport: a reflow can move a row into the
+        // scrollback, and the characters are what must survive.
+        let narrow = read(&term, 10_000, None, 500, 1 << 20);
+        let flat: String = narrow.text.chars().filter(|c| !c.is_whitespace()).collect();
+        assert!(
+            flat.contains("okaaaaaaaaaaaaaaaaaaaaaaaa"),
+            "the wrapped run survives the reflow: {:?}",
+            narrow.text
+        );
+        assert!(flat.contains("bolddone"), "{:?}", narrow.text);
     }
 
     /// A wide character occupies one cell and is extracted once, not as its

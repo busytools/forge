@@ -320,8 +320,9 @@ column's top-edge pill says it is loading. Nothing is made unreachable.
 ## The live row
 
 One row of segments at the top of the composer's card, in a fixed order: the
-browser, the agents, the processes, the connectors, the schedules, the MCP
-servers, the files, the tree, the review, the tasks, the monitors. Each segment
+browser, the terminal, the agents, the processes, the connectors, the
+schedules, the MCP servers, the files, the tree, the review, the tasks, the
+monitors. Each segment
 draws what it has and nothing else, and the row stands whenever anything has
 something to say - a running turn is one of the things it may say, not the
 condition for it, because these chips are the home of what the inspector
@@ -335,6 +336,11 @@ seat's project resolves to, show raises one of them as the full-window
 takeover, hide lowers it, and the sessions keep driving the same tabs
 underneath while it is closed. **It draws only while that profile has a
 tab**, so a page that has never used the browser carries no browser row.
+
+**The terminal segment raises the seat's terminal** (see
+[terminal.md](./terminal.md)): show opens the full-window surface, hide lowers
+it, and the row draws for every seat - on one no agent has opened, its button
+is **start**, which is the person's own door.
 
 **The files slip is the one mandatory segment** (Ved, 2026-10-17): every
 seat has a tree - a worker's own worktree, the lead's checkout - so it

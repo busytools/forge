@@ -538,7 +538,7 @@ enum Outbound {
     /// than leave it dark.
     TerminalView {
         seat: Value,
-        id: u16,
+        id: Option<u16>,
         reply: Option<u64>,
         answered: Option<oneshot::Sender<Result<Value, String>>>,
     },
@@ -594,19 +594,27 @@ impl Socket {
     /// Dial `url` and keep the connection up for as long as this handle
     /// lives. Events land on `events`; the task ends on [`Socket::close`].
     pub fn open(url: String, events: mpsc::UnboundedSender<SocketEvent>) -> Self {
-        Self::open_with_reply_bound(url, events, Arc::new(|_| {}), Arc::new(|_| {}), REPLY_BOUND)
+        Self::open_with_reply_bound(
+            url,
+            events,
+            Arc::new(|_| {}),
+            Arc::new(|_| {}),
+            Arc::new(|_| {}),
+            REPLY_BOUND,
+        )
     }
 
-    /// [`Socket::open`] with the browser-frame and audio sinks given: every
-    /// relayed frame and each packet of the page's sound lands there, drawn
-    /// or dropped by the viewer.
+    /// [`Socket::open`] with the browser-frame, audio and terminal sinks
+    /// given: every relayed frame, each packet of the page's sound and each
+    /// terminal chunk lands there, drawn or dropped by the viewer.
     pub fn open_with_frames(
         url: String,
         events: mpsc::UnboundedSender<SocketEvent>,
         frames: FrameSink,
         audio: AudioSink,
+        terminal: TerminalSink,
     ) -> Self {
-        Self::open_with_reply_bound(url, events, frames, audio, REPLY_BOUND)
+        Self::open_with_reply_bound(url, events, frames, audio, terminal, REPLY_BOUND)
     }
 
     /// The same, with the reply bound stated: tests inject a short one rather
@@ -616,12 +624,13 @@ impl Socket {
         events: mpsc::UnboundedSender<SocketEvent>,
         frames: FrameSink,
         audio: AudioSink,
+        terminal: TerminalSink,
         reply_bound: Duration,
     ) -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
         let next_reply = Arc::new(AtomicU64::new(1));
         let socket = Self { tx: tx.clone(), next_reply: Arc::clone(&next_reply), reply_bound };
-        tokio::spawn(run(url, events, rx, frames, audio));
+        tokio::spawn(run(url, events, rx, frames, audio, terminal));
         socket
     }
 
@@ -828,7 +837,7 @@ impl Socket {
     }
 
     /// Attach this connection to a seat's terminal, as a viewer.
-    pub async fn terminal_view(&self, seat: Value, id: u16) -> Result<Value, String> {
+    pub async fn terminal_view(&self, seat: Value, id: Option<u16>) -> Result<Value, String> {
         let reply = self.next_reply.fetch_add(1, Ordering::Relaxed);
         let (answered, answer) = oneshot::channel();
         self.tx
@@ -1039,6 +1048,11 @@ pub type FrameSink = Arc<dyn Fn(&[u8]) + Send + Sync>;
 /// to: the profile, sequence, rate and channels, then interleaved samples.
 pub type AudioSink = Arc<dyn Fn(&[u8]) + Send + Sync>;
 
+/// The terminal sink a connection hands every terminal output chunk to: the
+/// terminal id, its sequence and the shell's bytes, already stripped of the
+/// socket's kind tag.
+pub type TerminalSink = Arc<dyn Fn(&[u8]) + Send + Sync>;
+
 /// The owning task: connect, read, retry - for the life of the handle.
 async fn run(
     url: String,
@@ -1046,6 +1060,7 @@ async fn run(
     mut outbound: mpsc::UnboundedReceiver<Outbound>,
     frames: FrameSink,
     audio: AudioSink,
+    terminal: TerminalSink,
 ) {
     // Declared once, on the address: every dial and every retry after it
     // carries the capability this half can read back.
@@ -1257,6 +1272,12 @@ async fn run(
                             }
                             Some(&1) => frames(&bytes[1..]),
                             Some(&2) => audio(&bytes[1..]),
+                            // **The terminal's own kind has its own sink.**
+                            // Handing it to the browser sink made a terminal
+                            // chunk a malformed browser frame, and the
+                            // browser's header could adopt a bogus profile
+                            // and tab from its bytes.
+                            Some(&4) => terminal(&bytes[1..]),
                             // **A binary frame of another kind is said**, not
                             // dropped in silence: a short one has no kind at
                             // all, and both leave a reader guessing what went
@@ -2370,6 +2391,60 @@ pub(crate) mod tests {
         let _ = socket;
     }
 
+    /// **A kind-4 frame is the terminal's, and only its outer tag decides.**
+    /// The shell hands the tag-stripped header to the terminal sink; a
+    /// browser frame whose own payload begins with 4 stays the browser's.
+    #[tokio::test]
+    async fn a_terminal_frame_reaches_the_terminal_sink() {
+        let stub = stub().await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let terminal_bytes = std::sync::Arc::new(std::sync::Mutex::new(Vec::<Vec<u8>>::new()));
+        let browser_bytes = std::sync::Arc::new(std::sync::Mutex::new(Vec::<Vec<u8>>::new()));
+        let terminal_into = std::sync::Arc::clone(&terminal_bytes);
+        let browser_into = std::sync::Arc::clone(&browser_bytes);
+        let _socket = Socket::open_with_frames(
+            stub.url.clone(),
+            tx,
+            std::sync::Arc::new(move |bytes: &[u8]| {
+                browser_into.lock().expect("the browser sink").push(bytes.to_vec());
+            }),
+            std::sync::Arc::new(|_: &[u8]| {}),
+            std::sync::Arc::new(move |bytes: &[u8]| {
+                terminal_into.lock().expect("the terminal sink").push(bytes.to_vec());
+            }),
+        );
+        loop {
+            if let SocketEvent::Status(Status::Open) = next_event(&mut rx).await {
+                break;
+            }
+        }
+        // Kind 4: id 7, seq 3, then the shell's bytes.
+        let mut frame = vec![4u8];
+        frame.extend_from_slice(&7u16.to_le_bytes());
+        frame.extend_from_slice(&3u32.to_le_bytes());
+        frame.extend_from_slice(b"hi");
+        stub.say.send(json!({ "__binary": frame })).expect("the stub broadcasts");
+        // Kind 1 whose payload's first byte is 4: the browser's own tab id.
+        stub.say.send(json!({ "__binary": [1u8, 4, 0, 0, 0, 0] })).expect("the stub broadcasts");
+        let deadline = std::time::Instant::now() + PAUSED_WAIT;
+        while std::time::Instant::now() < deadline
+            && (terminal_bytes.lock().expect("the terminal sink").is_empty()
+                || browser_bytes.lock().expect("the browser sink").is_empty())
+        {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(
+            terminal_bytes.lock().expect("the terminal sink").as_slice(),
+            [vec![7, 0, 3, 0, 0, 0, b'h', b'i']],
+            "the terminal sink got the header with its kind stripped",
+        );
+        assert_eq!(
+            browser_bytes.lock().expect("the browser sink").as_slice(),
+            [vec![4, 0, 0, 0, 0]],
+            "the browser sink got its own frame, untouched by the terminal's kind",
+        );
+    }
+
     /// The pessimistic rate a debug build's frame crosses at on a loaded
     /// machine: a 70 MiB frame measured ~19 s at load 41-64, which is about
     /// 3.7 MiB/s, so 3 MiB/s is the floor a bound is derived from (#2273).
@@ -3112,6 +3187,7 @@ pub(crate) mod tests {
             tx,
             Arc::new(|_| {}),
             Arc::new(|_| {}),
+            Arc::new(|_| {}),
             Duration::from_millis(50),
         );
         loop {
@@ -3162,6 +3238,7 @@ pub(crate) mod tests {
         let socket = Socket::open_with_reply_bound(
             stub.url.clone(),
             tx,
+            Arc::new(|_| {}),
             Arc::new(|_| {}),
             Arc::new(|_| {}),
             Duration::from_millis(50),

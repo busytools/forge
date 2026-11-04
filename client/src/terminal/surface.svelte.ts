@@ -92,6 +92,8 @@ export const handOff = $state<{
   current: {
     id: string;
     reason: string;
+    /** The PTY has ECHO off: what the person types is hidden. */
+    secret: boolean;
     respond: (ending: 'done' | 'not_now') => void;
   } | null;
 }>({ current: null });
@@ -128,11 +130,40 @@ export function installTerminalSurface(connection: Connection): () => void {
       }
     }
   });
+  // **A reconnect is a new connection, and the attach died with the old one.**
+  // A live surface re-attaches and is repainted rather than left drawing a
+  // frozen screen under a bar that still says live.
+  const stopStatus = connection.onStatus((status) => {
+    if (status !== 'open') return;
+    if (surface.phase !== 'live' || surface.seat === null || surface.id === null) return;
+    void reattach();
+  });
   return () => {
     stopView();
     stopFrame();
+    stopStatus();
     clearTerminalLink();
   };
+}
+
+/** Attach the live surface again after a reconnect, keeping its screen until
+ * the repaint lands. */
+async function reattach(): Promise<void> {
+  const seat = surface.seat;
+  const id = surface.id;
+  if (seat === null || id === null) return;
+  const mine = ++generation;
+  try {
+    const attached = await terminalLink().show(seat, id);
+    if (mine !== generation) return;
+    surface.id = attached;
+    surface.phase = 'live';
+    surface.reason = null;
+  } catch (why) {
+    if (mine !== generation) return;
+    surface.phase = 'failed';
+    surface.reason = why instanceof Error ? why.message : String(why);
+  }
 }
 
 /** The request that is current; a result from an older one is dropped. */
@@ -141,10 +172,11 @@ let generation = 0;
 /**
  * Raise a seat's terminal.
  *
- * `id` is the terminal the seat's record named. Answers why it could not
- * open, or `null` when it did.
+ * `id` is the terminal the seat's record named, or `null` for a seat that has
+ * none: the server opens one, so the person has a door on a seat no agent has
+ * touched. Answers why it could not open, or `null` when it did.
  */
-export async function openTerminal(seat: SessionSlot, id: number): Promise<string | null> {
+export async function openTerminal(seat: SessionSlot, id: number | null): Promise<string | null> {
   const link = terminalLink();
   if (!link.attachable) return 'this page is not connected to a forge';
   const mine = ++generation;

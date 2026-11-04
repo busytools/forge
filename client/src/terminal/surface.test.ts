@@ -75,13 +75,18 @@ import type { Connection } from '../socket';
 
 const seat = { org: 'TestOrg', project: 'proj', label: 'lead' };
 
+/** A connection whose status never moves: the store only listens for one. */
+function stillConnection(): Connection {
+  return { onStatus: () => () => {} } as unknown as Connection;
+}
+
 describe('the terminal surface store', () => {
   afterEach(async () => {
     await closeTerminal();
   });
 
   it('opens, answers a repaint, and writes only the frames after it', async () => {
-    const stop = installTerminalSurface({} as Connection);
+    const stop = installTerminalSurface(stillConnection());
     const written: number[] = [];
     const off = onOutput((frame) => written.push(frame.seq));
 
@@ -104,7 +109,7 @@ describe('the terminal surface store', () => {
   });
 
   it('lowers the surface without closing the terminal', async () => {
-    const stop = installTerminalSurface({} as Connection);
+    const stop = installTerminalSurface(stillConnection());
     await openTerminal(seat, 4);
     expect(await closeTerminal()).toBeNull();
     expect(surface.phase).toBe('closed');
@@ -114,10 +119,38 @@ describe('the terminal surface store', () => {
   });
 
   it('fails the surface with the server sentence when the attach refuses', async () => {
-    const stop = installTerminalSurface({} as Connection);
+    const stop = installTerminalSurface(stillConnection());
     link.show.mockRejectedValueOnce(new Error('this seat has no terminal open'));
     expect(await openTerminal(seat, 4)).toBe('this seat has no terminal open');
     expect(surface.phase).toBe('failed');
+    stop();
+  });
+
+  it('starts the seat a terminal when the attach names none', async () => {
+    const stop = installTerminalSurface(stillConnection());
+    link.show.mockResolvedValueOnce(7);
+    expect(await openTerminal(seat, null)).toBeNull();
+    expect(link.show).toHaveBeenCalledWith(seat, null);
+    expect(surface.id).toBe(7);
+    stop();
+  });
+
+  it('re-attaches a live surface when the connection comes back', async () => {
+    const statuses: ((status: 'connecting' | 'open' | 'closed') => void)[] = [];
+    const connection = {
+      onStatus: (fn: (status: 'connecting' | 'open' | 'closed') => void) => {
+        statuses.push(fn);
+        return () => {};
+      },
+    } as unknown as Connection;
+    const stop = installTerminalSurface(connection);
+    await openTerminal(seat, 4);
+    link.show.mockClear();
+    statuses[0]?.('open');
+    await vi.waitFor(() => {
+      expect(link.show).toHaveBeenCalledWith(seat, 4);
+    });
+    expect(surface.phase).toBe('live');
     stop();
   });
 });

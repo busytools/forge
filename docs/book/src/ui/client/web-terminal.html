@@ -51,6 +51,11 @@
   .bar .title { color: var(--text); }
   .bar .state { color: var(--muted); }
   .bar .state.held { color: var(--warn); }
+  /* The parked ask's reason rides the raised bar too: the dock is behind it. */
+  .bar.ask { padding: 6px 12px; border-bottom: 1px solid var(--line); flex-wrap: wrap;
+    gap: 6px 12px; }
+  .bar.ask .why { color: var(--warn); overflow-wrap: anywhere; }
+  .bar.ask .fo { color: var(--muted); }
   .screen { padding: 10px 12px 14px; font-family: var(--mono); font-size: 13px; line-height: 1.45;
     min-height: 260px; white-space: pre-wrap; }
   .p { color: var(--ansi-green); } .c { color: var(--text); }
@@ -70,6 +75,7 @@
     font-family: var(--mono); font-size: var(--fs-label); }
   .dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
   .dot.ok { background: var(--ok); } .dot.warn { background: var(--warn); }
+  .dot.off { border: 1.4px solid var(--dim); background: none; }
   .ring { width: 8px; height: 8px; border: 2px solid var(--accent); border-radius: 50%; display: inline-block; }
   .btn { min-height: 28px; padding: 2px 10px; border: 1px solid var(--line); border-radius: 6px;
     background: var(--s2); color: var(--text); font: inherit; }
@@ -100,6 +106,8 @@
         <span class="act">read the screen</span>
         <span class="act">close</span>
       </div>
+      <div class="bar ask"><span class="why">sudo needs the account password before the
+        reinstall can run</span><span class="fo">typing is hidden</span></div>
       <div class="screen"><span class="p">vedhavyas@mac-studio:~/Projects/forge $</span> <span class="c">cargo nextest run -p forge-terminal</span>
 <span class="g">   Compiling forge-terminal v1.2.0</span>
 <span class="g">    Finished `test` profile [unoptimized + debuginfo] target(s)</span>
@@ -108,22 +116,29 @@
 <span class="p">vedhavyas@mac-studio:~/Projects/forge $</span> <span class="c">sudo -v</span>
 <span class="y">Password:</span> <span class="cur"> </span></div>
       <div class="keys">
-        <span>Esc</span><span>Tab</span><span>^C</span><span>↑</span><span>↓</span>
-        <span>←</span><span>→</span><span>Enter</span><span>/</span><span>-</span>
-        <span>|</span><span>~</span>
+        <span>Ctrl</span><span>Alt</span><span>Esc</span><span>Tab</span><span>^C</span>
+        <span>↑</span><span>↓</span><span>←</span><span>→</span><span>Enter</span>
+        <span>/</span><span>-</span><span>|</span><span>~</span>
       </div>
     </div>
-    <div class="tnote">the touch key bar is drawn under <span class="mono">pointer: coarse</span>: a finger cannot produce Escape, Tab or an arrow, and every key is a 44px target.</div>
+    <div class="tnote">the touch key bar is drawn under <span class="mono">pointer: coarse</span>: a
+      finger cannot produce Escape, Tab or an arrow, and every key is a 44px target. Ctrl and Alt
+      are sticky for the next character the soft keyboard types, and the whole bar is inert
+      outside a hand-off - the surface is a viewer then, and the server refuses a keystroke that
+      arrives anyway.</div>
   </div>
 
   <div class="tile">
-    <div class="tcap"><b>the strip's row</b> · drawn only while the seat has a terminal</div>
+    <div class="tcap"><b>the strip's row</b> · drawn for every seat</div>
     <div class="strip">
       <span class="seg"><span class="ring"></span>terminal <span class="dim">a command is running</span> <span class="btn">show</span></span>
       <span class="seg"><span class="dot warn"></span>terminal <span class="dim">waiting for you</span> <span class="btn">hide</span></span>
-      <span class="seg"><span class="dot ok"></span>terminal <span class="dim">idle</span> <span class="btn">show</span></span>
+      <span class="seg"><span class="dot ok"></span>terminal <span class="dim">view only</span> <span class="btn">show</span></span>
+      <span class="seg"><span class="dot off"></span>terminal <span class="dim">off</span> <span class="btn">start</span></span>
     </div>
-    <div class="tnote">the states are words as well as colour: a running command, a person's input wanted, or idle.</div>
+    <div class="tnote">the states are words as well as colour: a running command, a person's input
+      wanted, idle-but-the-agent's, or no terminal yet. <b>Start</b> is the person's own door on a
+      seat no agent has opened.</div>
   </div>
 
   <div class="tile">

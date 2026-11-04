@@ -20,16 +20,17 @@ card shows is a bundled default; every list it opens is a live read.
 | Dialog | the dictation panel: the axes, the models each role runs, the input device | the greeting's dictate axes; `dictate` subject |
 
 **The live row is the strip, moved onto the card.** It mounts the same segment components the
-strip drew - browser, subagents, processes, connectors, schedules, MCPs, files, git, review,
-tasks, monitors - in that fixed order, so a segment gaining a state gains it here for free. A
+strip drew - browser, terminal, subagents, processes, connectors, schedules, MCPs, files, git,
+review, tasks, monitors - in that fixed order, so a segment gaining a state gains it here for
+free. A
 turn's figure the record does not carry is dropped, never drawn as a zero or a dash. Chips that
 do not fit collapse behind `+N`, which lists them in a panel; the row clips rather than wrapping
 or scrolling sideways. A segment with something waiting - the review answer, a failed process -
 takes its tone: the accent for attention, red for a failure.
 
 **The row carries the ask too.** While an ask holds the body, a chip at the row's front names it
-(the question's position, an approval, a held post, a document, a browser hand-off or a held
-configuration write) in the
+(the question's position, an approval, a held post, a document, a browser hand-off, a terminal
+hand-off or a held configuration write) in the
 attention tone. When the reader has words in their draft, a `draft N lines · show` chip sits on
 the row: one click swaps the field into the body, the ask stays mounted and hidden behind it, and
 the ask's chip brings it back. Nothing the reader had chosen in the ask - a toggled set, the

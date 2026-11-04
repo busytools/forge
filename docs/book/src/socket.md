@@ -534,12 +534,13 @@ list from then on, and every change is pushed as a `browser_tabs` frame. A
 refusal answers `{"ok": false, "why": ...}`; with no `reply_to`, a refusal is
 an `error` frame and a success is silent.
 
-**`terminal_view {seat, id, reply_to}`** - attach this connection to a
+**`terminal_view {seat, id?, reply_to}`** - attach this connection to a
 seat's terminal as a viewer. The answer is a `terminal_view` frame carrying
 the screen as a VT stream and the sequence the byte stream continues from,
-then output frames as the shell writes them. A terminal that is not open is
-refused with `{"ok": false, "why": ...}` rather than spawned: the strip's row
-exists only while a terminal does.
+then output frames as the shell writes them. **`id` omitted opens the seat's
+terminal**, creating it on first use - the person's door on a seat no agent
+has touched; a named id that is not the seat's is refused with
+`{"ok": false, "why": ...}`.
 
 **`terminal_detach`** - stop viewing the attached terminal. Lowering the
 surface sends this, so the idle clock and the viewer count see the truth.
@@ -1002,11 +1003,13 @@ content_hash, threads, reviews}`** - in answer to `document_read`: the
   a chunk at or below it is one the screen already carries. Sent on attach
   and on a resume, never as a reply: the attach's `reply` is its own
   `{"ok": true, "id": ...}`.
-- **`terminal_state {seat, terminal}`** - a seat's terminal opened, changed
-  or closed, as the strip draws it: the summary carries the id, the shell,
-  the cwd, the size, whether the shell is alive, the state (with its
-  `source`), the title and whether a hand-off holds it. `terminal` is `null`
-  when the terminal is gone.
+- **`terminal_changed {key, terminal}`** - a seat's terminal opened, changed
+  or closed, as an `update` frame and not a message of its own: the summary
+  carries the id, the shell, the cwd, the size, whether the shell is alive,
+  the state (with its `source`), the title and whether a hand-off holds it.
+  `terminal` is `null` when the terminal is gone. **It is pushed on every
+  real state change** - a command starts, a password is wanted, the shell
+  exits - so the strip's words never wait for a record re-read.
 - **`browser_file_dialog {id, tab, multiple}`** - a page asked for a file.
   The shell opens this machine's picker and answers `browser_file_answer`
   under the same id; `multiple` is whether the page accepts more than one

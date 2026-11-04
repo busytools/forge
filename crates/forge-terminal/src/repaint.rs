@@ -12,18 +12,36 @@
 use alacritty_terminal::event::EventListener;
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::index::{Column, Line};
-use alacritty_terminal::term::Term;
 use alacritty_terminal::term::cell::Flags;
+use alacritty_terminal::term::{Term, TermMode};
 use alacritty_terminal::vte::ansi::{Color, NamedColor};
 
 /// The visible screen as a VT stream, ending with the cursor where the
 /// program left it.
+///
+/// **The modes go with the cells.** A client attaching while vim holds the
+/// alternate screen must be told that before the cells land, or it draws them
+/// onto its normal buffer and the program's next frame corrupts both.
 pub fn repaint<T: EventListener>(term: &Term<T>) -> Vec<u8> {
     let grid = term.grid();
     let rows = grid.screen_lines();
     let cols = grid.columns();
     let mut out = Vec::with_capacity(rows * cols * 2);
-    out.extend_from_slice(b"\x1b[0m\x1b[H\x1b[2J");
+    let mode = term.mode();
+    out.extend_from_slice(b"\x1b[0m");
+    // The buffer is first: it decides where every cell lands.
+    toggle(&mut out, mode.contains(TermMode::ALT_SCREEN), "?1049");
+    toggle(&mut out, mode.contains(TermMode::BRACKETED_PASTE), "?2004");
+    toggle(&mut out, mode.contains(TermMode::APP_CURSOR), "?1");
+    toggle(&mut out, mode.contains(TermMode::MOUSE_REPORT_CLICK), "?1000");
+    toggle(&mut out, mode.contains(TermMode::MOUSE_MOTION), "?1002");
+    toggle(&mut out, mode.contains(TermMode::SGR_MOUSE), "?1006");
+    toggle(&mut out, mode.contains(TermMode::ALTERNATE_SCROLL), "?1007");
+    toggle(&mut out, mode.contains(TermMode::INSERT), "4");
+    toggle(&mut out, mode.contains(TermMode::LINE_FEED_NEW_LINE), "20");
+    // App keypad is its own pair, not a private mode.
+    out.extend_from_slice(if mode.contains(TermMode::APP_KEYPAD) { b"\x1b=" } else { b"\x1b>" });
+    out.extend_from_slice(b"\x1b[H\x1b[2J");
     let mut current: Option<Style> = None;
     for row in 0..rows {
         // Position each row explicitly: a full-width row would otherwise
@@ -51,7 +69,16 @@ pub fn repaint<T: EventListener>(term: &Term<T>) -> Vec<u8> {
     let row = point.line.0.clamp(0, last_row) + 1;
     let col = point.column.0 + 1;
     out.extend_from_slice(format!("\x1b[{row};{col}H").as_bytes());
+    // Origin mode makes every later position relative to the scroll region,
+    // so it is set only once the screen is drawn and the cursor is placed.
+    toggle(&mut out, mode.contains(TermMode::ORIGIN), "?6");
+    toggle(&mut out, mode.contains(TermMode::SHOW_CURSOR), "?25");
     out
+}
+
+/// One DEC private mode, set or reset.
+fn toggle(out: &mut Vec<u8>, on: bool, mode: &str) {
+    out.extend_from_slice(format!("\x1b[{mode}{}", if on { 'h' } else { 'l' }).as_bytes());
 }
 
 /// One cell's drawing attributes, compared to decide when to emit an SGR.
@@ -226,6 +253,23 @@ mod tests {
         assert!(text.contains("38;2;1;2;3"), "{text:?}");
     }
 
+    /// **The modes ride the repaint.** A client attaching into a full-screen
+    /// program is put on the alternate screen, with its cursor hidden and its
+    /// mouse and paste modes as the program set them.
+    #[test]
+    fn the_repaint_carries_the_terminal_modes() {
+        let source =
+            term_with(b"\x1b[?1049h\x1b[?25l\x1b[?2004h\x1b[?1000h\x1b[?1h\x1b[4hX", 20, 5);
+        let repainted = term_with(&repaint(&source), 20, 5);
+        let mode = *repainted.mode();
+        assert!(mode.contains(TermMode::ALT_SCREEN), "alternate screen: {mode:?}");
+        assert!(!mode.contains(TermMode::SHOW_CURSOR), "hidden cursor: {mode:?}");
+        assert!(mode.contains(TermMode::BRACKETED_PASTE), "bracketed paste: {mode:?}");
+        assert!(mode.contains(TermMode::MOUSE_REPORT_CLICK), "mouse clicks: {mode:?}");
+        assert!(mode.contains(TermMode::APP_CURSOR), "application cursor: {mode:?}");
+        assert!(mode.contains(TermMode::INSERT), "insert mode: {mode:?}");
+    }
+
     /// The repaint ends with the cursor where the program left it, so a
     /// client that attaches mid-line types in the right place.
     #[test]
@@ -233,6 +277,10 @@ mod tests {
         let term = term_with(b"abc", 20, 5);
         let bytes = repaint(&term);
         let text = String::from_utf8_lossy(&bytes);
-        assert!(text.ends_with("\x1b[1;4H"), "the cursor is after 'abc': {text:?}");
+        let at = text.find("\x1b[1;4H");
+        assert!(
+            at.is_some_and(|at| text[..at].contains("abc")),
+            "the cursor is placed after 'abc': {text:?}",
+        );
     }
 }

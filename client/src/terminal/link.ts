@@ -25,8 +25,11 @@ export interface TerminalOutput {
 
 /** What the surface store and the dock call. */
 export interface TerminalLink {
-  /** Attach this connection to a seat's terminal; answers the id it attached. */
-  show(seat: SessionSlot, id: number): Promise<number>;
+  /**
+   * Attach this connection to a seat's terminal; answers the id it attached.
+   * `id` is null when the seat has no terminal yet: the server opens one.
+   */
+  show(seat: SessionSlot, id: number | null): Promise<number>;
   /** Give the surface up; the terminal keeps running. */
   hide(): Promise<void>;
   /** One client input frame: the keystrokes, as bytes. */
@@ -98,7 +101,8 @@ function shellLink(): TerminalLink {
             : 'the terminal could not be opened',
         );
       }
-      return typeof held['id'] === 'number' ? held['id'] : id;
+      if (typeof held['id'] !== 'number') throw new Error('the attach named no terminal');
+      return held['id'];
     },
     async hide() {
       await invokeShell('client_terminal_detach');
@@ -187,13 +191,19 @@ function wireLink(connection: Connection & TerminalWire): TerminalLink {
       connection.terminalInput(id, bytes);
     },
     resize: (seat, id, cols, rows) => {
-      connection.terminalResize(seat, id, cols, rows);
+      if (!connection.terminalResize(seat, id, cols, rows)) {
+        console.warn('the terminal was not resized: the socket is not open');
+      }
     },
     pause: (paused) => {
-      connection.terminalPause(paused);
+      if (!connection.terminalPause(paused)) {
+        console.warn('the terminal stream was not paused: the socket is not open');
+      }
     },
     close: (seat, id) => {
-      connection.terminalClose(seat, id);
+      if (!connection.terminalClose(seat, id)) {
+        console.warn('the terminal was not closed: the socket is not open');
+      }
     },
     onFrame: (listener) => connection.onTerminalFrame(listener),
     onView: (listener) =>

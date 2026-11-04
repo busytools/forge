@@ -273,6 +273,48 @@ async fn send(socket: &mut Client, message: ClientMessage) {
     socket.send(Message::Text(text.into())).await.expect("send");
 }
 
+/// The server's next binary frame inside `ms` - how a terminal's bytes cross.
+async fn next_binary_within(socket: &mut Client, ms: u64) -> Option<Vec<u8>> {
+    let deadline = Instant::now() + Duration::from_millis(ms);
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return None;
+        }
+        let msg = tokio::time::timeout(left, socket.next()).await.ok()?.expect("a message");
+        if let Message::Binary(bytes) = msg.expect("no error") {
+            return Some(bytes.to_vec());
+        }
+    }
+}
+
+/// Whether a binary frame carrying `needle` arrives inside `ms`.
+async fn binary_containing(socket: &mut Client, needle: &[u8], ms: u64) -> bool {
+    let deadline = Instant::now() + Duration::from_millis(ms);
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return false;
+        }
+        let Some(frame) =
+            next_binary_within(socket, u64::try_from(left.as_millis()).unwrap_or(u64::MAX)).await
+        else {
+            return false;
+        };
+        if frame.windows(needle.len()).any(|window| window == needle) {
+            return true;
+        }
+    }
+}
+
+/// One client terminal-input frame: the tag, the terminal id, then the bytes.
+async fn send_terminal_input(socket: &mut Client, id: u16, bytes: &[u8]) {
+    let mut frame = vec![forge_primitives::terminal::TERMINAL_INPUT_TAG];
+    frame.extend_from_slice(&id.to_le_bytes());
+    frame.extend_from_slice(bytes);
+    socket.send(Message::Binary(frame.into())).await.expect("send");
+}
+
 /// The server's next message, or `None` if it said nothing inside `ms`.
 ///
 /// **Control frames are the socket's, not the protocol's**: the server's
@@ -12151,5 +12193,98 @@ async fn an_incoming_ping_clears_the_servers_outstanding_keepalive() {
     assert!(
         matches!(answered, Some(ServerMessage::Pong)),
         "the peer that answered was reaped, so its frame did not clear the keepalive: {answered:?}",
+    );
+}
+
+/// **The terminal over the socket.** An attach that names no terminal opens
+/// the seat's - the person's door on a seat no agent has touched - and its
+/// bytes cross as binary frames. The person's keys are refused outside a
+/// hand-off and land inside one; pause stops the stream, resume repaints, and
+/// close removes the terminal.
+#[tokio::test]
+async fn a_terminal_opens_types_and_closes_over_the_socket() {
+    // A fleet whose project directory exists, because the terminal spawns in
+    // that cwd and refuses one a PTY cannot enter.
+    let dir = tempfile::tempdir().expect("a config dir");
+    std::fs::create_dir_all(dir.path().join("proj")).expect("the project's directory");
+    let fleet = Fleet::in_dir(dir.path(), &[("TestOrg", &["proj"])]).expect("the fleet builds");
+    let (url, _state) = serve_fleet(&fleet, Heartbeat::default()).await;
+    let seat = lead_seat();
+    let mut socket = connect(&url).await;
+    // An answering subscription, so a hand-off has a door to park behind.
+    send(
+        &mut socket,
+        ClientMessage::Subscribe {
+            what: Subject::Session(seat.clone()),
+            answering: true,
+            review: false,
+        },
+    )
+    .await;
+    send(
+        &mut socket,
+        ClientMessage::TerminalView { seat: seat.clone(), id: None, reply_to: Some(41) },
+    )
+    .await;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut attached = None;
+    let mut replied = false;
+    while Instant::now() < deadline && (attached.is_none() || !replied) {
+        let Some(message) = next_server_within(&mut socket, 500).await else { continue };
+        match message {
+            ServerMessage::TerminalView { id, .. } => attached = Some(id),
+            ServerMessage::Reply { reply_to: 41, body } => {
+                assert!(body["ok"] == serde_json::Value::Bool(true), "{body}");
+                replied = true;
+            }
+            _ => {}
+        }
+    }
+    let id = attached.expect("the attach answered with a repaint");
+    assert!(replied, "the attach answered its reply_to");
+
+    // Nothing the person types reaches the shell until the terminal is
+    // handed over.
+    let outside = b"NO_HANDOFF_KEY";
+    send_terminal_input(&mut socket, id, outside).await;
+    assert!(
+        !binary_containing(&mut socket, outside, 700).await,
+        "input outside a hand-off reached the shell",
+    );
+
+    // Through the hand-off's door the keystrokes are the person's.
+    let parked = fleet.park_terminal_hand_off(&seat, id).expect("a hand-off parks");
+    send_terminal_input(&mut socket, id, b"echo THROUGH_THE_DOOR\r").await;
+    assert!(
+        binary_containing(&mut socket, b"THROUGH_THE_DOOR", 10_000).await,
+        "the person's keystrokes reached the shell",
+    );
+    fleet.answer_terminal_hand_off(&parked, &seat);
+    send_terminal_input(&mut socket, id, b"echo AFTER_THE_DOOR\r").await;
+    assert!(
+        !binary_containing(&mut socket, b"AFTER_THE_DOOR", 700).await,
+        "input after the hand-off was answered is refused again",
+    );
+
+    // Pause stops the stream; resume answers with a fresh repaint.
+    send(&mut socket, ClientMessage::TerminalPause { paused: true }).await;
+    send(&mut socket, ClientMessage::TerminalPause { paused: false }).await;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut repainted = false;
+    while Instant::now() < deadline && !repainted {
+        let Some(message) = next_server_within(&mut socket, 500).await else { continue };
+        repainted = matches!(message, ServerMessage::TerminalView { .. });
+    }
+    assert!(repainted, "a resume answers with a fresh repaint");
+
+    // The person's close door ends the terminal.
+    send(&mut socket, ClientMessage::TerminalClose { seat: seat.clone(), id }).await;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline && fleet.workspace().terminal_if_any(&seat).is_some() {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(
+        fleet.workspace().terminal_if_any(&seat).is_none(),
+        "close removed the seat's terminal",
     );
 }

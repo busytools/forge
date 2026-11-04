@@ -117,9 +117,10 @@ impl TerminalTool {
                 "Read this seat's terminal as plain text, never raw escapes. The text is the \
                  scrollback and the visible screen, bounded by `max_lines` (default 200) and \
                  `max_bytes` (default 32 KiB); `truncated` says the bound cut it. `cursor` is \
-                 the position to pass as `since` on the next read to get only what is new. \
-                 Output is never pushed to you: reading is how you see it. Refused while a \
-                 hand-off is parked."
+                 the position to pass as `since` on the next read: it answers what appeared \
+                 after it, and repeats the last line it gave you, because that line can still \
+                 change while a program writes. Output is never pushed to you: reading is how \
+                 you see it. Refused while a hand-off is parked."
             }
             Self::Wait => {
                 "Wait on this seat's terminal. `until` is \"exit\" (the running command \

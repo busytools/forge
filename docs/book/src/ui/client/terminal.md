@@ -29,9 +29,9 @@ tool gets the ending rather than the screen.
 | Region | Shows | Read from |
 |---|---|---|
 | The hand-off's card | `terminal hand-off · terminal N`, the agent's reason, **Open terminal**, **Done** and **Not now** before the surface is up, and `typing is hidden: the program is reading a secret` when the PTY has ECHO off. While the surface is up the card leaves the actions to its bar | the `terminal_hand_off` ask, and the page's own surface state |
-| The surface's bar | **back to chat**, `terminal N · <shell> · <cwd>`, the state line - `the agent is running a command`, `waiting for you`, `the shell exited`, `opening the terminal…`, or the server's sentence when it failed - **read the screen**, and **close** | the terminals state push, the record's `terminal`, and the page's own surface state |
+| The surface's bar | **back to chat**, `terminal N · <shell> · <cwd>`, the state line - `the agent is running a command`, `waiting for you`, `the agent is waiting for input`, `the shell exited`, `view only`, `opening the terminal…`, or the server's sentence when it failed - and, while a hand-off is parked, its reason and `typing is hidden`; then **read the screen** and **close** | the terminals state push, the record's `terminal`, the page's own surface state and the parked ask |
 | The surface | the terminal under the bar, filling the rest: the shell's screen, its colours and its cursor | the attach's `terminal_view` repaint, then the kind-4 output frames |
-| The strip's row | `terminal` with the state in words - `a command is running`, `waiting for you`, `a password is wanted`, `exited`, `idle` - and **show** / **hide**. **The row is drawn only while the seat has a terminal** | the session record's `terminal`, and the pushed `terminal_state` |
+| The strip's row | `terminal` with the state in words - `a command is running`, `waiting for you`, `a password is wanted`, `exited`, `idle`, `off` - and **show** / **hide**, or **start** on a seat with no terminal. **The row is the person's door even before an agent opens one** | the session record's `terminal`, and the pushed `terminal_changed` update |
 | The touch key bar | under `pointer: coarse`: Esc, Tab, Ctrl-C, the four arrows, Enter, `/`, `-`, `\|` and `~`, each at a 44px target | the page's pointer capability |
 | The states | `opening the terminal…`, the server's own sentence when the attach failed, and the terminal when it is live. Every state is words as well as colour | the page's surface state |
 
@@ -47,12 +47,16 @@ clipboard (OSC 52) and image (Sixel and iTerm2 IIP) are loaded beside it.
 **Kitty graphics is not drawn**; that gap is named rather than hidden, and
 Sixel and iTerm2 IIP cover the larger share of CLI image use.
 
-**The keyboard is the terminal's while it is focused.** Ctrl-C, Ctrl-D,
-Ctrl-Z and Ctrl-L reach the PTY untouched; Cmd+W lowers the surface rather
-than the window; a browser tab's Back lowers it, because the surface pushes
-one history entry. **A finger cannot produce Escape, Tab or an arrow**, so
-the touch key bar is required rather than a fallback, and every control it
-offers is 44px.
+**The keyboard is the terminal's only while the agent has handed it over.**
+Outside a parked hand-off the raised surface is a viewer: the key bar and the
+terminal's own input are inert, and the server refuses a keystroke that
+arrives anyway. Inside one, Ctrl-C, Ctrl-D, Ctrl-Z and Ctrl-L reach the PTY
+untouched; Cmd+J raises and lowers the surface, Cmd+W lowers it rather than the
+window, and a browser tab's Back lowers it, because the surface pushes one
+history entry. **A finger cannot produce Escape, Tab or an arrow**, so the
+touch key bar is required rather than a fallback, every control it offers is
+44px, and Ctrl and Alt are sticky keys for the next character the soft
+keyboard types.
 
 **Accessibility is honest about its limit.** xterm.js's `screenReaderMode`
 exposes the buffer, and **read the screen** puts the same text into a
@@ -66,11 +70,15 @@ set is, for the terminal's own chrome; a program chooses its own colours, so
 
 **The theme is the client's token set.** The 16 ANSI colours, the cursor and
 the selection are tokens in `client/src/theme.ts` beside the rest, so a
-second `[client] theme` palette themes the terminal for free. No palette
-lives inside the component.
+second `[client] theme` palette themes the terminal for free. The component
+maps those tokens onto xterm's theme and holds no colours of its own.
 
 **The desktop shell forwards the bytes itself.** On the desktop the page does
 not hold the socket, so kind-4 frames reach it as a `client://terminal-frame`
 event carrying the id, the sequence and the bytes base64, and the page
-decodes them into xterm. The batching that keeps a 60 fps stream of small
-writes from becoming 60 IPC calls is the page's, where the animation frame is.
+writes each frame to xterm as it lands - the frames are the shell's own
+bytes, so a frame is a write, not a repaint.
+
+**xterm.js is its own chunk.** The surface is imported when a terminal is
+first raised, so a session that never opens one never downloads the
+renderer.

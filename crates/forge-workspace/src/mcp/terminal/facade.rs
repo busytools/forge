@@ -153,6 +153,10 @@ impl ProdTerminalFacade {
 impl TerminalFacade for ProdTerminalFacade {
     async fn open(&self, seat: &SessionSlot, request: OpenRequest) -> Result<OpenAnswer, String> {
         let workspace = self.workspace()?;
+        // **The screen and the PTY are the person's while a hand-off is
+        // parked.** A parallel call or a subagent must not read their typing
+        // or type into their prompt.
+        refuse_when_held(&workspace, seat)?;
         let entry = match request.cwd.as_deref() {
             Some(cwd) if !cwd.trim().is_empty() => {
                 // A cwd names where the terminal is spawned, and a terminal is
@@ -193,13 +197,7 @@ impl TerminalFacade for ProdTerminalFacade {
         keys: Vec<Key>,
     ) -> Result<TerminalState, String> {
         let workspace = self.workspace()?;
-        if workspace.terminal_held(seat) {
-            return Err(
-                "a hand-off is parked on this terminal: the person owns its input until they \
-                 answer"
-                    .to_owned(),
-            );
-        }
+        refuse_when_held(&workspace, seat)?;
         let entry = workspace.terminal_by_id(seat, id)?;
         if let Some(text) = text.filter(|text| !text.is_empty()) {
             entry.terminal.write_text(&text).map_err(|error| error.to_string())?;
@@ -219,13 +217,7 @@ impl TerminalFacade for ProdTerminalFacade {
         max_bytes: usize,
     ) -> Result<ReadAnswer, String> {
         let workspace = self.workspace()?;
-        if workspace.terminal_held(seat) {
-            return Err(
-                "a hand-off is parked on this terminal: the screen is the person's until they \
-                 answer"
-                    .to_owned(),
-            );
-        }
+        refuse_when_held(&workspace, seat)?;
         let entry = workspace.terminal_by_id(seat, id)?;
         let read = entry.terminal.read(since, max_lines, max_bytes);
         Ok(ReadAnswer {
@@ -246,6 +238,7 @@ impl TerminalFacade for ProdTerminalFacade {
         timeout_ms: u64,
     ) -> Result<WaitAnswer, String> {
         let workspace = self.workspace()?;
+        refuse_when_held(&workspace, seat)?;
         let entry = workspace.terminal_by_id(seat, id)?;
         let deadline = Instant::now() + Duration::from_millis(timeout_ms);
         let matched = match until {
@@ -270,17 +263,24 @@ impl TerminalFacade for ProdTerminalFacade {
         rows: u16,
     ) -> Result<(), String> {
         let workspace = self.workspace()?;
+        refuse_when_held(&workspace, seat)?;
         let entry = workspace.terminal_by_id(seat, id)?;
         entry.terminal.resize(cols, rows).map_err(|error| error.to_string())
     }
 
     async fn close(&self, seat: &SessionSlot, id: u16) -> Result<Option<TerminalExit>, String> {
         let workspace = self.workspace()?;
+        refuse_when_held(&workspace, seat)?;
         let entry = workspace.terminal_by_id(seat, id)?;
         entry.terminal.close();
         let deadline = Instant::now() + Duration::from_secs(2);
         while Instant::now() < deadline && entry.terminal.is_alive() {
             tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        if entry.terminal.is_alive() {
+            // **A close that did not take is said, not reported as ok.** The
+            // entry stays so the next call can try again or read the screen.
+            return Err("the terminal's shell did not exit within 2 s; it is still open".to_owned());
         }
         let exit = entry
             .terminal
@@ -297,6 +297,9 @@ impl TerminalFacade for ProdTerminalFacade {
         reason: &str,
     ) -> Result<HandOffEnding, String> {
         let workspace = self.workspace()?;
+        if workspace.terminal_held(seat) {
+            return Err("a hand-off is already parked on this terminal".to_owned());
+        }
         let (parked, answer) = workspace.register_terminal_hand_off(seat, id, reason)?;
         let guard =
             ResolveOnDrop { workspace: Arc::clone(&workspace), id: parked, caller: seat.clone() };
@@ -342,6 +345,20 @@ impl TerminalFacade for ProdTerminalFacade {
         drop(guard);
         Ok(RunAnswer { exit, text: read.text, truncated: read.truncated })
     }
+}
+
+/// **The screen and the PTY belong to the person while a hand-off is
+/// parked.** Every tool that touches either is refused, so a parallel call or
+/// a subagent cannot read their typing or write into their prompt.
+fn refuse_when_held(workspace: &Workspace, seat: &SessionSlot) -> Result<(), String> {
+    if workspace.terminal_held(seat) {
+        return Err(
+            "a hand-off is parked on this terminal: the person owns its screen and input until \
+             they answer"
+                .to_owned(),
+        );
+    }
+    Ok(())
 }
 
 /// Resolves a parked hand-off when the awaiting handler goes - a session that

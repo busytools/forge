@@ -13,6 +13,7 @@
 
 pub mod keys;
 pub mod osc;
+mod parser;
 pub mod repaint;
 pub mod screen;
 pub mod shell;

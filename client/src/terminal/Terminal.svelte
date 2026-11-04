@@ -76,7 +76,8 @@
     if (phase === 'failed') return reason ?? 'the terminal stopped answering';
     if (phase === 'opening') return 'opening the terminal';
     const held = summary;
-    if (held === null) return 'live';
+    // The record no longer carries this terminal: it closed.
+    if (held === null) return 'the terminal closed';
     if (!held.alive) return 'the shell exited';
     if (held.held) return 'waiting for you';
     if (held.state.running) return 'the agent is running a command';
@@ -84,9 +85,9 @@
       held.state.input_expected?.kind === 'password' ||
       held.state.input_expected?.kind === 'confirm'
     ) {
-      return 'waiting for you';
+      return 'the agent is waiting for input';
     }
-    return 'live';
+    return 'view only';
   });
 
   /** The title the bar spells: the id, the shell and its cwd. */
@@ -98,6 +99,10 @@
   });
 
   function send(bytes: Uint8Array): void {
+    // **The person's input is the hand-off's.** Outside one this surface is a
+    // viewer: the agent owns the terminal, the server refuses the bytes, and
+    // sending them here would say the keyboard worked when it did not.
+    if (handOff.current === null) return;
     const id = surface.id;
     if (id === null) return;
     terminalLink().input(id, bytes);
@@ -111,10 +116,14 @@
   }
 
   onMount(() => {
+    // **The keyboard goes back where it came from.** Raising the surface
+    // focuses the terminal; lowering it returns focus to the door that was
+    // used, so a keyboard reader is not dropped at the top of the page.
+    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const instance = new Xterm({
       allowProposedApi: true,
       cursorBlink: true,
-      fontFamily: token('--font-mono', 'ui-monospace, Menlo, monospace'),
+      fontFamily: token('--mono', 'ui-monospace, Menlo, monospace'),
       fontSize: 13,
       lineHeight: 1.15,
       screenReaderMode: true,
@@ -156,7 +165,21 @@
       instance.open(host);
       fitted.fit();
     }
-    instance.onData((data) => send(new TextEncoder().encode(data)));
+    instance.onData((data) => {
+      // **A finger has no Ctrl or Alt**, so the bar's two sticky keys turn the
+      // next character the soft keyboard produces into the control byte or an
+      // escape-prefixed one.
+      let out = data;
+      if (ctrlArmed && data.length === 1) {
+        out = String.fromCharCode(data.toUpperCase().charCodeAt(0) & 0x1f);
+        ctrlArmed = false;
+      }
+      if (altArmed) {
+        out = `\u001b${out}`;
+        altArmed = false;
+      }
+      send(new TextEncoder().encode(out));
+    });
     instance.onResize(({ cols, rows }) => resize(cols, rows));
     instance.attachCustomKeyEventHandler((event) => {
       // **Cmd+W lowers the surface**, not the window; Ctrl+W is the PTY's.
@@ -202,6 +225,14 @@
       observer.disconnect();
       instance.dispose();
       term = null;
+      // **An entry the surface pushed is taken back with it**, whatever closed
+      // it: a strip hide or a Done unmounts without going through `lower`,
+      // and a stale entry would eat the reader's next Back.
+      if (pushed) {
+        pushed = false;
+        history.back();
+      }
+      previous?.focus();
     };
   });
 
@@ -213,6 +244,25 @@
     } else if (surface.phase === 'live' && phase === 'opening') {
       phase = 'live';
     }
+  });
+
+  // **Stdin is the hand-off's, and the surface says so**: outside one the
+  // keyboard does nothing rather than feeding a command the person did not
+  // ask to join.
+  $effect(() => {
+    if (term !== null) term.options.disableStdin = handOff.current === null;
+  });
+
+  // **The byte stream stops while the tab is hidden.** A page that cannot draw
+  // the frames would only grow the server's backlog; a resume repaints.
+  $effect(() => {
+    if (typeof document === 'undefined') return;
+    const move = (): void => terminalLink().pause(document.hidden);
+    document.addEventListener('visibilitychange', move);
+    return () => {
+      document.removeEventListener('visibilitychange', move);
+      terminalLink().pause(false);
+    };
   });
 
   function lower(): void {
@@ -251,6 +301,10 @@
     void tick().then(() => readEl?.focus());
   }
 
+  /** The touch bar's sticky modifiers: the next character carries them. */
+  let ctrlArmed = $state(false);
+  let altArmed = $state(false);
+
   /** One key the touch bar sends. */
   function key(bytes: string): void {
     send(new TextEncoder().encode(bytes));
@@ -280,6 +334,14 @@
     <span class="tn-state" class:bad={phase === 'failed'} class:held={summary?.held ?? false}>
       {stateLine}
     </span>
+    {#if handOff.current !== null}
+      <!-- **The ask is on the raised bar too**: the dock is behind this
+           surface, and the person needs the reason for the typing they are
+           about to do, and whether it is hidden. -->
+      <span class="tn-ask">
+        {handOff.current.reason}{handOff.current.secret ? ' · typing is hidden' : ''}
+      </span>
+    {/if}
     <button
       type="button"
       class="tn-act"
@@ -333,19 +395,60 @@
   {/if}
 
   {#if touch && phase !== 'failed'}
-    <div class="tn-keys" role="toolbar" aria-label="terminal keys">
-      <button type="button" onclick={() => key('\x1b')}>Esc</button>
-      <button type="button" onclick={() => key('\t')}>Tab</button>
-      <button type="button" onclick={() => key('\x03')}>^C</button>
-      <button type="button" onclick={() => key('\x1b[A')}>↑</button>
-      <button type="button" onclick={() => key('\x1b[B')}>↓</button>
-      <button type="button" onclick={() => key('\x1b[D')}>←</button>
-      <button type="button" onclick={() => key('\x1b[C')}>→</button>
-      <button type="button" onclick={() => key('\r')}>Enter</button>
-      <button type="button" onclick={() => key('/')}>/</button>
-      <button type="button" onclick={() => key('-')}>-</button>
-      <button type="button" onclick={() => key('|')}>|</button>
-      <button type="button" onclick={() => key('~')}>~</button>
+    <div
+      class="tn-keys"
+      role="toolbar"
+      aria-label="terminal keys"
+      aria-disabled={handOff.current === null}
+    >
+      <button
+        type="button"
+        aria-pressed={ctrlArmed}
+        disabled={handOff.current === null}
+        onclick={() => {
+          ctrlArmed = !ctrlArmed;
+        }}
+      >
+        Ctrl
+      </button>
+      <button
+        type="button"
+        aria-pressed={altArmed}
+        disabled={handOff.current === null}
+        onclick={() => {
+          altArmed = !altArmed;
+        }}
+      >
+        Alt
+      </button>
+      <button type="button" disabled={handOff.current === null} onclick={() => key('\x1b')}>
+        Esc
+      </button>
+      <button type="button" disabled={handOff.current === null} onclick={() => key('\t')}>
+        Tab
+      </button>
+      <button type="button" disabled={handOff.current === null} onclick={() => key('\x03')}>
+        ^C
+      </button>
+      <button type="button" disabled={handOff.current === null} onclick={() => key('\x1b[A')}>
+        ↑
+      </button>
+      <button type="button" disabled={handOff.current === null} onclick={() => key('\x1b[B')}>
+        ↓
+      </button>
+      <button type="button" disabled={handOff.current === null} onclick={() => key('\x1b[D')}>
+        ←
+      </button>
+      <button type="button" disabled={handOff.current === null} onclick={() => key('\x1b[C')}>
+        →
+      </button>
+      <button type="button" disabled={handOff.current === null} onclick={() => key('\r')}>
+        Enter
+      </button>
+      <button type="button" disabled={handOff.current === null} onclick={() => key('/')}>/</button>
+      <button type="button" disabled={handOff.current === null} onclick={() => key('-')}>-</button>
+      <button type="button" disabled={handOff.current === null} onclick={() => key('|')}>|</button>
+      <button type="button" disabled={handOff.current === null} onclick={() => key('~')}>~</button>
     </div>
   {/if}
 
@@ -373,15 +476,20 @@
   }
   .tn-bar {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
-    gap: 12px;
+    gap: 6px 12px;
     min-height: 44px;
-    padding: 0 12px;
+    padding: 6px 12px;
     border-bottom: 1px solid var(--line);
     background: var(--s1);
     color: var(--text);
   }
   .tn-title {
+    /* **Shrinkable and wrap-tolerant**: a phone's bar holds a title, a state
+       and four buttons, and a nowrap row overflowed the screen. */
+    flex: 1 1 6ch;
+    min-width: 0;
     font-weight: 500;
     white-space: nowrap;
     overflow: hidden;
@@ -390,6 +498,13 @@
   .tn-state {
     color: var(--muted);
     font-size: 12.5px;
+    white-space: nowrap;
+  }
+  .tn-ask {
+    flex: 1 1 100%;
+    color: var(--warn);
+    font-size: 12.5px;
+    overflow-wrap: anywhere;
   }
   .tn-state.held {
     color: var(--warn);
@@ -461,7 +576,7 @@
     border-top: 1px solid var(--line);
     background: var(--s1);
     color: var(--text);
-    font-family: var(--font-mono, ui-monospace, Menlo, monospace);
+    font-family: var(--mono, ui-monospace, Menlo, monospace);
     font-size: 12.5px;
   }
   .tn-read pre {

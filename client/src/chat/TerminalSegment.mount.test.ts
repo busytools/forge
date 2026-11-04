@@ -69,8 +69,10 @@ describe('the terminal strip row', () => {
     expect(text).toContain('waiting for you');
   });
 
-  it('draws no row when the seat has no terminal', () => {
+  it('is the person door on a seat with no terminal', () => {
     const text = draw(null);
-    expect(text.trim()).toBe('');
+    expect(text).toContain('terminal');
+    expect(text).toContain('off');
+    expect(text).toContain('start');
   });
 });

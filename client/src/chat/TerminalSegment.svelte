@@ -7,11 +7,13 @@
 
   /**
    * The terminal row in the strip above the composer: the seat's terminal and
-   * what it is doing, with **show** / **hide**.
+   * what it is doing, with **show** / **hide**, and **start** on a seat that
+   * has none.
    *
-   * **The row exists only while the seat has a terminal.** An unopened seat
-   * costs no row, exactly as a profile with no tab draws none. The terminal
-   * itself outlives the surface: hiding it is not closing it.
+   * **The row is the person's door even when no terminal exists.** An agent
+   * that never opened one must not leave the person with no way in, so the
+   * row is drawn for every seat and its button opens one. The terminal itself
+   * outlives the surface: hiding it is not closing it.
    */
   let {
     slot = null,
@@ -30,7 +32,7 @@
   /** What the terminal is doing, in words rather than only a colour. */
   const stateText = $derived.by((): string => {
     const held = live;
-    if (held === null) return 'no terminal';
+    if (held === null) return 'off';
     if (!held.alive) return 'exited';
     if (held.held) return 'waiting for you';
     if (held.state.input_expected?.kind === 'password') return 'a password is wanted';
@@ -58,12 +60,14 @@
   async function toggle(): Promise<void> {
     const held = live;
     const here = seat;
-    if (held === null || here === null) return;
+    if (here === null) return;
     if (fronting) {
       await closeTerminal();
       return;
     }
-    const why = await openTerminal(here, held.id);
+    // **No terminal yet is the start door**: the attach names none, and the
+    // server opens the seat's own.
+    const why = await openTerminal(here, held?.id ?? null);
     if (why !== null) {
       // The failure is drawn by the surface's own bar; the row keeps its
       // last state rather than inventing a second sentence.
@@ -72,32 +76,35 @@
   }
 </script>
 
-{#if live !== null}
-  <span class="tm-seg">
-    <span class="tm-state">
-      {#if mark === 'running'}
-        <span class="ring" title="a command is running"></span>
-      {:else if mark === 'held'}
-        <span class="dot warn" title="the terminal is waiting for you"></span>
-      {:else if mark === 'bad'}
-        <Icon name="x" class="bad" />
-      {:else}
-        <span class="dot idle" title="the terminal is idle"></span>
-      {/if}
-      terminal
-      <span class="tx">{stateText}</span>
-    </span>
-    <button
-      type="button"
-      class="tm-show"
-      aria-pressed={fronting}
-      aria-label={fronting ? 'hide the terminal' : 'show the terminal'}
-      onclick={toggle}
-    >
-      {fronting ? 'hide' : 'show'}
-    </button>
+<span class="tm-seg">
+  <span class="tm-state">
+    {#if mark === 'running'}
+      <span class="ring" title="a command is running"></span>
+    {:else if mark === 'held'}
+      <span class="dot warn" title="the terminal is waiting for you"></span>
+    {:else if mark === 'bad'}
+      <Icon name="x" class="bad" />
+    {:else}
+      <span class="dot idle" title="the terminal is idle"></span>
+    {/if}
+    terminal
+    <span class="tx">{stateText}</span>
   </span>
-{/if}
+  <button
+    type="button"
+    class="tm-show"
+    aria-pressed={fronting}
+    aria-keyshortcuts="Meta+J Control+J"
+    aria-label={fronting
+      ? 'hide the terminal'
+      : live === null
+        ? 'start a terminal'
+        : 'show the terminal'}
+    onclick={toggle}
+  >
+    {fronting ? 'hide' : live === null ? 'start' : 'show'}
+  </button>
+</span>
 
 <style>
   .tm-seg {

@@ -13,7 +13,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use forge_primitives::SessionSlot;
@@ -48,8 +48,6 @@ pub struct TerminalEntry {
     pub last_used: Mutex<Instant>,
     /// How many clients are attached.
     pub attached: AtomicUsize,
-    /// Whether the attached viewer asked the server to stop writing bytes.
-    pub paused: AtomicBool,
 }
 
 impl TerminalEntry {
@@ -108,22 +106,14 @@ impl Workspace {
         self: &Arc<Self>,
         slot: &SessionSlot,
     ) -> Result<Arc<TerminalEntry>, String> {
-        let mut terminals = self.terminals.lock();
-        if let Some(entry) = terminals.get(slot).cloned() {
-            entry.touch();
-            return Ok(entry);
-        }
-        let entry = self.spawn_terminal(slot, None)?;
-        terminals.insert(slot.clone(), Arc::clone(&entry));
-        drop(terminals);
-        self.ensure_terminal_clock();
-        self.watch_terminal_exit(slot, &entry);
-        self.announce_terminal(slot, Some(entry.summary(slot, false)));
-        Ok(entry)
+        self.spawn_terminal_at(slot, None)
     }
 
     /// The seat's terminal, spawned in `cwd` the first time; an existing
     /// terminal is returned as it is.
+    ///
+    /// **A shell that exited without a close is replaced**, so the seat's
+    /// next open starts a fresh shell rather than handing back a dead PTY.
     pub(crate) fn spawn_terminal_at(
         self: &Arc<Self>,
         slot: &SessionSlot,
@@ -131,16 +121,29 @@ impl Workspace {
     ) -> Result<Arc<TerminalEntry>, String> {
         let mut terminals = self.terminals.lock();
         if let Some(entry) = terminals.get(slot).cloned() {
-            entry.touch();
-            return Ok(entry);
+            if entry.terminal.is_alive() {
+                entry.touch();
+                return Ok(entry);
+            }
+            terminals.remove(slot);
         }
         let entry = self.spawn_terminal(slot, cwd)?;
         terminals.insert(slot.clone(), Arc::clone(&entry));
         drop(terminals);
         self.ensure_terminal_clock();
         self.watch_terminal_exit(slot, &entry);
+        self.watch_terminal_state(slot, &entry);
         self.announce_terminal(slot, Some(entry.summary(slot, false)));
         Ok(entry)
+    }
+
+    /// The seat's terminal, spawned on first use. **The person's door**: a
+    /// view can open one on a seat no agent has touched.
+    pub fn open_terminal(
+        self: &Arc<Self>,
+        slot: &SessionSlot,
+    ) -> Result<Arc<TerminalEntry>, String> {
+        self.terminal_for(slot)
     }
 
     /// A fresh terminal for `terminal__run`, not registered: the command's
@@ -245,6 +248,8 @@ impl Workspace {
     ) -> Result<(uuid::Uuid, oneshot::Receiver<HandOffEnding>), String> {
         let entry = self.terminal_by_id(caller, terminal)?;
         let state = wire_state(entry.terminal.state());
+        // The card describes the terminal when it asked; a program that turns
+        // ECHO back on later does not rewrite the reason the person was shown.
         let secret = state
             .input_expected
             .as_ref()
@@ -261,6 +266,9 @@ impl Workspace {
             .send_answering(SessionUpdate::TerminalHandOffPending { key: caller.clone(), handoff });
         if !answerable {
             self.terminal_handoffs.lock().remove(&id);
+            // **The strip must not keep saying the input is the person's**
+            // for a park that was withdrawn before it ever showed.
+            self.announce_terminal(caller, Some(entry.summary(caller, false)));
             let (_ignored_sender, dead_receiver) = oneshot::channel();
             return Ok((id, dead_receiver));
         }
@@ -311,9 +319,10 @@ impl Workspace {
         true
     }
 
-    /// A seat ended with a hand-off still parked: resolve it as abandoned so
-    /// no dock outlives its asker.
-    fn abandon_terminal_hand_offs(&self, slot: &SessionSlot) {
+    /// A seat ended - or `/new`/`/resume` replaced the occupant that was
+    /// waiting - with a hand-off still parked: resolve it as abandoned so no
+    /// dock outlives its asker.
+    pub(crate) fn abandon_terminal_hand_offs(&self, slot: &SessionSlot) {
         let ids: Vec<uuid::Uuid> = self
             .terminal_handoffs
             .lock()
@@ -379,7 +388,6 @@ impl Workspace {
             terminal: Arc::new(terminal),
             last_used: Mutex::new(Instant::now()),
             attached: AtomicUsize::new(0),
-            paused: AtomicBool::new(false),
         }))
     }
 
@@ -398,6 +406,30 @@ impl Workspace {
             let Some(workspace) = weak.upgrade() else { return };
             let held = workspace.terminal_held(&slot);
             workspace.announce_terminal(&slot, Some(entry.summary(&slot, held)));
+        });
+    }
+
+    /// **A state change is a push, not a poll.** The strip's words - a
+    /// command running, a password wanted - come from the record, and a
+    /// record that only changed on open, close and exit would say "idle"
+    /// through a whole command.
+    fn watch_terminal_state(self: &Arc<Self>, slot: &SessionSlot, entry: &Arc<TerminalEntry>) {
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else { return };
+        let weak = Arc::downgrade(self);
+        let slot = slot.clone();
+        let entry = Arc::clone(entry);
+        let mut states = entry.terminal.state_stream();
+        runtime.spawn(async move {
+            while states.changed().await.is_ok() {
+                let Some(workspace) = weak.upgrade() else { return };
+                // Only while this is still the seat's terminal: a replaced
+                // shell's watcher must not announce the old entry.
+                if workspace.terminal_if_any(&slot).map(|held| held.id) != Some(entry.id) {
+                    return;
+                }
+                let held = workspace.terminal_held(&slot);
+                workspace.announce_terminal(&slot, Some(entry.summary(&slot, held)));
+            }
         });
     }
 
@@ -486,6 +518,125 @@ mod tests {
             refused.write(&slot, entry.id, Some("x".to_owned()), Vec::new()).await.is_err(),
             "a write while parked is refused",
         );
+        workspace.close_terminal(&slot);
+    }
+
+    /// **An answer settles the park**: the waiter gets the ending, the seat
+    /// stops being held, and the views are told the ask resolved.
+    #[tokio::test]
+    async fn a_hand_off_answer_settles_the_park() {
+        let (workspace, mut rx) = Workspace::testing_stub();
+        workspace.seed_test_project("proj", "/tmp");
+        let slot = SessionSlot::lead("TestOrg", "proj");
+        let entry = workspace.terminal_for(&slot).expect("a terminal");
+        let (id, answer) = workspace
+            .register_terminal_hand_off(&slot, entry.id, "the sudo password")
+            .expect("a hand-off parks");
+        assert!(workspace.terminal_handoff_waiting(id, &slot));
+        let resolved = workspace.resolve_terminal_hand_off(
+            id,
+            &slot,
+            TerminalHandOffAnswer {
+                ending: HandOffEnding::Done,
+                source: forge_primitives::browser::HandOffSource::Unstated,
+                client: None,
+            },
+        );
+        assert!(resolved, "the registered hand-off resolves");
+        assert_eq!(answer.await.expect("an ending"), HandOffEnding::Done);
+        assert!(!workspace.terminal_held(&slot), "the agent owns the input again");
+        assert!(!workspace.terminal_handoff_waiting(id, &slot));
+        let mut told = false;
+        while let Ok(frame) = rx.try_recv() {
+            if matches!(
+                &*frame.update,
+                SessionUpdate::TerminalHandOffResolved { id: resolved, .. } if *resolved == id
+            ) {
+                told = true;
+            }
+        }
+        assert!(told, "the views were told the ask resolved");
+        workspace.close_terminal(&slot);
+    }
+
+    /// **A seat that ends with a hand-off parked abandons it**, so the waiter
+    /// stops and no dock outlives its asker.
+    #[tokio::test]
+    async fn ending_the_seat_abandons_a_parked_hand_off() {
+        let (workspace, _rx) = Workspace::testing_stub();
+        workspace.seed_test_project("proj", "/tmp");
+        let slot = SessionSlot::lead("TestOrg", "proj");
+        let entry = workspace.terminal_for(&slot).expect("a terminal");
+        let (id, answer) = workspace
+            .register_terminal_hand_off(&slot, entry.id, "the sudo password")
+            .expect("a hand-off parks");
+        workspace.release_session(&slot);
+        assert_eq!(
+            answer.await.expect("an ending"),
+            HandOffEnding::Abandoned,
+            "the seat ended, so the ask cannot be answered"
+        );
+        assert!(!workspace.terminal_handoff_waiting(id, &slot));
+    }
+
+    /// A hand-off id another seat names resolves nothing: the park is the
+    /// owner's alone.
+    #[tokio::test]
+    async fn another_seat_cannot_resolve_a_hand_off() {
+        let (workspace, _rx) = Workspace::testing_stub();
+        workspace.seed_test_project("proj", "/tmp");
+        let slot = SessionSlot::lead("TestOrg", "proj");
+        let other = SessionSlot::lead("OtherOrg", "proj");
+        let entry = workspace.terminal_for(&slot).expect("a terminal");
+        let (id, _answer) = workspace
+            .register_terminal_hand_off(&slot, entry.id, "the sudo password")
+            .expect("a hand-off parks");
+        let resolved = workspace.resolve_terminal_hand_off(
+            id,
+            &other,
+            TerminalHandOffAnswer {
+                ending: HandOffEnding::Done,
+                source: forge_primitives::browser::HandOffSource::Unstated,
+                client: None,
+            },
+        );
+        assert!(!resolved, "another seat's answer is refused");
+        assert!(workspace.terminal_held(&slot), "the ask still parks on its owner");
+        workspace.close_terminal(&slot);
+    }
+
+    /// **A command starting is pushed to the views**, so the strip says it is
+    /// running without waiting for a record re-read.
+    #[tokio::test]
+    async fn a_command_start_is_pushed_to_the_views() {
+        let (workspace, mut rx) = Workspace::testing_stub();
+        workspace.seed_test_project("proj", "/tmp");
+        let slot = SessionSlot::lead("TestOrg", "proj");
+        let entry = workspace.terminal_for(&slot).expect("a terminal");
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while tokio::time::Instant::now() < deadline
+            && entry.terminal.screen().text.trim().is_empty()
+        {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        // The open's own announcements are not this test's.
+        while rx.try_recv().is_ok() {}
+        entry.terminal.write_text("sleep 1\r").expect("a write");
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        let mut running = false;
+        while tokio::time::Instant::now() < deadline && !running {
+            match rx.try_recv() {
+                Ok(frame) => {
+                    if let SessionUpdate::TerminalChanged { terminal: Some(summary), .. } =
+                        &*frame.update
+                    {
+                        running |= summary.state.running;
+                    }
+                }
+                Err(_) => tokio::time::sleep(Duration::from_millis(10)).await,
+            }
+        }
+        assert!(running, "a TerminalChanged said the command is running");
         workspace.close_terminal(&slot);
     }
 

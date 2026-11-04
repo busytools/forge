@@ -31,23 +31,40 @@ preexec_functions+=(_forge_preexec)
 
 /// The bash integration: `PROMPT_COMMAND` closes the previous command and
 /// opens the prompt, a `DEBUG` trap opens the command.
+///
+/// Bash 3.2 (macOS) has no `PS0`, so the trap is the only pre-exec hook, and
+/// it fires for the prompt's own commands too. Two guards keep the marks
+/// honest: the trap hands `$?` back so `_forge_prompt` reads the command's
+/// real status, and `_forge_in_prompt` plus the `$BASH_COMMAND` match keep the
+/// prompt's commands from being announced as the person's.
 pub const BASH: &str = r#"
 _forge_cmd_running=
+_forge_in_prompt=
+_forge_status=0
 _forge_prompt() {
-  local ret=$?
+  local ret=$_forge_status
   if [ -n "$_forge_cmd_running" ]; then
     printf '\033]133;D;%s\007' "$ret"
     _forge_cmd_running=
   fi
   printf '\033]133;A\007\033]133;B\007'
+  _forge_in_prompt=1
 }
 _forge_preexec() {
+  _forge_status=$?
+  if [ -n "$_forge_in_prompt" ]; then
+    return 0
+  fi
+  case "$BASH_COMMAND" in
+    _forge_prompt) return 0 ;;
+  esac
   if [ -z "$_forge_cmd_running" ]; then
     _forge_cmd_running=1
     printf '\033]133;C\007'
   fi
+  return 0
 }
-PROMPT_COMMAND="_forge_prompt${PROMPT_COMMAND:+;$PROMPT_COMMAND}"
+PROMPT_COMMAND="_forge_prompt${PROMPT_COMMAND:+;$PROMPT_COMMAND};_forge_in_prompt="
 trap '_forge_preexec' DEBUG
 "#;
 
@@ -123,16 +140,19 @@ fn zsh_plan<S: std::hash::BuildHasher>(shell: &str, env: &HashMap<String, String
     let zshrc = format!("if [ -f \"{real}/.zshrc\" ]; then source \"{real}/.zshrc\"; fi\n{ZSH}");
     let zprofile =
         format!("if [ -f \"{real}/.zprofile\" ]; then source \"{real}/.zprofile\"; fi\n");
-    if std::fs::write(shim.join(".zshrc"), zshrc).is_err()
-        || std::fs::write(shim.join(".zprofile"), zprofile).is_err()
-    {
-        let _ = std::fs::remove_dir_all(&shim);
-        return ShellPlan {
-            program: shell.to_owned(),
-            args: vec!["-l".to_owned()],
-            env: clone_env(env),
-            shim: None,
-        };
+    let zshrc_path = shim.join(".zshrc");
+    let zprofile_path = shim.join(".zprofile");
+    for (path, body) in [(&zshrc_path, &zshrc), (&zprofile_path, &zprofile)] {
+        if let Err(error) = std::fs::write(path, body) {
+            warn_unavailable("zsh", path, &error);
+            let _ = std::fs::remove_dir_all(&shim);
+            return ShellPlan {
+                program: shell.to_owned(),
+                args: vec!["-l".to_owned()],
+                env: clone_env(env),
+                shim: None,
+            };
+        }
     }
     let mut env = clone_env(env);
     env.insert("ZDOTDIR".to_owned(), shim.display().to_string());
@@ -155,7 +175,8 @@ fn bash_plan<S: std::hash::BuildHasher>(
     };
     let rc = format!("if [ -f \"{home}/.bashrc\" ]; then source \"{home}/.bashrc\"; fi\n{BASH}");
     let rcfile = shim.join("bashrc");
-    if std::fs::write(&rcfile, rc).is_err() {
+    if let Err(error) = std::fs::write(&rcfile, rc) {
+        warn_unavailable("bash", &rcfile, &error);
         let _ = std::fs::remove_dir_all(&shim);
         return ShellPlan {
             program: shell.to_owned(),
@@ -164,6 +185,9 @@ fn bash_plan<S: std::hash::BuildHasher>(
             shim: None,
         };
     }
+    // **Not `-l`.** bash 3.2 ignores `--rcfile` in a login shell, which would
+    // silently cost the marks the terminal__wait exactness rests on; the
+    // rcfile sources the person's `~/.bashrc`, so their aliases still load.
     ShellPlan {
         program: shell.to_owned(),
         args: vec!["--rcfile".to_owned(), rcfile.display().to_string(), "-i".to_owned()],
@@ -179,35 +203,41 @@ fn fish_plan<S: std::hash::BuildHasher>(
     let Some(shim) = make_shim("fish") else {
         return ShellPlan {
             program: shell.to_owned(),
-            args: Vec::new(),
+            args: vec!["-l".to_owned()],
             env: clone_env(env),
             shim: None,
         };
     };
     let script = shim.join("integration.fish");
-    if std::fs::write(&script, FISH).is_err() {
+    if let Err(error) = std::fs::write(&script, FISH) {
+        warn_unavailable("fish", &script, &error);
         let _ = std::fs::remove_dir_all(&shim);
         return ShellPlan {
             program: shell.to_owned(),
-            args: Vec::new(),
+            args: vec!["-l".to_owned()],
             env: clone_env(env),
             shim: None,
         };
     }
     ShellPlan {
         program: shell.to_owned(),
-        args: vec!["-C".to_owned(), format!("source {}", script.display())],
+        args: vec!["-l".to_owned(), "-C".to_owned(), format!("source {}", script.display())],
         env: clone_env(env),
         shim: Some(shim),
     }
 }
 
-/// A plain hasher's copy of an environment, so the plan carries the map the
-/// terminal stores rather than the caller's hasher.
+/// The environment the shell starts with: the seat's own, plus what the PTY's
+/// terminal type answers to. The seat's env carries forge's launch terminal's
+/// `TERM`, which is not what this shell is attached to.
 fn clone_env<S: std::hash::BuildHasher>(
     env: &HashMap<String, String, S>,
 ) -> HashMap<String, String> {
-    env.iter().map(|(key, value)| (key.clone(), value.clone())).collect()
+    let mut env: HashMap<String, String> =
+        env.iter().map(|(key, value)| (key.clone(), value.clone())).collect();
+    env.insert("TERM".to_owned(), "xterm-256color".to_owned());
+    env.insert("COLORTERM".to_owned(), "truecolor".to_owned());
+    env
 }
 
 /// A fresh shim directory under the system temp dir.
@@ -217,8 +247,24 @@ fn make_shim(shell: &str) -> Option<PathBuf> {
         .map_or(0, |d| d.as_nanos());
     let dir =
         std::env::temp_dir().join(format!("forge-terminal-{shell}-{}-{nanos}", std::process::id()));
-    std::fs::create_dir_all(&dir).ok()?;
+    if let Err(error) = std::fs::create_dir_all(&dir) {
+        warn_unavailable(shell, &dir, &error);
+        return None;
+    }
     Some(dir)
+}
+
+/// **A missing integration is said, not discovered later as a password
+/// prompt.** Without the marks the shell falls back to the heuristic, which
+/// is forge's own problem to know about.
+fn warn_unavailable(shell: &str, path: &Path, error: &std::io::Error) {
+    tracing::warn!(
+        event_name = "terminal_integration_unavailable",
+        shell,
+        path = %path.display(),
+        %error,
+        "the shell integration could not be written; the terminal starts without OSC 133 marks"
+    );
 }
 
 #[cfg(test)]
@@ -241,6 +287,8 @@ mod tests {
         let shim = plan.shim.as_ref().expect("a shim");
         assert_eq!(plan.env.get("ZDOTDIR"), Some(&shim.display().to_string()));
         assert_eq!(plan.env.get("FORGE_REAL_ZDOTDIR"), Some(&"/home/person".to_owned()));
+        assert_eq!(plan.env.get("TERM").map(String::as_str), Some("xterm-256color"));
+        assert_eq!(plan.env.get("COLORTERM").map(String::as_str), Some("truecolor"));
         let zshrc = std::fs::read_to_string(shim.join(".zshrc")).expect("a .zshrc");
         assert!(zshrc.contains("source \"/home/person/.zshrc\""), "the person's rc is sourced");
         assert!(zshrc.contains("133;D"), "and the integration follows it");
@@ -267,8 +315,9 @@ mod tests {
     fn fish_gets_an_init_command() {
         let plan = plan("/opt/homebrew/bin/fish", &env());
         assert_eq!(plan.program, "/opt/homebrew/bin/fish");
-        assert_eq!(plan.args[0], "-C");
-        assert!(plan.args[1].starts_with("source "), "{}", plan.args[1]);
+        assert_eq!(plan.args[0], "-l", "a login shell, so the person's config ran");
+        assert_eq!(plan.args[1], "-C");
+        assert!(plan.args[2].starts_with("source "), "{}", plan.args[2]);
         plan.cleanup();
     }
 

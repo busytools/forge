@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use alacritty_terminal::event::{Event, EventListener, OnResize, WindowSize};
@@ -31,6 +31,7 @@ use rustix::process::{Pid, Signal, kill_process_group};
 use tokio::sync::{broadcast, watch};
 
 use crate::osc::Osc133;
+use crate::parser;
 use crate::screen::{self, ReadResult, Screen};
 use crate::shell;
 use crate::state::{self, ClassifyInput, Exit, State};
@@ -44,6 +45,13 @@ const OUTPUT_BACKLOG: usize = 256;
 
 /// How many times a nonblocking write retries before it gives up.
 const WRITE_RETRIES: u32 = 100;
+
+/// The smallest and largest size a terminal may take. Zero columns underflows
+/// alacritty's grid arithmetic.
+pub const MIN_COLS: u16 = 2;
+pub const MAX_COLS: u16 = 500;
+pub const MIN_ROWS: u16 = 2;
+pub const MAX_ROWS: u16 = 300;
 
 /// What a terminal is spawned with.
 #[derive(Clone, Debug)]
@@ -74,6 +82,11 @@ pub enum Error {
     Closed,
     #[error("the terminal's input could not be written: {0}")]
     Write(String),
+    #[error(
+        "{cols}x{rows} is outside the terminal's bounds ({MIN_COLS}..={MAX_COLS} columns, \
+         {MIN_ROWS}..={MAX_ROWS} rows)"
+    )]
+    Resize { cols: u16, rows: u16 },
 }
 
 /// One terminal.
@@ -85,10 +98,25 @@ pub struct Terminal {
 impl Terminal {
     /// Spawn a shell on a fresh PTY.
     pub fn spawn(config: &TerminalConfig) -> Result<Self, Error> {
+        // **A cwd the PTY cannot enter is refused, not ignored.** The child's
+        // chdir failure is silent, which would run the shell in whatever
+        // directory forge was launched from.
+        let cwd = config.cwd.canonicalize().map_err(|error| {
+            Error::Spawn(format!(
+                "the terminal's cwd {} cannot be used: {error}",
+                config.cwd.display()
+            ))
+        })?;
+        if !cwd.is_dir() {
+            return Err(Error::Spawn(format!(
+                "the terminal's cwd {} is not a directory",
+                cwd.display()
+            )));
+        }
         let plan = shell::plan(&config.shell, &config.env);
         let options = Options {
             shell: Some(Shell::new(plan.program.clone(), plan.args.clone())),
-            working_directory: Some(config.cwd.clone()),
+            working_directory: Some(cwd.clone()),
             drain_on_exit: true,
             env: plan.env.clone(),
         };
@@ -116,6 +144,7 @@ impl Terminal {
             &Size { cols: usize::from(config.cols), rows: usize::from(config.rows) },
             listener,
         );
+        let initial_lines = u64::try_from(term.grid().total_lines()).unwrap_or(0);
         let (output, _) = broadcast::channel(OUTPUT_BACKLOG);
         let (exit_tx, exit_rx) = watch::channel(false);
         let (state_tx, state_rx) = watch::channel(State {
@@ -136,14 +165,19 @@ impl Terminal {
             state_rx,
             exit_tx,
             exit_rx,
-            seq: AtomicU32::new(0),
+            // Chunks start at 1: a viewer's repaint sequence is `next - 1`,
+            // so an unparsed terminal reports 0 and the first chunk still
+            // lies above it.
+            seq: AtomicU32::new(1),
+            lines: AtomicU64::new(initial_lines),
+            history: config.scrollback_lines,
             child_pid,
             closed: AtomicBool::new(false),
             alive: AtomicBool::new(true),
             cols: AtomicU16::new(config.cols),
             rows: AtomicU16::new(config.rows),
             shell: config.shell.clone(),
-            cwd: config.cwd.clone(),
+            cwd,
             shim: plan.shim.clone(),
             last_output: Mutex::new(Instant::now()),
             shell_exit: Mutex::new(None),
@@ -195,6 +229,9 @@ impl Terminal {
         if self.inner.closed.load(Ordering::Relaxed) {
             return Err(Error::Closed);
         }
+        if !(MIN_COLS..=MAX_COLS).contains(&cols) || !(MIN_ROWS..=MAX_ROWS).contains(&rows) {
+            return Err(Error::Resize { cols, rows });
+        }
         self.inner.cols.store(cols, Ordering::Relaxed);
         self.inner.rows.store(rows, Ordering::Relaxed);
         let _ = self.inner.resize_tx.send((cols, rows));
@@ -215,36 +252,27 @@ impl Terminal {
     /// A bounded read of the scrollback and the screen.
     pub fn read(&self, since: Option<u64>, max_lines: usize, max_bytes: usize) -> ReadResult {
         let term = self.inner.term.lock();
-        screen::read(&term, since, max_lines, max_bytes)
+        let appended = self.inner.lines.load(Ordering::Relaxed);
+        screen::read(&term, appended, since, max_lines, max_bytes)
     }
 
-    /// The visible screen as a VT stream, for a reattaching client.
-    pub fn repaint(&self) -> Vec<u8> {
+    /// The visible screen as a VT stream, with the sequence the next chunk
+    /// will carry - both read under the term's lock, because the sequence is
+    /// bumped under it after each parse. So every chunk below the sequence is
+    /// already in the repaint, and no chunk at or above it is.
+    pub fn repaint_and_seq(&self) -> (Vec<u8>, u32) {
         let term = self.inner.term.lock();
-        crate::repaint::repaint(&term)
+        (crate::repaint::repaint(&term), self.inner.seq.load(Ordering::Relaxed))
     }
 
     /// What the terminal is doing.
     pub fn state(&self) -> State {
-        let marks = self.inner.osc.lock().marks();
-        let echo = self.inner.echo();
-        let quiet = self.inner.last_output.lock().elapsed() > QUIET;
-        let last_line = {
-            let term = self.inner.term.lock();
-            last_nonempty_line(&term)
-        };
-        state::classify(ClassifyInput { marks, echo, quiet, last_line: &last_line })
+        self.inner.state()
     }
 
     /// The output stream, from the next chunk.
     pub fn subscribe(&self) -> broadcast::Receiver<OutputChunk> {
         self.inner.output.subscribe()
-    }
-
-    /// The sequence the next output chunk carries. A repaint taken now
-    /// reflects every chunk below it.
-    pub fn seq(&self) -> u32 {
-        self.inner.seq.load(Ordering::Relaxed)
     }
 
     /// The state stream, from the current value.
@@ -342,6 +370,11 @@ struct Inner {
     exit_tx: watch::Sender<bool>,
     exit_rx: watch::Receiver<bool>,
     seq: AtomicU32,
+    /// The lifetime count of lines that entered the buffer, read cursors
+    /// measured in it. Written under the term lock, so it is consistent with
+    /// the grid a read sees.
+    lines: AtomicU64,
+    history: usize,
     child_pid: i32,
     closed: AtomicBool,
     alive: AtomicBool,
@@ -362,13 +395,18 @@ impl Inner {
             return Err(Error::Closed);
         }
         let mut writer = self.writer.lock();
+        // A partial write has already put its prefix on the wire, so the
+        // retry resumes at the offset rather than repeating it.
+        let mut sent = 0usize;
         for _ in 0..WRITE_RETRIES {
-            match writer.write(bytes) {
-                Ok(written) if written == bytes.len() => {
-                    *self.last_output.lock() = Instant::now();
-                    return Ok(());
+            match writer.write(&bytes[sent..]) {
+                Ok(written) => {
+                    sent += written;
+                    if sent == bytes.len() {
+                        *self.last_output.lock() = Instant::now();
+                        return Ok(());
+                    }
                 }
-                Ok(_) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
                 Err(error) => return Err(Error::Write(error.to_string())),
             }
@@ -393,6 +431,32 @@ impl Inner {
     }
 
     fn publish_state(&self) {
+        let state = self.state();
+        // **Only a real transition notifies.** Every read batch republishes,
+        // and a watcher that announced each one would push a frame per chunk.
+        let _ = self.state_tx.send_if_modified(|current| {
+            if *current == state {
+                return false;
+            }
+            *current = state;
+            true
+        });
+    }
+
+    /// **A dead shell is not running anything.** Its marks still hold the last
+    /// command, so the classifier alone would report a running session whose
+    /// last exit is stale; the shell's own exit is the honest answer.
+    fn state(&self) -> State {
+        if !self.alive.load(Ordering::Relaxed) {
+            let exit =
+                self.shell_exit.lock().map(|exit| Exit { code: exit.code, signal: exit.signal });
+            return State {
+                running: false,
+                input_expected: None,
+                exit,
+                source: state::Source::Exact,
+            };
+        }
         let marks = self.osc.lock().marks();
         let echo = self.echo();
         let quiet = self.last_output.lock().elapsed() > QUIET;
@@ -400,8 +464,7 @@ impl Inner {
             let term = self.term.lock();
             last_nonempty_line(&term)
         };
-        let state = state::classify(ClassifyInput { marks, echo, quiet, last_line: &last_line });
-        let _ = self.state_tx.send(state);
+        state::classify(ClassifyInput { marks, echo, quiet, last_line: &last_line })
     }
 }
 
@@ -427,24 +490,34 @@ fn read_loop(
         }
 
         let mut fds = [PollFd::new(pty.file(), PollFlags::IN)];
+        let mut ended = false;
         match poll(&mut fds, Some(&timeout)) {
             Ok(0) => {}
             Ok(_) => {
-                if fds[0].revents().contains(PollFlags::IN) {
+                let flags = fds[0].revents();
+                if flags.contains(PollFlags::IN) {
                     read_ready(inner, &mut pty, &mut parser, &mut buf);
                 }
+                ended = poll_ended(flags);
             }
             Err(rustix::io::Errno::INTR) => continue,
-            Err(_) => break,
+            Err(error) => {
+                tracing::debug!(
+                    event_name = "terminal_poll_failed",
+                    pid = inner.child_pid,
+                    %error,
+                    "the terminal's poll failed; the terminal ends"
+                );
+                break;
+            }
         }
 
+        // **The child's own exit is read before a hangup ends the loop**, or
+        // the shell's code would be lost to the same poll that reports it.
         if let Some(ChildEvent::Exited(status)) = pty.next_child_event() {
             let exit =
                 status.map(|status| Exit { code: status.code(), signal: exit_signal(status) });
             *inner.shell_exit.lock() = exit;
-            inner.alive.store(false, Ordering::Relaxed);
-            inner.publish_state();
-            let _ = inner.exit_tx.send(true);
             tracing::debug!(
                 event_name = "terminal_exited",
                 pid = inner.child_pid,
@@ -453,9 +526,17 @@ fn read_loop(
             );
             break;
         }
+        if ended {
+            // **Nothing is left to read.** The slave side is gone, so polling
+            // would spin on the hung-up fd; end the terminal and kill what
+            // still ran on it.
+            inner.close();
+            break;
+        }
     }
     inner.alive.store(false, Ordering::Relaxed);
     inner.publish_state();
+    let _ = inner.exit_tx.send(true);
 }
 
 /// Read everything the PTY has, tap it, parse it, and answer the terminal's
@@ -467,17 +548,31 @@ fn read_ready(inner: &Arc<Inner>, pty: &mut tty::Pty, parser: &mut Processor, bu
             Ok(n) => {
                 let bytes = &buf[..n];
                 inner.osc.lock().feed(bytes);
-                let seq = inner.seq.fetch_add(1, Ordering::Relaxed);
-                let _ = inner.output.send(OutputChunk { seq, bytes: bytes.to_vec() });
-                {
+                // **Parse and sequence under one lock.** A reader that sees
+                // sequence N can repaint and know every chunk below N is in
+                // the screen; a sequence bumped before the parse would let a
+                // chunk be skipped as "already drawn" while it was not.
+                let seq = {
                     let mut term = inner.term.lock();
-                    parser.advance(&mut *term, bytes);
-                }
+                    let mut appended = inner.lines.load(Ordering::Relaxed);
+                    parser::advance(parser, &mut term, bytes, inner.history, &mut appended);
+                    inner.lines.store(appended, Ordering::Relaxed);
+                    inner.seq.fetch_add(1, Ordering::Relaxed)
+                };
+                let _ = inner.output.send(OutputChunk { seq, bytes: bytes.to_vec() });
                 *inner.last_output.lock() = Instant::now();
                 drain_responses(inner, pty);
             }
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
-            Err(_) => break,
+            Err(error) => {
+                tracing::debug!(
+                    event_name = "terminal_read_failed",
+                    pid = inner.child_pid,
+                    %error,
+                    "the terminal's read failed; the terminal ends"
+                );
+                break;
+            }
         }
     }
     inner.publish_state();
@@ -500,6 +595,12 @@ fn drain_responses(inner: &Arc<Inner>, pty: &mut tty::Pty) {
             _ => {}
         }
     }
+}
+
+/// Whether a poll's flags say the terminal is over: the slave side is gone or
+/// the fd errored, so no byte can arrive again.
+fn poll_ended(flags: PollFlags) -> bool {
+    flags.intersects(PollFlags::HUP | PollFlags::ERR)
 }
 
 /// The last non-empty line on the visible screen.
@@ -620,6 +721,103 @@ mod tests {
         assert_eq!(terminal.cols(), 100);
         assert_eq!(terminal.rows(), 30);
         terminal.close();
+    }
+
+    /// Closing kills the terminal's process group, not just the PTY: a child
+    /// that never reads the terminal is still gone.
+    #[test]
+    fn closing_a_terminal_kills_its_process_group() {
+        let terminal = Terminal::spawn(&config("/bin/sh")).expect("a terminal");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline && terminal.screen().text.trim().is_empty() {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        terminal.write_text("echo PID=$$\r").expect("a write");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut pid = None;
+        while Instant::now() < deadline && pid.is_none() {
+            let screen = terminal.screen().text;
+            pid = screen
+                .split_whitespace()
+                .filter_map(|word| word.strip_prefix("PID="))
+                .find_map(|pid| pid.parse::<i32>().ok());
+            if pid.is_none() {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+        let Some(pid) = pid else {
+            panic!("the shell printed its pid: {:?}", terminal.screen().text);
+        };
+        // `exec` keeps the pid and the process group, so the sleep stands in
+        // for the shell without touching the terminal; the ignored HUP
+        // outlives exec, so closing the PTY alone does not end it.
+        terminal.write_text("trap \"\" HUP; exec sleep 300\r").expect("a write");
+        std::thread::sleep(Duration::from_millis(200));
+        terminal.close();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut gone = false;
+        while Instant::now() < deadline && !gone {
+            if let Some(pid) = Pid::from_raw(pid) {
+                gone = rustix::process::test_kill_process(pid).is_err();
+            }
+            if !gone {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+        if !gone {
+            // The PTY's own drop waits for the child, so a child this close
+            // failed to reach would hang the assertion instead of failing it.
+            if let Some(pid) = Pid::from_raw(pid) {
+                let _ = rustix::process::kill_process(pid, Signal::KILL);
+            }
+        }
+        assert!(gone, "the terminal's process group was killed");
+    }
+
+    /// **A cwd the PTY cannot enter is refused by name.** alacritty ignores
+    /// the child's chdir failure, which would run the shell in forge's own
+    /// launch directory.
+    #[test]
+    fn a_cwd_that_cannot_be_entered_is_refused() {
+        let mut bad = config("/bin/sh");
+        bad.cwd = PathBuf::from("/definitely/not/a/forge/terminal/cwd");
+        let Err(error) = Terminal::spawn(&bad) else {
+            panic!("the cwd is refused");
+        };
+        assert!(
+            error.to_string().contains("/definitely/not/a/forge/terminal/cwd"),
+            "the error names the path: {error}"
+        );
+    }
+
+    /// **A dead shell is not running and reports its own exit**, not the last
+    /// command's marks.
+    #[test]
+    fn a_dead_shell_reports_its_own_exit() {
+        let terminal = Terminal::spawn(&config("/bin/sh")).expect("a terminal");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline && terminal.screen().text.trim().is_empty() {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        terminal.write_text("exit 3\r").expect("a write");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline && terminal.is_alive() {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let state = terminal.state();
+        assert!(!state.running, "the shell is gone: {state:?}");
+        assert!(state.input_expected.is_none(), "nothing is waiting for input: {state:?}");
+        assert_eq!(state.exit, Some(Exit { code: Some(3), signal: None }), "{state:?}");
+    }
+
+    /// **A hung-up or errored PTY is over.** Polling one again would return
+    /// the same flag forever, which was a full-CPU spin reporting the shell
+    /// alive.
+    #[test]
+    fn a_hung_up_or_errored_pty_ends_the_loop() {
+        assert!(poll_ended(PollFlags::HUP), "a hangup has nothing left to read");
+        assert!(poll_ended(PollFlags::ERR), "an error is not a retry");
+        assert!(!poll_ended(PollFlags::IN), "a readable terminal is not over");
     }
 
     /// A closed terminal refuses input rather than writing into a dead PTY.

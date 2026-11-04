@@ -382,6 +382,9 @@
     if (held.kind === 'settings_write') {
       return { mark: 'settings', label: 'config write waiting', tone: 'att' as const };
     }
+    if (held.kind === 'terminal_hand_off') {
+      return { mark: 'bell', label: 'terminal waiting', tone: 'att' as const };
+    }
     return { mark: 'bell', label: 'browser waiting', tone: 'att' as const };
   });
 
@@ -516,6 +519,7 @@
       handOff.current = {
         id,
         reason: held.request.reason,
+        secret: held.request.secret,
         respond: (ending) => {
           remember(id);
           try {
@@ -1025,6 +1029,10 @@
         box.ended = { tone: 'warn', text: message.why };
         return;
       }
+      if (message.what === 'respond_terminal_hand_off') {
+        box.ended = { tone: 'warn', text: message.why };
+        return;
+      }
       if (message.what === 'respond_settings_write') {
         box.ended = { tone: 'warn', text: message.why };
         return;
@@ -1348,11 +1356,17 @@
     const tabbables = (): HTMLElement[] => {
       const at = rootOf();
       if (at === null) return [];
-      return [
+      const all = [
         ...at.querySelectorAll<HTMLElement>(
           'textarea, input, button, [href], [tabindex]:not([tabindex="-1"])',
         ),
       ].filter((el) => !el.hasAttribute('disabled') && el.offsetParent !== null);
+      // **The field leads whatever else the box holds.** The live row's chips
+      // sit above it in the DOM, and a Tab from the page must still come to
+      // the box's own keyboard rather than to a strip button.
+      return field !== null && all.includes(field)
+        ? [field, ...all.filter((el) => el !== field)]
+        : all;
     };
     const onKey = (event: KeyboardEvent): void => {
       if (event.defaultPrevented) return;
@@ -1654,6 +1668,7 @@
       return `question:${current.request.toolId}:${String(current.request.index)}`;
     }
     if (current.kind === 'browser_hand_off') return `handoff:${current.request.id}`;
+    if (current.kind === 'terminal_hand_off') return `terminal:${current.request.id}`;
     if (current.kind === 'settings_write') return `settings:${current.request.id}`;
     return `slack:${current.request.id}`;
   }
