@@ -80,6 +80,7 @@ pub enum PendingAsk {
     BrowserHandOff(Box<forge_primitives::browser::HandOff>),
     DocumentHandOff(Box<forge_primitives::document::DocumentHandOffAsk>),
     SettingsWrite(Box<forge_primitives::settings::SettingsWriteAsk>),
+    Vault(Box<forge_primitives::vault::VaultDraft>),
 }
 
 impl PendingAsk {
@@ -94,7 +95,8 @@ impl PendingAsk {
             Self::SlackDraft(_)
             | Self::BrowserHandOff(_)
             | Self::DocumentHandOff(_)
-            | Self::SettingsWrite(_) => None,
+            | Self::SettingsWrite(_)
+            | Self::Vault(_) => None,
         }
     }
 }
@@ -384,6 +386,17 @@ pub enum Command {
         key: SessionSlot,
         id: uuid::Uuid,
         approved: bool,
+    },
+    /// Answer a held vault call. The blocked MCP handler is awaiting this
+    /// answer; a decline runs nothing, a send-back carries the reader's note
+    /// to the agent, and an approval runs the call after unlocking the shared
+    /// session when the card asked for the master password. App-level like
+    /// `RespondSettingsWrite`: the registry is workspace state, and `key`
+    /// names the owner the answer is checked against.
+    RespondVaultAsk {
+        key: SessionSlot,
+        id: uuid::Uuid,
+        answer: forge_primitives::vault::VaultAskAnswer,
     },
     RespondQuestion {
         key: SessionSlot,
@@ -932,6 +945,7 @@ impl Command {
             | Self::RespondBrowserHandOff { .. }
             | Self::AnswerDocumentHandOff { .. }
             | Self::RespondSettingsWrite { .. }
+            | Self::RespondVaultAsk { .. }
             | Self::SubmitReview { .. }
             | Self::TaskVerdict { .. }
             | Self::TaskAnswer { .. }
@@ -1036,6 +1050,12 @@ impl std::fmt::Debug for Command {
                 .field("id", id)
                 .field("approved", approved)
                 .finish(),
+            Self::RespondVaultAsk { key, id, answer } => f
+                .debug_struct("RespondVaultAsk")
+                .field("key", key)
+                .field("id", id)
+                .field("answer", answer)
+                .finish_non_exhaustive(),
             Self::AnswerDocumentHandOff { key, id, answer } => f
                 .debug_struct("AnswerDocumentHandOff")
                 .field("key", key)
@@ -2162,6 +2182,23 @@ pub enum SessionUpdate {
         id: Uuid,
         ending: forge_primitives::settings::SettingsWriteEnding,
     },
+    /// A vault call waits for the reader's approval in the dock: the family's
+    /// tool handler is blocked on a oneshot until `Command::RespondVaultAsk`
+    /// answers it, so no operation runs in the vault while this is outstanding.
+    /// `needs_unlock` on the draft is stamped from the live session as the
+    /// card is built, so a sibling that unlocked first re-bases this one.
+    VaultAskPending {
+        key: SessionSlot,
+        draft: forge_primitives::vault::VaultDraft,
+    },
+    /// A held vault call left the core's registry: answered in some view, or
+    /// its asking session gone. `ending` is what a view that did not answer
+    /// it says happened; the tool result carries the operation's own outcome.
+    VaultAskResolved {
+        key: SessionSlot,
+        id: Uuid,
+        ending: forge_primitives::vault::VaultAskEnding,
+    },
     /// One rendered clip of the seat's speech, mono 16-bit samples at
     /// `sample_rate`. Chunks arrive in `seq` order and every client with
     /// voice on for the seat plays them; a client with voice off receives
@@ -2224,6 +2261,8 @@ impl SessionUpdate {
             | Self::DocumentHandOffResolved { key, .. }
             | Self::SettingsWritePending { key, .. }
             | Self::SettingsWriteResolved { key, .. }
+            | Self::VaultAskPending { key, .. }
+            | Self::VaultAskResolved { key, .. }
             | Self::VoiceAudio { key, .. }
             | Self::VoiceModeState { key, .. }
             | Self::ChatAppended { key, .. }
@@ -2571,6 +2610,18 @@ impl std::fmt::Debug for SessionUpdate {
                 .field("id", id)
                 .field("ending", ending)
                 .finish_non_exhaustive(),
+            Self::VaultAskPending { key, draft } => f
+                .debug_struct("VaultAskPending")
+                .field("key", key)
+                .field("id", &draft.id)
+                .field("tool", &draft.tool)
+                .finish_non_exhaustive(),
+            Self::VaultAskResolved { key, id, ending } => f
+                .debug_struct("VaultAskResolved")
+                .field("key", key)
+                .field("id", id)
+                .field("ending", ending)
+                .finish_non_exhaustive(),
             Self::CatalogLoaded => f.write_str("CatalogLoaded"),
             Self::CliVersionChanged => f.write_str("CliVersionChanged"),
             Self::AccountsChanged { accounts } => f
@@ -2647,6 +2698,13 @@ pub enum DispatchError {
         "that configuration write is no longer waiting: it has been answered, or its asking session went away"
     )]
     NoSettingsWriteWaiting { key: SessionSlot, id: Uuid },
+    /// A vault answer named a held call the registry does not hold: answered
+    /// in another view, or its asking session went away. Its own word for the
+    /// same reason [`Self::NoDraftWaiting`] has one.
+    #[error(
+        "that vault call is no longer waiting: it has been answered, or its asking session went away"
+    )]
+    NoVaultAskWaiting { key: SessionSlot, id: Uuid },
     /// A catalogue check was asked for with `[dictate]` switched off:
     /// there are no pinned models for a check to be about.
     #[error("dictation is off, so there is no catalogue to check")]

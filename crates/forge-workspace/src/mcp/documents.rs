@@ -16,7 +16,7 @@
 //!
 //! **Any-caller and not toggleable, like the browser**: every session may
 //! hand a document out of its own tree, and the read resolves against that
-//! tree or its project's `vault_roots` - so there is nothing a project
+//! tree or its project's `document_roots` - so there is nothing a project
 //! could withhold. Every state the read can refuse is the call's failure,
 //! with the read's own sentence in it.
 
@@ -66,7 +66,7 @@ pub(crate) fn add_tools(
 /// over, when `reviewable` earns its place, and which moment this answers.
 const DESCRIPTION: &str = "\
 Hand the reader a document from this session's working tree, or from one of \
-the project's vault roots, opened in their own viewer. This tool is for \
+the project's document roots, opened in their own viewer. This tool is for \
 documents - Markdown, PDF, plain text; a visual artifact - an HTML mockup, \
 a PNG - goes to the browser instead: navigate to it and hand off that tab \
 with `browser_hand_off`, never this tool. Use it when a \
@@ -74,7 +74,7 @@ document is the thing the reader should see - a plan, a report, a spec - \
 rather than part of the conversation; a document the reader is meant to \
 review goes here with `reviewable: true`, never as a path or link in \
 chat. `path` is relative to the working directory, or absolute under \
-one of the project's `vault_roots` in `forge.toml`. Set `reviewable` \
+one of the project's `document_roots` in `forge.toml`. Set `reviewable` \
 when you want review comments back: the reader opens it, comments on \
 lines and answers, and their review then arrives filed under the \
 document's own scope. A PDF always opens read-only. **The answer is \
@@ -90,7 +90,7 @@ it answers when they approve, send feedback or say not now.";
 /// paragraphs it shares with `DESCRIPTION` change in both.
 const DESCRIPTION_WITHOUT_REVIEW: &str = "\
 Hand the reader a document from this session's working tree, or from one of \
-the project's vault roots, opened in their own viewer. This tool is for \
+the project's document roots, opened in their own viewer. This tool is for \
 documents - Markdown, PDF, plain text; a visual artifact - an HTML mockup, \
 a PNG - goes to the browser instead: navigate to it and hand off that tab \
 with `browser_hand_off`, never this tool. Use it when a \
@@ -98,7 +98,7 @@ document is the thing the reader should see - a plan, a report, a spec - \
 rather than part of the conversation; a document the reader is meant to \
 review goes here with `reviewable: true`, never as a path or link in \
 chat. `path` is relative to the working directory, or absolute under \
-one of the project's `vault_roots` in `forge.toml`. Set `reviewable` \
+one of the project's `document_roots` in `forge.toml`. Set `reviewable` \
 to ask the reader for a review of it: they open it, comment on lines \
 and answer, and their review is filed under the document's own scope. \
 This session was spawned without the `review` MCP family, so you cannot \
@@ -141,7 +141,7 @@ impl Tool for HandOffTool {
                     "type": "string",
                     "description": "The document's path, relative to the session's working \
                                     directory, or absolute under one of the project's \
-                                    `vault_roots` in `forge.toml`.",
+                                    `document_roots` in `forge.toml`.",
                 },
                 "reviewable": {
                     "type": "boolean",
@@ -182,7 +182,7 @@ impl HandOffTool {
     async fn hand_off(&self, args: Value) -> Result<String, String> {
         let Some(path) = args.get("path").and_then(Value::as_str) else {
             return Err("documents__hand_off needs `path`: the document's path, relative to this \
-                 session's working directory or absolute under one of the project's vault_roots"
+                 session's working directory or absolute under one of the project's document_roots"
                 .to_owned());
         };
         let reviewable = match args.get("reviewable") {

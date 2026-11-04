@@ -124,7 +124,7 @@ impl Workspace {
         };
         let read = crate::env::documents::read(
             std::path::Path::new(&cwd),
-            &self.vault_roots_for_session(seat),
+            &self.document_roots_for_session(seat),
             path,
             reviewable,
             self.document_max_bytes(),
@@ -177,7 +177,7 @@ mod tests {
     use crate::workspace::Workspace;
 
     /// A workspace holding one project rooted at `cwd` with `roots` as
-    /// its vault roots, and the project's lead slot. The project is
+    /// its document roots, and the project's lead slot. The project is
     /// declared in the config rather than seeded into the test overlay:
     /// a lead's cwd comes from `project_for_slot`, which reads
     /// `config.projects`.
@@ -196,14 +196,14 @@ mod tests {
             env_file: None,
             max_workers: None,
             permission_mode: forge_primitives::permission::PermissionMode::Auto,
-            vault_roots: roots,
+            document_roots: roots,
             handoff: None,
             browser_profile: forge_primitives::browser::ProfileKey::of("TestOrg", "default")
                 .expect("a profile key"),
             slack_workspace: None,
         });
         let (ws, _rx) = Workspace::testing_stub_with_config(
-            PathBuf::from("/tmp/forge-vault-roots-test"),
+            PathBuf::from("/tmp/forge-document-roots-test"),
             config,
         )
         .expect("the stub builds");
@@ -266,13 +266,13 @@ mod tests {
         assert!(ws.document_handoffs.lock().is_empty(), "and leaves nothing registered");
     }
 
-    /// The hand-off consults the seat's PROJECT's vault_roots: a file
+    /// The hand-off consults the seat's PROJECT's document_roots: a file
     /// under one gets past the containment check - with no client
     /// attached the park is what refuses it - while the same call on a
     /// project declaring none is the outside-the-tree sentence, the
     /// control that the roots are what carried it.
     #[tokio::test]
-    async fn the_hand_off_reads_through_the_seats_projects_vault_roots() {
+    async fn the_hand_off_reads_through_the_seats_projects_document_roots() {
         let dir = tempfile::tempdir().expect("tempdir");
         let base = dir.path().canonicalize().expect("canonical");
         let tree = base.join("tree");

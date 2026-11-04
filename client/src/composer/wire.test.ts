@@ -243,6 +243,40 @@ describe('the ask as the composer reads it', () => {
     expect(held.request.proposed).toBe(4);
     expect(held.request.unset).toBe(false);
   });
+
+  it('names a held vault call by the facts its card draws, and nothing else', () => {
+    // **A value planted on an unknown key never reaches the narrowed shape**,
+    // which is the client's half of the draft's contract: the core sends no
+    // secret, and this parser could not carry one if it did.
+    const held = askFrom({
+      kind: 'vault',
+      request: {
+        id: '0192e1c0-0000-7000-8000-0000000000cc',
+        tool: 'vault__update',
+        summary: "change the login for 'bank'",
+        item_id: 'cipher-id',
+        item_name: 'bank',
+        field: 'password',
+        masked_diff: 'password: ********',
+        attachment: { name: 'notes.txt', size: 97, replaces: 'old-attachment' },
+        needs_unlock: true,
+        secret: 'hunter2',
+      },
+    });
+    if (held?.kind !== 'vault') throw new Error('the held call did not narrow');
+
+    expect(held.request).toEqual({
+      id: '0192e1c0-0000-7000-8000-0000000000cc',
+      tool: 'vault__update',
+      summary: "change the login for 'bank'",
+      itemId: 'cipher-id',
+      itemName: 'bank',
+      field: 'password',
+      maskedDiff: 'password: ********',
+      attachment: { name: 'notes.txt', size: 97, replaces: 'old-attachment' },
+      needsUnlock: true,
+    });
+  });
 });
 
 describe('the browser hand-off read', () => {

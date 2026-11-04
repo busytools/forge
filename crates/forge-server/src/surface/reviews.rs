@@ -72,7 +72,7 @@ impl ViewSurface {
         threads: Vec<ReviewThread>,
     ) -> Vec<PlacedThread> {
         let cwd = self.roster().cwd_for(seat);
-        let roots = self.roster().vault_roots_for(seat);
+        let roots = self.roster().document_roots_for(seat);
         let ceiling = self.workspace.document_max_bytes();
         let mut files: std::collections::HashMap<String, Option<Vec<String>>> =
             std::collections::HashMap::new();
@@ -283,21 +283,21 @@ mod tests {
         assert_eq!(threads[0].placement, None, "no landing rather than a guess");
     }
 
-    /// The placement read hands the seat's project's vault roots to the
-    /// read, so a thread anchored on a vault document places against it.
-    /// Dropping the roots from the placement read leaves the thread
+    /// The placement read hands the seat's project's document roots to the
+    /// read, so a thread anchored on a document under a root places against
+    /// it. Dropping the roots from the placement read leaves the thread
     /// unplaced.
     #[test]
-    fn tree_reviews_places_a_thread_on_a_vault_document() {
+    fn tree_reviews_places_a_thread_on_a_document_under_a_root() {
         use forge_primitives::review::tree_scope_ref;
         use forge_workspace::env::git_diff::resolver::{AnchorPlacement, anchor_hash};
 
         let tree = tempfile::tempdir().expect("tempdir");
-        let vault = tempfile::tempdir().expect("tempdir");
-        let file = vault.path().join("plan.md");
-        std::fs::write(&file, "line one\nline two\n").expect("the vault document");
+        let documents = tempfile::tempdir().expect("tempdir");
+        let file = documents.path().join("plan.md");
+        std::fs::write(&file, "line one\nline two\n").expect("the document");
         let (workspace, _dir) =
-            crate::surface::testing::workspace_with_vault_roots(tree.path(), vault.path());
+            crate::surface::testing::workspace_with_document_roots(tree.path(), documents.path());
 
         let worker = SessionSlot::worker("TestOrg", "forge", "reader");
         let project = ViewSurface::new(Arc::clone(&workspace))
@@ -337,7 +337,7 @@ mod tests {
         assert_eq!(
             threads[0].placement,
             Some(AnchorPlacement::Placed { line: 2, moved_from: None }),
-            "in place against the vault document",
+            "in place against the document",
         );
     }
 }

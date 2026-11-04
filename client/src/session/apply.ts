@@ -333,6 +333,19 @@ export const HANDLERS: Record<string, Apply> = {
     return { ...held, pending_asks };
   },
 
+  vault_ask_pending: (held, payload) => parked(held, 'vault', payload['draft']),
+
+  vault_ask_resolved: (held, payload) => {
+    // The call left the core's registry - answered in another view, or its
+    // asking session gone - which is the only thing on the stream that clears
+    // a parked one this view never sent.
+    const id = text(payload['id']);
+    if (id === null) return held;
+    const pending_asks = held.pending_asks.filter((ask) => askKey(ask) !== `vault:${id}`);
+    if (pending_asks.length === held.pending_asks.length) return held;
+    return { ...held, pending_asks };
+  },
+
   slack_draft_resolved: (held, payload) => {
     // The draft left the core's registry - answered in another view, or its
     // session gone. A draft is answered by its own id, so this is the only
@@ -607,14 +620,29 @@ function parked(held: SessionRecord, kind: string, request: unknown): SessionRec
   if (request === undefined) return held;
   const ask = { kind, request };
   const key = askKey(ask);
-  if (key !== null && held.pending_asks.some((waiting) => askKey(waiting) === key)) return held;
+  if (key !== null) {
+    const existing = held.pending_asks.findIndex((waiting) => askKey(waiting) === key);
+    if (existing !== -1) {
+      // A repeated frame is not news. A restamped one (a vault card after
+      // another call unlocked the session) updates the ask in place: the
+      // position is the arrival order the core reports, and the new draft is
+      // the live one.
+      const previous = held.pending_asks[existing];
+      if (JSON.stringify(previous) === JSON.stringify(ask)) return held;
+      const pending_asks = held.pending_asks.map((waiting, at) =>
+        at === existing ? ask : waiting,
+      );
+      return { ...held, pending_asks };
+    }
+  }
   // The kinds held in the core's own registries rather than in the session's
   // pending set lead, the way the core's read orders them.
   const leads = (name: unknown): boolean =>
     name === 'slack_draft' ||
     name === 'browser_hand_off' ||
     name === 'document_hand_off' ||
-    name === 'settings_write';
+    name === 'settings_write' ||
+    name === 'vault';
   if (!leads(kind)) {
     return { ...held, pending_asks: [...held.pending_asks, ask] };
   }
@@ -652,6 +680,10 @@ function askKey(ask: unknown): string | null {
   if (kind === 'settings_write') {
     const id = text(request['id']);
     return id === null ? null : `settings:${id}`;
+  }
+  if (kind === 'vault') {
+    const id = text(request['id']);
+    return id === null ? null : `vault:${id}`;
   }
   const id = text(record(request['tool_call'])['tool_call_id']);
   if (id === null) return null;

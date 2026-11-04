@@ -347,6 +347,7 @@ fn seat_update(record: &mut Value, name: &str, payload: &Value) -> bool {
         "slack_post_pending" => parked(record, "slack_draft", payload.get("draft")),
         "browser_hand_off_pending" => parked(record, "browser_hand_off", payload.get("handoff")),
         "settings_write_pending" => parked(record, "settings_write", payload.get("ask")),
+        "vault_ask_pending" => parked(record, "vault", payload.get("draft")),
         "prompt_queued" => {
             let (Some(uuid), Some(words)) = (
                 payload.get("uuid").and_then(Value::as_str),
@@ -444,6 +445,7 @@ fn seat_update(record: &mut Value, name: &str, payload: &Value) -> bool {
         "slack_draft_resolved" => clear_ask(record, payload.get("id"), "slack"),
         "browser_hand_off_resolved" => clear_ask(record, payload.get("id"), "handoff"),
         "settings_write_resolved" => clear_ask(record, payload.get("id"), "settings"),
+        "vault_ask_resolved" => clear_ask(record, payload.get("id"), "vault"),
         // **A take is never folded here.** It belongs to the connection that
         // started it - the wire's own composer says so ("no take and no
         // notice") - so a record has no place for one and the page's own
@@ -700,21 +702,33 @@ fn parked(record: &mut Map<String, Value>, kind: &str, request: Option<&Value>) 
     let Some(request) = request else { return false };
     let ask = json!({ "kind": kind, "request": request });
     let key = ask_key(&ask);
-    let asks = array(record.get("pending_asks"));
+    let mut asks = array(record.get("pending_asks"));
     if let Some(key) = &key
-        && asks.iter().any(|waiting| ask_key(waiting).as_deref() == Some(key.as_str()))
+        && let Some(at) =
+            asks.iter().position(|waiting| ask_key(waiting).as_deref() == Some(key.as_str()))
     {
-        return false;
+        // A restamped frame (a vault card after another call unlocked) updates
+        // the ask in place; its position is the arrival order the core reports.
+        asks[at] = ask;
+        record.insert("pending_asks".to_owned(), Value::Array(asks));
+        return true;
     }
-    let leads = kind == "slack_draft" || kind == "browser_hand_off" || kind == "settings_write";
-    let mut asks = asks;
+    let leads = kind == "slack_draft"
+        || kind == "browser_hand_off"
+        || kind == "document_hand_off"
+        || kind == "settings_write"
+        || kind == "vault";
     if leads {
         // Behind the leaders already there, ahead of everything else.
         let first_other = asks
             .iter()
             .position(|waiting| {
                 let name = waiting.get("kind").and_then(Value::as_str).unwrap_or_default();
-                name != "slack_draft" && name != "browser_hand_off" && name != "settings_write"
+                name != "slack_draft"
+                    && name != "browser_hand_off"
+                    && name != "document_hand_off"
+                    && name != "settings_write"
+                    && name != "vault"
             })
             .unwrap_or(asks.len());
         asks.insert(first_other, ask);
@@ -738,6 +752,9 @@ fn ask_key(ask: &Value) -> Option<String> {
     }
     if kind == "settings_write" {
         return request.get("id").and_then(Value::as_str).map(|id| format!("settings:{id}"));
+    }
+    if kind == "vault" {
+        return request.get("id").and_then(Value::as_str).map(|id| format!("vault:{id}"));
     }
     let id = ask_tool_id(ask)?;
     Some(if kind == "question" {
@@ -970,6 +987,63 @@ mod tests {
         let asks = seen["pending_asks"].as_array().expect("asks");
         assert_eq!(asks[0]["kind"], json!("slack_draft"), "the draft leads");
         assert_eq!(asks[1]["kind"], json!("question"));
+    }
+
+    /// A held vault call parks by its own id and leads, like every ask the
+    /// core holds in its own registry; its resolution clears only the one it
+    /// names.
+    #[test]
+    fn a_vault_call_leads_and_clears_by_its_id() {
+        let mut records = open();
+        let question = json!({ "tool_call": { "tool_call_id": "t1" }, "question_index": 0 });
+        records.apply(&seated("question_request", json!({ "request": question })));
+        let draft = json!({
+            "id": "v1",
+            "tool": "vault_get",
+            "summary": "read the password for 'bank'",
+            "needs_unlock": true
+        });
+        records.apply(&seated("vault_ask_pending", json!({ "draft": draft })));
+        let asks = held(&records)["pending_asks"].as_array().expect("asks").clone();
+        assert_eq!(asks[0]["kind"], json!("vault"), "the call leads");
+        assert_eq!(asks[1]["kind"], json!("question"));
+
+        records.apply(&seated("vault_ask_resolved", json!({ "id": "v2" })));
+        assert_eq!(
+            held(&records)["pending_asks"].as_array().expect("asks").len(),
+            2,
+            "another call's resolution leaves this one parked"
+        );
+        records.apply(&seated("vault_ask_resolved", json!({ "id": "v1" })));
+        let asks = held(&records)["pending_asks"].as_array().expect("asks").clone();
+        assert_eq!(asks.len(), 1, "its own resolution clears it");
+        assert_eq!(asks[0]["kind"], json!("question"));
+    }
+
+    /// A restamped frame for a vault call already parked updates it in place:
+    /// another call's unlock makes every other card an ordinary approve card,
+    /// and the record must not keep demanding the password.
+    #[test]
+    fn a_restamped_vault_call_updates_in_place() {
+        let mut records = open();
+        let draft = json!({
+            "id": "v1",
+            "tool": "vault_get",
+            "summary": "read the password for 'bank'",
+            "needs_unlock": true
+        });
+        records.apply(&seated("vault_ask_pending", json!({ "draft": draft })));
+        let restamped = json!({
+            "id": "v1",
+            "tool": "vault_get",
+            "summary": "read the password for 'bank'",
+            "needs_unlock": false
+        });
+        records.apply(&seated("vault_ask_pending", json!({ "draft": restamped })));
+
+        let asks = held(&records)["pending_asks"].as_array().expect("asks").clone();
+        assert_eq!(asks.len(), 1, "the restamp does not park a second card");
+        assert_eq!(asks[0]["request"]["needs_unlock"], json!(false), "the card re-bases");
     }
 
     /// The round as well as the call: a resolution naming a later round does

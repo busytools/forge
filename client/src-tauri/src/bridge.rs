@@ -1032,6 +1032,7 @@ impl Bridge {
             "browser_hand_off_pending",
             "document_hand_off_pending",
             "settings_write_pending",
+            "vault_ask_pending",
         ]
         .iter()
         .any(|key| update.get(*key).is_some());

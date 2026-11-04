@@ -6,7 +6,7 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 rust-version.workspace = true
-description = "One module per inbound connector: stream client, REST lookups and subscription matching for one external integration."
+description = "One module per external integration: the Gotify and Slack connectors and the outbound Vaultwarden client."
 publish = false
 
 [lints]
@@ -16,15 +16,30 @@ workspace = true
 forge-primitives = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
+base64 = { workspace = true }
+# bitwarden-crypto 4.0.0 is GPL-3.0-only OR LicenseRef-Bitwarden-SDK. Private use
+# is accepted for the vault family per the approved plan; see Cargo.toml's
+# [workspace.metadata] note.
+bitwarden-crypto = "4.0.0"
+data-encoding = "2"
 form_urlencoded = "1.2"
 futures = { workspace = true }
-reqwest = { workspace = true }
+hmac = "0.13"
+reqwest = { workspace = true, features = ["multipart"] }
+rsa = "0.10.0-rc.17"
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha1 = "0.11"
+sha2 = { workspace = true }
+thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-tungstenite = { workspace = true }
 tracing = { workspace = true }
+url = "2"
+uuid = { workspace = true }
+zeroize = "1"
 
 [dev-dependencies]
+bitwarden-random = "4.0.0"
 tracing-subscriber = { workspace = true }
 uuid = { workspace = true }

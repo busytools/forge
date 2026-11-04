@@ -45,7 +45,7 @@ pub const AREAS: &[AreaSpec] = &[
     AreaSpec {
         id: "connectors",
         name: "connectors",
-        note: "gotify, slack, system one and the plugin switch - the integrations that reach outside forge",
+        note: "gotify, slack, system one, the vault and the plugin switch - the integrations that reach outside forge",
     },
     AreaSpec {
         id: "server",
@@ -192,12 +192,14 @@ fn edit_spec(path: &str) -> EditSpec {
         | "orgs[].projects[].env_file"
         | "orgs[].projects[].browser_profile"
         | "orgs[].projects[].slack.workspace" => named(TEXT, "project"),
-        "orgs[].projects[].vault_roots" => named(LIST, "project"),
+        "orgs[].projects[].document_roots" => named(LIST, "project"),
         // connectors
         "gotify.url"
         | "gotify.client_token"
         | "systemone.base_url"
         | "systemone.model"
+        | "vault.url"
+        | "vault.email"
         | "server.bind" => required(TEXT),
         "slack[].workspace" | "slack[].token" => named(required(TEXT), "slack"),
         "slack[].poll_seconds"
@@ -616,17 +618,17 @@ const PROJECT_KEYS: &[ConfigKey] = &[
         },
     },
     ConfigKey {
-        path: "orgs[].projects[].vault_roots",
+        path: "orgs[].projects[].document_roots",
         area: "projects",
-        class: EffectClass::NextSession,
+        class: EffectClass::Live,
         rows: |config| {
             config
                 .projects
                 .iter()
                 .map(|p| {
                     list(
-                        project_path(p, "vault_roots"),
-                        p.vault_roots.iter().map(|root| root.display().to_string()).collect(),
+                        project_path(p, "document_roots"),
+                        p.document_roots.iter().map(|root| root.display().to_string()).collect(),
                     )
                 })
                 .collect()
@@ -888,6 +890,22 @@ const CONNECTOR_KEYS: &[ConfigKey] = &[
                 .map(|s| number("systemone.timeout_ms", s.timeout_ms))
                 .into_iter()
                 .collect()
+        },
+    },
+    ConfigKey {
+        path: "vault.url",
+        area: "connectors",
+        class: EffectClass::Live,
+        rows: |config| {
+            vec![text_set("vault.url", config.vault.as_ref().map(|vault| vault.url.clone()))]
+        },
+    },
+    ConfigKey {
+        path: "vault.email",
+        area: "connectors",
+        class: EffectClass::Live,
+        rows: |config| {
+            vec![text_set("vault.email", config.vault.as_ref().map(|vault| vault.email.clone()))]
         },
     },
     ConfigKey {
@@ -1787,7 +1805,7 @@ model = "glm-5.3-flash"
 permission_mode = "auto"
 max_workers = 3
 env_file = "/tmp/forge-settings-test.env"
-vault_roots = ["/tmp"]
+document_roots = ["/tmp"]
 browser_profile = "projprofile"
 
 [orgs.projects.env]
@@ -1843,6 +1861,10 @@ base_url = "https://systemone.test"
 api_key = "k"
 model = "jev"
 timeout_ms = 1000
+
+[vault]
+url = "https://vault.test"
+email = "hi@vedhavyas.dev"
 
 [[slack]]
 workspace = "Test Slack"
@@ -2014,6 +2036,7 @@ models = ["m"]
         let huggingface = accepted_fields(&format!("{BASE}\n[huggingface]\nzzz_unknown = 1\n"));
         let gotify = accepted_fields(&format!("{BASE}\n[gotify]\nzzz_unknown = 1\n"));
         let systemone = accepted_fields(&format!("{BASE}\n[systemone]\nzzz_unknown = 1\n"));
+        let vault = accepted_fields(&format!("{BASE}\n[vault]\nzzz_unknown = 1\n"));
         let slack = accepted_fields(&format!("{BASE}\n[[slack]]\nzzz_unknown = 1\n"));
         let plugins = accepted_fields(&format!("{BASE}\n[plugins]\nzzz_unknown = 1\n"));
         let gateway = accepted_fields(&format!("{BASE}\n[gateway]\nzzz_unknown = 1\n"));
@@ -2058,6 +2081,7 @@ models = ["m"]
                 "systemone" => {
                     accepted.extend(systemone.iter().map(|field| format!("systemone.{field}")));
                 }
+                "vault" => accepted.extend(vault.iter().map(|field| format!("vault.{field}"))),
                 "slack" => accepted.extend(slack_names(&slack)),
                 "plugins" => {
                     accepted.extend(plugins.iter().map(|field| format!("plugins.{field}")));
