@@ -5319,32 +5319,27 @@ details[open] > summary .arw { opacity: 1; }
 }
 
 /* ---------- the document viewer ---------- */
-/* **The route is the scroller and the desk, and the sheet is a centred
-   reading column.** The page background stays the window's width; the
-   document sits on it as one centred sheet about 88 characters wide, so a
-   paragraph has a readable measure without the reader tracking across a
-   wide window. Code blocks and tables take the sheet's whole content width.
-   The scroller wears the sheet's one scrollbar skin (the group at the top),
-   corner included - the platform's unstyled corner is the white block this
-   page used to show at its bottom-right. */
+/* **The route is the scroller and the desk, and the sheet is a wide centred
+   page.** The page background stays the window's width; the document sits on
+   it as one wide centred sheet that uses the space, rather than a narrow
+   column with a desk of empty room beside it. Prose runs the sheet's whole
+   width (Ved, 2026-11-04: the centred column was right in direction and
+   wrong in measure). The scroller wears the sheet's one scrollbar skin (the
+   group at the top), corner included - the platform's unstyled corner is the
+   white block this page used to show at its bottom-right. */
 .doc-page { max-width: none; margin: 0; height: 100dvh; overflow-y: auto;
   overflow-x: hidden; scrollbar-gutter: stable; }
 /* **The sheet** (Ved, the look): the document rests on the app like a page
-   on a desk - one centred panel, and the space around it is the desk rather
-   than emptiness. The typography inside is the chat's own rules under the
-   doc scope, carrying the reading scale the drawing settled on: a hairline
-   over every section, tighter leading, one type scale for both the rendered
-   prose and the reviewable blocks (whose HTML is bare elements, so the same
-   rules reach them). */
-.doc-page .doc-body { max-width: 88ch; margin-inline: auto; background: var(--s1);
-  /* The document's own column, which its stacked tables guard on. */
+   on a desk - one wide centred panel, and the space around it is the desk
+   rather than emptiness. The typography inside is the chat's own rules under
+   the doc scope, carrying the reading scale the drawing settled on: a
+   hairline over every section, tighter leading, one type scale for both the
+   rendered prose and the reviewable blocks (whose HTML is bare elements, so
+   the same rules reach them). */
+.doc-page .doc-body { max-width: 1400px; margin-inline: auto; background: var(--s1);
+  /* The document's own width, which its stacked tables guard on. */
   container-type: inline-size;
   border: 1px solid var(--line); border-radius: 10px; padding: 46px 48px 40px; }
-/* A person reads prose line by line, so it keeps a measure; a heading rides
-   the same one. Code, tables and unbroken tokens are read by their columns
-   and take the whole sheet. */
-.doc-page .doc-body :is(h1, h2, h3, p, li, blockquote) { max-width: 76ch; }
-.doc-page .doc-body :is(pre, table, .code) { max-width: none; }
 .doc-page .doc-body h1 { font-size: 30px; line-height: 1.25; font-weight: 500;
   letter-spacing: -0.01em; margin: 0 0 18px; }
 .doc-page .doc-body h2 { font-size: 19px; font-weight: 500; letter-spacing: -0.005em;
@@ -5401,19 +5396,26 @@ details[open] > summary .arw { opacity: 1; }
 .doc-page .doc-block { position: relative; border-radius: 6px; cursor: pointer;
   padding: 0 10px 0 0; margin: 0 -10px 0 0; }
 .doc-page .doc-block:hover, .doc-page .doc-block.target, .doc-page .doc-block:focus-within {
-  background: var(--s2); box-shadow: inset 2px 0 0 var(--accent); outline: none; }
-/* The `+`: shown on hover or focus, and drawn always for a finger - an
+  background: var(--s2); outline: none; }
+/* The `+` is a plain mark in the margin - no chip, no rule (Ved, 2026-11-04) -
+   shown on hover or focus, and drawn always for a finger, because an
    affordance that exists only on hover is unreachable on touch. */
-.doc-page .doc-add { position: absolute; left: -2.2rem; top: 0.2rem; width: 1.5rem;
-  height: 1.5rem; display: grid; place-items: center; padding: 0;
-  border: 1px solid var(--line); border-radius: 999px; background: var(--s2);
-  color: var(--muted); font-family: var(--mono); font-size: 14px; line-height: 1;
-  cursor: pointer; opacity: 0; transition: opacity 120ms ease; }
+.doc-page .doc-add { position: absolute; left: -2.2rem; top: 0.15rem; width: 1.4rem;
+  height: 1.4rem; display: grid; place-items: center; padding: 0;
+  border: 0; background: none; color: var(--dim);
+  font-family: var(--mono); font-size: 16px; line-height: 1; cursor: pointer;
+  opacity: 0; transition: color 120ms ease, opacity 120ms ease; }
 .doc-page .doc-block:hover .doc-add, .doc-page .doc-block:focus-within .doc-add,
 .doc-page .doc-block.target .doc-add, .doc-page .doc-add:focus-visible { opacity: 1; }
 .doc-page .doc-add:hover, .doc-page .doc-add:focus-visible {
-  color: var(--text); border-color: var(--accent); outline: none; }
+  color: var(--text); outline: none; }
 .doc-page .doc-block-body { min-width: 0; }
+/* **A list or a quote is one target per child.** Each item renders in its own
+   list wrapper (and each quote paragraph in its own quote), so the wrapper's
+   block margins must not space the targets apart: the rows carry the list's
+   rhythm themselves. */
+.doc-page .doc-block :is(ul, ol, blockquote) { margin-block: 0; }
+.doc-page .doc-block:has(> .doc-block-body > :is(ul, ol, blockquote)) { padding-block: 2px; }
 /* The gutter between two blocks is the sheet's air, not a block's target: a
    press on a paragraph's gap opens nothing, because the block's own box is
    where its comment starts. A rule's band is the one target that reaches
@@ -5436,10 +5438,6 @@ details[open] > summary .arw { opacity: 1; }
    its own - the sheet's ground painted over the line it marks. */
 .doc-page .doc-block:has(> .doc-block-body > hr)::before { content: ''; position: absolute;
   inset: -10px 0; border-radius: 6px; }
-.doc-page .doc-block:has(> .doc-block-body > hr):hover::before,
-.doc-page .doc-block:has(> .doc-block-body > hr).target::before,
-.doc-page .doc-block:has(> .doc-block-body > hr):focus-visible::before {
-  box-shadow: inset 2px 0 0 var(--accent); }
 /* The sheet's edges keep the trims the block used to apply to every child:
    only the first and last blocks give up their outer margin. */
 .doc-page .doc-blocks > .doc-block:first-child > .doc-block-body > :first-child {
@@ -5508,14 +5506,21 @@ details[open] > summary .arw { opacity: 1; }
   color: var(--muted); background: var(--bg); border: 1px solid var(--line);
   border-radius: 8px; padding: 6px 8px; white-space: pre-wrap;
   overflow-wrap: anywhere; }
-/* The exit, at the document's end - **in every state**, aligned to the
-   sheet's reading column. A parked hand-off draws one feedback box above
-   two answers, approve and send feedback; a deep link has no call to answer
-   and draws the one done that files the round and returns. */
+/* The exit, at the document's end - **in every state**, the same width as
+   the sheet it closes. A parked hand-off draws one feedback box above two
+   answers, approve and send feedback; a deep link has no call to answer and
+   draws the one done that files the round and returns. */
 .doc-page .doc-exit { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px;
-  max-width: 88ch; margin-inline: auto; margin-top: 26px;
+  max-width: 1400px; margin-inline: auto; margin-top: 26px;
   padding: 14px 48px 0; border-top: 1px solid var(--line); }
 .doc-page .doc-left { color: var(--ok); font-family: var(--ui); font-size: var(--fs-base); }
+/* The feedback box's requirement, said in words: approve may carry it empty,
+   send feedback may not. The warning tone is the empty press's answer. */
+.doc-page .doc-hint { font-family: var(--mono); font-size: var(--fs-label);
+  color: var(--dim); }
+.doc-page .doc-hint.warn { color: var(--warn); }
+/* An answer's refusal is drawn where the buttons are, not 10vh below them. */
+.doc-page .doc-exit .doc-said { margin-top: 0; text-align: left; }
 
 @media (pointer: coarse) {
   /* **A finger's targets are the block, its `+`, the answer buttons and the

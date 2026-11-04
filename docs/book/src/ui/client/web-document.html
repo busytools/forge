@@ -110,23 +110,16 @@
       .doc-page::-webkit-scrollbar-thumb:active {
         background: var(--muted);
       }
-      /* the sheet is a centred reading column about 88 characters wide; the
-         page background stays the window's. prose keeps a readable measure of
-         its own, code and tables take the sheet's content width */
+      /* the sheet is a wide centred page that uses the space; the page
+         background stays the window's and prose runs the sheet's width */
       .doc-body {
-        max-width: 88ch;
+        max-width: 1400px;
         margin-inline: auto;
         container-type: inline-size;
         background: var(--s1);
         border: 1px solid var(--line);
         border-radius: 10px;
         padding: 46px 48px 40px;
-      }
-      .doc-body :is(h1, h2, h3, p, li, blockquote) {
-        max-width: 76ch;
-      }
-      .doc-body :is(pre, table, .code) {
-        max-width: none;
       }
       /* a readable markdown or text document: every top-level block is a
          comment target with a `+` on its own line - the block or the `+`
@@ -145,29 +138,27 @@
       .doc-block.target,
       .doc-block:focus-within {
         background: var(--s2);
-        box-shadow: inset 2px 0 0 var(--accent);
       }
-      /* the `+`: the line-level target, drawn on hover or focus and always on
-         a finger-driven surface */
+      /* the `+` is a plain mark in the margin, no chip: drawn on hover or
+         focus and always on a finger-driven surface */
       .doc-add {
         position: absolute;
         left: -2.2rem;
-        top: 0.2rem;
-        width: 1.5rem;
-        height: 1.5rem;
+        top: 0.15rem;
+        width: 1.4rem;
+        height: 1.4rem;
         display: grid;
         place-items: center;
         padding: 0;
-        border: 1px solid var(--line);
-        border-radius: 999px;
-        background: var(--s2);
-        color: var(--muted);
+        border: 0;
+        background: none;
+        color: var(--dim);
         font-family: var(--mono);
-        font-size: 14px;
+        font-size: 16px;
         line-height: 1;
         cursor: pointer;
         opacity: 0;
-        transition: opacity 120ms ease;
+        transition: color 120ms ease, opacity 120ms ease;
       }
       .doc-block:hover .doc-add,
       .doc-block:focus-within .doc-add,
@@ -176,7 +167,6 @@
       }
       .doc-add:hover {
         color: var(--text);
-        border-color: var(--accent);
       }
       .doc-block-body {
         min-width: 0;
@@ -201,6 +191,57 @@
       }
       .doc-blocks > .doc-block:not(:has(~ .doc-block)) > .doc-block-body > :last-child {
         margin-bottom: 0;
+      }
+      /* The answer row sits in the sheet's column: one feedback box, the
+         requirement said under it, and the two answers beside the mic. */
+      .doc-exit {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr);
+        gap: 10px;
+        max-width: 1400px;
+        margin-inline: auto;
+        margin-top: 26px;
+        padding: 14px 48px 0;
+        border-top: 1px solid var(--line);
+      }
+      .doc-exitbox {
+        width: 100%;
+        min-height: 52px;
+        background: var(--bg);
+        color: var(--dim);
+        border: 1px solid var(--ctl);
+        border-radius: var(--r);
+        padding: 8px 10px;
+        font-family: var(--ui);
+        font-size: var(--fs-base);
+      }
+      .doc-hint {
+        font-family: var(--mono);
+        font-size: var(--fs-label);
+        color: var(--dim);
+      }
+      .doc-hint.warn {
+        color: var(--warn);
+      }
+      .rv-finishacts {
+        display: flex;
+        gap: 8px;
+        justify-content: flex-end;
+        align-items: center;
+      }
+      .doc-answer-btn {
+        font-family: var(--mono);
+        font-size: var(--fs-label);
+        border-radius: 9px;
+        padding: 6px 12px;
+        cursor: pointer;
+        border: 1px solid var(--ctl);
+        background: var(--s1);
+        color: var(--muted);
+      }
+      .doc-answer-btn:hover {
+        color: var(--text);
+        border-color: var(--text);
       }
       /* a comment under the block its placed line lives in: every turn the
          thread carries, with its acts on a line of their own */
@@ -403,6 +444,14 @@
           color: var(--muted);
           font-size: var(--fs-label);
         }
+      }
+      /* a list or quote renders one target per child: its wrapper's margins
+         must not space the targets apart */
+      .doc-block :is(ul, ol, blockquote) {
+        margin-block: 0;
+      }
+      .doc-block:has(> .doc-block-body > :is(ul, ol, blockquote)) {
+        padding-block: 2px;
       }
       .prose hr {
         border: 0;
@@ -659,8 +708,8 @@
               <p>
                 The agent hands the reader a document, and it opens here: the
                 client's own viewer, on every surface the client runs. The sheet
-                is one centred reading column; prose keeps a readable measure
-                while code and tables take its content width.
+                is one wide centred page; prose runs its width while code and
+                tables take its content width.
               </p>
             </div>
           </div>
@@ -668,7 +717,7 @@
             <button class="doc-add" aria-label="comment on line 3">+</button>
             <div class="doc-block-body">
               <p>
-                A press on a block's <strong>+</strong> comments on that exact
+                A press on a target's <strong>+</strong> comments on that exact
                 source line, the line first in its captured context - so a
                 revision can re-find the thread by it.
               </p>
@@ -699,12 +748,26 @@
                   or <strong>Not now</strong> - and Open lands here, at the
                   document's resolved path.
                 </li>
+              </ul>
+            </div>
+          </div>
+          <div class="doc-block prose">
+            <button class="doc-add" aria-label="comment on line 6">+</button>
+            <div class="doc-block-body">
+              <ul>
                 <li>
                   The answer is <strong>approve</strong> or
                   <strong>send feedback</strong>: feedback means revise the
                   document and hand it off again, and a bare done is not an
                   answer.
                 </li>
+              </ul>
+            </div>
+          </div>
+          <div class="doc-block prose">
+            <button class="doc-add" aria-label="comment on line 7">+</button>
+            <div class="doc-block-body">
+              <ul>
                 <li>
                   The parked call waits until one is chosen: a reader who
                   presses neither leaves it parked, and nothing on the page
@@ -803,19 +866,21 @@ max_size_mib = 10</pre>
           </div>
         </section>
 
-        <div class="doc-exit">
-          <div class="doc-finish">
-            <div class="doc-exitbox">feedback (optional)</div>
-            <div class="doc-answeracts">
-              <button class="doc-answer-btn">approve</button>
-              <button class="doc-answer-btn">send feedback</button>
-              <span class="mic" title="dictation"
-                ><svg class="ic" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="10" height="12" x="7" y="3" rx="5"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v3"/></svg></span
-              >
-            </div>
-          </div>
-        </div>
       </article>
+
+      <div class="doc-exit">
+        <div class="doc-wordline">
+          <div class="doc-exitbox">feedback on the document...</div>
+        </div>
+        <p class="doc-hint">approve may carry this empty; send feedback needs words</p>
+        <div class="rv-finishacts">
+          <button class="doc-answer-btn">approve</button>
+          <button class="doc-answer-btn">send feedback</button>
+          <span class="mic" title="dictation"
+            ><svg class="ic" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="10" height="12" x="7" y="3" rx="5"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v3"/></svg></span
+          >
+        </div>
+      </div>
 
       <section class="strip">
         <h2>the states, each drawn as its own line</h2>
@@ -852,7 +917,7 @@ max_size_mib = 10</pre>
         </div>
         <div class="state">
           <div class="cap">
-            a comment on a line: the `+` on the block's own line is the target,
+            a comment on a line: the `+` on the target's own line is the target,
             the composer opens under the block, and a written comment draws as
             drafted until an answer files it
           </div>
@@ -885,11 +950,25 @@ max_size_mib = 10</pre>
         </div>
         <div class="state">
           <div class="cap">
+            send feedback with nothing written: the hint turns into the
+            requirement and nothing is sent; the button stays in the tab order
+          </div>
+          <div class="doc-answers">
+            <div class="doc-exitbox">feedback on the document...</div>
+            <p class="doc-hint warn">write what is off before sending feedback</p>
+            <div class="doc-answeracts">
+              <button class="doc-answer-btn">approve</button>
+              <button class="doc-answer-btn">send feedback</button>
+            </div>
+          </div>
+        </div>
+        <div class="state">
+          <div class="cap">
             both answers, sending: the pressed one says what it is doing and
             both disable until the round files and the call is answered
           </div>
           <div class="doc-answers">
-            <div class="doc-exitbox">feedback (optional)</div>
+            <div class="doc-exitbox">feedback on the document...</div>
             <div class="doc-answeracts">
               <button class="doc-answer-btn">approving...</button>
               <button class="doc-answer-btn">send feedback</button>

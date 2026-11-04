@@ -56,10 +56,10 @@ function mediaBlocks(header: string): string[] {
 }
 
 describe('the document sheet', () => {
-  /** **The sheet is a centred reading column.** The page background stays
-   *  full width, the body is capped at a readable measure and centred, and
-   *  code and tables take the sheet's whole content width. */
-  it('centres the reading column, with prose at a measure and code and tables wide', () => {
+  /** **The sheet is a wide centred page.** The page background stays full
+   *  width, the body uses the space at a wide cap and is centred, and prose
+   *  runs the sheet's whole width rather than a narrow measure. */
+  it('centres a wide sheet, with prose filling it', () => {
     const page = rulesFor('.doc-page');
     expect(
       page.some(
@@ -73,23 +73,17 @@ describe('the document sheet', () => {
       bodies.some(
         (rule) =>
           rule.selector.trim() === '.doc-page .doc-body' &&
-          /max-width:\s*88ch/.test(rule.body) &&
+          /max-width:\s*1400px/.test(rule.body) &&
           /margin-inline:\s*auto/.test(rule.body),
       ),
-      'the document body is a centred column about 88ch wide',
+      'the document body is a wide centred sheet',
     ).toBe(true);
 
     const prose = rulesFor('.doc-page .doc-body :is(h1, h2, h3, p, li, blockquote)');
     expect(
-      prose.some((rule) => /max-width:\s*76ch/.test(rule.body)),
-      'a paragraph keeps a readable measure',
-    ).toBe(true);
-
-    const wide = rulesFor('.doc-page .doc-body :is(pre, table, .code)');
-    expect(
-      wide.some((rule) => /max-width:\s*none/.test(rule.body)),
-      'code and tables take the full width',
-    ).toBe(true);
+      prose.some((rule) => /max-width:/.test(rule.body)),
+      'prose runs the sheet, not a narrow measure',
+    ).toBe(false);
   });
 
   /** The body of the grouped rule that names this scroller part. */
@@ -135,5 +129,60 @@ describe('the document sheet', () => {
     );
     expect(coarse, 'and the rule is the 44px floor').toMatch(/min-height:\s*44px/);
     expect(coarse, 'the `+` is always drawn for a finger').toMatch(/opacity:\s*1/);
+    expect(coarse, 'the `+` itself takes the 44px floor, not any neighbour').toMatch(
+      /\.doc-page \.doc-add\s*\{[^}]*width:\s*44px[^}]*height:\s*44px/,
+    );
+  });
+
+  /** **The `+` is a plain margin mark, revealed by hover or focus.** No chip,
+   *  no rule; the block under the pointer shows it, focus-within covers the
+   *  keyboard, and the base rule keeps it out of sight otherwise. */
+  it('reveals a plain + on hover or focus', () => {
+    const base = rulesFor('.doc-add').find((rule) => rule.selector.trim() === '.doc-page .doc-add');
+    expect(base, 'the base rule exists').toBeDefined();
+    expect(base?.body, 'the `+` is hidden until the block is under the pointer').toMatch(
+      /opacity:\s*0/,
+    );
+    expect(base?.body, 'the `+` is a mark, not a chip').toMatch(/border:\s*0/);
+    expect(base?.body, 'with no ground of its own').toMatch(/background:\s*none/);
+    expect(base?.body, 'and no circle').not.toMatch(/border-radius/);
+    const reveal = rulesFor('.doc-add').find(
+      (rule) =>
+        /\.doc-block:hover\s+\.doc-add/.test(rule.selector) &&
+        /\.doc-block:focus-within\s+\.doc-add/.test(rule.selector),
+    );
+    expect(reveal, 'hover and focus share the reveal rule').toBeDefined();
+    expect(reveal?.body, 'and the reveal is drawn').toMatch(/opacity:\s*1/);
+
+    const hover = rulesFor('.doc-block:hover').find((rule) =>
+      rule.selector.includes('.doc-block:hover'),
+    );
+    expect(hover, 'the block highlight rule exists').toBeDefined();
+    expect(hover?.body, 'the highlight is neutral, with no accent bar').not.toMatch(
+      /--accent|box-shadow/,
+    );
+  });
+
+  /** **The answer row sits in the same column as the sheet.** Its width and
+   *  padding follow the sheet's, the phone inset follows the sheet's own
+   *  padding, and a refusal draws where the buttons are. */
+  it('aligns the answer row to the reading column', () => {
+    const exit = rulesFor('.doc-exit').find(
+      (rule) => rule.selector.trim() === '.doc-page .doc-exit',
+    );
+    expect(exit, 'the exit rule exists').toBeDefined();
+    expect(exit?.body, 'the exit keeps the sheet width').toMatch(/max-width:\s*1400px/);
+    expect(exit?.body, 'and is centred with the sheet').toMatch(/margin-inline:\s*auto/);
+    expect(exit?.body, "and carries the sheet's inset").toMatch(/padding:\s*14px 48px 0/);
+
+    const phone = mediaBlocks('@media (max-width: 760px)').find((block) =>
+      block.includes('.doc-page .doc-exit'),
+    );
+    expect(phone, 'the phone inset follows the sheet').toMatch(/padding-inline:\s*20px/);
+
+    const refused = rulesFor('.doc-exit .doc-said').find((rule) =>
+      rule.selector.includes('.doc-exit .doc-said'),
+    );
+    expect(refused?.body, 'a refused answer is drawn at the buttons').toMatch(/margin-top:\s*0/);
   });
 });

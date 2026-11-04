@@ -228,6 +228,9 @@
    *  answer is chosen, and the review's own description when drafts exist. */
   let feedbackText = $state('');
   let feedbackField = $state<HTMLElement | null>(null);
+  /** Whether send feedback was pressed with nothing written: the hint turns
+   *  into the requirement until the box has words. */
+  let feedbackHint = $state(false);
 
   /**
    * The box an EDIT opens, wherever a comment is drawn: the thread - or the
@@ -821,8 +824,19 @@
    * the feedback box's words and the review the finish filed. Done is not
    * one of them - a reader who presses neither leaves the call parked, and
    * the agent learns nothing it could read as approval.
+   *
+   * **Send feedback needs words**, and the button says so rather than
+   * disabling: a native disabled button leaves the tab order and explains
+   * nothing, so an empty press draws the requirement beside the box and
+   * sends nothing.
    */
   async function answer(outcome: 'approve' | 'feedback'): Promise<void> {
+    if (outcome === 'feedback' && feedbackText.trim() === '') {
+      feedbackHint = true;
+      feedbackField?.focus();
+      return;
+    }
+    feedbackHint = false;
     finishState = { kind: 'sending', answer: outcome };
     const filed = await fileDrafts(outcome);
     if (filed === null) return;
@@ -990,7 +1004,7 @@
           >
           <div class="doc-block-body">
             {#if row.html !== null}
-              <!-- The rendered markdown, which `renderProseBlocks` produced
+              <!-- The rendered markdown, which `renderProseTargets` produced
                    from escaped input: the same renderer and the same rules
                    the chat's own Prose draws with, raw HTML off. -->
               <!-- eslint-disable-next-line svelte/no-at-html-tags -->
@@ -1203,7 +1217,13 @@
               <div class="doc-notehead">
                 <span class="doc-cc">outdated</span>
                 <div class="rv-acts">
-                  {#if statusName(thread.status) !== 'resolved'}
+                  {#if statusName(thread.status) === 'resolved'}
+                    <button
+                      class="rv-a"
+                      type="button"
+                      onclick={() => void reopenedThread(thread.id)}>reopen</button
+                    >
+                  {:else}
                     <button
                       class="rv-a"
                       type="button"
@@ -1281,7 +1301,7 @@
                 editor="nowhere"
                 class="rv-txarea"
                 rows={2}
-                placeholder="feedback (optional)"
+                placeholder="feedback on the document..."
                 aria={{ label: 'feedback on the document' }}
                 bind:value={feedbackText}
                 field={(el: HTMLElement | null) => {
@@ -1290,6 +1310,15 @@
               />
             {/if}
           </div>
+          {#if handoff !== null}
+            <!-- The requirement, in words: the button stays in the tab order
+                 and an empty press turns this line into the warning. -->
+            <p class="doc-hint" class:warn={feedbackHint && feedbackText.trim() === ''}>
+              {feedbackHint && feedbackText.trim() === ''
+                ? 'write what is off before sending feedback'
+                : 'approve may carry this empty; send feedback needs words'}
+            </p>
+          {/if}
         {/if}
         {#if handoff !== null}
           <div class="rv-finishacts">
@@ -1305,7 +1334,7 @@
             <button
               class="doc-answer-btn"
               type="button"
-              disabled={finishState.kind === 'sending' || feedbackText.trim() === ''}
+              disabled={finishState.kind === 'sending'}
               onclick={() => void answer('feedback')}
               >{finishState.kind === 'sending' && finishState.answer === 'feedback'
                 ? 'sending...'

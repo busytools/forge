@@ -349,6 +349,70 @@ describe('the reviewable document', () => {
   });
 
   /**
+   * **A list is one target per item.** A markdown chunk that draws ten
+   * bullets is ten things a reader may comment on, so each item renders on
+   * its own line and anchors at its own source line.
+   */
+  it('draws one target per list item, each anchored at its own line', () => {
+    const page = drawReviewable({
+      kind: 'landed',
+      document_kind: 'markdown',
+      bytes: enc('# hi\n\n- one\n- two\n- three\n'),
+      reviewable: true,
+      content_hash: '42',
+    });
+
+    const items = [...document.querySelectorAll<HTMLElement>('.doc-block')].filter(
+      (block) => block.querySelector('.doc-block-body > ul') !== null,
+    );
+    expect(
+      items.map((item) => item.querySelector('.doc-block-body')?.textContent?.trim()),
+      'one row per bullet',
+    ).toEqual(['one', 'two', 'three']);
+    expect(
+      items.map((item) => item.querySelector('.doc-add')?.getAttribute('aria-label')),
+      'each item carries its own line target',
+    ).toEqual(['comment on line 3', 'comment on line 4', 'comment on line 5']);
+
+    items[1]?.click();
+    flushSync();
+    const composer = document.querySelector<HTMLTextAreaElement>('.doc-compose textarea');
+    if (composer === null) throw new Error('no composer');
+    composer.value = 'on the second bullet';
+    composer.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    buttonByText('comment').click();
+    flushSync();
+
+    const sent = (page.sent as Record<string, Record<string, Record<string, unknown>>>[])[0];
+    const anchor = sent?.['upsert_review_thread']?.['thread'] as
+      { anchor?: { line?: number } } | undefined;
+    expect(anchor?.anchor?.line, 'the second bullet anchors at line 4').toBe(4);
+  });
+
+  /** **A quote's paragraphs are targets too**, not one target for the whole
+   *  quote. */
+  it('splits a quote into one target per paragraph', () => {
+    drawReviewable({
+      kind: 'landed',
+      document_kind: 'markdown',
+      bytes: enc('> one\n>\n> two\n'),
+      reviewable: true,
+      content_hash: '42',
+    });
+
+    const quotes = [...document.querySelectorAll('.doc-block')].filter(
+      (block) => block.querySelector('.doc-block-body > blockquote') !== null,
+    );
+    expect(
+      quotes.map((quote) => quote.querySelector('.doc-block-body')?.textContent?.trim()),
+    ).toEqual(['one', 'two']);
+    expect(
+      quotes.map((quote) => quote.querySelector('.doc-add')?.getAttribute('aria-label')),
+    ).toEqual(['comment on line 1', 'comment on line 3']);
+  });
+
+  /**
    * **The hover target and the block are two anchors.** A press on the
    * rendered block is a comment on the section; a press on its `+` is a
    * comment on the block's own source line, the line first in its captured
@@ -395,11 +459,19 @@ describe('the reviewable document', () => {
     flushSync();
 
     expect(
-      document.querySelectorAll('textarea[placeholder$="(optional)"]').length,
-      'exactly one optional box',
+      document.querySelectorAll('textarea[placeholder^="feedback on the document"]').length,
+      'exactly one feedback box',
     ).toBe(1);
+    expect(
+      document.querySelector('textarea[placeholder="summary (optional)"]'),
+      'no separate summary box',
+    ).toBeNull();
+    expect(
+      document.querySelector('textarea[placeholder="note (optional)"]'),
+      'no separate note box',
+    ).toBeNull();
     const box = document.querySelector<HTMLTextAreaElement>(
-      'textarea[placeholder="feedback (optional)"]',
+      'textarea[placeholder="feedback on the document..."]',
     );
     expect(box, 'the one box is the feedback box').not.toBeNull();
     if (box === null) return;
@@ -429,12 +501,13 @@ describe('the reviewable document', () => {
   });
 
   /**
-   * **The second answer is "send feedback", and it needs words.** Approve
-   * still goes with an empty box; the feedback ending is the reader's
-   * sentence and cannot be pressed with nothing to say.
+   * **The second answer is "send feedback", and it needs words.** The
+   * requirement is said in the row rather than by disabling the button: a
+   * disabled control leaves the tab order and explains nothing, so an empty
+   * press draws the requirement and sends nothing.
    */
-  it('names the second answer send feedback and requires words', () => {
-    drawReviewable();
+  it('names the second answer send feedback and says what it needs', () => {
+    const page = drawReviewable();
 
     expect(
       [...document.querySelectorAll('button')].some(
@@ -443,17 +516,34 @@ describe('the reviewable document', () => {
       'the old wording is gone',
     ).toBe(false);
     const send = buttonByText('send feedback');
-    expect(send.disabled, 'an empty feedback box cannot send').toBe(true);
+    expect(send.disabled, 'the button stays in the tab order').toBe(false);
+    expect(
+      document.querySelector('.doc-exit .doc-hint')?.textContent,
+      'the requirement is visible before the press',
+    ).toContain('send feedback needs words');
+
+    send.click();
+    flushSync();
+    expect(
+      document.querySelector('.doc-hint.warn')?.textContent,
+      'an empty press draws the requirement',
+    ).toContain('write what is off');
+    expect(
+      (page.sent as Record<string, unknown>[]).some(
+        (command) => 'answer_document_hand_off' in command,
+      ),
+      'and answers nothing',
+    ).toBe(false);
 
     const box = document.querySelector<HTMLTextAreaElement>(
-      'textarea[placeholder="feedback (optional)"]',
+      'textarea[placeholder="feedback on the document..."]',
     );
     if (box === null) throw new Error('no feedback box');
     box.value = 'the second paragraph is stale';
     box.dispatchEvent(new Event('input', { bubbles: true }));
     flushSync();
 
-    expect(buttonByText('send feedback').disabled, 'words make it sendable').toBe(false);
+    expect(document.querySelector('.doc-hint.warn'), 'words clear the warning').toBeNull();
     expect(buttonByText('approve').disabled, 'approve never needed them').toBe(false);
   });
 
@@ -628,7 +718,7 @@ describe('the reviewable document', () => {
     // The one box above the door is the round's description and the answer's
     // note, so the same words ride both.
     const feedback = document.querySelector<HTMLTextAreaElement>(
-      'textarea[placeholder="feedback (optional)"]',
+      'textarea[placeholder="feedback on the document..."]',
     );
     if (feedback === null) throw new Error('no feedback box');
     feedback.value = 'the doc reads well, one note';
@@ -1029,7 +1119,7 @@ describe('the reviewable document', () => {
     expect(buttonByText('approve'), 'a PDF answers the parked hand-off').toBeDefined();
     expect(buttonByText('send feedback'), 'with the explicit other answer').toBeDefined();
     expect(
-      document.querySelector('textarea[placeholder="feedback (optional)"]'),
+      document.querySelector('textarea[placeholder="feedback on the document..."]'),
       'and the one feedback box rides with either',
     ).not.toBeNull();
     expect(
@@ -1059,7 +1149,7 @@ describe('the reviewable document', () => {
     );
 
     const box = document.querySelector<HTMLTextAreaElement>(
-      'textarea[placeholder="feedback (optional)"]',
+      'textarea[placeholder="feedback on the document..."]',
     );
     if (box === null) throw new Error('no feedback box');
     box.value = 'the document is gone, re-hand it';
@@ -1083,6 +1173,46 @@ describe('the reviewable document', () => {
       },
       { timeout: 3000 },
     );
+  });
+
+  /** **The feedback box draws only when it has a job.** A parked call always
+   *  carries it as the answer note; a deep link has no call, so the box is
+   *  the review's description and appears only once a draft needs one. */
+  it('draws the feedback box on a deep link only when there is a review to describe', () => {
+    const fake = fakeDoc({
+      kind: 'landed',
+      document_kind: 'markdown',
+      bytes: enc('# hi\nline two\nline three'),
+      content_hash: '42',
+    });
+    app = mount(Document, {
+      target: document.body,
+      props: { slot: SLOT, path: PATH, reviewable: false, connection: fake.connection },
+    });
+    flushSync();
+    expect(
+      document.querySelector('textarea[placeholder^="feedback on the document"]'),
+      'a bare deep link has no box',
+    ).toBeNull();
+
+    blockTarget('line two').click();
+    flushSync();
+    const composer = document.querySelector('textarea');
+    if (!(composer instanceof HTMLTextAreaElement)) throw new Error('no composer');
+    composer.value = 'hello';
+    composer.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    buttonByText('comment').click();
+    flushSync();
+
+    expect(
+      document.querySelector('textarea[placeholder^="feedback on the document"]'),
+      'a draft gives the description a box',
+    ).not.toBeNull();
+    expect(
+      document.querySelector('.doc-hint'),
+      'a deep link has no send feedback to require words',
+    ).toBeNull();
   });
 
   /** Nothing to release (a deep link): the one door is still the way back,
@@ -1235,6 +1365,58 @@ describe('the reviewable document', () => {
       'line 42 is past this version',
     );
     expect(document.querySelector('.doc-note:not(.doc-quoted)'), 'nothing draws inline').toBeNull();
+  });
+
+  /** **A thread with no place is still the reader's to resolve.** The
+   *  bottom section draws the same act as the inline cards. */
+  it('resolves a thread with no place in this version', () => {
+    const page = revision([
+      placedThread('d9', 42, { state: 'outdated', reason: 'gone' }, ['^ old line']),
+    ]);
+
+    const resolve = [...document.querySelectorAll<HTMLButtonElement>('.doc-quoted .rv-a')].find(
+      (button) => button.textContent?.trim() === 'resolve',
+    );
+    expect(resolve, 'the bottom section draws the resolve act').toBeDefined();
+    resolve?.click();
+    flushSync();
+
+    const status = (page.sent as Record<string, Record<string, unknown>>[])
+      .filter((command) => 'set_review_thread_status' in command)
+      .map((command) => command['set_review_thread_status']);
+    // The drift ages the thread to Outdated on the way in; the press is the
+    // write this test is about.
+    expect(status.at(-1)).toEqual({
+      project: SLOT.project,
+      branch: `doc:${PATH}`,
+      thread_id: 'd9',
+      status: 'Resolved',
+    });
+  });
+
+  /** **A resolved thread with no place keeps a reopen**: the bottom section
+   *  must not be a one-way door. */
+  it('reopens a resolved thread with no place in this version', () => {
+    const page = revision([
+      {
+        ...placedThread('d9', 42, { state: 'outdated', reason: 'gone' }, ['^ old line']),
+        status: 'Resolved',
+      },
+    ]);
+
+    const reopen = [...document.querySelectorAll<HTMLButtonElement>('.doc-quoted .rv-a')].find(
+      (button) => button.textContent?.trim() === 'reopen',
+    );
+    expect(reopen, 'a resolved bottom-section thread draws reopen').toBeDefined();
+    reopen?.click();
+    flushSync();
+
+    const wrote = (page.sent as Record<string, Record<string, unknown>>[])
+      .filter((command) => 'set_review_thread_status' in command)
+      .map((command) => command['set_review_thread_status']);
+    expect(wrote).toEqual([
+      { project: SLOT.project, branch: `doc:${PATH}`, thread_id: 'd9', status: 'Open' },
+    ]);
   });
 
   /** **The blank lines before the first block are rows too.** A thread placed
@@ -1409,7 +1591,7 @@ describe('the reviewable document', () => {
 describe('the hand-off answers', () => {
   const feedbackBox = (): HTMLTextAreaElement => {
     const found = document.querySelector<HTMLTextAreaElement>(
-      'textarea[placeholder="feedback (optional)"]',
+      'textarea[placeholder="feedback on the document..."]',
     );
     if (found === null) throw new Error('no feedback box');
     return found;
@@ -1743,7 +1925,7 @@ describe("the block's own take", () => {
     );
 
     const feedback = document.querySelector<HTMLTextAreaElement>(
-      'textarea[placeholder="feedback (optional)"]',
+      'textarea[placeholder="feedback on the document..."]',
     );
     expect(feedback?.value, 'the words land in the feedback box').toBe(
       'the second line reads well',
