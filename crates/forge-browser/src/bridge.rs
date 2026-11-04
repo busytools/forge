@@ -299,7 +299,8 @@ mod tests {
     /// handle**, and closing one leaves the other addressable. There is no
     /// live rig: a second bridged start while a popup is live times out CEF's
     /// browser-info response (measured locally and in CI, `has_rfh=0`), so the
-    /// routing guard lives here until the engine makes a second start safe.
+    /// routing guard lives here until the engine makes a second start safe
+    /// (#2869).
     #[test]
     fn two_channels_from_one_opener_route_independently() {
         let mut channels = Channels::default();
