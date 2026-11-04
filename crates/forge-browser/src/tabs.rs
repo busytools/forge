@@ -384,6 +384,13 @@ impl TabRegistry {
     pub fn numbers(&self) -> Vec<u16> {
         self.tabs.keys().copied().collect()
     }
+
+    /// Whether any open tab is a page's popup. **A popup's target hangs a
+    /// fresh driver's connect whether or not its document has started**, so
+    /// the host is kept while one stands.
+    pub fn has_popup(&self) -> bool {
+        self.tabs.values().any(|tab| tab.opener.is_some())
+    }
 }
 
 #[cfg(test)]

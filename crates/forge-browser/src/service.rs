@@ -379,11 +379,12 @@ impl BrowserService {
                         state.host.as_ref().map(|host| host.port),
                     )
                 };
-                // **A pass with no driver yet is retried**, or a birth that
-                // arrived while the profile was still coming up waits for a
-                // call that never comes.
+                // **A pass with no driver yet is retried while the birth is
+                // live**, or a birth that arrived before the driver did waits
+                // for a call that never comes.
                 let (Some(driver), Some(port)) = (driver, port) else {
-                    if tokio::time::Instant::now() < request.until {
+                    defer_unread_tab_events(&profile).await;
+                    if popup_birth_waits(&profile) {
                         tokio::time::sleep(POPUP_PAIR_EVERY).await;
                         let _ = service.pairing.send(request);
                     }
@@ -411,6 +412,10 @@ impl BrowserService {
                 if matches!(outcome, Ok(false)) {
                     request.warned = true;
                 }
+                // **A pass that failed or outlasted its bound never took the
+                // queue**, so its births would be invisible to the retry and
+                // to the keep; they move to the deferred list now.
+                defer_unread_tab_events(&profile).await;
                 let retry = if let Ok(listed) = outcome {
                     // **A pass that could not list pairs nothing**, so its
                     // birth is still the receiver's: it is retried exactly as
@@ -431,8 +436,11 @@ impl BrowserService {
                 // started.** The birth that asked for this pass may have
                 // arrived before the driver could list its page, so a birth
                 // still waiting is tried again rather than left for a call
-                // that a person clicking a sign-in button never makes.
-                if retry && tokio::time::Instant::now() < request.until {
+                // that a person clicking a sign-in button never makes. **The
+                // retries track the keep's window**, because one pass can
+                // spend its whole bound on a single listing and a fixed
+                // short window would expire before the birth was paired.
+                if retry && popup_birth_waits(&profile) {
                     tokio::time::sleep(POPUP_PAIR_EVERY).await;
                     let _ = service.pairing.send(request);
                 }
@@ -1383,7 +1391,11 @@ impl BrowserService {
                         .deferred_tab_events
                         .lock()
                         .unwrap_or_else(PoisonError::into_inner)
-                        .extend(drained);
+                        .extend(
+                            drained.into_iter().map(|(generation, event)| {
+                                DeferredTabEvent::now(generation, event)
+                            }),
+                        );
                 }
             }
         }
@@ -1913,7 +1925,7 @@ impl BrowserService {
         // returns cancels the future with the births in hand; dropping them
         // loses a popup for good, and the next pass then prunes its page as an
         // orphan.
-        let taken: Vec<(u64, HostEvent)> = {
+        let taken: Vec<DeferredTabEvent> = {
             let mut deferred =
                 profile.deferred_tab_events.lock().unwrap_or_else(PoisonError::into_inner);
             std::mem::take(&mut *deferred)
@@ -1922,9 +1934,9 @@ impl BrowserService {
         {
             let mut queue = profile.host_tab_events.lock().await;
             if let Some(receiver) = queue.as_mut() {
-                while let Ok(event) = receiver.try_recv() {
+                while let Ok((generation, event)) = receiver.try_recv() {
                     if let Some(events) = held.events.as_mut() {
-                        events.push(event);
+                        events.push(DeferredTabEvent::now(generation, event));
                     }
                 }
             }
@@ -1934,7 +1946,7 @@ impl BrowserService {
             let mut tabs = profile.tabs.lock().unwrap_or_else(PoisonError::into_inner);
             pair_tab_events(&mut tabs, &listing, events, generation)
         };
-        if unmatched.iter().any(|(_, event)| matches!(event, HostEvent::TabCreated { .. })) {
+        if unmatched.iter().any(|entry| matches!(&entry.event, HostEvent::TabCreated { .. })) {
             // **A CEF browser the host created after the driver attached is
             // not reported to that driver's context**, so a popup is only a
             // tab to a driver that attached after it existed. A fresh one
@@ -2239,6 +2251,24 @@ impl BrowserService {
         why: &str,
     ) -> DeadHost {
         let _decision = profile.file_decision.lock().await;
+        // **A popup is not a host's fault, its page named or not**: the
+        // attach waits on a target the host itself starts, and ending the
+        // browser would take the page the person signed in from: the driver
+        // goes and the next call attaches a fresh one.
+        if attach_blocked_by_popup(profile, why) {
+            tracing::debug!(
+                event_name = "browser_host_kept_for_popup",
+                profile = %profile.key,
+                "a driver attach timed out while a popup is open or its page waits; the host is \
+                 kept and the next call attaches a fresh driver"
+            );
+            // **The driver that could not attach goes with the keep**: an
+            // installed one whose transport is still open would be reused by
+            // the next call, which would pay the same timeout without the
+            // popup being any likelier to answer.
+            Self::drop_dead_driver(profile, drove.generation, why).await;
+            return DeadHost::KeptForPopup;
+        }
         // **A host another session's page is open on is never ended**: one
         // host per profile is what the browser requires, so ending it loses
         // that page with the sign-in behind it.
@@ -3714,8 +3744,10 @@ pub struct Profile {
     host_tab_events: AsyncMutex<Option<mpsc::UnboundedReceiver<(u64, HostEvent)>>>,
     /// Host tab events a reconcile could not pair yet: **the host reports a
     /// popup before the driver lists its page**, so an unmatched event waits
-    /// for the next pass rather than being lost.
-    deferred_tab_events: Mutex<Vec<(u64, HostEvent)>>,
+    /// for the next pass rather than being lost. Each carries when it was
+    /// deferred, so a birth that never pairs ages out rather than keeping a
+    /// wedged host alive forever.
+    deferred_tab_events: Mutex<Vec<DeferredTabEvent>>,
     /// Where a page's popup asks for a pairing pass. **A birth nothing asked
     /// for must still become a row**: a person clicking "Continue with
     /// Google" makes no tool call, so the service cannot wait for one.
@@ -4972,7 +5004,6 @@ impl Profile {
                                 tab,
                                 opener,
                                 url: url.clone(),
-                                until: tokio::time::Instant::now() + POPUP_PAIR_UNTIL,
                                 warned: false,
                             });
                         }
@@ -5298,13 +5329,16 @@ const NAV_RETRY: Duration = Duration::from_millis(500);
 const PAIR_BOUND: Duration = Duration::from_secs(30);
 
 /// How often a pairing pass is retried while a popup's birth still waits for
-/// its page, and how long the retries last. **The page appears only after
-/// the popup's own first document starts**, so the birth is older than the
-/// listing that can name it.
+/// its page. **The page appears only after the popup's own first document
+/// starts**, so the birth is older than the listing that can name it.
 const POPUP_PAIR_EVERY: Duration = Duration::from_millis(250);
-/// A little past the host's own give-up, so a final pass reads the close that
-/// answers the birth instead of leaving it deferred until someone calls.
-const POPUP_PAIR_UNTIL: Duration = Duration::from_secs(12);
+
+/// How long a deferred popup birth may refuse its host's end. **The pairing
+/// retries track this window**: one pass can spend its whole 30 s bound on a
+/// single listing, so a shorter window could expire before the birth was
+/// paired. A popup the pass did pair is kept by its open tab, not by this
+/// bound, so only a birth that never became a row goes stale.
+const POPUP_BIRTH_KEEP: Duration = Duration::from_secs(60);
 
 /// A popup birth waiting to be paired, and whether its first pass warned.
 ///
@@ -5330,7 +5364,6 @@ struct PairingRequest {
     tab: u16,
     opener: u16,
     url: String,
-    until: tokio::time::Instant,
     /// Whether this request's first unlisted pass has already warned, so its
     /// retries stay at debug.
     warned: bool,
@@ -5686,6 +5719,9 @@ enum DeadHost {
     AlreadyGone,
     /// Another host serves the profile now; this call ends nothing.
     NotOurs,
+    /// A popup was open or its page was not named yet, so the host was kept
+    /// and the next call attaches a fresh driver.
+    KeptForPopup,
     /// Other sessions hold tabs on this host, so it was left running. Each
     /// entry is a session and how long it has held its oldest tab; `wedged`
     /// says the endpoint stopped answering, which only the idle clock
@@ -5757,6 +5793,7 @@ fn dead_host_answer(profile: &Profile, host: DeadHost, why: &str) -> String {
             profile.dir.display(),
         ),
         DeadHost::NotOurs => format!("the browser driver stopped answering: {why}"),
+        DeadHost::KeptForPopup => popup_kept_host_answer(why),
         DeadHost::Shared { pid, port, holders, wedged: false } => format!(
             "the browser host (pid {pid}, port {port}, profile {}) is in use by {}, so it was left \
              running rather than ended: {why}. Call browser_tabs to see the tabs, or try again \
@@ -5992,11 +6029,11 @@ fn collect_event(
 /// it. An event from a receiver that was replaced is kept too; a later pass
 /// drops it by its older generation, or pairs it when it is the successor's.
 fn defer_events(profile: &Profile, events: &mut Vec<(u64, HostEvent)>, skip: Option<usize>) {
-    let kept: Vec<(u64, HostEvent)> = std::mem::take(events)
+    let kept: Vec<DeferredTabEvent> = std::mem::take(events)
         .into_iter()
         .enumerate()
         .filter(|(at, _)| Some(*at) != skip)
-        .map(|(_, event)| event)
+        .map(|(_, (generation, event))| DeferredTabEvent::now(generation, event))
         .collect();
     if kept.is_empty() {
         return;
@@ -6004,14 +6041,71 @@ fn defer_events(profile: &Profile, events: &mut Vec<(u64, HostEvent)>, skip: Opt
     profile.deferred_tab_events.lock().unwrap_or_else(PoisonError::into_inner).extend(kept);
 }
 
-/// Whether a popup's birth is still waiting for its page.
+/// **Move births a pass never read into the deferred list**, so the keep and
+/// the retry can see them. A pass that failed or outlasted its bound never
+/// reached the queue; draining it here leaves rule 25 intact, because the
+/// deferred list is where the next pass reads them from.
+async fn defer_unread_tab_events(profile: &Profile) {
+    let mut pending = Vec::new();
+    {
+        let mut queue = profile.host_tab_events.lock().await;
+        let Some(receiver) = queue.as_mut() else { return };
+        while let Ok((generation, event)) = receiver.try_recv() {
+            pending.push(DeferredTabEvent::now(generation, event));
+        }
+    }
+    if !pending.is_empty() {
+        profile.deferred_tab_events.lock().unwrap_or_else(PoisonError::into_inner).extend(pending);
+    }
+}
+
+/// Whether a driver failure is a popup's target, settled or not, rather than
+/// a host that cannot be driven. **The browser is kept**: the page the person
+/// signed in from is on it, and a fresh driver is attached on the next call
+/// to retry.
+fn attach_blocked_by_popup(profile: &Profile, why: &str) -> bool {
+    crate::driver::attach_timed_out(why)
+        && (popup_birth_waits(profile)
+            || profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).has_popup())
+}
+
+/// The sentence a call answers with when a popup keeps its host up.
+fn popup_kept_host_answer(why: &str) -> String {
+    format!(
+        "{why}\nthe browser is kept: a popup is open or its page is not named yet, so the next \
+         call attaches a fresh driver"
+    )
+}
+
+/// A host tab event held until a driver can pair it, and when it was deferred.
+/// **The stamp survives every pass**: an event a pairing pass could not pair
+/// goes back with its original age rather than being refreshed, so a birth
+/// that never pairs cannot keep a host alive forever.
+#[derive(Clone, Debug)]
+struct DeferredTabEvent {
+    generation: u64,
+    deferred_at: tokio::time::Instant,
+    event: HostEvent,
+}
+
+impl DeferredTabEvent {
+    fn now(generation: u64, event: HostEvent) -> Self {
+        Self { generation, deferred_at: tokio::time::Instant::now(), event }
+    }
+}
+
+/// Whether a popup's birth is still waiting for its page. **Only this host's
+/// births count, and only while they are fresh**: a birth left under a
+/// replaced host, or one nothing has paired inside [`POPUP_BIRTH_KEEP`], is
+/// stale, and a real wedge must still be endable.
 fn popup_birth_waits(profile: &Profile) -> bool {
-    profile
-        .deferred_tab_events
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .iter()
-        .any(|(_, event)| matches!(event, HostEvent::TabCreated { opener: Some(_), .. }))
+    let generation = profile.host_generation.load(Ordering::Acquire);
+    let now = tokio::time::Instant::now();
+    profile.deferred_tab_events.lock().unwrap_or_else(PoisonError::into_inner).iter().any(|entry| {
+        entry.generation == generation
+            && now.saturating_duration_since(entry.deferred_at) < POPUP_BIRTH_KEEP
+            && matches!(&entry.event, HostEvent::TabCreated { opener: Some(_), .. })
+    })
 }
 
 /// **The events one reconcile took, put back if that pass is cancelled.**
@@ -6021,7 +6115,7 @@ fn popup_birth_waits(profile: &Profile) -> bool {
 /// prunes its page as an orphan.
 struct TakenEvents<'a> {
     profile: &'a Profile,
-    events: Option<Vec<(u64, HostEvent)>>,
+    events: Option<Vec<DeferredTabEvent>>,
 }
 
 impl Drop for TakenEvents<'_> {
@@ -6046,11 +6140,12 @@ impl Drop for TakenEvents<'_> {
 fn pair_tab_events(
     tabs: &mut TabRegistry,
     listing: &[crate::tabs::DriverTab],
-    events: Vec<(u64, HostEvent)>,
+    events: Vec<DeferredTabEvent>,
     generation: u64,
-) -> Vec<(u64, HostEvent)> {
+) -> Vec<DeferredTabEvent> {
     let mut unmatched = Vec::new();
-    for (event_generation, event) in events {
+    for entry in events {
+        let DeferredTabEvent { generation: event_generation, deferred_at, event } = entry;
         // **An older receiver speaks for a dead host.** Its tab numbers
         // belong to a registry this profile no longer holds, so it is
         // dropped. **A newer one is the successor's**: this pass pairs with
@@ -6066,7 +6161,7 @@ fn pair_tab_events(
             continue;
         }
         if event_generation > generation {
-            unmatched.push((event_generation, event));
+            unmatched.push(DeferredTabEvent { generation: event_generation, deferred_at, event });
             continue;
         }
         match event {
@@ -6093,25 +6188,32 @@ fn pair_tab_events(
                     .find(|row| unclaimed(row) && (url.is_empty() || row.url == url))
                     .or_else(|| listing.iter().find(unclaimed))
                 else {
-                    unmatched.push((
-                        event_generation,
-                        HostEvent::TabCreated { tab, opener, url, request },
-                    ));
+                    unmatched.push(DeferredTabEvent {
+                        generation: event_generation,
+                        deferred_at,
+                        event: HostEvent::TabCreated { tab, opener, url, request },
+                    });
                     continue;
                 };
                 if let Some(opener) = opener {
                     let _ = tabs.create_under(opener, tab, &row.target, &row.title, &row.url);
                 }
             }
-            other => unmatched.push((event_generation, other)),
+            other => {
+                unmatched.push(DeferredTabEvent {
+                    generation: event_generation,
+                    deferred_at,
+                    event: other,
+                });
+            }
         }
     }
     // **A close and a birth can arrive in one pass**, the birth first. The
     // close answers the birth, so it is dropped here rather than kept for a
     // page the tab will never have.
-    unmatched.retain(|(event_generation, event)| {
-        !(*event_generation == generation
-            && matches!(event, HostEvent::TabCreated { tab, .. } if tabs.was_closed(*tab)))
+    unmatched.retain(|entry| {
+        !(entry.generation == generation
+            && matches!(&entry.event, HostEvent::TabCreated { tab, .. } if tabs.was_closed(*tab)))
     });
     unmatched
 }
@@ -6194,12 +6296,12 @@ mod tests {
 
     use super::{
         BrowserService, Call, ChooserAnswer, ChooserFuture, ChooserLedger, DeadDriverOutcome,
-        DeadHost, DeadPageOutcome, Driven, HostEnd, Profile, ReconcilePass, State, UploadRequest,
-        agent_upload_paths, agent_upload_refused, begin_upload, captured_generation, clear_if_dead,
-        dead_driver_answer, dead_host_answer, dead_page_answer, death_cause, device_pixels,
-        file_name, installed_generation, note_agent_answered, note_dialog, note_surfaced_opened,
-        note_upload_finished, owner_size, pair_tab_events, stage_agent_uploads, upload_request,
-        window_dimension, write_uploads,
+        DeadHost, DeadPageOutcome, DeferredTabEvent, Driven, HostEnd, Profile, ReconcilePass,
+        State, UploadRequest, agent_upload_paths, agent_upload_refused, begin_upload,
+        captured_generation, clear_if_dead, dead_driver_answer, dead_host_answer, dead_page_answer,
+        death_cause, device_pixels, file_name, installed_generation, note_agent_answered,
+        note_dialog, note_surfaced_opened, note_upload_finished, owner_size, pair_tab_events,
+        stage_agent_uploads, upload_request, window_dimension, write_uploads,
     };
     use crate::control::JsDialogState;
     use forge_primitives::SessionSlot;
@@ -7146,6 +7248,84 @@ mod tests {
         crate::osr::Ring::unlink(&ring_name);
     }
 
+    /// **A create whose fresh driver cannot attach while a popup waits keeps
+    /// the host and lets that driver go.** The create path installs its own
+    /// driver; the keep's drop is what stops the next call reusing it.
+    #[tokio::test]
+    async fn a_create_that_cannot_attach_while_a_popup_waits_keeps_the_host() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let seat = SessionSlot::lead("O", "p");
+        let wedged = FakeDriver::with_blank("T1");
+        let successor = FakeDriver::with_blank("T1");
+        successor.attach_timeout_on_listing();
+        service
+            .install_fake_with_successor(&seat, wedged, move || {
+                Arc::new(successor.clone()) as Arc<dyn crate::driver::TabDriver>
+            })
+            .await;
+        let profile = service.find("O/default").await.expect("the profile");
+        let ring_name = format!("/forge-create-keep-{}", std::process::id());
+        let ring = crate::osr::Ring::create(&ring_name, 4, 4).expect("a test ring");
+        let (input, requests) = std::sync::mpsc::channel();
+        let (events, births) = tokio::sync::mpsc::unbounded_channel();
+        *profile.host_tab_events.lock().await = Some(births);
+        profile.state.lock().await.host = Some(crate::spawn::ActiveHost {
+            pid: std::process::id(),
+            port: 9,
+            ring: Arc::new(ring),
+            profile: dir.path().join("host-create-keep"),
+            input,
+            reader: None,
+            monitor: None,
+        });
+        let generation = profile.host_generation.load(Ordering::Acquire);
+        // The popup's birth the host reported, still waiting for its page.
+        profile.deferred_tab_events.lock().unwrap_or_else(PoisonError::into_inner).push(
+            DeferredTabEvent::now(
+                generation,
+                crate::control::HostEvent::TabCreated {
+                    tab: 2,
+                    opener: Some(1),
+                    url: "https://auth/".to_owned(),
+                    request: None,
+                },
+            ),
+        );
+        let host = tokio::task::spawn_blocking(move || {
+            if let Ok(line) = requests.recv_timeout(Duration::from_secs(10))
+                && let Some(crate::input::HostInput::TabNew { request, .. }) =
+                    crate::input::parse_host_line(&line)
+            {
+                events
+                    .send((
+                        generation,
+                        crate::control::HostEvent::TabCreated {
+                            tab: 1,
+                            opener: None,
+                            url: String::new(),
+                            request,
+                        },
+                    ))
+                    .expect("the birth is reported");
+            }
+        });
+
+        let refused = service
+            .call(&seat, "browser_tabs", json!({ "action": "new" }))
+            .await
+            .expect_err("a create whose driver cannot attach answers its reason");
+        host.await.expect("the host's birth is answered");
+
+        assert!(refused.contains("the browser is kept"), "{refused}");
+        assert!(profile.state.lock().await.host.is_some(), "the host stands");
+        assert!(
+            profile.state.lock().await.driver.is_none(),
+            "the driver that could not attach is let go"
+        );
+        crate::osr::Ring::unlink(&ring_name);
+    }
+
     /// **A late close from the old host leaves its successor's tab one
     /// alone.** A host death clears the focus and restarts tab numbers, so a
     /// close aimed at the old host must not unfocus the new one's tab.
@@ -7459,15 +7639,17 @@ mod tests {
             .await;
         let profile = service.find("O/default").await.expect("the profile");
         let generation = profile.host_generation.load(Ordering::Acquire);
-        profile.deferred_tab_events.lock().unwrap_or_else(PoisonError::into_inner).push((
-            generation,
-            crate::control::HostEvent::TabCreated {
-                tab: 2,
-                opener: Some(1),
-                url: "u".to_owned(),
-                request: None,
-            },
-        ));
+        profile.deferred_tab_events.lock().unwrap_or_else(PoisonError::into_inner).push(
+            DeferredTabEvent::now(
+                generation,
+                crate::control::HostEvent::TabCreated {
+                    tab: 2,
+                    opener: Some(1),
+                    url: "u".to_owned(),
+                    request: None,
+                },
+            ),
+        );
         let driver: Arc<dyn crate::driver::TabDriver> = Arc::new(seen);
         // **Enough for a start and a little more**: every listing after the
         // install must still be bounded by this, not by `CALL_TIMEOUT`.
@@ -7510,15 +7692,17 @@ mod tests {
             .await;
         let profile = service.find("O/default").await.expect("the profile");
         let generation = profile.host_generation.load(Ordering::Acquire);
-        profile.deferred_tab_events.lock().unwrap_or_else(PoisonError::into_inner).push((
-            generation,
-            crate::control::HostEvent::TabCreated {
-                tab: 2,
-                opener: Some(1),
-                url: "u".to_owned(),
-                request: None,
-            },
-        ));
+        profile.deferred_tab_events.lock().unwrap_or_else(PoisonError::into_inner).push(
+            DeferredTabEvent::now(
+                generation,
+                crate::control::HostEvent::TabCreated {
+                    tab: 2,
+                    opener: Some(1),
+                    url: "u".to_owned(),
+                    request: None,
+                },
+            ),
+        );
         let driver: Arc<dyn crate::driver::TabDriver> = Arc::new(seen.clone());
 
         // Well under a driver start, and well over the first listing.
@@ -10313,6 +10497,11 @@ mod tests {
         tabs.adopt(1, seat.clone(), "T1", "", "about:blank").expect("the test's tab")
     }
 
+    /// The measured `initializeServer` line (#2534), so a fake can answer it
+    /// and a test can assert on the same words.
+    pub(crate) const ATTACH_TIMEOUT: &str =
+        "### Error\nTimeoutError: async initializeServer: Timeout 30000ms exceeded.";
+
     /// A driver the call path can be tested against: it records the targets
     /// it selects and answers every tool with one text part.
     #[derive(Clone, Default)]
@@ -10337,6 +10526,9 @@ mod tests {
         changed: Arc<Notify>,
         /// **Every** listing answers the driver's own timeout.
         slow_listing: Arc<std::sync::atomic::AtomicBool>,
+        /// **Every** listing answers the attach timeout, as a driver that
+        /// cannot initialize against a host with a popup target does.
+        attach_listing: Arc<std::sync::atomic::AtomicBool>,
         /// **Every** page call answers an initialise timeout, as a driver
         /// that could not attach to its host does.
         attach_timeout: Arc<std::sync::atomic::AtomicBool>,
@@ -10403,6 +10595,12 @@ mod tests {
         /// this same fake cannot pass, so only a real replacement can.
         pub(crate) fn timeout_every_listing(&self) {
             self.slow_listing.store(true, Ordering::Release);
+        }
+
+        /// **Every** listing answers the attach timeout, as a driver that
+        /// cannot initialize against a host with a popup target does.
+        pub(crate) fn attach_timeout_on_listing(&self) {
+            self.attach_listing.store(true, Ordering::Release);
         }
 
         /// **Every** selection answers the driver's own timeout: a retry on
@@ -10540,8 +10738,10 @@ mod tests {
             url: "u".to_owned(),
             request: None,
         };
-        let waiting = pair_tab_events(&mut tabs, &[], vec![(1, event.clone())], 1);
-        assert_eq!(waiting, vec![(1, event)], "no page, no adoption");
+        let waiting =
+            pair_tab_events(&mut tabs, &[], vec![DeferredTabEvent::now(1, event.clone())], 1);
+        assert_eq!(waiting.len(), 1, "no page, no adoption");
+        assert_eq!(waiting[0].event, event, "the birth is held as it arrived");
         let listing = [crate::tabs::DriverTab {
             index: 0,
             target: "T2".to_owned(),
@@ -10558,7 +10758,8 @@ mod tests {
         // names tab 2, which generation 1 holds; a generation-0 close is
         // refused, so the guard is what keeps it.
         let stale = crate::control::HostEvent::TabClosed { tab: 2 };
-        let waiting = pair_tab_events(&mut tabs, &listing, vec![(0, stale)], 1);
+        let waiting =
+            pair_tab_events(&mut tabs, &listing, vec![DeferredTabEvent::now(0, stale)], 1);
         assert!(waiting.is_empty(), "a stale close is dropped, not re-deferred");
         assert_eq!(tabs.target(2), Some("T2"), "the live tab survives the stale close");
 
@@ -10566,12 +10767,15 @@ mod tests {
         // events go back for the next pass, which will carry its generation,
         // rather than being dropped here or paired with this pass's listing.
         let successor = crate::control::HostEvent::TabClosed { tab: 2 };
-        let waiting = pair_tab_events(&mut tabs, &listing, vec![(2, successor.clone())], 1);
-        assert_eq!(
-            waiting,
-            vec![(2, successor)],
-            "a newer generation is re-deferred, not paired or dropped"
+        let waiting = pair_tab_events(
+            &mut tabs,
+            &listing,
+            vec![DeferredTabEvent::now(2, successor.clone())],
+            1,
         );
+        assert_eq!(waiting.len(), 1, "a newer generation is re-deferred, not paired or dropped");
+        assert_eq!(waiting[0].generation, 2, "the successor's generation is kept");
+        assert_eq!(waiting[0].event, successor, "and its event");
         assert_eq!(tabs.target(2), Some("T2"), "and this pass leaves the tab alone");
     }
 
@@ -10610,6 +10814,9 @@ mod tests {
             self.listings.fetch_add(1, Ordering::AcqRel);
             self.bounds.lock().expect("the bounds").push(bound);
             self.changed.notify_one();
+            if self.attach_listing.load(Ordering::Acquire) {
+                return Err(ATTACH_TIMEOUT.to_owned());
+            }
             if self.slow_listing.load(Ordering::Acquire) {
                 return Err(crate::driver::did_not_answer("browser_tabs", bound));
             }
@@ -11696,15 +11903,17 @@ mod tests {
         assert_eq!(service.tabs(&worker).await.expect("rows").rows.len(), 1);
 
         let profile = service.find("O/default").await.expect("the profile");
-        profile.deferred_tab_events.lock().unwrap_or_else(PoisonError::into_inner).push((
-            profile.host_generation.load(Ordering::Acquire),
-            crate::control::HostEvent::TabCreated {
-                tab: 9,
-                opener: Some(1),
-                url: "http://stale/".to_owned(),
-                request: None,
-            },
-        ));
+        profile.deferred_tab_events.lock().unwrap_or_else(PoisonError::into_inner).push(
+            DeferredTabEvent::now(
+                profile.host_generation.load(Ordering::Acquire),
+                crate::control::HostEvent::TabCreated {
+                    tab: 9,
+                    opener: Some(1),
+                    url: "http://stale/".to_owned(),
+                    request: None,
+                },
+            ),
+        );
         profile.host_gone();
 
         // **The death is pushed at once**, so a subscribed strip with no
@@ -11760,8 +11969,10 @@ mod tests {
 /// re-read spares the same pages, so the branch was redundant.
 #[cfg(test)]
 mod server_guards {
-    use super::tests::{Caught, FakeDriver, ended, records, saw, seed_tab};
-    use super::{BrowserService, Call, Driven, Profile, ReconcilePass, pair_tab_events};
+    use super::tests::{ATTACH_TIMEOUT, Caught, FakeDriver, ended, records, saw, seed_tab};
+    use super::{
+        BrowserService, Call, DeferredTabEvent, Driven, Profile, ReconcilePass, pair_tab_events,
+    };
     use crate::control::HostEvent;
     use crate::driver::TabDriver;
     use crate::tabs::DriverTab;
@@ -11909,7 +12120,7 @@ mod server_guards {
             .deferred_tab_events
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .push((generation, HostEvent::TabClosed { tab: 99 }));
+            .push(DeferredTabEvent::now(generation, HostEvent::TabClosed { tab: 99 }));
         drop(queue);
         pass.await.expect("the pass completes");
 
@@ -11921,7 +12132,7 @@ mod server_guards {
         let deferred =
             profile.deferred_tab_events.lock().unwrap_or_else(PoisonError::into_inner).clone();
         assert!(
-            deferred.iter().any(|(_, event)| matches!(event, HostEvent::TabClosed { tab: 99 })),
+            deferred.iter().any(|entry| matches!(&entry.event, HostEvent::TabClosed { tab: 99 })),
             "an event deferred while the host was replaced was wiped: {deferred:?}"
         );
     }
@@ -11956,14 +12167,14 @@ mod server_guards {
             .deferred_tab_events
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .push((generation, HostEvent::TabClosed { tab: 99 }));
+            .push(DeferredTabEvent::now(generation, HostEvent::TabClosed { tab: 99 }));
         drop(queue);
         pass.await.expect("the pass completes");
 
         let deferred =
             profile.deferred_tab_events.lock().unwrap_or_else(PoisonError::into_inner).clone();
         assert!(
-            !deferred.iter().any(|(_, event)| matches!(event, HostEvent::TabClosed { tab: 99 })),
+            !deferred.iter().any(|entry| matches!(&entry.event, HostEvent::TabClosed { tab: 99 })),
             "a stable pass kept an event it did not pair: {deferred:?}"
         );
     }
@@ -11983,6 +12194,22 @@ mod server_guards {
         service.install_fake(&seat, fake).await;
         let profile = service.find("O/default").await.expect("the profile");
         let (_, ring) = install_host(&profile, dir.path(), 23).await;
+        // **The birth the request stands for**, queued as the host pump
+        // would leave it: the retries are gated on a birth still waiting.
+        let generation = profile.host_generation.load(Ordering::Acquire);
+        let (births, taken) = tokio::sync::mpsc::unbounded_channel();
+        *profile.host_tab_events.lock().await = Some(taken);
+        births
+            .send((
+                generation,
+                HostEvent::TabCreated {
+                    tab: 2,
+                    opener: Some(1),
+                    url: "about:blank".to_owned(),
+                    request: None,
+                },
+            ))
+            .expect("the birth is queued");
 
         let caught = Caught::default();
         let subscriber = tracing_subscriber::registry().with(caught.clone());
@@ -11992,10 +12219,9 @@ mod server_guards {
             tab: 2,
             opener: 1,
             url: "about:blank".to_owned(),
-            until: tokio::time::Instant::now() + Duration::from_secs(1),
             warned: false,
         });
-        // Past the request's whole window, so every retry it makes has run.
+        // Long enough for several retries at the pair cadence to run.
         tokio::time::sleep(Duration::from_secs(2)).await;
         drop(guard);
 
@@ -12080,15 +12306,17 @@ mod server_guards {
         // the tab the registry already knows, so the pass lists, pairs
         // nothing and is retried.
         let generation = profile.host_generation.load(Ordering::Acquire);
-        profile.deferred_tab_events.lock().unwrap_or_else(PoisonError::into_inner).push((
-            generation,
-            HostEvent::TabCreated {
-                tab: 2,
-                opener: Some(1),
-                url: "about:blank".to_owned(),
-                request: None,
-            },
-        ));
+        profile.deferred_tab_events.lock().unwrap_or_else(PoisonError::into_inner).push(
+            DeferredTabEvent::now(
+                generation,
+                HostEvent::TabCreated {
+                    tab: 2,
+                    opener: Some(1),
+                    url: "about:blank".to_owned(),
+                    request: None,
+                },
+            ),
+        );
 
         let caught = Caught::default();
         let subscriber = tracing_subscriber::registry().with(caught.clone());
@@ -12098,10 +12326,9 @@ mod server_guards {
             tab: 2,
             opener: 1,
             url: "about:blank".to_owned(),
-            until: tokio::time::Instant::now() + Duration::from_secs(1),
             warned: false,
         });
-        // Past the request's whole window, so every retry it makes has run.
+        // Long enough for several retries at the pair cadence to run.
         tokio::time::sleep(Duration::from_secs(2)).await;
         drop(guard);
 
@@ -12176,7 +12403,9 @@ mod server_guards {
         let deferred =
             profile.deferred_tab_events.lock().unwrap_or_else(PoisonError::into_inner).clone();
         assert!(
-            deferred.iter().any(|(_, event)| matches!(event, HostEvent::TabCreated { tab: 2, .. })),
+            deferred
+                .iter()
+                .any(|entry| matches!(&entry.event, HostEvent::TabCreated { tab: 2, .. })),
             "a cancelled pass ate the popup's birth: {deferred:?}"
         );
     }
@@ -12191,14 +12420,20 @@ mod server_guards {
         tabs.close(9);
         let birth =
             HostEvent::TabCreated { tab: 9, opener: Some(1), url: "u".to_owned(), request: None };
-        let waiting = pair_tab_events(&mut tabs, &[], vec![(1, birth)], 1);
+        let waiting = pair_tab_events(&mut tabs, &[], vec![DeferredTabEvent::now(1, birth)], 1);
         assert!(waiting.is_empty(), "a birth for a closed tab is dropped: {waiting:?}");
 
-        // The control: the same birth for a tab nobody closed waits.
+        // The control: the same birth for a tab nobody closed waits, with the
+        // age it arrived with.
         let live =
             HostEvent::TabCreated { tab: 10, opener: Some(1), url: "u".to_owned(), request: None };
-        let waiting = pair_tab_events(&mut tabs, &[], vec![(1, live.clone())], 1);
-        assert_eq!(waiting, vec![(1, live)], "a birth with no page and no close waits");
+        let birth = DeferredTabEvent::now(1, live.clone());
+        let stamp = birth.deferred_at;
+        let waiting = pair_tab_events(&mut tabs, &[], vec![birth], 1);
+        assert_eq!(waiting.len(), 1, "a birth with no page and no close waits: {waiting:?}");
+        assert_eq!(waiting[0].generation, 1, "the birth keeps its generation");
+        assert_eq!(waiting[0].event, live, "and its event");
+        assert_eq!(waiting[0].deferred_at, stamp, "and the age it was deferred with");
     }
 
     /// **A pairing pass that could not list tries again.** The birth is still
@@ -12247,7 +12482,6 @@ mod server_guards {
             tab: 2,
             opener: 1,
             url: "about:blank".to_owned(),
-            until: tokio::time::Instant::now() + Duration::from_secs(5),
             warned: false,
         });
 
@@ -12522,6 +12756,319 @@ mod server_guards {
         );
         crate::osr::Ring::unlink(&first_ring);
         crate::osr::Ring::unlink(&second_ring);
+    }
+
+    /// **A popup's page the host has not named keeps its browser.** An
+    /// initializeServer timeout against a popup target is the driver's to
+    /// retry, not the host's to die for: the page the person signed in from
+    /// is on it, and the next call attaches a fresh driver.
+    #[tokio::test]
+    async fn an_attach_timeout_while_a_popup_waits_keeps_the_host() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let profile = profile_for_test(&service).await;
+        let seat = SessionSlot::lead("O", "p");
+        let (identity, ring) = install_host(&profile, dir.path(), 12).await;
+        profile.up.store(true, Ordering::Release);
+        let generation = profile.host_generation.load(Ordering::Acquire);
+        profile.deferred_tab_events.lock().unwrap_or_else(PoisonError::into_inner).push(
+            DeferredTabEvent::now(
+                generation,
+                HostEvent::TabCreated {
+                    tab: 2,
+                    opener: Some(1),
+                    url: String::new(),
+                    request: None,
+                },
+            ),
+        );
+        let why = "### Error\nTimeoutError: async initializeServer: Timeout 30000ms exceeded.";
+
+        let host = service.end_dead_host(&profile, &seat, identity, why).await;
+
+        assert!(
+            matches!(host, super::DeadHost::KeptForPopup),
+            "a popup in flight kept the host: {host:?}"
+        );
+        assert!(profile.state.lock().await.host.is_some(), "the host still stands");
+        assert!(
+            profile.state.lock().await.driver.is_none(),
+            "the driver that could not attach is let go, so the next call starts a fresh one"
+        );
+        let answer = super::dead_host_answer(&profile, host, why);
+        assert!(
+            answer.contains("the browser is kept") && answer.contains("a fresh driver"),
+            "the answer names the keep and the next move: {answer}"
+        );
+        crate::osr::Ring::unlink(&ring);
+    }
+
+    /// **A birth nothing paired cannot keep a wedge forever.** A birth older
+    /// than the keep's bound is stale, and the next attach timeout must still
+    /// be able to end the host.
+    #[tokio::test]
+    async fn a_stale_popup_birth_does_not_keep_a_wedged_host() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let profile = profile_for_test(&service).await;
+        let seat = SessionSlot::lead("O", "p");
+        let (identity, ring) = install_host(&profile, dir.path(), 16).await;
+        profile.up.store(true, Ordering::Release);
+        let generation = profile.host_generation.load(Ordering::Acquire);
+        profile.deferred_tab_events.lock().unwrap_or_else(PoisonError::into_inner).push(
+            DeferredTabEvent {
+                generation,
+                deferred_at: tokio::time::Instant::now()
+                    - super::POPUP_BIRTH_KEEP
+                    - Duration::from_secs(1),
+                event: HostEvent::TabCreated {
+                    tab: 2,
+                    opener: Some(1),
+                    url: String::new(),
+                    request: None,
+                },
+            },
+        );
+        let why = "### Error\nTimeoutError: async initializeServer: Timeout 30000ms exceeded.";
+
+        let host = service.end_dead_host(&profile, &seat, identity, why).await;
+
+        assert!(
+            matches!(host, super::DeadHost::Ended { .. }),
+            "a stale birth must not keep the host: {host:?}"
+        );
+        assert!(profile.state.lock().await.host.is_none(), "the host is ended");
+        crate::osr::Ring::unlink(&ring);
+    }
+
+    /// **A birth still inside the keep's window keeps the host**, even after
+    /// a slow pairing pass has come and gone; the window must cover the
+    /// retries, not only the first attempt.
+    #[tokio::test]
+    async fn a_birth_inside_the_keep_window_still_keeps_the_host() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let profile = profile_for_test(&service).await;
+        let seat = SessionSlot::lead("O", "p");
+        let (identity, ring) = install_host(&profile, dir.path(), 18).await;
+        profile.up.store(true, Ordering::Release);
+        let generation = profile.host_generation.load(Ordering::Acquire);
+        profile.deferred_tab_events.lock().unwrap_or_else(PoisonError::into_inner).push(
+            DeferredTabEvent {
+                generation,
+                deferred_at: tokio::time::Instant::now() - Duration::from_secs(45),
+                event: HostEvent::TabCreated {
+                    tab: 2,
+                    opener: Some(1),
+                    url: String::new(),
+                    request: None,
+                },
+            },
+        );
+        let why = "### Error\nTimeoutError: async initializeServer: Timeout 30000ms exceeded.";
+
+        let host = service.end_dead_host(&profile, &seat, identity, why).await;
+
+        assert!(
+            matches!(host, super::DeadHost::KeptForPopup),
+            "a birth inside the window kept the host: {host:?}"
+        );
+        assert!(profile.state.lock().await.host.is_some(), "the host still stands");
+        crate::osr::Ring::unlink(&ring);
+    }
+
+    /// **A birth from a replaced host is not this host's popup.** The
+    /// receiver's generation is part of the event's identity, and a birth it
+    /// reported must not refuse the end of the host that replaced it.
+    #[tokio::test]
+    async fn a_popup_birth_from_a_replaced_host_does_not_keep_this_one() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let profile = profile_for_test(&service).await;
+        let seat = SessionSlot::lead("O", "p");
+        let (identity, ring) = install_host(&profile, dir.path(), 17).await;
+        profile.up.store(true, Ordering::Release);
+        let birth_generation = profile.host_generation.load(Ordering::Acquire);
+        profile.host_generation.fetch_add(1, Ordering::AcqRel);
+        profile.deferred_tab_events.lock().unwrap_or_else(PoisonError::into_inner).push(
+            DeferredTabEvent::now(
+                birth_generation,
+                HostEvent::TabCreated {
+                    tab: 2,
+                    opener: Some(1),
+                    url: String::new(),
+                    request: None,
+                },
+            ),
+        );
+        let why = "### Error\nTimeoutError: async initializeServer: Timeout 30000ms exceeded.";
+
+        let host = service.end_dead_host(&profile, &seat, identity, why).await;
+
+        assert!(
+            matches!(host, super::DeadHost::Ended { .. }),
+            "a replaced host's birth must not keep this one: {host:?}"
+        );
+        assert!(profile.state.lock().await.host.is_none(), "the host is ended");
+        crate::osr::Ring::unlink(&ring);
+    }
+
+    /// **A popup whose document has started keeps the host too.** A fresh
+    /// connect hangs on a popup target after the popup has loaded (#2861), so
+    /// a settled popup is not a reason to end the browser either.
+    #[tokio::test]
+    async fn an_attach_timeout_with_a_settled_popup_keeps_the_host() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let profile = profile_for_test(&service).await;
+        let seat = SessionSlot::lead("O", "p");
+        let (identity, ring) = install_host(&profile, dir.path(), 14).await;
+        profile.up.store(true, Ordering::Release);
+        {
+            let mut tabs = profile.tabs.lock().unwrap_or_else(PoisonError::into_inner);
+            tabs.adopt(1, seat.clone(), "opener", "Sign in", "https://opener/")
+                .expect("the opener's row");
+            tabs.create_under(1, 2, "popup", "Auth", "https://auth/").expect("the popup's row");
+        }
+        let why = "### Error\nTimeoutError: async initializeServer: Timeout 30000ms exceeded.";
+
+        let host = service.end_dead_host(&profile, &seat, identity, why).await;
+
+        assert!(
+            matches!(host, super::DeadHost::KeptForPopup),
+            "a settled popup kept the host: {host:?}"
+        );
+        assert!(profile.state.lock().await.host.is_some(), "the host still stands");
+        crate::osr::Ring::unlink(&ring);
+    }
+
+    /// **The control: with no popup, the same timeout still ends the host.**
+    #[tokio::test]
+    async fn an_attach_timeout_with_no_popup_ends_the_host() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let profile = profile_for_test(&service).await;
+        let seat = SessionSlot::lead("O", "p");
+        let (identity, ring) = install_host(&profile, dir.path(), 15).await;
+        profile.up.store(true, Ordering::Release);
+        let why = "### Error\nTimeoutError: async initializeServer: Timeout 30000ms exceeded.";
+
+        let host = service.end_dead_host(&profile, &seat, identity, why).await;
+
+        assert!(
+            matches!(host, super::DeadHost::Ended { .. }),
+            "with no popup the timeout is the host's end: {host:?}"
+        );
+        assert!(profile.state.lock().await.host.is_none(), "the host is gone");
+        crate::osr::Ring::unlink(&ring);
+    }
+
+    /// **An ordinary tab is not a popup.** The keep is about a target the
+    /// attach waits on, not about tabs in general: a host with only ordinary
+    /// tabs must still be endable on the measured timeout.
+    #[tokio::test]
+    async fn an_attach_timeout_with_an_ordinary_tab_ends_the_host() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let profile = profile_for_test(&service).await;
+        let seat = SessionSlot::lead("O", "p");
+        let (identity, ring) = install_host(&profile, dir.path(), 19).await;
+        profile.up.store(true, Ordering::Release);
+        profile
+            .tabs
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .adopt(1, seat.clone(), "opener", "Sign in", "https://page/")
+            .expect("an ordinary tab");
+        let why = "### Error\nTimeoutError: async initializeServer: Timeout 30000ms exceeded.";
+
+        let host = service.end_dead_host(&profile, &seat, identity, why).await;
+
+        assert!(
+            matches!(host, super::DeadHost::Ended { .. }),
+            "an ordinary tab is not the keep: {host:?}"
+        );
+        assert!(profile.state.lock().await.host.is_none(), "the host is gone");
+        crate::osr::Ring::unlink(&ring);
+    }
+
+    /// **The keep is both halves: the attach timeout and a popup.** A timeout
+    /// with no popup must still end a wedge, and a popup must not excuse a
+    /// tool's own timeout.
+    #[tokio::test]
+    async fn only_an_attach_timeout_with_a_popup_blocks_a_hosts_end() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let profile = profile_for_test(&service).await;
+        let tool = "### Error\nTimeoutError: page.click: Timeout 30000ms exceeded.";
+
+        assert!(
+            !super::attach_blocked_by_popup(&profile, ATTACH_TIMEOUT),
+            "no popup: the measured attach timeout is still the host's end"
+        );
+        assert!(
+            !super::attach_blocked_by_popup(&profile, tool),
+            "no popup: a tool's own timeout is the host's end too"
+        );
+        let generation = profile.host_generation.load(Ordering::Acquire);
+        profile.deferred_tab_events.lock().unwrap_or_else(PoisonError::into_inner).push(
+            DeferredTabEvent::now(
+                generation,
+                HostEvent::TabCreated {
+                    tab: 2,
+                    opener: Some(1),
+                    url: String::new(),
+                    request: None,
+                },
+            ),
+        );
+        assert!(
+            !super::attach_blocked_by_popup(&profile, tool),
+            "a popup does not excuse a tool's own timeout"
+        );
+        assert!(
+            super::attach_blocked_by_popup(&profile, ATTACH_TIMEOUT),
+            "a waiting popup and the attach timeout are the keep"
+        );
+    }
+
+    /// **The mark a create's failed attach leaves settles into a keep while a
+    /// popup waits.** The call path marks the host and ends it on the way
+    /// out; this is that ending, and the waiting birth is what refuses it.
+    #[tokio::test]
+    async fn a_settled_mark_with_a_popup_waiting_keeps_the_host() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let profile = profile_for_test(&service).await;
+        let seat = SessionSlot::lead("O", "p");
+        let (_identity, ring) = install_host(&profile, dir.path(), 13).await;
+        profile.up.store(true, Ordering::Release);
+        let generation = profile.host_generation.load(Ordering::Acquire);
+        // The mark a create's fresh driver leaves when its listing times out.
+        BrowserService::mark_host_suspect(&profile, generation).await;
+        profile.deferred_tab_events.lock().unwrap_or_else(PoisonError::into_inner).push(
+            DeferredTabEvent::now(
+                generation,
+                HostEvent::TabCreated {
+                    tab: 2,
+                    opener: Some(1),
+                    url: String::new(),
+                    request: None,
+                },
+            ),
+        );
+        let why = "### Error\nTimeoutError: async initializeServer: Timeout 30000ms exceeded.";
+
+        let answer = service.settle_suspect(&profile, &seat, why.to_owned()).await;
+
+        assert!(answer.contains("the browser is kept"), "{answer}");
+        assert!(answer.contains("a fresh driver"), "the answer names the next move: {answer}");
+        assert!(profile.state.lock().await.host.is_some(), "the host still stands");
+        assert!(
+            profile.host_suspect.lock().unwrap_or_else(PoisonError::into_inner).is_none(),
+            "the mark is spent, not left for the next call to end on",
+        );
+        crate::osr::Ring::unlink(&ring);
     }
 
     /// **The level says whether the end was forge's problem.** A fault that
