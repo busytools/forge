@@ -56,17 +56,27 @@ function mediaBlocks(header: string): string[] {
 }
 
 describe('the document sheet', () => {
-  /** **The route fills the surface.** The body is not capped to a column,
-   *  prose keeps a readable measure of its own, and code and tables take
-   *  the width the window gives them. */
-  it('fills the surface, with prose at a measure and code and tables at the width', () => {
+  /** **The sheet is a centred reading column.** The page background stays
+   *  full width, the body is capped at a readable measure and centred, and
+   *  code and tables take the sheet's whole content width. */
+  it('centres the reading column, with prose at a measure and code and tables wide', () => {
+    const page = rulesFor('.doc-page');
+    expect(
+      page.some(
+        (rule) => rule.selector.trim() === '.doc-page' && /max-width:\s*none/.test(rule.body),
+      ),
+      'the page background stays full width',
+    ).toBe(true);
+
     const bodies = rulesFor('.doc-page .doc-body');
     expect(
       bodies.some(
         (rule) =>
-          rule.selector.trim() === '.doc-page .doc-body' && /max-width:\s*none/.test(rule.body),
+          rule.selector.trim() === '.doc-page .doc-body' &&
+          /max-width:\s*88ch/.test(rule.body) &&
+          /margin-inline:\s*auto/.test(rule.body),
       ),
-      'the document body is not capped to a prose column',
+      'the document body is a centred column about 88ch wide',
     ).toBe(true);
 
     const prose = rulesFor('.doc-page .doc-body :is(h1, h2, h3, p, li, blockquote)');
@@ -111,15 +121,19 @@ describe('the document sheet', () => {
     expect(skinBody('-thumb'), 'the thumb is the theme thumb').toMatch(/background:\s*var\(--s3\)/);
   });
 
-  /** **A finger's targets are the line numbers and the answers.** Both join
-   *  the 44px floor the page's other controls carry, and that floor sits
-   *  inside the coarse-pointer gate rather than anywhere on the page. */
-  it('gives the gutter and the answers a 44px target under a coarse pointer', () => {
+  /** **A finger's targets are the hover `+` and the answers.** Both join
+   *  the 44px floor the page's other controls carry, inside the
+   *  coarse-pointer gate, and the `+` is drawn always there because a finger
+   *  has no hover to reveal it. */
+  it('gives the hover target and the answers a 44px target under a coarse pointer', () => {
     const coarse = mediaBlocks('@media (pointer: coarse)').find((block) =>
-      block.includes('.doc-page .doc-lnum'),
+      block.includes('.doc-page .doc-add'),
     );
     expect(coarse, 'the floor is gated on a coarse pointer').toBeDefined();
-    expect(coarse, 'the answers share the gutter rule').toContain('.doc-page .doc-answer-btn');
+    expect(coarse, 'the answers share the hover target rule').toContain(
+      '.doc-page .doc-answer-btn',
+    );
     expect(coarse, 'and the rule is the 44px floor').toMatch(/min-height:\s*44px/);
+    expect(coarse, 'the `+` is always drawn for a finger').toMatch(/opacity:\s*1/);
   });
 });

@@ -5319,25 +5319,27 @@ details[open] > summary .arw { opacity: 1; }
 }
 
 /* ---------- the document viewer ---------- */
-/* **The route fills the surface, and the route is the scroller.** A
-   document is read at whatever width the reader's window gives it: prose
-   keeps a readable measure of its own and code, tables and long lines take
-   the width. The scroller wears the sheet's one scrollbar skin (the group
-   at the top), corner included - the platform's unstyled corner is the
-   white block this page used to show at its bottom-right. */
+/* **The route is the scroller and the desk, and the sheet is a centred
+   reading column.** The page background stays the window's width; the
+   document sits on it as one centred sheet about 88 characters wide, so a
+   paragraph has a readable measure without the reader tracking across a
+   wide window. Code blocks and tables take the sheet's whole content width.
+   The scroller wears the sheet's one scrollbar skin (the group at the top),
+   corner included - the platform's unstyled corner is the white block this
+   page used to show at its bottom-right. */
 .doc-page { max-width: none; margin: 0; height: 100dvh; overflow-y: auto;
   overflow-x: hidden; scrollbar-gutter: stable; }
 /* **The sheet** (Ved, the look): the document rests on the app like a page
-   on a desk - one panel, and the space around it is the desk rather than
-   emptiness. The typography inside is the chat's own rules under the
+   on a desk - one centred panel, and the space around it is the desk rather
+   than emptiness. The typography inside is the chat's own rules under the
    doc scope, carrying the reading scale the drawing settled on: a hairline
-   over every section, tighter leading, one type scale for both the
-   rendered prose and the reviewable blocks (whose HTML is bare elements,
-   so the same rules reach them). */
-.doc-page .doc-body { max-width: none; margin: 0; background: var(--s1);
+   over every section, tighter leading, one type scale for both the rendered
+   prose and the reviewable blocks (whose HTML is bare elements, so the same
+   rules reach them). */
+.doc-page .doc-body { max-width: 88ch; margin-inline: auto; background: var(--s1);
   /* The document's own column, which its stacked tables guard on. */
   container-type: inline-size;
-  border: 1px solid var(--line); border-radius: 10px; padding: 52px 60px 44px; }
+  border: 1px solid var(--line); border-radius: 10px; padding: 46px 48px 40px; }
 /* A person reads prose line by line, so it keeps a measure; a heading rides
    the same one. Code, tables and unbroken tokens are read by their columns
    and take the whole sheet. */
@@ -5372,7 +5374,8 @@ details[open] > summary .arw { opacity: 1; }
 .doc-page .doc-pdf { width: 100%; height: 78dvh; border: 1px solid var(--line);
   border-radius: var(--r); background: var(--s1); }
 .doc-page.wide .doc-pdf { height: calc(100dvh - 104px); }
-.doc-page.wide .doc-exit { margin-top: 8px; padding-top: 8px; border-top: 0; }
+.doc-page.wide .doc-exit { max-width: none; margin-top: 8px; padding: 8px 0 0;
+  border-top: 0; }
 /* pdf.js draws to canvases at the container's width; the page behind them
    is the paper the document was written on, not this theme's. */
 .doc-page .doc-pdf-js { display: flex; flex-direction: column; gap: 14px; }
@@ -5380,37 +5383,36 @@ details[open] > summary .arw { opacity: 1; }
   border-radius: var(--r); background: #fff; }
 
 /* ---------- a reviewable document: its rendered blocks ---------- */
-/* The document rendered, every top-level block a comment target and every
-   source line in its gutter one too: the block or number under the pointer
-   (or the focus) is marked, and a press opens the composer under it. A
-   block anchor captures the block's span; a line anchor captures from the
-   pressed line, its first line being what a revision re-finds the thread
-   by. A plain-text document has no blocks, so its rows are its own lines,
-   drawn as the text they are. */
+/* The document rendered, every top-level block a comment target with one
+   hover target on its own source line: the block or the `+` under the
+   pointer (or the focus) is marked, and a press opens the composer under
+   it. A block anchor captures the block's span; a line anchor captures
+   from the pressed line, its first line being what a revision re-finds the
+   thread by. A plain-text document has no blocks, so its rows are its own
+   lines, drawn as the text they are. */
 .doc-page .doc-blocks { font-size: var(--fs-base); }
-/* **A block is a prose root with a source-line gutter.** Its rendered marks
-   read the chat's own rules through `.prose`; the gutter is one numbered
-   target per source line the block spans, so a comment can land on a line
-   as well as on the whole section. No vertical padding, so each block's
-   first and last child margins collapse through the box - the block boxes
-   then space themselves by the sheet's own rhythm instead of stacking
-   flush. */
+/* **A block is a prose root with one hover `+` on its own line.** Its
+   rendered marks read the chat's own rules through `.prose`; the always
+   visible source-line numbers are gone, and the `+` is the line-level
+   target, hanging in the sheet's left padding so it marks the line without
+   moving the text. No vertical padding, so each block's first and last
+   child margins collapse through the box - the block boxes then space
+   themselves by the sheet's own rhythm instead of stacking flush. */
 .doc-page .doc-block { position: relative; border-radius: 6px; cursor: pointer;
-  display: grid; grid-template-columns: 3.4rem minmax(0, 1fr);
-  column-gap: 10px; padding: 0 10px 0 0; margin: 0 -10px 0 0; }
-.doc-page .doc-block:hover, .doc-page .doc-block.target, .doc-page .doc-block:focus-visible {
-  background: var(--s1); box-shadow: inset 2px 0 0 var(--accent); outline: none; }
-/* The gutter fills its block's height, one cell per source line, so a
-   number sits beside the part of the block its source line produced. */
-.doc-page .doc-lines { display: flex; flex-direction: column; align-items: stretch;
-  border-right: 1px solid var(--line); padding-right: 4px; }
-.doc-page .doc-lnum { font-family: var(--mono); font-size: var(--fs-label);
-  color: var(--dim); background: none; border: 0; border-radius: 4px;
-  padding: 0 4px; cursor: pointer; text-align: right; flex: 1 1 0;
-  min-height: 1.5em; line-height: 1.5; }
-.doc-page .doc-lnum:hover, .doc-page .doc-lnum:focus-visible, .doc-page .doc-lnum.target {
-  color: var(--text); background: var(--s2);
-  box-shadow: inset 2px 0 0 var(--accent); outline: none; }
+  padding: 0 10px 0 0; margin: 0 -10px 0 0; }
+.doc-page .doc-block:hover, .doc-page .doc-block.target, .doc-page .doc-block:focus-within {
+  background: var(--s2); box-shadow: inset 2px 0 0 var(--accent); outline: none; }
+/* The `+`: shown on hover or focus, and drawn always for a finger - an
+   affordance that exists only on hover is unreachable on touch. */
+.doc-page .doc-add { position: absolute; left: -2.2rem; top: 0.2rem; width: 1.5rem;
+  height: 1.5rem; display: grid; place-items: center; padding: 0;
+  border: 1px solid var(--line); border-radius: 999px; background: var(--s2);
+  color: var(--muted); font-family: var(--mono); font-size: 14px; line-height: 1;
+  cursor: pointer; opacity: 0; transition: opacity 120ms ease; }
+.doc-page .doc-block:hover .doc-add, .doc-page .doc-block:focus-within .doc-add,
+.doc-page .doc-block.target .doc-add, .doc-page .doc-add:focus-visible { opacity: 1; }
+.doc-page .doc-add:hover, .doc-page .doc-add:focus-visible {
+  color: var(--text); border-color: var(--accent); outline: none; }
 .doc-page .doc-block-body { min-width: 0; }
 /* The gutter between two blocks is the sheet's air, not a block's target: a
    press on a paragraph's gap opens nothing, because the block's own box is
@@ -5506,23 +5508,24 @@ details[open] > summary .arw { opacity: 1; }
   color: var(--muted); background: var(--bg); border: 1px solid var(--line);
   border-radius: 8px; padding: 6px 8px; white-space: pre-wrap;
   overflow-wrap: anywhere; }
-/* The exit, at the document's end - **in every state**. A parked hand-off
-   draws two answers, approve or something is off, each above the note the
-   reader may carry to the agent; a deep link has no call to answer and
-   draws the one done that files the round and returns. */
+/* The exit, at the document's end - **in every state**, aligned to the
+   sheet's reading column. A parked hand-off draws one feedback box above
+   two answers, approve and send feedback; a deep link has no call to answer
+   and draws the one done that files the round and returns. */
 .doc-page .doc-exit { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px;
-  margin-top: 26px; padding-top: 14px; border-top: 1px solid var(--line); }
+  max-width: 88ch; margin-inline: auto; margin-top: 26px;
+  padding: 14px 48px 0; border-top: 1px solid var(--line); }
 .doc-page .doc-left { color: var(--ok); font-family: var(--ui); font-size: var(--fs-base); }
 
 @media (pointer: coarse) {
-  /* **A finger's target is the row and every line number.** The block stays
-     the grid the fine layout draws it as; its gutter cells and the answer
-     buttons join the 44px floor, so each source line is a target a finger
-     can hit rather than a 12px sliver. The collapsed rhythm above is the
-     fine-pointer layout; the coarse one states its own gaps. */
+  /* **A finger's targets are the block, its `+`, the answer buttons and the
+     one done**, each at the 44px floor. The `+` is drawn always because a
+     finger has no hover. The collapsed rhythm above is the fine-pointer
+     layout; the coarse one states its own gaps. */
   .doc-page .doc-block, .doc-page .doc-comment-btn, .doc-page .doc-cancel-btn,
-  .doc-page .doc-finish-btn, .doc-page .doc-answer-btn,
-  .doc-page .doc-lnum { min-height: 44px; }
+  .doc-page .doc-finish-btn, .doc-page .doc-answer-btn { min-height: 44px; }
+  .doc-page .doc-add { width: 44px; height: 44px; left: -2.9rem; top: 0;
+    opacity: 1; }
   .doc-page .doc-block { margin-bottom: 20px; }
   .doc-page .doc-block-body > :first-child { margin-top: 0; }
   .doc-page .doc-block-body > :last-child { margin-bottom: 0; }
@@ -5534,7 +5537,19 @@ details[open] > summary .arw { opacity: 1; }
 
 /* The phone's page: the sheet keeps its padding, but it cannot keep the
    desk's 60px either side of a 430 window - the document would read in a
-   sliver. */
+   sliver. The `+` moves inside the sheet and its block keeps room for it,
+   so no target hangs past the viewport's edge; the answer row keeps the
+   same padding as the body it aligns to. */
 @media (max-width: 760px) {
   .doc-page .doc-body { padding: 28px 20px 30px; }
+  .doc-page .doc-exit { padding-inline: 20px; }
+  .doc-page .doc-block { padding-left: 2.1rem; margin-left: 0; }
+  .doc-page .doc-add { left: 0; }
+}
+
+/* A finger on a phone: the `+` takes the 44px floor in the room the block
+   reserved for it. */
+@media (pointer: coarse) and (max-width: 760px) {
+  .doc-page .doc-block { padding-left: 3rem; }
+  .doc-page .doc-add { width: 44px; height: 44px; left: 0; top: 0.1rem; }
 }
