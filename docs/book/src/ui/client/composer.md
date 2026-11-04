@@ -66,6 +66,14 @@ call's refusal, so it revises and calls again, and the revision parks as its own
 posts until the reader approves that one. The press stands the card down, a line where it stood
 says the feedback is on its way, and a refusal replaces that line with its reason.
 
+**The send-back field takes dictation.** It wears the same `DictateControl` as every other text
+box, so a reader can speak the correction rather than type it. While its take runs the take's
+card replaces the field in the send-back row, and the card's own way out abandons the take. A
+take begun there lands its words in the send-back field, not the composer's draft behind the
+card; a take whose field closes before its words land keeps them in the composer's draft
+instead, so nothing spoken is lost. A take that never starts says so in the dock's refusal line
+at its foot, because the box's own notice row is not on screen while a prompt holds the slot.
+
 **A held configuration write draws like a held post, with both values.** A `settings__set` or
 `settings__unset` call parks its key, what the key holds now and what the write would leave;
 the two verbs are `Write it` and `Don't write`, and the dock stands down on the answer the way
@@ -143,10 +151,11 @@ holes in it, then resubscribes the switch if this client still wants voice.
 
 The mic sits at the body row's end; a take runs `ready` (the capture is
 open, nothing said yet), `recording` from the first real sample, and
-`transcribing` after the release. The take's card is the body's own row in every phase - a dot
-while it records, a spinner while it transcribes, the clock, the level graph or the section
-bar, the counts and the way out - and there is no second take shape anywhere, no pill or badge
-on the live row. Push-to-talk is `forge.toml`'s own
+`transcribing` after the release. The take's card draws in the body's own row in every phase - a
+dot while it records, a spinner while it transcribes, the clock, the level graph or the section
+bar, the counts and the way out - except a take begun in the send-back box, whose card draws in
+the send-back row in place of its field. There is no second take shape anywhere, no pill or
+badge on the live row. Push-to-talk is `forge.toml`'s own
 binding (right or left Cmd, or off), in one of three modes: a clean
 press-release under 300ms is a tap, and whether a tap keeps recording or
 finishes is the mode's business. The panel opens from the mic: the three
@@ -202,6 +211,13 @@ crosses the C boundary, and the capture stops delivering. That line is a
 `tracing` record, and the shell forwards it into the client log beside its
 own lines. A panic that unwinds through a foreign frame still aborts; no
 catch at either layer can reach it.
+
+**Every landing copies its words.** After a take's words land in a box - the
+composer's draft, the dock's words row or the send-back field - the same text
+is written to the clipboard with `navigator.clipboard.writeText`, overwriting
+what was there. A page over a plain-http origin has no clipboard at all and a
+live one can still refuse the write; neither costs the reader the words that
+just landed, and a refusal is logged at debug.
 
 ## The states the surface can be in
 

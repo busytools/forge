@@ -2363,13 +2363,15 @@
     const rose = height - room < lastSeen.content - lastSeen.room;
     lastSeen = { content: height, room };
     const foot = atFoot();
+    const byReader = readerMoved();
+    const aimed = aimedAtFoot();
+    /** Whether the reader stood at the foot before this event moved them. */
+    const wasFoot = footHeld;
     // **Where the reader is now, for the pin's next decision.** Only a move
     // moves it: a size change moves the foot under a reader standing still,
     // and the follow is what absorbs that. A few pixels above the end is the
     // notch a row's measurement leaves, not a place of their own.
     if (offset !== was) footHeld = height - offset - room <= FOOT_NEAR;
-    const byReader = readerMoved();
-    const aimed = aimedAtFoot();
     // **Every move is written, flagged.** A machine move has no other record -
     // the draw says where the list stands and never that the reader was
     // carried - and the flags are what separate it from the reader's own: a
@@ -2387,6 +2389,30 @@
       restore_owed: owed !== null,
       pin: false,
     });
+    // **A layout move is not the reader leaving.** The browser's own scroll
+    // anchoring shifts the offset toward the foot when rows above measure; a
+    // following column it leaves short of the foot goes back rather than
+    // adopt the displacement. Only that shape: the reader stood at the foot
+    // (`wasFoot`), the follow is on, and no hand made the move. `!footHeld`
+    // is this event's landing: a landing inside the notch already counts as
+    // holding the foot, so a re-land there would write the exact foot and
+    // move a reader the column has just treated as standing at it.
+    // No shrink term: a net shrink with an anchoring shift can still leave a
+    // following column short - a pin held at the model end does - and landing
+    // the foot again is the right recovery there.
+    // `restoring` is a return still placing its reader, not a foot to land.
+    if (
+      wasFoot &&
+      held.following &&
+      towardFoot &&
+      !footHeld &&
+      !byReader &&
+      !aimed &&
+      restoring === null
+    ) {
+      land(true);
+      return;
+    }
     if (foot) {
       // **A return that lands at the foot re-arms, whatever the size did.**
       // The clamp skip exists for a foot that closed on the reader, and their
