@@ -52,7 +52,7 @@ carries the workspace and the conversation, and the segment beside it names the 
 an upload replies into, or the message every other operation acts on, by its author and its
 opening words, with a mention in the quote drawn as its name (its id when the lookup fails), a
 link as its label or address, and bold without its stars. The people the draft tags follow as
-their names. A parent the core could not read
+their names. A quoted message the core could not read
 draws its raw `ts` and a tag it could not resolve draws its id, so a failed lookup is drawn as
 itself rather than as a missing segment. A message that itself sits inside a thread is not named:
 the read answers its thread's parent, so that card draws the raw `ts` rather than the wrong

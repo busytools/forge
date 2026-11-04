@@ -466,8 +466,8 @@ fn is_user_id(id: &str) -> bool {
 /// cannot be named), a link its label or address, and `*text*` its text.
 /// A token this does not understand is left exactly as written. Flattening
 /// stops once `limit` non-space characters have been emitted, which is
-/// enough for the excerpt bound and keeps a long message from being walked
-/// in full.
+/// enough for the excerpt bound; a single long token still scans the text
+/// after the bound.
 pub fn flatten_mrkdwn<S: BuildHasher>(
     text: &str,
     names: &HashMap<String, String, S>,
@@ -528,7 +528,8 @@ pub fn flatten_mrkdwn<S: BuildHasher>(
 
 /// A `*` opens a bold span only at a word boundary, with text after it and
 /// no doubled marker either side - the `**` of a literal and the `*` of a
-/// glob are literals rather than openers.
+/// glob are literals rather than openers. The rule mirrors `strip_emphasis`
+/// in `forge-server`'s `envelope.rs`; a change there should move here.
 fn opens_bold(chars: &[char], at: usize) -> bool {
     let before = at.checked_sub(1).and_then(|p| chars.get(p));
     let after = chars.get(at + 1).copied();
@@ -3708,6 +3709,11 @@ mod tests {
             "a channel reference, a broadcast and a literal bracket keep their own text",
         );
         assert_eq!(
+            flatten_mrkdwn("<!here|*x*>", &names, 80),
+            "<!here|*x*>",
+            "a labelled broadcast is left whole, markup and all",
+        );
+        assert_eq!(
             flatten_mrkdwn("<@|broken> and <@123>", &names, 80),
             "<@|broken> and <@123>",
             "an unrecognised mention keeps its brackets",
@@ -3750,7 +3756,28 @@ mod tests {
             flat.starts_with(kept) && !kept.ends_with(' '),
             "the cut lands on a word boundary in multibyte text: {excerpt:?}",
         );
+        assert!(
+            kept.chars().count() >= 76,
+            "the cut keeps the character budget rather than a byte count: {excerpt:?}",
+        );
         assert!(!excerpt.contains('*'), "the bold markers are gone: {excerpt:?}");
+    }
+
+    /// The early stop counts characters, not bytes: a multibyte span inside
+    /// the budget still lets the prose after it through.
+    #[test]
+    fn the_early_stop_counts_characters_not_bytes() {
+        let names: HashMap<String, String> = HashMap::new();
+        let bold = format!("*{}* and more words", "é".repeat(50));
+        assert!(
+            flatten_mrkdwn(&bold, &names, 80).ends_with(" and more words"),
+            "a multibyte bold span that fits the budget does not end the walk",
+        );
+        let link = format!("<https://example.com|{}> and more words", "é".repeat(50));
+        assert!(
+            flatten_mrkdwn(&link, &names, 80).ends_with(" and more words"),
+            "a multibyte link label that fits the budget does not end the walk",
+        );
     }
 
     /// The card gets one line: the parent's whitespace collapses, and a long
