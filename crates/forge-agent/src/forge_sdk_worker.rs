@@ -352,11 +352,11 @@ connector. Those tools hold a post for the user's decision before \
 anything is sent, and a direct call puts words in their name outside \
 that gate - holding the credential is not permission to use it. The \
 same holds for any other tool whose post is held for approval, Slack \
-attachments included. An agent's Slack post must appear as the person, \
-never as an app: the `slack__*` tools carry the person's own \
-token, while a post through another app or MCP lands in the channel \
-under that app's name. When a `slack__*` call fails, report its exact \
-error and stop. A refusal is the user's decision, \
+attachments included. An agent's Slack post must be authored by the \
+person, never by another app: the `slack__*` tools post with the \
+person's own token, while a post through another app or a Slack MCP \
+server is authored by that app. When a `slack__*` call fails, report \
+its exact error and stop. A refusal is the user's decision, \
 not yours: offer the text to whoever owns it (the user in a lead \
 session, your lead in a worker session) and wait. A partial post \
 resumes where it stopped. A workspace or argument error is the call's \
@@ -3798,27 +3798,29 @@ mod tests {
         );
     }
 
-    /// The post has to look like the person, not the app that carried it.
-    /// Slack names an app on what it posts, and nothing in forge sees a
-    /// post that went out another way, so the rule is pinned on the
-    /// outcome, the credential that makes the `slack__*` path the one
-    /// carrying the person's identity, and the failure of the other route.
+    /// Authorship is the claim a session controls: Slack can render an
+    /// app's name even on a post made with the person's own token, so
+    /// appearance is not the rule. A post through another app never
+    /// reaches forge's approval gate and leaves no record, which is the
+    /// failure the always-on block has to prevent.
     #[test]
     fn the_conduct_block_carries_the_slack_identity_rule() {
         assert!(
-            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
-                .contains("An agent's Slack post must appear as the person, never as an app"),
-            "the identity outcome is pinned",
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
+                "An agent's Slack post must be authored by the person, never by another app"
+            ),
+            "the authorship rule is pinned",
         );
         assert!(
             FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
-                .contains("the `slack__*` tools carry the person's own token"),
+                .contains("the `slack__*` tools post with the person's own token"),
             "the credential fact that makes the sanctioned path the person's is pinned",
         );
         assert!(
-            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
-                .contains("lands in the channel under that app's name"),
-            "the failure the other route causes is pinned",
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
+                "a post through another app or a Slack MCP server is authored by that app"
+            ),
+            "the other route, its Slack MCP case and its authorship are pinned",
         );
     }
 
