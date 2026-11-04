@@ -117,10 +117,16 @@ mod tests {
         ))
         .expect("the key parses")
         .expect("the key exists");
-        let config = ServerConfig::builder()
-            .with_no_client_auth()
-            .with_single_cert(certs, key)
-            .expect("the server config");
+        // Name the provider rather than relying on a process default: the
+        // workspace builds with more than one rustls provider feature.
+        let config = ServerConfig::builder_with_provider(
+            tokio_rustls::rustls::crypto::aws_lc_rs::default_provider().into(),
+        )
+        .with_safe_default_protocol_versions()
+        .expect("the protocol versions")
+        .with_no_client_auth()
+        .with_single_cert(certs, key)
+        .expect("the server config");
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
         let address = listener.local_addr().expect("addr");
         let acceptor = TlsAcceptor::from(std::sync::Arc::new(config));
