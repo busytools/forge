@@ -354,9 +354,10 @@ that gate - holding the credential is not permission to use it. The \
 same holds for any other tool whose post is held for approval, Slack \
 attachments included. An agent's Slack post must be authored by the \
 person, never by another app: the `slack__*` tools post with the \
-person's own token, while a post through another app or a Slack MCP \
-server is authored by that app. When a `slack__*` call fails, report \
-its exact error and stop. A refusal is the user's decision, \
+person's own token and hold every post for their decision, while a \
+post through another app or a Slack MCP server bypasses that \
+decision, whatever identity it posts under. When a `slack__*` call \
+fails, report its exact error and stop. A refusal is the user's decision, \
 not yours: offer the text to whoever owns it (the user in a lead \
 session, your lead in a worker session) and wait. A partial post \
 resumes where it stopped. A workspace or argument error is the call's \
@@ -3800,9 +3801,9 @@ mod tests {
 
     /// Authorship is the claim a session controls: Slack can render an
     /// app's name even on a post made with the person's own token, so
-    /// appearance is not the rule. A post through another app never
-    /// reaches forge's approval gate and leaves no record, which is the
-    /// failure the always-on block has to prevent.
+    /// appearance is not the rule. A post through another app is absent
+    /// from forge's approval and outbound-ledger record whatever identity
+    /// it posts under, which is the failure the always-on block names.
     #[test]
     fn the_conduct_block_carries_the_slack_identity_rule() {
         assert!(
@@ -3818,9 +3819,10 @@ mod tests {
         );
         assert!(
             FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
-                "a post through another app or a Slack MCP server is authored by that app"
+                "a post through another app or a Slack MCP server bypasses that decision, \
+                 whatever identity it posts under"
             ),
-            "the other route, its Slack MCP case and its authorship are pinned",
+            "the other route, its Slack MCP case and the decision it bypasses are pinned",
         );
     }
 
