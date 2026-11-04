@@ -2394,8 +2394,9 @@
     // following column it leaves short of the foot goes back rather than
     // adopt the displacement. Only that shape: the reader stood at the foot
     // (`wasFoot`), the follow is on, and no hand made the move. `!footHeld`
-    // is this event's landing: a move that already holds the foot needs no
-    // re-land, and writing the same value again would only cost the write.
+    // is this event's landing: a landing inside the notch already counts as
+    // holding the foot, so a re-land there would write the exact foot and
+    // move a reader the column has just treated as standing at it.
     // No shrink term: a net shrink with an anchoring shift can still leave a
     // following column short - a pin held at the model end does - and landing
     // the foot again is the right recovery there.
