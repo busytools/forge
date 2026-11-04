@@ -121,6 +121,46 @@ pub fn read<T: EventListener>(
     }
 }
 
+/// The dimensions a resize drives the grid with.
+struct GridSize {
+    cols: usize,
+    rows: usize,
+}
+
+impl Dimensions for GridSize {
+    fn total_lines(&self) -> usize {
+        self.rows
+    }
+    fn screen_lines(&self) -> usize {
+        self.rows
+    }
+    fn columns(&self) -> usize {
+        self.cols
+    }
+}
+
+/// Resize the grid, moving the lifetime read cursor with the reflow.
+///
+/// **A reflow is not output.** The grid's line count changes without a byte
+/// arriving, so a cursor read against `appended - total` would slide to a
+/// different line; moving the lifetime count by the same amount keeps the
+/// buffer's first line where the cursor was measured against it.
+pub(crate) fn resize<T: EventListener>(
+    term: &mut Term<T>,
+    cols: usize,
+    rows: usize,
+    appended: &mut u64,
+) {
+    let before = term.grid().total_lines();
+    term.resize(GridSize { cols, rows });
+    let after = term.grid().total_lines();
+    if after >= before {
+        *appended = appended.saturating_add(u64::try_from(after - before).unwrap_or(u64::MAX));
+    } else {
+        *appended = appended.saturating_sub(u64::try_from(before - after).unwrap_or(u64::MAX));
+    }
+}
+
 /// One grid line as text, trailing blanks trimmed.
 fn line_text(grid: &Grid<Cell>, line: Line) -> String {
     let row = &grid[line];
@@ -290,6 +330,34 @@ mod tests {
             narrow.text
         );
         assert!(flat.contains("bolddone"), "{:?}", narrow.text);
+    }
+
+    /// **A reflow does not move the read window.** A cursor is a lifetime
+    /// line number read against `appended - total`; the resize changes the
+    /// grid's line count without output, so the count moves with it and the
+    /// buffer's first line stays where the cursor was measured against it.
+    #[test]
+    fn a_reflow_keeps_the_read_windows_first_line() {
+        let mut term = Term::new(
+            Config { scrolling_history: 100, ..Default::default() },
+            &Size { cols: 10, rows: 4 },
+            VoidListener,
+        );
+        let mut appended = u64::try_from(term.grid().total_lines()).unwrap_or(0);
+        let mut parser: Processor = Processor::new();
+        feed(
+            &mut term,
+            &mut parser,
+            b"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\r\n",
+            100,
+            &mut appended,
+        );
+        let first = appended.saturating_sub(u64::try_from(term.grid().total_lines()).unwrap_or(0));
+        // Widening reflows the wrapped line into one row: the grid shrinks
+        // without a byte arriving.
+        resize(&mut term, 40, 4, &mut appended);
+        let after = appended.saturating_sub(u64::try_from(term.grid().total_lines()).unwrap_or(0));
+        assert_eq!(after, first, "the reflow moved the buffer's first line under the cursor");
     }
 
     /// A wide character occupies one cell and is extracted once, not as its

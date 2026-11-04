@@ -55,7 +55,7 @@ pub struct State {
     pub running: bool,
     /// The input the terminal is waiting for, when it is waiting for one.
     pub input_expected: Option<InputExpected>,
-    /// The last command's exit, when it has one.
+    /// The last command's exit, and the shell's own once it has died.
     pub exit: Option<Exit>,
     /// Whether the answer came from the marks or the fallback.
     pub source: Source,

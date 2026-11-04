@@ -49,11 +49,28 @@ export const surface: TerminalSurface = $state({
   seq: 0,
 });
 
+/** Whether two slots name the same seat. */
+export function sameSeat(one: SessionSlot, other: SessionSlot): boolean {
+  return one.org === other.org && one.project === other.project && one.label === other.label;
+}
+
 /** The newest repaint, for a component that mounts after it landed. */
 let newestScreen: string | null = null;
 /** The listeners the mounted surface draws through. */
 const views = new SvelteSet<(view: TerminalViewMessage) => void>();
 const frames = new SvelteSet<(frame: TerminalOutput) => void>();
+/**
+ * Frames that arrived while no component was mounted to draw them, and
+ * whether more arrived than a mount can catch up on.
+ *
+ * The surface component is a lazy chunk, so a first raise has a window where
+ * frames land with nowhere to go; dropping them leaves a hole the repaint
+ * predates.
+ */
+let pending: TerminalOutput[] = [];
+let pendingBytes = 0;
+let needResync = false;
+const PENDING_LIMIT = 1_000_000;
 
 /** Give a mounted surface the newest repaint, then every later one. */
 export function onScreen(listener: (view: TerminalViewMessage) => void): () => void {
@@ -75,9 +92,29 @@ export function onScreen(listener: (view: TerminalViewMessage) => void): () => v
   };
 }
 
-/** Every output frame, from now. */
+/** Every output frame, from now, and the ones held for this mount. */
 export function onOutput(listener: (frame: TerminalOutput) => void): () => void {
   frames.add(listener);
+  if (pending.length > 0) {
+    const held = pending;
+    pending = [];
+    pendingBytes = 0;
+    for (const frame of held) {
+      // A repaint that landed while these waited already carries them.
+      if (frame.seq <= surface.seq) continue;
+      surface.seq = frame.seq;
+      try {
+        listener(frame);
+      } catch (why) {
+        console.warn('a terminal output listener threw', why);
+      }
+    }
+  } else if (needResync) {
+    // The window outgrew what a mount can catch up on by replaying bytes; a
+    // repaint is how the surface syncs again.
+    needResync = false;
+    void reattach();
+  }
   return () => {
     frames.delete(listener);
   };
@@ -103,7 +140,13 @@ export function installTerminalSurface(connection: Connection): () => void {
   installTerminal(connection);
   const link = terminalLink();
   const stopView = link.onView((view) => {
+    if (surface.phase === 'closed') return;
+    if (surface.seat !== null && !sameSeat(surface.seat, view.seat)) return;
     if (surface.id !== null && view.id !== surface.id) return;
+    // **The attach's own answer names the terminal.** A first open names
+    // none in its request, so this is where the id first lands - before the
+    // open's promise resolves, when the two messages cross.
+    surface.id = view.id;
     surface.cols = view.cols;
     surface.rows = view.rows;
     surface.seq = view.seq;
@@ -117,10 +160,25 @@ export function installTerminalSurface(connection: Connection): () => void {
     }
   });
   const stopFrame = link.onFrame((frame) => {
-    if (surface.phase !== 'live' || frame.id !== surface.id) return;
+    // An open's own chunks can land while its attach is still in flight.
+    if (surface.phase === 'closed' || frame.id !== surface.id) return;
     // **A chunk the repaint already carries is not written again**: the
     // attach's `seq` is the last one its screen reflects.
     if (frame.seq <= surface.seq) return;
+    if (frames.size === 0) {
+      // **A frame that lands before the surface mounts is not dropped.** The
+      // component is a lazy chunk; hold what arrives until it draws. The
+      // sequence does not move until it is drawn, so a repaint that lands in
+      // the meantime still supersedes the held copy.
+      pending.push(frame);
+      pendingBytes += frame.bytes.length;
+      if (pendingBytes > PENDING_LIMIT) {
+        pending = [];
+        pendingBytes = 0;
+        needResync = true;
+      }
+      return;
+    }
     surface.seq = frame.seq;
     for (const listener of frames) {
       try {
@@ -185,6 +243,9 @@ export async function openTerminal(seat: SessionSlot, id: number | null): Promis
   surface.id = id;
   surface.reason = null;
   newestScreen = null;
+  pending = [];
+  pendingBytes = 0;
+  needResync = false;
   try {
     const attached = await link.show(seat, id);
     if (mine !== generation) return null;
@@ -215,7 +276,46 @@ export async function closeTerminal(): Promise<string | null> {
   surface.id = null;
   surface.reason = null;
   newestScreen = null;
+  pending = [];
+  pendingBytes = 0;
+  needResync = false;
   return null;
+}
+
+/**
+ * Tell the server the size the client fitted to, and take a repaint laid out
+ * for it.
+ *
+ * **The attach's repaint is laid out at the server's grid**, which a first
+ * open has not yet learned: drawing a 120x30 screen into an 80x24 client
+ * wraps it. Answers whether it asked - false when there is nothing to send
+ * or the sizes already agree.
+ */
+export function reconcileSurfaceSize(cols: number, rows: number): boolean {
+  const seat = surface.seat;
+  const id = surface.id;
+  if (seat === null || id === null) return false;
+  if (surface.cols === cols && surface.rows === rows) return false;
+  terminalLink().resize(seat, id, cols, rows);
+  // Record the size asked for, so the next view compares against the grid
+  // the client actually has rather than the one this repaint was made for.
+  surface.cols = cols;
+  surface.rows = rows;
+  void reattach();
+  return true;
+}
+
+/**
+ * **A raised surface belongs to the seat it was opened on.** A page that
+ * switches seats with one up would draw the next seat's record over the old
+ * screen, and its close would end the old seat's shell; lowering it keeps
+ * the old terminal running and the new seat's page honest.
+ */
+export async function lowerForOtherSeat(seat: SessionSlot): Promise<void> {
+  const at = surface.seat;
+  if (surface.phase === 'closed' || at === null) return;
+  if (sameSeat(at, seat)) return;
+  await closeTerminal();
 }
 
 /** Whether a terminal surface is up. */

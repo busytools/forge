@@ -12,7 +12,9 @@
   import { setTerminalRecord } from '../terminal/record.svelte';
   import {
     closeTerminal,
+    lowerForOtherSeat,
     openTerminal,
+    sameSeat,
     surface as terminalSurface,
   } from '../terminal/surface.svelte';
   import { subjectKey } from '../protocol';
@@ -157,6 +159,14 @@
     ) {
       void closeTerminal();
     }
+  });
+
+  // **A raised terminal belongs to the seat it was opened on.** The page is
+  // deliberately not keyed on the seat, so a switch keeps its instance; the
+  // old surface would draw under the new seat's bar and its close would end
+  // the old seat's shell. Lowering it keeps the old terminal running.
+  $effect(() => {
+    void lowerForOtherSeat(slot);
   });
 
   /**
@@ -681,7 +691,7 @@
     <BrowserSurface {connection} />
   {/if}
 
-  {#if terminalSurface.phase !== 'closed'}
+  {#if terminalSurface.phase !== 'closed' && terminalSurface.seat !== null && sameSeat(terminalSurface.seat, slot)}
     <!-- The terminal's own surface, the browser takeover's sibling: a
          full-window layer with the terminal under a slim bar. It is hidden by
          default and raised by the strip row or a hand-off's Open.

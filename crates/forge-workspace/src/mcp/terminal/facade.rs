@@ -241,10 +241,14 @@ impl TerminalFacade for ProdTerminalFacade {
         refuse_when_held(&workspace, seat)?;
         let entry = workspace.terminal_by_id(seat, id)?;
         let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+        // **The entry check is not enough**: the person can take the screen
+        // while this polls it, and a wait that kept reading would return
+        // what they type.
+        let blind = Some((workspace.as_ref(), seat));
         let matched = match until {
-            WaitUntil::Exit => wait_exit(&entry, deadline).await,
-            WaitUntil::Quiet => wait_quiet(&entry, deadline).await,
-            WaitUntil::Pattern(pattern) => wait_pattern(&entry, &pattern, deadline).await,
+            WaitUntil::Exit => wait_exit(&entry, deadline, blind).await?,
+            WaitUntil::Quiet => wait_quiet(&entry, deadline, blind).await?,
+            WaitUntil::Pattern(pattern) => wait_pattern(&entry, &pattern, deadline, blind).await?,
         };
         let read = entry.terminal.read(None, 200, 32 * 1024);
         Ok(WaitAnswer {
@@ -318,6 +322,7 @@ impl TerminalFacade for ProdTerminalFacade {
         timeout_ms: u64,
     ) -> Result<RunAnswer, String> {
         let workspace = self.workspace()?;
+        refuse_when_held(&workspace, seat)?;
         let entry = workspace.spawn_terminal_for_run(
             seat,
             cwd.filter(|cwd| !cwd.trim().is_empty()).map(PathBuf::from),
@@ -329,7 +334,7 @@ impl TerminalFacade for ProdTerminalFacade {
         let deadline = Instant::now() + Duration::from_millis(timeout_ms);
         entry.terminal.write_text(command).map_err(|error| error.to_string())?;
         entry.terminal.write_keys(&[Key::Enter]).map_err(|error| error.to_string())?;
-        let matched = wait_exit(&entry, deadline).await;
+        let matched = wait_exit(&entry, deadline, None).await?;
         let read = entry.terminal.read(None, 500, 64 * 1024);
         let exit = if matched {
             entry
@@ -352,13 +357,22 @@ impl TerminalFacade for ProdTerminalFacade {
 /// a subagent cannot read their typing or write into their prompt.
 fn refuse_when_held(workspace: &Workspace, seat: &SessionSlot) -> Result<(), String> {
     if workspace.terminal_held(seat) {
-        return Err(
-            "a hand-off is parked on this terminal: the person owns its screen and input until \
-             they answer"
-                .to_owned(),
-        );
+        return Err(held_error());
     }
     Ok(())
+}
+
+fn held_error() -> String {
+    "a hand-off is parked on this terminal: the person owns its screen and input until they answer"
+        .to_owned()
+}
+
+/// The seat a wait is polling, while it may be taken by the person. A wait
+/// that sees it held stops rather than reading what they type.
+type Blind<'a> = Option<(&'a Workspace, &'a SessionSlot)>;
+
+fn held_now(blind: Blind<'_>) -> bool {
+    blind.is_some_and(|(workspace, seat)| workspace.terminal_held(seat))
 }
 
 /// Resolves a parked hand-off when the awaiting handler goes - a session that
@@ -413,11 +427,18 @@ async fn wait_ready(entry: &TerminalEntry) {
 
 /// Wait for a command to finish: exact through the marks, the heuristic's
 /// quiet prompt otherwise, and the shell's own exit for either.
-async fn wait_exit(entry: &TerminalEntry, deadline: Instant) -> bool {
+async fn wait_exit(
+    entry: &TerminalEntry,
+    deadline: Instant,
+    blind: Blind<'_>,
+) -> Result<bool, String> {
     let mut states = entry.terminal.state_stream();
     loop {
+        if held_now(blind) {
+            return Err(held_error());
+        }
         if !entry.terminal.is_alive() {
-            return true;
+            return Ok(true);
         }
         let state = entry.terminal.state();
         let finished = match state.source {
@@ -431,44 +452,59 @@ async fn wait_exit(entry: &TerminalEntry, deadline: Instant) -> bool {
             }
         };
         if finished {
-            return true;
+            return Ok(true);
         }
         let left = deadline.saturating_duration_since(Instant::now());
         if left.is_zero() {
-            return false;
+            return Ok(false);
         }
         let _ = timeout(left.min(Duration::from_millis(50)), states.changed()).await;
     }
 }
 
 /// Wait until no output has arrived for the quiet window.
-async fn wait_quiet(entry: &TerminalEntry, deadline: Instant) -> bool {
+async fn wait_quiet(
+    entry: &TerminalEntry,
+    deadline: Instant,
+    blind: Blind<'_>,
+) -> Result<bool, String> {
     let mut output = entry.terminal.subscribe();
     loop {
+        if held_now(blind) {
+            return Err(held_error());
+        }
         let left = deadline.saturating_duration_since(Instant::now());
         if left.is_zero() {
-            return false;
+            return Ok(false);
         }
         let window = Duration::from_millis(300);
         match timeout(window.min(left), output.recv()).await {
             Ok(Ok(_)) => {}
-            Ok(Err(_)) => return true,
-            Err(_) if left >= window => return true,
-            Err(_) => return false,
+            Ok(Err(_)) => return Ok(true),
+            Err(_) if left >= window => return Ok(true),
+            Err(_) => return Ok(false),
         }
     }
 }
 
 /// Wait until the screen contains `pattern`.
-async fn wait_pattern(entry: &TerminalEntry, pattern: &str, deadline: Instant) -> bool {
+async fn wait_pattern(
+    entry: &TerminalEntry,
+    pattern: &str,
+    deadline: Instant,
+    blind: Blind<'_>,
+) -> Result<bool, String> {
     let mut output = entry.terminal.subscribe();
     loop {
+        if held_now(blind) {
+            return Err(held_error());
+        }
         if entry.terminal.screen().text.contains(pattern) {
-            return true;
+            return Ok(true);
         }
         let left = deadline.saturating_duration_since(Instant::now());
         if left.is_zero() {
-            return false;
+            return Ok(false);
         }
         let _ = timeout(left.min(Duration::from_millis(100)), output.recv()).await;
     }

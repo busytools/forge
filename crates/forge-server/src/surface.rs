@@ -125,11 +125,6 @@ impl ViewSurface {
         Ok(entry)
     }
 
-    /// This connection stopped viewing the terminal.
-    pub fn terminal_detach(&self, entry: &forge_workspace::terminal::TerminalEntry) {
-        entry.attached.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-    }
-
     /// The person's close door: end the terminal's process group.
     pub fn terminal_close(&self, seat: &SessionSlot, id: u16) -> Result<(), String> {
         self.workspace.terminal_by_id(seat, id)?;

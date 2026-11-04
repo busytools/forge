@@ -521,6 +521,63 @@ mod tests {
         workspace.close_terminal(&slot);
     }
 
+    /// **A wait already in flight stops when a hand-off parks.** The entry
+    /// check is not enough: the person can take the screen while the agent
+    /// is polling it, and a wait that keeps reading would return what they
+    /// type.
+    #[tokio::test]
+    async fn a_wait_in_flight_stops_when_a_hand_off_parks() {
+        let (workspace, _rx) = Workspace::testing_stub();
+        workspace.seed_test_project("proj", "/tmp");
+        let slot = SessionSlot::lead("TestOrg", "proj");
+        let entry = workspace.terminal_for(&slot).expect("a terminal");
+        let facade = crate::mcp::terminal::facade::ProdTerminalFacade::from_workspace(&workspace);
+        let waiter = {
+            let facade = Arc::clone(&facade);
+            let slot = slot.clone();
+            let id = entry.id;
+            tokio::spawn(async move {
+                facade
+                    .wait(
+                        &slot,
+                        id,
+                        crate::mcp::terminal::facade::WaitUntil::Pattern("NEVER_SHOWN".to_owned()),
+                        5_000,
+                    )
+                    .await
+            })
+        };
+        // Let the wait reach its poll loop before the person takes the screen.
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        let (_id, _answer) = workspace
+            .register_terminal_hand_off(&slot, entry.id, "the sudo password")
+            .expect("a hand-off parks");
+        let joined = tokio::time::timeout(Duration::from_secs(2), waiter)
+            .await
+            .expect("the wait returns once the person holds the screen")
+            .expect("the wait task joins");
+        assert!(joined.is_err(), "a wait in flight must refuse once a hand-off parks: {joined:?}");
+        workspace.close_terminal(&slot);
+    }
+
+    /// **`terminal__run` is a terminal call too.** A hand-off owns the seat's
+    /// terminal and its input; a run started behind it is the same call the
+    /// other tools refuse.
+    #[tokio::test]
+    async fn run_is_refused_while_a_hand_off_is_parked() {
+        let (workspace, _rx) = Workspace::testing_stub();
+        workspace.seed_test_project("proj", "/tmp");
+        let slot = SessionSlot::lead("TestOrg", "proj");
+        let entry = workspace.terminal_for(&slot).expect("a terminal");
+        let (_id, _answer) = workspace
+            .register_terminal_hand_off(&slot, entry.id, "the sudo password")
+            .expect("a hand-off parks");
+        let facade = crate::mcp::terminal::facade::ProdTerminalFacade::from_workspace(&workspace);
+        let result = facade.run(&slot, "echo x", None, 1_000).await;
+        assert!(result.is_err(), "run is refused while the person owns the screen");
+        workspace.close_terminal(&slot);
+    }
+
     /// **An answer settles the park**: the waiter gets the ending, the seat
     /// stops being held, and the views are told the ask resolved.
     #[tokio::test]

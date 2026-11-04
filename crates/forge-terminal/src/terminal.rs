@@ -232,6 +232,15 @@ impl Terminal {
         if !(MIN_COLS..=MAX_COLS).contains(&cols) || !(MIN_ROWS..=MAX_ROWS).contains(&rows) {
             return Err(Error::Resize { cols, rows });
         }
+        {
+            // **The model resizes here, not on the read loop.** A repaint
+            // taken right after this call must already be laid out at the
+            // new size, and the read cursor moves with the reflow.
+            let mut term = self.inner.term.lock();
+            let mut lines = self.inner.lines.load(Ordering::Relaxed);
+            screen::resize(&mut term, usize::from(cols), usize::from(rows), &mut lines);
+            self.inner.lines.store(lines, Ordering::Relaxed);
+        }
         self.inner.cols.store(cols, Ordering::Relaxed);
         self.inner.rows.store(rows, Ordering::Relaxed);
         let _ = self.inner.resize_tx.send((cols, rows));
@@ -485,8 +494,6 @@ fn read_loop(
             let window =
                 WindowSize { num_lines: rows, num_cols: cols, cell_width: 0, cell_height: 0 };
             pty.on_resize(window);
-            let mut term = inner.term.lock();
-            term.resize(Size { cols: usize::from(cols), rows: usize::from(rows) });
         }
 
         let mut fds = [PollFd::new(pty.file(), PollFlags::IN)];

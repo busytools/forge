@@ -1,10 +1,10 @@
 //! The shell integration scripts, and how a shell is started with them.
 //!
 //! **The person's own rc is never replaced.** zsh gets a `ZDOTDIR` shim that
-//! sources the real `.zshrc` and then the integration; bash gets an
-//! `--rcfile` that sources `~/.bashrc` first; fish gets its init command. A
-//! shell forge does not know starts with no integration, and the classifier
-//! says `heuristic`.
+//! sources the real `.zshenv`, `.zprofile` and `.zshrc` and then the
+//! integration; bash gets an `--rcfile` that sources `~/.bashrc` first; fish
+//! gets its init command. A shell forge does not know starts with no
+//! integration, and the classifier says `heuristic`.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -137,12 +137,19 @@ fn zsh_plan<S: std::hash::BuildHasher>(shell: &str, env: &HashMap<String, String
             shim: None,
         };
     };
+    // **zsh reads .zshenv from ZDOTDIR for every invocation**, before the
+    // profile and rc, so the shim has to forward the person's own or their
+    // environment is silently dropped.
+    let zshenv = format!("if [ -f \"{real}/.zshenv\" ]; then source \"{real}/.zshenv\"; fi\n");
     let zshrc = format!("if [ -f \"{real}/.zshrc\" ]; then source \"{real}/.zshrc\"; fi\n{ZSH}");
     let zprofile =
         format!("if [ -f \"{real}/.zprofile\" ]; then source \"{real}/.zprofile\"; fi\n");
+    let zshenv_path = shim.join(".zshenv");
     let zshrc_path = shim.join(".zshrc");
     let zprofile_path = shim.join(".zprofile");
-    for (path, body) in [(&zshrc_path, &zshrc), (&zprofile_path, &zprofile)] {
+    for (path, body) in
+        [(&zshenv_path, &zshenv), (&zshrc_path, &zshrc), (&zprofile_path, &zprofile)]
+    {
         if let Err(error) = std::fs::write(path, body) {
             warn_unavailable("zsh", path, &error);
             let _ = std::fs::remove_dir_all(&shim);
@@ -289,6 +296,11 @@ mod tests {
         assert_eq!(plan.env.get("FORGE_REAL_ZDOTDIR"), Some(&"/home/person".to_owned()));
         assert_eq!(plan.env.get("TERM").map(String::as_str), Some("xterm-256color"));
         assert_eq!(plan.env.get("COLORTERM").map(String::as_str), Some("truecolor"));
+        let zshenv = std::fs::read_to_string(shim.join(".zshenv")).expect("a .zshenv");
+        assert!(
+            zshenv.contains("source \"/home/person/.zshenv\""),
+            "the person's env file is sourced, as zsh always reads it"
+        );
         let zshrc = std::fs::read_to_string(shim.join(".zshrc")).expect("a .zshrc");
         assert!(zshrc.contains("source \"/home/person/.zshrc\""), "the person's rc is sourced");
         assert!(zshrc.contains("133;D"), "and the integration follows it");

@@ -13,6 +13,7 @@
     handOff,
     onOutput,
     onScreen,
+    reconcileSurfaceSize,
     surface,
     type TerminalPhase,
   } from './surface.svelte';
@@ -191,10 +192,11 @@
     });
     term = instance;
     const stopScreen = onScreen((view) => {
+      // **The repaint is laid out at the server's grid.** A client fitted to
+      // its own box must not draw a wider screen into it: tell the server
+      // the size it has and take the repaint that comes back.
+      if (reconcileSurfaceSize(instance.cols, instance.rows)) return;
       instance.write(view.screen);
-      if (host !== null && (instance.cols !== view.cols || instance.rows !== view.rows)) {
-        fitted.fit();
-      }
     });
     const stopOutput = onOutput((frame) => instance.write(frame.bytes));
     phase = surface.phase === 'live' ? 'live' : 'opening';

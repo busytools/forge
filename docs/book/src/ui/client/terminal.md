@@ -13,7 +13,9 @@ terminal runs in its worktree, the lead's in its checkout - and `/new`,
 `/resume`, a handoff and a release/resume leave the PTY, its shell and its
 scrollback untouched. Only the seat ending, an explicit close, the shell
 exiting or forge exiting ends it. `[terminal] idle_minutes` closes one nobody
-is attached to or has called after that long, and the strip says why.
+is attached to or has called after that long, and the strip says why. **A
+raised surface belongs to the seat it was opened on**: switching seats lowers
+it, and the old terminal keeps running.
 
 **The agent drives it like a human.** There is no agent mode, no wrapper and
 no environment flag of its own: the agent types bytes and named keys through
@@ -40,7 +42,10 @@ tool gets the ending rather than the screen.
 **The client is a viewer, and xterm.js is the renderer.** The attach answers
 with the visible screen as a VT stream - the server's grid, its colours and
 its cursor - and every later frame is the shell's own bytes, so the client
-sees exactly what the shell wrote. The DOM renderer is the default;
+sees exactly what the shell wrote. **The repaint is laid out at the server's
+grid**, so a first raise sends the size the client fitted to and draws the
+repaint that comes back; frames that land while xterm.js is still loading are
+held rather than dropped. The DOM renderer is the default;
 `@xterm/addon-webgl` is loaded behind a try so a renderer that will not paint
 never draws an empty terminal over a live shell. Fit, unicode11, search,
 clipboard (OSC 52) and image (Sixel and iTerm2 IIP) are loaded beside it.
