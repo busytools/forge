@@ -87,7 +87,7 @@ for anything:
 ```json
 {
   "kind": "greeting",
-  "version": 27,
+  "version": 28,
   "forge_version": "1.1.25 · abc1234",
   "forge_version_short": "1.1.25+abc1234",
   "settings": {
@@ -297,8 +297,12 @@ and whether the shared session is locked. The blocked tool call waits for
 `send_back` with a note, or `decline`, plus the master password and 2FA
 code when the card asked for them. An approval unlocks the one shared
 session and runs the call; `needs_unlock` is stamped from the live session
-on every read, so the other parked cards re-base to ordinary approve cards
-through the record read. `vault_ask_resolved` names the ending. **The
+on every read, so the other parked cards re-base to ordinary approve cards.
+The unlock pushes a restamped `vault_ask_pending` for each card still
+parked, so a dock that already drew one merges the frame by id; a call that
+then re-locks the session (a failed refresh, or a decryption that means the
+keys rotated) pushes the restamped frame the other way. `vault_ask_resolved`
+names the ending. **The
 answer is a local channel**: it travels the same connection the card came
 over, and the password's privacy is the socket's - `[server] bind` is the
 boundary, so a vault answer is only meaningful over loopback or the private

@@ -2382,11 +2382,21 @@ impl Workspace {
         .map(Arc::new);
         let vault = match config.vault.as_ref() {
             Some(vault_config) => Some(Arc::new(
-                crate::vault::VaultSession::new(vault_config, app_support.as_deref(), &config_dir)
-                    .map_err(|error| WorkspaceError::ConfigInvalid {
-                        path: crate::config::forge_data_dir(&config_dir).join("forge.toml"),
-                        message: format!("[vault] {error}"),
+                crate::vault::VaultSession::with_client(
+                    vault_config,
+                    app_support.as_deref(),
+                    &config_dir,
+                    crate::vault::production_client(&vault_config.url).map_err(|error| {
+                        WorkspaceError::ConfigInvalid {
+                            path: crate::config::forge_data_dir(&config_dir).join("forge.toml"),
+                            message: format!("[vault] {error}"),
+                        }
                     })?,
+                )
+                .map_err(|error| WorkspaceError::ConfigInvalid {
+                    path: crate::config::forge_data_dir(&config_dir).join("forge.toml"),
+                    message: format!("[vault] {error}"),
+                })?,
             )),
             None => None,
         };
@@ -2662,10 +2672,16 @@ impl Workspace {
                 self.vault.read().clone()
             }
             Some(vault_config) => Some(Arc::new(
-                crate::vault::VaultSession::new(
+                crate::vault::VaultSession::with_client(
                     vault_config,
                     self.app_support.as_deref(),
                     &self.config_dir,
+                    crate::vault::production_client(&vault_config.url).map_err(|error| {
+                        WorkspaceError::ConfigInvalid {
+                            path: forge_toml.clone(),
+                            message: format!("[vault] {error}"),
+                        }
+                    })?,
                 )
                 .map_err(|error| WorkspaceError::ConfigInvalid {
                     path: forge_toml.clone(),

@@ -61,15 +61,15 @@ pub(crate) struct VaultSession {
 }
 
 impl VaultSession {
-    /// Build the session's client and audit. The audit path is
-    /// `<app-support>/vault/audit-<config-dir-store-key>.jsonl`; a missing
-    /// app-support dir leaves the session usable and the audit off.
-    pub(crate) fn new(
+    /// Build the session's audit around a client the workspace built. The
+    /// audit path is `<app-support>/vault/audit-<config-dir-store-key>.jsonl`;
+    /// a missing app-support dir leaves the session usable and the audit off.
+    pub(crate) fn with_client(
         config: &VaultConfig,
         app_support: Option<&Path>,
         config_dir: &Path,
+        client: VaultClient,
     ) -> Result<Self, VaultError> {
-        let client = VaultClient::new(&config.url)?;
         let audit = app_support.and_then(|base| {
             match VaultAudit::new(base, &forge_sdk::config_dir_store_key(config_dir)) {
                 Ok(audit) => Some(audit),
@@ -127,14 +127,21 @@ impl VaultSession {
         let hash = Zeroizing::new(crypto::master_password_hash(&master_key, password));
         let mut two_factor =
             two_factor.map(|token| TwoFactorCode { token: token.to_owned(), provider: 0 });
-        let token: TokenResponse =
-            self.client.login_password(&self.email, &hash, two_factor.as_ref()).await?;
+        let login = self.client.login_password(&self.email, &hash, two_factor.as_ref()).await;
         if let Some(code) = &mut two_factor {
             code.token.zeroize();
         }
+        let token: TokenResponse = login?;
         let sync = self.client.sync(&token.access_token).await?;
         let unlocked =
             crypto::unlock(&token, &master_key, &sync.profile).map_err(VaultError::Crypto)?;
+        if !unlocked.failed_orgs.is_empty() {
+            tracing::warn!(
+                event_name = "vault_org_keys_unavailable",
+                orgs = ?unlocked.failed_orgs,
+                "organization keys were not unlocked; their items are refused until the next unlock"
+            );
+        }
 
         let mut state = self.state.write();
         state.tokens = Some(Tokens { access: token.access_token, refresh: token.refresh_token });
@@ -207,6 +214,17 @@ impl VaultSession {
         let mut state = self.state.write();
         state.tokens = None;
         state.keys = None;
+    }
+
+    /// A decryption failure under a key that has not changed means the account
+    /// rotated its keys: drop them, so the next held call asks for the master
+    /// password rather than repeating a failure against stale keys.
+    pub(crate) fn note_decrypt_failure(&self) {
+        tracing::warn!(
+            event_name = "vault_decrypt_failed",
+            "a vault decryption failed; the session's keys are dropped and the next call will unlock"
+        );
+        self.lock();
     }
 
     /// `GET /api/sync`, through the refresh path.
@@ -446,12 +464,16 @@ impl VaultSession {
         }
     }
 
-    pub(crate) async fn download_attachment(&self, url: &str) -> Result<Vec<u8>, VaultError> {
+    pub(crate) async fn download_attachment(
+        &self,
+        url: &str,
+        max_bytes: u64,
+    ) -> Result<Vec<u8>, VaultError> {
         let token = self.access_token()?;
-        match self.client.download_attachment(&token, url).await {
+        match self.client.download_attachment(&token, url, max_bytes).await {
             Err(VaultError::Unauthorized) => {
                 let token = self.refresh(&token).await?;
-                match self.client.download_attachment(&token, url).await {
+                match self.client.download_attachment(&token, url, max_bytes).await {
                     Err(VaultError::Unauthorized) => {
                         self.lock();
                         Err(VaultError::Locked)
@@ -518,6 +540,45 @@ impl VaultSession {
     }
 }
 
+/// A session over the connector's own client, for local test servers. The
+/// production path builds the clients through [`production_client`].
+#[cfg(test)]
+pub(crate) fn test_session(
+    config: &VaultConfig,
+    app_support: Option<&Path>,
+    config_dir: &Path,
+) -> Result<VaultSession, VaultError> {
+    let client = VaultClient::new(&config.url)?;
+    VaultSession::with_client(config, app_support, config_dir, client)
+}
+
+/// The production vault clients: the machine's extra TLS roots, `https_only`,
+/// the account's own user agent, and the vault family's bounds. The download
+/// client takes a longer read and total bound because an attachment is opaque
+/// ciphertext up to the server's cap.
+pub(crate) fn production_client(base: &str) -> Result<VaultClient, VaultError> {
+    use forge_connectors::vault::client::{
+        CONNECT_TIMEOUT, DOWNLOAD_READ_TIMEOUT, DOWNLOAD_TIMEOUT, READ_TIMEOUT, REQUEST_TIMEOUT,
+    };
+    let build = |read_timeout: std::time::Duration, timeout: std::time::Duration| {
+        forge_agent::http_trust::with_extra_roots(
+            reqwest::Client::builder()
+                .user_agent(forge_connectors::vault::client::user_agent())
+                .https_only(true)
+                .connect_timeout(CONNECT_TIMEOUT)
+                .read_timeout(read_timeout)
+                .timeout(timeout),
+        )
+        .build()
+        .map_err(VaultError::Http)
+    };
+    VaultClient::with_clients(
+        base,
+        build(READ_TIMEOUT, REQUEST_TIMEOUT)?,
+        build(DOWNLOAD_READ_TIMEOUT, DOWNLOAD_TIMEOUT)?,
+    )
+}
+
 /// The append-only audit file, rotated 10 MB x 6.
 struct VaultAudit {
     path: PathBuf,
@@ -534,11 +595,20 @@ const AUDIT_MAX_FILES: usize = 6;
 
 impl VaultAudit {
     fn new(app_support: &Path, store_key: &str) -> std::io::Result<Self> {
-        use std::os::unix::fs::OpenOptionsExt;
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
         let dir = app_support.join("vault");
         std::fs::create_dir_all(&dir)?;
         let path = dir.join(format!("audit-{store_key}.jsonl"));
-        let file = std::fs::OpenOptions::new().create(true).append(true).mode(0o600).open(&path)?;
+        // `O_NOFOLLOW` refuses a planted symlink, and the explicit
+        // set_permissions fixes an existing looser file's mode, which `mode`
+        // only applies at creation.
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(&path)?;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
         let size = file.metadata()?.len();
         Ok(Self { path, file: parking_lot::Mutex::new(AuditFile { file, size }) })
     }
@@ -558,21 +628,30 @@ impl VaultAudit {
 }
 
 fn rotate(path: &Path, audit: &mut AuditFile) -> std::io::Result<()> {
-    use std::os::unix::fs::OpenOptionsExt;
-    let _ = std::fs::remove_file(rotated_path(path, AUDIT_MAX_FILES));
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    match std::fs::remove_file(rotated_path(path, AUDIT_MAX_FILES)) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
     for index in (1..AUDIT_MAX_FILES).rev() {
         let from = rotated_path(path, index);
         if from.exists() {
-            let _ = std::fs::rename(&from, rotated_path(path, index + 1));
+            std::fs::rename(&from, rotated_path(path, index + 1))?;
         }
     }
-    let _ = std::fs::rename(path, rotated_path(path, 1));
-    audit.file = std::fs::OpenOptions::new()
+    // A failed rename is returned rather than followed by a truncate of the
+    // file that was meant to move, which would destroy the audit.
+    std::fs::rename(path, rotated_path(path, 1))?;
+    let file = std::fs::OpenOptions::new()
         .create(true)
         .write(true)
         .truncate(true)
         .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
         .open(path)?;
+    file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    audit.file = file;
     audit.size = 0;
     Ok(())
 }
@@ -591,7 +670,7 @@ mod tests {
 
     #[test]
     fn a_new_session_is_locked() {
-        let session = VaultSession::new(&config(), None, Path::new("/tmp")).expect("a session");
+        let session = test_session(&config(), None, Path::new("/tmp")).expect("a session");
         assert!(session.is_locked());
         assert!(matches!(session.keys(), Err(VaultError::Locked)));
     }
@@ -658,7 +737,7 @@ mod tests {
     fn session_for(address: std::net::SocketAddr) -> VaultSession {
         let config =
             VaultConfig { url: format!("http://{address}"), email: "hi@vedhavyas.dev".to_owned() };
-        let session = VaultSession::new(&config, None, Path::new("/tmp")).expect("a session");
+        let session = test_session(&config, None, Path::new("/tmp")).expect("a session");
         session.state.write().tokens =
             Some(Tokens { access: "stale".to_owned(), refresh: Some("good".to_owned()) });
         session
@@ -733,7 +812,7 @@ mod tests {
     #[tokio::test]
     async fn a_session_without_a_refresh_token_locks_on_401() {
         let (address, server) = serve(vec![response("401 Unauthorized", "")]).await;
-        let session = VaultSession::new(
+        let session = test_session(
             &VaultConfig { url: format!("http://{address}"), email: "hi@vedhavyas.dev".to_owned() },
             None,
             Path::new("/tmp"),
@@ -756,7 +835,7 @@ mod tests {
             email: "hi@vedhavyas.dev".to_owned(),
         };
         let config_dir = Path::new("/tmp");
-        let session = VaultSession::new(&config, Some(dir.path()), config_dir).expect("session");
+        let session = test_session(&config, Some(dir.path()), config_dir).expect("session");
         session.audit(
             &SessionSlot::lead("Default", "forge"),
             VaultTool::Get,
@@ -784,6 +863,62 @@ mod tests {
         assert_eq!(value["tool"], "vault__get");
         assert_eq!(value["field"], "password");
         assert_eq!(value["item_id"], "item-id");
+    }
+
+    /// An existing audit file with looser permissions is repaired on open,
+    /// which `mode(0o600)` alone does not do.
+    #[test]
+    fn the_audit_file_is_private_even_when_it_existed_looser() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let vault = dir.path().join("vault");
+        std::fs::create_dir_all(&vault).expect("dir");
+        let path = vault.join("audit-store.jsonl");
+        std::fs::write(&path, "").expect("file");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).expect("chmod");
+
+        let _audit = VaultAudit::new(dir.path(), "store").expect("audit");
+
+        assert_eq!(
+            std::fs::metadata(&path).expect("metadata").permissions().mode() & 0o777,
+            0o600,
+            "the audit file is private",
+        );
+    }
+
+    /// A symlink planted at the audit path is refused rather than followed, so
+    /// a line cannot be appended through it.
+    #[test]
+    fn the_audit_refuses_a_symlink() {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let vault = dir.path().join("vault");
+        std::fs::create_dir_all(&vault).expect("dir");
+        let target = dir.path().join("target");
+        std::fs::write(&target, "").expect("target");
+        symlink(&target, vault.join("audit-store.jsonl")).expect("symlink");
+
+        assert!(VaultAudit::new(dir.path(), "store").is_err(), "the symlink is not followed");
+        assert_eq!(std::fs::read(&target).expect("target read"), b"");
+    }
+
+    /// A decryption failure under a known key means the account rotated them:
+    /// the session drops them and the next held call asks for the password.
+    #[test]
+    fn a_decrypt_failure_drops_the_keys() {
+        let session = test_session(&config(), None, Path::new("/tmp")).expect("a session");
+        session.state.write().keys = Some(std::sync::Arc::new(Unlocked {
+            user_key: crypto::make_symmetric_key(),
+            private_key: None,
+            org_keys: std::collections::HashMap::new(),
+            failed_orgs: Vec::new(),
+        }));
+        assert!(!session.is_locked());
+
+        session.note_decrypt_failure();
+
+        assert!(session.is_locked(), "the stale keys are dropped");
+        assert!(matches!(session.keys(), Err(VaultError::Locked)));
     }
 
     #[test]

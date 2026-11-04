@@ -2,6 +2,9 @@
 //! the access token the workspace's `VaultSession` holds, so the session is the
 //! one owner of the tokens and the client can be shared across seats.
 
+use std::time::Duration;
+
+use futures::StreamExt;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use zeroize::Zeroize;
@@ -20,21 +23,69 @@ pub const CLIENT_VERSION: &str = "2026.6.0";
 /// grant. There is no secret: the password grant is a public client.
 pub const CLIENT_ID: &str = "cli";
 
+/// Bounds for one ordinary vault call. A stalled server must fail the call
+/// rather than hold the unlock or refresh gate for ever, which would queue
+/// every later vault call behind it.
+pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+pub const READ_TIMEOUT: Duration = Duration::from_secs(60);
+pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+
+/// A download is opaque ciphertext up to the attachment cap, so its idle read
+/// bound and total bound are longer than an API call's.
+pub const DOWNLOAD_READ_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+pub const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(60 * 60);
+
+/// The user agent every vault request carries.
+pub fn user_agent() -> String {
+    format!("forge-vault/{}", env!("CARGO_PKG_VERSION"))
+}
+
 pub struct VaultClient {
     http: reqwest::Client,
+    download_http: reqwest::Client,
     base: String,
+    base_url: url::Url,
     device_id: String,
 }
 
 impl VaultClient {
-    /// Build a client for `base`, which may carry a trailing slash.
+    /// Build a client for `base`, which may carry a trailing slash. The
+    /// workspace's production session builds its clients through
+    /// [`VaultClient::with_clients`] so the machine's TLS roots and
+    /// `https_only` apply; this constructor is for local servers and tests.
     pub fn new(base: &str) -> Result<Self, VaultError> {
         let http = reqwest::Client::builder()
-            .user_agent(format!("forge-vault/{}", env!("CARGO_PKG_VERSION")))
+            .user_agent(user_agent())
+            .connect_timeout(CONNECT_TIMEOUT)
+            .read_timeout(READ_TIMEOUT)
+            .timeout(REQUEST_TIMEOUT)
             .build()?;
+        let download_http = reqwest::Client::builder()
+            .user_agent(user_agent())
+            .connect_timeout(CONNECT_TIMEOUT)
+            .read_timeout(DOWNLOAD_READ_TIMEOUT)
+            .timeout(DOWNLOAD_TIMEOUT)
+            .build()?;
+        Self::with_clients(base, http, download_http)
+    }
+
+    /// Build a client over callers' own HTTP clients. The download client is
+    /// separate because its read and total bounds are longer than an API
+    /// call's.
+    pub fn with_clients(
+        base: &str,
+        http: reqwest::Client,
+        download_http: reqwest::Client,
+    ) -> Result<Self, VaultError> {
+        let base = base.trim_end_matches('/').to_owned();
+        let base_url = url::Url::parse(&base).map_err(|error| {
+            VaultError::InvalidInput(format!("the vault URL does not parse: {error}"))
+        })?;
         Ok(Self {
             http,
-            base: base.trim_end_matches('/').to_owned(),
+            download_http,
+            base,
+            base_url,
             device_id: uuid::Uuid::new_v4().to_string(),
         })
     }
@@ -59,7 +110,7 @@ impl VaultClient {
     async fn send_json(&self, resp: reqwest::Response) -> Result<Value, VaultError> {
         let status = resp.status();
         let retry_after = retry_after(&resp);
-        let body = resp.text().await?;
+        let body = resp.text().await.map_err(|error| VaultError::Http(error.without_url()))?;
         if !status.is_success() {
             return Err(api_error(status.as_u16(), retry_after, safe_error(&body)));
         }
@@ -80,11 +131,10 @@ impl VaultClient {
     /// `POST /identity/accounts/prelogin`, which is where Vaultwarden mounts it
     /// (the `/api/accounts/prelogin` forms answer 404).
     pub async fn prelogin(&self, email: &str) -> Result<Prelogin, VaultError> {
-        let resp = self
+        let request = self
             .unauth(reqwest::Method::POST, "/identity/accounts/prelogin")
-            .json(&serde_json::json!({ "email": email }))
-            .send()
-            .await?;
+            .json(&serde_json::json!({ "email": email }));
+        let resp = send_request(request).await?;
         self.send_typed(resp).await
     }
 
@@ -109,15 +159,12 @@ impl VaultClient {
             form.push(("two_factor_token".to_owned(), code.token.clone()));
             form.push(("two_factor_provider".to_owned(), code.provider.to_string()));
         }
-        let resp = self
-            .unauth(reqwest::Method::POST, "/identity/connect/token")
-            .form(&form)
-            .send()
-            .await?;
+        let request = self.unauth(reqwest::Method::POST, "/identity/connect/token").form(&form);
+        let sent = send_request(request).await;
         for (_, value) in &mut form {
             value.zeroize();
         }
-        self.send_typed(resp).await
+        self.send_typed(sent?).await
     }
 
     /// `POST /identity/connect/token` with the refresh grant.
@@ -127,29 +174,28 @@ impl VaultClient {
             ("client_id", CLIENT_ID),
             ("refresh_token", refresh_token),
         ];
-        let resp = self
-            .unauth(reqwest::Method::POST, "/identity/connect/token")
-            .form(&form)
-            .send()
-            .await?;
+        let request = self.unauth(reqwest::Method::POST, "/identity/connect/token").form(&form);
+        let resp = send_request(request).await?;
         self.send_typed(resp).await
     }
 
     /// `GET /api/sync`: the profile and every cipher and folder.
     pub async fn sync(&self, token: &str) -> Result<SyncData, VaultError> {
-        let resp = self.authed(reqwest::Method::GET, "/api/sync", token).send().await?;
+        let request = self.authed(reqwest::Method::GET, "/api/sync", token);
+        let resp = send_request(request).await?;
         self.send_typed(resp).await
     }
 
     pub async fn get_cipher(&self, token: &str, id: &str) -> Result<Value, VaultError> {
-        let resp =
-            self.authed(reqwest::Method::GET, &format!("/api/ciphers/{id}"), token).send().await?;
+        let path = format!("/api/ciphers/{}", path_segment(id)?);
+        let request = self.authed(reqwest::Method::GET, &path, token);
+        let resp = send_request(request).await?;
         self.send_json(resp).await
     }
 
     pub async fn create_cipher(&self, token: &str, body: &Value) -> Result<Value, VaultError> {
-        let resp =
-            self.authed(reqwest::Method::POST, "/api/ciphers", token).json(body).send().await?;
+        let request = self.authed(reqwest::Method::POST, "/api/ciphers", token).json(body);
+        let resp = send_request(request).await?;
         self.send_json(resp).await
     }
 
@@ -159,43 +205,39 @@ impl VaultClient {
         id: &str,
         body: &Value,
     ) -> Result<Value, VaultError> {
-        let resp = self
-            .authed(reqwest::Method::PUT, &format!("/api/ciphers/{id}"), token)
-            .json(body)
-            .send()
-            .await?;
+        let path = format!("/api/ciphers/{}", path_segment(id)?);
+        let request = self.authed(reqwest::Method::PUT, &path, token).json(body);
+        let resp = send_request(request).await?;
         self.send_json(resp).await
     }
 
     /// The soft delete. `POST /api/ciphers/{id}/delete` and
     /// `DELETE /api/ciphers/{id}` are permanent and are never called here.
     pub async fn trash_cipher(&self, token: &str, id: &str) -> Result<Value, VaultError> {
-        let resp = self
-            .authed(reqwest::Method::PUT, &format!("/api/ciphers/{id}/delete"), token)
-            .send()
-            .await?;
+        let path = format!("/api/ciphers/{}/delete", path_segment(id)?);
+        let request = self.authed(reqwest::Method::PUT, &path, token);
+        let resp = send_request(request).await?;
         self.send_json(resp).await
     }
 
     pub async fn restore_cipher(&self, token: &str, id: &str) -> Result<Value, VaultError> {
-        let resp = self
-            .authed(reqwest::Method::PUT, &format!("/api/ciphers/{id}/restore"), token)
-            .send()
-            .await?;
+        let path = format!("/api/ciphers/{}/restore", path_segment(id)?);
+        let request = self.authed(reqwest::Method::PUT, &path, token);
+        let resp = send_request(request).await?;
         self.send_json(resp).await
     }
 
     pub async fn list_folders(&self, token: &str) -> Result<Vec<Folder>, VaultError> {
-        let resp = self.authed(reqwest::Method::GET, "/api/folders", token).send().await?;
+        let request = self.authed(reqwest::Method::GET, "/api/folders", token);
+        let resp = send_request(request).await?;
         self.send_typed(resp).await
     }
 
     pub async fn create_folder(&self, token: &str, name: &str) -> Result<Value, VaultError> {
-        let resp = self
+        let request = self
             .authed(reqwest::Method::POST, "/api/folders", token)
-            .json(&serde_json::json!({ "name": name }))
-            .send()
-            .await?;
+            .json(&serde_json::json!({ "name": name }));
+        let resp = send_request(request).await?;
         self.send_json(resp).await
     }
 
@@ -205,19 +247,18 @@ impl VaultClient {
         id: &str,
         name: &str,
     ) -> Result<Value, VaultError> {
-        let resp = self
-            .authed(reqwest::Method::PUT, &format!("/api/folders/{id}"), token)
-            .json(&serde_json::json!({ "name": name }))
-            .send()
-            .await?;
+        let path = format!("/api/folders/{}", path_segment(id)?);
+        let request = self
+            .authed(reqwest::Method::PUT, &path, token)
+            .json(&serde_json::json!({ "name": name }));
+        let resp = send_request(request).await?;
         self.send_json(resp).await
     }
 
     pub async fn delete_folder(&self, token: &str, id: &str) -> Result<Value, VaultError> {
-        let resp = self
-            .authed(reqwest::Method::DELETE, &format!("/api/folders/{id}"), token)
-            .send()
-            .await?;
+        let path = format!("/api/folders/{}", path_segment(id)?);
+        let request = self.authed(reqwest::Method::DELETE, &path, token);
+        let resp = send_request(request).await?;
         self.send_json(resp).await
     }
 
@@ -229,15 +270,9 @@ impl VaultClient {
         cipher_id: &str,
         body: &Value,
     ) -> Result<Value, VaultError> {
-        let resp = self
-            .authed(
-                reqwest::Method::POST,
-                &format!("/api/ciphers/{cipher_id}/attachment/v2"),
-                token,
-            )
-            .json(body)
-            .send()
-            .await?;
+        let path = format!("/api/ciphers/{}/attachment/v2", path_segment(cipher_id)?);
+        let request = self.authed(reqwest::Method::POST, &path, token).json(body);
+        let resp = send_request(request).await?;
         self.send_json(resp).await
     }
 
@@ -255,15 +290,13 @@ impl VaultClient {
             .file_name("blob")
             .mime_str("application/octet-stream")?;
         let form = reqwest::multipart::Form::new().part("data", part);
-        let resp = self
-            .authed(
-                reqwest::Method::POST,
-                &format!("/api/ciphers/{cipher_id}/attachment/{attachment_id}"),
-                token,
-            )
-            .multipart(form)
-            .send()
-            .await?;
+        let path = format!(
+            "/api/ciphers/{}/attachment/{}",
+            path_segment(cipher_id)?,
+            path_segment(attachment_id)?
+        );
+        let request = self.authed(reqwest::Method::POST, &path, token).multipart(form);
+        let resp = send_request(request).await?;
         self.send_json(resp).await
     }
 
@@ -274,14 +307,13 @@ impl VaultClient {
         cipher_id: &str,
         attachment_id: &str,
     ) -> Result<AttachmentMeta, VaultError> {
-        let resp = self
-            .authed(
-                reqwest::Method::GET,
-                &format!("/api/ciphers/{cipher_id}/attachment/{attachment_id}"),
-                token,
-            )
-            .send()
-            .await?;
+        let path = format!(
+            "/api/ciphers/{}/attachment/{}",
+            path_segment(cipher_id)?,
+            path_segment(attachment_id)?
+        );
+        let request = self.authed(reqwest::Method::GET, &path, token);
+        let resp = send_request(request).await?;
         self.send_typed(resp).await
     }
 
@@ -293,40 +325,94 @@ impl VaultClient {
         cipher_id: &str,
         attachment_id: &str,
     ) -> Result<Value, VaultError> {
-        let resp = self
-            .authed(
-                reqwest::Method::DELETE,
-                &format!("/api/ciphers/{cipher_id}/attachment/{attachment_id}"),
-                token,
-            )
-            .send()
-            .await?;
+        let path = format!(
+            "/api/ciphers/{}/attachment/{}",
+            path_segment(cipher_id)?,
+            path_segment(attachment_id)?
+        );
+        let request = self.authed(reqwest::Method::DELETE, &path, token);
+        let resp = send_request(request).await?;
         self.send_json(resp).await
     }
 
     /// Download a signed attachment URL. The bytes are opaque ciphertext, so the
     /// request asks the proxy not to re-encode them. A relative URL is the API
-    /// route and takes the bearer; an absolute one is signed and does not.
-    pub async fn download_attachment(&self, token: &str, url: &str) -> Result<Vec<u8>, VaultError> {
+    /// route and takes the bearer; an absolute one is signed and does not, and
+    /// may only name this vault's own host. `max_bytes` bounds the body while it
+    /// streams, so an endless response cannot buffer past the cap.
+    pub async fn download_attachment(
+        &self,
+        token: &str,
+        url: &str,
+        max_bytes: u64,
+    ) -> Result<Vec<u8>, VaultError> {
         let absolute = url.starts_with("http://") || url.starts_with("https://");
-        let target = if absolute { url.to_owned() } else { format!("{}{}", self.base, url) };
+        // A leading slash is this vault's own path, so appending it cannot
+        // change the authority. Anything else is resolved by the URL parser:
+        // joined as a path, never concatenated as `base` followed by userinfo.
+        let target = if url.starts_with('/') {
+            url::Url::parse(&format!("{}{}", self.base, url))
+                .map_err(|error| VaultError::InvalidUrl(error.to_string()))?
+        } else if absolute {
+            url::Url::parse(url).map_err(|error| VaultError::InvalidUrl(error.to_string()))?
+        } else {
+            self.base_url.join(url).map_err(|error| VaultError::InvalidUrl(error.to_string()))?
+        };
+        if target.scheme() != self.base_url.scheme()
+            || target.host_str() != self.base_url.host_str()
+            || target.port_or_known_default() != self.base_url.port_or_known_default()
+        {
+            return Err(VaultError::InvalidUrl(
+                "the attachment URL points at a different host".to_owned(),
+            ));
+        }
         let mut request = self
-            .http
+            .download_http
             .get(target)
             .header("Bitwarden-Client-Version", CLIENT_VERSION)
             .header(reqwest::header::ACCEPT_ENCODING, "identity");
         if !absolute {
             request = request.bearer_auth(token);
         }
-        let resp = request.send().await?;
+        let resp = send_request(request).await?;
         let status = resp.status();
         let retry_after = retry_after(&resp);
         if !status.is_success() {
-            let body = resp.text().await.unwrap_or_default();
+            let body = resp.text().await.map_err(|error| VaultError::Http(error.without_url()))?;
             return Err(api_error(status.as_u16(), retry_after, safe_error(&body)));
         }
-        Ok(resp.bytes().await?.to_vec())
+        if let Some(declared) = resp.content_length()
+            && declared > max_bytes
+        {
+            return Err(VaultError::AttachmentTooLarge { size: declared, cap: max_bytes });
+        }
+        let mut body = Vec::new();
+        let mut stream = resp.bytes_stream();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|error| VaultError::Http(error.without_url()))?;
+            let size = body.len() as u64 + chunk.len() as u64;
+            if size > max_bytes {
+                return Err(VaultError::AttachmentTooLarge { size, cap: max_bytes });
+            }
+            body.extend_from_slice(&chunk);
+        }
+        Ok(body)
     }
+}
+
+/// Percent-encode one id for a path segment. An empty id is refused rather
+/// than sent as a route with a hole in it.
+fn path_segment(id: &str) -> Result<String, VaultError> {
+    if id.trim().is_empty() {
+        return Err(VaultError::InvalidInput("an empty id was passed".to_owned()));
+    }
+    Ok(url::form_urlencoded::byte_serialize(id.as_bytes()).collect::<String>().replace('+', "%20"))
+}
+
+/// Send one request, dropping the URL from any transport error: a signed
+/// download URL carries its token in the query string.
+async fn send_request(request: reqwest::RequestBuilder) -> Result<reqwest::Response, VaultError> {
+    request.send().await.map_err(|error| VaultError::Http(error.without_url()))
 }
 
 /// The server's `Retry-After` hint, when it sends a whole number of seconds.
@@ -481,7 +567,8 @@ mod tests {
     async fn a_relative_download_carries_the_bearer_and_an_absolute_one_does_not() {
         let (address, server) = serve_once("200 OK", "bytes", "").await;
         let client = VaultClient::new(&format!("http://{address}")).unwrap();
-        let downloaded = client.download_attachment("token", "/attachments/c/a").await.unwrap();
+        let downloaded =
+            client.download_attachment("token", "/attachments/c/a", 1024).await.unwrap();
         assert_eq!(downloaded, b"bytes");
         let request = server.await.unwrap();
         let text = String::from_utf8_lossy(&request);
@@ -491,13 +578,118 @@ mod tests {
         let (address, server) = serve_once("200 OK", "bytes", "").await;
         let client = VaultClient::new(&format!("http://{address}")).unwrap();
         let signed = format!("http://{address}/signed?token=x");
-        client.download_attachment("token", &signed).await.unwrap();
+        client.download_attachment("token", &signed, 1024).await.unwrap();
         let request = server.await.unwrap();
         let text = String::from_utf8_lossy(&request);
         assert!(
             !text.to_lowercase().contains("authorization:"),
             "a signed URL carries its own token: {text}",
         );
+    }
+
+    /// `base@host` is userinfo plus a foreign host when the base and the URL
+    /// are concatenated. Resolved as a path, it stays this vault's route.
+    #[tokio::test]
+    async fn a_relative_url_cannot_smuggle_the_bearer_to_another_host() {
+        let (address, server) = serve_once("200 OK", "bytes", "").await;
+        let elsewhere = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let other = elsewhere.local_addr().unwrap();
+        let client = VaultClient::new(&format!("http://{address}")).unwrap();
+
+        let downloaded =
+            client.download_attachment("token", &format!("@{other}/x"), 1024).await.unwrap();
+
+        assert_eq!(downloaded, b"bytes");
+        let request = server.await.unwrap();
+        let text = String::from_utf8_lossy(&request);
+        assert!(text.starts_with(&format!("GET /@{other}/x ")), "{text}");
+        assert!(text.contains("authorization: Bearer token"), "{text}");
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), elsewhere.accept())
+                .await
+                .is_err(),
+            "no request reached the foreign host",
+        );
+    }
+
+    /// An absolute URL naming another host is refused before any bearer is
+    /// attached or any request is sent.
+    #[tokio::test]
+    async fn a_download_to_another_host_is_refused() {
+        let (address, _server) = serve_once("200 OK", "bytes", "").await;
+        let elsewhere = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let other = elsewhere.local_addr().unwrap();
+        let client = VaultClient::new(&format!("http://{address}")).unwrap();
+
+        let error = client
+            .download_attachment("token", &format!("http://{other}/x"), 1024)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, VaultError::InvalidUrl(_)), "{error}");
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), elsewhere.accept())
+                .await
+                .is_err(),
+            "no request reached the foreign host",
+        );
+    }
+
+    /// The declared length is checked before the body is read, and the stream
+    /// is bounded as it arrives for a response that declares no length.
+    #[tokio::test]
+    async fn a_download_over_the_cap_is_refused() {
+        let (address, server) = serve_once("200 OK", "far more than ten bytes", "").await;
+        let client = VaultClient::new(&format!("http://{address}")).unwrap();
+
+        let error = client.download_attachment("token", "/a", 10).await.unwrap_err();
+
+        assert!(
+            matches!(error, VaultError::AttachmentTooLarge { size, cap: 10 } if size > 10),
+            "{error}"
+        );
+        server.await.unwrap();
+    }
+
+    /// A signed URL's token lives in its query string, so no transport error
+    /// may print the URL it was sent to.
+    #[tokio::test]
+    async fn a_download_error_does_not_carry_the_signed_url() {
+        let client = VaultClient::new("http://127.0.0.1:1").unwrap();
+
+        let error = client
+            .download_attachment("token", "http://127.0.0.1:1/signed?token=secret", 1024)
+            .await
+            .unwrap_err();
+        let text = error.to_string();
+
+        assert!(!text.contains("secret"), "the signed URL reached the error: {text}");
+        assert!(!text.contains("127.0.0.1"), "the URL reached the error: {text}");
+    }
+
+    /// The same holds for an ordinary call's transport error.
+    #[tokio::test]
+    async fn a_send_error_does_not_carry_the_url() {
+        let client = VaultClient::new("http://127.0.0.1:1").unwrap();
+
+        let error = client.sync("token").await.unwrap_err();
+        let text = error.to_string();
+
+        assert!(!text.contains("127.0.0.1"), "the URL reached the error: {text}");
+    }
+
+    /// An id is one path segment: a slash, a query marker or a space in it
+    /// cannot change the route the client asks for.
+    #[tokio::test]
+    async fn an_id_is_percent_encoded_as_one_path_segment() {
+        let (address, server) = serve_once("200 OK", "{}", "").await;
+        let client = VaultClient::new(&format!("http://{address}")).unwrap();
+
+        client.get_cipher("token", "a/b?c d").await.unwrap();
+
+        let request = server.await.unwrap();
+        let text = String::from_utf8_lossy(&request);
+        assert!(text.starts_with("GET /api/ciphers/a%2Fb%3Fc%20d "), "{text}");
     }
 
     #[tokio::test]

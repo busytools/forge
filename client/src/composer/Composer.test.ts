@@ -6,6 +6,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { hideBrowser, onModifier, onModifierChord, showBrowser } from '../browser/link';
 import { openSurface, selectTab, surface } from '../browser/surface.svelte';
 import { repoPath } from '../repo';
+// One frame shared with forge-server's decode test, so the dock's literal and
+// the Rust decoder cannot drift into different nesting.
+import vaultAnswerFrames from './vault-answer-frames.json';
 
 /**
  * The shell's own door, mock-able so both halves of Open's claim are testable
@@ -6762,19 +6765,7 @@ describe('the dock', () => {
     action('Approve').click();
     flushSync();
 
-    expect(commands(harness)).toEqual([
-      {
-        respond_vault_ask: {
-          key: SLOT,
-          id: '0192e1c0-0000-7000-8000-0000000000cc',
-          answer: {
-            decision: 'approve',
-            master_password: 'open sesame',
-            two_factor: '123456',
-          },
-        },
-      },
-    ]);
+    expect(commands(harness)).toEqual([vaultAnswerFrames.approve]);
   });
 
   it('sends a vault call back with the note the reader writes', () => {
@@ -6796,15 +6787,7 @@ describe('the dock', () => {
     sendBackAction().click();
     flushSync();
 
-    expect(commands(harness)).toEqual([
-      {
-        respond_vault_ask: {
-          key: SLOT,
-          id: '0192e1c0-0000-7000-8000-0000000000cc',
-          answer: { decision: 'send_back', note: 'ask for the password, not the TOTP' },
-        },
-      },
-    ]);
+    expect(commands(harness)).toEqual([vaultAnswerFrames.send_back]);
   });
 
   it('declines a vault call without running it', () => {

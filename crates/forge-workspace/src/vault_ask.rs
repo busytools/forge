@@ -124,11 +124,13 @@ impl Workspace {
         self.parked_vault_asks.lock().values().any(|(owner, _, _)| owner == slot)
     }
 
-    /// Re-stamp every call still parked after one of them unlocked the
-    /// session: each is now an ordinary approve card, and a fold that already
-    /// holds that id merges the restamped frame in place instead of ignoring
-    /// it. The answered call is already settled and gone from the registry.
-    pub(crate) fn rebase_vault_asks(&self) {
+    /// Re-stamp every call still parked after the shared session's lock state
+    /// changed: each is now an ordinary approve card when `needs_unlock` is
+    /// false, and asks for the password again when it is true. A fold that
+    /// already holds that id merges the restamped frame in place instead of
+    /// ignoring it. The answered call is already settled and gone from the
+    /// registry.
+    pub(crate) fn rebase_vault_asks(&self, needs_unlock: bool) {
         // Sent under the registry lock: a settle that raced this read would
         // otherwise let a restamp overtake its own resolution and re-park a
         // card the reader already answered.
@@ -136,7 +138,7 @@ impl Workspace {
         for (owner, draft, _) in asks.values() {
             let _ = self.update_sender().send(SessionUpdate::VaultAskPending {
                 key: owner.clone(),
-                draft: draft.clone().with_unlock_state(false),
+                draft: draft.clone().with_unlock_state(needs_unlock),
             });
         }
     }
@@ -281,7 +283,7 @@ mod tests {
 
         ws.settle_vault_ask(answered, &seat, VaultAskEnding::Approved);
         while rx.try_recv().is_ok() {}
-        ws.rebase_vault_asks();
+        ws.rebase_vault_asks(false);
 
         let mut seen = Vec::new();
         while let Ok(frame) = rx.try_recv() {
@@ -294,6 +296,29 @@ mod tests {
         assert_eq!(seen.len(), 1, "only the card still parked is pushed");
         assert_eq!(seen[0].id, other);
         assert!(!seen[0].needs_unlock, "the unlock is stamped on the pushed draft");
+    }
+
+    /// A re-lock stamps every parked card as needing the password again, which
+    /// is what makes a refresh failure reach the cards still waiting.
+    #[test]
+    fn a_relock_pushes_a_restamped_frame() {
+        let (ws, mut rx) = stub();
+        let (id, _held, _) = ws.register_vault_ask(&caller(), a_draft(), false);
+        while rx.try_recv().is_ok() {}
+
+        ws.rebase_vault_asks(true);
+
+        let mut seen = Vec::new();
+        while let Ok(frame) = rx.try_recv() {
+            if let SessionUpdate::VaultAskPending { draft, .. } =
+                std::sync::Arc::unwrap_or_clone(frame.update)
+            {
+                seen.push(draft);
+            }
+        }
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].id, id);
+        assert!(seen[0].needs_unlock, "the re-lock is stamped on the pushed draft");
     }
 
     /// An approval resolves the waiter and a decline resolves it too; a second

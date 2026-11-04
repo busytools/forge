@@ -353,9 +353,21 @@
     },
   };
 
+  // A locked card cannot name the item or its field: naming either needs the
+  // keys. It still carries the id, and the update's masked diff rides the
+  // arguments rather than a read.
   const vaultLocked = {
     kind: 'vault',
-    request: { ...vaultAsk.request, id: 'vault-2', needs_unlock: true },
+    request: {
+      ...vaultAsk.request,
+      id: 'vault-2',
+      tool: 'vault__update',
+      summary: "change the login for 'bank'",
+      item_name: null,
+      field: null,
+      masked_diff: 'password: ********',
+      needs_unlock: true,
+    },
   };
 
   /** A held draft whose verbs are not a post's: one wording for every

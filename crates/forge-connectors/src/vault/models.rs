@@ -83,7 +83,7 @@ pub struct Folder {
 }
 
 /// One attachment's metadata, as a cipher and the download route carry it.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AttachmentMeta {
     pub id: String,
@@ -99,6 +99,21 @@ pub struct AttachmentMeta {
     /// The wrapped attachment key. Never returned past this module.
     #[serde(default)]
     pub key: Option<String>,
+}
+
+/// Hand-written because the signed URL carries its own token and the key is a
+/// wrapped credential.
+impl std::fmt::Debug for AttachmentMeta {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AttachmentMeta")
+            .field("id", &self.id)
+            .field("file_name", &self.file_name)
+            .field("size", &self.size)
+            .field("size_name", &self.size_name)
+            .field("url", &self.url.as_ref().map(|_| "[redacted]"))
+            .field("key", &self.key.as_ref().map(|_| "[redacted]"))
+            .finish()
+    }
 }
 
 /// The parts of `GET /api/sync` this family reads.

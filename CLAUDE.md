@@ -53,13 +53,13 @@ forge-test-harness ─→ primitives + sdk + workspace + server
   forge-agent implements, so the crate stays HTTP + mapping and never
   spawns the CLI.
 - **`forge-connectors`** - one module per external integration: the
-  inbound stream clients (Gotify and Slack) and the outbound
-  Vaultwarden client behind the vault family. Depends on
-  forge-primitives only. Gotify's subscription set, app index and
-  message dispatch into sessions arrive through the `GotifyHost` port
-  forge-workspace implements; Slack's client is called by workspace
-  code directly, and the vault module is HTTP, crypto and mapping with
-  the session state in forge-workspace. Either way the crate stays
+  Gotify and Slack connectors and the outbound Vaultwarden client
+  behind the vault family. Depends on forge-primitives only. Gotify's
+  subscription set, app index and message dispatch into sessions
+  arrive through the `GotifyHost` port forge-workspace implements;
+  Slack's client is polled by workspace code directly, and the vault
+  module is HTTP, crypto and mapping with the session, its tokens and
+  the unlocked account in forge-workspace. Either way the crate stays
   transport + mapping and holds no workspace state. No generic
   connector trait: the variety is still small, and a trait waits until
   it is real.

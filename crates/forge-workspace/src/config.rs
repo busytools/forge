@@ -65,10 +65,18 @@ pub(crate) struct VaultSection {
 }
 
 /// The validated `[vault]` section.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) struct VaultConfig {
     pub url: String,
     pub email: String,
+}
+
+/// Hand-written because the email is the account's identity and the salt the
+/// master key derives with.
+impl std::fmt::Debug for VaultConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VaultConfig").field("url", &self.url).field("email", &"[redacted]").finish()
+    }
 }
 
 impl VaultSection {

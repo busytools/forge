@@ -630,17 +630,22 @@ Optional. Absent means the vault family (`vault__search`, `vault__get`,
 `vault__totp_code`, `vault__attachment_get`, `vault__attachment_put` and the
 four `vault__folder_*` tools) is not injected into any session. The family is
 also gated per agent through `mcp_families`, like every other toggleable
-family.
+family. Adding the section does not put the family into sessions that are
+already running: a session's tool catalogue is fixed when it spawns, so a
+live session gains the tools only from a new spawn.
 
-| Key     | Type   | Required | Notes                                                          |
-| ------- | ------ | -------- | -------------------------------------------------------------- |
-| `url`   | string | yes      | The Vaultwarden base URL, e.g. `https://bitwarden.hub`.        |
+| Key     | Type   | Required | Notes                                                           |
+| ------- | ------ | -------- | --------------------------------------------------------------- |
+| `url`   | string | yes      | The Vaultwarden base URL, e.g. `https://vault.example.com`.     |
 | `email` | string | yes      | The account's email; it is the salt the master key derives with. |
 
 Both keys are mandatory once the section is present. A missing one refuses
 the load naming the key: ``[vault] `url` is required when `[vault]` is
-present`` (or the same sentence for `email`). There is no built-in default,
-because `forge.toml` is the one source of truth for the account.
+present`` (or the same sentence for `email`). An unknown key in the table
+refuses the load like every other section, and `url` must be an `https://`
+URL: an `http://` one refuses the load with ``[vault] `url` must be an
+https:// URL; http is refused``. There is no built-in default, because
+`forge.toml` is the one source of truth for the account.
 
 One session serves every agent and every session. It holds the derived keys
 in memory only, zeroized, and never stores the master password: the first

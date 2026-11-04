@@ -345,6 +345,8 @@
   .dock .btn.p { border-color: rgba(244,118,0,.5); color: var(--hot);
     background: rgba(244,118,0,.1); }
   .dock .btn.d { border-color: rgba(224,104,62,.45); color: var(--bad); }
+  /* An action that waits on the card's own field: drawn, but not available. */
+  .dock .btn.off { opacity: .45; }
   /* The send-back's words, in the row the card opens under its verbs. */
   .dock .sendback { display: flex; align-items: flex-start; gap: 8px; }
   .dock .sendback .fld { flex: 1; min-width: 0; color: var(--text);
@@ -785,25 +787,24 @@ on the folded bar.</p>
             <span class="q mono">vault &middot; vault_update</span>
             <span class="chevb"><svg class="ic"><use href="#i-down"/></svg></span></div>
           <div class="d-q">change the login for 'bank'</div>
-          <div class="desc">item: bank</div>
           <div class="desc mono">id: cipher-id</div>
-          <div class="desc">field: password</div>
           <div class="desc">the change, with every secret value masked</div>
           <div class="wv mono">password: ********</div>
           <div class="unlock">
             <span class="fld"><span class="ph">master password</span></span>
             <span class="fld"><span class="ph">2FA code (optional)</span></span>
           </div>
-          <div class="acts"><span class="btn p">Approve</span>
+          <div class="acts"><span class="btn p off">Approve</span>
             <span class="btn">Send back with a note</span><span class="btn d">Decline</span></div>
           <div class="keys"><span><span class="k">tab</span> between the fields and the verbs</span>
             <span><span class="k">&#9166;</span> activates</span>
             <span><span class="k">esc</span> declines</span></div>
         </div></div></div>
       </div></div>
-      <p class="note" style="margin:8px 0 0">A locked card draws the masked master-password field
-      and the optional 2FA code, and Approve waits for the password. The draft carries no secret
-      value; the password rides only the approval.</p>
+      <p class="note" style="margin:8px 0 0">A locked card cannot name the item - naming it needs
+      the keys - so it draws the id, the masked diff and an attachment's name, then the masked
+      master-password field and the optional 2FA code. Approve waits, drawn unavailable, until the
+      password is entered. The draft carries no secret value; the password rides only the approval.</p>
     </div>
   </div>
   <div class="row">

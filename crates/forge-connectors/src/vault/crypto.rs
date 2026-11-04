@@ -18,7 +18,9 @@ use bitwarden_crypto::{
 use hmac::{Hmac, KeyInit, Mac};
 use rsa::pkcs8::DecodePrivateKey;
 use sha2::{Digest, Sha256};
+use zeroize::Zeroizing;
 
+use crate::vault::VaultError;
 use crate::vault::models::{Prelogin, Profile, TokenResponse};
 
 /// An unlocked account's keys: the user key every personal cipher inherits,
@@ -30,29 +32,47 @@ pub struct Unlocked {
     pub user_key: SymmetricCryptoKey,
     pub private_key: Option<rsa::RsaPrivateKey>,
     pub org_keys: HashMap<String, SymmetricCryptoKey>,
+    /// Organizations whose key the profile carries but this unlock could not
+    /// unwrap. A cipher in one of them fails with [`VaultError::MissingKey`]
+    /// rather than being encrypted or decrypted with the wrong key.
+    pub failed_orgs: Vec<String>,
 }
 
 impl Unlocked {
-    /// The key a cipher inherits: its organization's when it carries one,
-    /// else the user key. A personal cipher is the common case.
-    fn base_key<'a>(&'a self, cipher: &serde_json::Value) -> &'a SymmetricCryptoKey {
-        cipher
-            .get("organizationId")
-            .and_then(serde_json::Value::as_str)
-            .and_then(|id| self.org_keys.get(id))
-            .unwrap_or(&self.user_key)
+    /// The key a cipher inherits: its organization's when it carries one, else
+    /// the user key. A personal cipher is the common case; an organization
+    /// cipher whose key was not unlocked is refused rather than silently
+    /// falling back to the user key.
+    fn base_key<'a>(
+        &'a self,
+        cipher: &serde_json::Value,
+    ) -> Result<&'a SymmetricCryptoKey, VaultError> {
+        match cipher.get("organizationId").and_then(serde_json::Value::as_str) {
+            Some(org_id) => {
+                self.org_keys.get(org_id).ok_or_else(|| VaultError::MissingKey(org_id.to_owned()))
+            }
+            None => Ok(&self.user_key),
+        }
     }
 
     /// Decrypt one of a cipher's encrypted fields with the cipher's own key.
-    pub fn decrypt_item_str(&self, cipher: &serde_json::Value, enc: &str) -> Result<String> {
-        let key = cipher_key(cipher, self.base_key(cipher))?;
-        decrypt_str(enc, &key)
+    pub fn decrypt_item_str(
+        &self,
+        cipher: &serde_json::Value,
+        enc: &str,
+    ) -> Result<String, VaultError> {
+        let key = cipher_key(cipher, self.base_key(cipher)?)?;
+        decrypt_str(enc, &key).map_err(VaultError::Crypto)
     }
 
     /// Encrypt one of a cipher's fields with the cipher's own key.
-    pub fn encrypt_item_str(&self, cipher: &serde_json::Value, value: &str) -> Result<String> {
-        let key = cipher_key(cipher, self.base_key(cipher))?;
-        encrypt_str(value, &key)
+    pub fn encrypt_item_str(
+        &self,
+        cipher: &serde_json::Value,
+        value: &str,
+    ) -> Result<String, VaultError> {
+        let key = cipher_key(cipher, self.base_key(cipher)?)?;
+        encrypt_str(value, &key).map_err(VaultError::Crypto)
     }
 
     /// Decrypt a folder name or another value encrypted with the user key.
@@ -72,8 +92,8 @@ impl Unlocked {
         cipher: &serde_json::Value,
         name: &str,
         data: &[u8],
-    ) -> Result<(String, String, Vec<u8>)> {
-        let item_key = cipher_key(cipher, self.base_key(cipher))?;
+    ) -> Result<(String, String, Vec<u8>), VaultError> {
+        let item_key = cipher_key(cipher, self.base_key(cipher)?)?;
         let attachment_key = make_symmetric_key();
         let wrapped = wrap_symmetric_key(&attachment_key, &item_key)?;
         let encrypted_name = encrypt_str(name, &item_key)?;
@@ -88,10 +108,10 @@ impl Unlocked {
         cipher: &serde_json::Value,
         wrapped_key: &str,
         blob: &[u8],
-    ) -> Result<Vec<u8>> {
-        let item_key = cipher_key(cipher, self.base_key(cipher))?;
+    ) -> Result<Vec<u8>, VaultError> {
+        let item_key = cipher_key(cipher, self.base_key(cipher)?)?;
         let key = unwrap_attachment_key(wrapped_key, &item_key, self.private_key.as_ref())?;
-        decrypt_attachment_blob(blob, &key)
+        decrypt_attachment_blob(blob, &key).map_err(VaultError::Crypto)
     }
 }
 
@@ -105,8 +125,16 @@ pub fn kdf_from_prelogin(pre: &Prelogin) -> Result<Kdf> {
         0 => Ok(Kdf::PBKDF2 { iterations: nz(pre.kdf_iterations, "kdfIterations")? }),
         1 => Ok(Kdf::Argon2id {
             iterations: nz(pre.kdf_iterations, "kdfIterations")?,
-            memory: nz(pre.kdf_memory.unwrap_or(64), "kdfMemory")?,
-            parallelism: nz(pre.kdf_parallelism.unwrap_or(4), "kdfParallelism")?,
+            // Argon2id without its memory and parallelism is not a parameter
+            // set; defaulting would derive a key the account does not hold.
+            memory: nz(
+                pre.kdf_memory.context("prelogin returned kdf = 1 without kdfMemory")?,
+                "kdfMemory",
+            )?,
+            parallelism: nz(
+                pre.kdf_parallelism.context("prelogin returned kdf = 1 without kdfParallelism")?,
+                "kdfParallelism",
+            )?,
         }),
         other => bail!("prelogin returned unknown kdf type {other}"),
     }
@@ -146,10 +174,13 @@ pub fn unlock(
     master_key: &MasterKey,
     profile: &Profile,
 ) -> Result<Unlocked> {
+    // An empty string is a field a client left unset, not a wrapped key; it
+    // must not shadow the profile's real one.
     let user_key_enc: String = token
         .key
         .clone()
-        .or_else(|| profile.key.clone())
+        .filter(|key| !key.is_empty())
+        .or_else(|| profile.key.clone().filter(|key| !key.is_empty()))
         .context("token response and sync profile both lack the wrapped user key")?;
     let user_key_enc: EncString =
         user_key_enc.parse().map_err(|e| anyhow!("wrapped user key did not parse: {e}"))?;
@@ -157,36 +188,54 @@ pub fn unlock(
 
     let private_key = match token.private_key.clone().or_else(|| profile.private_key.clone()) {
         Some(enc) if !enc.is_empty() => {
-            let der = decrypt_bytes(&enc, &user_key).context("decrypting the private key")?;
+            let der = Zeroizing::new(
+                decrypt_bytes(&enc, &user_key).context("decrypting the private key")?,
+            );
             Some(parse_private_key(&der)?)
         }
         _ => None,
     };
 
-    let org_keys = match (&private_key, profile.organizations.as_slice()) {
-        (Some(private), orgs) if !orgs.is_empty() => orgs
-            .iter()
-            .filter_map(|org| {
-                let key = org.key.as_deref()?;
-                match unwrap_org_key(key, private) {
-                    Ok(key) => Some((org.id.clone(), key)),
-                    Err(error) => {
-                        tracing::debug!(
-                            target: "forge_connectors::vault",
-                            event_name = "vault_org_key_unwrap_failed",
-                            org_id = %org.id,
-                            error = %error,
-                            "an organization key was not unwrapped",
-                        );
-                        None
-                    }
-                }
-            })
-            .collect(),
-        _ => HashMap::new(),
-    };
+    let (org_keys, failed_orgs) = org_keys(private_key.as_ref(), profile);
 
-    Ok(Unlocked { user_key, private_key, org_keys })
+    Ok(Unlocked { user_key, private_key, org_keys, failed_orgs })
+}
+
+/// Unwrap every organization key the profile carries, naming the ones that
+/// failed. A failed org is not fatal to the unlock - the account is still
+/// usable - but its ciphers must not be touched with another key.
+fn org_keys(
+    private_key: Option<&rsa::RsaPrivateKey>,
+    profile: &Profile,
+) -> (HashMap<String, SymmetricCryptoKey>, Vec<String>) {
+    let mut keys = HashMap::new();
+    let mut failed = Vec::new();
+    let Some(private) = private_key else {
+        // No private key means no organization key can be unwrapped.
+        return (keys, profile.organizations.iter().map(|org| org.id.clone()).collect());
+    };
+    for org in &profile.organizations {
+        let Some(key) = org.key.as_deref().filter(|key| !key.is_empty()) else {
+            failed.push(org.id.clone());
+            continue;
+        };
+        match unwrap_org_key(key, private) {
+            Ok(unwrapped) => {
+                keys.insert(org.id.clone(), unwrapped);
+            }
+            Err(error) => {
+                tracing::warn!(
+                    target: "forge_connectors::vault",
+                    event_name = "vault_org_key_unwrap_failed",
+                    org_id = %org.id,
+                    error = %error,
+                    "an organization key was not unwrapped",
+                );
+                failed.push(org.id.clone());
+            }
+        }
+    }
+    (keys, failed)
 }
 
 /// Unwrap an organization key: EncString type 4, RSA-2048-OAEP-SHA1 with the
@@ -211,10 +260,13 @@ fn rsa_oaep_unwrap(
     let ciphertext = base64::engine::general_purpose::STANDARD
         .decode(data_b64)
         .with_context(|| format!("{what} ciphertext is not base64"))?;
-    let decrypted = private
-        .decrypt(rsa::Oaep::<sha1::Sha1>::new(), &ciphertext)
-        .map_err(|e| anyhow!("RSA-OAEP unwrap failed: {e}"))?;
-    SymmetricCryptoKey::try_from(&BitwardenLegacyKeyBytes::from(decrypted))
+    let decrypted = Zeroizing::new(
+        private
+            .decrypt(rsa::Oaep::<sha1::Sha1>::new(), &ciphertext)
+            .map_err(|e| anyhow!("RSA-OAEP unwrap failed: {e}"))?,
+    );
+    let legacy = BitwardenLegacyKeyBytes::from(decrypted.to_vec());
+    SymmetricCryptoKey::try_from(&legacy)
         .map_err(|e| anyhow!("unwrapped {what} is not a symmetric key: {e}"))
 }
 
@@ -240,10 +292,13 @@ pub fn unwrap_attachment_key(
         "0" | "1" | "2" => {
             let parsed: EncString =
                 enc.parse().map_err(|e| anyhow!("attachment key EncString parse failed: {e}"))?;
-            let raw: Vec<u8> = parsed
-                .decrypt_with_key(item_key)
-                .map_err(|e| anyhow!("attachment key decrypt failed: {e}"))?;
-            SymmetricCryptoKey::try_from(&BitwardenLegacyKeyBytes::from(raw))
+            let raw = Zeroizing::<Vec<u8>>::new(
+                parsed
+                    .decrypt_with_key(item_key)
+                    .map_err(|e| anyhow!("attachment key decrypt failed: {e}"))?,
+            );
+            let legacy = BitwardenLegacyKeyBytes::from(raw.to_vec());
+            SymmetricCryptoKey::try_from(&legacy)
                 .map_err(|e| anyhow!("unwrapped attachment key is not a symmetric key: {e}"))
         }
         "4" | "6" => {
@@ -299,7 +354,7 @@ fn parse_private_key(bytes: &[u8]) -> Result<rsa::RsaPrivateKey> {
                 .context("parsing the private key as PEM");
         }
         if let Ok(der) = base64::engine::general_purpose::STANDARD.decode(text.trim())
-            && let Ok(key) = rsa::RsaPrivateKey::from_pkcs8_der(&der)
+            && let Ok(key) = rsa::RsaPrivateKey::from_pkcs8_der(&Zeroizing::new(der))
         {
             return Ok(key);
         }
@@ -317,10 +372,13 @@ pub fn cipher_key(
         Some(enc) if !enc.is_empty() => {
             let parsed: EncString =
                 enc.parse().map_err(|e| anyhow!("cipher key EncString parse failed: {e}"))?;
-            let raw: Vec<u8> = parsed
-                .decrypt_with_key(base)
-                .map_err(|e| anyhow!("cipher key decrypt failed: {e}"))?;
-            SymmetricCryptoKey::try_from(&BitwardenLegacyKeyBytes::from(raw))
+            let raw = Zeroizing::<Vec<u8>>::new(
+                parsed
+                    .decrypt_with_key(base)
+                    .map_err(|e| anyhow!("cipher key decrypt failed: {e}"))?,
+            );
+            let legacy = BitwardenLegacyKeyBytes::from(raw.to_vec());
+            SymmetricCryptoKey::try_from(&legacy)
                 .map_err(|e| anyhow!("cipher key is not a symmetric key: {e}"))
         }
         _ => Ok(base.clone()),
@@ -344,10 +402,13 @@ pub fn unwrap_symmetric_key(
 ) -> Result<SymmetricCryptoKey> {
     let parsed: EncString =
         enc.parse().map_err(|e| anyhow!("wrapped key EncString parse failed: {e}"))?;
-    let raw: Vec<u8> = parsed
-        .decrypt_with_key(wrapping)
-        .map_err(|e| anyhow!("wrapped key decrypt failed: {e}"))?;
-    SymmetricCryptoKey::try_from(&BitwardenLegacyKeyBytes::from(raw))
+    let raw = Zeroizing::<Vec<u8>>::new(
+        parsed
+            .decrypt_with_key(wrapping)
+            .map_err(|e| anyhow!("wrapped key decrypt failed: {e}"))?,
+    );
+    let legacy = BitwardenLegacyKeyBytes::from(raw.to_vec());
+    SymmetricCryptoKey::try_from(&legacy)
         .map_err(|e| anyhow!("unwrapped key is not a symmetric key: {e}"))
 }
 
@@ -381,7 +442,9 @@ pub fn totp_from_uri(uri: &str, now: std::time::SystemTime) -> Result<Totp> {
     } else {
         (uri.trim().to_owned(), 6u32, 30u64, "SHA1".to_owned())
     };
-    if !(1..=10).contains(&digits) {
+    // The RFCs and every authenticator app issue 6 to 8 digits; a tenth digit
+    // overflows the u32 the truncation computes in.
+    if !(6..=8).contains(&digits) {
         bail!("TOTP digits out of range: {digits}");
     }
     if period == 0 {
@@ -585,6 +648,99 @@ mod tests {
         assert!(totp_from_uri("otpauth://totp/x?secret=not!base32", at).is_err());
     }
 
+    /// A tenth digit overflows the u32 the truncation computes in; the range
+    /// is the 6 to 8 every issuer actually uses.
+    #[test]
+    fn totp_rejects_a_digit_count_outside_six_to_eight() {
+        let at = std::time::UNIX_EPOCH + std::time::Duration::from_secs(59);
+        let uri = |digits: u32| {
+            format!("otpauth://totp/x?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ&digits={digits}")
+        };
+        assert!(totp_from_uri(&uri(10), at).is_err(), "ten digits must not overflow");
+        assert!(totp_from_uri(&uri(5), at).is_err());
+        assert!(totp_from_uri(&uri(6), at).is_ok());
+        assert!(totp_from_uri(&uri(8), at).is_ok());
+    }
+
+    /// Argon2id without its memory and parallelism is not a parameter set;
+    /// defaulting would derive a key the account does not hold.
+    #[test]
+    fn argon2id_requires_its_parameters() {
+        let missing =
+            Prelogin { kdf: 1, kdf_iterations: 3, kdf_memory: None, kdf_parallelism: Some(4) };
+        assert!(derive_master_key("x", "y", &missing).is_err());
+        let missing_parallelism =
+            Prelogin { kdf: 1, kdf_iterations: 3, kdf_memory: Some(64), kdf_parallelism: None };
+        assert!(derive_master_key("x", "y", &missing_parallelism).is_err());
+        let complete =
+            Prelogin { kdf: 1, kdf_iterations: 3, kdf_memory: Some(64), kdf_parallelism: Some(4) };
+        assert!(derive_master_key("x", "y", &complete).is_ok());
+    }
+
+    /// An empty `Key` field is a client's unset value, not a wrapped key, and
+    /// must not shadow the profile's real one.
+    #[test]
+    fn an_empty_token_key_falls_back_to_the_profile_key() {
+        let pre =
+            Prelogin { kdf: 0, kdf_iterations: 100_000, kdf_memory: None, kdf_parallelism: None };
+        let master_key = derive_master_key("asdfasdf", "test@bitwarden.com", &pre).unwrap();
+        let (user_key, wrapped_user_key) = master_key.make_user_key().unwrap();
+        drop(user_key);
+
+        let token = TokenResponse {
+            access_token: "token".to_owned(),
+            refresh_token: None,
+            key: Some(String::new()),
+            private_key: None,
+        };
+        let profile = Profile { key: Some(wrapped_user_key.to_string()), ..Profile::default() };
+
+        let unlocked = unlock(&token, &master_key, &profile).expect("the profile key is used");
+
+        assert!(unlocked.failed_orgs.is_empty());
+    }
+
+    /// An organization cipher whose key this unlock did not get is refused by
+    /// name rather than encrypted or decrypted with the user key.
+    #[test]
+    fn an_organization_cipher_without_its_key_is_refused() {
+        let unlocked = Unlocked {
+            user_key: SymmetricCryptoKey::make(SymmetricKeyAlgorithm::Aes256CbcHmac),
+            private_key: None,
+            org_keys: HashMap::new(),
+            failed_orgs: vec!["org-1".to_owned()],
+        };
+        let org_cipher = serde_json::json!({ "organizationId": "org-1", "name": "x" });
+
+        let error = unlocked.decrypt_item_str(&org_cipher, "2.aGk=|ZGF0YQ==|bWFj").unwrap_err();
+
+        assert!(matches!(&error, VaultError::MissingKey(org_id) if org_id == "org-1"), "{error}");
+
+        let personal = serde_json::json!({ "name": "x" });
+        let enc = encrypt_str("hello", &unlocked.user_key).unwrap();
+        assert_eq!(unlocked.decrypt_item_str(&personal, &enc).unwrap(), "hello");
+    }
+
+    /// A failed org unwrap is recorded by id, so the session can report it and
+    /// its ciphers fail closed.
+    #[test]
+    fn a_failed_org_key_is_recorded_by_id() {
+        let rsa_key = rsa::RsaPrivateKey::new(&mut bitwarden_random::rng(), 1024).unwrap();
+        let profile = Profile {
+            organizations: vec![crate::vault::models::Organization {
+                id: "org-1".to_owned(),
+                key: Some("2.aGk=|ZGF0YQ==|bWFj".to_owned()),
+                name: None,
+            }],
+            ..Profile::default()
+        };
+
+        let (keys, failed) = org_keys(Some(&rsa_key), &profile);
+
+        assert!(keys.is_empty());
+        assert_eq!(failed, vec!["org-1"]);
+    }
+
     #[test]
     fn attachment_blob_round_trips_and_rejects_tampering() {
         let key = SymmetricCryptoKey::make(SymmetricKeyAlgorithm::Aes256CbcHmac);
@@ -682,7 +838,12 @@ mod tests {
         let mut bad_mac = mac.to_vec();
         bad_mac[0] ^= 0xff;
         let bad = format!("6.{}|{}", engine.encode(&ciphertext), engine.encode(bad_mac));
-        assert!(unwrap_attachment_key(&bad, &item_key, Some(&rsa_key)).is_err());
+        let error = unwrap_attachment_key(&bad, &item_key, Some(&rsa_key))
+            .expect_err("a tampered MAC is refused");
+        assert!(
+            error.to_string().contains("MAC did not verify"),
+            "the refusal names its own reason: {error}"
+        );
     }
 
     #[test]

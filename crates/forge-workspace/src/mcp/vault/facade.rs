@@ -61,7 +61,7 @@ impl From<std::io::Error> for VaultToolError {
 }
 
 /// A custom field as `vault_create` / `vault_update` take it.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize)]
 pub struct CustomFieldInput {
     pub name: String,
     pub value: String,
@@ -69,8 +69,19 @@ pub struct CustomFieldInput {
     pub kind: Option<String>,
 }
 
+/// Hand-written because a custom field's value is a secret.
+impl std::fmt::Debug for CustomFieldInput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CustomFieldInput")
+            .field("name", &self.name)
+            .field("value", &"[redacted]")
+            .field("kind", &self.kind)
+            .finish()
+    }
+}
+
 /// The arguments `vault_create` accepts.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Clone, Default, Deserialize)]
 pub struct CreateInput {
     #[serde(default, rename = "type")]
     pub kind: Option<String>,
@@ -101,8 +112,31 @@ pub struct CreateInput {
     pub custom_fields: Option<Vec<CustomFieldInput>>,
 }
 
+/// Hand-written because its password, card number, CVV and custom values are
+/// secrets.
+impl std::fmt::Debug for CreateInput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CreateInput")
+            .field("kind", &self.kind)
+            .field("name", &self.name)
+            .field("username", &self.username)
+            .field("password", &self.password.as_ref().map(|_| "[redacted]"))
+            .field("uri", &self.uri)
+            .field("notes", &self.notes.as_ref().map(|_| "[redacted]"))
+            .field("cardholder_name", &self.cardholder_name)
+            .field("number", &self.number.as_ref().map(|_| "[redacted]"))
+            .field("exp_month", &self.exp_month)
+            .field("exp_year", &self.exp_year)
+            .field("code", &self.code.as_ref().map(|_| "[redacted]"))
+            .field("brand", &self.brand)
+            .field("folder_id", &self.folder_id)
+            .field("custom_fields", &self.custom_fields)
+            .finish()
+    }
+}
+
 /// The fields `vault_update` may change.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Clone, Default, Deserialize)]
 pub struct PatchInput {
     #[serde(default)]
     pub name: Option<String>,
@@ -130,6 +164,28 @@ pub struct PatchInput {
     pub folder_id: Option<String>,
     #[serde(default)]
     pub custom_fields: Option<Vec<CustomFieldInput>>,
+}
+
+/// Hand-written because its password, card number, CVV and custom values are
+/// secrets.
+impl std::fmt::Debug for PatchInput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PatchInput")
+            .field("name", &self.name)
+            .field("username", &self.username)
+            .field("password", &self.password.as_ref().map(|_| "[redacted]"))
+            .field("uri", &self.uri)
+            .field("notes", &self.notes.as_ref().map(|_| "[redacted]"))
+            .field("cardholder_name", &self.cardholder_name)
+            .field("number", &self.number.as_ref().map(|_| "[redacted]"))
+            .field("exp_month", &self.exp_month)
+            .field("exp_year", &self.exp_year)
+            .field("code", &self.code.as_ref().map(|_| "[redacted]"))
+            .field("brand", &self.brand)
+            .field("folder_id", &self.folder_id)
+            .field("custom_fields", &self.custom_fields)
+            .finish()
+    }
 }
 
 /// The thirteen vault operations. Every method parks a hold and awaits the
@@ -267,12 +323,50 @@ impl ProdVaultFacade {
             VaultAskDecision::Approve => {}
         }
 
+        // A `[vault]` reload builds a new session. The answer was drawn against
+        // the old account, so running it would send the old account's password
+        // hash to the old URL - or spend a password on a session that is gone.
+        let current = self.session();
+        let reloaded = match current {
+            Ok(current) => !Arc::ptr_eq(&current, &session),
+            Err(_) => true,
+        };
+        if reloaded {
+            if let Some(mut password) = answer.master_password.take() {
+                password.zeroize();
+            }
+            if let Some(mut code) = answer.two_factor.take() {
+                code.zeroize();
+            }
+            session.audit(
+                caller,
+                tool,
+                item_id,
+                item_name,
+                field,
+                "approve",
+                "failed: the vault configuration changed",
+            );
+            return Err(VaultToolError::Message(
+                "the vault configuration changed while the call was parked; nothing ran".to_owned(),
+            ));
+        }
+
         if session.is_locked() {
-            let password = answer
-                .master_password
-                .as_deref()
-                .filter(|password| !password.is_empty())
-                .ok_or(VaultToolError::Locked)?;
+            let Some(password) =
+                answer.master_password.as_deref().filter(|password| !password.is_empty())
+            else {
+                session.audit(
+                    caller,
+                    tool,
+                    item_id,
+                    item_name,
+                    field,
+                    "approve",
+                    "failed: a locked session was approved without the master password",
+                );
+                return Err(VaultToolError::Locked);
+            };
             let two_factor = answer.two_factor.as_deref().filter(|code| !code.is_empty());
             let unlocked = session.unlock(password, two_factor).await;
             if let Some(mut password) = answer.master_password.take() {
@@ -296,7 +390,7 @@ impl ProdVaultFacade {
             // One unlock serves every card parked behind this one: each is an
             // ordinary approve card now, and a client that already drew it
             // merges the restamped frame by id.
-            workspace.rebase_vault_asks();
+            workspace.rebase_vault_asks(false);
         } else {
             if let Some(mut password) = answer.master_password.take() {
                 password.zeroize();
@@ -319,6 +413,7 @@ impl ProdVaultFacade {
             VaultToolError::Vault(error)
         })?;
         Ok(Approved {
+            workspace,
             session,
             keys,
             caller: caller.clone(),
@@ -359,9 +454,20 @@ impl ProdVaultFacade {
         let item_name = draft.item_name.clone();
         draft.summary = summary(item_name.as_deref(), &mut draft);
         let approved = self.gate(caller, draft.clone(), tool, None).await?;
+        // A reload between the pre-gate read and the gate's own read leaves
+        // `cipher` from the old account; the approval names it, so it must not
+        // be read by the new session.
+        if !Arc::ptr_eq(&approved.session, &session) {
+            return approved.fail(VaultToolError::Message(
+                "the vault configuration changed while the call was parked; nothing ran".to_owned(),
+            ));
+        }
         let cipher = match cipher {
             Some(cipher) => cipher,
-            None => approved.session.get_cipher(id).await?,
+            None => match approved.session.get_cipher(id).await {
+                Ok(cipher) => cipher,
+                Err(error) => return approved.fail(VaultToolError::Vault(error)),
+            },
         };
         Ok((approved, cipher, draft))
     }
@@ -388,6 +494,7 @@ impl Drop for SettleOnDrop {
 /// audit line records. [`Approved::done`] writes that line from the
 /// operation's own result, never before it has run.
 struct Approved {
+    workspace: Arc<Workspace>,
     session: Arc<VaultSession>,
     keys: Arc<Unlocked>,
     caller: SessionSlot,
@@ -399,6 +506,20 @@ struct Approved {
 
 impl Approved {
     fn done<T>(&self, result: Result<T, VaultToolError>) -> Result<T, VaultToolError> {
+        // A decryption failure under a key that has not changed means the
+        // account rotated its keys; the stale ones are dropped so the next
+        // held call asks for the master password.
+        if matches!(
+            &result,
+            Err(VaultToolError::Vault(VaultError::Crypto(_)) | VaultToolError::Crypto(_))
+        ) {
+            self.session.note_decrypt_failure();
+        }
+        // A call's own 401 path may have locked the session (a failed refresh),
+        // so every card still parked asks for the password again.
+        if self.session.is_locked() {
+            self.workspace.rebase_vault_asks(true);
+        }
         let outcome = match &result {
             Ok(_) => "ok".to_owned(),
             Err(error) => format!("failed: {error}"),
@@ -413,6 +534,12 @@ impl Approved {
             &outcome,
         );
         result
+    }
+
+    /// Settle a failure that happened after the gate without running the
+    /// operation: the audit line is written from here, never skipped.
+    fn fail<T>(&self, error: VaultToolError) -> Result<T, VaultToolError> {
+        self.done(Err(error))
     }
 }
 
@@ -623,20 +750,32 @@ impl VaultFacade for ProdVaultFacade {
         destination: &str,
     ) -> Result<Value, VaultToolError> {
         let session = self.session()?;
+        let workspace = self.workspace()?;
+        // The destination is resolved before the card parks: it needs no keys,
+        // and the reader must see where the file would land even on a locked
+        // card that cannot name the item.
+        let path = resolve_destination(&workspace, caller, destination)?;
         let (cipher, name, file_name, size) = if session.is_locked() {
             (None, None, None, None)
         } else {
             let cipher = session.get_cipher(item_id).await?;
             let keys = session.keys()?;
-            let name = decrypt_name(&keys, &cipher)?;
-            let (file_name, size) = attachment_named(&keys, &cipher, attachment_id)?;
+            let name =
+                decrypt_name(&keys, &cipher).map_err(|error| decrypt_failed(&session, error))?;
+            let (file_name, size) = attachment_named(&keys, &cipher, attachment_id)
+                .map_err(|error| decrypt_failed(&session, error))?;
             (Some(cipher), Some(name), Some(file_name), Some(size))
         };
+        let destination_shown = path.display().to_string();
         let mut draft = VaultDraft::new(
             VaultTool::AttachmentGet,
             match (&name, &file_name) {
-                (Some(name), Some(file_name)) => format!("download '{file_name}' from '{name}'"),
-                _ => format!("download attachment {attachment_id} from item {item_id}"),
+                (Some(name), Some(file_name)) => {
+                    format!("download '{file_name}' from '{name}' to {destination_shown}")
+                }
+                _ => format!(
+                    "download attachment {attachment_id} from item {item_id} to {destination_shown}"
+                ),
             },
         );
         draft.item_id = Some(item_id.to_owned());
@@ -658,22 +797,18 @@ impl VaultFacade for ProdVaultFacade {
             let wrapped = meta.key.clone().ok_or_else(|| {
                 VaultToolError::Message("the vault did not return the attachment key".to_owned())
             })?;
-            let blob = approved.session.download_attachment(&url).await?;
-            if blob.len() as u64 > MAX_ATTACHMENT_BYTES {
-                return Err(VaultToolError::Message(format!(
-                    "the attachment is {} bytes, over the {} byte cap",
-                    blob.len(),
-                    MAX_ATTACHMENT_BYTES
-                )));
-            }
+            let blob = approved.session.download_attachment(&url, MAX_ATTACHMENT_BYTES).await?;
             let plain = approved.keys.open_attachment(&cipher, &wrapped, &blob)?;
-            let workspace = self.workspace()?;
-            let path = resolve_destination(&workspace, caller, destination)?;
-            write_private(&path, &plain)?;
+            let size = plain.len();
+            let sha256 = forge_connectors::vault::crypto::sha256_hex(&plain);
+            let written = path.clone();
+            tokio::task::spawn_blocking(move || write_private(&written, &plain))
+                .await
+                .map_err(|error| VaultToolError::Io(format!("the attachment write: {error}")))??;
             Ok(json!({
                 "path": path.display().to_string(),
-                "size": plain.len(),
-                "sha256": forge_connectors::vault::crypto::sha256_hex(&plain),
+                "size": size,
+                "sha256": sha256,
             }))
         }
         .await;
@@ -690,14 +825,13 @@ impl VaultFacade for ProdVaultFacade {
     ) -> Result<Value, VaultToolError> {
         let workspace = self.workspace()?;
         let source = resolve_source(&workspace, caller, path)?;
-        let data = std::fs::read(&source)?;
-        if data.len() as u64 > MAX_ATTACHMENT_BYTES {
-            return Err(VaultToolError::Message(format!(
-                "the file is {} bytes, over the {} byte cap",
-                data.len(),
-                MAX_ATTACHMENT_BYTES
-            )));
-        }
+        // The size is checked from metadata before a byte is read, and the
+        // read itself runs off the async thread.
+        let read_path = source.clone();
+        let data =
+            tokio::task::spawn_blocking(move || read_attachment(&read_path, MAX_ATTACHMENT_BYTES))
+                .await
+                .map_err(|error| VaultToolError::Io(format!("the attachment read: {error}")))??;
         let file_name = name
             .map(str::to_owned)
             .or_else(|| source.file_name().map(|name| name.to_string_lossy().into_owned()))
@@ -719,8 +853,7 @@ impl VaultFacade for ProdVaultFacade {
         };
         let (approved, cipher, _draft) = self
             .item_gate(caller, VaultTool::AttachmentPut, item_id, |name, draft| {
-                let replaced = replace_attachment_id
-                    .map(|id| replaced_name.clone().unwrap_or_else(|| id.to_owned()));
+                let replaced = replacement_label(replace_attachment_id, replaced_name);
                 draft.attachment = Some(VaultAttachmentDraft {
                     name: file_name.clone(),
                     size,
@@ -812,7 +945,9 @@ impl VaultFacade for ProdVaultFacade {
         let result = async {
             let encrypted = approved.keys.encrypt_user_str(name)?;
             let created = approved.session.create_folder(&encrypted).await?;
-            let id = created.get("id").and_then(Value::as_str).unwrap_or_default().to_owned();
+            let id = created.get("id").and_then(Value::as_str).ok_or_else(|| {
+                VaultToolError::Message("the vault did not return the new folder's id".to_owned())
+            })?;
             Ok(json!({ "id": id, "name": name }))
         }
         .await;
@@ -1375,12 +1510,46 @@ fn check_stored_size(stored: Option<u64>, blob_len: usize) -> Result<(), VaultTo
     Ok(())
 }
 
+/// A decryption failure outside an approved call still means the keys are
+/// stale: drop them before handing the error back.
+fn decrypt_failed(session: &VaultSession, error: VaultToolError) -> VaultToolError {
+    if matches!(&error, VaultToolError::Vault(VaultError::Crypto(_)) | VaultToolError::Crypto(_)) {
+        session.note_decrypt_failure();
+    }
+    error
+}
+
+/// The name a replace card draws for the attachment it would remove: the
+/// decrypted file name when the session could read it, else the id.
+fn replacement_label(id: Option<&str>, name: Option<String>) -> Option<String> {
+    id.map(|id| name.unwrap_or_else(|| id.to_owned()))
+}
+
+/// Read an attachment source: the size is checked from metadata before the
+/// read, and again after it, because the file can grow between the two.
+fn read_attachment(path: &Path, cap: u64) -> Result<Vec<u8>, VaultToolError> {
+    let declared = std::fs::metadata(path)?.len();
+    if declared > cap {
+        return Err(VaultToolError::Message(format!(
+            "the file is {declared} bytes, over the {cap} byte cap"
+        )));
+    }
+    let data = std::fs::read(path)?;
+    if data.len() as u64 > cap {
+        return Err(VaultToolError::Message(format!(
+            "the file is {} bytes, over the {cap} byte cap",
+            data.len()
+        )));
+    }
+    Ok(data)
+}
+
 fn write_private(path: &Path, bytes: &[u8]) -> Result<(), VaultToolError> {
     use std::io::Write;
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-    // `O_NOFOLLOW` refuses a final-component symlink, and the explicit
-    // set_permissions below fixes an existing file's mode, which `mode` only
-    // applies at creation.
+    // `O_NOFOLLOW` refuses a final-component symlink, and set_permissions on
+    // the held fd fixes an existing looser mode, which `mode` only applies at
+    // creation.
     let mut file = std::fs::OpenOptions::new()
         .write(true)
         .create(true)
@@ -1388,9 +1557,9 @@ fn write_private(path: &Path, bytes: &[u8]) -> Result<(), VaultToolError> {
         .mode(0o600)
         .custom_flags(libc::O_NOFOLLOW)
         .open(path)?;
+    file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
     file.write_all(bytes)?;
     file.flush()?;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
     Ok(())
 }
 
@@ -1524,7 +1693,67 @@ mod tests {
     use super::*;
     use crate::config::VaultConfig;
     use crate::protocol::Command;
+    use crate::vault::test_session;
     use forge_primitives::vault::{VaultAskAnswer, VaultAskDecision};
+
+    fn audit_text(dir: &tempfile::TempDir) -> String {
+        std::fs::read_to_string(
+            dir.path()
+                .join("vault")
+                .join(format!("audit-{}.jsonl", forge_sdk::config_dir_store_key(dir.path()))),
+        )
+        .unwrap_or_default()
+    }
+
+    async fn read_test_request(socket: &mut tokio::net::TcpStream) -> String {
+        use tokio::io::AsyncReadExt;
+        let mut buf = Vec::new();
+        let mut chunk = [0u8; 8192];
+        loop {
+            let read = socket.read(&mut chunk).await.unwrap_or(0);
+            if read == 0 {
+                break;
+            }
+            buf.extend_from_slice(&chunk[..read]);
+            if let Some(end) = buf.windows(4).position(|window| window == b"\r\n\r\n") {
+                let headers = String::from_utf8_lossy(&buf[..end]).to_lowercase();
+                let length: usize = headers
+                    .lines()
+                    .find_map(|line| line.strip_prefix("content-length:"))
+                    .and_then(|value| value.trim().parse().ok())
+                    .unwrap_or(0);
+                if buf.len() >= end + 4 + length {
+                    break;
+                }
+            }
+        }
+        String::from_utf8_lossy(&buf).into_owned()
+    }
+
+    /// Serve one response per expected `(path, body)` in order, asserting the
+    /// request line names the path the test expected.
+    async fn serve_vault(responses: Vec<(&'static str, String)>) -> std::net::SocketAddr {
+        use tokio::io::AsyncWriteExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let address = listener.local_addr().expect("addr");
+        tokio::spawn(async move {
+            for (path, body) in responses {
+                let (mut socket, _) = listener.accept().await.expect("accept");
+                let request = read_test_request(&mut socket).await;
+                assert!(
+                    request.split_whitespace().nth(1) == Some(path),
+                    "the server expected {path}, got {}",
+                    request.lines().next().unwrap_or_default(),
+                );
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = socket.write_all(response.as_bytes()).await;
+            }
+        });
+        address
+    }
 
     fn locked_workspace() -> (
         Arc<Workspace>,
@@ -1537,8 +1766,7 @@ mod tests {
             url: "http://127.0.0.1:1".to_owned(),
             email: "hi@vedhavyas.dev".to_owned(),
         };
-        let session =
-            Arc::new(VaultSession::new(&config, None, Path::new("/tmp")).expect("a session"));
+        let session = Arc::new(test_session(&config, None, Path::new("/tmp")).expect("a session"));
         *workspace.vault.write() = Some(session);
         let facade = Arc::new(ProdVaultFacade::from_arc(&workspace));
         (workspace, facade, SessionSlot::lead("Default", "forge"), rx)
@@ -1610,7 +1838,7 @@ mod tests {
             email: "hi@vedhavyas.dev".to_owned(),
         };
         let session =
-            Arc::new(VaultSession::new(&config, Some(dir.path()), dir.path()).expect("a session"));
+            Arc::new(test_session(&config, Some(dir.path()), dir.path()).expect("a session"));
         *workspace.vault.write() = Some(session);
         let facade = Arc::new(ProdVaultFacade::from_arc(&workspace));
         (workspace, facade, caller, dir, rx)
@@ -1766,13 +1994,15 @@ mod tests {
             email: "hi@vedhavyas.dev".to_owned(),
         };
         let session =
-            Arc::new(VaultSession::new(&config, Some(dir.path()), dir.path()).expect("a session"));
+            Arc::new(test_session(&config, Some(dir.path()), dir.path()).expect("a session"));
         let approved = Approved {
+            workspace: Arc::clone(&Workspace::testing_stub().0),
             session,
             keys: Arc::new(Unlocked {
                 user_key: forge_connectors::vault::crypto::make_symmetric_key(),
                 private_key: None,
                 org_keys: std::collections::HashMap::new(),
+                failed_orgs: Vec::new(),
             }),
             caller: SessionSlot::lead("Default", "forge"),
             tool: VaultTool::Get,
@@ -1905,6 +2135,7 @@ mod tests {
             user_key: forge_connectors::vault::crypto::make_symmetric_key(),
             private_key: None,
             org_keys: std::collections::HashMap::new(),
+            failed_orgs: Vec::new(),
         };
         let cipher = serde_json::json!({
             "id": "c",
@@ -1936,6 +2167,7 @@ mod tests {
             user_key: forge_connectors::vault::crypto::make_symmetric_key(),
             private_key: None,
             org_keys: std::collections::HashMap::new(),
+            failed_orgs: Vec::new(),
         };
         let input = CreateInput {
             name: "bank".to_owned(),
@@ -1951,6 +2183,260 @@ mod tests {
         assert_eq!(unlocked.decrypt_item_str(&body, name).expect("decrypt"), "bank");
         let username = body.pointer("/login/username").and_then(Value::as_str).expect("username");
         assert_eq!(unlocked.decrypt_item_str(&body, username).expect("decrypt"), "u");
+    }
+
+    /// Removing the containment checks would let a prompt-injected call read
+    /// `~/.ssh/id_rsa` or write outside the session's tree.
+    #[test]
+    fn the_attachment_paths_must_stay_inside_the_session_tree() {
+        let (workspace, _facade, caller, dir, _rx) = locked_worker_workspace();
+        std::fs::write(dir.path().join("ok.txt"), b"x").expect("the file");
+        let outside = tempfile::tempdir().expect("outside");
+        std::fs::write(outside.path().join("secret"), b"x").expect("the outside file");
+        std::os::unix::fs::symlink(outside.path(), dir.path().join("link")).expect("symlink");
+
+        assert!(resolve_source(&workspace, &caller, "ok.txt").is_ok());
+        assert!(resolve_destination(&workspace, &caller, "out.txt").is_ok());
+
+        for escape in ["../escape.txt", "/etc/hosts", "link/secret"] {
+            assert!(
+                resolve_source(&workspace, &caller, escape).is_err(),
+                "the source {escape} escapes the tree",
+            );
+        }
+        for escape in ["../escape.txt", "/tmp/escape.txt", "link/out.txt"] {
+            assert!(
+                resolve_destination(&workspace, &caller, escape).is_err(),
+                "the destination {escape} escapes the tree",
+            );
+        }
+        assert!(!outside.path().join("out.txt").exists(), "nothing was written outside");
+    }
+
+    /// A replace card names the file it removes when the session could read
+    /// it, and falls back to the id only when it could not.
+    #[test]
+    fn a_replace_card_names_the_file_it_removes() {
+        assert_eq!(
+            replacement_label(Some("att-1"), Some("old.txt".to_owned())).as_deref(),
+            Some("old.txt"),
+        );
+        assert_eq!(replacement_label(Some("att-1"), None).as_deref(), Some("att-1"));
+        assert_eq!(replacement_label(None, Some("old.txt".to_owned())), None);
+    }
+
+    /// The source size is checked from metadata before the read, and a file
+    /// that grew past the cap between the check and the read is refused too.
+    #[test]
+    fn an_attachment_source_over_the_cap_is_refused() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("file");
+        std::fs::write(&path, b"five!").expect("the file");
+
+        let error = read_attachment(&path, 4).expect_err("the cap refuses the file");
+        assert!(error.to_string().contains("over the 4 byte cap"), "{error}");
+        assert_eq!(read_attachment(&path, 5).expect("the exact size passes"), b"five!");
+    }
+
+    /// A locked attachment-get card cannot name the item, but it must name
+    /// where the file would land.
+    #[tokio::test]
+    async fn a_locked_attachment_get_card_names_its_destination() {
+        let (workspace, facade, caller, _dir, mut rx) = locked_worker_workspace();
+        let asked = caller.clone();
+        let task = tokio::spawn(async move {
+            facade.attachment_get(&asked, "item-1", "att-1", "out.bin").await
+        });
+
+        let draft = parked_draft(&mut rx).await;
+        assert!(draft.needs_unlock);
+        assert!(draft.item_name.is_none(), "a locked card cannot name the item");
+        assert!(
+            draft.summary.contains("out.bin"),
+            "the card names the destination: {}",
+            draft.summary,
+        );
+
+        decline(&workspace, &caller, draft.id);
+        assert!(matches!(task.await.expect("the call finishes"), Err(VaultToolError::Rejected)));
+    }
+
+    /// A `[vault]` reload builds a new session; an approval drawn against the
+    /// old account must not run against it.
+    #[tokio::test]
+    async fn an_approval_does_not_run_after_a_config_reload() {
+        let (workspace, facade, caller, dir, mut rx) = locked_worker_workspace();
+        let asked = caller.clone();
+        let task = tokio::spawn(async move { facade.search(&asked, "bank", None).await });
+        let draft = parked_draft(&mut rx).await;
+
+        let next = VaultConfig {
+            url: "http://127.0.0.1:1".to_owned(),
+            email: "other@example.com".to_owned(),
+        };
+        *workspace.vault.write() = Some(Arc::new(
+            test_session(&next, Some(dir.path()), dir.path()).expect("the new session"),
+        ));
+        workspace
+            .dispatch(Command::RespondVaultAsk {
+                key: caller.clone(),
+                id: draft.id,
+                answer: VaultAskAnswer {
+                    decision: VaultAskDecision::Approve,
+                    master_password: Some("old password".to_owned()),
+                    two_factor: None,
+                },
+            })
+            .expect("the answer routes");
+
+        let result = task.await.expect("the call finishes");
+        assert!(
+            matches!(&result, Err(VaultToolError::Message(message)) if message.contains("configuration changed")),
+            "{result:?}",
+        );
+        let audit = audit_text(&dir);
+        assert!(
+            audit.contains("failed: the vault configuration changed"),
+            "the mismatch is audited: {audit}",
+        );
+    }
+
+    /// An approval that carries no password cannot unlock, and the refusal is
+    /// audited rather than settling the card silently.
+    #[tokio::test]
+    async fn a_locked_approval_without_a_password_is_audited() {
+        let (workspace, facade, caller, dir, mut rx) = locked_worker_workspace();
+        let asked = caller.clone();
+        let task = tokio::spawn(async move { facade.search(&asked, "bank", None).await });
+        let draft = parked_draft(&mut rx).await;
+
+        workspace
+            .dispatch(Command::RespondVaultAsk {
+                key: caller.clone(),
+                id: draft.id,
+                answer: VaultAskAnswer {
+                    decision: VaultAskDecision::Approve,
+                    master_password: None,
+                    two_factor: None,
+                },
+            })
+            .expect("the answer routes");
+
+        assert!(matches!(task.await.expect("the call finishes"), Err(VaultToolError::Locked)));
+        let audit = audit_text(&dir);
+        assert!(
+            audit.contains("failed: a locked session was approved without the master password"),
+            "{audit}",
+        );
+    }
+
+    /// Approve -> unlock -> rebase, end to end: the first card carries the
+    /// password, the second is restamped by the unlock and runs without one.
+    #[tokio::test]
+    async fn an_unlock_rebases_the_other_parked_card_end_to_end() {
+        use forge_connectors::vault::crypto::{derive_master_key, encrypt_str};
+
+        let pre = forge_connectors::vault::models::Prelogin {
+            kdf: 0,
+            kdf_iterations: 100_000,
+            kdf_memory: None,
+            kdf_parallelism: None,
+        };
+        let master_key =
+            derive_master_key("open sesame", "hi@vedhavyas.dev", &pre).expect("the master key");
+        let (user_key, wrapped_user_key) = master_key.make_user_key().expect("the user key");
+        let cipher = serde_json::json!({
+            "id": "item-1",
+            "type": 1,
+            "name": encrypt_str("bank", &user_key.0).expect("encrypting the name"),
+            "login": {},
+        });
+        let prelogin = serde_json::json!({
+            "kdf": 0,
+            "kdfIterations": 100_000,
+        })
+        .to_string();
+        let token = serde_json::json!({
+            "access_token": "access",
+            "refresh_token": "refresh",
+            "Key": wrapped_user_key.to_string(),
+        })
+        .to_string();
+        let sync = r#"{"profile":{},"folders":[],"ciphers":[]}"#.to_owned();
+        let address = serve_vault(vec![
+            ("/identity/accounts/prelogin", prelogin),
+            ("/identity/connect/token", token),
+            ("/api/sync", sync),
+            ("/api/ciphers/item-1", cipher.to_string()),
+            ("/api/ciphers/item-1", cipher.to_string()),
+        ])
+        .await;
+        let (workspace, mut rx) = Workspace::testing_stub();
+        let config =
+            VaultConfig { url: format!("http://{address}"), email: "hi@vedhavyas.dev".to_owned() };
+        let session = Arc::new(test_session(&config, None, Path::new("/tmp")).expect("session"));
+        *workspace.vault.write() = Some(session);
+        let facade = Arc::new(ProdVaultFacade::from_arc(&workspace));
+        let caller = SessionSlot::lead("Default", "forge");
+
+        let first_facade = Arc::clone(&facade);
+        let first_caller = caller.clone();
+        let first =
+            tokio::spawn(async move { first_facade.get(&first_caller, "item-1", None).await });
+        let first_draft = parked_draft(&mut rx).await;
+        assert!(first_draft.needs_unlock, "the first card asks for the password");
+
+        let second_facade = Arc::clone(&facade);
+        let second_caller = caller.clone();
+        let second =
+            tokio::spawn(async move { second_facade.get(&second_caller, "item-1", None).await });
+        let second_draft = parked_draft(&mut rx).await;
+        assert!(second_draft.needs_unlock, "the second card parks while locked too");
+
+        workspace
+            .dispatch(Command::RespondVaultAsk {
+                key: caller.clone(),
+                id: first_draft.id,
+                answer: VaultAskAnswer {
+                    decision: VaultAskDecision::Approve,
+                    master_password: Some("open sesame".to_owned()),
+                    two_factor: None,
+                },
+            })
+            .expect("the answer routes");
+
+        let mut restamped = None;
+        while restamped.is_none() {
+            let frame = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+                .await
+                .expect("the unlock pushes a restamp")
+                .expect("the seat stream stays open");
+            if let crate::protocol::SessionUpdate::VaultAskPending { draft, .. } =
+                std::sync::Arc::unwrap_or_clone(frame.update)
+                && draft.id == second_draft.id
+            {
+                restamped = Some(draft);
+            }
+        }
+        let restamped = restamped.expect("the second card was restamped");
+        assert!(!restamped.needs_unlock, "the unlock restamps the other card");
+
+        let decoded = first.await.expect("the first call finishes").expect("the first read");
+        assert_eq!(decoded["name"], "bank");
+
+        workspace
+            .dispatch(Command::RespondVaultAsk {
+                key: caller.clone(),
+                id: second_draft.id,
+                answer: VaultAskAnswer {
+                    decision: VaultAskDecision::Approve,
+                    master_password: None,
+                    two_factor: None,
+                },
+            })
+            .expect("the answer routes");
+        let decoded = second.await.expect("the second call finishes").expect("the second read");
+        assert_eq!(decoded["name"], "bank");
     }
 
     /// A locked search parks the query rather than failing on the sync.
