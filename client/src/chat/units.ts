@@ -1074,6 +1074,17 @@ export function namesSkill(want: string, name: string): boolean {
 }
 
 /**
+ * Whether a waiting call names the command an expansion names, exactly.
+ *
+ * A heading, a path and a call spell one skill three ways, which is what
+ * `namesSkill` is for; a command names itself, so `/audit-claude` must not
+ * ride a waiting `audit` call that merely contains its name.
+ */
+function namesCommand(want: string, name: string): boolean {
+  return want === name || want.endsWith(`:${name}`);
+}
+
+/**
  * The continuation prompt a compaction leaves behind, which nobody typed.
  *
  * It arrives as a user frame right after the boundary frame, so the fold hands
@@ -2220,12 +2231,18 @@ export function fold(
    * their calls were made - and the row is the leaf itself, so a run that
    * flushed between the two changes nothing. `name` is the body's own evidence
    * where it carries one; `null` is a body whose text names no skill, claimed
-   * by position the way the synthetic mark says it should be (#1543).
+   * by position the way the synthetic mark says it should be (#1543). `exact`
+   * asks for a command's own spelling: an expansion names itself, so the loose
+   * match that serves headings and paths would pair `/audit-claude` with a
+   * waiting `audit` call.
    */
-  const attachSkillBody = (name: string | null, body: string): boolean => {
+  const attachSkillBody = (name: string | null, body: string, exact = false): boolean => {
     for (const held of skillCalls) {
       if (held.leaf.skill !== null) continue;
-      if (name !== null && !namesSkill(held.want, name)) continue;
+      if (name !== null) {
+        const names = exact ? namesCommand(held.want, name) : namesSkill(held.want, name);
+        if (!names) continue;
+      }
       held.leaf.skill = body;
       return true;
     }
@@ -3216,10 +3233,13 @@ export function fold(
           // prompt and a compaction's continuation prompt. Each rides the row
           // it belongs to rather than the reader's own.
           const skill = skillBody(stripped);
-          const carrier = skill ?? commandBodyOf(frame, stripped);
+          const command = commandBodyOf(frame, stripped);
+          const carrier = skill ?? command;
           const carried = carrier?.name ?? headingNameOf(stripped);
           if (carried !== null) {
-            if (attachSkillBody(carried, carrier?.body ?? stripped.trim())) continue;
+            if (attachSkillBody(carried, carrier?.body ?? stripped.trim(), command !== null)) {
+              continue;
+            }
             // Unclaimed: a body carrying its own name still gets a row of its
             // own rather than being dropped; a heading frame is an ordinary
             // user frame and falls through as it always did.
@@ -3261,9 +3281,16 @@ export function fold(
           // nor a matching heading, which rides the first call still waiting
           // for one - named by position the way the CLI injects it, right
           // after the call that loaded the skill. With no call waiting it
-          // still draws, as a notice - never as the reader's own turn.
+          // still draws, as a notice - never as the reader's own turn. Both
+          // spellings are one mark - the live wire says `isMeta`, a reloaded
+          // transcript re-synthesizes `isSynthetic` - and reading one renders
+          // the same frame two ways after a reload.
           const body = stripped.trim();
-          if (carried === null && body !== '' && frame.isSynthetic === true) {
+          if (
+            carried === null &&
+            body !== '' &&
+            (frame.isMeta === true || frame.isSynthetic === true)
+          ) {
             if (attachSkillBody(null, body)) continue;
             push({
               kind: 'notice',

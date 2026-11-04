@@ -543,20 +543,19 @@ describe('one turn folded into the units a view draws', () => {
     expect(orphan?.kind, 'an unclaimed expansion names the command').toBe('skill');
   });
 
-  it('claims a marked frame only when its text is a command expansion', () => {
-    // The mark alone cannot be the body: the CLI stamps other harness frames
-    // `isMeta` too - a skill reminder, an image's caption, "Continue from
-    // where you left off." - so a marked frame riding a waiting call by
-    // position would swallow words that are not a skill. And expansion-shaped
-    // words the reader typed wear no mark, so they stay the reader's own.
+  it('claims nothing for a frame the CLI did not mark', () => {
+    // The mark is half the claim: expansion-shaped words the reader typed wear
+    // none, so they stay the reader's own. A marked frame that is not an
+    // expansion is no command either; it reaches the positional fallback on
+    // both spellings, which keeps a live row and its reload the same.
     const load = said([use('toolu_alpha', 'Skill', { skill: 'alpha-skill' })]);
-    const continuation = heard([text('Continue from where you left off.')], { isMeta: true });
+    const continuation = heard([text('Continue from where you left off.')]);
 
     const units = fold([load, continuation]);
     const [group] = units;
     expect(
       callsOf(group).map((call) => call.leaf.skill),
-      'a marked frame that is not an expansion leaves the call waiting',
+      'an unmarked frame unlike a command leaves the call waiting',
     ).toEqual([null]);
     expect(kinds(units), 'and draws as itself').toEqual(['leaves', 'user']);
 
@@ -567,11 +566,61 @@ describe('one turn folded into the units a view draws', () => {
     ).toEqual(['leaves', 'user']);
   });
 
-  it('draws an unclaimed synthetic body as a notice, never as the reader', () => {
-    const body = heard([text('An injected line with no call behind it.')], { isSynthetic: true });
-    const units = fold([body]);
+  it('keeps a command expansion off a call whose name it merely contains', () => {
+    // `namesSkill` is deliberately loose to serve headings and paths; a
+    // command names itself, so `/audit-claude` must not ride an `audit` call
+    // that merely contains its name.
+    const load = said([use('toolu_audit', 'Skill', { skill: 'audit' })]);
+    const body = heard([text('The user has invoked `/audit-claude`: the repo-wide sweep.')], {
+      isMeta: true,
+    });
 
-    expect(kinds(units), "a synthetic frame drew as the reader's own").toEqual(['notice']);
+    const units = fold([load, body]);
+    const [group] = units;
+    expect(
+      callsOf(group).map((call) => call.leaf.skill),
+      'the audit call keeps waiting',
+    ).toEqual([null]);
+    expect(kinds(units), 'and the expansion draws as its own named row').toEqual([
+      'leaves',
+      'skill',
+    ]);
+    const row = units[1];
+    expect(row?.kind === 'skill' ? row.name : null, 'named after the command').toBe('audit-claude');
+  });
+
+  it('pairs a replayed expansion by name when two skill calls are waiting', () => {
+    // **The read path's spelling**: a reloaded conversation re-synthesizes
+    // this carrier as `isSynthetic`, never `isMeta`, and the name is what must
+    // pick the call - with two waiting, a positional claim rides the first and
+    // leaves the second empty. A single-call version is vacuous: the #1543
+    // positional fallback catches it whether or not the expansion carries its
+    // own name.
+    const load = said([
+      use('toolu_alpha', 'Skill', { skill: 'alpha-skill' }),
+      use('toolu_beta', 'Skill', { skill: 'beta-skill' }),
+    ]);
+    const replayed = heard([text('The user has invoked `/beta-skill`: the second one.')], {
+      isSynthetic: true,
+    });
+
+    const units = fold([load, replayed]);
+    expect(kinds(units), 'the call unit alone, no turn of the reader').toEqual(['leaves']);
+    const [group] = units;
+    const held = callsOf(group).map((call) => call.leaf.skill);
+    expect(held[0], 'the first call keeps waiting').toBeNull();
+    expect(held[1], 'the replay pairs with the call it names').toContain('the second one');
+  });
+
+  it('draws an unclaimed marked body as a notice, never as the reader', () => {
+    // Both spellings of the mark are one fact: the live wire says `isMeta`, a
+    // re-synthesized transcript row says `isSynthetic`, and reading one
+    // renders the same frame two ways after a reload.
+    const replay = heard([text('An injected line with no call behind it.')], { isSynthetic: true });
+    const live = heard([text('An injected line with no call behind it.')], { isMeta: true });
+
+    expect(kinds(fold([replay])), "a synthetic frame drew as the reader's own").toEqual(['notice']);
+    expect(kinds(fold([live])), "a marked frame drew as the reader's own").toEqual(['notice']);
   });
 
   it('leaves a stamped heading with no matching call off a call that is waiting', () => {
