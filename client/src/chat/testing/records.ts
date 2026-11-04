@@ -74,6 +74,7 @@ export function clear(): void {
   boxes.items = [];
   element.quantise = 0;
   gate.misses = 0;
+  gate.rowsMisses = 0;
   gate.mounts = 0;
 }
 
@@ -85,8 +86,13 @@ export function clear(): void {
  * mount whose delivery never lands is a mounted list drawing zero rows while
  * the store holds turns. `misses` is how many upcoming mounts miss it;
  * `Infinity` makes every mount miss, which is what pins the column's bound.
+ *
+ * **A measured viewport is not a drawn row.** `virtua` can report a viewport
+ * and still compute an empty range - the black first open of 2026-11-04 - so
+ * `rowsMisses` is the other mount failure, and the two are separate facts: a
+ * mount can miss the rows having measured its viewport.
  */
-export const gate = { misses: 0, mounts: 0 };
+export const gate = { misses: 0, rowsMisses: 0, mounts: 0 };
 
 /** Make the next list mount miss its viewport measurement, as #2825's did. */
 export function stuckOnce(): void {
@@ -97,6 +103,16 @@ export function stuckOnce(): void {
 /** Make every list mount miss it, so a re-measure that loops can be counted. */
 export function stuckEveryMount(): void {
   gate.misses = Number.POSITIVE_INFINITY;
+  gate.mounts = 0;
+}
+
+/**
+ * Make the next list mount report its viewport and draw no rows: the empty
+ * range over a measured viewport that leaves the column black while its
+ * conversation holds turns.
+ */
+export function stuckRowsOnce(): void {
+  gate.rowsMisses = 1;
   gate.mounts = 0;
 }
 

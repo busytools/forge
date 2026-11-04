@@ -26,6 +26,7 @@ import {
   setMeasured,
   stuckEveryMount,
   stuckOnce,
+  stuckRowsOnce,
 } from './testing/records';
 
 installResizeObserver();
@@ -143,6 +144,13 @@ function stub() {
     /** The page the server would answer `more` with. */
     answer(turns: unknown[], cursor: string | null = null): void {
       this.send({ kind: 'page', conversation: LEAD, turns, cursor });
+    },
+    /**
+     * The seat's record as a visited seat already holds it: the store's
+     * snapshot, which a column mounting on a seat the client knows seeds from.
+     */
+    seed(slot: SessionSlot, data: unknown): void {
+      stores.open({ session: slot }).set(data);
     },
     /**
      * A frame the connection holds for a seat: folded into the store, not yet
@@ -2559,6 +2567,27 @@ describe('a list that mounted and drew no rows', () => {
   });
 
   /**
+   * **A measured viewport is not a drawn row** (#2752, 2026-11-04): the black
+   * first open held its turns, its list reported a viewport, and the list drew
+   * no rows - until a seat switch remounted it. The one forced re-measure
+   * exists for exactly that state, so it must ask whether a row drew, not
+   * whether the list measured.
+   */
+  it('forces a re-measure when the list measured its viewport and drew no rows', async () => {
+    const server = stub();
+    stuckRowsOnce();
+    setMeasured(1_005, 1_005);
+    draw({}, server);
+    server.answer([turn('t1')]);
+    await painted();
+
+    expect(gate.mounts, 'a mount that reported a viewport and drew nothing was replaced').toBe(2);
+    expect(document.querySelectorAll('[data-t]'), 'the rows the seat held now draw').toHaveLength(
+      1,
+    );
+  });
+
+  /**
    * **The bound is one re-measure, not a retry loop.** Every mount misses the
    * measure here, so a column that kept forcing would re-mount on every check -
    * the timer this fix is not. Two extra frames give a loop room to show.
@@ -2600,6 +2629,69 @@ describe('a list that mounted and drew no rows', () => {
     expect(gate.mounts, 'no list mounts for an empty conversation, so nothing is re-measured').toBe(
       0,
     );
+  });
+});
+
+/**
+ * **The store and the seat's read are two answers to one question.**
+ *
+ * A column mounting on a seat the client already holds seeds from the store,
+ * and the seat's own read answers separately. Neither answer may leave the
+ * column holding nothing while the other holds rows: an empty read is a read
+ * that failed or was cut, not the conversation ending.
+ */
+describe('the store seed and the seat read', () => {
+  const turn = (key: string): unknown => ({
+    key,
+    messages: [
+      {
+        type: 'assistant',
+        message: {
+          id: `m-${key}`,
+          role: 'assistant',
+          model: 'claude-opus-5',
+          content: [{ type: 'text', text: `said ${key}` }],
+        },
+      },
+    ],
+  });
+
+  it('draws the store-seeded rows, and an empty page does not wipe them', async () => {
+    const server = stub();
+    setMeasured(1_005, 1_005);
+    server.seed(LEAD, { conversation: { turns: [turn('t1')], cursor: 'c1' } });
+    draw({}, server);
+
+    expect(document.querySelectorAll('[data-t]'), 'the store seed draws').toHaveLength(1);
+
+    // The seat's read answers with no rows and no cursor: a read that failed
+    // or was cut short, which must not empty a conversation the store backed.
+    server.answer([], null);
+    await painted();
+
+    expect(
+      document.querySelectorAll('[data-t]'),
+      'an empty read leaves the store-backed rows drawn',
+    ).toHaveLength(1);
+  });
+
+  it('draws a snapshot that arrives after the column mounted', async () => {
+    const server = stub();
+    setMeasured(1_005, 1_005);
+    draw({}, server);
+    expect(document.querySelectorAll('[data-t]'), 'nothing is held at mount').toHaveLength(0);
+
+    server.send({
+      kind: 'snapshot',
+      subject: { session: LEAD },
+      data: { conversation: { turns: [turn('t1')], cursor: 'c1' } },
+    });
+    await painted();
+
+    expect(
+      document.querySelectorAll('[data-t]'),
+      'the snapshot that landed after the mount reaches the column',
+    ).toHaveLength(1);
   });
 });
 

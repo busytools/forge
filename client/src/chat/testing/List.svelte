@@ -61,9 +61,17 @@
    * its ResizeObserver never reports (#2825): mounted with rows, drawing none,
    * and reporting no viewport until something forces a fresh mount.
    */
-  const unmeasured = gate.mounts < gate.misses;
+  const mount = gate.mounts;
+  const unmeasured = mount < gate.misses;
+  /**
+   * Whether THIS mount drew no rows while reporting its viewport, which is the
+   * other shape of the same black column: `virtua` can hold a measured
+   * viewport and compute an empty range.
+   */
+  const rowsMissing = mount < gate.rowsMisses;
   gate.mounts += 1;
   if (unmeasured && Number.isFinite(gate.misses)) gate.misses -= 1;
+  if (rowsMissing && Number.isFinite(gate.rowsMisses)) gate.rowsMisses -= 1;
 
   /** What a row is keyed by: the list's own keyer, or its position without one. */
   function keyOf(row: unknown, at: number): string {
@@ -297,7 +305,7 @@
 </script>
 
 <div class="conv" data-item-size={itemSize} {@attach container} {...rest}>
-  {#each unmeasured ? [] : data as row, at (keyOf(row, at))}
+  {#each unmeasured || rowsMissing ? [] : data as row, at (keyOf(row, at))}
     {@const itemKey = keyOf(row, at)}
     {@const attrs = itemProps?.({ item: row, index: at }) ?? {}}
     <!-- The base class is the stub's own and every test's selector, so an

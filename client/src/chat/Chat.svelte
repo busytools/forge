@@ -1486,14 +1486,20 @@
   });
 
   /**
-   * Force the measure when a list mounted over turns never reported one
-   * (#2825): no viewport, no rows, room to draw them. One mount per open, so a
-   * list still empty after it is not re-mounted on a loop.
+   * Force the measure when a list mounted over turns drew no rows (#2825),
+   * with room to draw them. One mount per open, so a list still empty after it
+   * is not re-mounted on a loop.
+   *
+   * **A drawn row is the only healthy answer.** A viewport the list reports is
+   * not one: a list that measured its own viewport can still compute an empty
+   * range, which is the black first open of 2026-11-04 - the column held its
+   * turns, the list reported a size, and nothing drew until a seat switch
+   * remounted it. Asking the rows is what tells that state from a list that
+   * has measured and is drawing next frame.
    */
   function checkMeasured(): void {
     checkFrame = null;
     if (remeasured || held.turns.length === 0 || viewport === null || list === null) return;
-    if (list.getViewportSize() > 0) return;
     // **No room is no answer.** A hidden or collapsed pane has nothing to draw
     // yet, and the size that gives it room re-arms this check through the
     // watcher below.
