@@ -390,12 +390,22 @@ impl Tabs {
     /// the browser is created synchronously and CEF runs a nested message loop
     /// inside that call: a page's popup can be admitted and given a number
     /// while the create is still in progress, and a number peeked beforehand
-    /// would be handed out twice. A browser that fails to create burns its
-    /// number, which costs a gap in a numbering nothing reads back.
+    /// would be handed out twice. A create that fails gives its number back
+    /// through `unreserve` unless a nested admission has taken a newer one.
     fn reserve(&mut self) -> u16 {
         let tab = self.next.saturating_add(1).max(1);
         self.next = tab;
         tab
+    }
+
+    /// Give back a number whose browser was never created. **Only the newest
+    /// reservation goes**: the create runs a nested loop, and a popup admitted
+    /// inside it has already taken the next number, so this leaves the gap
+    /// rather than rewinding over a live reservation.
+    fn unreserve(&mut self, tab: u16) {
+        if self.next == tab && !self.open.contains_key(&tab) {
+            self.next = tab.saturating_sub(1);
+        }
     }
 
     /// Take one tab out and end its frame worker. The page itself may be what
@@ -1186,6 +1196,10 @@ impl PopupGate {
                      cef_opener_bridge_unbound, profile {}, tab {tab}): {why}",
                     self.profile
                 );
+                // **A refusal the page can repeat must not spend a number**,
+                // or a handle that is not ours walks the counter to its u16
+                // ceiling and the next insert replaces a live tab.
+                self.tabs.lock().unwrap_or_else(PoisonError::into_inner).unreserve(tab);
                 return None;
             }
         }
@@ -1234,6 +1248,7 @@ impl PopupGate {
             if bridged.is_some() {
                 self.bridge.lock().unwrap_or_else(PoisonError::into_inner).popup_ended(tab);
             }
+            self.tabs.lock().unwrap_or_else(PoisonError::into_inner).unreserve(tab);
             return None;
         };
         // **Only a requested tab is shown here.** A bridged popup's visibility
@@ -2941,6 +2956,32 @@ mod tests {
         let first = tabs.reserve();
         assert_eq!(tabs.reserve(), first + 1, "each reservation takes the next number");
         assert_eq!(tabs.open.len(), 0, "a reservation opens no row of its own");
+    }
+
+    /// **A failed create gives its number back.** A page can repeat a refusal
+    /// (a handle that is not ours, or one it already used), and a number spent
+    /// per refusal would walk the counter to its u16 ceiling, where the next
+    /// insert lands on a live tab.
+    #[test]
+    fn a_failed_create_does_not_consume_a_number() {
+        use super::Tabs;
+        let mut tabs = Tabs::default();
+        let refused = tabs.reserve();
+        tabs.unreserve(refused);
+        assert_eq!(tabs.reserve(), refused, "the refused number is handed out again");
+    }
+
+    /// **A nested admission keeps its number.** A create can run CEF's loop
+    /// and admit a popup before failing; the outer create's unreserve must
+    /// not rewind over the reservation the popup already holds.
+    #[test]
+    fn unreserve_leaves_a_later_reservation_alone() {
+        use super::Tabs;
+        let mut tabs = Tabs::default();
+        let outer = tabs.reserve();
+        let inner = tabs.reserve();
+        tabs.unreserve(outer);
+        assert_eq!(tabs.reserve(), inner + 1, "the inner reservation keeps its place");
     }
 
     /// **A cue is acknowledged only when there is a host to show.** The
