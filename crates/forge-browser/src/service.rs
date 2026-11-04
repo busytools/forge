@@ -401,7 +401,7 @@ impl BrowserService {
                             &driver,
                             port,
                             deadline,
-                            ReconcilePass { first: !request.warned },
+                            ReconcilePass { first: !request.warned, pairing: true },
                         ),
                     )
                     .await
@@ -1939,13 +1939,22 @@ impl BrowserService {
         // context, so the host's own page list is the only source that names
         // it. That read touches no renderer, and pairing here is what keeps a
         // healthy host out of the driver replacement below.
-        if unmatched
+        let popup_waiting = unmatched
             .iter()
-            .any(|(_, event)| matches!(event, HostEvent::TabCreated { opener: Some(_), .. }))
-            && let Some(pages) = spawn::page_list_of(port).await
-        {
+            .any(|(_, event)| matches!(event, HostEvent::TabCreated { opener: Some(_), .. }));
+        let mut host_answered = false;
+        if popup_waiting && let Some(pages) = spawn::page_list_of(port).await {
+            host_answered = true;
+            // **A page with no URL has not started its document**, so it
+            // cannot name a birth; the retries run until the host lists the
+            // popup with the address it committed. **The host lists pages
+            // newest first, and births pair oldest first**, so the rows are
+            // reversed to keep a run of popups in the order their openers
+            // made them.
             let host_rows: Vec<crate::tabs::DriverTab> = pages
                 .into_iter()
+                .filter(|page| !page.url.is_empty())
+                .rev()
                 .enumerate()
                 .map(|(index, page)| crate::tabs::DriverTab {
                     index,
@@ -1958,27 +1967,42 @@ impl BrowserService {
             let mut tabs = profile.tabs.lock().unwrap_or_else(PoisonError::into_inner);
             unmatched = pair_tab_events(&mut tabs, &host_rows, unmatched, generation);
         }
-        if unmatched.iter().any(|(_, event)| matches!(event, HostEvent::TabCreated { .. })) {
+        // **A popup inside its pairing window is not a dead driver.** The
+        // host starts a popup's first document after its grace, so its page
+        // is not in the host list yet on the birth's first passes; the
+        // pairing request retries until it is. A replacement on those passes
+        // would initialize against a target with no document, which is the
+        // wedge this pass exists to avoid. **The pass that names the popup is
+        // the later pass**: its document has started, so that is where a
+        // replacement makes the driver see the tab it must drive.
+        let popup_named = popup_waiting
+            && host_answered
+            && !unmatched
+                .iter()
+                .any(|(_, event)| matches!(event, HostEvent::TabCreated { opener: Some(_), .. }));
+        let wait_for_host = popup_waiting && pass.pairing && host_answered && !popup_named;
+        let birth_waiting =
+            unmatched.iter().any(|(_, event)| matches!(event, HostEvent::TabCreated { .. }));
+        if (popup_named || (birth_waiting && !wait_for_host))
+            && deadline.saturating_duration_since(tokio::time::Instant::now())
+                >= driver::START_TIMEOUT
+        {
             // **A birth neither list names yet**: the page has not appeared
             // in the driver's context or the host's page list, and a fresh
-            // driver enumerates the context's pages once more.
-            //
-            // **A re-pair needs a driver start's worth of budget left**: the
-            // start alone would overrun the call's one budget, and the pairing
-            // pass pairs the birth on its next turn instead.
-            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-            if remaining >= driver::START_TIMEOUT {
-                let driver_generation = { profile.state.lock().await.driver_generation };
-                if let Ok((fresh, _generation)) =
-                    self.recover_driver(profile, driver_generation).await
-                    && let Ok(fresh_listing) = fresh.tabs_within(left(deadline)).await
-                {
-                    unmatched = {
-                        let mut tabs = profile.tabs.lock().unwrap_or_else(PoisonError::into_inner);
-                        pair_tab_events(&mut tabs, &fresh_listing, unmatched, generation)
-                    };
-                    listing = fresh_listing;
-                }
+            // driver enumerates the context's pages once more. **A re-pair
+            // needs a driver start's worth of budget left**: the start alone
+            // would overrun the call's one budget, and the pairing pass pairs
+            // the birth on its next turn instead.
+            let driver_generation = { profile.state.lock().await.driver_generation };
+            if let Ok((fresh, _generation)) = self.recover_driver(profile, driver_generation).await
+                && birth_waiting
+                && let Ok(fresh_listing) = fresh.tabs_within(left(deadline)).await
+            {
+                unmatched = {
+                    let mut tabs = profile.tabs.lock().unwrap_or_else(PoisonError::into_inner);
+                    pair_tab_events(&mut tabs, &fresh_listing, unmatched, generation)
+                };
+                listing = fresh_listing;
             }
         }
         // **An event read from a receiver that has since been replaced goes
@@ -5336,6 +5360,11 @@ const POPUP_PAIR_UNTIL: Duration = Duration::from_secs(12);
 /// debug rather than repeating one line per attempt.
 struct ReconcilePass {
     first: bool,
+    /// Whether this pass belongs to a popup birth's pairing window. **A
+    /// birth still inside its window is not a reason to replace the
+    /// driver**: the host starts a popup's first document after its grace,
+    /// and only then can its page be named.
+    pairing: bool,
 }
 
 impl ReconcilePass {
@@ -7502,7 +7531,7 @@ mod tests {
                 &driver,
                 9,
                 tokio::time::Instant::now() + budget,
-                ReconcilePass { first: true },
+                ReconcilePass { first: true, pairing: false },
             )
             .await;
 
@@ -7551,7 +7580,7 @@ mod tests {
                 &driver,
                 9,
                 tokio::time::Instant::now() + Duration::from_secs(1),
-                ReconcilePass { first: true },
+                ReconcilePass { first: true, pairing: false },
             )
             .await;
 
@@ -11844,21 +11873,30 @@ mod server_guards {
         (port, seen)
     }
 
-    /// One loopback endpoint answering `/json/list` with `pages` (target id,
-    /// title, url), for a pass's read of the host's own page list.
-    fn json_list_endpoint(pages: &[(&str, &str, &str)]) -> u16 {
+    /// One loopback endpoint answering `/json/list` with each list in
+    /// `lists` (target id, title, url) in turn, the last repeating. A
+    /// single-entry list serves the same pages every pass.
+    fn json_list_endpoint(lists: &[&[(&str, &str, &str)]]) -> u16 {
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("a test port");
         let port = listener.local_addr().expect("an address").port();
-        let rows: Vec<serde_json::Value> = pages
+        let bodies: Vec<String> = lists
             .iter()
-            .map(|(id, title, url)| json!({ "id": id, "type": "page", "title": title, "url": url }))
+            .map(|pages| {
+                let rows: Vec<serde_json::Value> = pages
+                    .iter()
+                    .map(|(id, title, url)| {
+                        json!({ "id": id, "type": "page", "title": title, "url": url })
+                    })
+                    .collect();
+                serde_json::to_string(&rows).expect("the page list")
+            })
             .collect();
-        let body = serde_json::to_string(&rows).expect("the page list");
         std::thread::spawn(move || {
-            for _ in 0..8 {
+            for at in 0..8 {
                 let Ok((mut stream, _)) = listener.accept() else { return };
                 let mut buf = [0_u8; 1024];
                 let _ = std::io::Read::read(&mut stream, &mut buf);
+                let body = bodies.get(at).or_else(|| bodies.last()).expect("a page list");
                 let _ = std::io::Write::write_all(
                     &mut stream,
                     format!(
@@ -11951,7 +11989,7 @@ mod server_guards {
                         &listing,
                         9,
                         tokio::time::Instant::now() + super::PAIR_BOUND,
-                        ReconcilePass { first: true },
+                        ReconcilePass { first: true, pairing: false },
                     )
                     .await
             })
@@ -11998,7 +12036,7 @@ mod server_guards {
                         &listing,
                         9,
                         tokio::time::Instant::now() + super::PAIR_BOUND,
-                        ReconcilePass { first: true },
+                        ReconcilePass { first: true, pairing: false },
                     )
                     .await
             })
@@ -12021,11 +12059,11 @@ mod server_guards {
     }
 
     /// **A popup the driver never listed is paired from the host's own page
-    /// list.** A CEF popup created after the driver attached is not reported
-    /// to that driver's context, so a pass that trusted the driver alone
-    /// replaces the driver to see it - and a replacement initializing against
-    /// the popup target times out, which ends the host. The host's page list
-    /// names the popup without touching a renderer.
+    /// list, and the driver is then made to see it.** A CEF popup created
+    /// after the driver attached is not reported to that driver's context,
+    /// so the host's page list is what names the row. The pass that names it
+    /// is also the pass a replacement can safely run on: the popup's
+    /// document has started, which is what a driver connect needs.
     #[tokio::test]
     async fn a_popup_the_driver_never_listed_pairs_from_the_hosts_own_pages() {
         let dir = tempfile::tempdir().expect("a temp dir");
@@ -12076,10 +12114,10 @@ mod server_guards {
                 request: None,
             },
         ));
-        let port = json_list_endpoint(&[
+        let port = json_list_endpoint(&[&[
             ("opener", "Sign in", "https://opener/"),
             ("popup", "Auth", "https://auth/"),
-        ]);
+        ]]);
         let first_listing = driver(vec![opener], None);
         let paired = service
             .reconcile(
@@ -12087,7 +12125,7 @@ mod server_guards {
                 &first_listing,
                 port,
                 tokio::time::Instant::now() + super::PAIR_BOUND,
-                ReconcilePass { first: true },
+                ReconcilePass { first: true, pairing: true },
             )
             .await;
 
@@ -12097,7 +12135,185 @@ mod server_guards {
             Some("popup"),
             "the popup's birth took the page the host named",
         );
-        assert!(!replaced.load(Ordering::Acquire), "the popup paired without replacing the driver");
+        assert!(
+            replaced.load(Ordering::Acquire),
+            "the driver was replaced on the pass that could name the popup, so a call on the row \
+             drives it",
+        );
+    }
+
+    /// **The first pass is too early for the host too.** A popup's first
+    /// document starts only after the host's grace, so the birth's first
+    /// pass sees no page in either list; that is not a dead driver. The
+    /// pairing pass retries, the host names the page on a later pass, and
+    /// the birth pairs there - with no replacement on either pass.
+    #[tokio::test]
+    async fn a_popup_waits_for_the_host_and_pairs_on_a_later_pass() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let seat = SessionSlot::lead("O", "p");
+        let opener = crate::tabs::DriverTab {
+            index: 0,
+            target: "opener".to_owned(),
+            title: "Sign in".to_owned(),
+            url: "https://opener/".to_owned(),
+            current: true,
+        };
+        let replaced = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&replaced);
+        let successor = crate::tabs::DriverTab {
+            index: 1,
+            target: "popup".to_owned(),
+            title: "Auth".to_owned(),
+            url: "https://auth/".to_owned(),
+            current: false,
+        };
+        let first = ListingDriver {
+            listing: vec![opener.clone()],
+            bump: None,
+            bumped: AtomicBool::new(false),
+        };
+        service
+            .install_fake_with_successor(&seat, first, move || {
+                flag.store(true, Ordering::Release);
+                driver(vec![successor.clone()], None)
+            })
+            .await;
+        let profile = service.find("O/default").await.expect("the profile");
+        profile
+            .tabs
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .adopt(1, seat, "opener", "Sign in", "https://opener/")
+            .expect("the opener's row");
+        let generation = profile.host_generation.load(Ordering::Acquire);
+        profile.deferred_tab_events.lock().unwrap_or_else(PoisonError::into_inner).push((
+            generation,
+            HostEvent::TabCreated {
+                tab: 2,
+                opener: Some(1),
+                url: "https://auth/".to_owned(),
+                request: None,
+            },
+        ));
+        // **The first pass finds no page; the second does.** The list is the
+        // host's own, so an empty one is a host that has not started the
+        // popup's document yet.
+        let port = json_list_endpoint(&[
+            &[],
+            &[("opener", "Sign in", "https://opener/"), ("popup", "Auth", "https://auth/")],
+        ]);
+        let listed = driver(vec![opener], None);
+        let first_pass = service
+            .reconcile(
+                &profile,
+                &listed,
+                port,
+                tokio::time::Instant::now() + super::PAIR_BOUND,
+                ReconcilePass { first: true, pairing: true },
+            )
+            .await;
+        assert!(first_pass, "the first pass listed");
+        assert_eq!(
+            profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).target(2),
+            None,
+            "a popup whose document has not started is not paired from nowhere",
+        );
+        assert!(
+            !replaced.load(Ordering::Acquire),
+            "a birth inside its pairing window does not replace the driver",
+        );
+
+        let second_pass = service
+            .reconcile(
+                &profile,
+                &listed,
+                port,
+                tokio::time::Instant::now() + super::PAIR_BOUND,
+                ReconcilePass { first: false, pairing: true },
+            )
+            .await;
+        assert!(second_pass, "the second pass listed");
+        assert_eq!(
+            profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).target(2),
+            Some("popup"),
+            "the birth took the page the host named on the later pass",
+        );
+        assert!(
+            replaced.load(Ordering::Acquire),
+            "the pass that named the page replaced the driver, so the popup is drivable",
+        );
+    }
+
+    /// **A run of popups pairs in the order its openers made them.** The
+    /// host lists pages newest first and births arrive oldest first; pairing
+    /// them straight across swaps two `about:blank` popups, and input then
+    /// lands in the wrong one.
+    #[tokio::test]
+    async fn two_popups_pair_in_the_order_their_openers_made_them() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let seat = SessionSlot::lead("O", "p");
+        let opener = crate::tabs::DriverTab {
+            index: 0,
+            target: "opener".to_owned(),
+            title: "Sign in".to_owned(),
+            url: "https://opener/".to_owned(),
+            current: true,
+        };
+        service
+            .install_fake(
+                &seat,
+                ListingDriver {
+                    listing: vec![opener.clone()],
+                    bump: None,
+                    bumped: AtomicBool::new(false),
+                },
+            )
+            .await;
+        let profile = service.find("O/default").await.expect("the profile");
+        profile
+            .tabs
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .adopt(1, seat, "opener", "Sign in", "https://opener/")
+            .expect("the opener's row");
+        let generation = profile.host_generation.load(Ordering::Acquire);
+        {
+            let mut deferred =
+                profile.deferred_tab_events.lock().unwrap_or_else(PoisonError::into_inner);
+            for tab in [2_u16, 3] {
+                deferred.push((
+                    generation,
+                    HostEvent::TabCreated {
+                        tab,
+                        opener: Some(1),
+                        url: String::new(),
+                        request: None,
+                    },
+                ));
+            }
+        }
+        // The host's list, newest first: the second popup then the first.
+        let port = json_list_endpoint(&[&[
+            ("popup-new", "", "about:blank"),
+            ("popup-old", "", "about:blank"),
+            ("opener", "Sign in", "https://opener/"),
+        ]]);
+        let listed = driver(vec![opener], None);
+        service
+            .reconcile(
+                &profile,
+                &listed,
+                port,
+                tokio::time::Instant::now() + super::PAIR_BOUND,
+                ReconcilePass { first: true, pairing: true },
+            )
+            .await;
+
+        let tabs = profile.tabs.lock().unwrap_or_else(PoisonError::into_inner);
+        assert_eq!(tabs.target(2), Some("popup-old"), "the first popup took the first page");
+        assert_eq!(tabs.target(3), Some("popup-new"), "the second popup took the second page");
     }
 
     /// **A pairing pass that cannot list warns once and retries quietly.** The
@@ -12298,7 +12514,7 @@ mod server_guards {
                 &listing,
                 9,
                 tokio::time::Instant::now() + super::PAIR_BOUND,
-                ReconcilePass { first: true },
+                ReconcilePass { first: true, pairing: false },
             ),
         )
         .await;
@@ -12438,7 +12654,7 @@ mod server_guards {
                 &listing,
                 port,
                 tokio::time::Instant::now() + super::PAIR_BOUND,
-                ReconcilePass { first: true },
+                ReconcilePass { first: true, pairing: false },
             )
             .await;
 
@@ -12465,7 +12681,7 @@ mod server_guards {
                 &listing,
                 port,
                 tokio::time::Instant::now() + super::PAIR_BOUND,
-                ReconcilePass { first: true },
+                ReconcilePass { first: true, pairing: false },
             )
             .await;
 
