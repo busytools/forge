@@ -310,11 +310,25 @@ impl ProdVaultFacade {
     ) -> Result<T, VaultToolError> {
         match result {
             Ok(value) => Ok(value),
-            Err(error) => match self.decrypt_failed(session, caller, item, error) {
-                error @ (VaultToolError::Vault(VaultError::Crypto(_))
-                | VaultToolError::Crypto(_)) => Err(error),
-                _ => Ok(fallback),
-            },
+            Err(VaultToolError::Vault(VaultError::MissingKey(_))) => Ok(fallback),
+            Err(error) => Err(self.decrypt_failed(session, caller, item, error)),
+        }
+    }
+
+    /// A write re-checks the account key immediately before it runs: a
+    /// rotation during the park would store ciphertext the next unlock cannot
+    /// read.
+    async fn ensure_keys_current(
+        &self,
+        approved: &Approved,
+        item: Option<&str>,
+    ) -> Result<(), VaultToolError> {
+        match approved.session.ensure_keys_current(&approved.caller, item).await {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                approved.workspace.rebase_vault_asks(true);
+                approved.fail(VaultToolError::Vault(error))
+            }
         }
     }
 
@@ -700,6 +714,7 @@ impl VaultFacade for ProdVaultFacade {
         draft.item_name = Some(input.name.clone());
         draft.masked_diff = Some(masked_create_diff(input, kind));
         let approved = self.gate(caller, draft.clone(), VaultTool::Create, None).await?;
+        self.ensure_keys_current(&approved, None).await?;
         let session = Arc::clone(&approved.session);
         let keys = Arc::clone(&approved.keys);
         let result = async move {
@@ -708,10 +723,12 @@ impl VaultFacade for ProdVaultFacade {
             let id = created.get("id").and_then(Value::as_str).ok_or_else(|| {
                 VaultToolError::Message("the vault did not return the new item's id".to_owned())
             })?;
-            let name = created.get("name").and_then(Value::as_str).map_or_else(
-                || input.name.clone(),
-                |enc| keys.decrypt_item_str(&created, enc).unwrap_or_else(|_| input.name.clone()),
-            );
+            // A missing name field falls back to what the caller asked for;
+            // any decrypt failure is the operation's own error.
+            let name = match created.get("name").and_then(Value::as_str) {
+                Some(enc) => keys.decrypt_item_str(&created, enc)?,
+                None => input.name.clone(),
+            };
             Ok(json!({ "id": id, "name": name, "type": kind }))
         }
         .await;
@@ -734,6 +751,7 @@ impl VaultFacade for ProdVaultFacade {
                 format!("change {} on '{}'", changed.join(", "), name.unwrap_or(id))
             })
             .await?;
+        self.ensure_keys_current(&approved, Some(id)).await?;
         let session = Arc::clone(&approved.session);
         let keys = Arc::clone(&approved.keys);
         let result = async move {
@@ -847,10 +865,6 @@ impl VaultFacade for ProdVaultFacade {
         let approved = self.gate(caller, draft.clone(), VaultTool::AttachmentGet, None).await?;
         Self::guard_reload(&approved, &session)?;
         let result = async {
-            // The parent can be swapped while the card waits, so the path is
-            // resolved and containment-checked again immediately before the
-            // write rather than trusting the path the card named.
-            let write_path = recheck_destination(&workspace, caller, destination, &path)?;
             let cipher = match cipher {
                 Some(cipher) => cipher,
                 None => approved.session.get_cipher(item_id).await?,
@@ -866,9 +880,21 @@ impl VaultFacade for ProdVaultFacade {
             let plain = approved.keys.open_attachment(&cipher, &wrapped, &blob)?;
             let size = plain.len();
             let sha256 = forge_connectors::vault::crypto::sha256_hex(&plain);
-            tokio::task::spawn_blocking(move || write_private(&write_path, &plain))
-                .await
-                .map_err(|error| VaultToolError::Io(format!("the attachment write: {error}")))??;
+            // The parent can be swapped at any point up to the write - the
+            // gate wait, the metadata read, the download - so the path is
+            // resolved and containment-checked inside the blocking closure
+            // that does the write, never before it.
+            let write_workspace = Arc::clone(&workspace);
+            let write_caller = caller.clone();
+            let expected = path.clone();
+            let destination = destination.to_owned();
+            tokio::task::spawn_blocking(move || {
+                let write_path =
+                    recheck_destination(&write_workspace, &write_caller, &destination, &expected)?;
+                write_private(&write_path, &plain)
+            })
+            .await
+            .map_err(|error| VaultToolError::Io(format!("the attachment write: {error}")))??;
             Ok(json!({
                 "path": path.display().to_string(),
                 "size": size,
@@ -937,6 +963,7 @@ impl VaultFacade for ProdVaultFacade {
             })
             .await?;
         Self::guard_reload(&approved, &session)?;
+        self.ensure_keys_current(&approved, Some(item_id)).await?;
         let result = async {
             let (wrapped, encrypted_name, blob) =
                 approved.keys.prepare_attachment(&cipher, &file_name, &data)?;
@@ -985,6 +1012,7 @@ impl VaultFacade for ProdVaultFacade {
     async fn folder_list(&self, caller: &SessionSlot) -> Result<Value, VaultToolError> {
         let draft = VaultDraft::new(VaultTool::FolderList, "list folders");
         let approved = self.gate(caller, draft.clone(), VaultTool::FolderList, None).await?;
+        self.ensure_keys_current(&approved, None).await?;
         let result = async {
             let folders = approved.session.list_folders().await?;
             let mut rows = Vec::new();
@@ -1012,6 +1040,7 @@ impl VaultFacade for ProdVaultFacade {
         let mut draft = VaultDraft::new(VaultTool::FolderCreate, format!("create folder '{name}'"));
         draft.item_name = Some(name.to_owned());
         let approved = self.gate(caller, draft.clone(), VaultTool::FolderCreate, None).await?;
+        self.ensure_keys_current(&approved, None).await?;
         let result = async {
             let encrypted = approved.keys.encrypt_user_str(name)?;
             let created = approved.session.create_folder(&encrypted).await?;
@@ -1034,6 +1063,7 @@ impl VaultFacade for ProdVaultFacade {
             VaultDraft::new(VaultTool::FolderUpdate, format!("rename a folder to '{name}'"));
         draft.item_id = Some(id.to_owned());
         let approved = self.gate(caller, draft.clone(), VaultTool::FolderUpdate, None).await?;
+        self.ensure_keys_current(&approved, Some(id)).await?;
         let result = async {
             let encrypted = approved.keys.encrypt_user_str(name)?;
             approved.session.update_folder(id, &encrypted).await?;
@@ -1322,12 +1352,16 @@ fn attachment_named(
         .ok_or_else(|| {
             VaultToolError::Message(format!("the item has no attachment '{attachment_id}'"))
         })?;
-    let name = attachment
-        .get("fileName")
-        .and_then(Value::as_str)
-        .map(|enc| keys.decrypt_item_str(cipher, enc))
-        .transpose()?
-        .unwrap_or_else(|| "(unreadable)".to_owned());
+    let name = match attachment.get("fileName").and_then(Value::as_str) {
+        Some(enc) => match keys.decrypt_item_str(cipher, enc) {
+            Ok(name) => name,
+            // A card can still draw the size for a file whose key did not
+            // unlock; that is a display gap, not a stale-key failure.
+            Err(VaultError::MissingKey(_)) => "(unreadable)".to_owned(),
+            Err(error) => return Err(VaultToolError::Vault(error)),
+        },
+        None => "(unreadable)".to_owned(),
+    };
     let size = attachment.get("size").and_then(Value::as_u64).unwrap_or(0);
     Ok((name, size))
 }
@@ -1956,6 +1990,122 @@ mod tests {
         (address, seen_rx, release_tx)
     }
 
+    enum Reply {
+        Json(String),
+        Bytes(Vec<u8>),
+    }
+
+    struct Step {
+        path: &'static str,
+        reply: Reply,
+        pause: Option<(tokio::sync::oneshot::Sender<()>, tokio::sync::oneshot::Receiver<()>)>,
+    }
+
+    /// Serve one scripted response per request in order, optionally pausing
+    /// after the request arrives so a test can swap state under the call.
+    async fn serve_steps(steps: Vec<Step>) -> std::net::SocketAddr {
+        use tokio::io::AsyncWriteExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let address = listener.local_addr().expect("addr");
+        tokio::spawn(async move {
+            for step in steps {
+                let (mut socket, _) = listener.accept().await.expect("accept");
+                let request = read_test_request(&mut socket).await;
+                assert_eq!(
+                    request.split_whitespace().nth(1),
+                    Some(step.path),
+                    "unexpected request: {}",
+                    request.lines().next().unwrap_or_default(),
+                );
+                if let Some((seen, release)) = step.pause {
+                    let _ = seen.send(());
+                    let _ = release.await;
+                }
+                let (kind, body) = match step.reply {
+                    Reply::Json(body) => ("application/json", body.into_bytes()),
+                    Reply::Bytes(body) => ("application/octet-stream", body),
+                };
+                let head = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: {kind}\r\nContent-Length: {}\r\n\r\n",
+                    body.len()
+                );
+                let _ = socket.write_all(head.as_bytes()).await;
+                let _ = socket.write_all(&body).await;
+            }
+        });
+        address
+    }
+
+    /// An unlocked worker session with a cwd, pointed at `address`.
+    fn unlocked_worker_workspace(
+        address: std::net::SocketAddr,
+        user_key: forge_connectors::vault::crypto::SymmetricCryptoKey,
+        user_key_fingerprint: String,
+    ) -> (
+        Arc<Workspace>,
+        Arc<ProdVaultFacade>,
+        SessionSlot,
+        tempfile::TempDir,
+        tokio::sync::mpsc::UnboundedReceiver<crate::SeatUpdate>,
+        Arc<VaultSession>,
+    ) {
+        use crate::mcp::workers::types::WorkerEntry;
+        use forge_primitives::WorkerLiveness;
+        use forge_primitives::project_key::ProjectKey;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (workspace, rx) = Workspace::testing_stub();
+        let caller = SessionSlot::worker("TestOrg", "proj", "vault-test");
+        workspace.insert_live_worker(
+            &ProjectKey::new("TestOrg/proj"),
+            WorkerEntry {
+                label: "vault-test".to_owned(),
+                charter: "test".to_owned(),
+                slot: caller.clone(),
+                session_id: None,
+                status: WorkerLiveness::Running,
+                spawned_at: std::time::SystemTime::UNIX_EPOCH,
+                spawned_by: SessionSlot::lead("TestOrg", "proj"),
+                needs_tag: false,
+                is_git_repo_at_spawn: false,
+                cwd: Some(dir.path().to_path_buf()),
+                diagnostic: None,
+                kick: None,
+            },
+        );
+        let config =
+            VaultConfig { url: format!("http://{address}"), email: "hi@vedhavyas.dev".to_owned() };
+        let session =
+            Arc::new(test_session(&config, Some(dir.path()), dir.path()).expect("a session"));
+        test_install_unlocked(
+            &session,
+            Unlocked {
+                user_key,
+                private_key: None,
+                org_keys: std::collections::HashMap::new(),
+                failed_orgs: Vec::new(),
+                user_key_fingerprint,
+            },
+        );
+        *workspace.vault.write() = Some(Arc::clone(&session));
+        let facade = Arc::new(ProdVaultFacade::from_arc(&workspace));
+        (workspace, facade, caller, dir, rx, session)
+    }
+
+    fn approve(workspace: &Arc<Workspace>, caller: &SessionSlot, id: uuid::Uuid) {
+        workspace
+            .dispatch(Command::RespondVaultAsk {
+                key: caller.clone(),
+                id,
+                answer: VaultAskAnswer {
+                    decision: VaultAskDecision::Approve,
+                    master_password: None,
+                    two_factor: None,
+                },
+            })
+            .expect("the answer routes");
+    }
+
     /// Serve one response per expected `(path, body)` in order, asserting the
     /// request line names the path the test expected.
     async fn serve_vault(responses: Vec<(&'static str, String)>) -> std::net::SocketAddr {
@@ -2229,6 +2379,7 @@ mod tests {
                 private_key: None,
                 org_keys: std::collections::HashMap::new(),
                 failed_orgs: Vec::new(),
+                user_key_fingerprint: String::new(),
             }),
             caller: SessionSlot::lead("Default", "forge"),
             tool: VaultTool::Get,
@@ -2362,6 +2513,7 @@ mod tests {
             private_key: None,
             org_keys: std::collections::HashMap::new(),
             failed_orgs: Vec::new(),
+            user_key_fingerprint: String::new(),
         };
         let cipher = serde_json::json!({
             "id": "c",
@@ -2394,6 +2546,7 @@ mod tests {
             private_key: None,
             org_keys: std::collections::HashMap::new(),
             failed_orgs: Vec::new(),
+            user_key_fingerprint: String::new(),
         };
         let input = CreateInput {
             name: "bank".to_owned(),
@@ -2769,6 +2922,7 @@ mod tests {
                 private_key: None,
                 org_keys: std::collections::HashMap::new(),
                 failed_orgs: Vec::new(),
+                user_key_fingerprint: String::new(),
             },
         );
         let (workspace, mut rx) = Workspace::testing_stub();
@@ -2792,6 +2946,7 @@ mod tests {
                 private_key: None,
                 org_keys: std::collections::HashMap::new(),
                 failed_orgs: Vec::new(),
+                user_key_fingerprint: String::new(),
             },
         );
         *workspace.vault.write() = Some(Arc::clone(&next));
@@ -2818,6 +2973,429 @@ mod tests {
         assert!(audit_text(&dir).contains("failed: the vault configuration changed"));
     }
 
+    /// A reload during the pre-gate sync makes the approved search settle as
+    /// changed instead of running old-account items against the new account.
+    #[tokio::test]
+    async fn a_reload_during_the_pre_gate_sync_fails_the_search() {
+        use forge_connectors::vault::crypto::make_symmetric_key;
+
+        let (seen, seen_rx) = tokio::sync::oneshot::channel();
+        let (release, release_rx) = tokio::sync::oneshot::channel();
+        let address = serve_steps(vec![Step {
+            path: "/api/sync",
+            reply: Reply::Json(r#"{"profile":{},"folders":[],"ciphers":[]}"#.to_owned()),
+            pause: Some((seen, release_rx)),
+        }])
+        .await;
+        let (workspace, facade, caller, dir, mut rx, old) =
+            unlocked_worker_workspace(address, make_symmetric_key(), String::new());
+        let asked = caller.clone();
+        let call = {
+            let facade = Arc::clone(&facade);
+            tokio::spawn(async move { facade.search(&asked, "bank", None).await })
+        };
+        seen_rx.await.expect("the pre-gate sync reached the server");
+        let user_key = old.keys().expect("keys").user_key.clone();
+        let next = Arc::new(
+            test_session(
+                &VaultConfig {
+                    url: format!("http://{address}"),
+                    email: "hi@vedhavyas.dev".to_owned(),
+                },
+                Some(dir.path()),
+                dir.path(),
+            )
+            .expect("the new session"),
+        );
+        test_install_unlocked(
+            &next,
+            Unlocked {
+                user_key,
+                private_key: None,
+                org_keys: std::collections::HashMap::new(),
+                failed_orgs: Vec::new(),
+                user_key_fingerprint: String::new(),
+            },
+        );
+        *workspace.vault.write() = Some(Arc::clone(&next));
+        release.send(()).expect("the server responds");
+
+        let draft = parked_draft(&mut rx).await;
+        approve(&workspace, &caller, draft.id);
+        let result = call.await.expect("the call finishes");
+        assert!(
+            matches!(&result, Err(VaultToolError::Message(message)) if message.contains("configuration changed")),
+            "{result:?}",
+        );
+    }
+
+    /// A reload during the pre-gate cipher read fails an attachment get.
+    #[tokio::test]
+    async fn a_reload_during_the_pre_gate_cipher_read_fails_attachment_get() {
+        use forge_connectors::vault::crypto::{encrypt_str, make_symmetric_key};
+
+        let user_key = make_symmetric_key();
+        let name = encrypt_str("bank", &user_key).expect("the name");
+        let file = encrypt_str("file", &user_key).expect("the file name");
+        let cipher = serde_json::json!({
+            "id": "item-1",
+            "type": 1,
+            "name": name,
+            "login": {},
+            "attachments": [{ "id": "att-1", "fileName": file, "size": 4 }],
+        })
+        .to_string();
+        let (seen, seen_rx) = tokio::sync::oneshot::channel();
+        let (release, release_rx) = tokio::sync::oneshot::channel();
+        let address = serve_steps(vec![Step {
+            path: "/api/ciphers/item-1",
+            reply: Reply::Json(cipher),
+            pause: Some((seen, release_rx)),
+        }])
+        .await;
+        let (workspace, facade, caller, dir, mut rx, old) =
+            unlocked_worker_workspace(address, user_key.clone(), String::new());
+        let asked = caller.clone();
+        let call = {
+            let facade = Arc::clone(&facade);
+            tokio::spawn(async move {
+                facade.attachment_get(&asked, "item-1", "att-1", "out.bin").await
+            })
+        };
+        seen_rx.await.expect("the pre-gate read reached the server");
+        let next = Arc::new(
+            test_session(
+                &VaultConfig {
+                    url: format!("http://{address}"),
+                    email: "hi@vedhavyas.dev".to_owned(),
+                },
+                Some(dir.path()),
+                dir.path(),
+            )
+            .expect("the new session"),
+        );
+        test_install_unlocked(
+            &next,
+            Unlocked {
+                user_key: old.keys().expect("keys").user_key.clone(),
+                private_key: None,
+                org_keys: std::collections::HashMap::new(),
+                failed_orgs: Vec::new(),
+                user_key_fingerprint: String::new(),
+            },
+        );
+        *workspace.vault.write() = Some(Arc::clone(&next));
+        release.send(()).expect("the server responds");
+
+        let draft = parked_draft(&mut rx).await;
+        approve(&workspace, &caller, draft.id);
+        let result = call.await.expect("the call finishes");
+        assert!(
+            matches!(&result, Err(VaultToolError::Message(message)) if message.contains("configuration changed")),
+            "{result:?}",
+        );
+    }
+
+    /// A reload during the pre-gate replace-name read fails an attachment put.
+    #[tokio::test]
+    async fn a_reload_during_the_pre_gate_replace_read_fails_attachment_put() {
+        use forge_connectors::vault::crypto::{encrypt_str, make_symmetric_key};
+
+        let user_key = make_symmetric_key();
+        let name = encrypt_str("bank", &user_key).expect("the name");
+        let file = encrypt_str("old", &user_key).expect("the file name");
+        let cipher = serde_json::json!({
+            "id": "item-1",
+            "type": 1,
+            "name": name,
+            "login": {},
+            "attachments": [{ "id": "att-1", "fileName": file, "size": 4 }],
+        })
+        .to_string();
+        let (seen, seen_rx) = tokio::sync::oneshot::channel();
+        let (release, release_rx) = tokio::sync::oneshot::channel();
+        let address = serve_steps(vec![
+            Step {
+                path: "/api/ciphers/item-1",
+                reply: Reply::Json(cipher.clone()),
+                pause: Some((seen, release_rx)),
+            },
+            Step { path: "/api/ciphers/item-1", reply: Reply::Json(cipher), pause: None },
+        ])
+        .await;
+        let (workspace, facade, caller, dir, mut rx, old) =
+            unlocked_worker_workspace(address, user_key.clone(), String::new());
+        std::fs::write(dir.path().join("upload.txt"), b"content").expect("the upload file");
+        let asked = caller.clone();
+        let call = {
+            let facade = Arc::clone(&facade);
+            tokio::spawn(async move {
+                facade.attachment_put(&asked, "item-1", "upload.txt", None, Some("att-1")).await
+            })
+        };
+        seen_rx.await.expect("the pre-gate read reached the server");
+        let next = Arc::new(
+            test_session(
+                &VaultConfig {
+                    url: format!("http://{address}"),
+                    email: "hi@vedhavyas.dev".to_owned(),
+                },
+                Some(dir.path()),
+                dir.path(),
+            )
+            .expect("the new session"),
+        );
+        test_install_unlocked(
+            &next,
+            Unlocked {
+                user_key: old.keys().expect("keys").user_key.clone(),
+                private_key: None,
+                org_keys: std::collections::HashMap::new(),
+                failed_orgs: Vec::new(),
+                user_key_fingerprint: String::new(),
+            },
+        );
+        *workspace.vault.write() = Some(Arc::clone(&next));
+        release.send(()).expect("the server responds");
+
+        let draft = parked_draft(&mut rx).await;
+        approve(&workspace, &caller, draft.id);
+        let result = call.await.expect("the call finishes");
+        assert!(
+            matches!(&result, Err(VaultToolError::Message(message)) if message.contains("configuration changed")),
+            "{result:?}",
+        );
+    }
+
+    /// A reload during the pre-gate folder read fails a folder delete.
+    #[tokio::test]
+    async fn a_reload_during_the_pre_gate_folder_read_fails_folder_delete() {
+        use forge_connectors::vault::crypto::{encrypt_str, make_symmetric_key};
+
+        let user_key = make_symmetric_key();
+        let name = encrypt_str("bank", &user_key).expect("the folder name");
+        let folders = serde_json::json!([{ "id": "folder-1", "name": name }]).to_string();
+        let (seen, seen_rx) = tokio::sync::oneshot::channel();
+        let (release, release_rx) = tokio::sync::oneshot::channel();
+        let address = serve_steps(vec![Step {
+            path: "/api/folders",
+            reply: Reply::Json(folders),
+            pause: Some((seen, release_rx)),
+        }])
+        .await;
+        let (workspace, facade, caller, dir, mut rx, old) =
+            unlocked_worker_workspace(address, user_key, String::new());
+        let asked = caller.clone();
+        let call = {
+            let facade = Arc::clone(&facade);
+            tokio::spawn(async move { facade.folder_delete(&asked, "folder-1").await })
+        };
+        seen_rx.await.expect("the pre-gate read reached the server");
+        let next = Arc::new(
+            test_session(
+                &VaultConfig {
+                    url: format!("http://{address}"),
+                    email: "hi@vedhavyas.dev".to_owned(),
+                },
+                Some(dir.path()),
+                dir.path(),
+            )
+            .expect("the new session"),
+        );
+        test_install_unlocked(
+            &next,
+            Unlocked {
+                user_key: old.keys().expect("keys").user_key.clone(),
+                private_key: None,
+                org_keys: std::collections::HashMap::new(),
+                failed_orgs: Vec::new(),
+                user_key_fingerprint: String::new(),
+            },
+        );
+        *workspace.vault.write() = Some(Arc::clone(&next));
+        release.send(()).expect("the server responds");
+
+        let draft = parked_draft(&mut rx).await;
+        approve(&workspace, &caller, draft.id);
+        let result = call.await.expect("the call finishes");
+        assert!(
+            matches!(&result, Err(VaultToolError::Message(message)) if message.contains("configuration changed")),
+            "{result:?}",
+        );
+    }
+
+    /// The write re-checks containment inside the blocking closure: a parent
+    /// swapped during the download is refused and nothing lands outside.
+    #[tokio::test]
+    async fn a_swap_during_the_download_is_refused_at_the_write() {
+        use forge_connectors::vault::crypto::{
+            SymmetricCryptoKey, encrypt_str, make_symmetric_key,
+        };
+
+        let user_key: SymmetricCryptoKey = make_symmetric_key();
+        let preparer = Unlocked {
+            user_key: user_key.clone(),
+            private_key: None,
+            org_keys: std::collections::HashMap::new(),
+            failed_orgs: Vec::new(),
+            user_key_fingerprint: String::new(),
+        };
+        let base = serde_json::json!({ "id": "item-1", "type": 1, "login": {} });
+        let (wrapped, encrypted_name, blob) =
+            preparer.prepare_attachment(&base, "file", b"contents").expect("the attachment");
+        let name = encrypt_str("bank", &user_key).expect("the name");
+        let cipher = serde_json::json!({
+            "id": "item-1",
+            "type": 1,
+            "name": name,
+            "login": {},
+            "attachments": [{
+                "id": "att-1",
+                "fileName": encrypted_name.clone(),
+                "size": blob.len(),
+            }],
+        })
+        .to_string();
+        let meta = serde_json::json!({
+            "id": "att-1",
+            "fileName": encrypted_name,
+            "size": blob.len(),
+            "url": "/dl",
+            "key": wrapped,
+        })
+        .to_string();
+        let (seen, seen_rx) = tokio::sync::oneshot::channel();
+        let (release, release_rx) = tokio::sync::oneshot::channel();
+        let address = serve_steps(vec![
+            Step { path: "/api/ciphers/item-1", reply: Reply::Json(cipher), pause: None },
+            Step {
+                path: "/api/ciphers/item-1/attachment/att-1",
+                reply: Reply::Json(meta),
+                pause: Some((seen, release_rx)),
+            },
+            Step { path: "/dl", reply: Reply::Bytes(blob), pause: None },
+        ])
+        .await;
+        let (workspace, facade, caller, dir, mut rx, _session) =
+            unlocked_worker_workspace(address, user_key, String::new());
+        std::fs::create_dir(dir.path().join("sub")).expect("sub");
+        let outside = tempfile::tempdir().expect("outside");
+        let asked = caller.clone();
+        let call = {
+            let facade = Arc::clone(&facade);
+            tokio::spawn(async move {
+                facade.attachment_get(&asked, "item-1", "att-1", "sub/out.bin").await
+            })
+        };
+        let draft = parked_draft(&mut rx).await;
+        approve(&workspace, &caller, draft.id);
+        seen_rx.await.expect("the metadata read reached the server");
+        std::fs::remove_dir(dir.path().join("sub")).expect("remove sub");
+        std::os::unix::fs::symlink(outside.path(), dir.path().join("sub")).expect("symlink");
+        release.send(()).expect("the server responds");
+
+        let result = call.await.expect("the call finishes");
+        assert!(result.is_err(), "the swapped destination is refused: {result:?}");
+        assert!(!outside.path().join("out.bin").exists(), "nothing was written outside");
+    }
+
+    /// The key comparison locks the session when the account's wrapped user
+    /// key changed under the unlock.
+    #[tokio::test]
+    async fn a_rotated_user_key_locks_the_session_on_a_write() {
+        use forge_connectors::vault::crypto::{make_symmetric_key, sha256_hex};
+
+        let sync = serde_json::json!({ "profile": { "key": "wrapped-key-two" } }).to_string();
+        let address =
+            serve_steps(vec![Step { path: "/api/sync", reply: Reply::Json(sync), pause: None }])
+                .await;
+        let (_workspace, _facade, caller, _dir, _rx, session) = unlocked_worker_workspace(
+            address,
+            make_symmetric_key(),
+            sha256_hex(b"wrapped-key-one"),
+        );
+
+        let error = session.ensure_keys_current(&caller, None).await.expect_err("rotation");
+
+        assert!(matches!(error, VaultError::KeyRotated), "{error}");
+        assert!(session.is_locked(), "the rotated keys are dropped");
+    }
+
+    /// The same wrapped key leaves the session unlocked.
+    #[tokio::test]
+    async fn an_unchanged_user_key_passes_the_write_check() {
+        use forge_connectors::vault::crypto::{make_symmetric_key, sha256_hex};
+
+        let sync = serde_json::json!({ "profile": { "key": "wrapped-key-one" } }).to_string();
+        let address =
+            serve_steps(vec![Step { path: "/api/sync", reply: Reply::Json(sync), pause: None }])
+                .await;
+        let (_workspace, _facade, caller, _dir, _rx, session) = unlocked_worker_workspace(
+            address,
+            make_symmetric_key(),
+            sha256_hex(b"wrapped-key-one"),
+        );
+
+        session.ensure_keys_current(&caller, None).await.expect("the key is unchanged");
+
+        assert!(!session.is_locked());
+    }
+
+    /// A missing organization key falls back; any other decrypt failure locks
+    /// and restamps the cards still parked.
+    #[tokio::test]
+    async fn missing_key_falls_back_and_a_crypto_failure_locks_and_restamps() {
+        use forge_connectors::vault::crypto::make_symmetric_key;
+
+        let address = serve_steps(Vec::new()).await;
+        let (workspace, facade, caller, _dir, mut rx, session) =
+            unlocked_worker_workspace(address, make_symmetric_key(), String::new());
+        let (other, _held, _) = workspace.register_vault_ask(
+            &caller,
+            VaultDraft::new(VaultTool::Search, "another call"),
+            false,
+        );
+        while rx.try_recv().is_ok() {}
+
+        let missing = facade
+            .fallback_or_lock(
+                &session,
+                &caller,
+                Some("item-1"),
+                Err(VaultToolError::Vault(VaultError::MissingKey("org-1".to_owned()))),
+                "fallback".to_owned(),
+            )
+            .expect("MissingKey falls back");
+        assert_eq!(missing, "fallback");
+        assert!(!session.is_locked(), "a missing org key does not lock the account");
+
+        let error = facade
+            .fallback_or_lock(
+                &session,
+                &caller,
+                Some("item-1"),
+                Err(VaultToolError::Vault(VaultError::Crypto(anyhow::anyhow!("rotated")))),
+                "fallback".to_owned(),
+            )
+            .expect_err("a crypto failure surfaces");
+        assert!(matches!(error, VaultToolError::Vault(VaultError::Crypto(_))), "{error}");
+        assert!(session.is_locked(), "the stale keys are dropped");
+
+        let mut restamped = None;
+        while let Ok(frame) = rx.try_recv() {
+            if let crate::protocol::SessionUpdate::VaultAskPending { draft, .. } =
+                std::sync::Arc::unwrap_or_clone(frame.update)
+                && draft.id == other
+            {
+                restamped = Some(draft);
+            }
+        }
+        assert!(
+            restamped.is_some_and(|draft| draft.needs_unlock),
+            "the other card asks for the password again",
+        );
+    }
+
     /// A decryption failure inside an approved call drops the keys and
     /// restamps every other parked card as needing the password.
     #[tokio::test]
@@ -2838,6 +3416,7 @@ mod tests {
                 private_key: None,
                 org_keys: std::collections::HashMap::new(),
                 failed_orgs: Vec::new(),
+                user_key_fingerprint: String::new(),
             },
         );
         let (workspace, mut rx) = Workspace::testing_stub();

@@ -13,7 +13,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use base64::Engine;
 use bitwarden_crypto::{
     BitwardenLegacyKeyBytes, EncString, HashPurpose, Kdf, KeyDecryptable, KeyEncryptable,
-    MasterKey, OctetStreamBytes, SymmetricCryptoKey,
+    MasterKey, OctetStreamBytes,
 };
 use hmac::{Hmac, KeyInit, Mac};
 use rsa::pkcs8::DecodePrivateKey;
@@ -22,6 +22,10 @@ use zeroize::Zeroizing;
 
 use crate::vault::VaultError;
 use crate::vault::models::{Prelogin, Profile, TokenResponse};
+
+/// The key type an [`Unlocked`] holds, re-exported so a caller building one
+/// for a test can name it.
+pub use bitwarden_crypto::SymmetricCryptoKey;
 
 /// An unlocked account's keys: the user key every personal cipher inherits,
 /// the account private key, and any organization keys the profile carries.
@@ -36,6 +40,9 @@ pub struct Unlocked {
     /// unwrap. A cipher in one of them fails with [`VaultError::MissingKey`]
     /// rather than being encrypted or decrypted with the wrong key.
     pub failed_orgs: Vec<String>,
+    /// SHA-256 of the wrapped user key this unlock used, so a later sync can
+    /// prove the account's keys did not rotate while the session was open.
+    pub user_key_fingerprint: String,
 }
 
 impl Unlocked {
@@ -182,6 +189,7 @@ pub fn unlock(
         .filter(|key| !key.is_empty())
         .or_else(|| profile.key.clone().filter(|key| !key.is_empty()))
         .context("token response and sync profile both lack the wrapped user key")?;
+    let user_key_fingerprint = sha256_hex(user_key_enc.as_bytes());
     let user_key_enc: EncString =
         user_key_enc.parse().map_err(|e| anyhow!("wrapped user key did not parse: {e}"))?;
     let user_key = master_key.decrypt_user_key(user_key_enc)?;
@@ -205,7 +213,7 @@ pub fn unlock(
 
     let (org_keys, failed_orgs) = org_keys(private_key.as_ref(), profile);
 
-    Ok(Unlocked { user_key, private_key, org_keys, failed_orgs })
+    Ok(Unlocked { user_key, private_key, org_keys, failed_orgs, user_key_fingerprint })
 }
 
 /// Unwrap every organization key the profile carries, naming the ones that
@@ -293,7 +301,7 @@ pub fn unwrap_attachment_key(
     enc: &str,
     item_key: &SymmetricCryptoKey,
     private_key: Option<&rsa::RsaPrivateKey>,
-) -> Result<SymmetricCryptoKey> {
+) -> Result<SymmetricCryptoKey, VaultError> {
     let (kind, rest) = enc.split_once('.').context("attachment key has no EncString header")?;
     match kind {
         "0" | "1" | "2" => {
@@ -305,12 +313,14 @@ pub fn unwrap_attachment_key(
                     .map_err(|e| anyhow!("attachment key decrypt failed: {e}"))?,
             );
             let legacy = BitwardenLegacyKeyBytes::from(raw.to_vec());
-            SymmetricCryptoKey::try_from(&legacy)
-                .map_err(|e| anyhow!("unwrapped attachment key is not a symmetric key: {e}"))
+            SymmetricCryptoKey::try_from(&legacy).map_err(|e| {
+                VaultError::Crypto(anyhow!("unwrapped attachment key is not a symmetric key: {e}"))
+            })
         }
         "4" | "6" => {
-            let private_key = private_key
-                .context("attachment key is RSA-wrapped but no private key is unlocked")?;
+            // A missing private key is not a decrypt failure: re-entering the
+            // master password is what fixes it, so it gets its own error.
+            let private_key = private_key.ok_or(VaultError::MissingPrivateKey)?;
             let parts: Vec<&str> = rest.split('|').collect();
             // `4.<ciphertext>`; `6.<ciphertext>|<mac>`. The MAC covers the
             // ciphertext only, per bitwarden-crypto's UnsignedSharedKey.
@@ -319,9 +329,11 @@ pub fn unwrap_attachment_key(
                 let mac = parts.get(1).context("attachment key type 6 has no MAC part")?;
                 verify_type6_mac(data, mac, item_key)?;
             }
-            rsa_oaep_unwrap(data, private_key, "attachment key")
+            rsa_oaep_unwrap(data, private_key, "attachment key").map_err(VaultError::Crypto)
         }
-        other => bail!("attachment key is EncString type {other}; no unwrap implemented"),
+        other => Err(VaultError::Crypto(anyhow!(
+            "attachment key is EncString type {other}; no unwrap implemented"
+        ))),
     }
 }
 
@@ -748,6 +760,7 @@ mod tests {
             private_key: None,
             org_keys: HashMap::new(),
             failed_orgs: vec!["org-1".to_owned()],
+            user_key_fingerprint: String::new(),
         };
         let org_cipher = serde_json::json!({ "organizationId": "org-1", "name": "x" });
 
@@ -883,6 +896,17 @@ mod tests {
             error.to_string().contains("MAC did not verify"),
             "the refusal names its own reason: {error}"
         );
+    }
+
+    /// An RSA-wrapped attachment key with no unlocked private key is not a
+    /// decrypt failure: it is named, and re-unlocking is what fixes it.
+    #[test]
+    fn an_rsa_wrapped_attachment_key_without_a_private_key_is_named() {
+        let item_key = SymmetricCryptoKey::make(SymmetricKeyAlgorithm::Aes256CbcHmac);
+
+        let error = unwrap_attachment_key("4.aGk=", &item_key, None).unwrap_err();
+
+        assert!(matches!(error, VaultError::MissingPrivateKey), "{error}");
     }
 
     #[test]

@@ -105,27 +105,41 @@ impl VaultClient {
         self.unauth(method, path).bearer_auth(token)
     }
 
-    /// Read one response: map a non-2xx status to its named error and parse the
-    /// body as JSON. An empty success body is `Value::Null`.
-    async fn send_json(&self, resp: reqwest::Response) -> Result<Value, VaultError> {
+    /// Read one response body, mapping a non-2xx status to its named error.
+    /// The body is zeroized on every path: a token response's body carries
+    /// the access and refresh tokens.
+    async fn send_body(
+        &self,
+        resp: reqwest::Response,
+    ) -> Result<zeroize::Zeroizing<String>, VaultError> {
         let status = resp.status();
         let retry_after = retry_after(&resp);
-        let body = resp.text().await.map_err(|error| VaultError::Http(error.without_url()))?;
+        let body = zeroize::Zeroizing::new(
+            resp.text().await.map_err(|error| VaultError::Http(error.without_url()))?,
+        );
         if !status.is_success() {
             return Err(api_error(status.as_u16(), retry_after, safe_error(&body)));
         }
+        Ok(body)
+    }
+
+    /// Read one response as JSON. An empty success body is `Value::Null`.
+    async fn send_json(&self, resp: reqwest::Response) -> Result<Value, VaultError> {
+        let body = self.send_body(resp).await?;
         if body.is_empty() {
             return Ok(Value::Null);
         }
         serde_json::from_str(&body).map_err(|e| VaultError::InvalidResponse(e.to_string()))
     }
 
+    /// Parse one response straight into `T`, zeroizing the raw text after the
+    /// parse rather than leaving a token-bearing `Value` to drop unzeroized.
     async fn send_typed<T: DeserializeOwned>(
         &self,
         resp: reqwest::Response,
     ) -> Result<T, VaultError> {
-        let value = self.send_json(resp).await?;
-        serde_json::from_value(value).map_err(|e| VaultError::InvalidResponse(e.to_string()))
+        let body = self.send_body(resp).await?;
+        serde_json::from_str(&body).map_err(|e| VaultError::InvalidResponse(e.to_string()))
     }
 
     /// `POST /identity/accounts/prelogin`, which is where Vaultwarden mounts it

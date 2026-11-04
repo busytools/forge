@@ -30,6 +30,10 @@ pub enum VaultError {
     Http(#[from] reqwest::Error),
     #[error("no unlocked key for organization {0}")]
     MissingKey(String),
+    #[error("the account has no unlocked private key; unlock again")]
+    MissingPrivateKey,
+    #[error("the account's keys changed while unlocked; unlock again")]
+    KeyRotated,
     #[error("invalid request: {0}")]
     InvalidInput(String),
     #[error("refused attachment URL: {0}")]

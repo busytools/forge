@@ -235,6 +235,40 @@ impl VaultSession {
         self.lock();
     }
 
+    /// A write must not run against keys the account rotated while the session
+    /// stayed open: its ciphertext would be unreadable after the next unlock.
+    /// The wrapped user key's fingerprint from unlock is compared with the
+    /// one a fresh sync carries.
+    pub(crate) async fn ensure_keys_current(
+        &self,
+        caller: &SessionSlot,
+        item: Option<&str>,
+    ) -> Result<(), VaultError> {
+        let keys = self.keys()?;
+        let sync = self.sync().await?;
+        let Some(profile_key) = sync.profile.key.as_deref().filter(|key| !key.is_empty()) else {
+            return Ok(());
+        };
+        if crypto::sha256_hex(profile_key.as_bytes()) != keys.user_key_fingerprint {
+            self.note_key_rotation(caller, item);
+            return Err(VaultError::KeyRotated);
+        }
+        Ok(())
+    }
+
+    /// Drop the keys after an account rotation; re-entering the master
+    /// password is the only thing that fixes it.
+    pub(crate) fn note_key_rotation(&self, caller: &SessionSlot, item: Option<&str>) {
+        tracing::warn!(
+            event_name = "vault_keys_rotated",
+            caller = %caller.display(),
+            item = item,
+            vault = %self.client.base(),
+            "the account's wrapped user key changed while unlocked; the session is locked"
+        );
+        self.lock();
+    }
+
     /// `GET /api/sync`, through the refresh path.
     pub(crate) async fn sync(&self) -> Result<SyncData, VaultError> {
         let token = self.access_token()?;
@@ -928,6 +962,7 @@ mod tests {
             private_key: None,
             org_keys: std::collections::HashMap::new(),
             failed_orgs: Vec::new(),
+            user_key_fingerprint: String::new(),
         }));
         assert!(!session.is_locked());
 
