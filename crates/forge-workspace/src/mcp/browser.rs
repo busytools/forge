@@ -146,9 +146,8 @@ impl BrowserTool {
                 if !is_page_id(tab) {
                     return Err(format!(
                         "browser_hand_off needs `tab` as the page id browser_tabs prints first \
-                         in its row - the full 32 hex characters, not '{tab}'. A shortened id \
-                         cannot name a tab; if your tool list shows `tab` as a number, only a \
-                         fresh session in this slot refreshes it."
+                         in its row: exactly 32 hex characters, not '{tab}'. If your tool list \
+                         shows `tab` as a number, only a fresh session in this slot refreshes it."
                     ));
                 }
                 tab
@@ -198,8 +197,8 @@ impl BrowserTool {
 
 /// A page id as `browser_tabs` prints it: the page's CDP target, 32 hex
 /// characters. A stale seat's numeric schema has produced a digit run instead
-/// (`DD241...` arrived as `241`), so anything shorter is refused before it can
-/// name a page.
+/// (`DD241...` arrived as `241`), so anything of another shape is refused
+/// before it can name a page.
 fn is_page_id(tab: &str) -> bool {
     tab.len() == 32 && tab.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
@@ -631,11 +630,12 @@ mod tests {
         assert!(mock.hand_offs.lock().is_empty(), "and nothing was parked");
     }
 
-    /// **A truncated page id is refused, not looked up.** The same stale
-    /// schema drove a model to shorten the id, and a shortened string must
-    /// fail before any tab is searched or parked.
+    /// **A tab that is not a page id is refused, not looked up.** The same
+    /// stale schema drove a model to send a digit run; a value of another
+    /// shape - short, long or non-hex - must fail before any tab is searched
+    /// or parked, and its refusal names the fresh-session recovery.
     #[tokio::test]
-    async fn a_truncated_page_id_is_refused_by_name() {
+    async fn a_tab_that_is_not_a_page_id_is_refused_by_name() {
         let mock = Arc::new(MockBrowserFacade::new());
         let tool = BrowserTool {
             spec: spec_named("browser_hand_off"),
@@ -643,16 +643,15 @@ mod tests {
             slot: seat(),
         };
 
-        for tab in ["241", &PAGE_ID[..31]] {
+        let long = format!("{PAGE_ID}0");
+        let non_hex = format!("ZZ{}", &PAGE_ID[2..]);
+        for tab in ["241", &PAGE_ID[..31], long.as_str(), non_hex.as_str()] {
             let out = tool.call(ToolInput { value: json!({ "reason": "look", "tab": tab }) }).await;
             assert!(out.is_error, "{tab}: {:?}", out.blocks);
             let text = crate::mcp::test_support::block_text(&out.blocks[0]);
             assert!(text.contains("32 hex"), "{tab}: {text}");
             assert!(text.contains(tab), "the refused value is named: {tab}: {text}");
-            assert!(
-                !text.contains("no tab has the page id"),
-                "it never reached the lookup: {tab}: {text}",
-            );
+            assert!(text.contains("fresh session in this slot"), "{tab}: {text}");
         }
         assert!(mock.hand_offs.lock().is_empty(), "and nothing was parked");
     }
