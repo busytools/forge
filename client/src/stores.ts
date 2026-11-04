@@ -27,7 +27,7 @@ import { get, writable, type Readable } from 'svelte/store';
 
 import type { Subject, SessionUpdate } from './protocol';
 import { subjectKey } from './protocol';
-import { REPLACES, variantOf } from './session/apply';
+import { movesInFlight, REPLACES, variantOf } from './session/apply';
 
 /**
  * How many updates a store keeps before the oldest are dropped.
@@ -56,7 +56,8 @@ export interface StoreValue {
    * How many updates the ceiling dropped off the front of `updates`, since
    * the snapshot it holds. A page folding them needs to know its tail is not
    * the whole story rather than finding out by arithmetic that does not add
-   * up.
+   * up. A compacted tail is complete for its readers, so `compact()` resets
+   * this to zero.
    */
   dropped: number;
 }
@@ -81,6 +82,24 @@ export interface Store {
    * that arrived, until the seat's own answer lands.
    */
   push(update: SessionUpdate): void;
+  /**
+   * No page is drawing this seat: from here the tail keeps only what its two
+   * readers fold - the newest chat edge and the voice states - rather than
+   * every frame a busy seat streams while nobody reads.
+   */
+  compact(): void;
+  /**
+   * Whether the tail has been compacted to what its readers fold.
+   *
+   * It is then complete for them, so `runningAt` may read it even where the
+   * ceiling's count says the tail lost its head.
+   */
+  compacted(): boolean;
+  /**
+   * A number that changes whenever the tail is reshaped rather than appended
+   * to, so a cursor over it knows its indices no longer mean what they did.
+   */
+  generation(): number;
   /**
    * The `voice_audio` frames pushed since the last call, drained.
    *
@@ -110,6 +129,60 @@ function replaces(update: SessionUpdate): boolean {
   return name !== null && REPLACES.includes(name);
 }
 
+/** The frame an update carries, for the seat tail's own question about it. */
+function chatFrame(update: SessionUpdate): unknown {
+  return (update as { chat_appended?: { msg?: unknown } }).chat_appended?.msg;
+}
+
+/**
+ * What a seat's store is read for once no page holds the seat.
+ *
+ * `runningAt` (`chat/conversation.ts`) folds a turn's edges out of the chat
+ * frames, and the voice control reads the listener count off `voice_mode_state`.
+ * Nothing else has a reader: the chat draws from its own conversation.
+ */
+function keptVariant(update: SessionUpdate): 'chat' | 'voice' | null {
+  const [name] = variantOf(update);
+  if (name === 'chat_appended') return movesInFlight(chatFrame(update)) ? 'chat' : null;
+  return name === 'voice_mode_state' ? 'voice' : null;
+}
+
+/**
+ * A seat's tail while no page holds the seat.
+ *
+ * **Two readers, two frames.** `runningAt` moves only on a turn's edge, and
+ * the voice control reads the newest listener count, so the tail holds the
+ * newest edge and the newest voice state and nothing else. Both replace what
+ * came before, which is a reshape rather than an append: the voice cursor
+ * restarts on the store's generation (`voice/voice.svelte.ts`), so a replaced
+ * state is replayed, not skipped.
+ */
+function settledTail(updates: SessionUpdate[], update: SessionUpdate): SessionUpdate[] {
+  const kept = keptVariant(update);
+  if (kept === 'voice') {
+    const rest = updates.filter((waiting) => variantOf(waiting)[0] !== 'voice_mode_state');
+    return [...rest, update];
+  }
+  if (kept === null) return updates;
+  // The newest edge supersedes every one before it; the voice state stays.
+  const withoutChat = updates.filter((waiting) => variantOf(waiting)[0] !== 'chat_appended');
+  return [...withoutChat, update];
+}
+
+/** The tail cut to that rule, for a seat whose page has just gone. */
+function compactedTail(updates: SessionUpdate[]): SessionUpdate[] {
+  const voice = updates.filter((waiting) => variantOf(waiting)[0] === 'voice_mode_state');
+  const chat = updates.filter(
+    (waiting) => variantOf(waiting)[0] === 'chat_appended' && movesInFlight(chatFrame(waiting)),
+  );
+  const kept: SessionUpdate[] = [];
+  const newestVoice = voice[voice.length - 1];
+  const newestEdge = chat[chat.length - 1];
+  if (newestVoice !== undefined) kept.push(newestVoice);
+  if (newestEdge !== undefined) kept.push(newestEdge);
+  return kept;
+}
+
 function createStore(subject: Subject, state: StoreState = { kind: 'loading' }): Store {
   const inner = writable<StoreValue>({ snapshot: null, updates: [], state, dropped: 0 });
   // Audio is drained by the voice reader and never retained: a parsed
@@ -117,6 +190,11 @@ function createStore(subject: Subject, state: StoreState = { kind: 'loading' }):
   // otherwise hold every one it has played.
   let audio: SessionUpdate[] = [];
   const MAX_AUDIO = 8;
+  // Set when the last page drawing the seat goes: see `compact`.
+  let compacted = false;
+  // Bumped whenever the tail is reshaped rather than appended to, so the
+  // voice cursor knows the indices it holds no longer name its frames.
+  let reshapes = 0;
   return {
     subject,
     value: { subscribe: inner.subscribe },
@@ -124,7 +202,22 @@ function createStore(subject: Subject, state: StoreState = { kind: 'loading' }):
     updates: () => get(inner).updates,
     state: () => get(inner).state,
     dropped: () => get(inner).dropped,
+    compacted: () => compacted,
+    generation: () => reshapes,
     set: (snapshot) => inner.set({ snapshot, updates: [], state: { kind: 'ready' }, dropped: 0 }),
+    compact: () => {
+      if (!isSeat(subject) || compacted) return;
+      compacted = true;
+      reshapes += 1;
+      inner.update((held) => ({
+        ...held,
+        updates: compactedTail(held.updates),
+        // The tail is complete for its readers now. Keeping the ceiling's
+        // count would make `runningAt` refuse the tail it can still answer
+        // from and read a stale snapshot instead.
+        dropped: 0,
+      }));
+    },
     push: (update) => {
       if (variantOf(update)[0] === 'voice_audio') {
         audio.push(update);
@@ -134,11 +227,13 @@ function createStore(subject: Subject, state: StoreState = { kind: 'loading' }):
         inner.update((held) => ({ ...held }));
         return;
       }
+      const replacing = isSeat(subject) && compacted;
+      if (replacing && keptVariant(update) !== null) reshapes += 1;
       inner.update((held) => {
         if (isSeat(subject) && replaces(update)) {
           return { snapshot: null, updates: [], state: { kind: 'loading' }, dropped: 0 };
         }
-        const updates = [...held.updates, update];
+        const updates = replacing ? settledTail(held.updates, update) : [...held.updates, update];
         const over = updates.length - MAX_UPDATES;
         return {
           snapshot: held.snapshot,
