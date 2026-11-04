@@ -46,6 +46,7 @@ const {
   setModel,
 } = await import('./testing/records');
 const { conversationsFor, places } = await import('./conversations');
+const { echoes } = await import('./echoes.svelte');
 const { subjectKey } = await import('../protocol');
 const { default: Chat } = await import('./Chat.svelte');
 const { default: Seats } = await import('./testing/Seats.svelte');
@@ -88,6 +89,21 @@ const spoken = (key: string): unknown => ({
 const idless = (role: 'user' | 'assistant', text: string): unknown => ({
   type: role,
   message: { role, content: [{ type: 'text', text }] },
+});
+
+/**
+ * One turn carrying a message big enough to put the held window over its
+ * 8 MiB budget, which is the only way the client's own trim drops a page.
+ */
+const huge = (key: string, bytes: number): unknown => ({
+  key,
+  messages: [
+    {
+      type: 'user',
+      uuid: `u-${key}`,
+      message: { role: 'user', content: [{ type: 'text', text: 'x'.repeat(bytes) }] },
+    },
+  ],
 });
 
 /** The same frame as the read carries it, with the id the CLI minted. */
@@ -215,6 +231,18 @@ function stub() {
     },
   });
 
+  /**
+   * The press this client makes before its command goes.
+   *
+   * The composer posts the echo with the prompt id it minted, and the
+   * conversation reads a frame's id against it to tell this client's own send
+   * from the reader's send on another client. A test that models a local send
+   * has to make that press, or the frame is a stranger's.
+   */
+  const localPress = (running: boolean): void => {
+    echoes.post(subjectKey({ session: LEAD }), 'what is this', running, 'said-once', echoes.mint());
+  };
+
   return {
     connection,
     /** Every ask for older turns the column made, by the cursor it asked from. */
@@ -276,6 +304,7 @@ function stub() {
      * one prompt agree about its sender.
      */
     prompt(): void {
+      localPress(false);
       send(promptMessage());
     },
     /**
@@ -283,6 +312,7 @@ function stub() {
      * takes both before any pass runs between them.
      */
     promptThenFrame(): void {
+      localPress(false);
       for (const fn of listeners) {
         fn(promptMessage());
         fn(frameMessage());
@@ -343,6 +373,13 @@ function stub() {
         update: { prompt_lifecycle: { key: LEAD, uuid: 'said-once', state: 'started' } },
       });
     },
+    /** The same lifecycle for a prompt the read's queue named under another id. */
+    startedFor(uuid: string): void {
+      send({
+        kind: 'update',
+        update: { prompt_lifecycle: { key: LEAD, uuid, state: 'started' } },
+      });
+    },
     /** The core's answer on whether a turn is in flight, which a page alone cannot say. */
     inflight(on = true): void {
       send({
@@ -374,9 +411,32 @@ function stub() {
      * own.
      */
     queued(source = 'you'): void {
+      // The reader's own mid-turn press is this client's, so the echo goes
+      // first; a queue announcement from anyone else carries another id.
+      if (source === 'you') localPress(true);
       send({
         kind: 'update',
         update: { prompt_queued: { key: LEAD, uuid: 'said-once', source, text: 'what is this' } },
+      });
+    },
+    /**
+     * A prompt the reader sent from ANOTHER client: the wire says `you`, and
+     * the id is one this client never minted.
+     */
+    remotePrompt(): void {
+      send({
+        kind: 'update',
+        update: {
+          chat_appended: {
+            key: LEAD,
+            source: 'you',
+            msg: {
+              type: 'user',
+              uuid: 'from-the-phone',
+              message: { role: 'user', content: [{ type: 'text', text: 'sent from the phone' }] },
+            },
+          },
+        },
       });
     },
   };
@@ -485,7 +545,11 @@ beforeEach(() => {
   // **The saved places outlive the connection**, so they outlive a test too.
   // Every case starts from no place of its own: a place is a fact about a
   // conversation, and two tests are two app runs.
-  for (const which of [LEAD, OTHER]) places.forget(subjectKey({ session: which }));
+  for (const which of [LEAD, OTHER]) {
+    const seat = subjectKey({ session: which });
+    places.forget(seat);
+    echoes.clear(seat);
+  }
   // **The suite runs as a reader who asked for less motion.** The glide has
   // its own cases, which turn the query off; every other case is about where
   // the column lands and reads the one write that landing is.
@@ -1089,21 +1153,40 @@ describe('whether the column follows the newest end', () => {
     expect(layout.reads - before, 'a read the frame did not owe').toBe(1);
   });
 
-  it('leaves a reader parked a few pixels short of the end alone', async () => {
+  it('follows again when a parked reader comes back inside the notch', async () => {
+    // **The notch is the follow's boundary, not the exact end** (the rule the
+    // book states): a reader who comes back within 48px of the bottom is at
+    // the latest as far as the column's own gate is concerned, so the follow
+    // comes back with them and the next append lands.
     const server = stub();
     await draw(server);
     readerAt(0);
     await settle();
     clear();
 
-    // Four pixels short: near enough to look like the end and not the end.
+    // Four pixels short: inside the notch.
     readerAt(FOOT - 4);
-    server.frame();
-    // The draw lands a painted frame after the frame, as above: without the
-    // settle this passes on the frame not having landed at all.
     await settle();
 
-    expect(pinned(), 'the very end is the rule, not a threshold near it').toEqual([]);
+    expect(following(server), 'the notch resumed the follow').toBe(true);
+    expect(document.querySelector('button.follow'), 'the circle goes with it').toBeNull();
+    expect(element.offset, 'and the column holds the foot').toBe(FOOT);
+  });
+
+  it('leaves a parked reader past the notch alone', async () => {
+    // The control: the same return, sixty pixels short, is a reader reading.
+    const server = stub();
+    await draw(server);
+    readerAt(0);
+    await settle();
+    clear();
+
+    readerAt(FOOT - 60);
+    server.frame();
+    await settle();
+
+    expect(pinned(), 'past the notch the reader is reading').toEqual([]);
+    expect(following(server), 'and the follow stays off').toBe(false);
   });
 
   it('leaves a reader who just scrolled away alone, for the frame in their own breath', async () => {
@@ -1217,7 +1300,9 @@ describe('whether the column follows the newest end', () => {
 
     const shrunk = TOTAL - 120;
     setElement(shrunk, VIEWPORT);
-    list()?.scrolledTo(Math.floor(shrunk) - VIEWPORT - 40, shrunk, VIEWPORT);
+    // A hundred short of the foot: past the 48px notch, which is where a
+    // reader is reading rather than standing at the latest.
+    list()?.scrolledTo(Math.floor(shrunk) - VIEWPORT - 100, shrunk, VIEWPORT);
     flushSync();
     clear();
 
@@ -2494,18 +2579,21 @@ describe('whether the column follows the newest end', () => {
 
   it('brings the reader back for their own queued words that only the read carried', async () => {
     // **The drain's positive arm, and the one case nothing else covers.** A
-    // client that attaches to a seat whose prompt is already waiting gets no
-    // `prompt_queued` frame - the pending backlog goes to the first-ever
-    // subscriber alone - so the snapshot's queue is the only thing that knows
-    // the words are the reader's, and the drain at `started` is the one place
-    // they can put the foot back under them. Without it their own words draw
-    // and the reader stays wherever the attach left them.
+    // client that reconnects onto a seat whose own prompt is still waiting
+    // gets no `prompt_queued` frame - the pending backlog goes to the
+    // first-ever subscriber alone - so the snapshot's queue is the only thing
+    // that knows the words are this reader's press, and the echo it kept
+    // across the drop is what says the row is this client's. The drain at
+    // `started` is then the one place they can put the foot back under them.
     const server = stub();
     await draw(server);
     readerAt(0);
     await settle();
     clear();
 
+    // The press this client made before the drop: the echo carries its prompt
+    // id, and the read's queue row names the same one.
+    echoes.post(subjectKey({ session: LEAD }), 'what is this', false, 'said-once', echoes.mint());
     server.readQueue([{ uuid: 'said-once', source: 'you', text: 'what is this' }]);
     await settle();
     server.started();
@@ -2514,6 +2602,25 @@ describe('whether the column follows the newest end', () => {
     expect(pinned(), 'their own queued words come back to the foot off the read alone').toEqual([
       PIN,
     ]);
+  });
+
+  it('does not bring a parked reader back for queued words this client never pressed', async () => {
+    // **The read's queue is not a press either.** A row the snapshot carries
+    // under an id this client never minted is the reader's own words from
+    // somewhere else - the phone's send while they read here - so it lands in
+    // the badge rather than under their eyes.
+    const server = stub();
+    await draw(server);
+    readerAt(0);
+    await settle();
+    clear();
+
+    server.readQueue([{ uuid: 'phone-queued', source: 'you', text: 'from the phone' }]);
+    await settle();
+    server.startedFor('phone-queued');
+    await settle();
+
+    expect(pinned(), "the phone's queued words may not carry the reader").toEqual([]);
   });
 
   it('re-pins when the content changes size under a reader at the foot', async () => {
@@ -3007,12 +3114,6 @@ describe('a return to the seat the reader left', () => {
     layOut(40);
   }
 
-  /** The seat's follow flag, which is the state the return's entry changes. */
-  function following(server: ReturnType<typeof stub>): boolean | undefined {
-    const chat = conversationsFor(server.connection).live.get(subjectKey({ session: LEAD }))?.chat;
-    return chat === undefined ? undefined : get(chat.value).following;
-  }
-
   it('puts a parked reader back at their place, and pins nothing', async () => {
     const server = stub();
     await parked(server);
@@ -3220,19 +3321,17 @@ describe('a return to the seat the reader left', () => {
     await settle();
     expect(following(server), 'precondition: the arrival armed the follow').toBe(true);
 
-    // A second nudge inside the disarm slack keeps the follow on and moves the
-    // place; the capture is what records it, because nothing publishes.
-    readerAt(660);
-    await settle();
-    expect(following(server), 'precondition: the follow is still on').toBe(true);
     clear();
 
+    // The return takes the place back and parks the reader, whatever the
+    // follow flag said when they left. (A place inside the 48px notch is not
+    // a place - the notch follows - so this reader is parked clear of it.)
     await ontoDocument();
     returned(server);
     await settle();
     await settle();
 
-    expect(element.offset, 'the return went to the first place the reader left').toBe(660);
+    expect(element.offset, 'the return went to the place the reader left').toBe(PLACE);
     expect(following(server), 'the return turns the follow off under the parked reader').toBe(
       false,
     );
@@ -3460,6 +3559,12 @@ async function parkedColumn(server: ReturnType<typeof stub>): Promise<void> {
   expect(element.offset, 'precondition: the reader is parked').toBe(50);
 }
 
+/** The seat's follow flag, which the entry, a send and a notch return change. */
+function following(server: ReturnType<typeof stub>): boolean | undefined {
+  const chat = conversationsFor(server.connection).live.get(subjectKey({ session: LEAD }))?.chat;
+  return chat === undefined ? undefined : get(chat.value).following;
+}
+
 /** The viewport offset of the row the reader's top edge is on. */
 function topRowTop(): number | null {
   const root = document.querySelector('.conv');
@@ -3575,6 +3680,22 @@ describe('the badge on the way back', () => {
     await settle();
     expect(badge(), 'the cleared count reopened with the next park').toBeNull();
   });
+
+  it('counts a send the reader made on another client, and does not carry them to it', async () => {
+    // **`source: 'you'` is every client of the reader, not this one.** The
+    // press that carries a parked reader to the foot is the one made here,
+    // under their own eye; the phone's message lands below them and rides the
+    // badge like any other turn they were away for.
+    const server = stub();
+    await parkedColumn(server);
+    expect(badge(), 'nothing appended yet').toBeNull();
+
+    server.remotePrompt();
+    await settle();
+
+    expect(badge(), "the phone's send is counted").toBe('1');
+    expect(element.offset, 'and the reader stays where they are').toBe(50);
+  });
 });
 
 describe('the motion of a following column', () => {
@@ -3583,7 +3704,7 @@ describe('the motion of a following column', () => {
    * than waited out in real time. The column publishes on a frame as well,
    * so pumping is what runs the follow's own pass.
    */
-  function clock(): { pump: (ms: number) => void; stop: () => void } {
+  function clock(): { pump: (ms: number) => Promise<void>; stop: () => void } {
     let now = 0;
     const queue = new Map<number, FrameRequestCallback>();
     let next = 1;
@@ -3600,13 +3721,18 @@ describe('the motion of a following column', () => {
       queue.delete(id);
     });
     return {
-      pump: (ms: number) => {
+      pump: async (ms: number) => {
         now += ms;
         for (const [id, fn] of [...queue]) {
           queue.delete(id);
           fn(now);
         }
         flushSync();
+        // **Let the write's scroll event run before the next frame.** A real
+        // browser delivers it between frames and the column's guard reads it;
+        // a pump that never yields would let a glide that dies on its first
+        // clamp read as one that eased all the way.
+        await new Promise((resolve) => setTimeout(resolve, 0));
       },
       stop: () => {
         nowSpy.mockRestore();
@@ -3644,13 +3770,24 @@ describe('the motion of a following column', () => {
       reported.size = TOTAL + 200;
       setElement(TOTAL + 200, VIEWPORT);
       server.forged('one');
-      hand.pump(0);
-      hand.pump(16);
+      await hand.pump(0);
+      await hand.pump(16);
       const first = element.offset;
       expect(first, 'the column jumped to the foot instead of gliding').toBeLessThan(moved);
       expect(first, 'and it did move toward it').toBeGreaterThan(FOOT);
-      for (let at = 0; at < 10; at += 1) hand.pump(16);
+      // **The ease is spread across the glide, not spent in its first third.**
+      // A tween aimed at the raw `scrollHeight` asks for a value past the
+      // clamp from early on: the viewport arrives while most of the duration
+      // is still to run and sits there. At 64ms of 160 the column must still
+      // be travelling.
+      for (let at = 0; at < 3; at += 1) await hand.pump(16);
+      expect(element.offset, 'the ease reached the foot before its time').toBeLessThan(moved);
+      for (let at = 0; at < 7; at += 1) await hand.pump(16);
       expect(element.offset, 'the glide lands the measured foot').toBe(moved);
+      expect(
+        pinned().length,
+        'the glide wrote its frames rather than dying on the clamp',
+      ).toBeGreaterThanOrEqual(6);
 
       // A row that grows under the finger during a stream is the same glide.
       clear();
@@ -3659,8 +3796,8 @@ describe('the motion of a following column', () => {
       setElement(TOTAL + 400, VIEWPORT);
       resized(60);
       flushSync();
-      hand.pump(0);
-      hand.pump(16);
+      await hand.pump(0);
+      await hand.pump(16);
       expect(element.offset, 'the stream growth glided rather than jumped').toBeLessThan(grown);
       expect(element.offset, 'and it glided to the foot it measured').toBeGreaterThan(moved);
     } finally {
@@ -3761,6 +3898,65 @@ describe('the freeze a parked column keeps', () => {
 
     expect(topRowTop(), 'the rotate moved the row under the reader').toBe(before);
     expect(element.offset, 'and the reader is still parked, not carried to the foot').toBe(51);
+  });
+
+  it('goes to the latest when a trim takes the row the reader holds', async () => {
+    // **The plan's rule 7.** The held window drops whole pages over 8 MiB, and
+    // a page dropped out from under a parked reader leaves their anchor naming
+    // a row nothing holds. The pass cannot find it and would retry forever, so
+    // the column goes to the one place that still exists rather than clamping
+    // to whatever row is left.
+    const server = stub();
+    clear();
+    clearObservers();
+    setMeasured(TOTAL, VIEWPORT);
+    app = mount(Chat, {
+      target: document.body,
+      props: { slot: LEAD, connection: server.connection },
+    });
+    flushSync();
+    server.page([spoken('t1')], LEAD, 'cursor-seed');
+    await settle();
+    layOut(40);
+    const chat = conversationsFor(server.connection).live.get(subjectKey({ session: LEAD }))?.chat;
+    expect(chat, 'precondition: the column holds the seat conversation').toBeDefined();
+    if (chat === undefined) return;
+    expect(get(chat.value).loaded, 'precondition: the seed landed').toBe(true);
+    expect(get(chat.value).cursor, 'precondition: the seed names the page above').toBe(
+      'cursor-seed',
+    );
+
+    // Park first, so the page above lands without the follow's own trim. The
+    // move near the top is the row's own ask for that page.
+    readerAt(10);
+    await settle();
+    expect(server.asks.length, 'precondition: an older ask went out').toBeGreaterThanOrEqual(1);
+    server.page([huge('huge', 9 << 20)], LEAD, 'cursor-older');
+    await settle();
+    // The rows the older page brought are new elements, and jsdom lays
+    // nothing out; then the top edge moves into its huge turn.
+    layOut(40);
+    readerAt(0);
+    await settle();
+    expect(
+      get(chat.value)
+        .turns.map((t) => t.key)
+        .includes('huge'),
+      'the older page landed',
+    ).toBe(true);
+    expect(
+      places.of(subjectKey({ session: LEAD }))?.anchor.key,
+      'precondition: the reader holds a row of the older page',
+    ).toMatch(/^huge:/);
+    clear();
+
+    // The trim the column runs when a reader returns to the latest.
+    chat.trim(null);
+    await settle();
+
+    expect(following(server), 'the follow came back with the latest').toBe(true);
+    expect(element.offset, 'and so did the reader').toBe(FOOT);
+    expect(document.querySelector('button.follow'), 'the circle goes with the place').toBeNull();
   });
 });
 

@@ -639,6 +639,12 @@
    * Glide the viewport to `target`, a foot of `reachable`, and settle the
    * landing when it arrives.
    *
+   * **`target` is the CLAMPED destination**, the browser's own maximum, not
+   * the raw `scrollHeight` the instant write asks for: a tween aimed at the
+   * raw end overshoots the clamp on its first frames, and the read-back then
+   * differs from the requested value by the whole viewport - which the scroll
+   * handler reads as a foreign move and cancels the glide.
+   *
    * **The completion owns everything the instant write's read-back owns**:
    * where the reader ended, whether that is the foot, the pin's own echo
    * token, and the place a landed foot gives up. A glide already heading for
@@ -662,7 +668,11 @@
         set scrollTop(value: number) {
           before = box.scrollTop;
           box.scrollTop = value;
-          glideAt = value;
+          // **What the browser LANDED, not what was asked for.** A write can
+          // clamp; the scroll event this write comes back as carries the
+          // landed offset, so the guard that compares the two has to hold the
+          // same number or it reads the glide's own frame as a foreign move.
+          glideAt = box.scrollTop;
         },
       },
       target,
@@ -2037,7 +2047,7 @@
       wantsMotion() &&
       Math.abs(want - viewport.scrollTop) > FOOT_QUANTUM
     ) {
-      startGlide(target, reachable);
+      startGlide(want, reachable);
       return foot;
     }
     // **The write is unconditional, and the token comes from the read-back.**
@@ -2640,6 +2650,8 @@
     }
     if (foot) {
       // **A return that lands at the foot re-arms, whatever the size did.**
+      // (The reasons below are the exact-foot arm's; the notch arm that
+      // follows shares them.)
       // The clamp skip exists for a foot that closed on the reader, and their
       // down-scroll can carry one in the SAME event - a row settling from the
       // estimate to its drawn height corrects the content shorter exactly as
@@ -2663,6 +2675,28 @@
         anchor = null;
         rememberPlace();
       }
+    } else if (
+      // **The notch resumes the follow, not only the exact end.** A reader who
+      // comes back within `FOOT_NEAR` of the bottom is at the latest as far as
+      // the column's own gate is concerned (`footHeld` above), and leaving the
+      // follow off there strands them: the next append could not land and the
+      // badge would keep counting over a reader who is all but at the foot.
+      // The same three things make the move theirs as the exact-foot arm
+      // below: a hand heard, or the offset moving toward the foot. **And it
+      // has to be a move**: a fresh list reports its own start as an event at
+      // zero, which is neither a reader arriving nor a foot to re-arm from.
+      offset !== was &&
+      footHeld &&
+      !held.following &&
+      (!rose || byReader || aimed || towardFoot)
+    ) {
+      working?.following(true);
+      settleWindow();
+      anchor = null;
+      rememberPlace();
+      // The place was just given up, so the capture below must not take a new
+      // one from this event's own offset.
+      return;
     }
     // `placed` is where the last pin left the reader; before any pin has
     // run it is unknown, and a reader above the foot is above it whatever
