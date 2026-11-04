@@ -2363,13 +2363,15 @@
     const rose = height - room < lastSeen.content - lastSeen.room;
     lastSeen = { content: height, room };
     const foot = atFoot();
+    const byReader = readerMoved();
+    const aimed = aimedAtFoot();
+    /** Whether the reader stood at the foot before this event moved them. */
+    const wasFoot = footHeld;
     // **Where the reader is now, for the pin's next decision.** Only a move
     // moves it: a size change moves the foot under a reader standing still,
     // and the follow is what absorbs that. A few pixels above the end is the
     // notch a row's measurement leaves, not a place of their own.
     if (offset !== was) footHeld = height - offset - room <= FOOT_NEAR;
-    const byReader = readerMoved();
-    const aimed = aimedAtFoot();
     // **Every move is written, flagged.** A machine move has no other record -
     // the draw says where the list stands and never that the reader was
     // carried - and the flags are what separate it from the reader's own: a
@@ -2387,6 +2389,24 @@
       restore_owed: owed !== null,
       pin: false,
     });
+    // **A layout move is not the reader leaving.** The browser's own scroll
+    // anchoring shifts the offset toward the foot when rows above measure, and
+    // at an entry it can land short of a foot the reader already stood at;
+    // read as the reader's, that leaves a following column parked short for
+    // good (measured live: 5,317 px, 2026-11-04). The pass goes back.
+    if (
+      wasFoot &&
+      held.following &&
+      towardFoot &&
+      !footHeld &&
+      !byReader &&
+      !aimed &&
+      !shrank &&
+      restoring === null
+    ) {
+      land(true);
+      return;
+    }
     if (foot) {
       // **A return that lands at the foot re-arms, whatever the size did.**
       // The clamp skip exists for a foot that closed on the reader, and their

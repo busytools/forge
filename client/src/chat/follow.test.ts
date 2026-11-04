@@ -524,6 +524,33 @@ describe('whether the column follows the newest end', () => {
     ]);
   });
 
+  it('keeps the foot when a layout move carries the reader short of it, with no hand', async () => {
+    // **The browser's own scroll anchoring, at an entry.** Rows above measure
+    // while the page settles, the offset moves down with them, and the foot
+    // moves further still - nobody touched the column, so the hold must not
+    // die here and leave every later growth behind it.
+    const server = stub();
+    await draw(server);
+    readerAt(FOOT);
+    await settle();
+    clear();
+
+    // The content grows around the reader: the offset moves down with the
+    // rows above, and the new foot sits past where it lands.
+    const grown = Math.floor(TOTAL + 400);
+    setElement(grown, VIEWPORT);
+    list()?.scrolledTo(FOOT + 100, grown, VIEWPORT);
+    flushSync();
+    clear();
+
+    resized();
+    await settle();
+
+    expect(pinned(), 'the layout move is not the reader leaving').toEqual([
+      { asked: grown, landed: grown - VIEWPORT },
+    ]);
+  });
+
   it("holds the pin at the list's own end while the browser counts a row it has not measured", async () => {
     // **The blink while a turn is live.** A row that grows is in the browser's
     // scrollHeight at once, and the list measures it a callback later. A scroll
