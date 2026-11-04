@@ -1060,14 +1060,15 @@ accepts has no class.
 | --- | --- |
 | `[[orgs]]` - `name`, `accounts`, `fallback_accounts`, `browser_profile`; `[orgs.slack] workspace`, `[orgs.projects.slack] workspace` | Live. The roster, pins and the next tool call read the new values. A Slack binding to a label already in `[[slack]]` applies to the next tool call. |
 | `[[orgs.projects]]` - `name`, `path` | Live. The roster re-reads them; a removed project leaves it, and sessions already running keep running. |
-| `[[orgs.projects]]` - `resume_lead`, `model`, `permission_mode`, `max_workers`, `env`, `env_file`, `document_roots`, `browser_profile` | Next session. The next spawn reads them; a running session keeps what it spawned with. Toggling `resume_lead` on a project that already exists applies the next time it starts, and an added project with `resume_lead = true` starts. |
+| `[[orgs.projects]]` - `resume_lead`, `model`, `permission_mode`, `max_workers`, `env`, `env_file`, `browser_profile` | Next session. The next spawn reads them; a running session keeps what it spawned with. Toggling `resume_lead` on a project that already exists applies the next time it starts, and an added project with `resume_lead = true` starts. |
+| `[[orgs.projects]]` - `document_roots` | Live. The next document read or hand-off consults the reloaded list. |
 | `[[accounts]]` - `display_name`, `provider`, `base_url`, `token`, `models`, `model_slugs`, `model_aliases` | Live. The pool gains or changes accounts, and retires a removed one: sessions bound to it keep working, new selections never see it, and usage probes follow the new set. A re-minted token reaches a bound session on its next request. |
 | `[[accounts]]` - `env` | Next session. Folded into each account's env at load, so the next spawn carries it; a running child keeps its own environment. |
 | `[env]` | Next session. Folded into each account's env at load, so the next spawn carries it. |
 | `[models."<name>"]` | Next session. The next spawn stamps the new parameters. |
 | `[handoff]`, `[orgs.projects.handoff]` | Live. The next handoff reads it. |
 | `[systemone]` | Next session. A session's MCP facade captures the client when it spawns, so a session already running keeps the tools it had. |
-| `[vault]` | Next session. A reload that changes the section rebuilds the process-wide session, which locks it; a reload that leaves the section alone keeps it unlocked. |
+| `[vault]` | Live. A reload that changes the section rebuilds the process-wide session, which locks it; a reload that leaves the section alone keeps it unlocked. |
 | `[gateway] streak_count`, `streak_window_secs`, `no_reset_cooldown_secs` | Live. A reload that moved these replaces the rotation numbers; one that did not leaves the live cooldowns and streaks alone. |
 | `[gateway] port` | Restart-only. Stored and named in the log; forge does not move a live listener. |
 | `[server] tool_record_cap_kb`, `first_frame_cap_kb`, `more_page_cap_kb` | Live for pages and `more`: a page read takes the new value at its next read, on a connection already open included. A live frame keeps the cap its connection read when it opened, so a reload reaches the next connection's stream rather than an open one's. |

@@ -1293,6 +1293,62 @@
         "enabled",
         "models_dir"
       ]
+    },
+    "VaultAskPending": {
+      "": [
+        "kind",
+        "seq",
+        "span",
+        "update"
+      ],
+      "/update": [
+        "vault_ask_pending"
+      ],
+      "/update/vault_ask_pending": [
+        "draft",
+        "key"
+      ],
+      "/update/vault_ask_pending/draft": [
+        "attachment",
+        "field",
+        "id",
+        "item_id",
+        "item_name",
+        "masked_diff",
+        "needs_unlock",
+        "summary",
+        "tool"
+      ],
+      "/update/vault_ask_pending/draft/attachment": [
+        "name",
+        "size"
+      ],
+      "/update/vault_ask_pending/key": [
+        "label",
+        "org",
+        "project"
+      ]
+    },
+    "VaultAskResolved": {
+      "": [
+        "kind",
+        "seq",
+        "span",
+        "update"
+      ],
+      "/update": [
+        "vault_ask_resolved"
+      ],
+      "/update/vault_ask_resolved": [
+        "ending",
+        "id",
+        "key"
+      ],
+      "/update/vault_ask_resolved/key": [
+        "label",
+        "org",
+        "project"
+      ]
     }
   },
   "client_sampled": {
@@ -1522,6 +1578,26 @@
         "note"
       ],
       "/respond_slack_post/key": [
+        "label",
+        "org",
+        "project"
+      ]
+    },
+    "RespondVaultAsk": {
+      "": [
+        "respond_vault_ask"
+      ],
+      "/respond_vault_ask": [
+        "answer",
+        "id",
+        "key"
+      ],
+      "/respond_vault_ask/answer": [
+        "decision",
+        "master_password",
+        "two_factor"
+      ],
+      "/respond_vault_ask/key": [
         "label",
         "org",
         "project"

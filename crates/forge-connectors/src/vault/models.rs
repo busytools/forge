@@ -22,7 +22,7 @@ pub struct Prelogin {
 }
 
 /// The token endpoint's answer for both the password and refresh grants.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 pub struct TokenResponse {
     pub access_token: String,
     #[serde(default)]
@@ -34,6 +34,19 @@ pub struct TokenResponse {
     /// The wrapped account private key, in the same two spellings.
     #[serde(default, rename = "PrivateKey", alias = "privateKey")]
     pub private_key: Option<String>,
+}
+
+/// Hand-written because every field is a credential: the access and refresh
+/// tokens, the wrapped user key and the wrapped private key.
+impl std::fmt::Debug for TokenResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TokenResponse")
+            .field("access_token", &"[redacted]")
+            .field("refresh_token", &self.refresh_token.as_ref().map(|_| "[redacted]"))
+            .field("key", &self.key.as_ref().map(|_| "[redacted]"))
+            .field("private_key", &self.private_key.as_ref().map(|_| "[redacted]"))
+            .finish()
+    }
 }
 
 /// The account profile inside `GET /api/sync`.
@@ -116,9 +129,19 @@ where
 }
 
 /// The second factor a password grant carries, when the account asks for one.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct TwoFactorCode {
     pub token: String,
     /// The provider id Vaultwarden expects: `0` is an authenticator app.
     pub provider: i32,
+}
+
+/// Hand-written because the token is a credential.
+impl std::fmt::Debug for TwoFactorCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TwoFactorCode")
+            .field("token", &"[redacted]")
+            .field("provider", &self.provider)
+            .finish()
+    }
 }

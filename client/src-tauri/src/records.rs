@@ -702,17 +702,22 @@ fn parked(record: &mut Map<String, Value>, kind: &str, request: Option<&Value>) 
     let Some(request) = request else { return false };
     let ask = json!({ "kind": kind, "request": request });
     let key = ask_key(&ask);
-    let asks = array(record.get("pending_asks"));
+    let mut asks = array(record.get("pending_asks"));
     if let Some(key) = &key
-        && asks.iter().any(|waiting| ask_key(waiting).as_deref() == Some(key.as_str()))
+        && let Some(at) =
+            asks.iter().position(|waiting| ask_key(waiting).as_deref() == Some(key.as_str()))
     {
-        return false;
+        // A restamped frame (a vault card after another call unlocked) updates
+        // the ask in place; its position is the arrival order the core reports.
+        asks[at] = ask;
+        record.insert("pending_asks".to_owned(), Value::Array(asks));
+        return true;
     }
     let leads = kind == "slack_draft"
         || kind == "browser_hand_off"
+        || kind == "document_hand_off"
         || kind == "settings_write"
         || kind == "vault";
-    let mut asks = asks;
     if leads {
         // Behind the leaders already there, ahead of everything else.
         let first_other = asks
@@ -721,6 +726,7 @@ fn parked(record: &mut Map<String, Value>, kind: &str, request: Option<&Value>) 
                 let name = waiting.get("kind").and_then(Value::as_str).unwrap_or_default();
                 name != "slack_draft"
                     && name != "browser_hand_off"
+                    && name != "document_hand_off"
                     && name != "settings_write"
                     && name != "vault"
             })
@@ -1012,6 +1018,32 @@ mod tests {
         let asks = held(&records)["pending_asks"].as_array().expect("asks").clone();
         assert_eq!(asks.len(), 1, "its own resolution clears it");
         assert_eq!(asks[0]["kind"], json!("question"));
+    }
+
+    /// A restamped frame for a vault call already parked updates it in place:
+    /// another call's unlock makes every other card an ordinary approve card,
+    /// and the record must not keep demanding the password.
+    #[test]
+    fn a_restamped_vault_call_updates_in_place() {
+        let mut records = open();
+        let draft = json!({
+            "id": "v1",
+            "tool": "vault_get",
+            "summary": "read the password for 'bank'",
+            "needs_unlock": true
+        });
+        records.apply(&seated("vault_ask_pending", json!({ "draft": draft })));
+        let restamped = json!({
+            "id": "v1",
+            "tool": "vault_get",
+            "summary": "read the password for 'bank'",
+            "needs_unlock": false
+        });
+        records.apply(&seated("vault_ask_pending", json!({ "draft": restamped })));
+
+        let asks = held(&records)["pending_asks"].as_array().expect("asks").clone();
+        assert_eq!(asks.len(), 1, "the restamp does not park a second card");
+        assert_eq!(asks[0]["request"]["needs_unlock"], json!(false), "the card re-bases");
     }
 
     /// The round as well as the call: a resolution naming a later round does

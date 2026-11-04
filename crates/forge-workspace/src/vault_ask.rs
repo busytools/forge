@@ -2,7 +2,7 @@
 //!
 //! A vault operation an agent asks for parks here, in the workspace's own
 //! registry, until the person at a client answers it: the blocked MCP handler
-//! awaits a oneshot this module hands back, and nothing reaches the vault
+//! awaits a oneshot this module hands back, and no operation runs in the vault
 //! unless that answer approved it. It sits beside the Slack draft and the
 //! hand-offs for the same reason they do - the parking is workspace state,
 //! not a session's pending set, so a seat with no domain can still hold one.
@@ -124,6 +124,23 @@ impl Workspace {
         self.parked_vault_asks.lock().values().any(|(owner, _, _)| owner == slot)
     }
 
+    /// Re-stamp every call still parked after one of them unlocked the
+    /// session: each is now an ordinary approve card, and a fold that already
+    /// holds that id merges the restamped frame in place instead of ignoring
+    /// it. The answered call is already settled and gone from the registry.
+    pub(crate) fn rebase_vault_asks(&self) {
+        // Sent under the registry lock: a settle that raced this read would
+        // otherwise let a restamp overtake its own resolution and re-park a
+        // card the reader already answered.
+        let asks = self.parked_vault_asks.lock();
+        for (owner, draft, _) in asks.values() {
+            let _ = self.update_sender().send(SessionUpdate::VaultAskPending {
+                key: owner.clone(),
+                draft: draft.clone().with_unlock_state(false),
+            });
+        }
+    }
+
     /// Every held vault call this seat owns, stamped with the live session's
     /// lock state. A `HashMap` keeps no arrival order to offer, the same
     /// exception the settings writes already have.
@@ -197,6 +214,22 @@ mod tests {
         assert!(ws.vault_asks(&SessionSlot::lead("Other", "project"), false).is_empty());
     }
 
+    /// The record read a client takes on reconnect carries the held vault
+    /// call, which is what the dock draws; the registry is not a live-only
+    /// channel.
+    #[test]
+    fn the_record_read_reports_the_held_call() {
+        let (ws, _rx) = stub();
+        let (id, _held, _) = ws.register_vault_ask(&caller(), a_draft(), false);
+        assert!(
+            ws.pending_asks(&caller())
+                .iter()
+                .any(|ask| matches!(ask, PendingAsk::Vault(draft) if draft.id == id)),
+            "the record read carries the held vault call",
+        );
+        assert!(ws.pending_asks(&SessionSlot::lead("Other", "project")).is_empty());
+    }
+
     /// Two calls parked on a locked session: when the first unlocks it, the
     /// second's next read is an ordinary approve card and never asks for the
     /// password again.
@@ -234,6 +267,33 @@ mod tests {
                 "the re-base keeps the call's identity",
             );
         }
+    }
+
+    /// One call's unlock pushes a restamped frame for every card still parked,
+    /// which is what lets a dock that already drew them stop asking.
+    #[test]
+    fn unlocking_pushes_a_restamped_frame_for_the_other_cards() {
+        let (ws, mut rx) = stub();
+        let seat = caller();
+        let (answered, _held, _) = ws.register_vault_ask(&seat, a_draft(), true);
+        let (other, _other_held, _) = ws.register_vault_ask(&seat, a_draft(), true);
+        while rx.try_recv().is_ok() {}
+
+        ws.settle_vault_ask(answered, &seat, VaultAskEnding::Approved);
+        while rx.try_recv().is_ok() {}
+        ws.rebase_vault_asks();
+
+        let mut seen = Vec::new();
+        while let Ok(frame) = rx.try_recv() {
+            if let SessionUpdate::VaultAskPending { draft, .. } =
+                std::sync::Arc::unwrap_or_clone(frame.update)
+            {
+                seen.push(draft);
+            }
+        }
+        assert_eq!(seen.len(), 1, "only the card still parked is pushed");
+        assert_eq!(seen[0].id, other);
+        assert!(!seen[0].needs_unlock, "the unlock is stamped on the pushed draft");
     }
 
     /// An approval resolves the waiter and a decline resolves it too; a second

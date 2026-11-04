@@ -1,4 +1,4 @@
-//! `forge-connectors` - one module per inbound connector.
+//! `forge-connectors` - one module per external integration, inbound or outbound.
 //!
 //! Each connector module owns the network client, payload mapping and
 //! matching rules for one external integration. The

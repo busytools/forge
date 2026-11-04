@@ -6767,9 +6767,11 @@ describe('the dock', () => {
         respond_vault_ask: {
           key: SLOT,
           id: '0192e1c0-0000-7000-8000-0000000000cc',
-          answer: { decision: 'approve' },
-          master_password: 'open sesame',
-          two_factor: '123456',
+          answer: {
+            decision: 'approve',
+            master_password: 'open sesame',
+            two_factor: '123456',
+          },
         },
       },
     ]);
@@ -6820,6 +6822,53 @@ describe('the dock', () => {
         },
       },
     ]);
+  });
+
+  it('clears the vault sending line when the call resolves, even for its own answer', () => {
+    const harness = open({ record: record({ pending_asks: [vaultAsk()] }) });
+
+    action('Send back with a note').click();
+    flushSync();
+    const note = document.querySelector('.dock .sendback textarea');
+    if (!(note instanceof HTMLTextAreaElement)) throw new Error('the dock drew no note field');
+    note.value = 'ask for the password, not the TOTP';
+    note.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    sendBackAction().click();
+    flushSync();
+    expect(drawn(), 'the press is acknowledged while it is in flight').toContain(
+      'Sending your note to the agent',
+    );
+
+    harness.say({
+      kind: 'update',
+      update: {
+        vault_ask_resolved: {
+          key: { org: 'Busytools', project: 'forge', label: 'lead' },
+          id: '0192e1c0-0000-7000-8000-0000000000cc',
+          ending: 'sent_back',
+        },
+      },
+    });
+    flushSync();
+    expect(drawn(), 'the sending line goes with the settled call').not.toContain(
+      'Sending your note to the agent',
+    );
+  });
+
+  it('draws a vault refusal where the card stood', () => {
+    const harness = open({ record: record({ pending_asks: [vaultAsk()] }) });
+
+    action('Decline').click();
+    flushSync();
+    harness.say({
+      kind: 'error',
+      what: 'respond_vault_ask',
+      why: 'that vault call is no longer waiting: it has been answered',
+    });
+    flushSync();
+
+    expect(drawn(), 'the reason is not dropped').toContain('no longer waiting');
   });
 
   it('posts the held draft from the verb the reader picks, addressed by its own id', () => {

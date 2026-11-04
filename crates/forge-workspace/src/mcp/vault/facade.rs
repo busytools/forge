@@ -25,6 +25,10 @@ use crate::SessionSlot;
 use crate::vault::VaultSession;
 use crate::workspace::Workspace;
 
+/// The server's attachment ceiling, mirrored so forge refuses before a read
+/// or write buffers more than the vault accepts.
+const MAX_ATTACHMENT_BYTES: u64 = 525 * 1024 * 1024;
+
 /// Why a vault tool call did not return a result.
 #[derive(Debug, thiserror::Error)]
 pub enum VaultToolError {
@@ -66,7 +70,7 @@ pub struct CustomFieldInput {
 }
 
 /// The arguments `vault_create` accepts.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct CreateInput {
     #[serde(default, rename = "type")]
     pub kind: Option<String>,
@@ -221,7 +225,7 @@ impl ProdVaultFacade {
         draft: VaultDraft,
         tool: VaultTool,
         field: Option<&str>,
-    ) -> Result<(Arc<VaultSession>, Arc<Unlocked>), VaultToolError> {
+    ) -> Result<Approved, VaultToolError> {
         let workspace = self.workspace()?;
         let session = self.session()?;
         let (id, receiver, answerable) =
@@ -248,6 +252,9 @@ impl ProdVaultFacade {
 
         let item_id = draft.item_id.as_deref();
         let item_name = draft.item_name.as_deref();
+        // A call that names a field on its draft (a reveal) must audit it even
+        // when the gate's own argument is empty.
+        let field = field.or(draft.field.as_deref());
         match &answer.decision {
             VaultAskDecision::Decline => {
                 session.audit(caller, tool, item_id, item_name, field, "decline", "not run");
@@ -286,6 +293,10 @@ impl ProdVaultFacade {
                 );
                 return Err(VaultToolError::Vault(error));
             }
+            // One unlock serves every card parked behind this one: each is an
+            // ordinary approve card now, and a client that already drew it
+            // merges the restamped frame by id.
+            workspace.rebase_vault_asks();
         } else {
             if let Some(mut password) = answer.master_password.take() {
                 password.zeroize();
@@ -307,8 +318,15 @@ impl ProdVaultFacade {
             );
             VaultToolError::Vault(error)
         })?;
-        session.audit(caller, tool, item_id, item_name, field, "approve", "approved");
-        Ok((session, keys))
+        Ok(Approved {
+            session,
+            keys,
+            caller: caller.clone(),
+            tool,
+            item_id: item_id.map(str::to_owned),
+            item_name: item_name.map(str::to_owned),
+            field: field.map(str::to_owned),
+        })
     }
 
     /// Gate one item operation. When the session is unlocked the item is
@@ -322,7 +340,7 @@ impl ProdVaultFacade {
         tool: VaultTool,
         id: &str,
         summary: F,
-    ) -> Result<(Arc<VaultSession>, Arc<Unlocked>, Value, VaultDraft), VaultToolError>
+    ) -> Result<(Approved, Value, VaultDraft), VaultToolError>
     where
         F: FnOnce(Option<&str>, &mut VaultDraft) -> String,
     {
@@ -340,12 +358,12 @@ impl ProdVaultFacade {
         draft.item_name = name;
         let item_name = draft.item_name.clone();
         draft.summary = summary(item_name.as_deref(), &mut draft);
-        let (session, keys) = self.gate(caller, draft.clone(), tool, None).await?;
+        let approved = self.gate(caller, draft.clone(), tool, None).await?;
         let cipher = match cipher {
             Some(cipher) => cipher,
-            None => session.get_cipher(id).await?,
+            None => approved.session.get_cipher(id).await?,
         };
-        Ok((session, keys, cipher, draft))
+        Ok((approved, cipher, draft))
     }
 }
 
@@ -363,6 +381,38 @@ impl Drop for SettleOnDrop {
         if self.armed {
             self.workspace.settle_vault_ask(self.id, &self.caller, VaultAskEnding::Abandoned);
         }
+    }
+}
+
+/// An approved call: the session and keys it runs with, plus the facts its
+/// audit line records. [`Approved::done`] writes that line from the
+/// operation's own result, never before it has run.
+struct Approved {
+    session: Arc<VaultSession>,
+    keys: Arc<Unlocked>,
+    caller: SessionSlot,
+    tool: VaultTool,
+    item_id: Option<String>,
+    item_name: Option<String>,
+    field: Option<String>,
+}
+
+impl Approved {
+    fn done<T>(&self, result: Result<T, VaultToolError>) -> Result<T, VaultToolError> {
+        let outcome = match &result {
+            Ok(_) => "ok".to_owned(),
+            Err(error) => format!("failed: {error}"),
+        };
+        self.session.audit(
+            &self.caller,
+            self.tool,
+            self.item_id.as_deref(),
+            self.item_name.as_deref(),
+            self.field.as_deref(),
+            "approve",
+            &outcome,
+        );
+        result
     }
 }
 
@@ -394,15 +444,20 @@ impl VaultFacade for ProdVaultFacade {
                 None => format!("search for '{query}'"),
             },
         );
-        let (session, _keys) = self.gate(caller, draft.clone(), VaultTool::Search, None).await?;
-        let items = if let Some(items) = items {
-            items
-        } else {
-            let sync = session.sync().await?;
-            let keys = session.keys()?;
-            search_items(&keys, &sync, query, limit)
-        };
-        Ok(json!({ "items": items }))
+        let approved = self.gate(caller, draft.clone(), VaultTool::Search, None).await?;
+        let session = Arc::clone(&approved.session);
+        let result = async move {
+            let items = if let Some(items) = items {
+                items
+            } else {
+                let sync = session.sync().await?;
+                let keys = session.keys()?;
+                search_items(&keys, &sync, query, limit)
+            };
+            Ok(json!({ "items": items }))
+        }
+        .await;
+        approved.done(result)
     }
 
     async fn get(
@@ -412,7 +467,7 @@ impl VaultFacade for ProdVaultFacade {
         reveal: Option<&str>,
     ) -> Result<Value, VaultToolError> {
         validate_reveal(reveal)?;
-        let (_session, keys, cipher, _draft) = self
+        let (approved, cipher, _draft) = self
             .item_gate(caller, VaultTool::Get, id, |name, draft| {
                 draft.field = reveal.map(str::to_owned);
                 match (name, reveal) {
@@ -423,12 +478,17 @@ impl VaultFacade for ProdVaultFacade {
                 }
             })
             .await?;
-        let mut result = item_metadata(&keys, &cipher)?;
-        if let Some(reveal) = reveal {
-            let value = reveal_value(&keys, &cipher, reveal)?;
-            result["revealed"] = json!({ "field": reveal, "value": value });
+        let keys = Arc::clone(&approved.keys);
+        let result = async move {
+            let mut result = item_metadata(&keys, &cipher)?;
+            if let Some(reveal) = reveal {
+                let value = reveal_value(&keys, &cipher, reveal)?;
+                result["revealed"] = json!({ "field": reveal, "value": value });
+            }
+            Ok(result)
         }
-        Ok(result)
+        .await;
+        approved.done(result)
     }
 
     async fn create(
@@ -452,17 +512,23 @@ impl VaultFacade for ProdVaultFacade {
         );
         draft.item_name = Some(input.name.clone());
         draft.masked_diff = Some(masked_create_diff(input, kind));
-        let (session, keys) = self.gate(caller, draft.clone(), VaultTool::Create, None).await?;
-        let body = build_new_cipher(&keys, input, kind)?;
-        let created = session.create_cipher(&body).await?;
-        let id = created.get("id").and_then(Value::as_str).ok_or_else(|| {
-            VaultToolError::Message("the vault did not return the new item's id".to_owned())
-        })?;
-        let name = created.get("name").and_then(Value::as_str).map_or_else(
-            || input.name.clone(),
-            |enc| keys.decrypt_item_str(&created, enc).unwrap_or_else(|_| input.name.clone()),
-        );
-        Ok(json!({ "id": id, "name": name, "type": kind }))
+        let approved = self.gate(caller, draft.clone(), VaultTool::Create, None).await?;
+        let session = Arc::clone(&approved.session);
+        let keys = Arc::clone(&approved.keys);
+        let result = async move {
+            let body = build_new_cipher(&keys, input, kind)?;
+            let created = session.create_cipher(&body).await?;
+            let id = created.get("id").and_then(Value::as_str).ok_or_else(|| {
+                VaultToolError::Message("the vault did not return the new item's id".to_owned())
+            })?;
+            let name = created.get("name").and_then(Value::as_str).map_or_else(
+                || input.name.clone(),
+                |enc| keys.decrypt_item_str(&created, enc).unwrap_or_else(|_| input.name.clone()),
+            );
+            Ok(json!({ "id": id, "name": name, "type": kind }))
+        }
+        .await;
+        approved.done(result)
     }
 
     async fn update(
@@ -475,55 +541,78 @@ impl VaultFacade for ProdVaultFacade {
         if changed.is_empty() {
             return Err(VaultToolError::Message("the patch changes no fields".to_owned()));
         }
-        let (session, keys, cipher, draft) = self
+        let (approved, cipher, draft) = self
             .item_gate(caller, VaultTool::Update, id, |name, draft| {
                 draft.masked_diff = Some(masked_update_diff(&changed));
                 format!("change {} on '{}'", changed.join(", "), name.unwrap_or(id))
             })
             .await?;
-        let name = draft.item_name.clone().unwrap_or_else(|| id.to_owned());
-        let body = apply_patch(&keys, cipher, patch)?;
-        session.update_cipher(id, &body).await?;
-        Ok(json!({ "id": id, "name": name, "updated": true }))
+        let session = Arc::clone(&approved.session);
+        let keys = Arc::clone(&approved.keys);
+        let result = async move {
+            let name = draft.item_name.clone().unwrap_or_else(|| id.to_owned());
+            let body = apply_patch(&keys, cipher, patch)?;
+            session.update_cipher(id, &body).await?;
+            Ok(json!({ "id": id, "name": name, "updated": true }))
+        }
+        .await;
+        approved.done(result)
     }
 
     async fn trash(&self, caller: &SessionSlot, id: &str) -> Result<Value, VaultToolError> {
-        let (session, _keys, _cipher, draft) = self
+        let (approved, _cipher, draft) = self
             .item_gate(caller, VaultTool::Trash, id, |name, _draft| {
                 format!("move '{}' to the trash", name.unwrap_or(id))
             })
             .await?;
-        session.trash_cipher(id).await?;
-        let name = draft.item_name.clone().unwrap_or_else(|| id.to_owned());
-        Ok(json!({ "id": id, "name": name, "trashed": true }))
+        let session = Arc::clone(&approved.session);
+        let result = async move {
+            session.trash_cipher(id).await?;
+            let name = draft.item_name.clone().unwrap_or_else(|| id.to_owned());
+            Ok(json!({ "id": id, "name": name, "trashed": true }))
+        }
+        .await;
+        approved.done(result)
     }
 
     async fn restore(&self, caller: &SessionSlot, id: &str) -> Result<Value, VaultToolError> {
-        let (session, _keys, _cipher, draft) = self
+        let (approved, _cipher, draft) = self
             .item_gate(caller, VaultTool::Restore, id, |name, _draft| {
                 format!("restore '{}' from the trash", name.unwrap_or(id))
             })
             .await?;
-        session.restore_cipher(id).await?;
-        let name = draft.item_name.clone().unwrap_or_else(|| id.to_owned());
-        Ok(json!({ "id": id, "name": name, "restored": true }))
+        let session = Arc::clone(&approved.session);
+        let result = async move {
+            session.restore_cipher(id).await?;
+            let name = draft.item_name.clone().unwrap_or_else(|| id.to_owned());
+            Ok(json!({ "id": id, "name": name, "restored": true }))
+        }
+        .await;
+        approved.done(result)
     }
 
     async fn totp_code(&self, caller: &SessionSlot, id: &str) -> Result<Value, VaultToolError> {
-        let (_session, keys, cipher, draft) = self
+        let (approved, cipher, draft) = self
             .item_gate(caller, VaultTool::TotpCode, id, |name, _draft| {
                 format!("compute a TOTP code for '{}'", name.unwrap_or(id))
             })
             .await?;
-        let name = draft.item_name.clone().unwrap_or_else(|| id.to_owned());
-        let seed = cipher
-            .pointer("/login/totp")
-            .and_then(Value::as_str)
-            .ok_or_else(|| VaultToolError::Message(format!("'{name}' has no TOTP seed")))?;
-        let seed = keys.decrypt_item_str(&cipher, seed)?;
-        let totp =
-            forge_connectors::vault::crypto::totp_from_uri(&seed, std::time::SystemTime::now())?;
-        Ok(json!({ "code": totp.code, "period": totp.period, "remaining": totp.remaining }))
+        let keys = Arc::clone(&approved.keys);
+        let result = async move {
+            let name = draft.item_name.clone().unwrap_or_else(|| id.to_owned());
+            let seed = cipher
+                .pointer("/login/totp")
+                .and_then(Value::as_str)
+                .ok_or_else(|| VaultToolError::Message(format!("'{name}' has no TOTP seed")))?;
+            let seed = keys.decrypt_item_str(&cipher, seed)?;
+            let totp = forge_connectors::vault::crypto::totp_from_uri(
+                &seed,
+                std::time::SystemTime::now(),
+            )?;
+            Ok(json!({ "code": totp.code, "period": totp.period, "remaining": totp.remaining }))
+        }
+        .await;
+        approved.done(result)
     }
 
     async fn attachment_get(
@@ -556,29 +645,39 @@ impl VaultFacade for ProdVaultFacade {
             draft.attachment =
                 Some(VaultAttachmentDraft { name: file_name.clone(), size, replaces: None });
         }
-        let (session, keys) =
-            self.gate(caller, draft.clone(), VaultTool::AttachmentGet, None).await?;
-        let cipher = match cipher {
-            Some(cipher) => cipher,
-            None => session.get_cipher(item_id).await?,
-        };
-        let meta = session.get_attachment_meta(item_id, attachment_id).await?;
-        let url = meta.url.clone().ok_or_else(|| {
-            VaultToolError::Message("the vault did not return a download URL".to_owned())
-        })?;
-        let wrapped = meta.key.clone().ok_or_else(|| {
-            VaultToolError::Message("the vault did not return the attachment key".to_owned())
-        })?;
-        let blob = session.download_attachment(&url).await?;
-        let plain = keys.open_attachment(&cipher, &wrapped, &blob)?;
-        let workspace = self.workspace()?;
-        let path = resolve_destination(&workspace, caller, destination)?;
-        write_private(&path, &plain)?;
-        Ok(json!({
-            "path": path.display().to_string(),
-            "size": plain.len(),
-            "sha256": forge_connectors::vault::crypto::sha256_hex(&plain),
-        }))
+        let approved = self.gate(caller, draft.clone(), VaultTool::AttachmentGet, None).await?;
+        let result = async {
+            let cipher = match cipher {
+                Some(cipher) => cipher,
+                None => approved.session.get_cipher(item_id).await?,
+            };
+            let meta = approved.session.get_attachment_meta(item_id, attachment_id).await?;
+            let url = meta.url.clone().ok_or_else(|| {
+                VaultToolError::Message("the vault did not return a download URL".to_owned())
+            })?;
+            let wrapped = meta.key.clone().ok_or_else(|| {
+                VaultToolError::Message("the vault did not return the attachment key".to_owned())
+            })?;
+            let blob = approved.session.download_attachment(&url).await?;
+            if blob.len() as u64 > MAX_ATTACHMENT_BYTES {
+                return Err(VaultToolError::Message(format!(
+                    "the attachment is {} bytes, over the {} byte cap",
+                    blob.len(),
+                    MAX_ATTACHMENT_BYTES
+                )));
+            }
+            let plain = approved.keys.open_attachment(&cipher, &wrapped, &blob)?;
+            let workspace = self.workspace()?;
+            let path = resolve_destination(&workspace, caller, destination)?;
+            write_private(&path, &plain)?;
+            Ok(json!({
+                "path": path.display().to_string(),
+                "size": plain.len(),
+                "sha256": forge_connectors::vault::crypto::sha256_hex(&plain),
+            }))
+        }
+        .await;
+        approved.done(result)
     }
 
     async fn attachment_put(
@@ -592,21 +691,44 @@ impl VaultFacade for ProdVaultFacade {
         let workspace = self.workspace()?;
         let source = resolve_source(&workspace, caller, path)?;
         let data = std::fs::read(&source)?;
+        if data.len() as u64 > MAX_ATTACHMENT_BYTES {
+            return Err(VaultToolError::Message(format!(
+                "the file is {} bytes, over the {} byte cap",
+                data.len(),
+                MAX_ATTACHMENT_BYTES
+            )));
+        }
         let file_name = name
             .map(str::to_owned)
             .or_else(|| source.file_name().map(|name| name.to_string_lossy().into_owned()))
             .ok_or_else(|| VaultToolError::Message("the path has no file name".to_owned()))?;
         let size = data.len() as u64;
-        let (session, keys, cipher, draft) = self
+        // The card names the file being replaced, which needs the keys. A locked
+        // session parks with the id instead, and says only that it replaces one.
+        let replaced_name = if let Some(old) = replace_attachment_id {
+            let session = self.session()?;
+            if session.is_locked() {
+                None
+            } else {
+                let cipher = session.get_cipher(item_id).await?;
+                let keys = session.keys()?;
+                attachment_named(&keys, &cipher, old).ok().map(|(name, _)| name)
+            }
+        } else {
+            None
+        };
+        let (approved, cipher, _draft) = self
             .item_gate(caller, VaultTool::AttachmentPut, item_id, |name, draft| {
+                let replaced = replace_attachment_id
+                    .map(|id| replaced_name.clone().unwrap_or_else(|| id.to_owned()));
                 draft.attachment = Some(VaultAttachmentDraft {
                     name: file_name.clone(),
                     size,
-                    replaces: replace_attachment_id.map(str::to_owned),
+                    replaces: replaced.clone(),
                 });
-                match replace_attachment_id {
-                    Some(_) => format!(
-                        "replace an attachment on '{}' with '{file_name}'",
+                match &replaced {
+                    Some(old) => format!(
+                        "replace '{old}' on '{}' with '{file_name}'",
                         name.unwrap_or(item_id)
                     ),
                     None => {
@@ -615,62 +737,68 @@ impl VaultFacade for ProdVaultFacade {
                 }
             })
             .await?;
-        let (wrapped, encrypted_name, blob) =
-            keys.prepare_attachment(&cipher, &file_name, &data)?;
-        let slot_body = json!({
-            "key": wrapped,
-            "fileName": encrypted_name,
-            "fileSize": blob.len() as u64,
-            "adminRequest": false,
-        });
-        let slot = session.create_attachment_slot(item_id, &slot_body).await?;
-        let attachment_id = slot.get("attachmentId").and_then(Value::as_str).ok_or_else(|| {
-            VaultToolError::Message("the vault did not return the new attachment id".to_owned())
-        })?;
-        session.upload_attachment(item_id, attachment_id, blob.clone()).await?;
-        let meta = session.get_attachment_meta(item_id, attachment_id).await?;
-        if meta.size.is_some_and(|stored| stored != blob.len() as u64) {
-            session.audit(
-                caller,
-                VaultTool::AttachmentPut,
-                draft.item_id.as_deref(),
-                draft.item_name.as_deref(),
-                None,
-                "approve",
-                "failed: the server stored a different size",
-            );
-            return Err(VaultToolError::Message(format!(
-                "the server stored {} bytes for a {} byte blob",
-                meta.size.unwrap_or(0),
-                blob.len()
-            )));
+        let result = async {
+            let (wrapped, encrypted_name, blob) =
+                approved.keys.prepare_attachment(&cipher, &file_name, &data)?;
+            if blob.len() as u64 > MAX_ATTACHMENT_BYTES {
+                return Err(VaultToolError::Message(format!(
+                    "the encrypted attachment is {} bytes, over the {} byte cap",
+                    blob.len(),
+                    MAX_ATTACHMENT_BYTES
+                )));
+            }
+            let slot_body = json!({
+                "key": wrapped,
+                "fileName": encrypted_name,
+                "fileSize": blob.len() as u64,
+                "adminRequest": false,
+            });
+            let slot = approved.session.create_attachment_slot(item_id, &slot_body).await?;
+            let attachment_id =
+                slot.get("attachmentId").and_then(Value::as_str).ok_or_else(|| {
+                    VaultToolError::Message(
+                        "the vault did not return the new attachment id".to_owned(),
+                    )
+                })?;
+            approved.session.upload_attachment(item_id, attachment_id, blob.clone()).await?;
+            let meta = approved.session.get_attachment_meta(item_id, attachment_id).await?;
+            check_stored_size(meta.size, blob.len())?;
+            // The replace's old attachment is deleted only after the new one
+            // is stored and its size checked; a failed upload leaves the old
+            // there.
+            if let Some(old) = replace_attachment_id {
+                approved.session.delete_attachment(item_id, old).await?;
+            }
+            Ok(json!({
+                "id": attachment_id,
+                "name": file_name,
+                "size": blob.len(),
+                "sha256": forge_connectors::vault::crypto::sha256_hex(&data),
+                "replaced": replace_attachment_id,
+            }))
         }
-        if let Some(old) = replace_attachment_id {
-            session.delete_attachment(item_id, old).await?;
-        }
-        Ok(json!({
-            "id": attachment_id,
-            "name": file_name,
-            "size": blob.len(),
-            "sha256": forge_connectors::vault::crypto::sha256_hex(&data),
-            "replaced": replace_attachment_id,
-        }))
+        .await;
+        approved.done(result)
     }
 
     async fn folder_list(&self, caller: &SessionSlot) -> Result<Value, VaultToolError> {
         let draft = VaultDraft::new(VaultTool::FolderList, "list folders");
-        let (session, keys) = self.gate(caller, draft.clone(), VaultTool::FolderList, None).await?;
-        let folders = session.list_folders().await?;
-        let rows: Vec<Value> = folders
-            .iter()
-            .map(|folder| {
-                json!({
-                    "id": folder.id,
-                    "name": keys.decrypt_user_str(&folder.name).unwrap_or_else(|_| "(unreadable)".to_owned()),
+        let approved = self.gate(caller, draft.clone(), VaultTool::FolderList, None).await?;
+        let result = async {
+            let folders = approved.session.list_folders().await?;
+            let rows: Vec<Value> = folders
+                .iter()
+                .map(|folder| {
+                    json!({
+                        "id": folder.id,
+                        "name": approved.keys.decrypt_user_str(&folder.name).unwrap_or_else(|_| "(unreadable)".to_owned()),
+                    })
                 })
-            })
-            .collect();
-        Ok(json!({ "folders": rows }))
+                .collect();
+            Ok(json!({ "folders": rows }))
+        }
+        .await;
+        approved.done(result)
     }
 
     async fn folder_create(
@@ -680,12 +808,15 @@ impl VaultFacade for ProdVaultFacade {
     ) -> Result<Value, VaultToolError> {
         let mut draft = VaultDraft::new(VaultTool::FolderCreate, format!("create folder '{name}'"));
         draft.item_name = Some(name.to_owned());
-        let (session, keys) =
-            self.gate(caller, draft.clone(), VaultTool::FolderCreate, None).await?;
-        let encrypted = keys.encrypt_user_str(name)?;
-        let created = session.create_folder(&encrypted).await?;
-        let id = created.get("id").and_then(Value::as_str).unwrap_or_default().to_owned();
-        Ok(json!({ "id": id, "name": name }))
+        let approved = self.gate(caller, draft.clone(), VaultTool::FolderCreate, None).await?;
+        let result = async {
+            let encrypted = approved.keys.encrypt_user_str(name)?;
+            let created = approved.session.create_folder(&encrypted).await?;
+            let id = created.get("id").and_then(Value::as_str).unwrap_or_default().to_owned();
+            Ok(json!({ "id": id, "name": name }))
+        }
+        .await;
+        approved.done(result)
     }
 
     async fn folder_update(
@@ -697,11 +828,14 @@ impl VaultFacade for ProdVaultFacade {
         let mut draft =
             VaultDraft::new(VaultTool::FolderUpdate, format!("rename a folder to '{name}'"));
         draft.item_id = Some(id.to_owned());
-        let (session, keys) =
-            self.gate(caller, draft.clone(), VaultTool::FolderUpdate, None).await?;
-        let encrypted = keys.encrypt_user_str(name)?;
-        session.update_folder(id, &encrypted).await?;
-        Ok(json!({ "id": id, "name": name }))
+        let approved = self.gate(caller, draft.clone(), VaultTool::FolderUpdate, None).await?;
+        let result = async {
+            let encrypted = approved.keys.encrypt_user_str(name)?;
+            approved.session.update_folder(id, &encrypted).await?;
+            Ok(json!({ "id": id, "name": name }))
+        }
+        .await;
+        approved.done(result)
     }
 
     async fn folder_delete(&self, caller: &SessionSlot, id: &str) -> Result<Value, VaultToolError> {
@@ -724,11 +858,14 @@ impl VaultFacade for ProdVaultFacade {
         );
         draft.item_id = Some(id.to_owned());
         draft.item_name = name;
-        let (session, _keys) =
-            self.gate(caller, draft.clone(), VaultTool::FolderDelete, None).await?;
-        session.delete_folder(id).await?;
-        let name = draft.item_name.clone().unwrap_or_else(|| id.to_owned());
-        Ok(json!({ "id": id, "name": name, "deleted": true }))
+        let approved = self.gate(caller, draft.clone(), VaultTool::FolderDelete, None).await?;
+        let result = async {
+            approved.session.delete_folder(id).await?;
+            let name = draft.item_name.clone().unwrap_or_else(|| id.to_owned());
+            Ok(json!({ "id": id, "name": name, "deleted": true }))
+        }
+        .await;
+        approved.done(result)
     }
 }
 
@@ -1222,16 +1359,38 @@ fn resolve_source(
     Ok(source)
 }
 
+/// The server records the ciphertext's size at upload; a missing size fails
+/// closed rather than reading as a match.
+fn check_stored_size(stored: Option<u64>, blob_len: usize) -> Result<(), VaultToolError> {
+    let Some(stored) = stored else {
+        return Err(VaultToolError::Message(
+            "the server did not report the stored attachment size".to_owned(),
+        ));
+    };
+    if stored != blob_len as u64 {
+        return Err(VaultToolError::Message(format!(
+            "the server stored {stored} bytes for a {blob_len} byte blob"
+        )));
+    }
+    Ok(())
+}
+
 fn write_private(path: &Path, bytes: &[u8]) -> Result<(), VaultToolError> {
     use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    // `O_NOFOLLOW` refuses a final-component symlink, and the explicit
+    // set_permissions below fixes an existing file's mode, which `mode` only
+    // applies at creation.
     let mut file = std::fs::OpenOptions::new()
         .write(true)
         .create(true)
         .truncate(true)
         .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
         .open(path)?;
     file.write_all(bytes)?;
+    file.flush()?;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
     Ok(())
 }
 
@@ -1364,7 +1523,7 @@ impl VaultFacade for MockVaultFacade {
 mod tests {
     use super::*;
     use crate::config::VaultConfig;
-    use crate::protocol::{Command, PendingAsk};
+    use crate::protocol::Command;
     use forge_primitives::vault::{VaultAskAnswer, VaultAskDecision};
 
     fn locked_workspace() -> (
@@ -1385,18 +1544,20 @@ mod tests {
         (workspace, facade, SessionSlot::lead("Default", "forge"), rx)
     }
 
-    async fn parked_draft(workspace: &Workspace, caller: &SessionSlot) -> VaultDraft {
-        for _ in 0..200 {
-            if let Some(PendingAsk::Vault(held)) = workspace
-                .pending_asks(caller)
-                .into_iter()
-                .find(|ask| matches!(ask, PendingAsk::Vault(_)))
+    async fn parked_draft(
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::SeatUpdate>,
+    ) -> VaultDraft {
+        loop {
+            let frame = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+                .await
+                .expect("the locked call parks a card")
+                .expect("the seat stream stays open");
+            if let crate::protocol::SessionUpdate::VaultAskPending { draft, .. } =
+                std::sync::Arc::unwrap_or_clone(frame.update)
             {
-                return *held;
+                return draft;
             }
-            tokio::task::yield_now().await;
         }
-        panic!("the locked call parks a card");
     }
 
     fn decline(workspace: &Arc<Workspace>, caller: &SessionSlot, id: uuid::Uuid) {
@@ -1413,17 +1574,245 @@ mod tests {
             .expect("the answer routes");
     }
 
+    fn locked_worker_workspace() -> (
+        Arc<Workspace>,
+        Arc<ProdVaultFacade>,
+        SessionSlot,
+        tempfile::TempDir,
+        tokio::sync::mpsc::UnboundedReceiver<crate::SeatUpdate>,
+    ) {
+        use crate::mcp::workers::types::WorkerEntry;
+        use forge_primitives::WorkerLiveness;
+        use forge_primitives::project_key::ProjectKey;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (workspace, rx) = Workspace::testing_stub();
+        let caller = SessionSlot::worker("TestOrg", "proj", "vault-test");
+        workspace.insert_live_worker(
+            &ProjectKey::new("TestOrg/proj"),
+            WorkerEntry {
+                label: "vault-test".to_owned(),
+                charter: "test".to_owned(),
+                slot: caller.clone(),
+                session_id: None,
+                status: WorkerLiveness::Running,
+                spawned_at: std::time::SystemTime::UNIX_EPOCH,
+                spawned_by: SessionSlot::lead("TestOrg", "proj"),
+                needs_tag: false,
+                is_git_repo_at_spawn: false,
+                cwd: Some(dir.path().to_path_buf()),
+                diagnostic: None,
+                kick: None,
+            },
+        );
+        let config = VaultConfig {
+            url: "http://127.0.0.1:1".to_owned(),
+            email: "hi@vedhavyas.dev".to_owned(),
+        };
+        let session =
+            Arc::new(VaultSession::new(&config, Some(dir.path()), dir.path()).expect("a session"));
+        *workspace.vault.write() = Some(session);
+        let facade = Arc::new(ProdVaultFacade::from_arc(&workspace));
+        (workspace, facade, caller, dir, rx)
+    }
+
+    async fn held<T, F>(
+        workspace: &Arc<Workspace>,
+        caller: &SessionSlot,
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::SeatUpdate>,
+        tool: VaultTool,
+        call: F,
+    ) where
+        T: Send + 'static,
+        F: std::future::Future<Output = Result<T, VaultToolError>> + Send + 'static,
+    {
+        let task = tokio::spawn(call);
+        let draft = parked_draft(rx).await;
+        assert_eq!(draft.tool, tool, "the card names the tool that parked");
+        decline(workspace, caller, draft.id);
+        assert!(
+            matches!(task.await.expect("the call finishes"), Err(VaultToolError::Rejected)),
+            "{} must not run",
+            tool.as_str(),
+        );
+    }
+
+    /// Every tool parks its own card on a locked session and runs nothing
+    /// until the reader answers.
+    #[tokio::test]
+    async fn every_tool_parks_its_own_card_on_a_locked_session() {
+        let (workspace, facade, caller, dir, mut rx) = locked_worker_workspace();
+        std::fs::write(dir.path().join("note.txt"), b"hello").expect("the file");
+
+        {
+            let f = Arc::clone(&facade);
+            let c = caller.clone();
+            held(&workspace, &caller, &mut rx, VaultTool::Search, async move {
+                f.search(&c, "bank", None).await
+            })
+            .await;
+        }
+        {
+            let f = Arc::clone(&facade);
+            let c = caller.clone();
+            held(&workspace, &caller, &mut rx, VaultTool::Get, async move {
+                f.get(&c, "item-1", Some("password")).await
+            })
+            .await;
+        }
+        {
+            let f = Arc::clone(&facade);
+            let c = caller.clone();
+            let input = CreateInput { name: "bank".to_owned(), ..Default::default() };
+            held(&workspace, &caller, &mut rx, VaultTool::Create, async move {
+                f.create(&c, &input).await
+            })
+            .await;
+        }
+        {
+            let f = Arc::clone(&facade);
+            let c = caller.clone();
+            let patch = PatchInput { password: Some("x".to_owned()), ..Default::default() };
+            held(&workspace, &caller, &mut rx, VaultTool::Update, async move {
+                f.update(&c, "item-1", &patch).await
+            })
+            .await;
+        }
+        for (tool, id) in [
+            (VaultTool::Trash, "item-1"),
+            (VaultTool::Restore, "item-1"),
+            (VaultTool::TotpCode, "item-1"),
+        ] {
+            let f = Arc::clone(&facade);
+            let c = caller.clone();
+            held(&workspace, &caller, &mut rx, tool, async move {
+                match tool {
+                    VaultTool::Trash => f.trash(&c, id).await,
+                    VaultTool::Restore => f.restore(&c, id).await,
+                    _ => f.totp_code(&c, id).await,
+                }
+            })
+            .await;
+        }
+        {
+            let f = Arc::clone(&facade);
+            let c = caller.clone();
+            held(&workspace, &caller, &mut rx, VaultTool::AttachmentGet, async move {
+                f.attachment_get(&c, "item-1", "att-1", "out.bin").await
+            })
+            .await;
+        }
+        {
+            let f = Arc::clone(&facade);
+            let c = caller.clone();
+            held(&workspace, &caller, &mut rx, VaultTool::AttachmentPut, async move {
+                f.attachment_put(&c, "item-1", "note.txt", None, None).await
+            })
+            .await;
+        }
+        {
+            let f = Arc::clone(&facade);
+            let c = caller.clone();
+            held(&workspace, &caller, &mut rx, VaultTool::FolderList, async move {
+                f.folder_list(&c).await
+            })
+            .await;
+        }
+        {
+            let f = Arc::clone(&facade);
+            let c = caller.clone();
+            held(&workspace, &caller, &mut rx, VaultTool::FolderCreate, async move {
+                f.folder_create(&c, "folder").await
+            })
+            .await;
+        }
+        {
+            let f = Arc::clone(&facade);
+            let c = caller.clone();
+            held(&workspace, &caller, &mut rx, VaultTool::FolderUpdate, async move {
+                f.folder_update(&c, "folder-id", "renamed").await
+            })
+            .await;
+        }
+        {
+            let f = Arc::clone(&facade);
+            let c = caller.clone();
+            held(&workspace, &caller, &mut rx, VaultTool::FolderDelete, async move {
+                f.folder_delete(&c, "folder-id").await
+            })
+            .await;
+        }
+
+        let audit = std::fs::read_to_string(
+            dir.path()
+                .join("vault")
+                .join(format!("audit-{}.jsonl", forge_sdk::config_dir_store_key(dir.path()))),
+        )
+        .expect("every decline wrote an audit line");
+        assert_eq!(audit.lines().count(), 13, "one line per decision");
+        assert!(
+            audit.contains("\"field\":\"password\""),
+            "the get's reveal field reaches the audit through the gate",
+        );
+    }
+
+    /// The line an approval leaves records the operation's own outcome, not
+    /// a claim made before it ran, and the field the gate carried reaches it.
+    #[test]
+    fn an_approved_call_audits_its_own_outcome() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = VaultConfig {
+            url: "http://127.0.0.1:1".to_owned(),
+            email: "hi@vedhavyas.dev".to_owned(),
+        };
+        let session =
+            Arc::new(VaultSession::new(&config, Some(dir.path()), dir.path()).expect("a session"));
+        let approved = Approved {
+            session,
+            keys: Arc::new(Unlocked {
+                user_key: forge_connectors::vault::crypto::make_symmetric_key(),
+                private_key: None,
+                org_keys: std::collections::HashMap::new(),
+            }),
+            caller: SessionSlot::lead("Default", "forge"),
+            tool: VaultTool::Get,
+            item_id: Some("cipher-id".to_owned()),
+            item_name: Some("bank".to_owned()),
+            field: Some("password".to_owned()),
+        };
+
+        let failed: Result<(), VaultToolError> = Err(VaultToolError::Message("boom".to_owned()));
+        let _ = approved.done(failed);
+        let _ = approved.done(Ok(()));
+
+        let path = dir
+            .path()
+            .join("vault")
+            .join(format!("audit-{}.jsonl", forge_sdk::config_dir_store_key(dir.path())));
+        let audit = std::fs::read_to_string(path).expect("the outcome lines");
+        let lines: Vec<serde_json::Value> =
+            audit.lines().map(|line| serde_json::from_str(line).expect("json")).collect();
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0]["tool"], "vault__get");
+        assert_eq!(lines[0]["item_id"], "cipher-id");
+        assert_eq!(lines[0]["item_name"], "bank");
+        assert_eq!(lines[0]["field"], "password");
+        assert_eq!(lines[0]["decision"], "approve");
+        assert_eq!(lines[0]["result"], "failed: boom");
+        assert_eq!(lines[1]["result"], "ok", "a success is recorded after the call runs");
+    }
+
     /// A locked session must park the card asking for the password before it
     /// makes any token call. The first call after a forge start is the case:
     /// an error returned before the hold would leave the reader no way to
     /// unlock.
     #[tokio::test]
     async fn a_locked_get_parks_the_unlock_card_before_any_token_call() {
-        let (workspace, facade, caller, _rx) = locked_workspace();
+        let (workspace, facade, caller, mut rx) = locked_workspace();
         let asked = caller.clone();
         let task = tokio::spawn(async move { facade.get(&asked, "item-1", None).await });
 
-        let draft = parked_draft(&workspace, &caller).await;
+        let draft = parked_draft(&mut rx).await;
         assert!(draft.needs_unlock, "the card asks for the master password");
         assert_eq!(draft.item_id.as_deref(), Some("item-1"));
         assert_eq!(draft.summary, "read metadata for item item-1");
@@ -1435,14 +1824,143 @@ mod tests {
         );
     }
 
-    /// A locked search parks the query rather than failing on the sync.
+    /// A send-back is not an approval: the note reaches the agent as the
+    /// call's own error and no operation runs in the vault.
     #[tokio::test]
-    async fn a_locked_search_parks_the_query() {
-        let (workspace, facade, caller, _rx) = locked_workspace();
+    async fn a_send_back_returns_the_note_and_runs_nothing() {
+        let (workspace, facade, caller, mut rx) = locked_workspace();
         let asked = caller.clone();
         let task = tokio::spawn(async move { facade.search(&asked, "bank", None).await });
 
-        let draft = parked_draft(&workspace, &caller).await;
+        let draft = parked_draft(&mut rx).await;
+        workspace
+            .dispatch(Command::RespondVaultAsk {
+                key: caller.clone(),
+                id: draft.id,
+                answer: VaultAskAnswer {
+                    decision: VaultAskDecision::SendBack { note: "use the bank folder".to_owned() },
+                    master_password: None,
+                    two_factor: None,
+                },
+            })
+            .expect("the answer routes");
+
+        match task.await.expect("the call finishes") {
+            Err(VaultToolError::SentBack { note }) => assert_eq!(note, "use the bank folder"),
+            other => panic!("a send-back must not run the search: {other:?}"),
+        }
+    }
+
+    /// The attachment writer creates a private file and repairs an existing
+    /// file's mode, which `mode(0o600)` alone does not do.
+    #[test]
+    fn write_private_creates_and_repairs_0600() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("note");
+        write_private(&path, b"first").expect("write");
+        assert_eq!(
+            std::fs::metadata(&path).expect("metadata").permissions().mode() & 0o777,
+            0o600,
+            "a new attachment is private",
+        );
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).expect("chmod");
+        write_private(&path, b"second").expect("write");
+        assert_eq!(
+            std::fs::metadata(&path).expect("metadata").permissions().mode() & 0o777,
+            0o600,
+            "an existing attachment is repaired to private",
+        );
+    }
+
+    /// A final-component symlink is refused rather than followed out of the
+    /// session's tree.
+    #[test]
+    fn write_private_refuses_a_final_symlink() {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target = dir.path().join("target");
+        std::fs::write(&target, b"x").expect("target");
+        let link = dir.path().join("link");
+        symlink(&target, &link).expect("symlink");
+
+        assert!(write_private(&link, b"y").is_err(), "the symlink is not followed");
+        assert_eq!(std::fs::read(&target).expect("target read"), b"x", "the target is untouched");
+    }
+
+    /// The upload size check is a comparison only when the server reported a
+    /// size; a missing size is an error, not a match.
+    #[test]
+    fn a_missing_upload_size_fails_closed() {
+        assert!(check_stored_size(Some(97), 97).is_ok());
+        assert!(check_stored_size(Some(96), 97).is_err());
+        assert!(check_stored_size(None, 97).is_err(), "a missing size is not a match");
+    }
+
+    /// A name patch leaves the fields this version does not model intact and
+    /// encrypts the new name with the cipher's own key.
+    #[test]
+    fn a_name_patch_keeps_the_unmodelled_fields() {
+        let unlocked = Unlocked {
+            user_key: forge_connectors::vault::crypto::make_symmetric_key(),
+            private_key: None,
+            org_keys: std::collections::HashMap::new(),
+        };
+        let cipher = serde_json::json!({
+            "id": "c",
+            "type": 1,
+            "name": "old",
+            "login": { "totp": "seed", "password": "pw" },
+            "fields": [{ "name": "n", "value": "v" }],
+            "passwordHistory": [{ "password": "old" }],
+            "key": null,
+        });
+        let patch = PatchInput { name: Some("renamed".to_owned()), ..Default::default() };
+
+        let out = apply_patch(&unlocked, cipher.clone(), &patch).expect("the patch");
+
+        assert_eq!(out["login"]["totp"], cipher["login"]["totp"]);
+        assert_eq!(out["login"]["password"], cipher["login"]["password"]);
+        assert_eq!(out["fields"], cipher["fields"]);
+        assert_eq!(out["passwordHistory"], cipher["passwordHistory"]);
+        assert_eq!(out["key"], cipher["key"]);
+        let name = out["name"].as_str().expect("the name is an EncString");
+        assert_eq!(unlocked.decrypt_item_str(&out, name).expect("decrypt"), "renamed");
+    }
+
+    /// A new login encrypts its fields with the user key and keeps the type
+    /// the caller asked for.
+    #[test]
+    fn a_new_login_encrypts_its_fields() {
+        let unlocked = Unlocked {
+            user_key: forge_connectors::vault::crypto::make_symmetric_key(),
+            private_key: None,
+            org_keys: std::collections::HashMap::new(),
+        };
+        let input = CreateInput {
+            name: "bank".to_owned(),
+            username: Some("u".to_owned()),
+            password: Some("p".to_owned()),
+            ..Default::default()
+        };
+
+        let body = build_new_cipher(&unlocked, &input, "login").expect("the body");
+
+        assert_eq!(body["type"], 1);
+        let name = body["name"].as_str().expect("the name is an EncString");
+        assert_eq!(unlocked.decrypt_item_str(&body, name).expect("decrypt"), "bank");
+        let username = body.pointer("/login/username").and_then(Value::as_str).expect("username");
+        assert_eq!(unlocked.decrypt_item_str(&body, username).expect("decrypt"), "u");
+    }
+
+    /// A locked search parks the query rather than failing on the sync.
+    #[tokio::test]
+    async fn a_locked_search_parks_the_query() {
+        let (workspace, facade, caller, mut rx) = locked_workspace();
+        let asked = caller.clone();
+        let task = tokio::spawn(async move { facade.search(&asked, "bank", None).await });
+
+        let draft = parked_draft(&mut rx).await;
         assert!(draft.needs_unlock);
         assert!(draft.summary.contains("search for 'bank'"), "{}", draft.summary);
 

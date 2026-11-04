@@ -41,19 +41,3 @@ pub enum VaultError {
     #[error("invalid response: {0}")]
     InvalidResponse(String),
 }
-
-impl VaultError {
-    /// The HTTP status this error stands for, when it came from the API. The
-    /// facade uses this to tell a 401 refresh from a 404 missing item without
-    /// matching on the body text.
-    pub fn status(&self) -> Option<u16> {
-        match self {
-            Self::Unauthorized => Some(401),
-            Self::Forbidden(_) => Some(403),
-            Self::NotFound(_) => Some(404),
-            Self::RateLimited { .. } => Some(429),
-            Self::Api { status, .. } => Some(*status),
-            Self::Http(_) | Self::Locked | Self::Crypto(_) | Self::InvalidResponse(_) => None,
-        }
-    }
-}

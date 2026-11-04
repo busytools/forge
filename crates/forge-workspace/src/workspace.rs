@@ -1102,7 +1102,7 @@ pub struct Workspace {
     /// Vault calls held for the reader's approval, keyed by the call's id and
     /// carrying the session that asked. Its own registry for the same reason
     /// the settings write's is: a held call exists on a seat with no domain,
-    /// and nothing reaches the vault until the blocked handler's oneshot is
+    /// and no operation runs in the vault until the blocked handler's oneshot is
     /// answered.
     pub(crate) parked_vault_asks: Mutex<HashMap<uuid::Uuid, crate::vault_ask::ParkedVaultAsk>>,
     /// How many asks have ever arrived for a seat. **The ask's identity on the
@@ -8487,9 +8487,9 @@ impl Workspace {
                 crate::protocol::PendingAsk::DocumentHandOff(Box::new(held.ask.clone()))
             }));
         }
-        asks.extend(self.settings_write_asks(slot));
         let needs_unlock = self.vault.read().as_ref().is_some_and(|session| session.is_locked());
         asks.extend(self.vault_asks(slot, needs_unlock));
+        asks.extend(self.settings_write_asks(slot));
         if let Some(domain) = self.domain_session_for(slot) {
             let guard = domain.lock();
             asks.extend(
@@ -14632,6 +14632,35 @@ base_url = "https://openrouter.ai/api"
         dir
     }
 
+    /// An unrelated reload keeps the live vault session: a settings save must
+    /// not lock a vault and make the next tool call ask for the password.
+    #[tokio::test]
+    async fn an_unrelated_reload_keeps_the_vault_session() {
+        let dir = make_workspace_dir_declaring_model();
+        let path = forge_toml_path(dir.path());
+        let raw = fs::read_to_string(&path).expect("read fixture");
+        let raw = format!(
+            "{raw}\n[vault]\nurl = \"https://bitwarden.hub\"\nemail = \"hi@vedhavyas.dev\"\n"
+        );
+        fs::write(&path, &raw).expect("write vault section");
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        let before =
+            Arc::clone(workspace.vault.read().as_ref().expect("the fixture configures a vault"));
+
+        let changed = raw.replace(
+            "model = \"deepseek-v4.1-flash\"",
+            "model = \"deepseek-v4.1-flash\"\nmax_workers = 2",
+        );
+        fs::write(&path, changed).expect("write the unrelated edit");
+        workspace.reload_config().expect("the file still loads");
+
+        let after = Arc::clone(workspace.vault.read().as_ref().expect("still configured"));
+        assert!(
+            Arc::ptr_eq(&before, &after),
+            "an unrelated reload must keep the session and its unlocked keys",
+        );
+    }
+
     /// A valid reload replaces the whole config, and the live value equals
     /// what a boot on the same file would load.
     #[tokio::test]
@@ -18415,6 +18444,42 @@ mod worker_activity_tests {
         ));
         assert_eq!(ws.session_activity(&seat), L::Running, "answered, the turn runs again");
         assert_eq!(ws.pending_interaction(&seat), None, "and the row stands down");
+    }
+
+    /// **A parked vault call rides the same machinery every ask does.** It
+    /// parks in its own registry, so without `has_vault_ask` a seat holding
+    /// one kept its running mark and the needs-you row said nothing.
+    #[test]
+    fn a_parked_vault_ask_reads_as_attention() {
+        let (ws, _rx) = Workspace::testing_stub();
+        let seat = SessionSlot::from_str_for_test("w-vaultask");
+        let domain = ws.register_domain_session(seat.clone(), None);
+        domain.lock().turn_pending = true;
+        assert_eq!(ws.session_activity(&seat), L::Running, "the control, mid-turn");
+
+        ws.note_client_attached();
+        let draft = forge_primitives::vault::VaultDraft::new(
+            forge_primitives::vault::VaultTool::Search,
+            "search for 'bank'",
+        );
+        let (id, _held, _) = ws.register_vault_ask(&seat, draft, false);
+        assert_eq!(
+            ws.session_activity(&seat),
+            L::Attention,
+            "a held vault call is a person's to answer, not a running turn's",
+        );
+
+        assert!(ws.resolve_vault_ask(
+            id,
+            &seat,
+            forge_primitives::vault::VaultAskAnswer {
+                decision: forge_primitives::vault::VaultAskDecision::Decline,
+                master_password: None,
+                two_factor: None,
+            },
+        ));
+        assert!(ws.settle_vault_ask(id, &seat, forge_primitives::vault::VaultAskEnding::Declined,));
+        assert_eq!(ws.session_activity(&seat), L::Running, "answered, the turn runs again");
     }
 
     /// `activity` is populated by the `agents__list` read path only; the

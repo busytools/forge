@@ -2,7 +2,7 @@
 //!
 //! Thirteen tools, every one held for the reader's approval: the blocked
 //! handler parks a `VaultDraft` on the workspace registry, the dock draws it,
-//! and nothing reaches the vault unless the answer approved it. The card
+//! and no operation runs in the vault unless the answer approved it. The card
 //! never carries a secret value; a reveal happens only after approval and
 //! travels in the tool result.
 
@@ -106,7 +106,7 @@ impl Tool for VaultCall {
             }
             VaultTool::Get => {
                 "Read one vault item. By default returns metadata only: id, name, type, \
-                 username, uris, folder, card brand, attachments and dates. Pass `reveal` to \
+                 username, uris, folder_id, card brand, attachments and dates. Pass `reveal` to \
                  return one selected value: password, notes, custom:<name>, card.cardholder, \
                  card.number, card.expiry (an object of expMonth and expYear) or card.code. \
                  The TOTP seed is never a reveal option; use vault__totp_code. The call is \
@@ -183,8 +183,8 @@ impl Tool for VaultCall {
                     "id": { "type": "string", "description": "The item's id." },
                     "reveal": {
                         "type": "string",
-                        "enum": ["password", "notes", "card.cardholder", "card.number", "card.expiry", "card.code"],
-                        "description": "One field to reveal. custom:<name> selects a custom field."
+                        "pattern": "^(password|notes|card\\.(cardholder|number|expiry|code)|custom:.+)$",
+                        "description": "One field to reveal: password, notes, custom:<name>, card.cardholder, card.number, card.expiry or card.code."
                     }
                 },
                 "required": ["id"],
@@ -498,6 +498,24 @@ mod tests {
         assert_eq!(calls, vec!["vault__search"]);
         let text = format!("{output:?}");
         assert!(text.contains("vault__search"), "{text}");
+    }
+
+    /// The Get schema admits the `custom:<name>` reveal the tool promises;
+    /// an enum of the fixed names would reject it before the facade could.
+    #[test]
+    fn the_get_schema_admits_a_custom_reveal() {
+        let facade = Arc::new(MockVaultFacade::new());
+        let call = VaultCall {
+            facade: Arc::clone(&facade) as Arc<dyn VaultFacade>,
+            slot: SessionSlot::lead("Default", "forge"),
+            tool: VaultTool::Get,
+        };
+        let schema = call.input_schema();
+        let pattern = schema["properties"]["reveal"]["pattern"]
+            .as_str()
+            .expect("the reveal carries a pattern");
+        assert!(pattern.contains("custom:"), "the custom reveal is admitted: {pattern}");
+        assert!(schema["properties"]["reveal"].get("enum").is_none());
     }
 
     /// A malformed argument fails before the facade runs.

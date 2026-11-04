@@ -4,6 +4,7 @@
 
 use serde::de::DeserializeOwned;
 use serde_json::Value;
+use zeroize::Zeroize;
 
 use crate::vault::VaultError;
 use crate::vault::models::{
@@ -60,7 +61,7 @@ impl VaultClient {
         let retry_after = retry_after(&resp);
         let body = resp.text().await?;
         if !status.is_success() {
-            return Err(api_error(status.as_u16(), retry_after, body));
+            return Err(api_error(status.as_u16(), retry_after, safe_error(&body)));
         }
         if body.is_empty() {
             return Ok(Value::Null);
@@ -113,6 +114,9 @@ impl VaultClient {
             .form(&form)
             .send()
             .await?;
+        for (_, value) in &mut form {
+            value.zeroize();
+        }
         self.send_typed(resp).await
     }
 
@@ -319,7 +323,7 @@ impl VaultClient {
         let retry_after = retry_after(&resp);
         if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
-            return Err(api_error(status.as_u16(), retry_after, body));
+            return Err(api_error(status.as_u16(), retry_after, safe_error(&body)));
         }
         Ok(resp.bytes().await?.to_vec())
     }
@@ -331,6 +335,19 @@ fn retry_after(resp: &reqwest::Response) -> Option<u64> {
         .get(reqwest::header::RETRY_AFTER)
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.trim().parse::<u64>().ok())
+}
+
+/// The server's own error field and nothing else. A proxy that echoes the
+/// request body must not put the master-password hash into a tool result or
+/// the audit file; the token endpoint is the reason this exists.
+fn safe_error(body: &str) -> String {
+    let Ok(value) = serde_json::from_str::<Value>(body) else { return String::new() };
+    value
+        .get("error")
+        .and_then(Value::as_str)
+        .or_else(|| value.get("error_description").and_then(Value::as_str))
+        .unwrap_or_default()
+        .to_owned()
 }
 
 /// Map a non-2xx response to the error the facade branches on.
@@ -437,8 +454,50 @@ mod tests {
         let error = client.sync("stale").await.unwrap_err();
 
         assert!(matches!(error, VaultError::Unauthorized));
-        assert_eq!(error.status(), Some(401));
         server.await.unwrap();
+    }
+
+    /// A proxy echoing the token request must not put the password hash in a
+    /// tool result or the audit file; only the server's error field survives.
+    #[tokio::test]
+    async fn a_token_error_keeps_the_error_field_and_not_the_body() {
+        let (address, server) =
+            serve_once("400 Bad Request", r#"{"error":"invalid_grant","password":"hunter2"}"#, "")
+                .await;
+        let client = VaultClient::new(&format!("http://{address}")).unwrap();
+
+        let error =
+            client.login_password("hi@vedhavyas.dev", "the-password-hash", None).await.unwrap_err();
+        let text = error.to_string();
+
+        assert!(text.contains("invalid_grant"), "{text}");
+        assert!(!text.contains("hunter2"), "the raw body reached the error: {text}");
+        server.await.unwrap();
+    }
+
+    /// A relative download is the API route and takes the bearer; an absolute
+    /// one is signed and must not.
+    #[tokio::test]
+    async fn a_relative_download_carries_the_bearer_and_an_absolute_one_does_not() {
+        let (address, server) = serve_once("200 OK", "bytes", "").await;
+        let client = VaultClient::new(&format!("http://{address}")).unwrap();
+        let downloaded = client.download_attachment("token", "/attachments/c/a").await.unwrap();
+        assert_eq!(downloaded, b"bytes");
+        let request = server.await.unwrap();
+        let text = String::from_utf8_lossy(&request);
+        assert!(text.contains("authorization: Bearer token"), "{text}");
+        assert!(text.contains("accept-encoding: identity"), "{text}");
+
+        let (address, server) = serve_once("200 OK", "bytes", "").await;
+        let client = VaultClient::new(&format!("http://{address}")).unwrap();
+        let signed = format!("http://{address}/signed?token=x");
+        client.download_attachment("token", &signed).await.unwrap();
+        let request = server.await.unwrap();
+        let text = String::from_utf8_lossy(&request);
+        assert!(
+            !text.to_lowercase().contains("authorization:"),
+            "a signed URL carries its own token: {text}",
+        );
     }
 
     #[tokio::test]

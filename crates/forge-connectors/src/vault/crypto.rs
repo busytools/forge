@@ -199,7 +199,7 @@ pub fn unwrap_org_key(enc: &str, private: &rsa::RsaPrivateKey) -> Result<Symmetr
         other => bail!("org key is EncString type {other}, not an RSA-OAEP wrap"),
     }
     let parts: Vec<&str> = rest.split('|').collect();
-    let data = parts.get(1).ok_or_else(|| anyhow!("org key has no ciphertext part"))?;
+    let data = parts.first().ok_or_else(|| anyhow!("org key has no ciphertext part"))?;
     rsa_oaep_unwrap(data, private, "org key")
 }
 
@@ -250,11 +250,12 @@ pub fn unwrap_attachment_key(
             let private_key = private_key
                 .context("attachment key is RSA-wrapped but no private key is unlocked")?;
             let parts: Vec<&str> = rest.split('|').collect();
-            let iv = parts.first().context("attachment key has no IV part")?;
-            let data = parts.get(1).context("attachment key has no ciphertext part")?;
+            // `4.<ciphertext>`; `6.<ciphertext>|<mac>`. The MAC covers the
+            // ciphertext only, per bitwarden-crypto's UnsignedSharedKey.
+            let data = parts.first().context("attachment key has no ciphertext part")?;
             if kind == "6" {
-                let mac = parts.get(2).context("attachment key type 6 has no MAC part")?;
-                verify_type6_mac(iv, data, mac, item_key)?;
+                let mac = parts.get(1).context("attachment key type 6 has no MAC part")?;
+                verify_type6_mac(data, mac, item_key)?;
             }
             rsa_oaep_unwrap(data, private_key, "attachment key")
         }
@@ -262,25 +263,18 @@ pub fn unwrap_attachment_key(
     }
 }
 
-fn verify_type6_mac(
-    iv_b64: &str,
-    data_b64: &str,
-    mac_b64: &str,
-    item_key: &SymmetricCryptoKey,
-) -> Result<()> {
+fn verify_type6_mac(data_b64: &str, mac_b64: &str, item_key: &SymmetricCryptoKey) -> Result<()> {
     let decode = |value: &str, what: &str| {
         base64::engine::general_purpose::STANDARD
             .decode(value)
             .with_context(|| format!("{what} is not base64"))
     };
-    let iv = decode(iv_b64, "type-6 IV")?;
     let data = decode(data_b64, "type-6 ciphertext")?;
     let mac = decode(mac_b64, "type-6 MAC")?;
     let encoded = item_key.to_encoded();
     let mac_key = encoded.as_ref().get(32..64).context("item key has no MAC half")?;
     let mut hmac =
         Hmac::<sha2::Sha256>::new_from_slice(mac_key).map_err(|e| anyhow!("HMAC init: {e}"))?;
-    hmac.update(&iv);
     hmac.update(&data);
     hmac.verify_slice(&mac).map_err(|_| anyhow!("attachment key type-6 MAC did not verify"))
 }
@@ -557,9 +551,8 @@ mod tests {
             .encrypt(&mut bitwarden_random::rng(), rsa::Oaep::<sha1::Sha1>::new(), encoded.as_ref())
             .unwrap();
 
-        let iv = base64::engine::general_purpose::STANDARD.encode([0u8; 16]);
         let data = base64::engine::general_purpose::STANDARD.encode(ciphertext);
-        let unwrapped = unwrap_org_key(&format!("4.{iv}|{data}"), &rsa_key).unwrap();
+        let unwrapped = unwrap_org_key(&format!("4.{data}"), &rsa_key).unwrap();
 
         assert_eq!(unwrapped, key);
     }
@@ -639,6 +632,57 @@ mod tests {
         let wrapped = wrap_symmetric_key(&attachment_key, &item_key).unwrap();
         let unwrapped = unwrap_attachment_key(&wrapped, &item_key, None).unwrap();
         assert_eq!(unwrapped, attachment_key);
+    }
+
+    /// The real RSA layout: `4.<ciphertext>`, one part, no IV. A parser that
+    /// expected an IV at index 0 failed every org and attachment unwrap.
+    #[test]
+    fn attachment_key_unwraps_when_rsa_wrapped_as_type_4() {
+        use base64::Engine;
+        let item_key = SymmetricCryptoKey::make(SymmetricKeyAlgorithm::Aes256CbcHmac);
+        let attachment_key = SymmetricCryptoKey::make(SymmetricKeyAlgorithm::Aes256CbcHmac);
+        let rsa_key = rsa::RsaPrivateKey::new(&mut bitwarden_random::rng(), 2048).unwrap();
+        let public = rsa_key.to_public_key();
+        let encoded = attachment_key.to_encoded();
+        let ciphertext = public
+            .encrypt(&mut bitwarden_random::rng(), rsa::Oaep::<sha1::Sha1>::new(), encoded.as_ref())
+            .unwrap();
+        let data = base64::engine::general_purpose::STANDARD.encode(ciphertext);
+        let wrapped = format!("4.{data}");
+
+        let unwrapped = unwrap_attachment_key(&wrapped, &item_key, Some(&rsa_key)).unwrap();
+        assert_eq!(unwrapped, attachment_key);
+    }
+
+    /// The type-6 layout is `6.<ciphertext>|<mac>`, and the MAC covers the
+    /// ciphertext only.
+    #[test]
+    fn attachment_key_unwraps_when_rsa_wrapped_as_type_6_and_rejects_a_bad_mac() {
+        use base64::Engine;
+        use hmac::{Hmac, KeyInit, Mac};
+
+        let item_key = SymmetricCryptoKey::make(SymmetricKeyAlgorithm::Aes256CbcHmac);
+        let attachment_key = SymmetricCryptoKey::make(SymmetricKeyAlgorithm::Aes256CbcHmac);
+        let rsa_key = rsa::RsaPrivateKey::new(&mut bitwarden_random::rng(), 2048).unwrap();
+        let public = rsa_key.to_public_key();
+        let encoded = attachment_key.to_encoded();
+        let ciphertext = public
+            .encrypt(&mut bitwarden_random::rng(), rsa::Oaep::<sha1::Sha1>::new(), encoded.as_ref())
+            .unwrap();
+        let composite = item_key.to_encoded();
+        let mut hmac = Hmac::<sha2::Sha256>::new_from_slice(&composite.as_ref()[32..64]).unwrap();
+        hmac.update(&ciphertext);
+        let mac = hmac.finalize().into_bytes();
+        let engine = base64::engine::general_purpose::STANDARD;
+        let wrapped = format!("6.{}|{}", engine.encode(&ciphertext), engine.encode(mac));
+
+        let unwrapped = unwrap_attachment_key(&wrapped, &item_key, Some(&rsa_key)).unwrap();
+        assert_eq!(unwrapped, attachment_key);
+
+        let mut bad_mac = mac.to_vec();
+        bad_mac[0] ^= 0xff;
+        let bad = format!("6.{}|{}", engine.encode(&ciphertext), engine.encode(bad_mac));
+        assert!(unwrap_attachment_key(&bad, &item_key, Some(&rsa_key)).is_err());
     }
 
     #[test]

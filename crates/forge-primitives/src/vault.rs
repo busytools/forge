@@ -15,6 +15,7 @@
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+use zeroize::Zeroize;
 
 /// One vault tool a held call can name. The wire spelling is the MCP tool
 /// name, so the card and the agent's request cannot disagree about which
@@ -112,7 +113,7 @@ pub struct VaultAttachmentDraft {
 
 /// One vault call held for the reader's approval.
 ///
-/// The blocked MCP handler awaits the answer; nothing reaches the vault
+/// The blocked MCP handler awaits the answer; no operation runs in the vault
 /// unless the answer approved it. Every field here is safe to draw: no
 /// secret value, no key, no TOTP seed, no card number.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -197,6 +198,11 @@ pub enum VaultAskDecision {
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VaultAskAnswer {
     /// What the reader decided.
+    ///
+    /// **Flattened, because the decision IS the answer's tag.** The client
+    /// writes `{"decision":"approve", ...}`; without this the internally
+    /// tagged enum nests one level down and no answer decodes.
+    #[serde(flatten)]
     pub decision: VaultAskDecision,
     /// The master password, when this card asked for it and the reader
     /// entered one. Absent on every card the session was already unlocked
@@ -206,6 +212,17 @@ pub struct VaultAskAnswer {
     /// The 2FA code, when the account asks for one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub two_factor: Option<String>,
+}
+
+impl Drop for VaultAskAnswer {
+    fn drop(&mut self) {
+        if let Some(password) = &mut self.master_password {
+            password.zeroize();
+        }
+        if let Some(code) = &mut self.two_factor {
+            code.zeroize();
+        }
+    }
 }
 
 impl std::fmt::Debug for VaultAskAnswer {
@@ -278,6 +295,17 @@ mod tests {
                 "tool"
             ],
         );
+    }
+
+    /// The serde spelling and `as_str` are one name, not two that happen to
+    /// round-trip through `parse`: the wire name is what the card and the
+    /// audit line carry.
+    #[test]
+    fn every_tool_serde_name_is_its_as_str() {
+        for tool in VaultTool::ALL {
+            let value = serde_json::to_value(tool).expect("a tool encodes");
+            assert_eq!(value.as_str(), Some(tool.as_str()), "{}", tool.as_str());
+        }
     }
 
     /// A draft and an answer round-trip through serde, which is what the

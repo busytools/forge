@@ -72,7 +72,10 @@ a post's does. Every write is held, whether the key belongs to this project or a
 and the core's one-line summary, then names the item and its id, the field the call reveals or
 changes, the diff with every secret value masked, and the attachment's name and size when the
 call moves one. The draft carries no secret value at all, so nothing the card draws can reveal
-one; the value reaches the tool's result only after an approval. A locked session adds a masked
+one; the value reaches the tool's result only after an approval. A card parked while the
+session is locked carries only what the call's arguments already say - the item's id, the field
+or the masked diff, an attachment's name and size - because naming the item needs the keys; the
+name appears on a card parked after an unlock. A locked session adds a masked
 master-password field and an optional 2FA code, and `Approve` stays unavailable until the
 password is entered, because the approval is what performs the unlock. The two ride only an
 approval: a send-back or a decline runs nothing. Its verbs are `Approve`, `Send back with a

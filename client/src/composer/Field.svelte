@@ -1,4 +1,5 @@
 <script lang="ts">
+  import type { FullAutoFill } from 'svelte/elements';
   import type { Editor } from './editors';
 
   /**
@@ -25,6 +26,8 @@
     id,
     name,
     autocapitalize,
+    autocomplete = 'off',
+    inputmode,
     oninput,
     onkeydown,
     field,
@@ -49,6 +52,10 @@
     id?: string;
     name?: string;
     autocapitalize?: 'off' | 'none' | 'on' | 'characters' | 'sentences' | 'words' | undefined;
+    /** The browser's autofill hint; `off` unless the box names its own. */
+    autocomplete?: FullAutoFill;
+    /** The soft keyboard a phone shows: `numeric` for a one-time code. */
+    inputmode?: 'none' | 'text' | 'tel' | 'url' | 'email' | 'numeric' | 'decimal' | 'search';
     oninput?: (event: Event) => void;
     onkeydown?: (event: KeyboardEvent) => void;
     field?: (el: HTMLElement | null) => void;
@@ -79,7 +86,8 @@
     {id}
     {name}
     {autocapitalize}
-    autocomplete="off"
+    {autocomplete}
+    {inputmode}
     spellcheck="false"
     aria-label={aria.label}
     aria-autocomplete={aria.autocomplete}
@@ -100,7 +108,7 @@
     {id}
     {name}
     {rows}
-    autocomplete="off"
+    {autocomplete}
     spellcheck="false"
     aria-label={aria.label}
     aria-autocomplete={aria.autocomplete}

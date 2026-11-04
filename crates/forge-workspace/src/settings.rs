@@ -45,7 +45,7 @@ pub const AREAS: &[AreaSpec] = &[
     AreaSpec {
         id: "connectors",
         name: "connectors",
-        note: "gotify, slack, system one and the plugin switch - the integrations that reach outside forge",
+        note: "gotify, slack, system one, the vault and the plugin switch - the integrations that reach outside forge",
     },
     AreaSpec {
         id: "server",
@@ -620,7 +620,7 @@ const PROJECT_KEYS: &[ConfigKey] = &[
     ConfigKey {
         path: "orgs[].projects[].document_roots",
         area: "projects",
-        class: EffectClass::NextSession,
+        class: EffectClass::Live,
         rows: |config| {
             config
                 .projects
@@ -895,7 +895,7 @@ const CONNECTOR_KEYS: &[ConfigKey] = &[
     ConfigKey {
         path: "vault.url",
         area: "connectors",
-        class: EffectClass::NextSession,
+        class: EffectClass::Live,
         rows: |config| {
             vec![text_set("vault.url", config.vault.as_ref().map(|vault| vault.url.clone()))]
         },
@@ -903,7 +903,7 @@ const CONNECTOR_KEYS: &[ConfigKey] = &[
     ConfigKey {
         path: "vault.email",
         area: "connectors",
-        class: EffectClass::NextSession,
+        class: EffectClass::Live,
         rows: |config| {
             vec![text_set("vault.email", config.vault.as_ref().map(|vault| vault.email.clone()))]
         },

@@ -2184,7 +2184,7 @@ pub enum SessionUpdate {
     },
     /// A vault call waits for the reader's approval in the dock: the family's
     /// tool handler is blocked on a oneshot until `Command::RespondVaultAsk`
-    /// answers it, so nothing reaches the vault while this is outstanding.
+    /// answers it, so no operation runs in the vault while this is outstanding.
     /// `needs_unlock` on the draft is stamped from the live session as the
     /// card is built, so a sibling that unlocked first re-bases this one.
     VaultAskPending {

@@ -80,6 +80,9 @@ impl VaultSection {
         if url.is_empty() {
             return Err("`url` is required when `[vault]` is present".to_owned());
         }
+        if !url.starts_with("https://") {
+            return Err("`url` must be an https:// URL; http is refused".to_owned());
+        }
         if email.is_empty() {
             return Err("`email` is required when `[vault]` is present".to_owned());
         }
@@ -4436,6 +4439,20 @@ base_url = "http://localhost:18765"
         write_config(dir.path(), minimal_config());
         let config = load_from_dir(dir.path()).expect("happy path");
         assert_eq!(config.vault, None, "an absent section injects no vault tools");
+    }
+
+    #[test]
+    fn a_plain_http_vault_url_is_refused() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            &format!(
+                "{}\n[vault]\nurl = \"http://bitwarden.hub\"\nemail = \"hi@vedhavyas.dev\"\n",
+                minimal_config()
+            ),
+        );
+        let err = load_from_dir(dir.path()).expect_err("http is refused");
+        assert!(err.to_string().contains("https://"), "{err}");
     }
 
     #[test]

@@ -336,6 +336,28 @@
     },
   };
 
+  /** A held vault call, and its locked twin: the masked fields exist only on
+   *  the locked card, and both are states the dock draws. */
+  const vaultAsk = {
+    kind: 'vault',
+    request: {
+      id: 'vault-1',
+      tool: 'vault__get',
+      summary: "read the password for 'bank'",
+      item_id: 'cipher-id',
+      item_name: 'bank',
+      field: 'password',
+      masked_diff: null,
+      attachment: null,
+      needs_unlock: false,
+    },
+  };
+
+  const vaultLocked = {
+    kind: 'vault',
+    request: { ...vaultAsk.request, id: 'vault-2', needs_unlock: true },
+  };
+
   /** A held draft whose verbs are not a post's: one wording for every
    *  operation is the defect the copy exists to avoid. */
   const slackDelete = {
@@ -671,6 +693,11 @@
       props: { record: { ...blank(), pending_asks: [readOutside] } },
     },
     { label: 'dock · slack draft', props: { record: { ...blank(), pending_asks: [slackDraft] } } },
+    { label: 'dock · vault call', props: { record: { ...blank(), pending_asks: [vaultAsk] } } },
+    {
+      label: 'dock · vault unlock',
+      props: { record: { ...blank(), pending_asks: [vaultLocked] } },
+    },
     {
       label: 'dock · slack reply',
       props: { record: { ...blank(), pending_asks: [slackReply] } },

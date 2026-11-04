@@ -1,6 +1,7 @@
 //! The vault family's ask shape, as another crate reads it: the draft a held
-//! call parks and the tool names it answers to. The crate does not expose the
-//! module yet, so this is the red the implementation turns green.
+//! call parks and the tool names it answers to. The wire spelling is the
+//! family's double-underscore MCP name (`vault__get`), which is also what the
+//! card and the audit line carry.
 
 use forge_primitives::vault::{VaultDraft, VaultTool};
 

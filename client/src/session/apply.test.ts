@@ -912,6 +912,33 @@ describe('applyUpdate', () => {
         'a resolution naming another call leaves this one parked',
       ).toBe(parked);
     });
+
+    it('merges a restamped vault call in place when another call unlocks', () => {
+      const draft = {
+        id: 'v1',
+        tool: 'vault__get',
+        summary: "read the password for 'bank'",
+        needs_unlock: true,
+      };
+      const first = applyUpdate(empty(), { vault_ask_pending: { key: SLOT, draft } });
+      const both = applyUpdate(first, {
+        vault_ask_pending: { key: SLOT, draft: { ...draft, id: 'v2' } },
+      });
+      const rebased = applyUpdate(both, {
+        vault_ask_pending: { key: SLOT, draft: { ...draft, needs_unlock: false } },
+      });
+
+      const held = (asked: SessionRecord): { id: string; needsUnlock: boolean }[] =>
+        asked.pending_asks.map((ask) => {
+          const request = (ask as Record<string, unknown>)['request'] as Record<string, unknown>;
+          return { id: request['id'] as string, needsUnlock: request['needs_unlock'] as boolean };
+        });
+
+      expect(held(rebased), 'the restamp updates the call and keeps its place').toEqual([
+        { id: 'v1', needsUnlock: false },
+        { id: 'v2', needsUnlock: true },
+      ]);
+    });
   });
 
   describe('the composer', () => {

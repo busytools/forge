@@ -1241,6 +1241,46 @@ fn frames_record() -> Value {
             span: 0,
         }),
     );
+    // **A held vault call's own shape.** The dock draws the tool, item,
+    // field, masked diff and attachment from names it writes by hand; a
+    // rename here fails no census line while the card draws an empty ask.
+    let mut vault_draft = forge_primitives::vault::VaultDraft::new(
+        forge_primitives::vault::VaultTool::Get,
+        "read 'bank'",
+    );
+    vault_draft.item_id = Some("cipher-id".to_owned());
+    vault_draft.item_name = Some("bank".to_owned());
+    vault_draft.field = Some("password".to_owned());
+    vault_draft.masked_diff = Some("password changed".to_owned());
+    vault_draft.attachment = Some(forge_primitives::vault::VaultAttachmentDraft {
+        name: "notes.txt".to_owned(),
+        size: 97,
+        replaces: None,
+    });
+    vault_draft.needs_unlock = true;
+    payload_sampled.insert(
+        "VaultAskPending".to_owned(),
+        shape_of(&ServerMessage::Update {
+            update: Box::new(forge_server::surface::SessionUpdate::VaultAskPending {
+                key: seat.clone(),
+                draft: vault_draft,
+            }),
+            seq: Some(9),
+            span: 0,
+        }),
+    );
+    payload_sampled.insert(
+        "VaultAskResolved".to_owned(),
+        shape_of(&ServerMessage::Update {
+            update: Box::new(forge_server::surface::SessionUpdate::VaultAskResolved {
+                key: seat.clone(),
+                id: uuid::Uuid::from_u128(12),
+                ending: forge_primitives::vault::VaultAskEnding::Approved,
+            }),
+            seq: Some(9),
+            span: 0,
+        }),
+    );
     // **A held config write's own shape.** The dock draws the key and both
     // values, and a rename inside this payload fails no census line while
     // the write draws an empty key nobody can approve knowingly.
@@ -1937,6 +1977,22 @@ fn command_sampled(seat: &SessionSlot) -> BTreeMap<String, BTreeMap<String, Valu
             project: "proj".to_owned(),
             id: "t-1".to_owned(),
             reserved: true,
+        }),
+    );
+    // **The held vault call's answer**, which the dock writes by hand: the
+    // unlock material lives INSIDE `answer`; a rename of `answer`, `decision`,
+    // `master_password` or `two_factor` would leave the client's literal
+    // writing a key nothing reads, with both sides' suites green.
+    sampled.insert(
+        "RespondVaultAsk".to_owned(),
+        sample(Command::RespondVaultAsk {
+            key: seat.clone(),
+            id: uuid::Uuid::new_v4(),
+            answer: forge_primitives::vault::VaultAskAnswer {
+                decision: forge_primitives::vault::VaultAskDecision::Approve,
+                master_password: Some("sample".to_owned()),
+                two_factor: Some("123456".to_owned()),
+            },
         }),
     );
     // **The held Slack draft's answer**, which the dock writes by hand: a

@@ -620,7 +620,21 @@ function parked(held: SessionRecord, kind: string, request: unknown): SessionRec
   if (request === undefined) return held;
   const ask = { kind, request };
   const key = askKey(ask);
-  if (key !== null && held.pending_asks.some((waiting) => askKey(waiting) === key)) return held;
+  if (key !== null) {
+    const existing = held.pending_asks.findIndex((waiting) => askKey(waiting) === key);
+    if (existing !== -1) {
+      // A repeated frame is not news. A restamped one (a vault card after
+      // another call unlocked the session) updates the ask in place: the
+      // position is the arrival order the core reports, and the new draft is
+      // the live one.
+      const previous = held.pending_asks[existing];
+      if (JSON.stringify(previous) === JSON.stringify(ask)) return held;
+      const pending_asks = held.pending_asks.map((waiting, at) =>
+        at === existing ? ask : waiting,
+      );
+      return { ...held, pending_asks };
+    }
+  }
   // The kinds held in the core's own registries rather than in the session's
   // pending set lead, the way the core's read orders them.
   const leads = (name: unknown): boolean =>

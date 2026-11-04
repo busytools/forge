@@ -570,7 +570,13 @@
       if (held === undefined) return;
       const id = typeof payload['id'] === 'string' ? payload['id'] : null;
       if (id === null || id !== held.shownVault) return;
-      if (held.answered === id) return;
+      // The reader's own answer: the sending line goes with the settled call,
+      // and the ending would only repeat the click. A send-back's line is not
+      // an ending, so it is cleared here rather than stranded.
+      if (held.answered === id) {
+        held.ended = null;
+        return;
+      }
       held.ended = vaultAskEndingLine(payload['ending']);
     });
   });
@@ -1457,7 +1463,10 @@
   function sendingBack(): void {
     box.ended = {
       tone: 'q',
-      text: 'Sending your feedback to the agent. Nothing was sent.',
+      text:
+        ask?.kind === 'vault'
+          ? 'Sending your note to the agent. No operation runs in the vault.'
+          : 'Sending your feedback to the agent. Nothing was sent.',
     };
   }
 

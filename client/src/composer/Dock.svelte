@@ -3,6 +3,7 @@
   import Icon from '../components/Icon.svelte';
   import { closeSurface, openSurface, surface } from '../browser/surface.svelte';
   import Field from './Field.svelte';
+  import SendBack from './SendBack.svelte';
   import TakeCard from './TakeCard.svelte';
   import type { Command } from '../protocol';
   import { goTo } from '../routes';
@@ -913,7 +914,7 @@
     const outcome = decision === 'send_back' ? { decision, note: vaultNote } : { decision };
     onanswer(id);
     if (decision === 'send_back') onsending();
-    answer({ respond_vault_ask: { key: slot, id, answer: outcome, ...unlock } });
+    answer({ respond_vault_ask: { key: slot, id, answer: { ...outcome, ...unlock } } });
   }
 
   /**
@@ -1560,7 +1561,7 @@
         {@const attachment = ask.request.attachment}
         <div class="desc">
           attachment: {attachment.name} ({attachment.size} bytes){attachment.replaces !== null
-            ? ' · replaces the attachment already there'
+            ? ` · replaces '${attachment.replaces}'`
             : ''}
         </div>
       {/if}
@@ -1584,6 +1585,8 @@
             element="input"
             bind:value={twoFactor}
             placeholder="2FA code (optional)"
+            autocomplete="one-time-code"
+            inputmode="numeric"
             aria={{ label: 'the two-factor code' }}
             onkeydown={(event: KeyboardEvent) => {
               onUnlockKey(event);
@@ -1703,24 +1706,17 @@
       {#if feedbackOpen}
         <!-- The send-back's words, on the card the draft is drawn on: the
              reader says what is wrong where they read what would go out. -->
-        <div class="sendback">
-          <Field
-            editor="dock"
-            class="notes"
-            bind:value={feedback}
-            rows={2}
-            placeholder="What should change?"
-            aria={{ label: 'feedback for the agent' }}
-            onkeydown={(event: KeyboardEvent) => {
-              onFeedbackKey(event);
-            }}
-            field={(el: HTMLElement | null) => {
-              feedbackEl = el;
-            }}
-          />
-          <button class="btn" disabled={feedback.trim() === ''} onclick={sendBack}>Send back</button
-          >
-        </div>
+        <SendBack
+          bind:value={feedback}
+          label="feedback for the agent"
+          onkeydown={(event: KeyboardEvent) => {
+            onFeedbackKey(event);
+          }}
+          field={(el: HTMLElement | null) => {
+            feedbackEl = el;
+          }}
+          onsend={sendBack}
+        />
       {/if}
       {#if take !== null}
         <!-- A take still running behind a held draft: this branch draws no words
@@ -1791,27 +1787,17 @@
       {#if vaultNoteOpen}
         <!-- The send-back's words, on the card the call is drawn on: the
            reader says what should change where they read what would run. -->
-        <div class="sendback">
-          <Field
-            editor="dock"
-            class="notes"
-            bind:value={vaultNote}
-            rows={2}
-            placeholder="What should change?"
-            aria={{ label: 'the note for the agent' }}
-            onkeydown={(event: KeyboardEvent) => {
-              onVaultNoteKey(event);
-            }}
-            field={(el: HTMLElement | null) => {
-              vaultNoteEl = el;
-            }}
-          />
-          <button
-            class="btn"
-            disabled={vaultNote.trim() === ''}
-            onclick={() => answerVault('send_back')}>Send back</button
-          >
-        </div>
+        <SendBack
+          bind:value={vaultNote}
+          label="the note for the agent"
+          onkeydown={(event: KeyboardEvent) => {
+            onVaultNoteKey(event);
+          }}
+          field={(el: HTMLElement | null) => {
+            vaultNoteEl = el;
+          }}
+          onsend={() => answerVault('send_back')}
+        />
       {/if}
     {/if}
 

@@ -6,7 +6,7 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 rust-version.workspace = true
-description = "One module per inbound connector: stream client, REST lookups and subscription matching for one external integration."
+description = "One module per external integration: inbound stream clients and the outbound Vaultwarden client."
 publish = false
 
 [lints]
