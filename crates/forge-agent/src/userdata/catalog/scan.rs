@@ -107,6 +107,10 @@ fn parse_session_messages<R: std::io::Read>(reader: R) -> SessionHistory {
     let mut out = Vec::new();
     let mut compaction_count = 0_u32;
     let mut seen = std::collections::HashSet::new();
+    // Queued prompts held until the row that says the CLI took one. The
+    // attachment names the press; the remove row names the start, and that is
+    // where the live path drew the words.
+    let mut queued = Vec::new();
     for (idx, line_res) in BufReader::new(reader).lines().enumerate() {
         let line = match line_res {
             Ok(l) => l,
@@ -139,9 +143,20 @@ fn parse_session_messages<R: std::io::Read>(reader: R) -> SessionHistory {
                 continue;
             }
         };
+        if let Some(remove) = queue_remove_row(&value) {
+            let row = queued_start_row(&mut queued, &value, remove);
+            if !already_kept(&mut seen, &row.uuid) {
+                out.push(row);
+            }
+            continue;
+        }
         let Some((message, boundary)) = transcript_row(&value) else {
             continue;
         };
+        if is_queued_attachment_row(&value) {
+            queued.push(message);
+            continue;
+        }
         if already_kept(&mut seen, &message.uuid) {
             continue;
         }
@@ -150,7 +165,117 @@ fn parse_session_messages<R: std::io::Read>(reader: R) -> SessionHistory {
         }
         out.push(message);
     }
+    // A prompt with no remove row never started: the live path drew no row
+    // for it, and neither does the read.
     SessionHistory { messages: out, compaction_count }
+}
+
+/// Whether a transcript line is the attachment the CLI writes for a prompt
+/// queued mid-turn.
+///
+/// **The harness's own completion notices are not these.** A background
+/// task's notice is pressed into the turn that was already running - it was
+/// never waiting in the queue - so its attachment row is its row, where the
+/// run ended. Only a prompt the CLI took moves to its remove row, at the
+/// turn's end or absorbed into the running turn.
+fn is_queued_attachment_row(value: &Value) -> bool {
+    if value.get("type").and_then(Value::as_str) != Some("attachment") {
+        return false;
+    }
+    let Some(attachment) = value.get("attachment") else { return false };
+    attachment.get("type").and_then(Value::as_str) == Some("queued_command")
+        && attachment.get("commandMode").and_then(Value::as_str) != Some("task-notification")
+}
+
+/// The removal reasons that mean the CLI TOOK the prompt, read off this
+/// machine's transcripts: `absorbed_mid_turn` (pressed into the running
+/// turn), `delivered_to_agent` (handed over at its boundary), and the empty
+/// reason on rows written before the field existed. Any other reason did not
+/// start the prompt and draws no row.
+const START_REASONS: [&str; 3] = ["absorbed_mid_turn", "delivered_to_agent", ""];
+
+/// The `queue-operation remove` line as the queued prompt's row, or `None`
+/// for any other line.
+///
+/// **The remove is the start.** The CLI writes it when it takes the prompt
+/// out of its queue - at the end of the turn that was running, or absorbed
+/// into it - so the row's clock is that removal, not the press. Only a
+/// reason in [`START_REASONS`] takes the prompt.
+fn queue_remove_row(value: &Value) -> Option<SessionMessage> {
+    if value.get("type").and_then(Value::as_str) != Some("queue-operation")
+        || value.get("operation").and_then(Value::as_str) != Some("remove")
+    {
+        return None;
+    }
+    let reason = value.get("reason").and_then(Value::as_str).unwrap_or_default();
+    if !START_REASONS.contains(&reason) {
+        return None;
+    }
+    let content = value.get("content").and_then(Value::as_str)?;
+    // A background task's notice was absorbed into the running turn, so its
+    // attachment already drew the row where the task ended; the removal is
+    // not a prompt start and draws nothing.
+    if content.trim_start().starts_with("<task-notification>") {
+        return None;
+    }
+    let attachment = serde_json::json!({ "prompt": content });
+    Some(SessionMessage {
+        kind: SessionMessageKind::User,
+        uuid: queue_row_id(value),
+        session_id: value.get("sessionId").and_then(Value::as_str).unwrap_or_default().to_owned(),
+        message: synthesize_queued_command_message(&attachment),
+        parent_tool_use_id: None,
+        timestamp: value.get("timestamp").and_then(Value::as_str).map(str::to_owned),
+        tool_use_result: None,
+        synthetic: false,
+    })
+}
+
+/// The row's id, minted from the one line an anchored read can reproduce.
+fn queue_row_id(value: &Value) -> String {
+    use std::hash::{Hash as _, Hasher as _};
+    let timestamp = value.get("timestamp").and_then(Value::as_str).unwrap_or_default();
+    let content = value.get("content").and_then(Value::as_str).unwrap_or_default();
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    content.hash(&mut hasher);
+    format!("queue-remove-{timestamp}-{:x}", hasher.finish())
+}
+
+/// The prompt words an attachment row's synthesised message carries.
+fn queued_prompt_text(row: &SessionMessage) -> Option<&str> {
+    row.message.get("content").and_then(Value::as_array)?.iter().find_map(|block| {
+        (block.get("type")?.as_str()? == "queued_command")
+            .then(|| block.get("prompt")?.as_str())
+            .flatten()
+    })
+}
+
+/// The row a remove line draws, taking the attachment that named the press if
+/// one is waiting.
+///
+/// The attachment is what carries a multi-modal prompt's blocks, its
+/// `commandMode` and the `source_uuid` the live row pairs with; the remove
+/// line contributes the position, the clock and the id.
+fn queued_start_row(
+    queued: &mut Vec<SessionMessage>,
+    remove: &Value,
+    mut row: SessionMessage,
+) -> SessionMessage {
+    let content = remove.get("content").and_then(Value::as_str).unwrap_or_default();
+    // **Exact words only.** A single pending attachment is not a safe guess:
+    // two prompts can be in play, and pairing by position would draw one
+    // prompt's words under another prompt's start.
+    let at = queued.iter().position(|held| queued_prompt_text(held) == Some(content));
+    if let Some(at) = at {
+        let attachment = queued.remove(at);
+        row.message = attachment.message;
+        row.parent_tool_use_id = attachment.parent_tool_use_id;
+        row.synthetic = attachment.synthetic;
+        if row.session_id.is_empty() {
+            row.session_id = attachment.session_id;
+        }
+    }
+    row
 }
 
 /// Whether a transcript row carries this frame.
@@ -1701,6 +1826,11 @@ fn window_rows(window: &Window) -> Vec<(SessionMessage, u64)> {
     // the window begins on a row, anything else means it begins inside one.
     let fragment = window.from > 0 && window.bytes.first() != Some(&b'\n');
     let mut rows = Vec::new();
+    // A queued prompt is held until its remove row, whose byte is where the
+    // row is served: the attachment's own byte is inside the turn the press
+    // interrupted. A held row whose remove lies past the window never started
+    // in this stretch, so it is dropped rather than served at the press.
+    let mut queued = Vec::new();
     let mut at = window.from;
     for line in window.bytes.split(|byte| *byte == b'\n') {
         let start = at;
@@ -1708,11 +1838,18 @@ fn window_rows(window: &Window) -> Vec<(SessionMessage, u64)> {
         if fragment && start == window.from {
             continue;
         }
-        if let Ok(text) = std::str::from_utf8(line)
-            && let Some(row) = session_row(text)
-        {
-            rows.push((row, start));
+        let Ok(text) = std::str::from_utf8(line) else { continue };
+        let Ok(value) = serde_json::from_str::<Value>(text) else { continue };
+        if let Some(remove) = queue_remove_row(&value) {
+            rows.push((queued_start_row(&mut queued, &value, remove), start));
+            continue;
         }
+        let Some((row, _)) = transcript_row(&value) else { continue };
+        if is_queued_attachment_row(&value) {
+            queued.push(row);
+            continue;
+        }
+        rows.push((row, start));
     }
     rows
 }
@@ -1735,6 +1872,11 @@ fn session_row(line: &str) -> Option<SessionMessage> {
         return None;
     }
     let value = serde_json::from_str::<Value>(line).ok()?;
+    // The queued prompt's row is served at this byte, so an anchor that names
+    // it verifies here as well as in a window's row list.
+    if let Some(row) = queue_remove_row(&value) {
+        return Some(row);
+    }
     transcript_row(&value).map(|(row, _)| row)
 }
 
@@ -2615,24 +2757,37 @@ mod tests {
         assert_eq!(info.custom_title.as_deref(), Some("Curated"));
     }
 
+    /// **A queued prompt's row sits where the CLI took it, not where it was
+    /// enqueued.** The attachment is written at the press, inside the turn it
+    /// interrupted; the `queue-operation remove` row is written when the CLI
+    /// took the prompt. The live path draws the row at that start, so a read
+    /// that served the attachment's position put the words above work written
+    /// after the press (rule 25). An attachment with no remove never started
+    /// and draws nothing, exactly as the live path drew nothing.
     #[test]
-    fn parse_session_messages_hoists_attachment_queued_command_to_user() {
+    fn parse_session_messages_places_a_queued_prompt_at_its_start() {
         // claude persists mid-turn queued inputs as
         // `{"type":"attachment", "attachment":{"type":"queued_command",
-        // "prompt":"...", "commandMode":"prompt"}}`. The scanner must
-        // synthesise these as user rows so replay reconstructs the
-        // bubble that was never on the live wire as a regular user
-        // message.
-        let jsonl = r#"{"type":"user","message":{"role":"user","content":"plain prompt"},"uuid":"u1","session_id":"s1"}
-{"type":"attachment","attachment":{"type":"queued_command","prompt":"queued prompt","commandMode":"prompt"},"uuid":"a1","session_id":"s1"}
-{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"hello"}]},"uuid":"as1","session_id":"s1"}
+        // "prompt":"...", "commandMode":"prompt"}}`, and the start as a
+        // `queue-operation remove` naming the same words.
+        let jsonl = r#"{"type":"user","message":{"role":"user","content":"plain prompt"},"uuid":"u1","session_id":"s1","timestamp":"2026-11-03T12:00:50.000Z"}
+{"type":"attachment","attachment":{"type":"queued_command","prompt":"queued prompt","commandMode":"prompt","source_uuid":"p1"},"uuid":"a1","session_id":"s1","timestamp":"2026-11-03T12:00:58.000Z"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"after the press"}]},"uuid":"as1","session_id":"s1","timestamp":"2026-11-03T12:00:59.000Z"}
+{"type":"queue-operation","operation":"remove","timestamp":"2026-11-03T12:01:10.000Z","sessionId":"s1","content":"queued prompt"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"the answer"}]},"uuid":"as2","session_id":"s1","timestamp":"2026-11-03T12:01:11.000Z"}
+{"type":"attachment","attachment":{"type":"queued_command","prompt":"never started","commandMode":"prompt"},"uuid":"a2","session_id":"s1","timestamp":"2026-11-03T12:02:00.000Z"}
 "#;
         let msgs = parse_session_messages(jsonl.as_bytes()).messages;
-        assert_eq!(msgs.len(), 3, "expected 3 rows (user + synthesised user + assistant)");
-        assert!(matches!(msgs[0].kind, SessionMessageKind::User));
-        assert!(matches!(msgs[1].kind, SessionMessageKind::User), "attachment row hoisted to User");
-        assert_eq!(msgs[1].uuid, "a1");
-        let content = msgs[1]
+        assert_eq!(msgs.len(), 4, "the prompt that never started draws no row");
+        assert_eq!(msgs[0].uuid, "u1");
+        assert_eq!(msgs[1].uuid, "as1");
+        assert_eq!(msgs[3].uuid, "as2");
+        assert!(
+            msgs[2].uuid.starts_with("queue-remove-2026-11-03T12:01:10.000Z-"),
+            "the row is named by the start it was served at: {:?}",
+            msgs[2].uuid,
+        );
+        let content = msgs[2]
             .message
             .get("content")
             .and_then(Value::as_array)
@@ -2641,7 +2796,16 @@ mod tests {
         assert_eq!(content[0].get("type").and_then(Value::as_str), Some("queued_command"));
         assert_eq!(content[0].get("prompt").and_then(Value::as_str), Some("queued prompt"));
         assert_eq!(content[0].get("commandMode").and_then(Value::as_str), Some("prompt"));
-        assert!(matches!(msgs[2].kind, SessionMessageKind::Assistant));
+        assert_eq!(
+            content[0].get("source_uuid").and_then(Value::as_str),
+            Some("p1"),
+            "the prompt id the live row pairs with",
+        );
+        assert_eq!(
+            msgs[2].timestamp.as_deref(),
+            Some("2026-11-03T12:01:10.000Z"),
+            "the start's clock, which is where the row is placed",
+        );
     }
 
     /// **A hook run the file persisted is a row the live chat drew.** The live
@@ -2874,6 +3038,7 @@ mod tests {
 {"type":"widget_state","widget":{"name":"counter"},"uuid":"w1","sessionId":"s1","timestamp":"2026-10-26T10:00:04.000Z"}
 {"type":"worktree-state","worktree":{},"uuid":"ws1"}
 {"type":"mode","mode":"default","uuid":"m1"}
+{"type":"queue-operation","operation":"enqueue","timestamp":"2026-11-03T12:00:58.593Z","sessionId":"s1","content":"a prompt the reader cancelled"}
 {"type":"system","subtype":"turn_duration","durationMs":10,"uuid":"t1","sessionId":"s1"}
 "#;
         let history = parse_session_messages(jsonl.as_bytes());
@@ -2883,6 +3048,13 @@ mod tests {
             // it provisionally, so the read keeps it too.
             ["p1", "e1", "i1", "n1", "w1", "t1"],
             "the live rows are kept, and no bookkeeping row is",
+        );
+        assert!(
+            !history.messages.iter().any(|row| {
+                row.message.get("type").and_then(serde_json::Value::as_str)
+                    == Some("queue-operation")
+            }),
+            "an enqueue-only queue-operation row is bookkeeping, so a cold read never serves it",
         );
 
         let messages = messages_from_rows(history.messages, "s1");
@@ -3047,7 +3219,8 @@ mod tests {
     #[test]
     fn every_row_a_transcript_read_keeps_reaches_the_wire_stamped() {
         let jsonl = r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"hi"}]},"uuid":"u1","sessionId":"s1","timestamp":"2026-10-15T05:18:05.217Z"}
-{"type":"attachment","attachment":{"type":"queued_command","prompt":"queued words","commandMode":"prompt"},"uuid":"q1","sessionId":"s1","timestamp":"2026-10-15T05:19:00.100Z"}
+{"type":"attachment","attachment":{"type":"queued_command","prompt":"queued words","commandMode":"prompt"},"uuid":"a1","session_id":"s1","timestamp":"2026-10-15T05:19:00.100Z"}
+{"type":"queue-operation","operation":"remove","timestamp":"2026-10-15T05:19:03.000Z","sessionId":"s1","content":"queued words"}
 {"type":"assistant","message":{"id":"m1","role":"assistant","model":"claude-opus-5","content":[{"type":"text","text":"working"}]},"uuid":"a1","sessionId":"s1","timestamp":"2026-10-15T05:19:05.544Z"}
 {"type":"system","subtype":"stop_hook_summary","hookCount":1,"hookInfos":[],"hookErrors":[],"hasOutput":false,"level":"suggestion","preventedContinuation":false,"stopReason":"","toolUseID":"tu1","uuid":"h1","sessionId":"s1","timestamp":"2026-10-15T05:19:40.632Z"}
 {"type":"system","subtype":"compact_boundary","uuid":"b1","sessionId":"s1","compactMetadata":{"trigger":"auto","preTokens":1018466,"postTokens":19526},"timestamp":"2026-10-15T05:20:11.004Z"}
@@ -3067,7 +3240,7 @@ mod tests {
             stamps,
             vec![
                 ("user".to_owned(), Some("2026-10-15T05:18:05.217Z".to_owned())),
-                ("user".to_owned(), Some("2026-10-15T05:19:00.100Z".to_owned())),
+                ("user".to_owned(), Some("2026-10-15T05:19:03.000Z".to_owned())),
                 ("assistant".to_owned(), Some("2026-10-15T05:19:05.544Z".to_owned())),
                 ("system".to_owned(), Some("2026-10-15T05:19:40.632Z".to_owned())),
                 ("system".to_owned(), Some("2026-10-15T05:20:11.004Z".to_owned())),
@@ -4650,11 +4823,13 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         let session = "550e8400-e29b-41d4-a716-446655440000";
         let body = format!(
-            "{}\n{}\n{}\n{}",
+            "{}\n{}\n{}\n{}\n{}",
             "{\"type\":\"user\",\"uuid\":\"u0\",\"session_id\":\"s1\",\
              \"message\":{\"role\":\"user\",\"content\":\"turn 0\"}}",
             "{\"type\":\"attachment\",\"uuid\":\"a1\",\"session_id\":\"s1\",\
              \"attachment\":{\"type\":\"queued_command\",\"prompt\":\"queued\",\"commandMode\":\"prompt\"}}",
+            "{\"type\":\"queue-operation\",\"operation\":\"remove\",\"timestamp\":\"2026-11-03T12:00:00Z\",\
+             \"sessionId\":\"s1\",\"content\":\"queued\"}",
             "{\"type\":\"system\",\"subtype\":\"compact_boundary\",\"uuid\":\"h1\",\
              \"sessionId\":\"s1\",\"compactMetadata\":{\"trigger\":\"auto\",\"preTokens\":1,\"postTokens\":1}}",
             "{\"type\":\"user\",\"uuid\":\"u2\",\"session_id\":\"s1\",\
@@ -4680,6 +4855,89 @@ mod tests {
                 if uuid == "h1"),
             "and the boundary row as the frame it is, not a skip: {:?}",
             span.messages[2],
+        );
+    }
+
+    /// **Only a start reason draws the prompt.** A removal carrying any other
+    /// reason did not take the prompt, so neither the removal nor the
+    /// attachment it would have paired with draws a row.
+    #[test]
+    fn a_remove_reason_that_is_not_a_start_draws_no_prompt_row() {
+        let jsonl = r#"{"type":"user","message":{"role":"user","content":"plain"},"uuid":"u1","session_id":"s1"}
+{"type":"attachment","attachment":{"type":"queued_command","prompt":"cancelled words","commandMode":"prompt"},"uuid":"a1","session_id":"s1","timestamp":"2026-11-03T12:00:00Z"}
+{"type":"queue-operation","operation":"remove","reason":"cancelled","timestamp":"2026-11-03T12:00:05Z","sessionId":"s1","content":"cancelled words"}
+"#;
+        let msgs = parse_session_messages(jsonl.as_bytes()).messages;
+        assert_eq!(
+            msgs.iter().map(|row| row.uuid.as_str()).collect::<Vec<_>>(),
+            ["u1"],
+            "the prompt a non-start removal names draws nothing",
+        );
+    }
+
+    /// **The paged read holds a queued prompt until its start too.** An
+    /// assistant row written between the attachment and its `remove` must
+    /// come first in the served span: the page's order is the start's, and a
+    /// span that served the attachment at its own byte would put the words
+    /// above work the same turn wrote after the press.
+    #[test]
+    fn a_paged_read_serves_a_queued_prompt_at_its_remove() {
+        let config = tempfile::tempdir().unwrap();
+        let cwd = "/Users/me/Projects/playground";
+        let dir = project_dir_for(config.path(), cwd);
+        fs::create_dir_all(&dir).unwrap();
+        let session = "550e8400-e29b-41d4-a716-446655440000";
+        let body = format!(
+            "{}\n{}\n{}\n{}\n{}",
+            "{\"type\":\"user\",\"uuid\":\"u1\",\"session_id\":\"s1\",\
+             \"message\":{\"role\":\"user\",\"content\":\"before\"},\
+             \"timestamp\":\"2026-11-03T11:59:00Z\"}",
+            "{\"type\":\"attachment\",\"uuid\":\"a1\",\"session_id\":\"s1\",\
+             \"attachment\":{\"type\":\"queued_command\",\"prompt\":\"queued words\",\
+             \"commandMode\":\"prompt\",\"source_uuid\":\"p1\"},\
+             \"timestamp\":\"2026-11-03T12:00:00Z\"}",
+            "{\"type\":\"assistant\",\"uuid\":\"as1\",\"session_id\":\"s1\",\
+             \"message\":{\"id\":\"m1\",\"role\":\"assistant\",\"model\":\"claude-opus-5\",\
+             \"content\":[{\"type\":\"text\",\"text\":\"working\"}]},\
+             \"timestamp\":\"2026-11-03T12:00:01Z\"}",
+            "{\"type\":\"queue-operation\",\"operation\":\"remove\",\
+             \"reason\":\"absorbed_mid_turn\",\"timestamp\":\"2026-11-03T12:00:05Z\",\
+             \"sessionId\":\"s1\",\"content\":\"queued words\"}",
+            "{\"type\":\"user\",\"uuid\":\"u2\",\"session_id\":\"s1\",\
+             \"message\":{\"role\":\"user\",\"content\":\"after\"},\
+             \"timestamp\":\"2026-11-03T12:00:06Z\"}",
+        );
+        write_session_jsonl(&dir, session, &body);
+
+        let span = read_rows(config.path(), session, Some(cwd), Some(&anchored("u2")), 100)
+            .expect("a span over the queued prompt");
+
+        assert_eq!(span.messages.len(), 3, "the page carries the rows below the anchor");
+        assert!(
+            matches!(&span.messages[1], forge_primitives::Message::Assistant { .. }),
+            "the assistant row written between the press and the start is served first",
+        );
+        let forge_primitives::Message::User { uuid, timestamp, message, .. } = &span.messages[2]
+        else {
+            panic!("the queued prompt is a user row: {:?}", span.messages[2]);
+        };
+        assert!(
+            uuid.as_deref().is_some_and(|id| id.starts_with("queue-remove-2026-11-03T12:00:05Z-")),
+            "named by the start it was served at: {uuid:?}",
+        );
+        assert_eq!(
+            timestamp.as_deref(),
+            Some("2026-11-03T12:00:05Z"),
+            "stamped at the start, not the press",
+        );
+        assert!(
+            message.content.iter().any(|block| matches!(
+                block,
+                forge_primitives::ContentBlock::QueuedCommand { prompt, source_uuid, .. }
+                    if prompt.as_str() == Some("queued words")
+                        && source_uuid.as_deref() == Some("p1")
+            )),
+            "carrying the prompt's words and the id the live row pairs with: {message:?}",
         );
     }
 

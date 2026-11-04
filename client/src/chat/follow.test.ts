@@ -236,30 +236,6 @@ function stub() {
       });
     },
     /**
-     * A handoff on this seat, as the live swap announces it: the row that says
-     * two sessions met, and the successor the replacement below lands.
-     */
-    handoff(from = 'old', to = 'new'): void {
-      send({
-        kind: 'update',
-        update: {
-          handoff: {
-            key: LEAD,
-            handoff: {
-              from,
-              to,
-              reason: 'fill',
-              fill_percent: 85,
-              total_tokens: 850_000,
-              max_tokens: 1_000_000,
-              at_percent: 85,
-              brief: { ground_truth: [], judgment: [] },
-            },
-          },
-        },
-      });
-    },
-    /**
      * A refusal of an ask. `seat` is what the server names where the refusal is
      * about a seat; an older server names none.
      */
@@ -834,106 +810,12 @@ describe('whether the column follows the newest end', () => {
     expect(pinned(), 'nothing that lands below them moves the column').toEqual([]);
   });
 
-  it('holds a parked reader through a handoff to its successor', async () => {
-    // **The handoff is an arrival, not the reader moving.** The successor
-    // keeps the conversation above its row, so the rows stay mounted where
-    // the reader left them - and an arrival carries a reader who scrolled
-    // away down to the foot on the successor's first frame (Ved, 2026-11-03:
-    // "after a document hand-off the scroll moved although I had not touched
-    // it"). What holds this here is the pin's own gate; the fold's half - the
-    // follow no longer flipping at the swap - is the conversation test's.
-    const server = stub();
-    await draw(server);
-    readerAt(0);
-    await settle();
-    clear();
-    const parked = element.offset;
-
-    server.handoff('old', 'new');
-    server.replaced('new');
-    await settle();
-    clear();
-
-    server.frame();
-    await settle();
-
-    expect(pinned(), 'the successor arriving is not the reader moving').toEqual([]);
-    expect(element.offset, 'the reader stays where they were reading').toBe(parked);
-  });
-
-  it('keeps following a successor when the reader was at the foot', async () => {
-    // **The symmetric case of the handoff's carry.** A reader at the foot
-    // during the swap is still following: the successor's frames keep landing
-    // under their eyes, and the way back stays out of the way. The fold drops
-    // the flag and the reader is stranded at the foot with no pin following
-    // the stream.
-    const server = stub();
-    await draw(server);
-    readerAt(FOOT);
-    await settle();
-    clear();
-
-    server.handoff('old', 'new');
-    server.replaced('new');
-    await settle();
-    clear();
-
-    server.frame();
-    await settle();
-
-    expect(pinned(), "the successor's frames still follow a reader at the foot").toEqual([PIN]);
-  });
-
-  it('does not carry an outgoing send arm across a handoff', async () => {
-    // **The arm belonged to the session that left.** A send arms the follow so
-    // the foot goes under the reader's eyes wherever they were; the prompt it
-    // was armed for is the outgoing session's, and the successor owes it no
-    // jump. A reserved row can hold that pin back across the swap, which is
-    // how an armed follow meets a parked reader on the successor's first pass.
-    const server = stub();
-    await draw(server);
-    readerAt(0);
-    await settle();
-    clear();
-
-    const reserved = [
-      { top: 0, height: TOTAL / 2 },
-      { top: TOTAL / 2, height: TOTAL / 2 },
-    ];
-    // The third slot is the handoff row's, reserved for both halves of the
-    // swap: the outgoing turns end at index one, the successor's row at two.
-    measured(TOTAL + 300, [...reserved, { top: TOTAL, height: 0 }]);
-    element.height = TOTAL + 300;
-
-    // The reader's own send, with the pin held back by the reservation.
-    server.queued('you');
-    await settle();
-    expect(pinned(), 'the reserved row holds the send jump back').toEqual([]);
-
-    server.handoff('old', 'new');
-    server.replaced('new');
-    await settle();
-    clear();
-
-    // The reservation clears, so a pin the column still thought it owed would
-    // write here.
-    setModel(TOTAL);
-    measured(TOTAL, [...reserved, { top: TOTAL, height: 0 }]);
-    element.height = TOTAL;
-    resized();
-    await settle();
-
-    expect(pinned(), 'the successor owes the outgoing send no jump').toEqual([]);
-    expect(element.offset, 'and the reader stays where they were reading').toBe(0);
-  });
-
   it('does not move a parked reader for a follow an arrival armed', async () => {
-    // **The pin's own rule, apart from the arm that broke it.** The handoff's
-    // re-arm is fixed at the fold, but the column cannot depend on every arm
-    // being right: a follow turned on while the reader is parked is not
-    // theirs to travel on unless their own send armed it. This is the change
-    // that catches a NEW arrival path arming the follow - the class this fix
-    // is about.
+    // **The pin's own rule, apart from the arm that broke it.** The column
+    // cannot depend on every arm being right: a follow turned on while the
+    // reader is parked is not theirs to travel on unless their own send armed
+    // it. This is the change that catches a NEW arrival path arming the
+    // follow - the class this fix is about.
     const server = stub();
     await draw(server);
     readerAt(0);

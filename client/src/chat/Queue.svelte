@@ -39,7 +39,19 @@
   } = $props();
 
   /** The one line an ending leaves, where the last card was. */
-  const line = $derived(endingLine(ended));
+  const line = $derived(endingLine(ended, endingWords));
+
+  /**
+   * The words an ending carries, as plain text.
+   *
+   * **A peer envelope draws its body alone**, the same rule the card uses -
+   * the `[Message id=...]` head is plumbing - and the line is rendered as
+   * text rather than markup, so it takes the body's prose unrendered.
+   */
+  function endingWords(text: string): string {
+    const envelope = inbound(text, null);
+    return joinedLine(envelope?.kind === 'peer' ? firstLine(envelope.card.body) : text);
+  }
 
   /** The step between one arc and the next. */
   const STEP = 16;
@@ -262,14 +274,13 @@
   .qlist {
     outline: none;
   }
-  /* **The pile separates itself from the turn above, and its box below.**
-     The composer's own margin pulls it up under the conversation
-     (`margin-top: calc(-1 * var(--ins))`, written for the box alone); with
-     the pile on top the card met the last row flush (#1705), so the pile
-     carries the block gap instead - and the mock gives the box its own
-     `margin-top: 8px`, which is the seam the last card was missing below. */
+  /* **The pile sits at the conversation's foot.** No seam above it: the
+     header meets the last chat row, where the block gap this used to carry
+     read as a row of its own (Ved, 2026-11-03). Its height stays its own, so
+     the column above shrinks by exactly that much and nothing paints over
+     it, and the gap below it to the box stays. */
   .pile {
-    margin-top: 8px;
+    margin-top: 0;
     margin-bottom: 8px;
   }
   .ended {
@@ -277,6 +288,10 @@
     font-family: var(--mono);
     font-size: var(--fs-label);
     color: var(--dim);
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   /* The header's pieces sit together: a right-pinned hint is a step in the
      mock's tile and a canyon in the real column (#1705). */

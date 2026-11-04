@@ -156,8 +156,8 @@ impl ViewSurface {
     /// the writes it needs and not the whole core, so nothing here grows a
     /// way to reach the workspace itself.
     pub fn dispatch(&self, command: Command) -> Result<(), DispatchError> {
-        // A view's entry rather than the core's: a prompt's frame says the
-        // words came from a view over the socket, which no view has drawn.
+        // A view's entry rather than the core's: the press is routed through
+        // the view's own door, and no frame marks who sent it since v27.
         self.workspace.dispatch_from_view(command)
     }
 
@@ -388,19 +388,6 @@ impl ViewSurface {
         )
         .await
         .map_err(|refusal| refusal.to_string())
-    }
-
-    /// The handoff row a seat's occupant arrived by, for a record built
-    /// where the transport holds no live copy of the conversation.
-    ///
-    /// Looked up by the occupant, not by recency: a later handoff that never
-    /// reached its successor must not hide the row of the session running.
-    pub fn handoff_record(
-        &self,
-        slot: &SessionSlot,
-        occupant: &str,
-    ) -> Option<forge_primitives::HandoffRecord> {
-        self.workspace.handoff_record_for(slot, occupant)
     }
 
     /// The conversation the session at `slot` holds, read from its own

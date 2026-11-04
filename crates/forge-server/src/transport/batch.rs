@@ -83,7 +83,7 @@ impl Batch {
 /// value, the id and the session are that frame's own, and only the counter is
 /// the run's.
 fn merge(last: &mut SessionUpdate, update: &SessionUpdate) -> bool {
-    let SessionUpdate::ChatAppended { key, origin, source, msg } = update else {
+    let SessionUpdate::ChatAppended { key, source, msg } = update else {
         return false;
     };
     let forge_primitives::Message::ThinkingTokens {
@@ -96,18 +96,13 @@ fn merge(last: &mut SessionUpdate, update: &SessionUpdate) -> bool {
     else {
         return false;
     };
-    let SessionUpdate::ChatAppended {
-        key: held_key,
-        origin: held_origin,
-        source: held_source,
-        msg: held_msg,
-    } = last
+    let SessionUpdate::ChatAppended { key: held_key, source: held_source, msg: held_msg } = last
     else {
         return false;
     };
     // The occupant needs no comparing beside the seat: a change of session
     // rides `SessionReplaced`, which is not a counter and breaks the run.
-    if held_key != key || held_origin != origin || held_source != source {
+    if held_key != key || held_source != source {
         return false;
     }
     let forge_primitives::Message::ThinkingTokens { estimated_tokens_delta: held_delta, .. } =
@@ -166,7 +161,6 @@ where
                     update: Box::new(SessionUpdate::ChatAppended {
                         key,
                         msg,
-                        origin: None,
                         source: Some(source),
                     }),
                     seq: None,
@@ -500,7 +494,6 @@ mod tests {
     fn token(seat: &SessionSlot, running: u64, delta: i64, uuid: &str) -> SessionUpdate {
         SessionUpdate::ChatAppended {
             key: seat.clone(),
-            origin: None,
             source: None,
             msg: forge_primitives::Message::ThinkingTokens {
                 estimated_tokens: running,

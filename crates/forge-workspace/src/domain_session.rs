@@ -622,7 +622,11 @@ impl DomainSession {
     /// Let go of the registry and everything that resolves a command in it: a
     /// new occupant's calls are its own, and the CLI re-sends the set only
     /// when it changes.
-    pub(crate) fn drop_background_tasks(&mut self) {
+    ///
+    /// The queued prompts are handed back rather than dropped: they died with
+    /// the process that held them, so the caller owns the row each one still
+    /// deserves.
+    pub(crate) fn drop_background_tasks(&mut self) -> Vec<crate::protocol::QueuedPrompt> {
         self.background_work = false;
         self.background_tasks.clear();
         self.live_tasks.clear();
@@ -634,8 +638,8 @@ impl DomainSession {
         // new occupant's own init, which the CLI re-fires every turn. Left
         // latched, a `/resume` onto an advertising CLI would keep the pile
         // silently off, or latch true beside rows nothing can settle.
-        self.prompt_queue.clear();
         self.lifecycle_frames = None;
+        std::mem::take(&mut self.prompt_queue)
     }
 
     /// Record a prompt as waiting, at the dispatch site.
@@ -644,12 +648,33 @@ impl DomainSession {
         uuid: &str,
         source: crate::protocol::PromptSource,
         text: &str,
+        attachments: Vec<forge_primitives::ImageAttachment>,
     ) {
         self.prompt_queue.push(crate::protocol::QueuedPrompt {
             uuid: uuid.to_owned(),
             source,
             text: text.to_owned(),
+            attachments,
         });
+    }
+
+    /// The entry a lifecycle frame names, while it is still waiting.
+    ///
+    /// **Read before the frame advances the queue**, because `started` is a
+    /// settled state: the entry leaves the pile as the row it draws arrives.
+    pub(crate) fn queued_prompt(&self, uuid: &str) -> Option<&crate::protocol::QueuedPrompt> {
+        self.prompt_queue.iter().find(|prompt| prompt.uuid == uuid)
+    }
+
+    /// Take every entry still waiting, leaving the pile empty.
+    ///
+    /// **The capability arrives after the first prompt.** `msg_lifecycle_v1`
+    /// is read from the CLI's init frame, and its first user message lands
+    /// before that - so a prompt recorded while the flag was `None` can never
+    /// be settled by a lifecycle frame. The task takes the entries and draws
+    /// them itself, the only carrier they will get.
+    pub(crate) fn take_queued_prompts(&mut self) -> Vec<crate::protocol::QueuedPrompt> {
+        std::mem::take(&mut self.prompt_queue)
     }
 
     /// Advance a prompt's state from one of the CLI's lifecycle frames.

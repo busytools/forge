@@ -815,7 +815,7 @@ function createSeat(
     }
     const data = seat.held.snapshot();
     if (data === null) return;
-    publish(withHeldTake(sessionFrom(data), seat.wire), null);
+    publish(withHeldObservations(sessionFrom(data), seat.wire), null);
   }
 
   /**
@@ -1509,19 +1509,33 @@ function createSeat(
 }
 
 /**
- * A whole-record answer carries no take, and the fold's own must not go with
- * it: the row is drawn off the record, so a replace that dropped the take
+ * A whole-record answer carries neither of the two things this view watched
+ * for itself, and neither may go with it.
+ *
+ * **The take** is drawn off the record, so a replace that dropped the take
  * this connection's own updates had drawn emptied the screen while the
  * recording stayed live (#1880). The take is this connection's, and the
  * socket leaving `open` is what ends that claim.
+ *
+ * **The ending** is one dim line where a prompt's card was, written by the
+ * frame that watched the prompt leave - and a read carries only what is
+ * waiting, never what left. A seat that resumed after its process died is
+ * exactly a read with an empty queue, so dropped there the words reach no
+ * surface at all. A read whose queue has rows is a queue that moved on, and
+ * the ending goes with the one it belonged to.
  *
  * The take is carried and its sibling NOTICE is not: a take is live state a
  * replace must not touch, while a notice is a moment - and only a take is
  * owed back to a reader who was away - so a refusal line landing just before
  * a snapshot is the one thing this can wipe.
  */
-function withHeldTake(next: SessionRecord, previous: SessionRecord | null): SessionRecord {
-  const held = previous?.composer.take ?? null;
-  if (held === null) return next;
-  return { ...next, composer: { ...next.composer, take: held } };
+function withHeldObservations(next: SessionRecord, previous: SessionRecord | null): SessionRecord {
+  const take = previous?.composer.take ?? null;
+  const ended = next.queue.length === 0 ? (previous?.queue_ended ?? null) : null;
+  if (take === null && ended === null) return next;
+  return {
+    ...next,
+    composer: take === null ? next.composer : { ...next.composer, take },
+    queue_ended: ended,
+  };
 }

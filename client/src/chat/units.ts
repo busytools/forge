@@ -39,7 +39,6 @@
  * they duplicate that surface inside every turn that used one.
  */
 
-import { handoffOf, type HandoffRecord } from '../wire/handoff';
 import { changeNoun } from './change';
 import { cronNames } from './cron-names.svelte';
 import { taskStatus, type CallStatus } from './families';
@@ -298,8 +297,9 @@ export interface NudgeLeaf {
 }
 
 /**
- * The handoff's procedure prompt: forge's own text that opens the judgment
- * turn, asking the handing-over session to run the handoff skill.
+ * The handoff's own prompt, as the transcript carries it: the procedure that
+ * opens the judgment turn in the session handing over, or the brief that opens
+ * the successor's.
  *
  * It is the machinery's words, not the reader's, but it is the turn's own
  * opening rather than a passing nudge - so it wears its own mark and holds
@@ -309,6 +309,8 @@ export interface ProcedureLeaf {
   /** The frame and block it came from, which is what the row is keyed by. */
   key: string;
   text: string;
+  /** The successor's brief opens itself; the judgment prompt stays folded. */
+  open?: boolean;
 }
 
 /**
@@ -506,16 +508,6 @@ export type Unit =
       postTokens: number | null;
       summary: string | null;
     }
-  /**
-   * The row between two sessions: the one forge swapped, why, and the brief
-   * the successor was given.
-   *
-   * The wire carries it as a `handoff` update of its own, and the client
-   * forges the turn this unit folds from - the CLI wrote no such row, so a
-   * read and a stream both come through here rather than through the
-   * transcript.
-   */
-  | { kind: 'handoff'; key: string; handoff: HandoffRecord }
   /** What a settled turn did, under the work it did it with. */
   | { kind: 'report'; key: string; info: TurnInfo };
 
@@ -690,8 +682,6 @@ interface Frame {
   exit_code?: unknown;
   /** `NoticeSeverity`, on the core's own line about a command. */
   severity?: unknown;
-  /** The record the handoff row folds from, on forge's own frame. */
-  handoff?: unknown;
   output?: unknown;
   stdout?: unknown;
   stderr?: unknown;
@@ -2385,8 +2375,8 @@ export function fold(
    * interrupted** - a bracket-led envelope opens no turn - so the drawn row is
    * what says one landed, and the reader's own words ride the same carrier. A
    * delivery is the same: a cron fire, a Slack message or a Gotify push
-   * carries its own prompt in, and one queued at a turn's end belongs to the
-   * next.
+   * carries its own prompt in; one taken at a turn's end belongs to the next,
+   * and one absorbed mid-turn belongs to the turn it interrupted.
    */
   const arrivedAfterOutput = (unit: Unit): boolean => {
     // **The interrupt marker is the user row that is not a message**: the CLI
@@ -3056,17 +3046,6 @@ export function fold(
       continue;
     }
 
-    // The handoff row: a frame forge mints for its own row, never a
-    // transcript's. It ends the run above it, because the two conversations
-    // meet at it and nothing below is the same work.
-    if (frame.type === 'forge_handoff') {
-      const handoff = handoffOf(frame.handoff);
-      if (handoff !== null) {
-        push({ kind: 'handoff', key: `h-${at}`, handoff });
-      }
-      continue;
-    }
-
     // **A frame type this build has no row for draws as itself** rather than
     // vanishing: its own type is the mark and the payload is behind the open,
     // so a frame the CLI adds is seen on the day it arrives (rule 25).
@@ -3102,12 +3081,20 @@ export function fold(
           // typing in the launch terminal, and the view this client replaced
           // filtered the same heads. A decided ignore, not a dropped frame.
           if (isLocalCommand(stripped)) continue;
-          // **The handoff brief is already drawn.** The handoff row carries
-          // both halves the successor was given, so the prompt that delivered
-          // them is not a second row: filtered, not lost. Keyed on the id
-          // forge minted, not the text, because a reader may type the same
-          // words and their own prompt must draw.
+          // **The handoff brief opens the successor's turn.** It is the
+          // prompt that carried the two halves the session arrived by, and it
+          // is the transcript's own row for the handoff - the block forge
+          // used to insert above the exchange is gone, so this row is where
+          // the handoff draws. Keyed on the id forge minted, not the text,
+          // because a reader may type the same words and their own prompt
+          // must draw.
           if (stripped.startsWith('HANDOFF - ') && isNudgeId(promptIdOf(frame, block))) {
+            pending.push({
+              tag: 'procedure',
+              key: keyOf(at, frame, blockAt),
+              text: stripped,
+              open: true,
+            });
             continue;
           }
           // **The handoff's procedure prompt opens its turn.** It is forge's
@@ -3357,10 +3344,12 @@ export function fold(
         // the same words draw two ways depending on which carrier brought
         // them.
         if (isProcedureId(promptIdOf(frame, block))) {
+          const procedure = stripEscapes(words);
           pending.push({
             tag: 'procedure',
             key: keyOf(at, frame, blockAt),
-            text: stripEscapes(words),
+            text: procedure,
+            open: procedure.startsWith('HANDOFF - '),
           });
           continue;
         }

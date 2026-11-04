@@ -246,4 +246,48 @@ mod tests {
             assert!(is_forge_prompt_name(name), "{name} is a name a view forwards on");
         }
     }
+
+    /// **The client's answered and forwarded sets mirror this file.** The
+    /// composer decides whether to post its pending echo from `coreAnswers`;
+    /// a name in one set and not the other leaves a row nothing clears, or
+    /// swallows a prompt the CLI would have run.
+    #[test]
+    fn the_clients_answer_sets_match_this_files() {
+        const CLIENT: &str =
+            concat!(env!("CARGO_MANIFEST_DIR"), "/../../client/src/composer/forge-commands.ts");
+        let source = std::fs::read_to_string(CLIENT)
+            .unwrap_or_else(|error| panic!("the client's forge commands are readable: {error}"));
+
+        let set = |marker: &str| -> Vec<String> {
+            let start = source
+                .find(marker)
+                .unwrap_or_else(|| panic!("the client still declares {marker:?}"));
+            let block = &source[start + marker.len()..];
+            let end = block
+                .find("]);")
+                .unwrap_or_else(|| panic!("the client's set closes after its entries"));
+            let mut names: Vec<String> = block[..end]
+                .split(',')
+                .map(|entry| entry.trim().trim_matches('\'').trim_matches('"').to_owned())
+                .filter(|name| !name.is_empty())
+                .collect();
+            names.sort();
+            names
+        };
+
+        let mut answered: Vec<String> = forge_prompt_names().map(str::to_owned).collect();
+        answered.sort();
+        assert_eq!(
+            set("const ANSWERED = new Set(["),
+            answered,
+            "the client answers exactly the names this file does",
+        );
+        let mut forwarded: Vec<String> = FORWARDED.iter().map(|name| (*name).to_owned()).collect();
+        forwarded.sort();
+        assert_eq!(
+            set("const FORWARDED = new Set(["),
+            forwarded,
+            "and forwards exactly the names this file forwards",
+        );
+    }
 }

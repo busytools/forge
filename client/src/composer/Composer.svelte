@@ -36,7 +36,7 @@
     takePhase,
     takeSilenceLine,
   } from './dictate.svelte';
-  import { FORGE_COMMANDS } from './forge-commands';
+  import { FORGE_COMMANDS, coreAnswers } from './forge-commands';
   import {
     blocked,
     composerState,
@@ -1002,7 +1002,18 @@
       // press's reason would be a stranger's failure (#1583). Only a server
       // that predates the field names none, and that is the fallback below.
       if (typeof message.dispatch_id === 'number') {
-        echoes.refuseDispatch(message.dispatch_id, message.why);
+        // **A press with no echo is the seat's core-answered press, not any
+        // seat's.** A command the core answers itself posts no echo because no
+        // turn will carry its words, so the refusal is drawn on the box that
+        // minted the id - never on whatever seat the reader is showing now.
+        if (!echoes.refuseDispatch(message.dispatch_id, message.why)) {
+          const refused = boxes.answered(message.dispatch_id);
+          if (refused !== undefined) {
+            refused.answeredDispatch = null;
+            refused.sent = null;
+            refused.ended = { tone: 'warn', text: message.why };
+          }
+        }
         return;
       }
       // **A take's own refusal is not an answer's.** This composer knows it
@@ -1084,17 +1095,30 @@
       return;
     }
     const [first = ''] = text.split(/\s+/);
-    if (first.startsWith('/')) box.sent = first;
-    // What the seat was doing when the words left: a send that starts a turn is
-    // taken by it, one sent into a turn already running is not (it is settled by
-    // the conversation carrying the words, or by a refusal).
-    //
-    // **Read from the connection's store rather than from the record this box
-    // draws.** The record is written once per painted frame, so a turn-start
-    // frame can be applied and not yet drawn - and a send posted as
-    // not-running is taken by the very publish that carries the turn, where a
-    // refusal can no longer reach it.
-    echoes.post(boxKey(slot), text, runningAt(connection, slot, running), uuid, dispatch);
+    // **A prompt the core answers itself draws no row** (#2816): a forge
+    // command, a misuse or a slash name this session cannot run never reaches
+    // a model, so no turn carries its words and the echo would stand as a row
+    // nothing clears. The core's answer is the feedback.
+    const advertised = advisoriesFrom(record.slash_commands).map((row) => row.name);
+    const answered = coreAnswers(first, advertised);
+    // **And it never starts a turn either**, so the blocked "Running <command>"
+    // line has nothing to wait for: no record update follows to clear it, and
+    // the field would stay away with it. The id is kept so a refusal of this
+    // press lands on this seat's box and no other.
+    box.answeredDispatch = answered ? dispatch : null;
+    if (first.startsWith('/') && !answered) box.sent = first;
+    if (!answered) {
+      // What the seat was doing when the words left: a send that starts a turn
+      // is taken by it, one sent into a turn already running is not (it is
+      // settled by the conversation carrying the words, or by a refusal).
+      //
+      // **Read from the connection's store rather than from the record this box
+      // draws.** The record is written once per painted frame, so a turn-start
+      // frame can be applied and not yet drawn - and a send posted as
+      // not-running is taken by the very publish that carries the turn, where a
+      // refusal can no longer reach it.
+      echoes.post(boxKey(slot), text, runningAt(connection, slot, running), uuid, dispatch);
+    }
     box.draft = '';
   }
 

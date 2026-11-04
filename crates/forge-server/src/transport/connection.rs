@@ -3113,12 +3113,7 @@ async fn transcript_frames(
             cap_message_record(&mut msg, cap, slot);
             SeatFrameWire {
                 seq: first.saturating_add(u64::try_from(at).unwrap_or(u64::MAX)),
-                update: SessionUpdate::ChatAppended {
-                    key: slot.clone(),
-                    origin: None,
-                    source: None,
-                    msg,
-                },
+                update: SessionUpdate::ChatAppended { key: slot.clone(), source: None, msg },
             }
         })
         .collect()
@@ -4518,10 +4513,8 @@ mod tests {
             "uuid": "u-1",
         }))
         .expect("a task notification frame");
-        conversations.apply(
-            &SessionUpdate::ChatAppended { key: seat.clone(), msg, origin: None, source: None },
-            Some(1),
-        );
+        conversations
+            .apply(&SessionUpdate::ChatAppended { key: seat.clone(), msg, source: None }, Some(1));
 
         assert_eq!(
             call_output(&state, &seat, "tu-1").await,
@@ -5465,12 +5458,7 @@ mod tests {
         .expect("a user frame");
         let frame = SeatUpdate {
             seq: Some(9),
-            update: Arc::new(SessionUpdate::ChatAppended {
-                key: seat.clone(),
-                origin: None,
-                source: None,
-                msg,
-            }),
+            update: Arc::new(SessionUpdate::ChatAppended { key: seat.clone(), source: None, msg }),
         };
 
         let queued = forward_queued(&state, vec![frame], &[Subject::Session(seat)], 1);
@@ -6628,7 +6616,6 @@ mod tests {
             &SessionUpdate::ChatAppended {
                 key: seat.clone(),
                 msg: following.clone(),
-                origin: None,
                 source: None,
             },
             None,
@@ -6645,7 +6632,6 @@ mod tests {
                 &SessionUpdate::ChatAppended {
                     key: seat.clone(),
                     msg: result_frame(at),
-                    origin: None,
                     source: None,
                 },
                 None,
@@ -6767,19 +6753,13 @@ mod tests {
         conversations
             .insert(&seat, crate::transport::conversation::Conversation::new(frames, 0, 0));
         conversations.apply(
-            &SessionUpdate::ChatAppended {
-                key: seat.clone(),
-                msg: unnameable_row(),
-                origin: None,
-                source: None,
-            },
+            &SessionUpdate::ChatAppended { key: seat.clone(), msg: unnameable_row(), source: None },
             None,
         );
         conversations.apply(
             &SessionUpdate::ChatAppended {
                 key: seat.clone(),
                 msg: resulting_row(9_999),
-                origin: None,
                 source: None,
             },
             None,
@@ -6794,7 +6774,6 @@ mod tests {
                 &SessionUpdate::ChatAppended {
                     key: seat.clone(),
                     msg: result_frame(at),
-                    origin: None,
                     source: None,
                 },
                 None,
@@ -7121,7 +7100,6 @@ mod tests {
         Live::lock(&state.live).apply(&SessionUpdate::ChatAppended {
             key: slot.clone(),
             msg: result,
-            origin: None,
             source: None,
         });
     }
@@ -7596,7 +7574,6 @@ mod tests {
         Live::lock(&state.live).apply(&SessionUpdate::ChatAppended {
             key: slot.clone(),
             msg: result,
-            origin: None,
             source: None,
         });
 

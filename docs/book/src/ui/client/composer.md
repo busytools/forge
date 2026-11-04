@@ -229,7 +229,8 @@ a parked ask takes the body ahead of it, because both are the reader's own
 surface; while the read wait holds the box the push-to-talk key begins
 nothing, since the field is not on screen to receive the words. A row the column already
 holds - a send carried across a reload, or one the takeover bar sent - still
-draws above as the reader's own, so those words are never lost.
+draws above as the reader's own, so those words are never lost. A command the
+core answers itself draws no row: its answer is the feedback.
 
 **Every narrative hold is one draw.** Waking, reading, a command in flight, a
 compaction and a handoff all replace the body with one line and the same sweep
