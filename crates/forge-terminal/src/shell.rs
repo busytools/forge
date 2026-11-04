@@ -1,0 +1,283 @@
+//! The shell integration scripts, and how a shell is started with them.
+//!
+//! **The person's own rc is never replaced.** zsh gets a `ZDOTDIR` shim that
+//! sources the real `.zshrc` and then the integration; bash gets an
+//! `--rcfile` that sources `~/.bashrc` first; fish gets its init command. A
+//! shell forge does not know starts with no integration, and the classifier
+//! says `heuristic`.
+
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+
+/// The zsh integration: `precmd` closes the previous command and opens the
+/// prompt, `preexec` opens the command.
+pub const ZSH: &str = r#"
+_forge_cmd_running=0
+_forge_precmd() {
+  local ret=$?
+  if (( _forge_cmd_running )); then
+    printf '\033]133;D;%s\007' "$ret"
+    _forge_cmd_running=0
+  fi
+  printf '\033]133;A\007\033]133;B\007'
+}
+_forge_preexec() {
+  _forge_cmd_running=1
+  printf '\033]133;C\007'
+}
+precmd_functions+=(_forge_precmd)
+preexec_functions+=(_forge_preexec)
+"#;
+
+/// The bash integration: `PROMPT_COMMAND` closes the previous command and
+/// opens the prompt, a `DEBUG` trap opens the command.
+pub const BASH: &str = r#"
+_forge_cmd_running=
+_forge_prompt() {
+  local ret=$?
+  if [ -n "$_forge_cmd_running" ]; then
+    printf '\033]133;D;%s\007' "$ret"
+    _forge_cmd_running=
+  fi
+  printf '\033]133;A\007\033]133;B\007'
+}
+_forge_preexec() {
+  if [ -z "$_forge_cmd_running" ]; then
+    _forge_cmd_running=1
+    printf '\033]133;C\007'
+  fi
+}
+PROMPT_COMMAND="_forge_prompt${PROMPT_COMMAND:+;$PROMPT_COMMAND}"
+trap '_forge_preexec' DEBUG
+"#;
+
+/// The fish integration: the `fish_prompt` and `fish_preexec` events.
+pub const FISH: &str = r"
+function _forge_prompt --on-event fish_prompt
+  set -l ret $status
+  if set -q _forge_cmd_running
+    printf '\033]133;D;%s\007' $ret
+    set -e _forge_cmd_running
+  end
+  printf '\033]133;A\007\033]133;B\007'
+end
+function _forge_preexec --on-event fish_preexec
+  set -g _forge_cmd_running 1
+  printf '\033]133;C\007'
+end
+";
+
+/// How one shell is started, and the shim directory it needs.
+#[derive(Debug)]
+pub struct ShellPlan {
+    pub program: String,
+    pub args: Vec<String>,
+    pub env: HashMap<String, String>,
+    /// The shim directory, removed when the terminal drops.
+    pub shim: Option<PathBuf>,
+}
+
+impl ShellPlan {
+    /// Remove the shim directory, if one was made.
+    pub fn cleanup(&self) {
+        if let Some(shim) = &self.shim {
+            let _ = std::fs::remove_dir_all(shim);
+        }
+    }
+}
+
+/// Build the command for `shell`, with the integration its name supports.
+///
+/// `env` is the seat's environment; the plan adds only what the integration
+/// needs. A shell whose name is not zsh, bash or fish starts with no
+/// integration.
+pub fn plan<S: std::hash::BuildHasher>(shell: &str, env: &HashMap<String, String, S>) -> ShellPlan {
+    let name = Path::new(shell).file_name().and_then(|name| name.to_str()).unwrap_or(shell);
+    match name {
+        "zsh" => zsh_plan(shell, env),
+        "bash" => bash_plan(shell, env),
+        "fish" => fish_plan(shell, env),
+        _ => ShellPlan {
+            program: shell.to_owned(),
+            args: vec!["-l".to_owned()],
+            env: clone_env(env),
+            shim: None,
+        },
+    }
+}
+
+fn zsh_plan<S: std::hash::BuildHasher>(shell: &str, env: &HashMap<String, String, S>) -> ShellPlan {
+    let real = env
+        .get("ZDOTDIR")
+        .cloned()
+        .or_else(|| env.get("HOME").cloned())
+        .unwrap_or_else(|| "/".to_owned());
+    let Some(shim) = make_shim("zsh") else {
+        return ShellPlan {
+            program: shell.to_owned(),
+            args: vec!["-l".to_owned()],
+            env: clone_env(env),
+            shim: None,
+        };
+    };
+    let zshrc = format!("if [ -f \"{real}/.zshrc\" ]; then source \"{real}/.zshrc\"; fi\n{ZSH}");
+    let zprofile =
+        format!("if [ -f \"{real}/.zprofile\" ]; then source \"{real}/.zprofile\"; fi\n");
+    if std::fs::write(shim.join(".zshrc"), zshrc).is_err()
+        || std::fs::write(shim.join(".zprofile"), zprofile).is_err()
+    {
+        let _ = std::fs::remove_dir_all(&shim);
+        return ShellPlan {
+            program: shell.to_owned(),
+            args: vec!["-l".to_owned()],
+            env: clone_env(env),
+            shim: None,
+        };
+    }
+    let mut env = clone_env(env);
+    env.insert("ZDOTDIR".to_owned(), shim.display().to_string());
+    env.insert("FORGE_REAL_ZDOTDIR".to_owned(), real);
+    ShellPlan { program: shell.to_owned(), args: vec!["-l".to_owned()], env, shim: Some(shim) }
+}
+
+fn bash_plan<S: std::hash::BuildHasher>(
+    shell: &str,
+    env: &HashMap<String, String, S>,
+) -> ShellPlan {
+    let home = env.get("HOME").cloned().unwrap_or_else(|| "/".to_owned());
+    let Some(shim) = make_shim("bash") else {
+        return ShellPlan {
+            program: shell.to_owned(),
+            args: vec!["-i".to_owned()],
+            env: clone_env(env),
+            shim: None,
+        };
+    };
+    let rc = format!("if [ -f \"{home}/.bashrc\" ]; then source \"{home}/.bashrc\"; fi\n{BASH}");
+    let rcfile = shim.join("bashrc");
+    if std::fs::write(&rcfile, rc).is_err() {
+        let _ = std::fs::remove_dir_all(&shim);
+        return ShellPlan {
+            program: shell.to_owned(),
+            args: vec!["-i".to_owned()],
+            env: clone_env(env),
+            shim: None,
+        };
+    }
+    ShellPlan {
+        program: shell.to_owned(),
+        args: vec!["--rcfile".to_owned(), rcfile.display().to_string(), "-i".to_owned()],
+        env: clone_env(env),
+        shim: Some(shim),
+    }
+}
+
+fn fish_plan<S: std::hash::BuildHasher>(
+    shell: &str,
+    env: &HashMap<String, String, S>,
+) -> ShellPlan {
+    let Some(shim) = make_shim("fish") else {
+        return ShellPlan {
+            program: shell.to_owned(),
+            args: Vec::new(),
+            env: clone_env(env),
+            shim: None,
+        };
+    };
+    let script = shim.join("integration.fish");
+    if std::fs::write(&script, FISH).is_err() {
+        let _ = std::fs::remove_dir_all(&shim);
+        return ShellPlan {
+            program: shell.to_owned(),
+            args: Vec::new(),
+            env: clone_env(env),
+            shim: None,
+        };
+    }
+    ShellPlan {
+        program: shell.to_owned(),
+        args: vec!["-C".to_owned(), format!("source {}", script.display())],
+        env: clone_env(env),
+        shim: Some(shim),
+    }
+}
+
+/// A plain hasher's copy of an environment, so the plan carries the map the
+/// terminal stores rather than the caller's hasher.
+fn clone_env<S: std::hash::BuildHasher>(
+    env: &HashMap<String, String, S>,
+) -> HashMap<String, String> {
+    env.iter().map(|(key, value)| (key.clone(), value.clone())).collect()
+}
+
+/// A fresh shim directory under the system temp dir.
+fn make_shim(shell: &str) -> Option<PathBuf> {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    let dir =
+        std::env::temp_dir().join(format!("forge-terminal-{shell}-{}-{nanos}", std::process::id()));
+    std::fs::create_dir_all(&dir).ok()?;
+    Some(dir)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn env() -> HashMap<String, String> {
+        let mut env = HashMap::new();
+        env.insert("HOME".to_owned(), "/home/person".to_owned());
+        env
+    }
+
+    /// zsh starts as a login shell with a `ZDOTDIR` shim, and the shim
+    /// sources the person's own `.zshrc` before the integration.
+    #[test]
+    fn zsh_gets_a_zdotdir_shim_that_keeps_the_persons_rc() {
+        let plan = plan("/bin/zsh", &env());
+        assert_eq!(plan.program, "/bin/zsh");
+        assert_eq!(plan.args, ["-l"]);
+        let shim = plan.shim.as_ref().expect("a shim");
+        assert_eq!(plan.env.get("ZDOTDIR"), Some(&shim.display().to_string()));
+        assert_eq!(plan.env.get("FORGE_REAL_ZDOTDIR"), Some(&"/home/person".to_owned()));
+        let zshrc = std::fs::read_to_string(shim.join(".zshrc")).expect("a .zshrc");
+        assert!(zshrc.contains("source \"/home/person/.zshrc\""), "the person's rc is sourced");
+        assert!(zshrc.contains("133;D"), "and the integration follows it");
+        plan.cleanup();
+        assert!(!shim.exists(), "the shim is removed");
+    }
+
+    /// bash starts with `--rcfile`, and the rcfile sources `~/.bashrc` first.
+    #[test]
+    fn bash_gets_an_rcfile_that_keeps_the_persons_rc() {
+        let plan = plan("/bin/bash", &env());
+        assert_eq!(plan.program, "/bin/bash");
+        assert_eq!(plan.args[0], "--rcfile");
+        assert_eq!(plan.args[2], "-i");
+        let rcfile = PathBuf::from(&plan.args[1]);
+        let rc = std::fs::read_to_string(&rcfile).expect("an rcfile");
+        assert!(rc.contains("source \"/home/person/.bashrc\""), "the person's rc is sourced");
+        assert!(rc.contains("133;D"), "and the integration follows it");
+        plan.cleanup();
+    }
+
+    /// fish gets its init command, which sources the integration.
+    #[test]
+    fn fish_gets_an_init_command() {
+        let plan = plan("/opt/homebrew/bin/fish", &env());
+        assert_eq!(plan.program, "/opt/homebrew/bin/fish");
+        assert_eq!(plan.args[0], "-C");
+        assert!(plan.args[1].starts_with("source "), "{}", plan.args[1]);
+        plan.cleanup();
+    }
+
+    /// A shell forge does not know starts with no integration, so the
+    /// classifier falls back rather than pretending.
+    #[test]
+    fn an_unknown_shell_gets_no_integration() {
+        let plan = plan("/bin/sh", &env());
+        assert!(plan.shim.is_none());
+        assert_eq!(plan.args, ["-l"]);
+    }
+}
