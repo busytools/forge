@@ -237,6 +237,33 @@ impl std::fmt::Debug for TwoFactorCode {
 mod tests {
     use super::*;
 
+    /// Both spellings of the wrapped keys parse, and an unknown field is
+    /// skipped: lower-casing clients must still log in.
+    #[test]
+    fn token_response_parses_both_key_spellings_and_skips_unknown_fields() {
+        let upper: TokenResponse = serde_json::from_str(
+            r#"{"access_token":"a","Key":"wrapped","PrivateKey":"private","unknown":1}"#,
+        )
+        .expect("the upper-case spells parse");
+        assert_eq!(upper.key.as_deref(), Some("wrapped"));
+        assert_eq!(upper.private_key.as_deref(), Some("private"));
+
+        let lower: TokenResponse =
+            serde_json::from_str(r#"{"access_token":"a","key":"wrapped","privateKey":"private"}"#)
+                .expect("the lower-case spells parse");
+        assert_eq!(lower.key.as_deref(), Some("wrapped"));
+        assert_eq!(lower.private_key.as_deref(), Some("private"));
+    }
+
+    /// The access token is the one required field; its absence names it.
+    #[test]
+    fn a_token_response_without_an_access_token_is_refused() {
+        let error = serde_json::from_str::<TokenResponse>(r#"{"key":"wrapped"}"#)
+            .expect_err("the access token is required");
+
+        assert!(error.to_string().contains("access_token"), "{error}");
+    }
+
     /// The signed URL carries its own token and the key is a wrapped
     /// credential, so neither may appear in a Debug line.
     #[test]

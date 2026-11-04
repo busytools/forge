@@ -715,39 +715,34 @@ impl VaultFacade for ProdVaultFacade {
         draft.masked_diff = Some(masked_create_diff(input, kind));
         let approved = self.gate(caller, draft.clone(), VaultTool::Create, None).await?;
         self.ensure_keys_current(&approved, None).await?;
-        let session = Arc::clone(&approved.session);
-        let keys = Arc::clone(&approved.keys);
-        let result = async move {
-            let body = build_new_cipher(&keys, input, kind)?;
-            let created = session.create_cipher(&body).await?;
-            let id = created.get("id").and_then(Value::as_str).ok_or_else(|| {
-                VaultToolError::Message("the vault did not return the new item's id".to_owned())
-            })?;
-            // A missing name field falls back to what the caller asked for.
-            // A decrypt failure means the item already exists, so the audit
-            // line names the id it landed under before the error surfaces.
-            let name = match created.get("name").and_then(Value::as_str) {
-                Some(enc) => match keys.decrypt_item_str(&created, enc) {
-                    Ok(name) => name,
-                    Err(error) => {
-                        session.audit(
-                            caller,
-                            VaultTool::Create,
-                            Some(id),
-                            Some(&input.name),
-                            None,
-                            "approve",
-                            &format!("created as {id}; its name could not be decrypted: {error}"),
-                        );
-                        return Err(VaultToolError::Vault(error));
-                    }
-                },
-                None => input.name.clone(),
-            };
-            Ok(json!({ "id": id, "name": name, "type": kind }))
-        }
-        .await;
-        approved.done(result)
+        let body = match build_new_cipher(&approved.keys, input, kind) {
+            Ok(body) => body,
+            Err(error) => return approved.done(Err(error)),
+        };
+        let created = match approved.session.create_cipher(&body).await {
+            Ok(created) => created,
+            Err(error) => return approved.done(Err(VaultToolError::Vault(error))),
+        };
+        let Some(id) = created.get("id").and_then(Value::as_str) else {
+            return approved.done(Err(VaultToolError::Message(
+                "the vault did not return the new item's id".to_owned(),
+            )));
+        };
+        // A missing name field falls back to what the caller asked for. A
+        // decrypt failure means the item already exists, so the one audit
+        // line is the one that names the id it landed under.
+        let name = match created.get("name").and_then(Value::as_str) {
+            Some(enc) => match approved.keys.decrypt_item_str(&created, enc) {
+                Ok(name) => name,
+                Err(error) => {
+                    let mut approved = approved;
+                    approved.item_id = Some(id.to_owned());
+                    return approved.done(Err(VaultToolError::Vault(error)));
+                }
+            },
+            None => input.name.clone(),
+        };
+        approved.done(Ok(json!({ "id": id, "name": name, "type": kind })))
     }
 
     async fn update(
@@ -1786,8 +1781,18 @@ fn write_private(path: &Path, bytes: &[u8]) -> Result<(), VaultToolError> {
         .ok_or_else(|| VaultToolError::Message("the destination has no file name".to_owned()))?;
     // The parent is held as a directory handle and the file is opened
     // relative to it, so the path checked for containment is the one written.
+    // The handle is then proven to be the directory the containment check
+    // looked at: dev/ino from the opened fd must equal the canonical path's.
+    let expected = rustix::fs::stat(parent).map_err(errno_io)?;
     let dir = rustix::fs::open(parent, OFlags::RDONLY | OFlags::CLOEXEC, Mode::empty())
         .map_err(errno_io)?;
+    let actual = rustix::fs::fstat(&dir).map_err(errno_io)?;
+    if expected.st_dev != actual.st_dev || expected.st_ino != actual.st_ino {
+        return Err(VaultToolError::Message(
+            "the destination directory changed while the call was parked; nothing was written"
+                .to_owned(),
+        ));
+    }
     let dir = std::fs::File::from(dir);
     let file = rustix::fs::openat(
         &dir,
@@ -2031,6 +2036,7 @@ mod tests {
     enum Reply {
         Json(String),
         Bytes(Vec<u8>),
+        Status { code: u16, body: String },
     }
 
     struct Step {
@@ -2059,12 +2065,17 @@ mod tests {
                     let _ = seen.send(());
                     let _ = release.await;
                 }
-                let (kind, body) = match step.reply {
-                    Reply::Json(body) => ("application/json", body.into_bytes()),
-                    Reply::Bytes(body) => ("application/octet-stream", body),
+                let (status, kind, body) = match step.reply {
+                    Reply::Json(body) => {
+                        ("200 OK".to_owned(), "application/json", body.into_bytes())
+                    }
+                    Reply::Bytes(body) => ("200 OK".to_owned(), "application/octet-stream", body),
+                    Reply::Status { code, body } => {
+                        (format!("{code} Error"), "application/json", body.into_bytes())
+                    }
                 };
                 let head = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: {kind}\r\nContent-Length: {}\r\n\r\n",
+                    "HTTP/1.1 {status}\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                     body.len()
                 );
                 let _ = socket.write_all(head.as_bytes()).await;
@@ -2907,9 +2918,12 @@ mod tests {
         assert_eq!(size, 7);
     }
 
-    /// A FIFO destination is refused without blocking the write thread.
+    /// A FIFO destination is refused by the regular-file guard, not merely by
+    /// the non-blocking open: a reader is held so the writer's open succeeds.
     #[test]
-    fn write_private_refuses_a_fifo_without_blocking() {
+    fn write_private_refuses_a_fifo() {
+        use std::os::unix::fs::OpenOptionsExt;
+
         let dir = tempfile::tempdir().expect("tempdir");
         let fifo = dir.path().join("fifo");
         let created = std::process::Command::new("mkfifo")
@@ -2917,10 +2931,15 @@ mod tests {
             .status()
             .expect("mkfifo runs");
         assert!(created.success(), "mkfifo failed");
+        let _reader = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(&fifo)
+            .expect("the FIFO reader");
 
-        let started = std::time::Instant::now();
-        let _error = write_private(&fifo, b"x").expect_err("the FIFO is refused");
-        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        let error = write_private(&fifo, b"x").expect_err("the FIFO is refused");
+
+        assert!(error.to_string().contains("not a regular file"), "{error}");
     }
 
     /// A hard link names bytes outside this tree; writing through one would
@@ -3478,6 +3497,59 @@ mod tests {
         assert!(session.is_locked(), "an unverifiable key locks the session");
     }
 
+    /// A transient error from the key check must not restamp parked cards as
+    /// needing a password the gate would then ignore.
+    #[tokio::test]
+    async fn a_transient_sync_error_does_not_restamp_parked_cards() {
+        use forge_connectors::vault::crypto::make_symmetric_key;
+
+        let address = serve_steps(vec![Step {
+            path: "/api/sync",
+            reply: Reply::Status { code: 500, body: "{}".to_owned() },
+            pause: None,
+        }])
+        .await;
+        let (workspace, facade, caller, _dir, mut rx, session) =
+            unlocked_worker_workspace(address, make_symmetric_key(), String::new());
+        let (other, _held, _) = workspace.register_vault_ask(
+            &caller,
+            VaultDraft::new(VaultTool::Search, "another call"),
+            false,
+        );
+        while rx.try_recv().is_ok() {}
+
+        let asked = caller.clone();
+        let call = {
+            let facade = Arc::clone(&facade);
+            tokio::spawn(async move {
+                facade
+                    .create(&asked, &CreateInput { name: "bank".to_owned(), ..Default::default() })
+                    .await
+            })
+        };
+        let draft = parked_draft(&mut rx).await;
+        approve(&workspace, &caller, draft.id);
+        let result = call.await.expect("the call finishes");
+
+        assert!(
+            matches!(result, Err(VaultToolError::Vault(VaultError::Api { status: 500, .. }))),
+            "{result:?}",
+        );
+        assert!(!session.is_locked(), "a transient error does not lock");
+        let mut restamped = Vec::new();
+        while let Ok(frame) = rx.try_recv() {
+            if let crate::protocol::SessionUpdate::VaultAskPending { draft, .. } =
+                std::sync::Arc::unwrap_or_clone(frame.update)
+            {
+                restamped.push(draft);
+            }
+        }
+        assert!(
+            !restamped.iter().any(|draft| draft.id == other),
+            "the other card is not restamped: {restamped:?}",
+        );
+    }
+
     /// Each write path refuses after the account key rotated during the park.
     #[tokio::test]
     async fn a_rotated_key_refuses_create() {
@@ -3666,11 +3738,12 @@ mod tests {
 
         assert!(matches!(result, Err(VaultToolError::Vault(VaultError::Crypto(_)))), "{result:?}");
         assert!(session.is_locked(), "the crypto failure drops the keys");
+        let audit = audit_text(&dir);
         assert!(
-            audit_text(&dir).contains("created as new-item"),
-            "the audit names the id that landed: {}",
-            audit_text(&dir),
+            audit.contains("\"item_id\":\"new-item\""),
+            "the one audit line names the id that landed: {audit}",
         );
+        assert_eq!(audit.lines().count(), 1, "one audit line, not two: {audit}");
     }
 
     /// A missing organization key falls back; any other decrypt failure locks

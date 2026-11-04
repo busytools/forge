@@ -318,8 +318,8 @@ pub fn unwrap_attachment_key(
             })
         }
         "4" | "6" => {
-            // A missing private key is not a decrypt failure: re-entering the
-            // master password is what fixes it, so it gets its own error.
+            // A missing private key is not a decrypt failure: the account has
+            // none to unlock, so it gets its own error.
             let private_key = private_key.ok_or(VaultError::MissingPrivateKey)?;
             let parts: Vec<&str> = rest.split('|').collect();
             // `4.<ciphertext>`; `6.<ciphertext>|<mac>`. The MAC covers the
@@ -898,8 +898,8 @@ mod tests {
         );
     }
 
-    /// An RSA-wrapped attachment key with no unlocked private key is not a
-    /// decrypt failure: it is named, and re-unlocking is what fixes it.
+    /// An RSA-wrapped attachment key with no private key is not a decrypt
+    /// failure: the account has none, and it is named as such.
     #[test]
     fn an_rsa_wrapped_attachment_key_without_a_private_key_is_named() {
         let item_key = SymmetricCryptoKey::make(SymmetricKeyAlgorithm::Aes256CbcHmac);
