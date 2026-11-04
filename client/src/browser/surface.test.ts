@@ -798,15 +798,17 @@ describe('the browser surface', () => {
     await vi.waitFor(() => expect(surface.tab).toBe(5));
     expect(show).toHaveBeenLastCalledWith('hunt', seat, 5);
 
-    // **A later push with the same rows does not re-fire.** The list
-    // republishes on its own clock, and a person who picks the opener must
-    // not be yanked back to the popup on the next one.
+    // **A person who picks the opener is not yanked back.** The list
+    // republishes on its own clock, and the popup row is not new any more.
+    show.mockResolvedValueOnce({ profile: 'hunt', tab: 2 });
+    await selectTab(2);
+    expect(surface.tab).toBe(2);
     show.mockClear();
     seen.tabs(both);
     await Promise.resolve();
     await Promise.resolve();
     expect(show, 'an unchanged popup row does not move the surface again').not.toHaveBeenCalled();
-    expect(surface.tab).toBe(5);
+    expect(surface.tab).toBe(2);
   });
 
   /// **A popup that already existed when the surface opened is not
@@ -819,8 +821,9 @@ describe('the browser surface', () => {
     tabs.mockResolvedValue(both);
     show.mockResolvedValueOnce({ profile: 'hunt', tab: 2 });
     await openSurface('hunt', seat, 2);
-    // The list that lands as the surface's first is the one with the popup
-    // already in it.
+    // **The landing's own read lands before the push**, so the list the push
+    // carries is not the first this surface sees and the popup row is not new.
+    await vi.waitFor(() => expect(surface.tabs).not.toBeNull());
     seen.tabs(both);
     await Promise.resolve();
     await Promise.resolve();
