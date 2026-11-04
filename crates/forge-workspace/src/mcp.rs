@@ -966,6 +966,22 @@ mod tests {
                 .chain(
                     ["cron__create", "cron__delete", "cron__list"].into_iter().map(str::to_owned),
                 )
+                // The terminal is any-caller and always on, so a cron-only
+                // selection still carries its eight tools.
+                .chain(
+                    [
+                        "terminal__open",
+                        "terminal__write",
+                        "terminal__read",
+                        "terminal__wait",
+                        "terminal__resize",
+                        "terminal__close",
+                        "terminal__hand_off",
+                        "terminal__run",
+                    ]
+                    .into_iter()
+                    .map(str::to_owned),
+                )
                 .collect();
         expected.sort();
         assert_eq!(names, expected, "{names:?}");
