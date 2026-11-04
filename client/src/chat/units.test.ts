@@ -507,6 +507,66 @@ describe('one turn folded into the units a view draws', () => {
     );
   });
 
+  it('hangs a slash-command expansion on the Skill call that launched it', () => {
+    // **The expansion carrier** (Ved, 2026-11-04): `/board-chores` drew its
+    // body as the reader's own turn, raw backticks and all. It carries
+    // neither of the marks the fold knew - no plumbing line, no heading - and
+    // the live wire spells its mark `isMeta` where the read path re-synthesizes
+    // the same frame as `isSynthetic`. Its first sentence names the command it
+    // is, and that is what pairs it with the call still waiting for a body.
+    const load = said([use('toolu_chores', 'Skill', { skill: 'board-chores' })]);
+    const launch = heard([result('toolu_chores', 'Launching skill: board-chores')]);
+    const body = heard(
+      [
+        text(
+          'The user has invoked `/board-chores`: one pass over the board that ACTS.\n\n## Step 0\n\nRead the board once.',
+        ),
+      ],
+      { isMeta: true },
+    );
+
+    const units = fold([load, launch, body]);
+    expect(kinds(units), 'the call unit alone, no turn of the reader').toEqual(['leaves']);
+    const [group] = units;
+    const held = callsOf(group).map((call) => call.leaf);
+    expect(held, 'one call drew').toHaveLength(1);
+    expect(held[0]?.skill, 'the call opens onto the expanded command').toContain(
+      'one pass over the board that ACTS',
+    );
+
+    // With no call to ride, the expansion still draws as itself - a row that
+    // names the command - never as words the reader typed.
+    const alone = heard([text('The user has invoked `/board-chores`: one pass, unclaimed.')], {
+      isMeta: true,
+    });
+    const [orphan] = fold([alone]);
+    expect(orphan?.kind, 'an unclaimed expansion names the command').toBe('skill');
+  });
+
+  it('claims a marked frame only when its text is a command expansion', () => {
+    // The mark alone cannot be the body: the CLI stamps other harness frames
+    // `isMeta` too - a skill reminder, an image's caption, "Continue from
+    // where you left off." - so a marked frame riding a waiting call by
+    // position would swallow words that are not a skill. And expansion-shaped
+    // words the reader typed wear no mark, so they stay the reader's own.
+    const load = said([use('toolu_alpha', 'Skill', { skill: 'alpha-skill' })]);
+    const continuation = heard([text('Continue from where you left off.')], { isMeta: true });
+
+    const units = fold([load, continuation]);
+    const [group] = units;
+    expect(
+      callsOf(group).map((call) => call.leaf.skill),
+      'a marked frame that is not an expansion leaves the call waiting',
+    ).toEqual([null]);
+    expect(kinds(units), 'and draws as itself').toEqual(['leaves', 'user']);
+
+    const typed = heard([text('The user has invoked `/alpha-skill`: over to you.')]);
+    expect(
+      kinds(fold([said([use('toolu_beta', 'Skill', { skill: 'alpha-skill' })]), typed])),
+      'expansion-shaped words the reader typed stay theirs',
+    ).toEqual(['leaves', 'user']);
+  });
+
   it('draws an unclaimed synthetic body as a notice, never as the reader', () => {
     const body = heard([text('An injected line with no call behind it.')], { isSynthetic: true });
     const units = fold([body]);
