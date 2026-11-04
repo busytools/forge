@@ -14,7 +14,6 @@
   var native = window.__forgeBridgeNative;
   if (!native) return;
   var W = window;
-  var top = W === W.top;
   var savedOpen = W.open;
   var channels = Object.create(null);
   var MARK = 'forge-opener-bridge';
@@ -56,9 +55,24 @@
     return text;
   }
 
+  // **A targetOrigin is `*` or an origin, nothing else.** A path-bearing URL
+  // and an unparseable string both throw SyntaxError, as the platform's
+  // postMessage does; the relay never reduces a URL to its origin for the
+  // sender.
   function originOf(value) {
     if (typeof value !== 'string') {
       throw new TypeError('postMessage: targetOrigin must be a string');
+    }
+    if (value === '*') return value;
+    var parsed;
+    try {
+      parsed = new URL(value);
+    } catch (e) {
+      throw new DOMException('postMessage: invalid targetOrigin', 'SyntaxError');
+    }
+    if (parsed.pathname !== '/' || parsed.search !== '' || parsed.hash !== '' ||
+        parsed.username !== '' || parsed.password !== '') {
+      throw new DOMException('postMessage: invalid targetOrigin', 'SyntaxError');
     }
     return value;
   }
@@ -153,20 +167,14 @@
     return parsed.origin !== location.origin;
   }
 
+  // **The bridge is the main frame's.** This script only runs in a main
+  // frame; a subframe gets `bridge_frame.js`, which has no native object and
+  // only refuses a cross-site open.
   function open(url, name, features) {
     var featuresText = typeof features === 'string' ? features.toLowerCase() : '';
     var noopener =
       /(^|[\s,])noopener($|[\s,])/.test(featuresText) ||
       /(^|[\s,])noreferrer($|[\s,])/.test(featuresText);
-    if (!top) {
-      // A subframe is never a bridge opener: a cross-origin open there would
-      // fall back to CEF's popup and the wedge with it.
-      if (crossSite(String(url))) {
-        native.refuse(String(url));
-        return null;
-      }
-      return savedOpen.apply(W, arguments);
-    }
     if (!crossSite(String(url))) return savedOpen.apply(W, arguments);
     var token = handle();
     var resolved = String(new URL(String(url), location.href));
@@ -182,8 +190,17 @@
   }
 
   // The host delivers here: one event per message, closed notice or refusal.
-  W.__forgeBridgeDeliver = function (kind, token, origin, data) {
+  W.__forgeBridgeDeliver = function (kind, token, origin, data, target) {
     if (kind === 'message') {
+      // **The target origin is re-checked in the document that receives it.**
+      // The host checks against the recipient's origin when it sends, but a
+      // navigation can commit between that read and this dispatch; the
+      // document itself is the only place the check cannot race.
+      if (target !== '*') {
+        var targetOrigin = null;
+        try { targetOrigin = new URL(target).origin; } catch (e) { targetOrigin = null; }
+        if (targetOrigin === null || targetOrigin !== location.origin) return;
+      }
       var source = null;
       if (token && channels[token]) {
         source = channels[token].proxy;

@@ -147,21 +147,7 @@ async fn opener_title(auto_attach: bool) -> String {
     // **The wedge's own shape**: a root session with auto-attach, exactly as
     // Playwright asks for it, held open across the click. The control omits
     // it and must answer.
-    let (root, _root_events) = if auto_attach {
-        let path = browser_path(port).expect("the host answers its browser endpoint");
-        let (mut connected, events) = connect(port, &path).await.expect("the browser root accepts");
-        connected
-            .call(
-                "Target.setAutoAttach",
-                json!({ "autoAttach": true, "waitForDebuggerOnStart": true, "flatten": true }),
-                None,
-            )
-            .await
-            .expect("the root session auto-attaches");
-        (Some(connected), Some(events))
-    } else {
-        (None, None)
-    };
+    let auto = if auto_attach { Some(attach_and_resume(port).await) } else { None };
 
     // **The opener's own page session, held across the popup.** A fresh page
     // connection answers after the wedge; this one does not, which is the
@@ -199,10 +185,27 @@ async fn opener_title(auto_attach: bool) -> String {
     // **The popup exists as a page target**, so a failure below is the
     // opener's and not a popup that never opened.
     let listed = wait_for_pages(port, 2, BOUND).await;
-    assert!(
-        listed.iter().any(|page| page != &opener),
-        "the popup's page is listed beside the opener: {listed:?}"
-    );
+    let popup = listed
+        .into_iter()
+        .find(|page| page != &opener)
+        .expect("the popup's page is listed beside the opener");
+
+    // **The popup actually started.** The bridge does not avoid the driver's
+    // attachment - it removes the shared renderer and the CEF popup target -
+    // so this rig resumes what it pauses, and the popup's own document is
+    // what proves it ran rather than merely appeared as a target.
+    let deadline = Instant::now() + BOUND;
+    loop {
+        if popup_title(port, &popup).await.as_deref() == Some("provider") {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the popup never started its document (log: {})",
+            host.log_tail(),
+        );
+        tokio::time::sleep(POLL).await;
+    }
 
     // **The assertion the bridge exists for.** The title is the opener's own
     // word: `popup-open` means `window.open` answered a handle, which is the
@@ -239,9 +242,22 @@ async fn opener_title(auto_attach: bool) -> String {
         ),
     };
 
+    // **The client attached and every pause was resumed.** The bridge keeps
+    // the driver's attachment; what it removes is the shared renderer and the
+    // CEF popup target. A rig that only paused would leave the popup dead and
+    // this test would be asserting against a quiet host.
+    if let Some((resumer, attached, failures)) = auto {
+        resumer.abort();
+        assert_eq!(
+            failures.load(std::sync::atomic::Ordering::Acquire),
+            0,
+            "every attached target was resumed",
+        );
+        let urls = attached.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        assert!(urls.len() >= 2, "the driver attached to the opener and the popup: {urls:?}");
+    }
     assert!(host.terminate(Duration::from_secs(10)).success(), "the host ends on SIGTERM");
     Ring::unlink(&ring_name);
-    drop(root);
     title
 }
 
@@ -288,18 +304,23 @@ async fn a_cross_site_popup_relays_post_message_both_ways() {
     let provider_origin = format!("http://[::1]:{provider_port}");
     let app_origin = format!("http://127.0.0.1:{app_port}");
 
+    // **The provider posts inline, at document start.** That is the early
+    // message the channel must already be bound for: the host runs a nested
+    // CEF loop inside the create that starts this document.
     let provider = format!(
         "<!doctype html><meta charset=utf-8><title>provider-start</title>\
          <script>\
          addEventListener('message', function (e) {{\
            document.title = 'provider-got:' + (e.data && e.data.from) + ':' + e.origin;\
          }});\
-         document.title = 'provider-ready';\
-         setTimeout(function () {{\
-           if (!window.opener) {{ document.title = 'provider-no-opener'; return; }}\
+         if (!window.opener) {{\
+           document.title = 'provider-no-opener:' + window.name + ':' + \
+             (window.__forgeBridgePopup === true);\
+         }} else {{\
            window.opener.postMessage({{from:'provider-wrong'}}, 'http://127.0.0.1:1');\
            window.opener.postMessage({{from:'provider'}}, '{app_origin}');\
-         }}, 300);\
+           document.title = 'provider-posted';\
+         }}\
          </script>"
     );
     let app = format!(
@@ -309,10 +330,10 @@ async fn a_cross_site_popup_relays_post_message_both_ways() {
          <button id=signin>Sign in</button>\
          <script>\
          window.__messages=[];\
+         window.__syntax=[false,false];\
          addEventListener('message', function (e) {{\
            window.__messages.push({{from: e.data && e.data.from, origin: e.origin}});\
-           document.title = 'got:' + (e.data && e.data.from) + ':' + e.origin + ':' + \
-             window.__messages.length;\
+           document.title = 'got:' + (e.data && e.data.from) + ':' + e.origin;\
            if (e.data && e.data.from === 'provider' && window.__popup) {{\
              window.__popup.postMessage({{from:'opener'}}, '{provider_origin}');\
            }}\
@@ -322,6 +343,12 @@ async fn a_cross_site_popup_relays_post_message_both_ways() {
            var w=window.open('{provider_url}','signin');\
            window.__popup=w;\
            document.title = w ? 'popup-open' : 'popup-blocked';\
+           if (w) {{\
+             try {{ w.postMessage({{from:'bad'}}, 'not a url'); }} \
+             catch (e) {{ window.__syntax[0] = e.name === 'SyntaxError'; }}\
+             try {{ w.postMessage({{from:'bad'}}, '{provider_origin}/path'); }} \
+             catch (e) {{ window.__syntax[1] = e.name === 'SyntaxError'; }}\
+           }}\
          }};\
          document.title='ready';\
          </script>"
@@ -333,36 +360,7 @@ async fn a_cross_site_popup_relays_post_message_both_ways() {
         support::Host::start_with_events(&exe, &profile, port, &ring_name, "800x600", &[], &log);
     let opener = support::wait_for_page(port, &log, BOUND);
 
-    let path = browser_path(port).expect("the host answers its browser endpoint");
-    let (mut root, mut root_events) = connect(port, &path).await.expect("the browser root accepts");
-    root.call(
-        "Target.setAutoAttach",
-        json!({ "autoAttach": true, "waitForDebuggerOnStart": true, "flatten": true }),
-        None,
-    )
-    .await
-    .expect("the root session auto-attaches");
-
-    // **A real client resumes what it pauses.** The veto and the Playwright
-    // driver both do; a rig that only pauses leaves the popup's renderer
-    // waiting for a debugger that never comes, which is the test's bug, not
-    // the bridge's.
-    let resumer = tokio::spawn(async move {
-        while let Some(event) = root_events.recv().await {
-            if event["method"] != "Target.attachedToTarget" {
-                continue;
-            }
-            let session = event["params"]["sessionId"].as_str().unwrap_or_default().to_owned();
-            if session.is_empty() {
-                continue;
-            }
-            let _ = tokio::time::timeout(
-                Duration::from_secs(5),
-                root.call("Runtime.runIfWaitingForDebugger", json!({}), Some(&session)),
-            )
-            .await;
-        }
-    });
+    let (resumer, attached, failures) = attach_and_resume(port).await;
 
     let (mut cdp, _events) = connect(port, &format!("/devtools/page/{opener}"))
         .await
@@ -381,7 +379,7 @@ async fn a_cross_site_popup_relays_post_message_both_ways() {
 
     // **The app hears the provider, and only the matching post.** Two were
     // sent; the log holds one, with the provider's own origin.
-    let wanted = format!("got:provider:{provider_origin}:1");
+    let wanted = format!("got:provider:{provider_origin}");
     let deadline = Instant::now() + BOUND;
     loop {
         let title = evaluate(&mut cdp, "document.title").await;
@@ -396,6 +394,17 @@ async fn a_cross_site_popup_relays_post_message_both_ways() {
         );
         tokio::time::sleep(POLL).await;
     }
+    // **The delivered list is exactly one entry with the provider's own
+    // origin.** A wrong-origin post that was delivered instead would leave
+    // `from: provider-wrong` here, and a second delivery would leave two
+    // entries; the assertion names what actually arrived.
+    let messages = evaluate(&mut cdp, "window.__messages").await;
+    assert_eq!(
+        messages,
+        json!([{ "from": "provider", "origin": provider_origin }]),
+        "the app heard the provider's matching post and nothing else (log: {})",
+        host.log_tail(),
+    );
 
     // **The popup heard the opener through its own `window.opener`.**
     let wanted = format!("provider-got:opener:{app_origin}");
@@ -413,7 +422,29 @@ async fn a_cross_site_popup_relays_post_message_both_ways() {
         tokio::time::sleep(POLL).await;
     }
 
+    // **An invalid targetOrigin throws in the page**, as the platform's
+    // postMessage does: an unparseable string and a path-bearing URL are both
+    // SyntaxError, not a silent drop.
+    let syntax = evaluate(&mut cdp, "JSON.stringify(window.__syntax)").await;
+    assert_eq!(
+        syntax.as_str(),
+        Some("[true,true]"),
+        "an invalid targetOrigin must throw SyntaxError (log: {})",
+        host.log_tail(),
+    );
+
+    // **The driver attached to both and every pause was resumed.** The
+    // bridge removes the shared renderer and the CEF popup target; it does
+    // not avoid the attachment, and this is the evidence.
     resumer.abort();
+    assert_eq!(
+        failures.load(std::sync::atomic::Ordering::Acquire),
+        0,
+        "every attached target was resumed",
+    );
+    let urls = attached.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+    assert!(urls.len() >= 2, "the driver attached to the opener and the popup: {urls:?}");
+
     assert!(host.terminate(Duration::from_secs(10)).success(), "the host ends on SIGTERM");
     Ring::unlink(&ring_name);
 }
@@ -727,6 +758,480 @@ async fn an_about_blank_popup_navigated_cross_site_leaves_the_opener_answering()
     Ring::unlink(&ring_name);
 }
 
+/// **A cross-origin iframe cannot reach the bridge or open a popup.** The
+/// native object is the main frame's alone, and a web address opened in a
+/// cross-origin frame is refused rather than becoming a CEF popup that shares
+/// that frame's renderer.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_cross_origin_iframe_cannot_reach_the_bridge_or_open_a_popup() {
+    let scratch = tempfile::tempdir().expect("a temp dir");
+    let exe = support::host_executable(scratch.path());
+    let profile = scratch.path().join("profile");
+    std::fs::create_dir_all(&profile).expect("the profile dir");
+    let port = support::free_port();
+    let ring_name = format!("/forge-ob-frame-{}", std::process::id());
+    let log = scratch.path().join("host.log");
+
+    let app_listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("an app port");
+    let app_port = app_listener.local_addr().expect("the app port").port();
+    let app_origin = format!("http://127.0.0.1:{app_port}");
+    let frame_listener = std::net::TcpListener::bind(("::1", 0)).expect("a frame port");
+    let frame_port = frame_listener.local_addr().expect("the frame port").port();
+    let frame_url = format!("http://[::1]:{frame_port}/");
+    let frame_origin = format!("http://[::1]:{frame_port}");
+
+    let frame = format!(
+        "<!doctype html><meta charset=utf-8><title>frame</title>\
+         <script>\
+         var native = typeof window.__forgeBridgeNative;\
+         var opened = window.open(location.href, 'frame-popup');\
+         parent.postMessage({{native: native, \
+           opened: opened === null ? 'null' : 'object'}}, '{app_origin}');\
+         </script>"
+    );
+    let app = format!(
+        "<!doctype html><meta charset=utf-8>\
+         <iframe src=\"{frame_url}\"></iframe>\
+         <script>\
+         addEventListener('message', function (e) {{\
+           if (e.data && 'native' in e.data) {{\
+             document.title = 'frame:' + e.data.native + ':' + e.data.opened + ':' + e.origin;\
+           }}\
+         }});\
+         document.title = 'ready';\
+         </script>"
+    );
+    let _frame = serve_listener(frame_listener, &frame);
+    let _app = serve_listener(app_listener, &app);
+
+    let mut host =
+        support::Host::start_with_events(&exe, &profile, port, &ring_name, "800x600", &[], &log);
+    let opener = support::wait_for_page(port, &log, BOUND);
+    let (mut cdp, _events) = connect(port, &format!("/devtools/page/{opener}"))
+        .await
+        .expect("the page's devtools endpoint accepts");
+    cdp.call("Page.navigate", json!({ "url": format!("http://127.0.0.1:{app_port}/") }), None)
+        .await
+        .expect("the app navigates");
+    wait_for_title(&mut cdp, &["ready"], BOUND).await;
+
+    let wanted = format!("frame:undefined:null:{frame_origin}");
+    let deadline = Instant::now() + BOUND;
+    loop {
+        let title = evaluate(&mut cdp, "document.title").await;
+        if title.as_str() == Some(wanted.as_str()) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the cross-origin frame got more than a refusal: {title:?} \
+             (wanted {wanted:?}, log: {})",
+            host.log_tail(),
+        );
+        tokio::time::sleep(POLL).await;
+    }
+    // **No page was created**: the iframe's refused open did not fall back to
+    // CEF's popup.
+    assert_eq!(pages(port).len(), 1, "the iframe's open created no page");
+
+    assert!(host.terminate(Duration::from_secs(10)).success(), "the host ends on SIGTERM");
+    Ring::unlink(&ring_name);
+}
+
+/// **A `noopener` popup whose renderer dies is reaped.** It has no channel,
+/// so the tab itself is the record that the host made it; a dead renderer
+/// must not leave a row pointing at nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_noopener_popup_whose_renderer_dies_is_reaped() {
+    let scratch = tempfile::tempdir().expect("a temp dir");
+    let exe = support::host_executable(scratch.path());
+    let profile = scratch.path().join("profile");
+    std::fs::create_dir_all(&profile).expect("the profile dir");
+    let port = support::free_port();
+    let ring_name = format!("/forge-ob-noop-{}", std::process::id());
+    let log = scratch.path().join("host.log");
+
+    let (provider_port, _provider) = serve_on(
+        "::1",
+        "<!doctype html><meta charset=utf-8><title>provider</title><h1>provider</h1>",
+    );
+    let provider_url = format!("http://[::1]:{provider_port}/");
+    let app = format!(
+        "<!doctype html><meta charset=utf-8>\
+         <style>html,body{{margin:0;padding:0}}\
+         button{{width:300px;height:120px;font-size:24px}}</style>\
+         <button id=signin>Sign in</button>\
+         <script>\
+         document.getElementById('signin').onclick=function() {{\
+           if (window.__opened) return;\
+           window.__popup = window.open('{provider_url}', 'signin', 'noopener');\
+           window.__opened = true;\
+           document.title = window.__popup === null ? 'noopener-null' : 'noopener-object';\
+         }};\
+         document.title='ready';\
+         </script>"
+    );
+    let (app_port, _app) = serve_on("127.0.0.1", &app);
+
+    let mut host =
+        support::Host::start_with_events(&exe, &profile, port, &ring_name, "800x600", &[], &log);
+    let opener = support::wait_for_page(port, &log, BOUND);
+    let (mut cdp, _events) = connect(port, &format!("/devtools/page/{opener}"))
+        .await
+        .expect("the page's devtools endpoint accepts");
+    cdp.call("Page.navigate", json!({ "url": format!("http://127.0.0.1:{app_port}/") }), None)
+        .await
+        .expect("the app navigates");
+    wait_for_title(&mut cdp, &["ready"], BOUND).await;
+
+    let tab = click_until_popup(&mut host, BOUND).await;
+    let listed = wait_for_pages(port, 2, BOUND).await;
+    let popup = listed
+        .into_iter()
+        .find(|page| page != &opener)
+        .expect("the popup's page is listed beside the opener");
+    let (mut popup_cdp, _popup_events) = connect(port, &format!("/devtools/page/{popup}"))
+        .await
+        .expect("the popup's devtools endpoint accepts");
+    // **Crash its renderer.** The call itself may not answer once the renderer
+    // is gone, so it is bounded and its failure is expected.
+    let _ =
+        tokio::time::timeout(Duration::from_secs(5), popup_cdp.call("Page.crash", json!({}), None))
+            .await;
+
+    let deadline = Instant::now() + BOUND;
+    loop {
+        let closed = host.events().iter().any(|line| {
+            matches!(parse(line), Some(HostEvent::TabClosed { tab: closed }) if closed == tab)
+        });
+        if closed {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "a noopener popup whose renderer died was not reaped: {:?} (log: {})",
+            host.events(),
+            host.log_tail(),
+        );
+        tokio::time::sleep(POLL).await;
+    }
+
+    assert!(host.terminate(Duration::from_secs(10)).success(), "the host ends on SIGTERM");
+    Ring::unlink(&ring_name);
+}
+
+/// **The opener closes first and the popup survives it.** The popup's
+/// `window.opener.closed` flips, its posts are dropped, and its tab stays; the
+/// same fact `TabRegistry` keeps as `is_popup` so an attach timeout still
+/// knows a popup is open.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_popup_whose_opener_closes_first_sees_it_closed_and_survives() {
+    let scratch = tempfile::tempdir().expect("a temp dir");
+    let exe = support::host_executable(scratch.path());
+    let profile = scratch.path().join("profile");
+    std::fs::create_dir_all(&profile).expect("the profile dir");
+    let port = support::free_port();
+    let ring_name = format!("/forge-ob-orphan-{}", std::process::id());
+    let log = scratch.path().join("host.log");
+
+    let (provider_port, _provider) = serve_on(
+        "::1",
+        "<!doctype html><meta charset=utf-8><title>provider-ready</title>\
+         <script>\
+         setInterval(function () {\
+           if (!window.opener) { document.title = 'no-opener'; return; }\
+           document.title = window.opener.closed ? 'opener-closed' : 'opener-open';\
+           if (window.opener.closed) window.opener.postMessage({from:'after'}, '*');\
+         }, 200);\
+         </script>",
+    );
+    let provider_url = format!("http://[::1]:{provider_port}/");
+    let app = format!(
+        "<!doctype html><meta charset=utf-8>\
+         <style>html,body{{margin:0;padding:0}}\
+         button{{width:300px;height:120px;font-size:24px}}</style>\
+         <button id=signin>Sign in</button>\
+         <script>\
+         document.getElementById('signin').onclick=function() {{\
+           if (window.__popup) return;\
+           window.__popup = window.open('{provider_url}', 'signin');\
+           document.title = window.__popup ? 'popup-open' : 'popup-blocked';\
+         }};\
+         document.title='ready';\
+         </script>"
+    );
+    let (app_port, _app) = serve_on("127.0.0.1", &app);
+
+    let mut host =
+        support::Host::start_with_events(&exe, &profile, port, &ring_name, "800x600", &[], &log);
+    let opener = support::wait_for_page(port, &log, BOUND);
+    let (mut cdp, _events) = connect(port, &format!("/devtools/page/{opener}"))
+        .await
+        .expect("the page's devtools endpoint accepts");
+    cdp.call("Page.navigate", json!({ "url": format!("http://127.0.0.1:{app_port}/") }), None)
+        .await
+        .expect("the app navigates");
+    wait_for_title(&mut cdp, &["ready"], BOUND).await;
+
+    let tab = click_until_popup(&mut host, BOUND).await;
+    let listed = wait_for_pages(port, 2, BOUND).await;
+    let popup = listed
+        .into_iter()
+        .find(|page| page != &opener)
+        .expect("the popup's page is listed beside the opener");
+
+    // **The popup's document is up with its proxy before the opener goes.**
+    // Closing first would race the push against a context that has not
+    // loaded; the host re-sends on a later document, but the test should
+    // exercise the ordinary path.
+    let deadline = Instant::now() + BOUND;
+    loop {
+        let title = popup_title(port, &popup).await;
+        if title.as_deref() == Some("opener-open") {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the popup never installed its opener proxy: {title:?} (log: {})",
+            host.log_tail(),
+        );
+        tokio::time::sleep(POLL).await;
+    }
+
+    // **The opener tab ends the way a call or the sweep ends it.** The boot
+    // tab takes number 1, and the popup is the other page.
+    host.input(&forge_browser::input::host_line(&forge_browser::input::HostInput::TabClose {
+        tab: 1,
+    }));
+
+    let deadline = Instant::now() + BOUND;
+    loop {
+        let title = popup_title(port, &popup).await;
+        if title.as_deref() == Some("opener-closed") {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the popup never read its opener as closed: {title:?} (log: {})",
+            host.log_tail(),
+        );
+        tokio::time::sleep(POLL).await;
+    }
+    assert!(
+        !host.events().iter().any(|line| matches!(
+            parse(line),
+            Some(HostEvent::TabClosed { tab: closed }) if closed == tab
+        )),
+        "the popup survives its opener: {:?}",
+        host.events(),
+    );
+    let _ = host.terminate(Duration::from_secs(10));
+    Ring::unlink(&ring_name);
+}
+
+/// **Two popups from one opener hold two channels and route by handle.** A
+/// message from the first arrives with the first proxy as its source, the
+/// second with the second, and closing one leaves the other live.
+///
+/// **Ignored: a second concurrent host start times out CEF's browser-info
+/// response** in this host, so the rig's second popup never commits. The
+/// routing itself is pinned in `bridge.rs`'s channel tests; this rig is kept
+/// for the engine fix that makes two starts safe together.
+#[ignore = "a second concurrent bridged start times out CEF's browser-info response"]
+#[tokio::test(flavor = "multi_thread")]
+async fn two_popups_from_one_opener_route_independently() {
+    let scratch = tempfile::tempdir().expect("a temp dir");
+    let exe = support::host_executable(scratch.path());
+    let profile = scratch.path().join("profile");
+    std::fs::create_dir_all(&profile).expect("the profile dir");
+    let port = support::free_port();
+    let ring_name = format!("/forge-ob-two-{}", std::process::id());
+    let log = scratch.path().join("host.log");
+
+    let app_listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("an app port");
+    let app_port = app_listener.local_addr().expect("the app port").port();
+    let app_origin = format!("http://127.0.0.1:{app_port}");
+    let (provider_port, _provider) = serve_on(
+        "::1",
+        &format!(
+            "<!doctype html><meta charset=utf-8><title>provider</title>\
+             <script>\
+             var n = (location.search.match(/n=(\\d)/) || [])[1] || '0';\
+             function post() {{\
+               if (window.opener) window.opener.postMessage({{from:'p' + n}}, '{app_origin}');\
+             }}\
+             document.title = 'provider-' + n;\
+             setTimeout(post, 200);\
+             if (n === '2') setTimeout(post, 900);\
+             </script>"
+        ),
+    );
+    let provider_url = format!("http://[::1]:{provider_port}/");
+    let provider_origin = format!("http://[::1]:{provider_port}");
+    let app = format!(
+        "<!doctype html><meta charset=utf-8>\
+         <style>html,body{{margin:0;padding:0}}\
+         button{{width:300px;height:120px;font-size:24px}}</style>\
+         <button id=signin>Sign in</button>\
+         <script>\
+         window.__got=[];\
+         addEventListener('message', function (e) {{\
+           if (!e.data || !e.data.from || e.data.from.charAt(0) !== 'p') return;\
+           window.__got.push({{from: e.data.from, origin: e.origin, \
+             a: e.source === window.__a, b: e.source === window.__b}});\
+           // **The second popup starts once the first has posted**, so two
+           // browser starts are never in flight together; the routing is what
+           // this test is for.
+           if (!window.__b && e.source === window.__a) {{\
+             window.__b = window.open('{provider_url}?n=2', 'two');\
+           }}\
+           var both = window.__got.some(function (m) {{ return m.from === 'p1'; }}) && \
+             window.__got.some(function (m) {{ return m.from === 'p2'; }});\
+           document.title = both ? 'got:both' : 'got:' + window.__got.length;\
+           if (both && !window.__closedA) {{\
+             window.__closedA = true;\
+             window.__a.close();\
+           }}\
+         }});\
+         document.getElementById('signin').onclick=function() {{\
+           if (window.__opened) return;\
+           window.__opened = true;\
+           window.__a = window.open('{provider_url}?n=1', 'one');\
+           document.title = 'popup-open';\
+         }};\
+         document.title='ready';\
+         </script>"
+    );
+    let _app = serve_listener(app_listener, &app);
+
+    let mut host =
+        support::Host::start_with_events(&exe, &profile, port, &ring_name, "800x600", &[], &log);
+    let opener = support::wait_for_page(port, &log, BOUND);
+    let (mut cdp, _events) = connect(port, &format!("/devtools/page/{opener}"))
+        .await
+        .expect("the page's devtools endpoint accepts");
+    cdp.call("Page.navigate", json!({ "url": format!("http://127.0.0.1:{app_port}/") }), None)
+        .await
+        .expect("the app navigates");
+    wait_for_title(&mut cdp, &["ready"], BOUND).await;
+
+    // **Click until both popups exist.** A gesture sent into a fresh renderer
+    // can be dropped, so the click is retried; the page guards a second run.
+    let deadline = Instant::now() + BOUND;
+    loop {
+        support::click(&mut host, 60, 60);
+        if pages(port).len() == 3 {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the two popups never opened (log: {})",
+            host.log_tail()
+        );
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    let deadline = Instant::now() + BOUND;
+    loop {
+        if evaluate(&mut cdp, "document.title").await.as_str() == Some("got:both") {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the two popups did not both post: {:?} (log: {})",
+            evaluate(&mut cdp, "JSON.stringify(window.__got)").await,
+            host.log_tail(),
+        );
+        tokio::time::sleep(POLL).await;
+    }
+    let routes = evaluate(
+        &mut cdp,
+        "window.__got.map(function (m) { \
+           return m.from + ':' + m.origin + ':' + (m.a ? 'a' : '') + (m.b ? 'b' : ''); }).sort()",
+    )
+    .await;
+    assert_eq!(
+        routes,
+        json!([format!("p1:{provider_origin}:a"), format!("p2:{provider_origin}:b"),]),
+        "each popup's message names its own proxy (log: {})",
+        host.log_tail(),
+    );
+
+    // **Closing one leaves the other.** The first proxy reads closed, the
+    // second does not, and the second popup's later post still lands.
+    let deadline = Instant::now() + BOUND;
+    loop {
+        let state = evaluate(
+            &mut cdp,
+            "({a: window.__a.closed, b: window.__b.closed, got: window.__got.length})",
+        )
+        .await;
+        let a = state.pointer("/a").and_then(Value::as_bool);
+        let b = state.pointer("/b").and_then(Value::as_bool);
+        let got = state.pointer("/got").and_then(Value::as_u64);
+        if a == Some(true) && b == Some(false) && got == Some(3) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the closed popup did not leave the other live: {state} (log: {})",
+            host.log_tail(),
+        );
+        tokio::time::sleep(POLL).await;
+    }
+
+    let _ = host.terminate(Duration::from_secs(10));
+    Ring::unlink(&ring_name);
+}
+
+/// A root client that does what the driver does: auto-attach to every target,
+/// pause it, and resume it. Answers the attachments it made and how many
+/// resumes the host refused. **The bridge does not avoid this attachment**:
+/// it removes the shared renderer and CEF's popup target, so the popup is a
+/// page target like any tab.
+async fn attach_and_resume(
+    port: u16,
+) -> (
+    tokio::task::JoinHandle<()>,
+    std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    std::sync::Arc<std::sync::atomic::AtomicUsize>,
+) {
+    let path = browser_path(port).expect("the host answers its browser endpoint");
+    let (mut root, mut events) = connect(port, &path).await.expect("the browser root accepts");
+    root.call(
+        "Target.setAutoAttach",
+        json!({ "autoAttach": true, "waitForDebuggerOnStart": true, "flatten": true }),
+        None,
+    )
+    .await
+    .expect("the root session auto-attaches");
+    let attached = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let failures = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let record = std::sync::Arc::clone(&attached);
+    let failed = std::sync::Arc::clone(&failures);
+    let resumer = tokio::spawn(async move {
+        while let Some(event) = events.recv().await {
+            if event["method"] != "Target.attachedToTarget" {
+                continue;
+            }
+            let session = event["params"]["sessionId"].as_str().unwrap_or_default().to_owned();
+            let url = event["params"]["targetInfo"]["url"].as_str().unwrap_or_default().to_owned();
+            if session.is_empty() {
+                continue;
+            }
+            record.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(url);
+            let resumed = tokio::time::timeout(
+                Duration::from_secs(5),
+                root.call("Runtime.runIfWaitingForDebugger", json!({}), Some(&session)),
+            )
+            .await;
+            if !matches!(resumed, Ok(Ok(_))) {
+                failed.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+            }
+        }
+    });
+    (resumer, attached, failures)
+}
+
 /// One reading of a page's title over a connection of its own.
 async fn popup_title(port: u16, page: &str) -> Option<String> {
     popup_value(port, page, "document.title").await?.as_str().map(str::to_owned)
@@ -737,7 +1242,8 @@ async fn popup_probe(port: u16, page: &str) -> Option<Value> {
     popup_value(
         port,
         page,
-        "({ title: document.title, native: typeof window.__forgeBridgeNative, \
+        "({ title: document.title, name: window.name, \
+          native: typeof window.__forgeBridgeNative, \
           popup: window.__forgeBridgePopup === true, \
           opener: window.opener === null ? 'null' : 'set', \
           close: window.close ? 'set' : 'missing' })",

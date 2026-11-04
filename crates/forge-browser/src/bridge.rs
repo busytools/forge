@@ -142,7 +142,7 @@ impl Channels {
         self.handles.retain(|(tab, _), _| *tab != opener);
     }
 
-    /// Whether any channel remains. A test and a teardown read this.
+    /// Only a test reads this.
     #[cfg(test)]
     pub(crate) fn is_empty(&self) -> bool {
         self.by_id.is_empty()
@@ -293,6 +293,29 @@ mod tests {
         let second = channels.next_id();
         assert!(channels.bind(second, 1, 3, "h1".to_owned()).is_err());
         assert!(channels.by_handle(1, "h1").is_some());
+    }
+
+    /// **Two popups from one opener bind two channels and route by their own
+    /// handle**, and closing one leaves the other addressable. The live rig
+    /// for this is ignored on a CEF timeout, so the routing guard lives here.
+    #[test]
+    fn two_channels_from_one_opener_route_independently() {
+        let mut channels = Channels::default();
+        let first = channels.next_id();
+        let second = channels.next_id();
+        channels.bind(first, 1, 2, "h1".to_owned()).expect("a first popup");
+        channels.bind(second, 1, 3, "h2".to_owned()).expect("a second popup");
+        assert_eq!(channels.by_handle(1, "h1").map(|channel| channel.popup), Some(2));
+        assert_eq!(channels.by_handle(1, "h2").map(|channel| channel.popup), Some(3));
+        assert_eq!(channels.by_popup(2).map(|channel| channel.handle), Some("h1".to_owned()));
+        assert_eq!(channels.by_popup(3).map(|channel| channel.handle), Some("h2".to_owned()));
+
+        let ended = channels.popup_ended(2).expect("the first popup ended");
+        assert_eq!(ended.popup, 2);
+        assert!(channels.by_handle(1, "h1").is_none(), "the first handle goes with it");
+        assert!(channels.by_handle(1, "h2").is_some(), "the second channel is untouched");
+        assert!(channels.by_popup(3).is_some());
+        assert_eq!(channels.opener_ended(1).len(), 1, "one popup outlives the opener");
     }
 
     /// **A handle is a small hex token, not a URL or a page's text.**
