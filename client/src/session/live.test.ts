@@ -1845,6 +1845,8 @@ function drivable(refusedAtFirst = false, rangeAskFails = false): Driveable {
       },
       push: () => {},
       compact: () => {},
+      compacted: () => false,
+      generation: () => 0,
       takeAudio: () => [],
       refuse: () => {},
     };

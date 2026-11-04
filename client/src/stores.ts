@@ -56,7 +56,8 @@ export interface StoreValue {
    * How many updates the ceiling dropped off the front of `updates`, since
    * the snapshot it holds. A page folding them needs to know its tail is not
    * the whole story rather than finding out by arithmetic that does not add
-   * up.
+   * up. A compacted tail is complete for its readers, so `compact()` resets
+   * this to zero.
    */
   dropped: number;
 }
@@ -87,6 +88,18 @@ export interface Store {
    * every frame a busy seat streams while nobody reads.
    */
   compact(): void;
+  /**
+   * Whether the tail has been compacted to what its readers fold.
+   *
+   * It is then complete for them, so `runningAt` may read it even where the
+   * ceiling's count says the tail lost its head.
+   */
+  compacted(): boolean;
+  /**
+   * A number that changes whenever the tail is reshaped rather than appended
+   * to, so a cursor over it knows its indices no longer mean what they did.
+   */
+  generation(): number;
   /**
    * The `voice_audio` frames pushed since the last call, drained.
    *
@@ -137,16 +150,21 @@ function keptVariant(update: SessionUpdate): 'chat' | 'voice' | null {
 /**
  * A seat's tail while no page holds the seat.
  *
- * **The chat edge is appended last and the voice states only ever grow.** The
- * voice reader's cursor reads a front drop or a reset; replacing the edge can
- * shift its index by one and replay a voice state, never skip one, and a new
- * voice state always lengthens the list.
+ * **Two readers, two frames.** `runningAt` moves only on a turn's edge, and
+ * the voice control reads the newest listener count, so the tail holds the
+ * newest edge and the newest voice state and nothing else. Both replace what
+ * came before, which is a reshape rather than an append: the voice cursor
+ * restarts on the store's generation (`voice/voice.svelte.ts`), so a replaced
+ * state is replayed, not skipped.
  */
 function settledTail(updates: SessionUpdate[], update: SessionUpdate): SessionUpdate[] {
   const kept = keptVariant(update);
-  if (kept === 'voice') return [...updates, update];
+  if (kept === 'voice') {
+    const rest = updates.filter((waiting) => variantOf(waiting)[0] !== 'voice_mode_state');
+    return [...rest, update];
+  }
   if (kept === null) return updates;
-  // The newest edge supersedes every one before it; the voice states stay.
+  // The newest edge supersedes every one before it; the voice state stays.
   const withoutChat = updates.filter((waiting) => variantOf(waiting)[0] !== 'chat_appended');
   return [...withoutChat, update];
 }
@@ -157,8 +175,12 @@ function compactedTail(updates: SessionUpdate[]): SessionUpdate[] {
   const chat = updates.filter(
     (waiting) => variantOf(waiting)[0] === 'chat_appended' && movesInFlight(chatFrame(waiting)),
   );
-  const newest = chat[chat.length - 1];
-  return newest === undefined ? voice : [...voice, newest];
+  const kept: SessionUpdate[] = [];
+  const newestVoice = voice[voice.length - 1];
+  const newestEdge = chat[chat.length - 1];
+  if (newestVoice !== undefined) kept.push(newestVoice);
+  if (newestEdge !== undefined) kept.push(newestEdge);
+  return kept;
 }
 
 function createStore(subject: Subject, state: StoreState = { kind: 'loading' }): Store {
@@ -170,6 +192,9 @@ function createStore(subject: Subject, state: StoreState = { kind: 'loading' }):
   const MAX_AUDIO = 8;
   // Set when the last page drawing the seat goes: see `compact`.
   let compacted = false;
+  // Bumped whenever the tail is reshaped rather than appended to, so the
+  // voice cursor knows the indices it holds no longer name its frames.
+  let reshapes = 0;
   return {
     subject,
     value: { subscribe: inner.subscribe },
@@ -177,10 +202,13 @@ function createStore(subject: Subject, state: StoreState = { kind: 'loading' }):
     updates: () => get(inner).updates,
     state: () => get(inner).state,
     dropped: () => get(inner).dropped,
+    compacted: () => compacted,
+    generation: () => reshapes,
     set: (snapshot) => inner.set({ snapshot, updates: [], state: { kind: 'ready' }, dropped: 0 }),
     compact: () => {
       if (!isSeat(subject) || compacted) return;
       compacted = true;
+      reshapes += 1;
       inner.update((held) => ({
         ...held,
         updates: compactedTail(held.updates),
@@ -199,14 +227,13 @@ function createStore(subject: Subject, state: StoreState = { kind: 'loading' }):
         inner.update((held) => ({ ...held }));
         return;
       }
+      const replacing = isSeat(subject) && compacted;
+      if (replacing && keptVariant(update) !== null) reshapes += 1;
       inner.update((held) => {
         if (isSeat(subject) && replaces(update)) {
           return { snapshot: null, updates: [], state: { kind: 'loading' }, dropped: 0 };
         }
-        const updates =
-          isSeat(subject) && compacted
-            ? settledTail(held.updates, update)
-            : [...held.updates, update];
+        const updates = replacing ? settledTail(held.updates, update) : [...held.updates, update];
         const over = updates.length - MAX_UPDATES;
         return {
           snapshot: held.snapshot,

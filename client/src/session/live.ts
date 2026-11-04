@@ -529,7 +529,7 @@ function createSeat(
   function leaving(): void {
     shown = false;
     // Nothing draws the seat until a page returns, and a return draws its own
-    // conversation, so the store keeps only what `runningAt` folds.
+    // conversation, so the store keeps only what its readers fold.
     seat.held?.compact();
     // No frame paints for a page that has gone, so a record still waiting for
     // one is written now: it is what a return draws.

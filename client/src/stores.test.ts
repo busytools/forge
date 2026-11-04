@@ -102,11 +102,45 @@ describe('the stores one connection holds', () => {
     store.push(voiceState(2));
     store.push(resultFrame());
 
-    const names = store.updates().map((update) => variantOf(update)[0]);
-    expect(names, 'a file index was kept').not.toContain('file_index_changed');
-    expect(names, 'the voice state was dropped').toContain('voice_mode_state');
-    expect(store.updates().length, 'the mixed tail grew').toBeLessThan(5);
+    const kinds = store.updates().map((update) => variantOf(update)[0]);
+    expect(kinds, 'the tail is not exactly the newest voice state and the newest edge').toEqual([
+      'voice_mode_state',
+      'chat_appended',
+    ]);
+    expect(store.updates()[0], 'the newest voice state was not the one kept').toEqual(
+      voiceState(2),
+    );
+    expect(store.updates()[1], 'an older edge stayed').toEqual(resultFrame());
     expect(foldTail(store.updates(), false), 'the newest edge did not answer').toBe(false);
+  });
+
+  /**
+   * **Voice traffic must not re-open the ceiling.** The compacted tail keeps
+   * one voice state and one edge, so a seat whose voice toggles for hours
+   * still leaves `runningAt` a tail it can answer from.
+   */
+  it('bounds a voice-busy tail, and runningAt still answers from it', () => {
+    const stores = new Stores();
+    const seat = { session: LEAD };
+    const store = stores.open(seat);
+    store.set({ header: { turn_in_flight: false } });
+    store.compact();
+    store.push(opening('s'));
+    for (let at = 0; at < 1_000; at += 1) store.push(voiceState(at));
+
+    expect(store.updates().length, 'voice states grew the compacted tail').toBeLessThanOrEqual(2);
+    expect(
+      store.updates().some((update) => variantOf(update)[0] === 'voice_mode_state'),
+      'the newest voice state was dropped',
+    ).toBe(true);
+    expect(JSON.stringify(store.updates()), 'an old voice state stayed').not.toContain(
+      '"listeners":998',
+    );
+    expect(store.dropped(), 'voice pressure raised the ceiling count').toBe(0);
+    expect(
+      runningAt({ store: () => store }, LEAD, false),
+      'runningAt read the stale snapshot',
+    ).toBe(true);
   });
 
   /** A snapshot supersedes the updates before it, so they go with it. */

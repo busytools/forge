@@ -605,6 +605,7 @@ describe('the conversation the chat draws', () => {
         },
       }),
       dropped: () => 0,
+      compacted: () => false,
       updates: () => [],
     }));
     const chat = new Chat(server.connection, LEAD);

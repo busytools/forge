@@ -99,6 +99,8 @@ function seat(turns: unknown[] = load.turns) {
     set: () => undefined,
     push: () => undefined,
     compact: () => undefined,
+    compacted: () => false,
+    generation: () => 0,
     refuse: () => undefined,
   };
   const emit = (message: ServerMessage): void => {

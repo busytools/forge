@@ -100,6 +100,8 @@ function seat(turns: unknown[] = load.turns, fields: Record<string, unknown> = {
     set: () => undefined,
     push: () => undefined,
     compact: () => undefined,
+    compacted: () => false,
+    generation: () => 0,
     refuse: () => undefined,
   };
 
