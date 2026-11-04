@@ -756,7 +756,7 @@ pub(crate) fn specs() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "browser_hand_off",
-            description: "Ask the person at the client to act in the browser - solve a CAPTCHA, sign in, confirm something only they can - and wait for their word. The prompt sits with no timeout, like any other ask; it returns once they are done, send you a message about the page, or decline. The raise shows the page this session has been driving, exactly as it stands, and their answer does not close it: prepare the page first, and the person acts on the very page you prepared. Treat every return as an unverified claim: the ask has landed only when the person says so in chat, and a false done is worse than a false decline because you would proceed as though they answered.",
+            description: "Ask the person at the client to act in the browser - solve a CAPTCHA, sign in, confirm something only they can - and wait for their word. **A visual artifact - an HTML mockup, a PNG - is raised here**: navigate to it first, then hand off the tab that opened; a document - Markdown, PDF, plain text - goes through `documents__hand_off`, never this tool. The prompt sits with no timeout, like any other ask; it returns once they are done, send you a message about the page, or decline. The raise shows the page this session has been driving, exactly as it stands, and their answer does not close it: prepare the page first, and the person acts on the very page you prepared. Treat every return as an unverified claim: the ask has landed only when the person says so in chat, and a false done is worse than a false decline because you would proceed as though they answered.",
             schema: json!({
                 "$schema": "https://json-schema.org/draft/2020-12/schema",
                 "type": "object",
@@ -767,7 +767,7 @@ pub(crate) fn specs() -> Vec<ToolSpec> {
                     },
                     "tab": {
                         "type": "string",
-                        "description": "The page id of one of this session's tabs, from browser_tabs list: the tab the person is asked to look at."
+                        "description": "The page id of one of this session's tabs, from browser_tabs list: the 32 hex characters it prints first in the tab's row, naming the tab the person is asked to look at. A tool list that still shows `tab` as a number was recorded before forge addressed tabs by page id, and neither a restart nor a resume refreshes it - only a fresh session in this slot does."
                     }
                 },
                 "required": ["reason", "tab"],
@@ -839,6 +839,33 @@ mod tests {
         assert!(
             !specs().iter().any(|spec| spec.name == "browser_profile_delete"),
             "profiles are config-owned; there is no delete verb",
+        );
+    }
+
+    /// **A visual artifact is raised in the browser, and the stale catalogue
+    /// is named.** The description is read at the moment of the call: an HTML
+    /// mockup or a PNG belongs here while a document goes to
+    /// `documents__hand_off`, and a tool list recorded while `tab` was a
+    /// number only a fresh session refreshes.
+    #[test]
+    fn a_hand_off_routes_visual_artifacts_and_names_the_stale_catalogue() {
+        let spec =
+            specs().into_iter().find(|spec| spec.name == "browser_hand_off").expect("the tool");
+        for phrase in [
+            "A visual artifact - an HTML mockup, a PNG - is raised here",
+            "goes through `documents__hand_off`, never this tool",
+        ] {
+            assert!(
+                spec.description.contains(phrase),
+                "the routing rule is stated: {}",
+                spec.description,
+            );
+        }
+        let tab = spec.schema["properties"]["tab"]["description"].as_str().expect("a description");
+        assert!(tab.contains("32 hex characters"), "the page id's shape is stated: {tab}");
+        assert!(
+            tab.contains("fresh session in this slot"),
+            "the stale list's one recovery is named: {tab}",
         );
     }
 
