@@ -673,9 +673,10 @@ export function ageLabel(at: AgeReading, now: number): string {
 }
 
 /**
- * How long ago the session last wrote. A project nothing has run in is
- * `never`; a live session with no transcript yet has only just started,
- * which is `now` rather than an absence.
+ * How long ago the session last wrote, as the raw stamp an age cell reads
+ * against its clock. A project nothing has run in is `never`; a live session
+ * with no transcript yet has only just started, which is `now` rather than an
+ * absence.
  */
 export function whenOf(row: Row): AgeReading {
   if (row.state.kind === 'never-started') return 'never';

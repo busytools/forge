@@ -118,7 +118,8 @@ export interface RailProject {
    * against this and exactly one of them matches.
    */
   shown: string | null;
-  /** How long since it last wrote, drawn only when nothing is running. */
+  /** The raw stamp of how long since it last wrote, which the Age cell reads
+   *  against the clock; drawn only when nothing is running. */
   age: AgeReading;
   asleep: boolean;
   row: Row;

@@ -2,20 +2,21 @@
 /**
  * The seat's 30 s clock tick must re-render the age text and nothing else.
  *
- * **The failure this pins.** On a long conversation the page used to hand
- * `now` down as a plain number, so the tick re-ran every row builder over the
- * whole tree - `railGroups` among them - and the main thread stalled for
- * seconds (#2782's report measured 1-6.5 s on a 42,738 px conversation).
+ * **What the tick re-ran.** The page handed `now` down as a plain number, so
+ * every `$derived` reading it was rebuilt: `railGroups`, the rail footer and
+ * the inspector's schedule, monitor and review builders. The conversation
+ * column never read that clock; this case pins that it stays out too.
  *
- * The fix hands the leaves a store instead, so this case counts renders: the
- * row builder must not run again when the clock moves, while the age cell
- * must. Mutation-verified by putting the plain number back: the tick then
- * calls the row builder and this case fails.
+ * The fix hands the age leaf a store instead, so this case counts renders: the
+ * conversation and rail builders must not run again when the clock moves,
+ * while the age cell must. Mutation-verified by putting the plain number back:
+ * the tick then calls `railGroups` and this case fails.
  */
 import { flushSync, mount, unmount } from 'svelte';
 import { writable } from 'svelte/store';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { installResizeObserver } from '../chat/testing/viewport';
 import { boardWire, homeWire } from '../dev/fixture.data';
 import load from '../dev/fixtures/session-load.json';
 import session from '../dev/fixtures/session.json';
@@ -24,6 +25,15 @@ import type { ServerMessage, Subject } from '../protocol';
 import type { Connection } from '../socket';
 import type { SessionSlot } from '../wire/types';
 import type { HomeWire } from '../wire/home';
+
+installResizeObserver();
+
+// The conversation draws every turn it is handed, rather than the virtualised
+// window: what this case counts is the builders, and that needs the rows drawn.
+vi.mock('virtua/svelte', async () => {
+  const { default: List } = await import('../chat/testing/List.svelte');
+  return { VList: List };
+});
 
 vi.mock('../session/view', async (importOriginal) => {
   const real = await importOriginal<typeof import('./view')>();
@@ -71,7 +81,9 @@ function asleepHome(): HomeWire {
 }
 
 function seats(turns: unknown[]): unknown {
-  return { ...session, conversation: { turns, compaction_count: 0 }, ...load };
+  // `cursor` present, even null, so the snapshot seeds its page rather than
+  // being read as an older server's record that has to be asked for again.
+  return { ...session, conversation: { turns, compaction_count: 0, cursor: null }, ...load };
 }
 
 function seat(turns: unknown[] = load.turns) {
@@ -129,7 +141,7 @@ afterEach(async () => {
 });
 
 describe('the seat clock tick', () => {
-  it('re-renders the age text without re-running the row builders', () => {
+  it('re-renders the age text without re-running the conversation or rail builders', () => {
     app = mount(Harness, {
       target: document.body,
       props: {
@@ -140,6 +152,9 @@ describe('the seat clock tick', () => {
       },
     });
     flushSync();
+
+    const drawn = counts.tally().find((entry) => entry.name === 'turnFold');
+    expect(drawn, 'the mount drew no conversation, so a quiet tick proves nothing').toBeDefined();
     counts.clear();
 
     const age = document.querySelector('.age');
@@ -150,8 +165,12 @@ describe('the seat clock tick', () => {
     flushSync();
 
     expect(
-      counts.tally().find((entry) => entry.name === 'railGroups'),
+      counts.tally().find((entry) => entry.name === 'turnFold'),
       'the tick re-ran the conversation row builder',
+    ).toBeUndefined();
+    expect(
+      counts.tally().find((entry) => entry.name === 'railGroups'),
+      'the tick re-ran the rail builder',
     ).toBeUndefined();
     expect(
       document.querySelector('.age')?.textContent,
