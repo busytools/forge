@@ -18,7 +18,7 @@ its connector sets. The drawing it is held against is
 |---|---|---|
 | Rail | every declared project grouped by the strongest state among its rows, the current seat marked, each project's and seat's decision waits marked with a glyph and a count, sleepers folded - a fold hiding a decision wait opens itself, so the mark is visible without expanding it; its footer carries the account and what it is costing | the home's snapshot, the board's snapshot for each row's task, and `accounts` |
 | Header | the chip, the seat's own mark, org and name, and the facts: session id, model with its effort, mode, context fill, and the compaction count | `header`, `conversation.compaction_count` |
-| Conversation | the turns and everything inside them, and the handoff row where two sessions met, in the column's own scroll viewport | `conversation` |
+| Conversation | the turns and everything inside them, in the column's own scroll viewport | `conversation` |
 | Queue | the prompts waiting, drawn against what is running | `queue`, `queue_ended` |
 | Bar | the composer's one bar: a live row of the seat's segments and the running turn's figures, and a body holding the field, an ask, a take or a blocked line | the seat's record, the project's board row, the page's clock, and the composer's own record |
 
@@ -247,44 +247,27 @@ on the failure line just under it; a message that arrives at the turn's
 end, a peer message among them, draws below either, where the next turn
 starts.
 
-**A handoff draws a row between two conversations.** When forge replaces a
-session with a fresh one that continues from a brief - at a turn boundary
-past 85% of its window by default, after a compaction, or when one is asked
-for - the row names the pair and the reason it fired for: the fill it
-crossed, or the compaction that forced it (a manual ask says so). Opened, it
-carries both full session ids, each with the control that copies it - the
-recovery `/resume <old-id>` needs is on the row itself - and the brief the
-successor was given: the ground truth forge read off the transcript, git and
-the board - the seat, the working directory, the branch, the role, the files
-read and changed, the rows the seat owns and their links, the transcript the
-record names, and what was still running when the seat changed: the live
-agents, background tasks, monitors and the session's process tree, so the
-successor knows what to resume - then
-the note the handing-over session wrote, or its closing text under a `source`
-row when the exit call carried none: where things stand, what is in
-flight with the id that names it, what failed, and the exact next action with
-the file, command or row it starts at, so the successor opens what the note
-names rather than reading a retelling of it. **The brief is one
-table.** Each section takes its own labelled row, and the note's own headings,
-when it writes any, sit on the same label column; the value takes the width the
-pane has and wraps inside its own row. Under the meta sit the record's own
-numbers: when the swap happened, what the cycle counted (requests, turns and
-prompt tokens) and how the successor's first turns went once they have been
-measured - an unmeasured successor is absent rather than a row of zeros. The
-previous conversation stays above it, so a swap reads as a seam in the page
-rather than a seat that emptied, and the old session is one `/resume` away.
+**A handoff opens a new chat.** When forge replaces a session with a fresh
+one that continues from a brief - at a turn boundary past 85% of its window
+by default, after a compaction, or when one is asked for - the successor's
+transcript opens with the brief forge delivered, and that prompt draws as
+the handoff procedure: the row wears the handoff's own mark, names itself,
+and holds the whole brief behind its open. The brief is the ground truth
+forge read off the transcript, git and the board - the seat, the working
+directory, the branch, the role, the files read and changed, the rows the
+seat owns and their links, the transcript the record names, and what was
+still running when the seat changed: the live agents, background tasks,
+monitors and the session's process tree, so the successor knows what to
+resume - then the note the handing-over session wrote, or its closing text
+under a `source` label when the exit call carried none: where things stand,
+what is in flight with the id that names it, what failed, and the exact next
+action with the file, command or row it starts at, so the successor opens
+what the note names rather than reading a retelling of it.
 
-**The turn that ran the handoff draws above the row.** Its first row is the
-procedure forge wrote - the prompt that asks the handing-over session to run
-the handoff skill - drawn under the handoff's own mark rather than as an
-ordinary machinery nudge, closed on its name and open on the whole text.
-Below it are the calls the turn made, the exit call among them, so the row
-is the end of work the reader can read rather than a seam with nothing
-above it. **That turn comes from the handoff record, not from the
-successor's transcript**, because it ran in the session that left: a client
-that attached after the swap, or reloaded, draws exactly what the client
-that watched the swap drew, and the closed conversation above it stays with
-the client that watched it.
+**The previous conversation goes with the seat that left.** The chat clears
+on the swap rather than carrying the old turns above a seam: the successor
+is a new session with its own transcript, and what it draws is its own. The
+handoff record keeps the old session's id.
 
 **A row is drawn before the list has measured it.** The virtualised list
 places a row on an estimate-derived offset and corrects it the moment the

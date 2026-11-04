@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 
 import { render } from 'svelte/server';
+import { writable } from 'svelte/store';
 import { describe, expect, it } from 'vitest';
 
 import { homeWire } from '../dev/fixture.data';
@@ -26,6 +27,11 @@ import Rail from './Rail.svelte';
 const sheet = readFileSync(new URL('../assets/web.css', import.meta.url), 'utf8');
 
 const LEAD: SessionSlot = { org: 'TestOrg', project: 'proj', label: 'lead' };
+
+/** The rail's clock, as the production page hands it down: the fixture's
+ *  stamps are measured from epoch zero, so this stays there to keep the ages
+ *  the assertions name. */
+const NOW = writable(0);
 
 /**
  * A connection this sheet never reaches.
@@ -75,7 +81,7 @@ const footer = render(Rail, {
     // escaped, so this reads the build the way the wire does.
     home: { ...homeWire, forge_version_short: '1.0.105' },
     current: LEAD,
-    now: Date.now(),
+    now: NOW,
     connection: untouched(),
   },
 }).body;
@@ -168,7 +174,7 @@ describe('the footer when no account resolves', () => {
    */
   it('draws the project account it knows, or the bare word, never nothing', () => {
     const drawn = render(Rail, {
-      props: { home: homeWire, current: LEAD, now: 0, connection: untouched() },
+      props: { home: homeWire, current: LEAD, now: NOW, connection: untouched() },
     }).body;
     expect(drawn, 'a project chipping no account lost the footer account line').toContain(
       '<span class="an">Acct</span>',
@@ -187,7 +193,7 @@ describe('the footer when no account resolves', () => {
     );
 
     const bare = render(Rail, {
-      props: { home: undeclared(), current: LEAD, now: 0, connection: untouched() },
+      props: { home: undeclared(), current: LEAD, now: NOW, connection: untouched() },
     }).body;
     expect(bare, 'a project declaring no account drew no account line').toContain(
       '<span class="an">account</span>',
@@ -198,7 +204,7 @@ describe('the footer when no account resolves', () => {
 describe('the footer when the snapshot is absent', () => {
   it('keeps the 5h and 7d rows with the placeholder spend already uses', () => {
     const drawn = render(Rail, {
-      props: { home: chipped(null), current: LEAD, now: 0, connection: untouched() },
+      props: { home: chipped(null), current: LEAD, now: NOW, connection: untouched() },
     }).body;
     expect(drawn, 'the account line went with the snapshot').toContain(
       '<span class="an">Acct</span>',
@@ -222,7 +228,7 @@ describe('the footer when the snapshot carries windows', () => {
           seven_day: { utilization: 24, reset_description: '2d 6h' },
         }),
         current: LEAD,
-        now: 0,
+        now: NOW,
         connection: untouched(),
       },
     }).body;
@@ -248,7 +254,7 @@ describe('the footer marks a spent window', () => {
           seven_day: { utilization: 42, status: 'allowed', reset_description: '2d 6h' },
         }),
         current: LEAD,
-        now: 0,
+        now: NOW,
         connection: untouched(),
       },
     }).body;
@@ -274,7 +280,7 @@ describe('the footer names a rate-limited account', () => {
       props: {
         home: chipped({ source: 'Oauth' }, 'rate_limited'),
         current: LEAD,
-        now: 0,
+        now: NOW,
         connection: untouched(),
       },
     }).body;
@@ -284,7 +290,7 @@ describe('the footer names a rate-limited account', () => {
     expect(rule('.rfoot .who .st'), 'the state word lost its amber').toContain('var(--warn)');
 
     const ready = render(Rail, {
-      props: { home: chipped(null), current: LEAD, now: 0, connection: untouched() },
+      props: { home: chipped(null), current: LEAD, now: NOW, connection: untouched() },
     }).body;
     expect(ready, 'a ready account claimed a state word').not.toContain('class="st"');
   });
@@ -320,7 +326,7 @@ describe('a project row', () => {
       props: {
         home: { ...homeWire, agents: [{ ...template, lifecycle: 'Sleeping' }] },
         current: LEAD,
-        now: 0,
+        now: NOW,
         connection: untouched(),
       },
     }).body;
@@ -369,7 +375,7 @@ describe('a closed seat', () => {
     const wire = { ...homeWire, agents: [lead, worker] };
     const { open, deliver } = speaking();
     const opened = (): string =>
-      render(Rail, { props: { home: wire, current: LEAD, now: 0, connection: open } }).body;
+      render(Rail, { props: { home: wire, current: LEAD, now: NOW, connection: open } }).body;
 
     const stop = watchReleases(open, () => {});
     try {
@@ -407,7 +413,7 @@ describe('a closed seat', () => {
         props: {
           home: wire,
           current: LEAD,
-          now: 0,
+          now: NOW,
           connection: closes(),
         },
       }).body;
@@ -415,7 +421,7 @@ describe('a closed seat', () => {
     try {
       expect(opened(), 'a row nobody closed was settling').not.toContain('settling');
 
-      expect(closeSeat(closes(), wire, worker.slot, LEAD, 0), 'the close never went').toBe(true);
+      expect(closeSeat(closes(), wire, worker.slot, LEAD), 'the close never went').toBe(true);
       const drawn = opened();
       expect(drawn, "the closed worker's row did not fold asleep").toContain('1 asleep');
       // The ROW's own dot, sliced to it: the fold's summary now wears the same
@@ -444,10 +450,9 @@ describe('a closed seat', () => {
       // The lead's own path: without the mark reaching its row, the project
       // sits under an "asleep" heading drawn as still live. Anchored on the
       // lead's own row, because the fold's worker dot would answer for it.
-      expect(
-        closeSeat(closes(), wire, lead.slot, worker.slot, 0),
-        'the lead close never went',
-      ).toBe(true);
+      expect(closeSeat(closes(), wire, lead.slot, worker.slot), 'the lead close never went').toBe(
+        true,
+      );
       const withLead = opened();
       const leadRow = withLead.slice(withLead.indexOf('class="pr'), withLead.indexOf('class="wk'));
       expect(leadRow, 'the closed lead kept a live dot').toContain(
@@ -523,7 +528,7 @@ describe("a project row's mark", () => {
    */
   it('sits in one fixed, centred slot', () => {
     const drawn = render(Rail, {
-      props: { home: homeWire, current: LEAD, now: Date.now(), connection: untouched() },
+      props: { home: homeWire, current: LEAD, now: NOW, connection: untouched() },
     }).body;
     expect(drawn, 'the project row lost its fixed mark slot').toMatch(
       /<span class="dot-slot"><span class="dot [^"]+"><\/span><\/span>/,
@@ -567,7 +572,7 @@ describe("a worker's failure", () => {
           ],
         },
         current: LEAD,
-        now: 0,
+        now: NOW,
         connection: untouched(),
       },
     }).body;
@@ -622,7 +627,7 @@ describe('the rail rows are ways in', () => {
       ],
     };
     const drawn = render(Rail, {
-      props: { home: withWorker, current: LEAD, now: Date.now(), connection: untouched() },
+      props: { home: withWorker, current: LEAD, now: NOW, connection: untouched() },
     }).body;
     expect(drawn, 'the project row links its lead').toMatch(
       /class="rail-go" href="\/session\/TestOrg\/proj\/lead"/,

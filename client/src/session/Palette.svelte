@@ -158,7 +158,7 @@
       return;
     }
     if (row.doing === 'close') {
-      closeSeat(connection, wire, slot, slot, Date.now());
+      closeSeat(connection, wire, slot, slot);
       onclose();
     }
   }

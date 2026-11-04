@@ -1581,10 +1581,10 @@ mod tests {
             .map(|frame| std::sync::Arc::unwrap_or_clone(frame.update))
             .collect();
         let frame = drawn.iter().find_map(|update| match update {
-            SessionUpdate::ChatAppended { msg, origin, .. } => Some((msg, origin)),
+            SessionUpdate::ChatAppended { msg, .. } => Some(msg),
             _ => None,
         });
-        let Some((Message::User { message, uuid, .. }, origin)) = frame else {
+        let Some(Message::User { message, uuid, .. }) = frame else {
             panic!("the chase's delivery forges its words as the turn; got {drawn:?}")
         };
         assert_eq!(
@@ -1592,7 +1592,6 @@ mod tests {
             Some(wired.as_str()),
             "the frame is stamped with the id the prompt runs under",
         );
-        assert!(origin.is_none(), "no view drew these words, so the frame claims no origin");
         assert!(
             matches!(
                 message.content.first(),

@@ -144,10 +144,10 @@ export function closeCommand(home: HomeWire, slot: SessionSlot): Command | null 
 }
 
 /** Every seat the rail draws that has a session behind it, in its drawn order. */
-function liveSlots(home: HomeWire, slot: SessionSlot, now: number): SessionSlot[] {
+function liveSlots(home: HomeWire, slot: SessionSlot): SessionSlot[] {
   // The seat the rail marks affects nothing here - the groups, their order
   // and each project's rows come from the states and not from the mark.
-  return railGroups(home, null, slot, now)
+  return railGroups(home, null, slot)
     .flatMap((group) =>
       group.projects.flatMap((project) => [
         project.row.slot,
@@ -163,9 +163,9 @@ function liveSlots(home: HomeWire, slot: SessionSlot, now: number): SessionSlot[
  * before it in reverse - the walk the view this client replaced made - and
  * the home when no row is left.
  */
-function walk(home: HomeWire, closed: SessionSlot, now: number): Route {
+function walk(home: HomeWire, closed: SessionSlot): Route {
   const key = keyOf(closed);
-  const drawn = liveSlots(home, closed, now);
+  const drawn = liveSlots(home, closed);
   const at = drawn.findIndex((candidate) => keyOf(candidate) === key);
   const order = at === -1 ? drawn : [...drawn.slice(at + 1), ...drawn.slice(0, at).reverse()];
   const next = order.find((candidate) => keyOf(candidate) !== key);
@@ -185,12 +185,12 @@ function walk(home: HomeWire, closed: SessionSlot, now: number): Route {
  * runs (the cascade), so that first row is the first one outside the close,
  * and the home is the answer when none is left.
  */
-export function closeLanding(home: HomeWire, slot: SessionSlot, now: number): Route {
+export function closeLanding(home: HomeWire, slot: SessionSlot): Route {
   const lead: SessionSlot = { org: slot.org, project: slot.project, label: 'lead' };
   if (slot.label !== 'lead' && behind(home, lead)) {
     return { name: 'session', slot: lead };
   }
-  return walk(home, slot, now);
+  return walk(home, slot);
 }
 
 /**
@@ -206,11 +206,10 @@ export function removedLanding(
   home: HomeWire,
   slot: SessionSlot,
   spawnedBy: SessionSlot | null,
-  now: number,
 ): Route {
   const lead = spawnedBy ?? { org: slot.org, project: slot.project, label: 'lead' };
   if (behind(home, lead)) return { name: 'session', slot: lead };
-  return walk(home, slot, now);
+  return walk(home, slot);
 }
 
 /** The seat a `worker_status_changed` update removed, and the lead that spawned it. */
@@ -310,7 +309,6 @@ export function closeSeat(
   home: HomeWire,
   slot: SessionSlot,
   current: SessionSlot,
-  now: number,
 ): boolean {
   const command = closeCommand(home, slot);
   if (command === null) return false;
@@ -339,7 +337,7 @@ export function closeSeat(
     }
   }
   if (keyOf(current) === keyOf(slot)) {
-    goTo(closeLanding(home, slot, now));
+    goTo(closeLanding(home, slot));
   }
   return true;
 }

@@ -595,7 +595,6 @@ async fn showing_a_seat_that_spent_a_mark_re_sends_the_home_the_connection_holds
     fleet.emit(SessionUpdate::ChatAppended {
         key: lead_seat(),
         msg: a_finished_turn(),
-        origin: None,
         source: None,
     });
     assert!(
@@ -2826,7 +2825,6 @@ async fn a_turn_finishing_on_a_seat_a_page_shows_asks_the_core_for_a_reading() {
     fleet.emit(SessionUpdate::ChatAppended {
         key: lead_seat(),
         msg: an_assistant_chunk(),
-        origin: None,
         source: None,
     });
     // One window for both negatives: the read that opened the seat asks for
@@ -2840,7 +2838,6 @@ async fn a_turn_finishing_on_a_seat_a_page_shows_asks_the_core_for_a_reading() {
     fleet.emit(SessionUpdate::ChatAppended {
         key: lead_seat(),
         msg: a_finished_turn(),
-        origin: None,
         source: None,
     });
 
@@ -2875,7 +2872,6 @@ async fn a_turn_finishing_on_a_seat_no_page_holds_asks_for_nothing() {
     fleet.emit(SessionUpdate::ChatAppended {
         key: lead_seat(),
         msg: a_finished_turn(),
-        origin: None,
         source: None,
     });
 
@@ -2893,7 +2889,6 @@ async fn a_turn_finishing_on_a_seat_no_page_holds_asks_for_nothing() {
     fleet.emit(SessionUpdate::ChatAppended {
         key: lead_seat(),
         msg: a_finished_turn(),
-        origin: None,
         source: None,
     });
 
@@ -2925,7 +2920,6 @@ async fn a_compaction_settling_on_a_seat_a_page_holds_asks_past_the_bound() {
     fleet.emit(SessionUpdate::ChatAppended {
         key: lead_seat(),
         msg: a_finished_turn(),
-        origin: None,
         source: None,
     });
     let refused = next_agent_command(&mut asked, 250).await;
@@ -2937,7 +2931,6 @@ async fn a_compaction_settling_on_a_seat_a_page_holds_asks_past_the_bound() {
     fleet.emit(SessionUpdate::ChatAppended {
         key: lead_seat(),
         msg: a_compaction_settle(),
-        origin: None,
         source: None,
     });
 
@@ -2969,7 +2962,6 @@ async fn a_compaction_settling_on_a_seat_no_page_holds_still_asks() {
     fleet.emit(SessionUpdate::ChatAppended {
         key: lead_seat(),
         msg: a_compaction_settle(),
-        origin: None,
         source: None,
     });
 
@@ -2998,7 +2990,6 @@ async fn a_permission_mode_change_is_not_a_settled_compaction() {
     fleet.emit(SessionUpdate::ChatAppended {
         key: lead_seat(),
         msg: a_permission_mode_change(),
-        origin: None,
         source: None,
     });
 
@@ -3026,7 +3017,6 @@ async fn a_compaction_settling_inside_the_interval_still_asks() {
     fleet.emit(SessionUpdate::ChatAppended {
         key: lead_seat(),
         msg: a_finished_turn(),
-        origin: None,
         source: None,
     });
     let first = next_agent_command(&mut asked, 5_000).await;
@@ -3040,7 +3030,6 @@ async fn a_compaction_settling_inside_the_interval_still_asks() {
     fleet.emit(SessionUpdate::ChatAppended {
         key: lead_seat(),
         msg: a_compaction_settle(),
-        origin: None,
         source: None,
     });
 
@@ -3111,7 +3100,6 @@ async fn a_seat_with_no_agent_has_the_refused_ask_recorded() {
     fleet.emit(SessionUpdate::ChatAppended {
         key: lead_seat(),
         msg: a_finished_turn(),
-        origin: None,
         source: None,
     });
 
@@ -3152,7 +3140,6 @@ async fn a_burst_of_finished_turns_on_a_reporting_seat_costs_one_probe() {
         fleet.emit(SessionUpdate::ChatAppended {
             key: lead_seat(),
             msg: a_finished_turn(),
-            origin: None,
             source: None,
         });
     }
@@ -3234,7 +3221,6 @@ async fn a_dropped_connection_lets_go_of_the_seats_it_attached() {
                 "session_id": "s",
             }))
             .expect("parse a result message"),
-            origin: None,
             source: None,
         });
         assert!(
@@ -3296,7 +3282,6 @@ async fn a_dropped_connection_lets_go_of_the_seats_it_attached() {
             "session_id": "s",
         }))
         .expect("parse a result message"),
-        origin: None,
         source: None,
     });
 
@@ -3362,7 +3347,6 @@ async fn a_turn_that_finished_unwatched_marks_its_row() {
             "session_id": "s",
         }))
         .expect("parse a result message"),
-        origin: None,
         source: None,
     });
     // That a completion reaches the home as a row change is a property of the
@@ -4996,7 +4980,6 @@ async fn a_seats_reconnect_answer_carries_the_running_turn() {
     wait_for_the_fold(&fleet).await;
     fleet.emit(SessionUpdate::ChatAppended {
         key: seat.clone(),
-        origin: None,
         source: None,
         msg: forge_primitives::Message::ThinkingTokens {
             estimated_tokens: 24,
@@ -5198,7 +5181,6 @@ async fn a_reconnect_answer_covers_every_frame_below_its_number() {
     state.conversations.hold_the_fold(true);
     fleet.emit(SessionUpdate::ChatAppended {
         key: seat.clone(),
-        origin: None,
         source: None,
         msg: a_said_frame("the frame the fold has not taken yet"),
     });
@@ -5283,7 +5265,6 @@ async fn a_caught_up_seat_answers_a_reconnect_with_a_shed_window() {
     for at in 1..=3 {
         fleet.emit(SessionUpdate::ChatAppended {
             key: seat.clone(),
-            origin: None,
             source: None,
             msg: a_said_frame(&format!("frame {at}")),
         });
@@ -5337,7 +5318,6 @@ async fn a_copy_no_window_can_cover_is_refused_rather_than_answered() {
     for at in 1..=2 {
         fleet.emit(SessionUpdate::ChatAppended {
             key: seat.clone(),
-            origin: None,
             source: None,
             msg: a_said_frame(&format!("frame {at}")),
         });
@@ -5406,7 +5386,6 @@ async fn a_seal_the_watermark_jumped_past_still_applies_its_history() {
     });
     fleet.emit(SessionUpdate::ChatAppended {
         key: seat.clone(),
-        origin: None,
         source: None,
         msg: a_said_frame("the live row"),
     });
@@ -5494,7 +5473,6 @@ fn a_seat_sealed_under_a_held_fold(fleet: &Fleet, state: &Arc<TransportState>, s
     });
     fleet.emit(SessionUpdate::ChatAppended {
         key: seat.clone(),
-        origin: None,
         source: None,
         msg: a_said_frame("the live row"),
     });
@@ -5617,7 +5595,6 @@ async fn an_empty_history_seal_still_fills_from_the_ring() {
     });
     fleet.emit(SessionUpdate::ChatAppended {
         key: seat.clone(),
-        origin: None,
         source: None,
         msg: a_said_frame("the live row"),
     });
@@ -5703,7 +5680,6 @@ async fn an_empty_history_epoch_after_a_sealed_one_still_fills_from_the_ring() {
     });
     fleet.emit(SessionUpdate::ChatAppended {
         key: seat.clone(),
-        origin: None,
         source: None,
         msg: a_said_frame("the new run's row"),
     });
@@ -6104,7 +6080,6 @@ async fn an_answer_through_a_reseed_carries_the_copys_own_number() {
     });
     fleet.emit(SessionUpdate::ChatAppended {
         key: seat.clone(),
-        origin: None,
         source: None,
         msg: a_said_frame("the old run's frame"),
     });
@@ -6289,10 +6264,9 @@ async fn a_call_output_read_is_answered_from_the_transports_held_copy() {
         "uuid": "u-1",
     }))
     .expect("a task notification frame");
-    state.conversations.apply(
-        &SessionUpdate::ChatAppended { key: seat.clone(), msg, origin: None, source: None },
-        Some(1),
-    );
+    state
+        .conversations
+        .apply(&SessionUpdate::ChatAppended { key: seat.clone(), msg, source: None }, Some(1));
 
     let mut socket = connect(&url).await;
     let ask = |call_id: &str| ClientMessage::Command {
@@ -6453,7 +6427,6 @@ async fn a_range_ask_after_an_occupant_change_reaches_the_new_epoch() {
     });
     fleet.emit(SessionUpdate::ChatAppended {
         key: seat.clone(),
-        origin: None,
         source: None,
         msg: a_said_frame("the new epoch's first"),
     });
@@ -6519,7 +6492,6 @@ async fn a_live_frame_caps_an_oversized_tool_record() {
 
     fleet.emit(SessionUpdate::ChatAppended {
         key: lead_seat(),
-        origin: None,
         source: None,
         msg: a_recorded_frame(&serde_json::json!({"payload": "x".repeat(100_000)})),
     });
@@ -6559,7 +6531,6 @@ async fn a_range_ask_inside_the_window_answers_exactly_the_asked_frames() {
     for at in 1..=3 {
         fleet.emit(SessionUpdate::ChatAppended {
             key: seat.clone(),
-            origin: None,
             source: None,
             msg: a_said_frame(&format!("frame {at}")),
         });
@@ -6593,7 +6564,6 @@ async fn a_ring_repair_caps_an_oversized_tool_record() {
     wait_for_the_fold(&fleet).await;
     fleet.emit(SessionUpdate::ChatAppended {
         key: seat.clone(),
-        origin: None,
         source: None,
         msg: a_recorded_frame(&serde_json::json!({"payload": "x".repeat(100_000)})),
     });
@@ -6645,7 +6615,6 @@ async fn a_range_older_than_the_window_falls_back_to_the_transcript() {
     for at in 1..=4 {
         fleet.emit(SessionUpdate::ChatAppended {
             key: seat.clone(),
-            origin: None,
             source: None,
             msg: a_said_frame(&format!("frame {at}")),
         });
@@ -6980,12 +6949,7 @@ async fn a_seat_reopened_after_a_release_is_filled_from_its_ring() {
         "session_id": "s",
     }))
     .expect("parse a user message");
-    fleet.emit(SessionUpdate::ChatAppended {
-        key: seat.clone(),
-        msg: prompt,
-        origin: None,
-        source: None,
-    });
+    fleet.emit(SessionUpdate::ChatAppended { key: seat.clone(), msg: prompt, source: None });
     loop {
         let Some(ServerMessage::Update { update, .. }) =
             next_server_within(&mut first, 5_000).await
@@ -7947,7 +7911,6 @@ async fn a_read_off_the_loop_holds_its_own_seats_frames_only() {
     fleet.emit(SessionUpdate::ChatAppended {
         key: lead_seat(),
         msg: an_assistant_chunk(),
-        origin: None,
         source: None,
     });
 
@@ -8480,7 +8443,6 @@ async fn a_subscriber_hears_the_update_it_asked_for_and_not_another_seats() {
             "session_id": "s",
         }))
         .expect("parse an assistant message"),
-        origin: None,
         source: None,
     });
     send(
@@ -8614,7 +8576,6 @@ async fn a_batch_waiting_when_a_client_asks_goes_out_ahead_of_the_answer() {
 fn a_token_append(running: u64, delta: i64) -> SessionUpdate {
     SessionUpdate::ChatAppended {
         key: lead_seat(),
-        origin: None,
         source: None,
         msg: forge_primitives::Message::ThinkingTokens {
             estimated_tokens: running,
@@ -8956,34 +8917,13 @@ fn user_text(msg: &forge_primitives::Message) -> Option<String> {
     })
 }
 
-/// The media type of the image a user turn carries, when the frame is one.
-fn user_image_mime(msg: &forge_primitives::Message) -> Option<String> {
-    let forge_primitives::Message::User { message, .. } = msg else {
-        return None;
-    };
-    message.content.iter().find_map(|block| match block {
-        forge_primitives::ContentBlock::Image { source, .. } => {
-            source.get("media_type")?.as_str().map(str::to_owned)
-        }
-        _ => None,
-    })
-}
-
-/// A prompt one client sends draws for every other client on that seat, and
-/// for the one that sent it.
+/// A prompt one client sends draws no row for any client at dispatch.
 ///
-/// The CLI queues a prompt a client hands it and never echoes it on
-/// stream-json, so nothing on the wire carries the words the reader said: a
-/// second viewer watches the assistant answer something nobody saw, and the
-/// sender itself draws nothing of its own. The send is the one place the words
-/// are known, so the frame is forged from it.
-///
-/// The sender is included on purpose. A view draws the user's own bubble
-/// from that same frame for exactly this reason, so withholding the
-/// frame from the sender would be the client inventing a rule the wire
-/// does not have.
+/// The queue carries the words and the row lands when the CLI starts the
+/// prompt (#2816): a frame forged here drew above the assistant text the
+/// running turn was still writing, for every viewer at once.
 #[tokio::test]
-async fn a_prompt_a_client_sends_draws_for_every_client_on_that_seat() {
+async fn a_prompt_a_client_sends_draws_no_row_at_dispatch() {
     let (url, fleet) = a_server().await;
     fleet.install_agent("TestOrg", "proj", "lead");
     fleet.intercept_dispatch();
@@ -9002,120 +8942,136 @@ async fn a_prompt_a_client_sends_draws_for_every_client_on_that_seat() {
             },
         )
         .await;
-        let ServerMessage::Snapshot { .. } = next_server(socket).await else {
-            panic!("a seat that exists is answered with its snapshot")
-        };
+        let (subject, _, _) = snapshot_answering(socket).await;
+        assert_eq!(subject, Subject::Session(lead_seat()), "the seat's own snapshot answers");
     }
 
-    // **The attachment the prompt carries rides the frame too.** The read
-    // path draws it from the transcript's queued copy, so a live row without
-    // it shows words alone until the page re-reads - and this frame is the
-    // live path's only carrier.
-    let image =
-        ImageAttachment { data: "iVBORw0KGgo=".to_owned(), mime_type: "image/png".to_owned() };
-    // Malformed attachments are sent too, one per arm `validate_image`
-    // refuses: the sender drops them before the model sees them, so the live
-    // row must not draw one that disappears on reload.
-    let wrong_mime =
-        ImageAttachment { data: "iVBORw0KGgo=".to_owned(), mime_type: "text/plain".to_owned() };
-    let bad_base64 =
-        ImageAttachment { data: "not base64!".to_owned(), mime_type: "image/png".to_owned() };
     send(
         &mut sender,
         ClientMessage::Command {
             command: Box::new(Command::Prompt {
                 key: lead_seat(),
                 text: "hello there".to_owned(),
-                attachments: vec![image.clone(), wrong_mime, bad_base64],
+                attachments: vec![ImageAttachment {
+                    data: "iVBORw0KGgo=".to_owned(),
+                    mime_type: "image/png".to_owned(),
+                }],
             }),
             reply_to: None,
         },
     )
     .await;
-
-    let drawn = |update: &SessionUpdate| {
-        matches!(update, SessionUpdate::ChatAppended {
-            msg,
-            origin: Some(forge_workspace::PromptOrigin::View),
-            // **And the source survives the socket**: a client arms its follow
-            // off this field, so a frame that lost it in transit would draw
-            // the reader's own words without bringing the foot under them
-            // (#2198).
-            source: Some(forge_workspace::PromptSource::You),
-            ..
-        } if user_text(msg).as_deref() == Some("hello there")
-            && user_image_mime(msg).as_deref() == Some(image.mime_type.as_str()))
+    // The connection handles its own messages in order, so its pong proves
+    // the prompt was dispatched before the barrier below.
+    send(&mut sender, ClientMessage::Ping).await;
+    let ServerMessage::Pong = next_server(&mut sender).await else {
+        panic!("a ping is answered with a pong")
     };
-    let first = update_until(
-        &mut watcher,
-        "the prompt a client sent, drawn for another client with the attachment it carried",
-        drawn,
-    )
-    .await;
-    let SessionUpdate::ChatAppended { msg, .. } = &first else {
-        panic!("a prompt draws as a chat frame: {first:?}")
-    };
-    let forge_primitives::Message::User { message, .. } = msg else {
-        panic!("a prompt draws as the user turn it was: {msg:?}")
-    };
-    let Some(forge_primitives::ContentBlock::Image { source, extras }) = message
-        .content
-        .iter()
-        .find(|block| matches!(block, forge_primitives::ContentBlock::Image { .. }))
-    else {
-        panic!("the live frame carries the attachment the prompt was sent with: {message:?}")
-    };
-    // **The payload never rides the live frame.** The frame is kept and
-    // re-served by every read of the row, so an image block here carries what
-    // a row prints - the mime and the measured size - exactly as the read
-    // path's stripped copy does.
-    assert_eq!(source.get("data"), None, "the live frame carries no base64 payload: {source}");
-    // The literal, not the helper the implementation calls: "iVBORw0KGgo=" is
-    // twelve base64 characters, eight bytes once the padding is out.
-    assert_eq!(
-        extras.get("forge_bytes").and_then(serde_json::Value::as_u64),
-        Some(8),
-        "the row prints the eight bytes the payload weighed",
-    );
-    assert_eq!(
-        message.content.len(),
-        2,
-        "only the attachment the sender kept draws, beside the words: {message:?}",
-    );
-    // **The order the echo documents**: the images first and the words last,
-    // the array the prompt was sent as - a text-first echo draws the same row
-    // but stops matching the transcript's own copy of the message.
     assert!(
-        matches!(message.content.first(), Some(forge_primitives::ContentBlock::Image { .. })),
-        "the attachment leads the echo: {message:?}",
+        fleet.dispatched().iter().any(
+            |command| matches!(command, Command::PromptUnder { text, .. } if text == "hello there")
+        ),
+        "the prompt reaches the seat",
     );
-    assert!(
-        matches!(message.content.last(), Some(forge_primitives::ContentBlock::Text { .. })),
-        "the words close it: {message:?}",
-    );
-    update_until(
-        &mut sender,
-        "the prompt a client sent, drawn for the client that sent it with the attachment it carried",
-        drawn,
-    )
-    .await;
-    update_until(
-        &mut onlooker,
-        "a third view's send, drawn for this one with the attachment it carried",
-        drawn,
-    )
-    .await;
 
-    // And exactly once: the evidence is ORDER, never a timeout,a nd a second
-    // forged frame would have to arrive ahead of an update every subscriber
-    // hears. Two connections on one seat both forging is the shape this
-    // catches.
+    // One update every subscriber hears is the barrier: anything the prompt
+    // drew is ahead of it on each socket's own stream.
     fleet.emit(SessionUpdate::TurnCancelled { key: lead_seat() });
-    let msg = next_server(&mut onlooker).await;
-    assert!(
-        matches!(&msg, ServerMessage::Update { update, .. } if matches!(**update, SessionUpdate::TurnCancelled { .. })),
-        "one send draws one frame per view: {msg:?}",
+    for socket in [&mut sender, &mut watcher, &mut onlooker] {
+        loop {
+            match next_server(socket).await {
+                ServerMessage::Update { update, .. } => match *update {
+                    SessionUpdate::TurnCancelled { .. } => break,
+                    SessionUpdate::ChatAppended { msg, .. } => assert_ne!(
+                        user_text(&msg).as_deref(),
+                        Some("hello there"),
+                        "a prompt that has not started draws no row",
+                    ),
+                    _ => {}
+                },
+                // The effective config is server-wide and arrives on its own
+                // schedule, like any queued update.
+                ServerMessage::Settings { .. } => {}
+                other => panic!("a subscribed socket hears updates, not {other:?}"),
+            }
+        }
+    }
+}
+
+/// **The row a started prompt draws reaches every client on the seat**, with
+/// the source a reader's follow arms on and the attachments the dispatch
+/// held. The task emits it at the CLI's `started`; this is the socket half,
+/// where every subscriber has to hear the same row.
+#[tokio::test]
+async fn a_started_prompts_row_reaches_every_client_with_its_attachments() {
+    let (url, fleet) = a_server().await;
+    fleet.install_agent("TestOrg", "proj", "lead");
+
+    let mut sender = connect(&url).await;
+    let mut watcher = connect(&url).await;
+    for socket in [&mut sender, &mut watcher] {
+        send(
+            socket,
+            ClientMessage::Subscribe {
+                what: Subject::Session(lead_seat()),
+                answering: true,
+                review: false,
+            },
+        )
+        .await;
+        let _ = snapshot_answering(socket).await;
+    }
+
+    let image =
+        ImageAttachment { data: "iVBORw0KGgo=".to_owned(), mime_type: "image/png".to_owned() };
+    let msg = forge_primitives::Message::display_only_user_with_blocks(
+        "sent mid turn".to_owned(),
+        forge_primitives::display_blocks(std::slice::from_ref(&image)),
+        "send-row-uuid".to_owned(),
     );
+    fleet.emit(SessionUpdate::ChatAppended {
+        key: lead_seat(),
+        msg,
+        source: Some(forge_workspace::PromptSource::You),
+    });
+
+    for socket in [&mut sender, &mut watcher] {
+        let update = update_until(socket, "the started row", |update| {
+            matches!(
+                update,
+                SessionUpdate::ChatAppended {
+                    msg,
+                    source: Some(forge_workspace::PromptSource::You),
+                    ..
+                } if user_text(msg).as_deref() == Some("sent mid turn")
+            )
+        })
+        .await;
+        let SessionUpdate::ChatAppended { msg, .. } = update else {
+            panic!("the started row is a chat frame: {update:?}")
+        };
+        let forge_primitives::Message::User { message, .. } = msg else {
+            panic!("the started row is the user turn it draws: {msg:?}")
+        };
+        let Some(forge_primitives::ContentBlock::Image { source, extras }) = message
+            .content
+            .iter()
+            .find(|block| matches!(block, forge_primitives::ContentBlock::Image { .. }))
+        else {
+            panic!("the row carries the attachment the dispatch held: {message:?}")
+        };
+        assert_eq!(
+            source.get("media_type").and_then(serde_json::Value::as_str),
+            Some(image.mime_type.as_str()),
+            "the row names the mime",
+        );
+        assert_eq!(
+            extras.get("forge_bytes").and_then(serde_json::Value::as_u64),
+            Some(8),
+            "and the eight bytes the payload weighed, never the payload",
+        );
+        assert_eq!(source.get("data"), None, "no base64 payload rides the frame");
+    }
 }
 
 /// The frame name a view reads a seat's stream by: its type, and for a
@@ -9307,7 +9263,6 @@ async fn a_thinking_turn_reaches_a_client_watching_its_seat_frame_for_frame() {
         fleet.emit(SessionUpdate::ChatAppended {
             key: lead_seat(),
             msg: serde_json::from_value(value).expect("parse a frame of the turn"),
-            origin: None,
             source: None,
         });
     }
@@ -10207,7 +10162,6 @@ async fn a_giant_seats_history_crosses_bounded_and_the_connection_survives() {
     // `1` proves the seal was applied.
     fleet.emit(SessionUpdate::ChatAppended {
         key: seat.clone(),
-        origin: None,
         source: None,
         msg: a_said_frame("after the handover"),
     });
@@ -10316,7 +10270,6 @@ async fn a_thought_heavy_resume_serves_its_whole_thinking_sum() {
     // nothing to the sum.
     fleet.emit(SessionUpdate::ChatAppended {
         key: seat.clone(),
-        origin: None,
         source: None,
         msg: a_counter_frame(counters, 0),
     });

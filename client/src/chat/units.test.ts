@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 
-import { handoffFrame } from '../wire/handoff';
 import { cronNames } from './cron-names.svelte';
 import { familyOf } from './families';
 import { runningMs } from './report';
@@ -2987,6 +2986,23 @@ describe('one turn folded into the units a view draws', () => {
     expect(proceduresOf(nudge[0]), 'and is not the procedure').toEqual([]);
   });
 
+  it('opens the successor brief and leaves the judgment prompt folded', () => {
+    // **The brief is the successor's first row and the only carrier of the
+    // handoff**; it opens on arrival rather than asking the reader to unfold
+    // the one row the new chat exists to show. The judgment prompt in the
+    // session handing over stays folded like any other procedure.
+    const brief = 'HANDOFF - a -> b\n\nPART 1: GROUND TRUTH\nseat: TestOrg/send-row/lead';
+    const live = fold([heard([text(brief)], { uuid: 'forge_nudge_5_1a2b3c4d' })]);
+    expect(
+      proceduresOf(live[0]).map((row) => row.open),
+      'the brief opens itself',
+    ).toEqual([true]);
+
+    const judgment = 'A handoff is starting for this session: run the skill.';
+    const before = fold([heard([text(judgment)], { uuid: 'forge_nudge_handoff_7_feedface' })]);
+    expect(proceduresOf(before[0])[0]?.open, 'the judgment prompt stays folded').not.toBe(true);
+  });
+
   it('draws no line for a task the wire did not say outlives its turn', () => {
     // A foreground call's own result is already on the row, and a dispatched
     // agent's report is the row's own body: the harness's summary under either
@@ -4062,13 +4078,17 @@ describe('a page seam that re-serves a result', () => {
     expect(kinds(stray), 'an unpaired result is drawn nowhere at all').toEqual([]);
   });
 
-  it('draws the handoff brief nowhere but the handoff row', () => {
+  it('draws the handoff brief the successor arrived by as its procedure row', () => {
     const brief = fold([
       heard([{ type: 'text', text: 'HANDOFF - old -> new\n\nPART 1: GROUND TRUTH\nseat: x' }], {
         uuid: 'forge_nudge_12_ab12cd34',
       }),
     ]);
-    expect(kinds(brief), 'the brief reaches the page through the handoff row').toEqual([]);
+    expect(kinds(brief), "the brief is work, not the reader's own turn").toEqual(['leaves']);
+    expect(
+      proceduresOf(brief[0]).map((row) => row.text),
+      'and it draws as the handoff procedure',
+    ).toEqual(['HANDOFF - old -> new\n\nPART 1: GROUND TRUTH\nseat: x']);
     const typed = fold([
       heard([{ type: 'text', text: 'HANDOFF - my own notes for the next session' }], {
         uuid: 'forge_prompt_13_99aa88bb',
@@ -4077,34 +4097,6 @@ describe('a page seam that re-serves a result', () => {
     expect(kinds(typed), 'a reader typing the same words keeps their own row').toEqual(['user']);
     const real = fold([heard([{ type: 'text', text: 'a real prompt' }])]);
     expect(kinds(real), "and a person's own words still draw").toEqual(['user']);
-  });
-
-  it('folds a handoff frame into the row that joins two sessions', () => {
-    const units = fold([
-      said([{ type: 'text', text: 'the work so far' }]),
-      handoffFrame({
-        from: 'old-session-id',
-        to: 'new-session-id',
-        reason: 'fill',
-        fill_percent: 85,
-        total_tokens: null,
-        max_tokens: null,
-        at_percent: 85,
-        at: null,
-        cycle: { requests: 0, turns: 0, prompt_tokens: 0 },
-        successor: null,
-        ground_truth: [{ label: 'seat', lines: ['Busytools/forge/lead'] }],
-        judgment: [{ label: 'Next', lines: ['the client row'] }],
-        judgment_turn: [],
-      }),
-      said([{ type: 'text', text: 'picked up' }]),
-    ]);
-    expect(kinds(units), 'prose, the row, then the successor').toEqual(['text', 'handoff', 'text']);
-    const row = units.find((unit) => unit.kind === 'handoff');
-    const handed = row?.kind === 'handoff' ? row.handoff : null;
-    expect(handed?.to, 'the row names the session that continues').toBe('new-session-id');
-    expect(handed?.ground_truth[0]?.label, 'the ground truth rides the row').toBe('seat');
-    expect(handed?.judgment[0]?.label, 'and the judgment with it').toBe('Next');
   });
 });
 

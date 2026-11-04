@@ -35,3 +35,29 @@ export const FORGE_COMMANDS: ForgeCommand[] = [
 export function isForgeCommand(name: string): boolean {
   return FORGE_COMMANDS.some((command) => command.name === name);
 }
+
+/**
+ * The names the core answers itself, and so draws no turn row for.
+ *
+ * `crates/forge-workspace/src/prompt.rs`'s usage table, not this catalogue:
+ * `/compact` and `/usage` are offered here but forwarded to the CLI, which
+ * does start a turn for them.
+ */
+const ANSWERED = new Set(['/new', '/resume', '/handoff', '/mode', '/model', '/effort']);
+
+/** The names the CLI resolves itself though it does not advertise them. */
+const FORWARDED = new Set(['/help', '/plugins', '/quit', '/mcp']);
+
+/**
+ * Whether the core answers this prompt itself, so no turn carries its words.
+ *
+ * Mirrors the dispatcher's rule: a forge name it handles, or a slash name this
+ * session cannot run. **An empty catalogue is forwarded**, because the core
+ * cannot tell an unknown name from one the CLI has not advertised yet.
+ */
+export function coreAnswers(name: string, advertised: readonly string[]): boolean {
+  if (ANSWERED.has(name)) return true;
+  if (!name.startsWith('/')) return false;
+  if (advertised.length === 0) return false;
+  return !advertised.includes(name) && !FORWARDED.has(name);
+}

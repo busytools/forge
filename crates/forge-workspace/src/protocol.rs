@@ -285,18 +285,6 @@ pub enum Command {
         /// (#1583). `None` from a view that minted none.
         #[serde(default)]
         dispatch_id: Option<u64>,
-        /// Who submitted the words, for the frame the SESSION TASK draws
-        /// before it hands the prompt to the CLI.
-        ///
-        /// Stamped by [`crate::Workspace::dispatch`] /
-        /// [`crate::Workspace::dispatch_from_view`], which overwrite whatever
-        /// a view sent: the frame's ordering against the task's own
-        /// `TurnError` is only structural if the task emits it, and the
-        /// origin is what tells a view it already drew the words. `None` for
-        /// every delivery forge's machinery routes, which draws its own
-        /// envelope turn instead.
-        #[serde(default)]
-        origin: Option<PromptOrigin>,
     },
     Cancel {
         key: SessionSlot,
@@ -1319,28 +1307,9 @@ pub enum SpawnRole {
     },
 }
 
-/// Who submitted the prompt a [`SessionUpdate::ChatAppended`] frame carries.
-///
-/// The CLI does not echo a prompt handed to it on stdin, so the frame that
-/// draws one is forged, and whether a view has already drawn those words is a
-/// fact about the dispatch rather than about the words. It is therefore set
-/// where the dispatch happens, by which entry the caller took, and never read
-/// off the wire.
-#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Debug)]
-#[serde(rename_all = "snake_case")]
-pub enum PromptOrigin {
-    /// The forge process's own input handler submitted it, so that view has
-    /// already drawn the words and must not draw them a second time.
-    Ui,
-    /// A view submitted it over the socket, and no view drew it: a composer
-    /// that is not optimistic has only this frame to draw its own send from.
-    View,
-}
-
 /// Who dispatched a prompt, for a queued row's label.
 ///
-/// Distinct from [`PromptOrigin`], which says whether a VIEW drew the words
-/// already: this one is about the sender, and every frame forge writes as a
+/// This one is about the sender, and every frame forge writes as a
 /// user message gets one. Serialised as the label itself.
 #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Debug)]
 #[serde(rename_all = "snake_case")]
@@ -1384,6 +1353,15 @@ pub struct QueuedPrompt {
     pub source: PromptSource,
     /// The prompt's words, as they were written.
     pub text: String,
+    /// What the prompt carried besides its words.
+    ///
+    /// **Core-side only, never on the wire.** The row is drawn at the CLI's
+    /// start, long after the command that carried these is gone, so the task
+    /// keeps them here to build that frame; the queue a view reads is the
+    /// three fields above, and a base64 payload has no business riding every
+    /// seat record read.
+    #[serde(skip)]
+    pub attachments: Vec<forge_primitives::ImageAttachment>,
 }
 
 /// How loudly a [`SessionUpdate::Notice`] reads.
@@ -1479,8 +1457,9 @@ pub enum SessionUpdate {
     },
     /// The seat's occupant was replaced by a handoff rather than by a person
     /// asking for one, and this is the record of it - emitted before any
-    /// frame from the new occupant, so a view draws the row between the two
-    /// conversations rather than after the new one has started.
+    /// frame from the new occupant, so the seat learns the swap before the
+    /// successor's transcript starts. No view draws a row from it: the
+    /// successor's own procedure row carries the handoff.
     Handoff {
         key: SessionSlot,
         handoff: forge_primitives::HandoffRecord,
@@ -1609,13 +1588,6 @@ pub enum SessionUpdate {
     ChatAppended {
         key: SessionSlot,
         msg: Message,
-        /// Set only on a prompt frame, where it says who submitted the words.
-        ///
-        /// `None` for every frame the CLI sent and for every turn a delivery
-        /// forges, so a reader that ignores this behaves as it did before the
-        /// field existed.
-        #[serde(default)]
-        origin: Option<PromptOrigin>,
         /// Who dispatched the prompt this frame writes as a user turn: the
         /// same [`PromptSource`] the queue's own row carries.
         ///

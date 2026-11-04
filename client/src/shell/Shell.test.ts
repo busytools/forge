@@ -959,7 +959,7 @@ describe('a seat removed under the reader', () => {
     const LEAD: SessionSlot = { org: 'TestOrg', project: 'proj', label: 'lead' };
 
     // The close, as the rail makes it; the handle never crosses the stub.
-    closeSeat({ dispatch: () => null } as unknown as Connection, wire, W1, LEAD, 0);
+    closeSeat({ dispatch: () => null } as unknown as Connection, wire, W1, LEAD);
     expect(closingSeat(W1), 'the close left no mark to clear').toBe(true);
 
     forge.home({ ...wire, agents: [row('lead', 'Running'), row('w1', 'Sleeping')] });

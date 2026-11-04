@@ -37,4 +37,25 @@ describe('the handoff procedure row, mounted', () => {
       document.body.innerHTML = '';
     }
   });
+
+  it('keeps the brief one fact per line', () => {
+    // The brief writes one `label: value` line per fact with single newlines.
+    // Markdown soft-breaks those into one running paragraph, which reads the
+    // seat, cwd, branch and role as prose - and this row is now the only
+    // carrier of the handoff's information.
+    const brief =
+      'HANDOFF - a -> b\n\nPART 1: GROUND TRUTH\nseat: TestOrg/send-row/lead\ncwd: /tmp/proj\nbranch: master';
+    const app = mount(Procedure, { target: document.body, props: { text: brief, open: true } });
+    try {
+      flushSync();
+      const breaks = document.querySelectorAll('.prose br');
+      expect(breaks.length, 'each fact line keeps its own break').toBeGreaterThanOrEqual(2);
+      expect(document.body.textContent, 'and both facts are on the page').toContain(
+        'cwd: /tmp/proj',
+      );
+    } finally {
+      void unmount(app);
+      document.body.innerHTML = '';
+    }
+  });
 });

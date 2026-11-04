@@ -251,13 +251,10 @@ describe("starting a project's lead from its own page", () => {
    */
   it('asks for nothing at a seat this client just closed', () => {
     const wire = homeAs('Sleeping');
-    const moved = closeSeat(
-      { dispatch: () => null } as unknown as Connection,
-      wire,
-      LEAD,
-      { ...LEAD, label: 'w1' },
-      0,
-    );
+    const moved = closeSeat({ dispatch: () => null } as unknown as Connection, wire, LEAD, {
+      ...LEAD,
+      label: 'w1',
+    });
     expect(moved, 'the close never went').toBe(true);
 
     const { sent } = openWith(wire);

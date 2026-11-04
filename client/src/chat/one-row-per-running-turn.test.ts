@@ -48,9 +48,10 @@ const typed = (text: string): unknown => ({
   message: { role: 'user', content: [{ type: 'text', text }] },
 });
 
-/** A prompt as forge echoes it for a view: the words and NO id. */
-const forged = (text: string): unknown => ({
+/** A prompt as forge echoes it for a view: the words under the prompt's id. */
+const forged = (text: string, id?: string): unknown => ({
   type: 'user',
+  ...(id === undefined ? {} : { uuid: id }),
   timestamp: '2026-10-01T10:00:02Z',
   message: { role: 'user', content: [{ type: 'text', text }] },
 });
@@ -78,8 +79,8 @@ const ended = (): unknown => ({
  * `attachment` row into a user envelope carrying this block, and the fold opens
  * a turn on it.
  *
- * `id` is the row's own, kept apart from the words so a test counting one does
- * not count the other.
+ * `id` is the prompt's own: the block carries it as `source_uuid`, which is
+ * what pairs this copy with the live row the same prompt drew.
  */
 const queued = (text: string, id: string): unknown => ({
   type: 'user',
@@ -87,7 +88,7 @@ const queued = (text: string, id: string): unknown => ({
   timestamp: '2026-10-01T10:00:02Z',
   message: {
     role: 'user',
-    content: [{ type: 'queued_command', prompt: text, commandMode: 'prompt' }],
+    content: [{ type: 'queued_command', prompt: text, commandMode: 'prompt', source_uuid: id }],
   },
 });
 
@@ -355,19 +356,17 @@ describe('one row per running turn', () => {
     ]);
   });
 
-  it('keeps one row when a page lands with the fold own cut at the words', () => {
-    // A page is read from the transcript, where the CLI persists a mid-turn
-    // prompt as an `attachment` row - and the fold opens a turn on the block
-    // the scan hoists out of it, so the page carries the words as a row with
-    // its own answer under them. The turn it interrupted is the turn it
-    // belongs to: the live path draws it inside that row, and the page's cut
-    // is joined back the same way rather than re-splitting the row.
+  it('pairs a page copy of a started prompt with the live row it names', () => {
+    // The scanner serves a queued prompt's row at the CLI's start, after the
+    // turn it was typed into, so the page row is the prompt's own turn. A page
+    // read while the live row exists carries the same prompt under
+    // `source_uuid`, and that id is what keeps it one row rather than two.
     const server = fakeConnection();
     const chat = new Chat(server.connection, LEAD);
     chat.start();
     server.send(page([{ key: 't1', messages: [typed('mine'), said('working')] }], '9'));
     server.says(true);
-    server.update({ chat_appended: { key: LEAD, msg: forged('now do this') } });
+    server.update({ chat_appended: { key: LEAD, msg: forged('now do this', 'p1') } });
     server.update({ chat_appended: { key: LEAD, msg: said('more') } });
     server.update({ chat_appended: { key: LEAD, msg: ended() } });
     expect(newest(chat)?.key, 'precondition: the words joined the running row').toBe('t1');
@@ -377,23 +376,23 @@ describe('one row per running turn', () => {
     // holds it when the page repeats it.
     const cut = [
       { key: 't1', messages: [typed('mine'), said('working')] },
-      { key: null, messages: [queued('now do this', '1'), said('more'), ended()] },
+      { key: null, messages: [queued('now do this', 'p1'), said('more'), ended()] },
     ];
     server.send(page(cut, null));
 
     const turns = get(chat.value).turns;
     expect(
       turns.map((turn) => turn.key),
-      'one row, and the page own cut added no name to it',
+      'the page copy pairs with the live row, adding no turn of its own',
     ).toEqual(['t1']);
     expect(
       JSON.stringify(turns[0]?.messages).split('now do this').length - 1,
       'the words drawn once, not once per carrier',
     ).toBe(1);
-    expect(turns[0]?.messages, 'the row is the one the live path wrote').toEqual([
+    expect(turns[0]?.messages, 'the row is the page copy the live one paired with').toEqual([
       typed('mine'),
       said('working'),
-      forged('now do this'),
+      queued('now do this', 'p1'),
       said('more'),
       ended(),
     ]);
@@ -410,19 +409,16 @@ describe('one row per running turn', () => {
   });
 
   it('draws a second prompt saying the same words', () => {
-    // Two prompts saying "yes" inside one turn are two messages, and the page
-    // carries them as TWO ROWS: the fold opens a turn on every queued block,
-    // so no page can hold two of them in one row. The pairing is counted across
-    // the whole page rather than per row, so neither copy consumes the frame
-    // the other is the same message as - the reader's own words, gone.
+    // Two prompts saying "yes" are two messages. The first pairs with the live
+    // row it names; the second has no live row, so the page gives it its own
+    // turn. Neither copy is read as the other: the reader's words are drawn
+    // once per prompt, not once total and not twice for one.
     const server = fakeConnection();
     const chat = new Chat(server.connection, LEAD);
     chat.start();
     server.send(page([{ key: 't1', messages: [typed('mine')] }], null));
     server.says(true);
-    // The row grew with the second prompt's own frame, and nothing pairs with
-    // a frame twice: the first page row's copy is the one that has it.
-    server.update({ chat_appended: { key: LEAD, msg: forged('yes') } });
+    server.update({ chat_appended: { key: LEAD, msg: forged('yes', '1') } });
 
     server.send(
       page(
@@ -438,18 +434,18 @@ describe('one row per running turn', () => {
     const turns = get(chat.value).turns;
     expect(
       turns.map((turn) => turn.key),
-      'both prompts landed in the turn they interrupted',
-    ).toEqual(['t1']);
+      'the unpaired prompt opens its own turn after the one it followed',
+    ).toEqual(['t1', 'turn-q-2']);
     expect(
-      JSON.stringify(turns[0]?.messages).split('"yes"').length - 1,
+      JSON.stringify(turns).split('"yes"').length - 1,
       'and the words are drawn twice, once per prompt',
     ).toBe(2);
   });
 
   it('keeps both prompts when a page holds no frame to pair them with', () => {
     // The same two rows on a seat whose prompt frames this client never saw,
-    // which a page read from the transcript is: nothing pairs with anything,
-    // and the copy added for the first row must not answer for the second.
+    // which a page read from the transcript is: each prompt opens its own
+    // turn, and neither is read as the other.
     const server = fakeConnection();
     const chat = new Chat(server.connection, LEAD);
     chat.start();
@@ -470,10 +466,10 @@ describe('one row per running turn', () => {
     const turns = get(chat.value).turns;
     expect(
       turns.map((turn) => turn.key),
-      'both prompts landed in the turn they interrupted',
-    ).toEqual(['t1']);
+      'each prompt opens its own turn',
+    ).toEqual(['t1', 'turn-q-1', 'turn-q-2']);
     expect(
-      JSON.stringify(turns[0]?.messages).split('"yes"').length - 1,
+      JSON.stringify(turns).split('"yes"').length - 1,
       'and both are drawn, neither read as the other',
     ).toBe(2);
   });

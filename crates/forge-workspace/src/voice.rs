@@ -690,7 +690,6 @@ impl NoteDispatch for WorkspaceNotes {
         let _ = workspace.update_sender().send(crate::SessionUpdate::ChatAppended {
             key: seat.clone(),
             msg: row,
-            origin: None,
             source: Some(crate::PromptSource::Forge),
         });
     }

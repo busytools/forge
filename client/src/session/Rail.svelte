@@ -1,6 +1,8 @@
 <script lang="ts">
+  import type { Readable } from 'svelte/store';
   import Icon from '../components/Icon.svelte';
   import AttentionMark from '../home/AttentionMark.svelte';
+  import Age from './Age.svelte';
   import { hrefForSlot } from '../routes';
   import type { Connection } from '../socket';
   import type { BoardWire } from '../wire/board';
@@ -46,7 +48,7 @@
     board?: BoardWire | null;
     /** The seat the page is showing, which is the one row the rail marks. */
     current: SessionSlot;
-    now: number;
+    now: Readable<number>;
     /** What a row's close chip acts through, and what moves the reader after it. */
     connection: Connection;
     /** The connection's own line - a protocol skew or a reconnect - drawn
@@ -63,12 +65,12 @@
     onleave?: (() => void) | null;
   } = $props();
 
-  const groups = $derived(railGroups(home, board, current, now, closingSeat));
+  const groups = $derived(railGroups(home, board, current, closingSeat));
   /**
    * The account and the two builds, which sit under the list rather than in it:
    * the projects scroll behind them.
    */
-  const foot = $derived(railFooter(home, current, connection.serverProtocol(), now));
+  const foot = $derived(railFooter(home, current, connection.serverProtocol(), $now));
 
   /**
    * Close one row's seat. The command the row sends and where the reader
@@ -76,7 +78,7 @@
    * this client replaced apart.
    */
   function close(slot: SessionSlot): void {
-    closeSeat(connection, home, slot, current, now);
+    closeSeat(connection, home, slot, current);
   }
 </script>
 
@@ -132,7 +134,7 @@
           <span class="org">{project.org}</span>
           <AttentionMark waits={project.waits} org={project.org} project={project.name} {now} />
           {#if project.asleep}
-            <span class="age">{project.age}</span>
+            <Age at={project.age} {now} />
           {:else}
             <CloseChip name={project.name} onclose={() => close(project.row.slot)} />
           {/if}

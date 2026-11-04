@@ -30,7 +30,6 @@ import { inFlightOf } from '../session/apply';
 import { takeReturn } from '../session/returns';
 import type { Connection } from '../socket';
 import type { SessionSlot } from '../wire/types';
-import { handoffFrame, handoffKey, handoffOf, type HandoffRecord } from '../wire/handoff';
 import { cronNames } from './cron-names.svelte';
 import { echoes } from './echoes.svelte';
 import { outputs } from './outputs.svelte';
@@ -110,17 +109,6 @@ export interface Turn {
    * trim only ever drops from the oldest end, where the page's own turns sit.
    */
   before?: string | null;
-  /**
-   * A turn that came from a record rather than from this conversation's
-   * transcript: the handoff's judgment turn, which ran in the session that
-   * left.
-   *
-   * **No page of THIS transcript can ever carry it**, so a walk toward it
-   * would fetch every page above the successor's head and never arrive - the
-   * same reason a forged notice is not a walk target. It draws where it was
-   * seeded and is never asked for again.
-   */
-  record?: boolean;
 }
 
 /**
@@ -156,19 +144,6 @@ function heldIds(turn: Turn): ReadonlySet<string> {
       if (id !== null) held.add(id);
     },
   );
-}
-
-/**
- * Whether a page row opens on a mid-turn prompt: the `queued_command` block
- * the scan hoists the transcript's `attachment` row into.
- *
- * The CLI queues a prompt only while a turn is running, so a row opening on
- * one is the turn above it carrying on rather than a turn of its own. The
- * harness's own background-completion notice rides the same block and opens no
- * turn at all, so it is not one of these.
- */
-function queuedPrompt(row: PageTurn): boolean {
-  return queuedWords(messagesOf(row)[0]) !== null;
 }
 
 /** Whether a seat's own record says a turn is in flight. */
@@ -438,27 +413,6 @@ function messagesOf(turn: PageTurn): unknown[] {
 }
 
 /**
- * The judgment turn a handoff record carries, as a turn the chat can hold.
- *
- * **Keyed the way the live frames named it** (`live:<the prompt's uuid>`), so
- * a client that watched the swap keeps the row it already drew rather than a
- * second copy of the same turn from the record. A turn whose prompt row lost
- * its id falls back to a name of its own rather than to an empty one, which
- * would make every such turn one row.
- */
-function judgmentTurnOf(handoff: HandoffRecord): Turn | null {
-  const messages = handoff.judgment_turn;
-  if (messages.length === 0) return null;
-  const id = uuidOf(messages[0]);
-  return {
-    key: id !== null ? `live:${id}` : `live:judgment-${handoff.from}`,
-    messages: [...messages],
-    live: false,
-    record: true,
-  };
-}
-
-/**
  * The newest stamp a run of frames carries, in ms, or `null` when none parses.
  *
  * A turn's END, for asking whether a newer one follows it: the stamps are the
@@ -575,32 +529,6 @@ function triggerRow(uuid: string, text: string): unknown {
 }
 
 /**
- * The frame in `messages` that is the same message as `message` under its other
- * carrier - the words it says - or `null` when none is left to pair with it.
- *
- * **One frame answers for one copy**, which is why the frames that have already
- * answered are carried in: two prompts saying the same words inside one turn are
- * two messages, and the second would otherwise be read as a repeat of the first
- * and dropped - the reader's own words, gone.
- *
- * By identity rather than by position, because the frames it is asked about
- * belong to rows that are merged into one: a pairing counted by where a frame
- * sits is lost as soon as the row grows.
- */
-function pairedWith(
-  messages: unknown[],
-  message: unknown,
-  answered: ReadonlySet<unknown>,
-): unknown {
-  const words = wordsOf(message);
-  if (words.length === 0) return null;
-  for (const held of messages) {
-    if (!answered.has(held) && sameWords(words, wordsOf(held))) return held;
-  }
-  return null;
-}
-
-/**
  * What one frame says, when it is a person's own words.
  *
  * The words are read from both carriers a prompt travels in: the frame's own
@@ -619,11 +547,6 @@ function wordsOf(message: unknown): string[] {
   const queued = queuedWords(message);
   if (queued !== null) words.push(queued);
   return words;
-}
-
-/** Whether two frames say the same words, in the same order. */
-function sameWords(one: string[], other: string[]): boolean {
-  return one.length === other.length && one.every((word, at) => word === other[at]);
 }
 
 /**
@@ -1249,14 +1172,11 @@ interface FailedLine {
 }
 
 /** Whether a frame is a row forge itself minted, which no transcript read
- * carries: the core's own line, or the handoff row. A turn of nothing but
- * these is no walk's target, because no page ever answers with one. */
+ * carries: the core's own line. A turn of nothing but these is no walk's
+ * target, because no page ever answers with one. */
 function isForgeNotice(message: unknown): boolean {
   const frame = message as { type?: unknown; subtype?: unknown } | null;
-  return (
-    frame?.type === 'forge_handoff' ||
-    (frame?.type === 'system' && frame.subtype === 'forge_notice')
-  );
+  return frame?.type === 'system' && frame.subtype === 'forge_notice';
 }
 
 /** The update's variant name, for the ones the chat acts on. */
@@ -1358,16 +1278,6 @@ export class Chat {
    * for the same reason (`session/live.ts`).
    */
   private held: Conversation = NOTHING;
-  /**
-   * The turns a handoff keeps across the swap that follows it.
-   *
-   * **A `/new` clears the seat's conversation; a handoff does not.** The row
-   * says two conversations met, so the one above it stays - the reader's own
-   * work does not vanish because the session did. Held here between the
-   * `handoff` frame and the `session_replaced` that lands the successor, and
-   * taken by [`Self::replaced`].
-   */
-  private carried: { turns: Turn[]; to: string } | null = null;
   /** The frame a publish is waiting for, or `null`. */
   private queued: number | null = null;
   /** The paint's own deadline, armed while `queued` is: see [`PAINT_WATCHDOG_MS`]. */
@@ -1791,12 +1701,9 @@ export class Chat {
     const conversation = (data.conversation ?? {}) as {
       turns?: unknown;
       cursor?: unknown;
-      handoff?: unknown;
       cron_names?: unknown;
     };
     cronNames.seed(conversation.cron_names);
-    const record = handoffOf(conversation.handoff);
-    if (record !== null) this.seedHandoffJoin(record, 'ahead');
     const rows = pageTurns(conversation.turns);
     // A store record with no turns seeds nothing; the page's own subscribe
     // answers it.
@@ -2320,15 +2227,9 @@ export class Chat {
           const conversation = (data.conversation ?? {}) as {
             turns?: unknown;
             cursor?: unknown;
-            handoff?: unknown;
             cron_names?: unknown;
           };
           cronNames.seed(conversation.cron_names);
-          // **A client attaching after the swap draws the row the record
-          // carries**, because the successor's transcript never holds it and
-          // the live frame it arrived on is long gone.
-          const record = handoffOf(conversation.handoff);
-          if (record !== null) this.seedHandoffJoin(record, 'ahead');
           if (fresh) {
             const rows = pageTurns(conversation.turns);
             if (rows.length > 0) {
@@ -2496,17 +2397,6 @@ export class Chat {
        * moved into that place rather than the one that was there.
        */
       const namedTurn: Array<Turn | null> = [];
-      /**
-       * The frames that have answered for a copy of the reader's own words,
-       * for the WHOLE page.
-       *
-       * The row it is read against spans rows: the fold opens a turn on every
-       * queued prompt, so two of them arrive as two rows and both join the one
-       * above - and a count minted per row forgets what the row before it
-       * paired with, which lets the next copy consume the same frame and drop
-       * the words.
-       */
-      const answered = new Set<unknown>();
       for (const row of pageRows) {
         // What the turn is held under: the fold's own name where it gave one,
         // and the name this conversation gave it where it did not. Reading
@@ -2547,42 +2437,10 @@ export class Chat {
           namedTurn.push(repeated);
           continue;
         }
-        // **A row the fold cut at a mid-turn prompt is not a row of its own.**
-        // The CLI queues a prompt only while a turn is running, and it writes
-        // the transcript's row where it queued it - inside that turn - so the
-        // row above it is the turn it interrupted, and the page's cut joins
-        // back where the live path draws the words: inside the running row.
-        const above = named[named.length - 1];
-        if (above !== undefined && queuedPrompt(row)) {
-          let messages = [...(copies[copies.length - 1] ?? [])];
-          // **The row grows below, so its index grows with it.** A frame the
-          // loop itself appends is one the next asks have to find - an index
-          // that only read its constructor would answer for the row as it
-          // was, and the same prompt would land a second time.
-          const carried = new Frames(messages);
-          // The prompt the row already grew with is the SAME words under the
-          // carrier a page holds them in, and the two carriers mint different
-          // ids - so a copy is paired with the frame it is, and no other frame
-          // answers for it twice.
-          for (const message of messagesOf(row)) {
-            if (carried.carries(message)) continue;
-            const paired = pairedWith(messages, message, answered);
-            if (paired === null) {
-              // **An unmatched copy keeps the page's position, settled row or
-              // not.** Its live echo never arrived, and appending it put it
-              // below frames the row already held - frames the page says came
-              // after it (#1584).
-              messages = rejoin(messages, [message], messagesOf(row));
-              carried.add(message);
-              answered.add(message);
-            } else {
-              answered.add(paired);
-            }
-          }
-          named[named.length - 1] = { ...above, messages };
-          copies[copies.length - 1] = messages;
-          continue;
-        }
+        // **A page row is a turn of its own.** The scanner serves a queued
+        // prompt at the CLI's start - after the turn it was typed into, or
+        // absorbed into it - which is where the live path draws it, so no row
+        // here belongs to the turn above.
         const key = nameIn(row, taken);
         taken.add(key);
         const fresh: Turn = { key, messages: messagesOf(row), live: false };
@@ -2897,15 +2755,10 @@ export class Chat {
       // is written here and nowhere else - no read restores it - so a tail of
       // nothing but notices has nothing to walk for, and targeting one would
       // fetch the whole history one page per landing for a turn no page will
-      // ever carry. **A record turn is the same fact from the other
-      // transcript**: the handoff's judgment turn ran in the session that
-      // left, so no page of the successor's history names it, and walking to
-      // it would read that history to its top on every load. The walk's own
-      // reach is the transcript-carried turns.
+      // ever carry. The walk's own reach is the transcript-carried turns.
       if (direction === 'newest' && !reachesHeld) {
-        const carriable = rest.filter(
-          (turn) =>
-            turn.record !== true && turn.messages.some((message) => !isForgeNotice(message)),
+        const carriable = rest.filter((turn) =>
+          turn.messages.some((message) => !isForgeNotice(message)),
         );
         walk.key = carriable.length > 0 ? (carriable[carriable.length - 1]?.key ?? null) : null;
         walk.below = walk.key === null ? null : new Set(rest.map((turn) => turn.key));
@@ -2977,10 +2830,9 @@ export class Chat {
        *
        * **A page that stamps nothing has no `overtaken` routing.** Its rows
        * cannot say what they ran past, and `loose` draws after every held row
-       * - which flipped a watched handoff, whose in-play judgment turn then
-       * drew BELOW the row it ends at (#2643). With no page rows to draw
-       * between them, the held order is the only order such a landing leaves
-       * standing, so the seam keeps it.
+       * - which put an in-play turn below rows held after it (#2643). With no
+       * page rows to draw between them, the held order is the only order such
+       * a landing leaves standing, so the seam keeps it.
        *
        * **Only the empty page.** A landing with rows is drawn in the page's
        * own order, and putting a held row above it would file the reader's
@@ -3002,10 +2854,10 @@ export class Chat {
       }
       // **The turns a newest page does not carry keep the order they were
       // held in.** A settled turn and one still in play are not two ranks
-      // here: a watched swap leaves the judgment turn in play while its row
-      // is already settled, and placing every settled turn above every
-      // in-play one lifted the row over the turn it ends - within one
-      // successor turn (#2639). The seam is one stretch of held order.
+      // here: a turn can settle while a later one is still running, and
+      // placing every settled turn above every in-play one lifted the later
+      // turn over the one it follows (#2639). The seam is one stretch of
+      // held order.
       //
       // **An older landing needs no such rule.** Its page is older than
       // every held turn, so the recorded seam sits wholly below it; the one
@@ -3137,110 +2989,10 @@ export class Chat {
    * The turns go rather than being replaced in place, because a page that
    * answered before the swap is the OLD occupant's and nothing in a page says
    * which occupant it came from - so what is held has to be nothing, and the
-   * ask has to go out after the swap rather than before it.
+   * ask has to go out after the swap rather than before it. A handoff opens a
+   * new chat the same way: the successor's transcript is its own.
    */
-  /**
-   * Draw the row a live swap announced, and hold the conversation above it
-   * for the `session_replaced` that follows.
-   *
-   * A swap is two frames: the row, then the new occupant. The row is added
-   * before the clear so the turns it joins are the ones whose work it
-   * describes.
-   */
-  private holdHandoff(handoff: HandoffRecord): void {
-    this.seedHandoffJoin(handoff, 'after');
-    // **The successor's id rides with the turns.** A swap that never lands
-    // (a failed spawn, a dropped socket) leaves this set, and the next
-    // `session_replaced` from anything else - a plain `/new` - must not read
-    // it as its own continuation.
-    this.carried = { turns: this.held.turns, to: handoff.to };
-  }
-
-  /** Put the join in the conversation once, wherever it is missing: the
-   * judgment turn the record carries, and the row it ended at.
-   *
-   * **The turn rather than the row alone.** The procedure prompt and the
-   * calls that ran it lived in the session that left, so a client that did
-   * not watch the swap has no frames for them - the record is their only
-   * carrier. Both are keyed, so a live client that already drew the turn
-   * from its own frames lands on that row instead of a second copy. */
-  private seedHandoffJoin(handoff: HandoffRecord, where: 'ahead' | 'after'): void {
-    const row = handoffKey(handoff);
-    const judgment = judgmentTurnOf(handoff);
-    this.fold((held) => {
-      let turns = held.turns;
-      const added: Turn[] = [];
-      if (judgment !== null) {
-        // **The same turn can already be here under another name, and not
-        // necessarily as its opening row.** A client that attached while the
-        // judgment turn ran got it from a page keyed by the server's own name;
-        // worse, a procedure prompt that was QUEUED behind a running turn is
-        // folded into the turn above it, so that row opens on the interrupted
-        // work and carries the prompt somewhere inside. The prompt's id is the
-        // one fact both carriers keep, so it is what pairs them - searched
-        // through every message, not only the first.
-        const opening = uuidOf(judgment.messages[0]);
-        const at =
-          opening === null
-            ? turns.findIndex((turn) => turn.key === judgment.key)
-            : turns.findIndex((turn) =>
-                turn.messages.some((message) => uuidOf(message) === opening),
-              );
-        if (at === -1) {
-          added.push(judgment);
-        } else {
-          // **Only what the row lacks.** The held row may be the interrupted
-          // turn itself, opening on frames of its own; replacing its messages
-          // wholesale would drop them. The record's copy appends where it
-          // continues.
-          //
-          // **And the record settles the row.** The turn ended before the
-          // record was written, so nothing about it is still being written -
-          // a watching client that had it live would otherwise draw the
-          // running mark until a full reload, which is the class this cut
-          // exists to close. `record` is set for the same reason it is on a
-          // freshly seeded turn: no page of the successor's transcript can
-          // ever carry it, so it is no target for the walk.
-          const same = turns[at];
-          if (same !== undefined) {
-            const carried = new Frames(same.messages);
-            const grown = judgment.messages.filter((message) => !carried.carries(message));
-            const settled: Turn = {
-              ...same,
-              messages: grown.length > 0 ? [...same.messages, ...grown] : same.messages,
-              live: false,
-              running: false,
-              record: true,
-            };
-            if (grown.length > 0 || same.live || same.running === true || same.record !== true) {
-              turns = [...turns.slice(0, at), settled, ...turns.slice(at + 1)];
-            }
-          }
-        }
-      }
-      if (!turns.some((turn) => turn.key === row)) {
-        added.push({ key: row, messages: [handoffFrame(handoff)], live: false });
-      }
-      if (added.length === 0 && turns === held.turns) return held;
-      // **A live swap puts the join after the outgoing conversation**; a seed
-      // from a seat record puts it before the successor turns that are already
-      // held - the successor's transcript never carries either, so they are
-      // the head of what is drawn, not its tail.
-      return {
-        ...held,
-        turns: where === 'ahead' ? [...added, ...turns] : [...turns, ...added],
-      };
-    });
-  }
-
-  private replaced(occupant: string | null): void {
-    // Only the session the handoff named continues the conversation above
-    // the row; any other replacement is a plain occupant change and clears.
-    const carried =
-      this.carried !== null && occupant !== null && this.carried.to === occupant
-        ? this.carried.turns
-        : null;
-    this.carried = null;
+  private replaced(): void {
     const held = this.inFlight !== null;
     if (held) this.abandoned += 1;
     this.inFlight = null;
@@ -3274,27 +3026,9 @@ export class Chat {
     this.pageFloor = null;
     this.pageCursor = null;
     this.seedFloor = null;
-    // **A handoff keeps the conversation; a plain `/new` clears it.** The row
-    // between them says two sessions met, so what the reader was reading
-    // stays above it - and the successor is fresh, so there is no page above
-    // the carried turns to fetch.
-    //
-    // **And a handoff keeps the reader's place in it, but not the arm.** The
-    // rows stay mounted where they were read, so a follow re-armed here would
-    // carry a parked reader to the foot on the successor's first frame. A
-    // send's arm is the OLD session's: the prompt it was armed for is gone, so
-    // the successor owes no jump for it. Only a plain `/new` opens following,
-    // because only it unmounts the list.
-    this.held =
-      carried === null
-        ? NOTHING
-        : {
-            ...NOTHING,
-            turns: carried,
-            loaded: true,
-            following: this.held.following,
-            send_armed: false,
-          };
+    // **A swap opens a new chat.** The successor's transcript is its own, so
+    // nothing the previous occupant drew is carried across.
+    this.held = NOTHING;
     this.flush();
     // **The swap forgot an ask too, and it has to say so.** The reset above
     // zeroes the count the column drains against, so a column that was holding
@@ -3317,12 +3051,7 @@ export class Chat {
     // and nothing re-subscribes it, so no snapshot follows to seed the new
     // occupant - this ask is the only way its page arrives. It is therefore
     // `ask` rather than the guarded `refresh`.
-    //
-    // **A handoff's successor needs no page**: it is a fresh session whose
-    // history is empty, and the row the reader keeps above it would be
-    // replaced by whatever a read answered about a conversation it did not
-    // join.
-    if (carried === null) this.ask(null);
+    this.ask(null);
   }
 
   /**
@@ -3371,15 +3100,12 @@ export class Chat {
         // "sending" over a card already showing them (Ved, 2026-10-04). Ids
         // only: two sends of the same text compare equal by words.
         if (echoes.of(this.key)?.id === uuid) echoes.clear(this.key);
-        // **The two frames race, and this side of the race is the retraction.**
-        // The dispatcher emits the user turn as it routes the prompt; the
-        // task's queue announcement follows it, so a frame often arrives before
-        // the pile knows the prompt is waiting. An announcement for a row the
-        // seat has already drawn pulls it back into the hold - and what keeps
-        // that invisible is the SERVER's batch window rather than this side:
-        // the transport coalesces both updates into one flush, so the draw and
-        // the retraction land in one paint. Outside that window the row hops
-        // back into the pile a beat late rather than standing in both.
+        // **A row the seat already drew is pulled back into the hold.** A page
+        // read can carry a prompt's own row while the queue still lists it -
+        // the transcript gained it before this view heard the announcement -
+        // and the card is what carries the words while they wait. The
+        // announcement retracts that copy, and the drain draws it once when
+        // the CLI starts it.
         //
         // **And a queued send is the reader acting, so the column follows it.**
         // A prompt the CLI queues never folds as a user unit - which is the one
@@ -3440,19 +3166,10 @@ export class Chat {
       this.append(message, !repaired && textIn(update, 'chat_appended', 'source') === 'you');
       return;
     }
-    // The seat changed occupant by a handoff. The row is drawn here, and the
-    // conversation above it is remembered: the `session_replaced` that lands
-    // the successor must not clear the work the reader was reading.
-    if (variant === 'handoff') {
-      const record = (update as { handoff?: { handoff?: unknown } }).handoff?.handoff;
-      const handoff = handoffOf(record);
-      if (handoff !== null) this.holdHandoff(handoff);
-      return;
-    }
     // The seat changed occupant under this column - a `/new`, a `/resume`, a
     // login or a logout - so what is drawn is another session's conversation.
     if (variant === 'session_replaced') {
-      this.replaced(textIn(update, 'session_replaced', 'session_id'));
+      this.replaced();
       return;
     }
     // A process that is gone takes its queue with it: no lifecycle frame is
@@ -3468,8 +3185,6 @@ export class Chat {
       this.drained.clear();
       this.emptied.clear();
       this.plainDrawn.clear();
-      // A fresh connect is its own occupant, not a handoff's successor.
-      this.carried = null;
       return;
     }
     // The answer to the row's own ask, kept where the row reads it: by the
@@ -3494,9 +3209,6 @@ export class Chat {
       this.drained.clear();
       this.emptied.clear();
       this.plainDrawn.clear();
-      // A handoff whose spawn failed has no successor: the conversation is
-      // not carried by whatever replacement comes next.
-      this.carried = null;
       const failed = (update as { connection_failed?: { message?: unknown } }).connection_failed;
       const why = failed?.message;
       if (typeof why === 'string' && why !== '') {
@@ -3814,11 +3526,11 @@ export class Chat {
    * between the card's "queued" and the row's "sent", and the reason the row
    * was held at all. `completed` draws the same way, which is what saves a
    * hold whose `started` was lost - a reattached client that missed the frame.
-   * `refused` and `discarded` draw too, without the note, because those words
-   * never reached a model and the pile's own ending line is the only other
-   * place they exist. `cancelled` goes: the reader deleted it, and the send
-   * that was waiting on it is settled rather than left behind a copy that is
-   * never coming. Anything else keeps the hold.
+   * `cancelled`, `refused` and `discarded` draw nothing: none of them reached
+   * a model, so no turn carries the words. A refusal or a discard hands them
+   * to the pile's ending line, which draws them where the card was; a cancel
+   * has said what it had to say by leaving (#2816). Anything else keeps the
+   * hold.
    */
   private advanced(update: SessionUpdate): void {
     const uuid = textIn(update, 'prompt_lifecycle', 'uuid');
@@ -3846,6 +3558,14 @@ export class Chat {
     if (!dropped && !drawn) return;
     this.waiting.delete(uuid);
     this.drained.delete(uuid);
+    // **A prompt that never starts draws no row.** Refused and discarded
+    // leave their words to the pile's ending line, which is the only place
+    // after the card; cancelled leaves nothing, because the reader ended it
+    // (#2816). The page copy never carries any of them.
+    if (dropped) {
+      this.dropEmptied(uuid);
+      return;
+    }
     const into = this.emptied.get(uuid) ?? null;
     this.emptied.delete(uuid);
     // **A trigger the queue alone carried draws from the announcement's own
@@ -3861,7 +3581,7 @@ export class Chat {
     // carries them to the foot. The sender is the announcement's, kept in the
     // hold for this - the row it draws may be built from the announcement's
     // words alone, with no frame to read a source off.
-    this.append(dropped ? row : this.noted(row, waited), entry?.source === 'you', into);
+    this.append(this.noted(row, waited), entry?.source === 'you', into);
   }
 
   /**

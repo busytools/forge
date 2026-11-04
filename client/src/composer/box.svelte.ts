@@ -35,6 +35,12 @@ export class Box {
   /** The reader's own words, and the command a send named. A send still on its way is not here: it is the conversation's own row (`chat/echoes.svelte`). */
   draft = $state('');
   sent = $state<string | null>(null);
+  /**
+   * The dispatch id of a press the core answers itself, if the last press on
+   * this seat was one. A refusal names that id and this box is where it lands;
+   * a prompt that starts a turn posts an echo instead and leaves this null.
+   */
+  answeredDispatch: number | null = null;
   /** The prompt this box answered, while the core still lists it as waiting. */
   answered = $state<string | null>(null);
   /**
@@ -191,5 +197,13 @@ export class Boxes {
    */
   held(key: string): Box | undefined {
     return this.#held.get(key);
+  }
+
+  /** The box waiting on one core-answered press, by the dispatch id it minted. */
+  answered(dispatch: number): Box | undefined {
+    for (const box of this.#held.values()) {
+      if (box.answeredDispatch === dispatch) return box;
+    }
+    return undefined;
   }
 }

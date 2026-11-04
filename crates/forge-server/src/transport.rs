@@ -240,15 +240,30 @@ pub mod wire;
 /// a dock nobody draws. `baselines/socket/25/` is the record a v25 server
 /// emitted.
 ///
-/// **The held Slack draft's new fields kept v26.** `thread` and `tagged` are
-/// additive under the rule below: a v26 client ignores them and draws the raw
-/// ts it always drew, so `baselines/socket/26/` is re-recorded in place rather
-/// than a v27 directory being cut.
+/// **v27 drops the handoff row from the conversation record and the prompt
+/// origin from the wire.** The record's `handoff` field was what a client
+/// drew the block from; the block is gone, so the field goes with it - a v26
+/// client reading a v27 record draws no block from it, and one that watches
+/// the swap still receives the `handoff` update and draws its own block from
+/// that, because it is the old client - though the record no longer carries
+/// the judgment turn, which only that block read. `ChatAppended.origin` and
+/// `PromptUnder.origin` were the dispatch-time row's bookkeeping; the row is
+/// drawn when the CLI takes the prompt (`started`), which can be inside the
+/// running turn when the CLI absorbs it, so nothing carries an origin. A v26
+/// client reads both fields as absent; its dispatch row and its echo are that
+/// client's own code, and a core-answered command leaves its echo standing
+/// because that client has no answered-command set.
+/// `baselines/socket/26/` is the record a v26 server emitted.
+///
+/// **The held Slack draft's new fields did not need a v28.** `thread` and
+/// `tagged` are additive under the rule below: a v27 client ignores them and
+/// draws the raw ts it always drew, so `baselines/socket/27/` is re-recorded
+/// in place rather than a v28 directory being cut.
 ///
 /// **Additive fields do not bump.** `diff.base_error` is one, carried on the
 /// v16-era record: a client older than the field draws the vaguer line it
 /// always drew, and nothing it sends changes.
-pub const PROTOCOL_VERSION: u32 = 26;
+pub const PROTOCOL_VERSION: u32 = 27;
 
 /// The socket's keepalive: how often a connection is asked to prove it is
 /// still there, and how long it may stay silent before it is reaped.

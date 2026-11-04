@@ -587,8 +587,8 @@
    * flag says the reader wants the newest end; this says they are standing at
    * it, so an arrival may carry them with it. It goes false on the reader's
    * own move away and comes back only where a pin or a scroll leaves them at
-   * the end - so a follow re-armed by a handoff or any other arrival holds a
-   * parked reader where they are instead of yanking them down.
+   * the end - so a follow re-armed by an arrival holds a parked reader where
+   * they are instead of yanking them down.
    *
    * Reactive, because the way-back control is drawn from it: a reader whose
    * follow is on but whose pin cannot fire needs the door back.

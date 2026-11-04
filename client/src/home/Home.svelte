@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { writable } from 'svelte/store';
+
   import AttentionMark from './AttentionMark.svelte';
   import Brand from '../components/Brand.svelte';
   import Card from '../components/Card.svelte';
@@ -88,13 +90,13 @@
       ? `${row.name} - when the project last moved`
       : `${row.name} - ${where} - when the project last moved`;
   }
-  let now = $state(Date.now());
+  const now = writable(Date.now());
   /** The ready fact as a value, so the timer below does not restart on every update that rewrites `wire`. */
   const ready = $derived(wire !== null);
   $effect(() => {
     if (!ready) return;
     const tick = setInterval(() => {
-      now = Date.now();
+      now.set(Date.now());
     }, 30_000);
     return () => clearInterval(tick);
   });
@@ -231,7 +233,7 @@
             {#if row.place.files}<span class="files">{row.place.files}</span>{/if}
           {/if}
         </span>
-        <span class="fleet-when">{ageOf(row, now)}</span>
+        <span class="fleet-when">{ageOf(row, $now)}</span>
         <span class="fleet-seats">
           {#each row.seats as seat (seat.label)}
             <span class="fleet-seat-pair">

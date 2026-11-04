@@ -63,8 +63,6 @@ function ground(projects: string[], ...slots: SessionSlot[]): HomeWire {
   };
 }
 
-const NOW = 0;
-
 beforeEach(() => {
   // The closed-seat marks are module state; an empty roster forgets all of
   // them, which the production function does on its own terms.
@@ -95,7 +93,7 @@ describe("what a row's close sends", () => {
 
 describe('where a close lands the reader', () => {
   it("lands a worker's close on its lead, the seat that owns it", () => {
-    expect(closeLanding(home(LEAD, W1), W1, NOW)).toEqual({ name: 'session', slot: LEAD });
+    expect(closeLanding(home(LEAD, W1), W1)).toEqual({ name: 'session', slot: LEAD });
   });
 
   /**
@@ -111,7 +109,7 @@ describe('where a close lands the reader', () => {
     const held = ground(['proj', 'other'], LEAD, W1, OTHER_LEAD, OTHER_W1);
     const { open, dispatch } = connection();
     history.replaceState(null, '', '/session/TestOrg/proj/lead');
-    expect(closeSeat(open, held, LEAD, LEAD, NOW)).toBe(true);
+    expect(closeSeat(open, held, LEAD, LEAD)).toBe(true);
     expect(dispatch).toHaveBeenCalledWith({ close_session: { session_key: LEAD } }, LEAD);
     expect(location.pathname, 'the landing offered a seat of the closing project').toBe(
       '/session/TestOrg/other/lead',
@@ -126,7 +124,7 @@ describe('where a close lands the reader', () => {
     const held = ground(['a', 'b', 'proj'], a, b, LEAD, W1);
     const { open } = connection();
     history.replaceState(null, '', '/session/TestOrg/proj/lead');
-    expect(closeSeat(open, held, LEAD, LEAD, NOW)).toBe(true);
+    expect(closeSeat(open, held, LEAD, LEAD)).toBe(true);
     expect(
       location.pathname,
       "the landing was the walk's adjacent pick, not the rail's first live row",
@@ -143,12 +141,12 @@ describe('where a close lands the reader', () => {
     const held = ground(['proj', 'other'], LEAD, W1, W2, OTHER_LEAD, OTHER_W1);
     const { open } = connection();
     history.replaceState(null, '', '/session/TestOrg/proj/w1');
-    expect(closeSeat(open, held, LEAD, W1, NOW)).toBe(true);
+    expect(closeSeat(open, held, LEAD, W1)).toBe(true);
     expect(location.pathname, 'a close elsewhere moved the reader').toBe(
       '/session/TestOrg/proj/w1',
     );
     expect(
-      removedLanding(held, W1, LEAD, NOW),
+      removedLanding(held, W1, LEAD),
       'the removal landed the reader on a seat of the closing project',
     ).toEqual({ name: 'session', slot: OTHER_LEAD });
   });
@@ -159,15 +157,15 @@ describe('where a close lands the reader', () => {
    * lands on the one above it rather than falling past everything.
    */
   it('wraps: closing the last row lands on the row above it', () => {
-    expect(closeLanding(home(W1, W2), W2, NOW)).toEqual({ name: 'session', slot: W1 });
+    expect(closeLanding(home(W1, W2), W2)).toEqual({ name: 'session', slot: W1 });
   });
 
   it('lands on the home when no row is left behind it', () => {
-    expect(closeLanding(home(LEAD), LEAD, NOW)).toEqual({ name: 'home' });
+    expect(closeLanding(home(LEAD), LEAD)).toEqual({ name: 'home' });
   });
 
   it('lands a worker with no lead row on the next drawn row', () => {
-    expect(closeLanding(home(W1, W2), W1, NOW)).toEqual({ name: 'session', slot: W2 });
+    expect(closeLanding(home(W1, W2), W1)).toEqual({ name: 'session', slot: W2 });
   });
 });
 
@@ -197,7 +195,7 @@ describe('closing a seat', () => {
   it("sends the row's command and moves off the seat the reader was on", () => {
     history.replaceState(null, '', '/session/TestOrg/proj/w1');
     const { open, dispatch } = connection();
-    expect(closeSeat(open, home(LEAD, W1), W1, W1, NOW)).toBe(true);
+    expect(closeSeat(open, home(LEAD, W1), W1, W1)).toBe(true);
     expect(dispatch).toHaveBeenCalledWith(command, W1);
     expect(location.pathname, 'the reader was left on the seat that closed').toBe(
       '/session/TestOrg/proj/lead',
@@ -207,7 +205,7 @@ describe('closing a seat', () => {
   it('leaves the reader where they are when another row was closed', () => {
     history.replaceState(null, '', '/session/TestOrg/proj/w2');
     const { open, dispatch } = connection();
-    expect(closeSeat(open, home(LEAD, W1, W2), W1, W2, NOW)).toBe(true);
+    expect(closeSeat(open, home(LEAD, W1, W2), W1, W2)).toBe(true);
     // The stale seat the reader is on, not the target: a refusal line draws
     // in the column on screen (the round-1 find), so the close hands over W2.
     expect(dispatch).toHaveBeenCalledWith(command, W2);
@@ -226,7 +224,7 @@ describe('closing a seat', () => {
     const { open } = connection(() => {
       throw new Error('the socket is closed');
     });
-    expect(closeSeat(open, home(LEAD, W1), W1, W1, NOW)).toBe(false);
+    expect(closeSeat(open, home(LEAD, W1), W1, W1)).toBe(false);
     expect(location.pathname, 'a close that never went moved the reader').toBe(
       '/session/TestOrg/proj/w1',
     );
@@ -241,7 +239,7 @@ describe('closing a seat', () => {
     const { open } = connection();
     expect(closingSeat(W1), 'a seat nobody closed read as closing').toBe(false);
 
-    expect(closeSeat(open, home(LEAD, W1), W1, LEAD, NOW)).toBe(true);
+    expect(closeSeat(open, home(LEAD, W1), W1, LEAD)).toBe(true);
     expect(closingSeat(W1), 'the closed row lost its mark').toBe(true);
     expect(closingSeat(LEAD), 'the close marked a seat it never touched').toBe(false);
 
@@ -253,7 +251,7 @@ describe('closing a seat', () => {
     // seat ARRIVING, not only on it going. (A closed lead's mark goes by the
     // absent arm - the roster stops naming it.)
     const landed = connection();
-    expect(closeSeat(landed.open, home(LEAD, W1), LEAD, LEAD, NOW)).toBe(true);
+    expect(closeSeat(landed.open, home(LEAD, W1), LEAD, LEAD)).toBe(true);
     forgetClosed({
       ...home(LEAD),
       agents: [agentIn(LEAD, 'Sleeping'), agentIn(W1, 'Sleeping')],
@@ -263,7 +261,7 @@ describe('closing a seat', () => {
 
     // Logged out is the other way a seat arrives asleep.
     const out = connection();
-    expect(closeSeat(out.open, home(LEAD, W1), W1, LEAD, NOW)).toBe(true);
+    expect(closeSeat(out.open, home(LEAD, W1), W1, LEAD)).toBe(true);
     forgetClosed({ ...home(LEAD), agents: [agent(LEAD), agentIn(W1, 'LoggedOut')] });
     expect(closingSeat(W1), 'a logged-out seat kept its mark').toBe(false);
 
@@ -272,13 +270,13 @@ describe('closing a seat', () => {
     // over one would hold the closing mark forever while the row draws its
     // own settled state.
     const crashed = connection();
-    expect(closeSeat(crashed.open, home(LEAD, W1), W1, LEAD, NOW)).toBe(true);
+    expect(closeSeat(crashed.open, home(LEAD, W1), W1, LEAD)).toBe(true);
     forgetClosed({ ...home(LEAD), agents: [agent(LEAD), agentIn(W1, 'Failed')] });
     expect(closingSeat(W1), 'a failed seat kept its closing mark').toBe(false);
 
     // A lead's close cascades: every live row the project takes says it too.
     const cascaded = connection();
-    expect(closeSeat(cascaded.open, home(LEAD, W1), LEAD, LEAD, NOW)).toBe(true);
+    expect(closeSeat(cascaded.open, home(LEAD, W1), LEAD, LEAD)).toBe(true);
     expect(closingSeat(W1), 'the cascade left a worker row reading live').toBe(true);
   });
 });
@@ -293,10 +291,10 @@ describe('the walk passes a failed lead', () => {
   it('never lands on a failed lead', () => {
     const failed: HomeWire = { ...homeWire, agents: [agentIn(LEAD, 'Failed')] };
 
-    expect(closeLanding(failed, W1, NOW), 'a close landed on the failed lead').toEqual({
+    expect(closeLanding(failed, W1), 'a close landed on the failed lead').toEqual({
       name: 'home',
     });
-    expect(removedLanding(failed, W1, LEAD, NOW), 'a removal landed on the failed lead').toEqual({
+    expect(removedLanding(failed, W1, LEAD), 'a removal landed on the failed lead').toEqual({
       name: 'home',
     });
   });
@@ -316,7 +314,7 @@ describe('the walk is over seats with something behind them', () => {
    */
   it('skips a sleeping row rather than hand the reader a seat with no session', () => {
     const held: HomeWire = { ...homeWire, agents: [agent(LEAD), agentIn(W1, 'Sleeping')] };
-    expect(closeLanding(held, LEAD, NOW)).toEqual({ name: 'home' });
+    expect(closeLanding(held, LEAD)).toEqual({ name: 'home' });
   });
 
   /**
@@ -326,7 +324,7 @@ describe('the walk is over seats with something behind them', () => {
    */
   it("prefers the closed worker's own lead, not the walk's next row", () => {
     const held = ground(['proj', 'other'], LEAD, W1, OTHER_LEAD);
-    expect(closeLanding(held, W1, NOW)).toEqual({ name: 'session', slot: LEAD });
+    expect(closeLanding(held, W1)).toEqual({ name: 'session', slot: LEAD });
   });
 
   /**
@@ -338,7 +336,7 @@ describe('the walk is over seats with something behind them', () => {
    */
   it('walks forward from a middle row rather than back', () => {
     const held = ground(['proj', 'other'], W1, OTHER_W1, OTHER_W2);
-    expect(closeLanding(held, OTHER_W1, NOW)).toEqual({ name: 'session', slot: OTHER_W2 });
+    expect(closeLanding(held, OTHER_W1)).toEqual({ name: 'session', slot: OTHER_W2 });
   });
 });
 
@@ -401,11 +399,11 @@ describe('a seat released by another view', () => {
     try {
       deliver(releasing(LEAD));
       expect(
-        removedLanding(wire, W1, LEAD, NOW),
+        removedLanding(wire, W1, LEAD),
         'a worker close landed the reader on the released lead',
       ).toEqual({ name: 'home' });
       expect(
-        removedLanding(wire, LEAD, null, NOW),
+        removedLanding(wire, LEAD, null),
         'the released lead landed the reader back on itself',
       ).toEqual({ name: 'session', slot: W1 });
     } finally {
@@ -432,7 +430,7 @@ describe('a seat removed under the reader', () => {
    */
   it('lands a removed worker on its spawning lead', () => {
     const held = ground(['proj', 'other'], LEAD, W1, OTHER_LEAD);
-    expect(removedLanding(held, W1, LEAD, NOW)).toEqual({ name: 'session', slot: LEAD });
+    expect(removedLanding(held, W1, LEAD)).toEqual({ name: 'session', slot: LEAD });
   });
 
   /**
@@ -444,8 +442,8 @@ describe('a seat removed under the reader', () => {
     const held = ground(['proj', 'other'], LEAD, W1, OTHER_LEAD);
     const { open } = connection();
     history.replaceState(null, '', '/session/TestOrg/proj/lead');
-    expect(closeSeat(open, held, LEAD, LEAD, NOW)).toBe(true);
-    expect(removedLanding(held, W1, LEAD, NOW)).toEqual({ name: 'session', slot: OTHER_LEAD });
+    expect(closeSeat(open, held, LEAD, LEAD)).toBe(true);
+    expect(removedLanding(held, W1, LEAD)).toEqual({ name: 'session', slot: OTHER_LEAD });
   });
 
   /**
@@ -459,15 +457,15 @@ describe('a seat removed under the reader', () => {
     const restarted = ground(['proj', 'other'], LEAD, W1, OTHER_LEAD);
     const { open } = connection();
     history.replaceState(null, '', '/session/TestOrg/proj/lead');
-    expect(closeSeat(open, first, LEAD, LEAD, NOW)).toBe(true);
-    expect(removedLanding(first, W1, LEAD, NOW), 'the mark was not in force').toEqual({
+    expect(closeSeat(open, first, LEAD, LEAD)).toBe(true);
+    expect(removedLanding(first, W1, LEAD), 'the mark was not in force').toEqual({
       name: 'session',
       slot: OTHER_LEAD,
     });
 
     forgetClosed(caughtUp);
     expect(
-      removedLanding(restarted, W1, LEAD, NOW),
+      removedLanding(restarted, W1, LEAD),
       'a project started again stayed suppressed',
     ).toEqual({ name: 'session', slot: LEAD });
   });

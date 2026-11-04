@@ -43,32 +43,6 @@ const turn = (key: string): unknown => ({
 });
 
 /**
- * One handoff record, as the wire carries it, with the judgment turn a
- * catching-up client joins the conversation on.
- */
-const handoffRecord = (prompt: string): unknown => ({
-  slot: LEAD,
-  from: 'old',
-  to: 'new',
-  reason: 'fill',
-  fill_percent: 85,
-  total_tokens: 850_000,
-  max_tokens: 1_000_000,
-  compaction_count: 0,
-  at_percent: 85,
-  brief: { ground_truth: [], judgment: [] },
-  judgment_turn: [
-    {
-      type: 'user',
-      uuid: prompt,
-      message: { role: 'user', content: [{ type: 'text', text: 'A handoff is starting.' }] },
-    },
-  ],
-  transcript_path: '/tmp/old.jsonl',
-  at: '2026-10-24T08:00:00Z',
-});
-
-/**
  * A connection a test drives by hand, with a switch for whether it sends.
  *
  * `more` answering `false` is what a socket that is not open does, and the
@@ -156,17 +130,16 @@ function stub() {
     },
     /**
      * The seat's own snapshot, which is the one frame that says whether a turn
-     * is running - and so the one that lets a turn's ending mean anything - and
-     * the carrier of a handoff record a catching-up client joins on.
+     * is running - and so the one that lets a turn's ending mean anything.
      */
-    snapshot(turns: unknown[], running: boolean, handoff: unknown = null): void {
+    snapshot(turns: unknown[], running: boolean): void {
       for (const fn of listeners) {
         fn({
           kind: 'snapshot',
           subject: { session: LEAD },
           data: {
             header: { turn_in_flight: running },
-            conversation: { turns, cursor: null, compaction_count: 0, handoff },
+            conversation: { turns, cursor: null, compaction_count: 0 },
           },
         });
       }
@@ -593,45 +566,6 @@ describe('the compensation the list is handed', () => {
       changes.map((held) => [held.length, held.shift]),
       'the landing keeps its mark through the ending',
     ).toEqual([[3, true]]);
-  });
-
-  // **A composition pin, not a fix pin.** It holds on the round-2 code too:
-  // it says #2639's handoff row goes through the same funnel and therefore
-  // gets the same boundary, not that this cut changed it.
-  it('joins a mid-handoff prepend as a change of its own', async () => {
-    const server = stub();
-    draw(server);
-    server.page([turn('t1'), turn('t2')], '2');
-    await tick();
-    const handed = records.length;
-
-    // A frame arms a draw; then the seat's record arrives carrying a handoff
-    // whose judgment turn is joined AHEAD of the held rows - a client catching
-    // up mid-handoff. A prepend above the reader is exactly the change that
-    // must be published on its own, and #2639 put it through the same funnel.
-    server.update({
-      chat_appended: {
-        key: LEAD,
-        msg: {
-          type: 'user',
-          uuid: 'u-mid',
-          message: { role: 'user', content: [{ type: 'text', text: 'while away' }] },
-        },
-      },
-    });
-    server.snapshot([turn('t1'), turn('t2')], false, handoffRecord('forge_nudge_handoff_mid'));
-    await frame();
-
-    const changes = records
-      .slice(handed)
-      .filter((held, at, all) => at === 0 || held.length !== all[at - 1]?.length);
-    expect(
-      changes.map((held) => [held.length, held.shift]),
-      'the frame, then the handoff turn and row above it',
-    ).toEqual([
-      [3, false],
-      [5, true],
-    ]);
   });
 
   it('publishes a landing on its own tick when the page cannot paint', async () => {

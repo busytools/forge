@@ -24,6 +24,14 @@ import Composed from './testing/Composed.svelte';
 
 const SLOT: SessionSlot = { org: 'Busytools', project: 'forge', label: 'lead' };
 
+/** The component's own style block: the test environment does not inject it
+ * beside the mount, so the cascade is read against the source. */
+const QUEUE_STYLE =
+  /<style>([\s\S]*?)<\/style>/.exec(readFileSync('src/chat/Queue.svelte', 'utf8'))?.[1] ?? '';
+
+/** The app's sheet, in case the rule moves out of the component. */
+const SHEET = readFileSync('src/assets/web.css', 'utf8');
+
 const row = (uuid: string): QueuedPromptRow => ({ uuid, source: 'you', text: uuid });
 
 const rows = (...texts: string[]): QueuedPromptRow[] =>
@@ -132,6 +140,37 @@ describe('the queue pile', () => {
     draw([], connection);
 
     expect(host.querySelector('.pile')).toBeNull();
+  });
+
+  it('sits at the conversation foot with no seam above it', () => {
+    // The gap between the last chat row and the pile's top read as a row of
+    // its own (Ved, 2026-11-03). The pile keeps its own height and its gap
+    // below, and takes none above: the header meets the last row.
+    const { connection } = recording();
+    draw(rows('one'), connection);
+
+    // The rule is read from the component's own style block and the app's
+    // sheet, so a move between them still resolves; the presence check below
+    // fails loudly rather than letting an absent rule read as NaN. Only the
+    // rule is fed to the parser: the app sheet carries syntax this jsdom
+    // cannot read, and a whole-sheet parse would drop it.
+    const markup = host.innerHTML;
+    const css = `${SHEET}\n${QUEUE_STYLE}`;
+    const rule = /\.pile\s*\{[^}]*\}/.exec(css)?.[0] ?? '';
+    expect(rule, 'the pile rule is in one of the sheets').toContain('margin-top: 0');
+    const dom = new JSDOM(
+      `<!doctype html><html><head><style>${rule}</style></head><body><div class="conv">${markup}</div></body></html>`,
+      { pretendToBeVisual: true },
+    );
+    const held = dom.window.document.querySelector('.pile');
+    if (held === null) throw new Error('the pile did not draw');
+    const style = dom.window.getComputedStyle(held);
+    expect(Number.parseFloat(style.marginTop), 'no seam above the pile').toBe(0);
+    expect(Number.parseFloat(style.marginBottom), 'the gap below it to the box stays').toBe(8);
+    expect(
+      ['', 'static'],
+      'the pile stays in flow, so it cannot paint over the row above',
+    ).toContain(style.position);
   });
 
   it('walks from the newest to the oldest and back into the box', () => {
@@ -297,7 +336,7 @@ describe('the queue pile', () => {
     expect(second?.textContent, 'with no raw backticks').not.toContain('`marks`');
   });
 
-  it('says what an ending was, where the card was', () => {
+  it('says a discarded ending and the words it carried', () => {
     const { connection } = recording();
     mount(Queue, {
       target: host,
@@ -313,7 +352,48 @@ describe('the queue pile', () => {
     expect(
       host.querySelector('.ended')?.textContent,
       'a row that vanishes silently reads as one that was delivered',
-    ).toBe('discarded, never sent');
+    ).toBe('discarded, never sent: the lost one');
+  });
+
+  it('draws a peer ending with its body, not the envelope head', () => {
+    const { connection } = recording();
+    mount(Queue, {
+      target: host,
+      props: {
+        rows: [],
+        ended: {
+          text: "[Message id=m-1 from agent 'forge' (org 'Busytools')]\n\nthe lost body",
+          state: 'discarded',
+        },
+        slot: SLOT,
+        connection,
+      },
+    });
+    flushSync();
+
+    expect(
+      host.querySelector('.ended')?.textContent,
+      'the envelope head is plumbing; the body is what the reader lost',
+    ).toBe('discarded, never sent: the lost body');
+  });
+
+  it('says a refused ending and the words it carried', () => {
+    const { connection } = recording();
+    mount(Queue, {
+      target: host,
+      props: {
+        rows: [],
+        ended: { text: 'the refused one', state: 'refused' },
+        slot: SLOT,
+        connection,
+      },
+    });
+    flushSync();
+
+    expect(
+      host.querySelector('.ended')?.textContent,
+      'the refusal names the prompt it refused',
+    ).toBe('refused by a hook: the refused one');
   });
 
   /**
