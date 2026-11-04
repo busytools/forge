@@ -19,7 +19,7 @@
 import { fold } from '../chat/units';
 import { FALLBACK_FLOOR_DB, fractionOf } from '../composer/meter';
 import { surfaceFrom } from '../composer/wire';
-import type { SessionUpdate } from '../protocol';
+import { SUBSCRIBE_TURNS, type SessionUpdate } from '../protocol';
 import { METER_CELLS } from '../wire/limits';
 import {
   backgroundTaskFrom,
@@ -704,6 +704,10 @@ function settled(held: SessionRecord): SessionRecord {
  *
  * Nothing draws these turns whole: a view reads them flattened, so a
  * difference here is a row count rather than a picture.
+ *
+ * **The record keeps the ceiling a fresh read sends**: `SUBSCRIBE_TURNS`, the
+ * server's count (`crates/forge-server/src/transport/wire.rs`), which its own
+ * byte cap can carry fewer of.
  */
 function appendFrame(conversation: Conversation, message: unknown): Conversation {
   // **A boundary moves the count**, the same rule the server's own copy keeps
@@ -717,13 +721,19 @@ function appendFrame(conversation: Conversation, message: unknown): Conversation
   const opens =
     last === undefined || (fold([message]).length > 0 && !isSystem(message) && opensATurn(message));
   if (opens) {
-    return { ...held, turns: [...held.turns, { key: null, messages: [message] }] };
+    return windowed({ ...held, turns: [...held.turns, { key: null, messages: [message] }] });
   }
   if (last === undefined) return held;
-  return {
+  return windowed({
     ...held,
     turns: [...held.turns.slice(0, -1), { ...last, messages: [...last.messages, message] }],
-  };
+  });
+}
+
+/** The conversation cut to the newest whole turns, which never splits the live one. */
+function windowed(conversation: Conversation): Conversation {
+  const over = conversation.turns.length - SUBSCRIBE_TURNS;
+  return over > 0 ? { ...conversation, turns: conversation.turns.slice(over) } : conversation;
 }
 
 /** Whether a frame is a `system` frame, which is a report about a turn rather than part of one. */
@@ -782,10 +792,20 @@ function headerFrom(held: SessionHeader, message: unknown): SessionHeader {
  * being routed and the CLI's first frame for it, and it closes on that frame.
  */
 export function inFlightOf(held: boolean, frame: unknown): boolean {
+  return edgeOf(frame) ?? held;
+}
+
+/** Whether a frame is one of the edges `inFlightOf` moves on. */
+export function movesInFlight(frame: unknown): boolean {
+  return edgeOf(frame) !== null;
+}
+
+/** The answer a frame states, or `null` when it says nothing about a turn being in flight. */
+function edgeOf(frame: unknown): boolean | null {
   const said = record(frame);
   if (said['type'] === 'result' || said['type'] === 'error') return false;
   if (said['type'] === 'system' && said['subtype'] === 'init') return true;
-  return held;
+  return null;
 }
 
 /**

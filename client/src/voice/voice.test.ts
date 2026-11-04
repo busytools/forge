@@ -189,6 +189,31 @@ describe("one seat's voice", () => {
     ).toEqual([]);
   });
 
+  it('re-reads a tail the store reshaped under it', () => {
+    const stores = new Stores();
+    const store = stores.open({ session: SLOT });
+    store.push({ voice_mode_state: { key: SLOT, listeners: 1 } });
+    const port = connectionPort(
+      { store: (subject) => stores.get(subject), dispatch: () => Promise.resolve(null) },
+      SLOT,
+    );
+    expect(port.frames(), 'the first read seeds at the end').toEqual([]);
+
+    // The page leaves and the voice keeps toggling: the store keeps only the
+    // newest state, which replaces the one this cursor had already passed.
+    store.compact();
+    store.push({ voice_mode_state: { key: SLOT, listeners: 2 } });
+    const fresh = port.frames();
+    expect(
+      fresh.some(
+        (update) =>
+          (update as { voice_mode_state?: { listeners?: number } }).voice_mode_state?.listeners ===
+          2,
+      ),
+      'the cursor skipped the state a reshape put in place',
+    ).toBe(true);
+  });
+
   it('resubscribes after a reconnect when the client still wants voice', () => {
     const at = voice();
     at.voice.turnOn();
