@@ -814,9 +814,11 @@
   /* The specimen page's own framing, which is not the client's theme: the
      composer's slot in a real page is the session column's foot, and what is
      being looked at here is the box, not the page around it. */
-  /* The specimens whose whole point is the line's width take the full row. */
+  /* The specimens whose whole point is the line's width take the full row,
+     judged at the mock's own 1258 rather than at whatever the window is. */
   .states section.wide {
     grid-column: 1 / -1;
+    max-width: 1258px;
   }
   .states {
     display: grid;
