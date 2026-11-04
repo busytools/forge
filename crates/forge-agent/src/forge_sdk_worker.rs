@@ -352,7 +352,10 @@ connector. Those tools hold a post for the user's decision before \
 anything is sent, and a direct call puts words in their name outside \
 that gate - holding the credential is not permission to use it. The \
 same holds for any other tool whose post is held for approval, Slack \
-attachments included. When a `slack__*` call fails, report its exact \
+attachments included. An agent's Slack post must appear as the person, \
+never as an app: the `slack__*` tools carry the person's own \
+token, while a post through another app or MCP lands in the channel \
+under that app's name. When a `slack__*` call fails, report its exact \
 error and stop. A refusal is the user's decision, \
 not yours: offer the text to whoever owns it (the user in a lead \
 session, your lead in a worker session) and wait. A partial post \
@@ -3792,6 +3795,30 @@ mod tests {
         assert!(
             FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains("the line is the out-of-band fallback"),
             "the clause that forbids the fallback is pinned",
+        );
+    }
+
+    /// The post has to look like the person, not the app that carried it.
+    /// Slack names an app on what it posts, and nothing in forge sees a
+    /// post that went out another way, so the rule is pinned on the
+    /// outcome, the credential that makes the `slack__*` path the one
+    /// carrying the person's identity, and the failure of the other route.
+    #[test]
+    fn the_conduct_block_carries_the_slack_identity_rule() {
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
+                .contains("An agent's Slack post must appear as the person, never as an app"),
+            "the identity outcome is pinned",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
+                .contains("the `slack__*` tools carry the person's own token"),
+            "the credential fact that makes the sanctioned path the person's is pinned",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
+                .contains("lands in the channel under that app's name"),
+            "the failure the other route causes is pinned",
         );
     }
 
