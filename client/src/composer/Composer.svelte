@@ -778,7 +778,7 @@
    * the notes option, and a held post never.
    */
   function toDock(): boolean {
-    // **The takeover's feedback line is this dock's words box** while the
+    // **The takeover's note line is this dock's words box** while the
     // takeover stands for this seat's hand-off: the only text box on screen is
     // the bar's, so a take started at it belongs there - the same `notes` the
     // dock binds.
@@ -1454,7 +1454,7 @@
    */
   let barField: HTMLElement | null = null;
 
-  /** The bar's feedback field, handed over on mount and given back on
+  /** The bar's note field, handed over on mount and given back on
    *  teardown. A stable function, so the field's own effect does not re-run
    *  on every render of this box. */
   function keepBarField(el: HTMLElement | null): void {
@@ -1483,14 +1483,17 @@
     barRowWas = drawn;
   });
 
-  /** Done, Not now or feedback: the hand-off's answer, and the takeover comes down. */
-  function takeoverAnswer(ending: 'done' | 'not_now' | 'feedback'): void {
-    if (takeoverAsk === null || !answering) return;
+  /**
+   * Done, Not now or feedback: the hand-off's answer, and the takeover comes
+   * down. **A failed dispatch is not an answer**: the park stays up so it can
+   * be sent again.
+   */
+  async function takeoverAnswer(ending: 'done' | 'not_now' | 'feedback'): Promise<boolean> {
+    if (takeoverAsk === null || !answering) return false;
     const id = takeoverAsk.request.id;
-    remember(id);
     const source = ending === 'feedback' ? 'feedback' : 'takeover';
     try {
-      void connection.dispatch(
+      await connection.dispatch(
         {
           respond_browser_hand_off: {
             key: slot,
@@ -1501,9 +1504,16 @@
         slot,
       );
     } catch (error) {
+      barRefused = 'Not sent - the connection is down.';
       report('the answer was not sent', error);
+      return false;
     }
+    // A hand-off answered from another view while the frame crossed is not
+    // this send's to remember or lower.
+    if (takeoverAsk === null || takeoverAsk.request.id !== id) return true;
+    remember(id);
     void closeSurface(null, slot);
+    return true;
   }
 
   /**
@@ -1556,7 +1566,8 @@
       box.barLanded = null;
       box.carried = null;
     }
-    takeoverAnswer(ending);
+    const sent = await takeoverAnswer(ending);
+    if (!sent) answeredFor = null;
   }
 
   /** Back to chat answers nothing: the hand-off stays parked for the next Open. */

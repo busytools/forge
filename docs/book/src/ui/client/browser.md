@@ -222,7 +222,7 @@ the region declares both chords as `aria-keyshortcuts`, so a keyboard reader
 can find the door it cannot see. The hint goes once the chord has been used.
 The bar is a document above the picture, not part of it, so with the keyboard
 there Tab stays inside the bar (it wraps at both ends), its buttons take
-Enter and Space, and the feedback field types as any field does. **The bar
+Enter and Space, and the note field types as any field does. **The bar
 holds the DOM focus only while it has the keys**: on open the native page
 keeps them, so no ring sits on a control the keyboard cannot reach, and
 clicking the picture takes them back the way the chord does. A focus that

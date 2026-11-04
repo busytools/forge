@@ -76,12 +76,12 @@
     /** What the page's own history allows; the shell pushes it as it moves. */
     nav?: NavState;
     onabandon?: () => void;
-    /** The take the feedback line's shared mic drives, from the composer. */
+    /** The take the note line's shared mic drives, from the composer. */
     dictate?: Dictation | null;
     dictation?: boolean;
     /**
      * What became of a take this page started, when the line is the bar's to
-     * say: the feedback row is this surface's words row, and the composer's
+     * say: the note row is this surface's words row, and the composer's
      * own notice row is behind the picture while the takeover is up, so a
      * refusal routed there would be invisible exactly when the mic was pressed.
      *
@@ -224,12 +224,12 @@
     const bar = barEl;
     const had = document.activeElement;
     restoreTo = had instanceof HTMLElement && had !== document.body ? had : null;
-    // **Capture, because the feedback field stops its own keys**: the Field's
+    // **Capture, because the note field stops its own keys**: the Field's
     // handler ends the event before it bubbles to this bar, so a Tab pressed
     // in the last stop would leave the surface.
     bar?.addEventListener('keydown', keys, true);
     // **A focus inside the bar is the keyboard's too.** A take's landing and
-    // the push-to-talk key both put the caret in the feedback field while the
+    // the push-to-talk key both put the caret in the note field while the
     // picture still holds AppKit's first responder, so the shell is asked to
     // hand it over rather than leaving a caret no key can reach.
     const keepKeyboard = (): void => {

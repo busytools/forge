@@ -1579,7 +1579,7 @@
         <!-- **The takeover carries the actions once it is up.** Open is the
            client's own act, not the core's: it replaces the window with the
            browser the sessions drive and answers nothing; Done, Not now, the
-           feedback line and back-to-chat live on the takeover's own bar.
+           note line and back-to-chat live on the takeover's own bar.
            Before it opens, the card carries Open, Done and Not now - the
            session waits with no timeout, so a way out must be reachable. -->
         {#if surface.phase === 'live' && (ask.request.tab === null || surface.tab === ask.request.tab)}
@@ -1587,7 +1587,7 @@
         {:else}
           <!-- **The card's three, as Ved asked (2026-10-19):** Open browser,
                Done and Not now before the takeover; inside it the bar adds
-               the feedback line and back to chat. -->
+               the note line and back to chat. -->
           <button class="btn p" onclick={open}>Open browser</button>
           <button class="btn" onclick={() => handOff('done', 'dock')}>Done</button>
           <button class="btn d" onclick={() => handOff('not_now', 'dock')}>Not now</button>

@@ -455,7 +455,7 @@ export function handOffEndingLine(answer: unknown): { tone: string; text: string
     return { tone: 'q', text: 'The browser hand-off was settled in another view.' };
   }
   if (kind === 'not_now') {
-    return { tone: 'q', text: 'The browser hand-off was declined in another view.' };
+    return { tone: 'q', text: 'The browser hand-off was left for later in another view.' };
   }
   if (kind === 'feedback') {
     return { tone: 'q', text: 'The browser hand-off was settled with a message in another view.' };

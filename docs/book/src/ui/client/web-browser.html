@@ -257,9 +257,13 @@
           <span class="bacts" style="margin-left:0; flex-basis:100%; flex-wrap:wrap; justify-content:flex-end;">
             <span class="bt">take control</span>
             <span class="bt">Done</span>
-            <span class="bt d">send feedback</span>
             <span class="bt d">Not now</span>
           </span>
+        </div>
+        <div class="bask">The CV form is showing a CAPTCHA. Solve it, then pick Upload CV again.</div>
+        <div class="feedback">
+          <input class="fld" value="" placeholder="an optional note for the agent">
+          <span class="mic" aria-label="dictate"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="10" height="12" x="7" y="3" rx="5"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v3"/></svg></span>
         </div>
         <div class="stage" style="min-height:400px;">
           <div class="pagetop" style="padding:20px 18px 0;">
@@ -275,7 +279,7 @@
     the page draws on a canvas. The picture keeps its own shape - a wide page in a portrait phone is
     letterboxed, and taking control lays it out at the phone's shape. The bar over it is the same
     bar, and a hand-off's row is wider than the phone in portrait: its actions wrap to a line of
-    their own, so <b>Done</b>, <b>send feedback</b> and <b>Not now</b> stay on screen
+    their own, so <b>Done</b>, <b>send feedback</b> once the note has words and <b>Not now</b> stay on screen
     and under the finger at the narrowest width. take control makes the phone the one viewer whose
     taps, keys and swipes reach the page, the bar clears the status band with its own safe-area
     padding, and the newest frame is kept for a canvas that mounts after it arrived.</div>
@@ -305,9 +309,13 @@
           <span class="bacts">
             <span class="bt">take control</span>
             <span class="bt">Done</span>
-            <span class="bt d">send feedback</span>
             <span class="bt d">Not now</span>
           </span>
+        </div>
+        <div class="bask">The CV form is showing a CAPTCHA. Solve it, then pick Upload CV again.</div>
+        <div class="feedback">
+          <input class="fld" value="" placeholder="an optional note for the agent">
+          <span class="mic" aria-label="dictate"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="10" height="12" x="7" y="3" rx="5"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v3"/></svg></span>
         </div>
         <div class="stage" style="min-height:300px;">
           <div class="pagetop" style="padding:20px 24px 0;">
@@ -409,7 +417,6 @@
       <div class="feedback">
         <input class="fld" value="the upload form rejected the file" placeholder="an optional note for the agent">
         <span class="mic" aria-label="dictate"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="10" height="12" x="7" y="3" rx="5"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v3"/></svg></span>
-        <span class="sendb" aria-label="send feedback"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="m5 12 7-7 7 7"/></svg></span>
       </div>
     </div>
     <div class="tnote">the card draws from this page's own take, which exists only once the

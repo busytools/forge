@@ -517,7 +517,7 @@ async function surfaceOn(seat: SessionSlot, tab: number): Promise<void> {
 
 /**
  * Let an Open land. **The bar's answers ride the page, not the press**: Done,
- * Not now and the feedback line are offered once the surface is live on the
+ * Not now and the note line are offered once the surface is live on the
  * tab the ask named, which is the shell's answer away.
  */
 async function raised(): Promise<void> {
@@ -7470,7 +7470,7 @@ describe('the dock', () => {
 
   /**
    * **The tab is half of the ask.** A surface showing another tab is a page
-   * the session did not prepare, so its Done and feedback line are not this
+   * the session did not prepare, so its Done and note line are not this
    * ask's answers - but the ask itself must still be named, with the tab it
    * wants, because the card carrying it is behind the page.
    */
@@ -7479,9 +7479,7 @@ describe('the dock', () => {
     open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
 
     expect(barButtons(), 'the wrong tab does not answer').not.toContain('Done');
-    expect(barButtons(), 'and the feedback line is not offered for it').not.toContain(
-      'send feedback',
-    );
+    expect(barButtons(), 'and the note line is not offered for it').not.toContain('send feedback');
     expect(barText(), 'and the ask is still named, with the tab it wants').toContain(
       'browser hand-off · tab 2',
     );
@@ -7508,7 +7506,7 @@ describe('the dock', () => {
   /** **A page that failed is still the ask's page.** The host dying under a
    *  parked hand-off is the one case the person most needs to report - "the
    *  browser exited" is a message to the session, not a decline - so the ask
-   *  and the feedback line stay on the bar. */
+   *  and the note line stay on the bar. */
   it('keeps the ask and its answers when the page fails under it', async () => {
     open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
     vi.mocked(showBrowser).mockResolvedValueOnce('the browser host exited (signal 11)');
@@ -7532,10 +7530,10 @@ describe('the dock', () => {
   /**
    * **A take begun at the bar belongs to the bar.** Its mic is the only door
    * a take has while the page owns the keyboard, and the words it brings are
-   * the feedback line's - not the chat draft's, which is hidden behind the
+   * the note line's - not the chat draft's, which is hidden behind the
    * page.
    */
-  it("lands a take's words in the feedback line the bar stands for", async () => {
+  it("lands a take's words in the note line the bar stands for", async () => {
     await surfaceOn(SLOT, 2);
     const harness = open({
       dictation: true,
@@ -7555,7 +7553,7 @@ describe('the dock', () => {
     flushSync();
 
     const field = document.querySelector<HTMLTextAreaElement>('.takeover-bar textarea');
-    expect(field, 'the bar keeps its feedback line').not.toBeNull();
+    expect(field, 'the bar keeps its note line').not.toBeNull();
     expect(field?.value, "and the take's words land in it").toBe('the words');
   });
 
@@ -7688,7 +7686,7 @@ describe('the dock', () => {
     flushSync();
 
     const field = document.querySelector<HTMLTextAreaElement>('.takeover-bar textarea');
-    if (!(field instanceof HTMLTextAreaElement)) throw new Error('the bar drew no feedback line');
+    if (!(field instanceof HTMLTextAreaElement)) throw new Error('the bar drew no note line');
     field.value = 'the submit button did nothing';
     field.dispatchEvent(new Event('input', { bubbles: true }));
     flushSync();
@@ -7773,6 +7771,46 @@ describe('the dock', () => {
     expect(commands(harness), 'a whitespace-only note answers nothing').toEqual([]);
   });
 
+  /// **A prompt that crossed is not an answer**: the ending's own dispatch
+  /// failing leaves the park up and answerable, not closed on a lie.
+  it('keeps the hand-off answerable when the ending never left', async () => {
+    const shared = wire();
+    const original = shared.connection.dispatch;
+    shared.connection.dispatch = (command, slot) => {
+      if (
+        typeof command === 'object' &&
+        command !== null &&
+        'respond_browser_hand_off' in command
+      ) {
+        throw new Error('the socket is closed');
+      }
+      return original(command, slot);
+    };
+    const harness = open({ record: record({ pending_asks: [browserHandOffAsk()] }) }, shared);
+
+    action('Open browser').click();
+    await raised();
+    flushSync();
+    const field = document.querySelector<HTMLTextAreaElement>('.takeover-bar textarea');
+    if (!(field instanceof HTMLTextAreaElement)) throw new Error('the bar drew no note line');
+    field.value = 'the submit button did nothing';
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+
+    barAction('send').click();
+    // The bar's own line is what the failure leaves, so once it is drawn the
+    // catch has run and the assertions below are safe to make.
+    await vi.waitFor(() => expect(drawn()).toContain('Not sent - the connection is down.'));
+    flushSync();
+
+    expect(
+      commands(harness).map((command) => Object.keys(command)[0]),
+      'the words left, the answer did not',
+    ).toEqual(['prompt_under']);
+    expect(surface.phase, 'the takeover stays up for the retry').toBe('live');
+    expect(barButtons(), 'and the answers are still there').toContain('Done');
+  });
+
   /// **Done carries the note too**, and the ending still reads as approval:
   /// the words go to the agent as a prompt and the park ends as `done`.
   it('sends the note with Done and keeps the ending as approval', async () => {
@@ -7843,7 +7881,7 @@ describe('the dock', () => {
     await raised();
     flushSync();
     const field = document.querySelector<HTMLTextAreaElement>('.takeover-bar textarea');
-    if (!(field instanceof HTMLTextAreaElement)) throw new Error('the bar drew no feedback line');
+    if (!(field instanceof HTMLTextAreaElement)) throw new Error('the bar drew no note line');
     field.value = 'the submit button did nothing';
     field.dispatchEvent(new Event('input', { bubbles: true }));
     flushSync();
@@ -7876,7 +7914,7 @@ describe('the dock', () => {
     await raised();
     flushSync();
     const field = document.querySelector<HTMLTextAreaElement>('.takeover-bar textarea');
-    if (!(field instanceof HTMLTextAreaElement)) throw new Error('the bar drew no feedback line');
+    if (!(field instanceof HTMLTextAreaElement)) throw new Error('the bar drew no note line');
     field.value = 'the submit button did nothing';
     field.dispatchEvent(new Event('input', { bubbles: true }));
     flushSync();
@@ -7919,7 +7957,7 @@ describe('the dock', () => {
     flushSync();
 
     const field = document.querySelector<HTMLTextAreaElement>('.takeover-bar textarea');
-    if (!(field instanceof HTMLTextAreaElement)) throw new Error('the bar drew no feedback line');
+    if (!(field instanceof HTMLTextAreaElement)) throw new Error('the bar drew no note line');
     field.focus();
     press('Escape');
 
@@ -7928,7 +7966,7 @@ describe('the dock', () => {
 
   /**
    * **A take begun at the bar stays the bar's while its takeover stands.**
-   * A failed page keeps the feedback line (the person can say the host died),
+   * A failed page keeps the note line (the person can say the host died),
    * and its retry puts the surface back into opening with the take still
    * recording. The words were spoken for that line, so they land there: the
    * composer's draft is behind the picture, where a press reads as dead.
@@ -7954,7 +7992,7 @@ describe('the dock', () => {
     await vi.waitFor(() => expect(surface.phase, 'the retried page is up').toBe('live'));
     flushSync();
     const line = document.querySelector<HTMLTextAreaElement>('.takeover-bar textarea');
-    if (!(line instanceof HTMLTextAreaElement)) throw new Error('the bar drew no feedback line');
+    if (!(line instanceof HTMLTextAreaElement)) throw new Error('the bar drew no note line');
     expect(line.value, 'the words were held for the line the reader spoke them into').toBe(
       'the words',
     );
@@ -7969,7 +8007,7 @@ describe('the dock', () => {
     expect(field().value, 'the words land in the composer, once').toBe('the words');
   });
 
-  /** A page that fails its first open, with the feedback line open and a take
+  /** A page that fails its first open, with the note line open and a take
    *  running at the bar's mic, which is where every carry case starts. */
   async function failedPageTaking(): Promise<ReturnType<typeof open>> {
     vi.mocked(showBrowser).mockResolvedValueOnce('the browser host exited');
@@ -8146,7 +8184,7 @@ describe('the dock', () => {
     landBarTake(harness);
 
     const line = document.querySelector<HTMLTextAreaElement>('.takeover-bar textarea');
-    if (!(line instanceof HTMLTextAreaElement)) throw new Error('the bar drew no feedback line');
+    if (!(line instanceof HTMLTextAreaElement)) throw new Error('the bar drew no note line');
     line.value = '   ';
     line.dispatchEvent(new Event('input', { bubbles: true }));
     flushSync();
@@ -8905,11 +8943,11 @@ describe('the dock', () => {
 });
 
 /**
- * The takeover bar's feedback line: the one words row the bar owns, and the
+ * The takeover bar's note line: the one words row the bar owns, and the
  * only place a take pressed there can say what it is doing - the composer's
  * band and notice rows are behind the picture while the takeover is up.
  */
-describe("the takeover bar's feedback line", () => {
+describe("the takeover bar's note line", () => {
   const commands = (harness: { sent: { command: Record<string, unknown> }[] }) =>
     harness.sent.map((entry) => entry.command);
 
@@ -8918,7 +8956,7 @@ describe("the takeover bar's feedback line", () => {
    *  has to open the microphone exactly as the box's mic does. The case passes
    *  on the tree before this cut too: what it pins is the contract the fix
    *  keeps, not the defect. */
-  it('starts a take from the bar feedback line, and ends it there', async () => {
+  it('starts a take from the bar note line, and ends it there', async () => {
     vi.useFakeTimers();
     try {
       const harness = open({
@@ -8949,7 +8987,7 @@ describe("the takeover bar's feedback line", () => {
   });
 
   /** **The key is the bar's second door.** The takeover owns the keyboard for
-   *  the page under it, but the feedback line is this client's own box: with
+   *  the page under it, but the note line is this client's own box: with
    *  the caret in it a press of the push-to-talk key begins the take there
    *  exactly as the mic does - and its words land on that line, because the
    *  bar is the box the take began in. With the caret anywhere else the page
@@ -8967,7 +9005,7 @@ describe("the takeover bar's feedback line", () => {
     await opened();
     flushSync();
     const line = document.querySelector<HTMLTextAreaElement>('.takeover-bar textarea');
-    if (!(line instanceof HTMLTextAreaElement)) throw new Error('the bar drew no feedback line');
+    if (!(line instanceof HTMLTextAreaElement)) throw new Error('the bar drew no note line');
 
     line.focus();
     key('ControlRight', 'keydown');
@@ -9102,7 +9140,7 @@ describe("the takeover bar's feedback line", () => {
   });
 
   /** **A take that will not open says so where it was pressed.** The bar's
-   *  feedback row is the words row a take here belongs to, and the composer's
+   *  note row is the words row a take here belongs to, and the composer's
    *  own notice row is behind the picture while the takeover is up - so a
    *  refusal routed there was a press that looked dead, while the same press
    *  in the box drew its line. */
@@ -9208,7 +9246,7 @@ describe("the takeover bar's feedback line", () => {
   /** **The bar's line is dictatable without a click.** A reader driving the
    *  page under the takeover leaves the caret on the page - the body, not one
    *  of this client's boxes - and the key presses there were dropped unless
-   *  the reader had first clicked into the feedback field. The press has to
+   *  the reader had first clicked into the note field. The press has to
    *  begin the bar's take instead: its line opens if it was shut, and its
    *  field takes the keyboard so the words have a home and the release is the
    *  natural one. */
@@ -9332,7 +9370,7 @@ describe("the takeover bar's feedback line", () => {
 
   /** **A line the reader cannot close is not a door for the key.** While the
    *  page is still opening the bar draws no toggle, so a press that opened the
-   *  feedback line there would leave words in a row with no way to shut it. */
+   *  note line there would leave words in a row with no way to shut it. */
   it('begins nothing while the page has no controls', async () => {
     let land: (answer: { profile: string; tab: number }) => void = () => {};
     vi.mocked(showBrowser).mockReturnValueOnce(

@@ -278,7 +278,7 @@ function ruleWith(selector: string): { selectors: string[]; body: string } | nul
 }
 
 /**
- * **The feedback line's mic and send are the dock's own controls**, so their
+ * **The note line's mic and send are the dock's own controls**, so their
  * rules have to be bare and keep the box they give: a rule scoped under
  * `.dock .qrow` reaches the dock's row and nothing in this bar, and a bare
  * rule that lost its 26px box falls back to UA sizing in both rows - the same
@@ -298,7 +298,7 @@ describe("the takeover bar's note controls", () => {
         `@media \\(pointer: coarse\\) \\{\\n(?: {2}[^\\n]*\\n)*? {2}\\.sendb \\{ min-height: 44px; min-width: 44px; \\}`,
       ),
     );
-    // **The feedback line's mic is the shared DictateControl**, so its box is
+    // **The note line's mic is the shared DictateControl**, so its box is
     // the composer's own `.mic` and takes the same finger floor; a bespoke
     // `.micb` here would be the second implementation this cut removes.
     expect(SHEET, 'the shared mic loses its finger floor').toMatch(
@@ -313,7 +313,7 @@ describe("the takeover bar's note controls", () => {
   /// tick row keep the pill's 116px and their own width, which is the same
   /// empty-row defect one phase later. Each selector is pinned by membership
   /// so a rewrap or a reorder does not read as a lost property.
-  it('gives the take card and its graph the line the feedback field gives up', () => {
+  it('gives the take card and its graph the line the note field gives up', () => {
     for (const selector of ['.takeline .tc', '.dock .qrow .tc', '.tb-feedback .tc']) {
       const rule = ruleWith(selector);
       expect(rule, `${selector} is in no rule, so the card sizes to its content`).not.toBeNull();
@@ -362,7 +362,7 @@ describe("the takeover bar's note controls", () => {
   it('styles the line the bar says a take by', () => {
     const base = ruleWith('.tb-line');
     expect(base, 'no .tb-line rule, so the line draws as bare text').not.toBeNull();
-    expect(base?.body, 'the line lost the band the feedback row wears').toMatch(
+    expect(base?.body, 'the line lost the band the note row wears').toMatch(
       /border-top: 1px solid var\(--line\)/,
     );
     expect(base?.body, 'the line lost its padding').toMatch(/padding: 7px 12px/);
@@ -416,7 +416,7 @@ describe("the takeover bar's note controls", () => {
     flushSync();
     expect(
       target.querySelector('.tb-feedback .mic'),
-      'the feedback line lost the shared DictateControl',
+      'the note line lost the shared DictateControl',
     ).not.toBeNull();
     expect(
       target.querySelector('.tb-feedback .sendb'),
@@ -643,7 +643,7 @@ describe("the takeover bar's note controls", () => {
     });
     flushSync();
     const line = target.querySelector('.tb-feedback textarea');
-    if (!(line instanceof HTMLTextAreaElement)) throw new Error('the bar drew no feedback line');
+    if (!(line instanceof HTMLTextAreaElement)) throw new Error('the bar drew no note line');
     expect(line.dataset['editor'], 'the line is its own box in the caret table').toBe('bar');
   });
 });
@@ -739,14 +739,14 @@ describe("the takeover bar's keyboard", () => {
   });
 
   /**
-   * **The feedback field stops its own keys**, so the bar has to trap them
+   * **The note field stops its own keys**, so the bar has to trap them
    * before that: the field is the last stop, and a Tab from it used to leave
    * the takeover (#2571).
    */
-  it('wraps Tab from the feedback field, whose keys stop inside it', async () => {
+  it('wraps Tab from the note field, whose keys stop inside it', async () => {
     const target = await full();
     const field = target.querySelector('.tb-feedback textarea');
-    if (!(field instanceof HTMLTextAreaElement)) throw new Error('the bar drew no feedback field');
+    if (!(field instanceof HTMLTextAreaElement)) throw new Error('the bar drew no note field');
     // **The field's own handler ends the event for its ancestors**, so the
     // bar only sees a Tab pressed there from the capture phase.
     field.addEventListener('keydown', (event) => event.stopPropagation());
@@ -970,7 +970,7 @@ describe("the takeover bar's keyboard over a native page", () => {
   });
 
   /// **A focus inside the bar is the keyboard's too**: a take's landing puts
-  /// the caret in the feedback field while the picture still holds AppKit's
+  /// the caret in the note field while the picture still holds AppKit's
   /// first responder, so the shell has to hand the keys over.
   it('asks the shell for the keyboard when focus lands inside it', async () => {
     const target = await nativeBar('live');
