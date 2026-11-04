@@ -250,6 +250,9 @@ impl TerminalFacade for ProdTerminalFacade {
             WaitUntil::Quiet => wait_quiet(&entry, deadline, blind).await?,
             WaitUntil::Pattern(pattern) => wait_pattern(&entry, &pattern, deadline, blind).await?,
         };
+        // **The last gap is a gap too**: a park that lands after the loop's
+        // final check must not get this read.
+        refuse_when_held(&workspace, seat)?;
         let read = entry.terminal.read(None, 200, 32 * 1024);
         Ok(WaitAnswer {
             matched,

@@ -166,6 +166,26 @@ describe('the terminal surface store', () => {
     stop();
   });
 
+  it('takes a repaint when the held window overflowed instead of drawing a fragment', async () => {
+    const stop = installTerminalSurface(stillConnection());
+    await openTerminal(seat, 4);
+    pushed.view?.({ seat, id: 4, cols: 80, rows: 24, seq: 10, screen: '$ ', viewers: 1 });
+    // One frame past the hold limit drops the buffer and asks for a repaint.
+    pushed.frame?.({ id: 4, seq: 11, bytes: new Uint8Array(1_000_001) });
+    // A later frame lands before the mount; the repaint still owns the
+    // screen, and drawing the held tail first would be a fragment of it.
+    pushed.frame?.({ id: 4, seq: 12, bytes: new Uint8Array([2]) });
+    const written: number[] = [];
+    link.show.mockClear();
+    const off = onOutput((frame) => written.push(frame.seq));
+    await vi.waitFor(() => {
+      expect(link.show).toHaveBeenCalledWith(seat, 4);
+    });
+    expect(written).toEqual([]);
+    off();
+    stop();
+  });
+
   it('takes the terminal id from the attach when the open named none', async () => {
     const stop = installTerminalSurface(stillConnection());
     let answer: (id: number) => void = () => {};

@@ -95,7 +95,15 @@ export function onScreen(listener: (view: TerminalViewMessage) => void): () => v
 /** Every output frame, from now, and the ones held for this mount. */
 export function onOutput(listener: (frame: TerminalOutput) => void): () => void {
   frames.add(listener);
-  if (pending.length > 0) {
+  if (needResync) {
+    // **A window that outgrew the buffer needs a repaint, not the tail that
+    // followed the drop**: the repaint carries the screen and the bytes, and
+    // the held tail would draw a fragment of it first.
+    needResync = false;
+    pending = [];
+    pendingBytes = 0;
+    void reattach();
+  } else if (pending.length > 0) {
     const held = pending;
     pending = [];
     pendingBytes = 0;
@@ -109,11 +117,6 @@ export function onOutput(listener: (frame: TerminalOutput) => void): () => void 
         console.warn('a terminal output listener threw', why);
       }
     }
-  } else if (needResync) {
-    // The window outgrew what a mount can catch up on by replaying bytes; a
-    // repaint is how the surface syncs again.
-    needResync = false;
-    void reattach();
   }
   return () => {
     frames.delete(listener);
