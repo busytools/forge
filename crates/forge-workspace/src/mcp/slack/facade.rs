@@ -683,8 +683,7 @@ impl ProdSlackFacade {
         parent: &SlackHistoryMessage,
         names: &HashMap<String, String>,
     ) -> Option<SlackThreadName> {
-        let author = if let Some(name) =
-            parent.bot_name.as_deref().filter(|name| !name.is_empty())
+        let author = if let Some(name) = parent.bot_name.as_deref().filter(|name| !name.is_empty())
         {
             // A bot names itself in the payload; that is its display name.
             name.to_owned()

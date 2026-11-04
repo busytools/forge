@@ -3741,7 +3741,10 @@ mod tests {
         let flat = flatten_mrkdwn(&multibyte, &names, 80);
         let excerpt = one_line_excerpt(&flat, 80);
         assert!(excerpt.ends_with("..."), "the glyph run is cut: {excerpt:?}");
-        assert!(excerpt.chars().count() <= 83, "the char bound holds on multibyte text: {excerpt:?}");
+        assert!(
+            excerpt.chars().count() <= 83,
+            "the char bound holds on multibyte text: {excerpt:?}"
+        );
         let kept = excerpt.strip_suffix("...").expect("the mark is there");
         assert!(
             flat.starts_with(kept) && !kept.ends_with(' '),
