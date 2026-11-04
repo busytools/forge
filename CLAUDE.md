@@ -999,6 +999,21 @@ inspected.
     `forge.toml` is half-shipped, and the settings page is where a person
     learns it exists at all.
 
+30. **Every design or UI change says what it does on every client forge ships,
+    and the review checks each one.** Ved, 2026-11-04: *"Every design or UI
+    change must say what it does on every client Forge ships, and the review
+    checks each one, not just the web layout."* The clients forge ships today
+    are the **desktop app** (the macOS bundle) and the **Android app** (the
+    release APK from `just client-android-release`), both built from the
+    shell in `client/src-tauri/` over the page in `client/src/`, and the
+    **web client** (that page staged by `just client-web-release` and served
+    from the web image). The change states its effect on each in the PR body
+    - a surface that is desktop-only, a control that is touch-only, a layout
+    only the web client draws - and the review checks each one rather than
+    judging the web layout alone. **The list moves in the same change that
+    adds or removes a client**: a stale list is how a new client ships
+    unconsidered.
+
 ## Claude Code worktree interop
 
 Non-guessable external conventions, recorded so forge does not reinvent
