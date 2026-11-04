@@ -5,9 +5,11 @@
 //! [`GotifyHost`](gotify::GotifyHost) port, implemented by
 //! forge-workspace, is the only workspace state, delivery or TLS-trust
 //! plumbing a connector may reach, so a connector stays stream +
-//! mapping and is testable offline. Two connectors exist today - Gotify
+//! mapping and is testable offline. Three connectors exist today - Gotify
 //! pushes through a host port, Slack is called by the workspace
-//! directly - so there is still deliberately no generic connector trait.
+//! directly, and Vaultwarden is an in-process HTTP client the vault family
+//! fronts - so there is still deliberately no generic connector trait.
 
 pub mod gotify;
 pub mod slack;
+pub mod vault;

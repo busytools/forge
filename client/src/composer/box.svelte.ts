@@ -85,6 +85,11 @@ export class Box {
    * terms: what tells a stand-down for THIS write from one for the next.
    */
   shownWrite: string | null = null;
+  /**
+   * The held vault call this box drew last, on [`shownDraft`]'s own terms:
+   * what tells a stand-down for THIS call from one for the next.
+   */
+  shownVault: string | null = null;
   /** The line the reader's own typing has dismissed, which the next take clears. */
   dismissed = $state<string | null>(null);
   /**

@@ -260,10 +260,17 @@ pub mod wire;
 /// draws the raw ts it always drew, so `baselines/socket/27/` is re-recorded
 /// in place rather than a v28 directory being cut.
 ///
+/// **v28 holds a vault call for the reader.** `respond_vault_ask` is a new
+/// command variant, and the vault family parks a call as a
+/// `vault_ask_pending` update with a `vault_ask_resolved` ending that a v27
+/// client has no vocabulary for: it would read the parked call as nothing,
+/// and the agent's call would wait on a dock nobody draws.
+/// `baselines/socket/28/` is the record a v28 server emitted.
+///
 /// **Additive fields do not bump.** `diff.base_error` is one, carried on the
 /// v16-era record: a client older than the field draws the vaguer line it
 /// always drew, and nothing it sends changes.
-pub const PROTOCOL_VERSION: u32 = 27;
+pub const PROTOCOL_VERSION: u32 = 28;
 
 /// The socket's keepalive: how often a connection is asked to prove it is
 /// still there, and how long it may stay silent before it is reaped.

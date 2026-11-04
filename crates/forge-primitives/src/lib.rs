@@ -93,6 +93,7 @@ pub mod tasks;
 pub mod token_usage;
 pub mod turn_error;
 pub mod usage;
+pub mod vault;
 pub mod wire;
 pub mod workers;
 

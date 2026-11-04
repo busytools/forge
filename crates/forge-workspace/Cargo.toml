@@ -50,6 +50,7 @@ tracing = { workspace = true }
 parking_lot = { workspace = true }
 dirs = { workspace = true }
 uuid = { workspace = true }
+zeroize = "1"
 reqwest = { workspace = true }
 # `process` for `getuid`, the uid component of the CLI's task-file path.
 rustix = { workspace = true, features = ["process"] }

@@ -580,6 +580,7 @@ pub enum PendingAskWire {
     BrowserHandOff(Value),
     DocumentHandOff(Value),
     SettingsWrite(Value),
+    Vault(Value),
 }
 
 impl From<&PendingAsk> for PendingAskWire {
@@ -604,6 +605,7 @@ impl From<&PendingAsk> for PendingAskWire {
             PendingAsk::SettingsWrite(ask) => {
                 Self::SettingsWrite(encode(serde_json::to_value(ask.as_ref())))
             }
+            PendingAsk::Vault(draft) => Self::Vault(encode(serde_json::to_value(draft.as_ref()))),
         }
     }
 }

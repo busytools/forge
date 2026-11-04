@@ -638,6 +638,12 @@ pub struct Workspace {
     /// facade over it. `None` keeps the systemone tools out of every
     /// session. Rebuilt by [`Workspace::reload_config`].
     pub(crate) systemone: parking_lot::RwLock<Option<Arc<forge_system_one::SystemOneClient>>>,
+    /// The `[vault]` credential session, built at boot when the section is
+    /// present; the family's tools are handed a facade over it. `None` keeps
+    /// the vault tools out of every session. Rebuilt by
+    /// [`Workspace::reload_config`] only when the section itself changed, so
+    /// an unrelated settings save never locks a live vault.
+    pub(crate) vault: parking_lot::RwLock<Option<Arc<crate::vault::VaultSession>>>,
     /// The per-seat voice service, built on first use: its sink and its note
     /// dispatch hold a `Weak<Workspace>`, which does not exist while the
     /// value is still being constructed.
@@ -1093,6 +1099,12 @@ pub struct Workspace {
     /// oneshot is answered.
     pub(crate) settings_writes:
         Mutex<HashMap<uuid::Uuid, crate::settings_ask::ParkedSettingsWrite>>,
+    /// Vault calls held for the reader's approval, keyed by the call's id and
+    /// carrying the session that asked. Its own registry for the same reason
+    /// the settings write's is: a held call exists on a seat with no domain,
+    /// and nothing reaches the vault until the blocked handler's oneshot is
+    /// answered.
+    pub(crate) parked_vault_asks: Mutex<HashMap<uuid::Uuid, crate::vault_ask::ParkedVaultAsk>>,
     /// How many asks have ever arrived for a seat. **The ask's identity on the
     /// wire**: one ask replacing another reads as a different ask, and
     /// answering one of several leaves the number where it was.
@@ -2368,6 +2380,16 @@ impl Workspace {
             &crate::config::forge_data_dir(&config_dir).join("forge.toml"),
         )?
         .map(Arc::new);
+        let vault = match config.vault.as_ref() {
+            Some(vault_config) => Some(Arc::new(
+                crate::vault::VaultSession::new(vault_config, app_support.as_deref(), &config_dir)
+                    .map_err(|error| WorkspaceError::ConfigInvalid {
+                        path: crate::config::forge_data_dir(&config_dir).join("forge.toml"),
+                        message: format!("[vault] {error}"),
+                    })?,
+            )),
+            None => None,
+        };
 
         // Catalog scan reads against the workspace's canonical
         // `config_dir` (where forge.toml lives). Each spawn binds to
@@ -2447,6 +2469,7 @@ impl Workspace {
             reload_generation: std::sync::atomic::AtomicU64::new(0),
             reload_gate: std::sync::Mutex::new(()),
             systemone: parking_lot::RwLock::new(systemone),
+            vault: parking_lot::RwLock::new(vault),
             voice: std::sync::OnceLock::new(),
             voice_preview_error: std::sync::Mutex::new(None),
             catalog,
@@ -2551,6 +2574,7 @@ impl Workspace {
             slack_drafts: Mutex::new(HashMap::new()),
             browser_handoffs: Mutex::new(HashMap::new()),
             settings_writes: Mutex::new(HashMap::new()),
+            parked_vault_asks: Mutex::new(HashMap::new()),
             pending_seq: Mutex::new(HashMap::new()),
             slack_recently_delivered: Mutex::new(HashMap::new()),
             slack_load_failed: std::sync::atomic::AtomicBool::new(slack_load_failed),
@@ -2630,6 +2654,26 @@ impl Workspace {
         let forge_toml = crate::config::forge_data_dir(&self.config_dir).join("forge.toml");
         let systemone =
             crate::systemone::client_for(next.systemone.as_ref(), &forge_toml)?.map(Arc::new);
+        // The vault session is rebuilt only when its own section changed: a
+        // config save that does not touch `[vault]` must not lock a live
+        // vault and make the next tool call ask for the master password.
+        let vault = match next.vault.as_ref() {
+            Some(vault_config) if self.config.read().vault.as_ref() == Some(vault_config) => {
+                self.vault.read().clone()
+            }
+            Some(vault_config) => Some(Arc::new(
+                crate::vault::VaultSession::new(
+                    vault_config,
+                    self.app_support.as_deref(),
+                    &self.config_dir,
+                )
+                .map_err(|error| WorkspaceError::ConfigInvalid {
+                    path: forge_toml.clone(),
+                    message: format!("[vault] {error}"),
+                })?,
+            )),
+            None => None,
+        };
 
         let previous = self.config.read().clone();
         let reload = previous.diff(&next);
@@ -2660,6 +2704,7 @@ impl Workspace {
                 self.gateway.set_rotation_numbers(next.gateway_rotation);
             }
             *self.systemone.write() = systemone;
+            *self.vault.write() = vault;
             *self.config.write() = Arc::new(next);
             self.reload_generation.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
         }
@@ -3629,9 +3674,12 @@ impl Workspace {
                     tasks: tasks_facade,
                     systemone: systemone_facade,
                     voice: self.voice_service(),
+                    vault: self.vault.read().as_ref().map(|_| {
+                        crate::mcp::vault::facade::ProdVaultFacade::from_arc(self).into_arc()
+                    }),
                 },
                 &families,
-                session_slot.clone(),
+                &session_slot,
                 session_kind,
             )
         };
@@ -6419,6 +6467,12 @@ impl Workspace {
                     });
                 }
             }
+            Command::RespondVaultAsk { key, id, .. } => {
+                let waiting = self.vault_ask_waiting(*id, key);
+                if !waiting {
+                    return Err(DispatchError::NoVaultAskWaiting { key: key.clone(), id: *id });
+                }
+            }
             _ => {}
         }
         if let Some(key) = cmd.key() {
@@ -6920,6 +6974,12 @@ impl Workspace {
                     let answered = self.resolve_settings_write(id, &key, approved);
                     if !answered {
                         return Err(DispatchError::NoSettingsWriteWaiting { key: key.clone(), id });
+                    }
+                }
+                Command::RespondVaultAsk { key, id, answer } => {
+                    let answered = self.resolve_vault_ask(id, &key, answer);
+                    if !answered {
+                        return Err(DispatchError::NoVaultAskWaiting { key: key.clone(), id });
                     }
                 }
                 Command::DictateCatalogueCheck => {
@@ -8054,6 +8114,9 @@ impl Workspace {
         // A parked write is not a prompt the gone session can answer, and a
         // reused label must not draw the previous occupant's edit on a dock.
         self.abandon_settings_writes(session_key);
+        // A parked vault call is the same shape: the blocked tool handler
+        // cannot be answered by a session that is gone.
+        self.abandon_vault_asks(session_key);
         // Anything parked for this session's owner was waiting on a
         // session that is now gone: fail the peer asks so their callers
         // are told, rather than letting them wait out the timeout.
@@ -8425,6 +8488,8 @@ impl Workspace {
             }));
         }
         asks.extend(self.settings_write_asks(slot));
+        let needs_unlock = self.vault.read().as_ref().is_some_and(|session| session.is_locked());
+        asks.extend(self.vault_asks(slot, needs_unlock));
         if let Some(domain) = self.domain_session_for(slot) {
             let guard = domain.lock();
             asks.extend(
@@ -8613,6 +8678,7 @@ impl Workspace {
             || self.has_browser_hand_off(slot)
             || self.has_document_handoff(slot)
             || self.has_settings_write(slot)
+            || self.has_vault_ask(slot)
         {
             L::Attention
         } else {
@@ -9845,10 +9911,10 @@ impl Workspace {
     }
 
     /// The extra document roots the seat's project declares: its
-    /// `vault_roots` entries, `~` expanded at load. Empty for a project
+    /// `document_roots` entries, `~` expanded at load. Empty for a project
     /// that declares none, and for a slot whose project is not loaded.
-    pub fn vault_roots_for_session(&self, session_key: &SessionSlot) -> Vec<PathBuf> {
-        self.project_for_slot(session_key).map(|project| project.vault_roots).unwrap_or_default()
+    pub fn document_roots_for_session(&self, session_key: &SessionSlot) -> Vec<PathBuf> {
+        self.project_for_slot(session_key).map(|project| project.document_roots).unwrap_or_default()
     }
 
     /// The cwd to pass `claude --resume` for the session at
@@ -11162,7 +11228,7 @@ mod account_stamp_tests {
             env_file: None,
             max_workers: None,
             permission_mode,
-            vault_roots: Vec::new(),
+            document_roots: Vec::new(),
             handoff: None,
             browser_profile: forge_primitives::browser::ProfileKey::of("Personal", "default")
                 .expect("a profile key"),
@@ -19628,6 +19694,7 @@ mod worker_respawn_tests {
                 gotify: crate::mcp::gotify::facade::ProdGotifyFacade::from_arc(workspace),
                 slack: crate::mcp::slack::facade::ProdSlackFacade::from_arc(workspace),
                 settings: crate::mcp::settings::facade::ProdSettingsFacade::from_arc(workspace),
+                vault: None,
                 tasks: crate::mcp::tasks::facade::ProdTasksFacade::from_arc(workspace),
                 voice: workspace.voice_service(),
                 systemone: workspace.systemone.read().as_ref().map(|client| {
@@ -19638,7 +19705,7 @@ mod worker_respawn_tests {
                 }),
             },
             &crate::mcp::McpFamily::all(),
-            SessionSlot::from_str_for_test("caller"),
+            &SessionSlot::from_str_for_test("caller"),
             kind,
         );
         let debug = format!("{server:?}");

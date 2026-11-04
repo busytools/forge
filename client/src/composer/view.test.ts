@@ -2,7 +2,13 @@ import { describe, expect, it } from 'vitest';
 
 import type { DictateWire } from '../wire/home';
 import { seatRead, take } from './testing';
-import { blocked, dictationOffered, draftEndingLine, settingsWriteEndingLine } from './view';
+import {
+  blocked,
+  dictationOffered,
+  draftEndingLine,
+  settingsWriteEndingLine,
+  vaultAskEndingLine,
+} from './view';
 import { composerFrom, NO_COMPOSER } from './wire';
 
 /** The home's dictate read, with whatever the test overrides. */
@@ -123,6 +129,30 @@ describe('the line a resolved config write leaves', () => {
 
   it('still says the write is gone for an ending this client is older than', () => {
     expect(settingsWriteEndingLine({ something_new: null }).text).toContain('no longer waiting');
+  });
+});
+
+/**
+ * The held vault call's ending shares the same wire shape again, and its line
+ * must name the call: a person who answered it from a second client is not
+ * told a config write happened.
+ */
+describe('the line a resolved vault call leaves', () => {
+  it('names the call and the ending', () => {
+    expect(vaultAskEndingLine('approved').text).toContain('approved from another view');
+    expect(vaultAskEndingLine('sent_back').text).toContain('sent back with a note');
+    expect(vaultAskEndingLine('declined').text).toContain('declined in another view');
+    expect(vaultAskEndingLine('abandoned').text).toContain("vault call's asking session");
+    for (const ending of ['approved', 'declined', undefined]) {
+      expect(vaultAskEndingLine(ending).text, 'never the Slack or config line').not.toContain(
+        'config write',
+      );
+      expect(vaultAskEndingLine(ending).text, 'never the Slack line').not.toContain('Slack');
+    }
+  });
+
+  it('still says the call is gone for an ending this client is older than', () => {
+    expect(vaultAskEndingLine({ something_new: null }).text).toContain('no longer waiting');
   });
 });
 

@@ -52,4 +52,16 @@ describe('the one field every surface uses', () => {
     expect(body, 'the error state still reaches it').toContain('aria-invalid="true"');
     expect(body, 'so does what explains it').toContain('aria-describedby="why"');
   });
+
+  it('masks a single-line box when its surface asks for a secret', () => {
+    // The vault card's master password: the box IS the value's whole
+    // protection on screen, so a surface that asked for a mask and got a text
+    // input would draw the credential in the clear.
+    const masked = draw({ element: 'input', type: 'password', placeholder: 'master password' });
+    expect(masked, 'the input carries the mask').toContain('type="password"');
+    expect(masked, 'and not the clear type').not.toContain('type="text"');
+
+    const plain = draw({ element: 'input' });
+    expect(plain, 'a box that asks for nothing is a text input').toContain('type="text"');
+  });
 });

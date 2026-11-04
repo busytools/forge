@@ -47,6 +47,7 @@
     pendingAsk,
     settingsWriteEndingLine,
     SIGN_IN_FALLBACK,
+    vaultAskEndingLine,
     type ComposerProps,
   } from './view';
   import {
@@ -335,7 +336,8 @@
       !(
         (ask.kind === 'slack_draft' ||
           ask.kind === 'browser_hand_off' ||
-          ask.kind === 'settings_write') &&
+          ask.kind === 'settings_write' ||
+          ask.kind === 'vault') &&
         box.answered === ask.request.id &&
         box.refusal === null
       )
@@ -380,6 +382,9 @@
     }
     if (held.kind === 'settings_write') {
       return { mark: 'settings', label: 'config write waiting', tone: 'att' as const };
+    }
+    if (held.kind === 'vault') {
+      return { mark: 'decide', label: 'vault waiting', tone: 'att' as const };
     }
     return { mark: 'bell', label: 'browser waiting', tone: 'att' as const };
   });
@@ -517,6 +522,18 @@
   });
 
   /**
+   * The held vault call this box is drawing, on the write's own terms: the
+   * record drops it from `pending_asks` on the same update that says it ended.
+   */
+  $effect(() => {
+    const held = ask;
+    if (held !== null && held.kind === 'vault') {
+      box.shownVault = held.request.id;
+      box.ended = null;
+    }
+  });
+
+  /**
    * A held write leaving the core, read on the draft's own terms: the ending
    * rides the update alone, and it is what tells a reader who did not answer
    * it what happened.
@@ -534,6 +551,27 @@
       if (id === null || id !== held.shownWrite) return;
       if (held.answered === id) return;
       held.ended = settingsWriteEndingLine(payload['ending']);
+    });
+  });
+
+  /**
+   * A held vault call leaving the core, read on the same terms: the ending
+   * rides the update alone, so a reader who did not answer it is told what
+   * became of the card they were looking at.
+   */
+  $effect(() => {
+    return connection.onMessage((message) => {
+      if (message.kind !== 'update') return;
+      const [name, payload] = variantOf(message.update);
+      if (name !== 'vault_ask_resolved') return;
+      const at = slotOf(message.update);
+      if (at === null) return;
+      const held = boxes.held(boxKey(at));
+      if (held === undefined) return;
+      const id = typeof payload['id'] === 'string' ? payload['id'] : null;
+      if (id === null || id !== held.shownVault) return;
+      if (held.answered === id) return;
+      held.ended = vaultAskEndingLine(payload['ending']);
     });
   });
 
@@ -989,6 +1027,10 @@
         return;
       }
       if (message.what === 'respond_settings_write') {
+        box.ended = { tone: 'warn', text: message.why };
+        return;
+      }
+      if (message.what === 'respond_vault_ask') {
         box.ended = { tone: 'warn', text: message.why };
         return;
       }
@@ -1618,6 +1660,7 @@
     }
     if (current.kind === 'browser_hand_off') return `handoff:${current.request.id}`;
     if (current.kind === 'settings_write') return `settings:${current.request.id}`;
+    if (current.kind === 'vault') return `vault:${current.request.id}`;
     return `slack:${current.request.id}`;
   }
 
@@ -1635,7 +1678,8 @@
       current.kind === 'slack_draft' ||
       current.kind === 'browser_hand_off' ||
       current.kind === 'document_hand_off' ||
-      current.kind === 'settings_write'
+      current.kind === 'settings_write' ||
+      current.kind === 'vault'
     ) {
       return current.request.id;
     }

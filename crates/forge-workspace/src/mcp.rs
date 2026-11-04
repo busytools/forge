@@ -24,6 +24,10 @@
 //!   enabled.
 //! - `voice` - `say`: one utterance spoken aloud to the person listening to
 //!   the seat. Renders as `mcp__forge__voice__say`.
+//! - `vault` - the Vaultwarden family: search, read with a reveal, create,
+//!   update, soft-delete and restore items, compute TOTP codes, move
+//!   attachments, and manage folders. Every call is held for the reader's
+//!   approval. Renders as `mcp__forge__vault__<name>`.
 //!
 //! Tool surface depends on the calling session's kind:
 //!
@@ -58,6 +62,7 @@ use crate::mcp::settings::facade::SettingsFacade;
 use crate::mcp::slack::facade::SlackFacade;
 use crate::mcp::systemone::facade::SystemOneFacade;
 use crate::mcp::tasks::facade::TasksFacade;
+use crate::mcp::vault::facade::VaultFacade;
 use crate::mcp::workers::facade::WorkerFacade;
 
 pub mod agents;
@@ -75,6 +80,7 @@ pub mod systemone;
 pub mod tasks;
 #[cfg(test)]
 pub(crate) mod test_support;
+pub mod vault;
 pub mod voice;
 pub mod workers;
 
@@ -101,11 +107,12 @@ pub enum McpFamily {
     Slack,
     Systemone,
     Voice,
+    Vault,
 }
 
 impl McpFamily {
     /// Every toggleable family, in wire order.
-    pub const ALL: [McpFamily; 7] = [
+    pub const ALL: [McpFamily; 8] = [
         McpFamily::Review,
         McpFamily::Cron,
         McpFamily::Tasks,
@@ -113,6 +120,7 @@ impl McpFamily {
         McpFamily::Slack,
         McpFamily::Systemone,
         McpFamily::Voice,
+        McpFamily::Vault,
     ];
 
     /// The default set: a worker whose row names none gets everything.
@@ -130,6 +138,7 @@ impl McpFamily {
             McpFamily::Slack => "slack",
             McpFamily::Systemone => "systemone",
             McpFamily::Voice => "voice",
+            McpFamily::Vault => "vault",
         }
     }
 
@@ -268,6 +277,10 @@ pub(crate) fn withheld_family_lines(families: &BTreeSet<McpFamily>) -> Vec<&'sta
                 "This session has no `voice__*` tools. The person listening cannot hear this \
                  session; put anything they should know in your message to your lead."
             }
+            McpFamily::Vault => {
+                "This session has no `vault__*` tools. Credentials in the vault are not \
+                 reachable from this session; ask your lead to read or change them."
+            }
         })
         .collect()
 }
@@ -287,6 +300,10 @@ pub struct ForgeServerFacades {
     pub tasks: Arc<dyn TasksFacade>,
     pub systemone: Option<Arc<dyn SystemOneFacade>>,
     pub voice: Arc<crate::voice::VoiceService>,
+    /// The vault family's facade, `None` when `[vault]` is absent. The tools
+    /// are doubly gated like systemone's: the family must be selected and a
+    /// session must exist.
+    pub vault: Option<Arc<dyn VaultFacade>>,
 }
 
 /// Build the per-session `forge` MCP server. ONE McpServer named
@@ -326,7 +343,7 @@ pub struct ForgeServerFacades {
 pub fn build_forge_server(
     facades: ForgeServerFacades,
     families: &BTreeSet<McpFamily>,
-    slot: SessionSlot,
+    slot: &SessionSlot,
     kind: SessionKind,
 ) -> McpServer {
     let ForgeServerFacades {
@@ -342,6 +359,7 @@ pub fn build_forge_server(
         tasks,
         systemone,
         voice,
+        vault,
     } = facades;
     let mut builder = McpServerBuilder::new("forge", env!("CARGO_PKG_VERSION"));
     let dispatcher = Arc::new(AgentDispatcher::new(workspace, worker.clone()));
@@ -390,7 +408,14 @@ pub fn build_forge_server(
     // Doubly gated like `systemone`: a switched-off `[tts]` leaves no tool a
     // session could try, even when the family is selected.
     if families.contains(&McpFamily::Voice) && voice.enabled() {
-        builder = voice::add_tools(builder, voice, slot);
+        builder = voice::add_tools(builder, voice, slot.clone());
+    }
+    // Doubly gated like `systemone`: an absent `[vault]` leaves no tool a
+    // session could try, even when the family is selected.
+    if families.contains(&McpFamily::Vault)
+        && let Some(vault) = vault
+    {
+        builder = vault::add_tools(builder, &vault, slot);
     }
     builder.instructions(TASK_BOARD_INSTRUCTIONS).build()
 }
@@ -637,9 +662,10 @@ mod tests {
                 tasks: MockTasksFacade::new().into_arc(),
                 systemone: systemone_facade,
                 voice: silent_voice(),
+                vault: Some(crate::mcp::vault::facade::MockVaultFacade::new().into_arc()),
             },
             families,
-            fake_key("test"),
+            &fake_key("test"),
             kind,
         )
     }
@@ -693,7 +719,7 @@ mod tests {
     /// manage their own project's reviews, crons, tasks, subscriptions and
     /// decisions. The browser's own names are read off its table instead -
     /// one list per family, so a tool added there cannot leave this behind.
-    const ANY_CALLER_TOOLS: [&str; 39] = [
+    const ANY_CALLER_TOOLS: [&str; 52] = [
         "review__list",
         "review__get",
         "review__reply",
@@ -733,6 +759,19 @@ mod tests {
         "systemone__ask_choice",
         "systemone__ask_score",
         "voice__say",
+        "vault__search",
+        "vault__get",
+        "vault__create",
+        "vault__update",
+        "vault__trash",
+        "vault__restore",
+        "vault__totp_code",
+        "vault__attachment_get",
+        "vault__attachment_put",
+        "vault__folder_list",
+        "vault__folder_create",
+        "vault__folder_update",
+        "vault__folder_delete",
     ];
 
     #[test]
@@ -904,9 +943,10 @@ mod tests {
                     tasks: MockTasksFacade::new().into_arc(),
                     systemone: None,
                     voice: silent_voice(),
+                    vault: None,
                 },
                 &families,
-                fake_key("test"),
+                &fake_key("test"),
                 SessionKind::Worker,
             );
             let answer = server
@@ -1001,6 +1041,7 @@ mod tests {
                 "This session has no `slack__*` tools. Channel reads and posts go through your lead.",
                 "This session has no `systemone__*` decision tools. When a decision is material and not obvious, route it to your lead instead of guessing.",
                 "This session has no `voice__*` tools. The person listening cannot hear this session; put anything they should know in your message to your lead.",
+                "This session has no `vault__*` tools. Credentials in the vault are not reachable from this session; ask your lead to read or change them.",
             ],
         );
 

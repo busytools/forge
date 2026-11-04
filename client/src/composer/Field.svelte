@@ -18,6 +18,7 @@
     value = $bindable(),
     placeholder,
     element = 'textarea',
+    type = 'text',
     class: className = '',
     aria = {},
     rows,
@@ -32,6 +33,8 @@
     value: string;
     placeholder?: string;
     element?: 'textarea' | 'input';
+    /** A single-line box's input type, for a field whose value is a secret. */
+    type?: 'text' | 'password' | undefined;
     class?: string;
     aria?: {
       controls?: string | undefined;
@@ -71,7 +74,7 @@
   <input
     class={className}
     data-editor={editor}
-    type="text"
+    {type}
     {placeholder}
     {id}
     {name}

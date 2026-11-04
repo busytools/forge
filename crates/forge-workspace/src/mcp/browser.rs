@@ -423,12 +423,13 @@ mod tests {
                 gotify: MockGotifyFacade::new().into_arc(),
                 slack: MockSlackFacade::new().into_arc(),
                 settings: crate::mcp::settings::facade::ProdSettingsFacade::from_arc(&workspace),
+                vault: None,
                 tasks: MockTasksFacade::new().into_arc(),
                 systemone: None,
                 voice: workspace.voice_service(),
             },
             &crate::mcp::McpFamily::all(),
-            seat(),
+            &seat(),
             crate::mcp::SessionKind::Worker,
         );
 
