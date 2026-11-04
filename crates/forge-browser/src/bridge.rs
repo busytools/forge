@@ -296,8 +296,10 @@ mod tests {
     }
 
     /// **Two popups from one opener bind two channels and route by their own
-    /// handle**, and closing one leaves the other addressable. The live rig
-    /// for this is ignored on a CEF timeout, so the routing guard lives here.
+    /// handle**, and closing one leaves the other addressable. There is no
+    /// live rig: a second bridged start while a popup is live times out CEF's
+    /// browser-info response (measured locally and in CI, `has_rfh=0`), so the
+    /// routing guard lives here until the engine makes a second start safe.
     #[test]
     fn two_channels_from_one_opener_route_independently() {
         let mut channels = Channels::default();
