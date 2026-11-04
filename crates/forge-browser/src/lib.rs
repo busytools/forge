@@ -6,6 +6,7 @@
 //! the server never links CEF into its own process and nothing here needs
 //! the client installed.
 
+pub mod bridge;
 #[cfg(unix)]
 pub mod channel;
 pub mod control;
@@ -18,6 +19,8 @@ pub mod tabs;
 
 #[cfg(target_os = "macos")]
 pub mod audio;
+#[cfg(target_os = "macos")]
+pub(crate) mod bridge_renderer;
 #[cfg(target_os = "macos")]
 pub(crate) mod challenge;
 #[cfg(target_os = "macos")]
