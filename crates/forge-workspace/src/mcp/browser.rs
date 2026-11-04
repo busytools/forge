@@ -141,11 +141,25 @@ impl BrowserTool {
             );
         }
         let tab = match args.get("tab") {
-            Some(Value::String(tab)) if !tab.trim().is_empty() => tab.trim(),
+            Some(Value::String(tab)) if !tab.trim().is_empty() => {
+                let tab = tab.trim();
+                if !is_page_id(tab) {
+                    return Err(format!(
+                        "browser_hand_off needs `tab` as the page id browser_tabs prints first \
+                         in its row: exactly 32 hex characters, not '{tab}'. If your tool list \
+                         shows `tab` as a number, only a fresh session in this slot refreshes it."
+                    ));
+                }
+                tab
+            }
             Some(Value::String(_)) => return Err("a page id cannot be blank".to_owned()),
             Some(_) => {
                 return Err(
-                    "browser_hand_off needs `tab` as a page id string, not a number".to_owned()
+                    "browser_hand_off needs `tab` as a page id string, not a number. If your \
+                     tool list shows `tab` as a number it was recorded before forge addressed \
+                     tabs by page id: a forge restart does not refresh it, and only a fresh \
+                     session in this slot picks up the current schema."
+                        .to_owned(),
                 );
             }
             None => {
@@ -181,6 +195,14 @@ impl BrowserTool {
     }
 }
 
+/// A page id as `browser_tabs` prints it: the page's CDP target, 32 hex
+/// characters. A stale seat's numeric schema has produced a digit run instead
+/// (`DD241...` arrived as `241`), so anything of another shape is refused
+/// before it can name a page.
+fn is_page_id(tab: &str) -> bool {
+    tab.len() == 32 && tab.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
 /// What a host's answer becomes on the tool's way back: one content block per
 /// part, in order.
 fn parts_output(parts: Vec<BrowserPart>) -> ToolOutput {
@@ -205,6 +227,10 @@ mod tests {
     fn seat() -> SessionSlot {
         SessionSlot::from_str_for_test("caller")
     }
+
+    /// A page id the way `browser_tabs` prints one - the CDP target, 32 hex
+    /// characters. A short stand-in would now be refused by the shape check.
+    const PAGE_ID: &str = "0123456789ABCDEF0123456789ABCDEF";
 
     /// Every tool name the server registered, read off its debug listing.
     fn names(facade: Arc<dyn BrowserFacade>) -> Vec<String> {
@@ -467,7 +493,7 @@ mod tests {
         };
 
         let out = tool
-            .call(ToolInput { value: json!({ "reason": "solve the CAPTCHA", "tab": "T3" }) })
+            .call(ToolInput { value: json!({ "reason": "solve the CAPTCHA", "tab": PAGE_ID }) })
             .await;
 
         assert!(!out.is_error, "{:?}", out.blocks);
@@ -477,7 +503,7 @@ mod tests {
         );
         assert_eq!(
             mock.hand_offs.lock().as_slice(),
-            [("solve the CAPTCHA".to_owned(), "T3".to_owned())],
+            [("solve the CAPTCHA".to_owned(), PAGE_ID.to_owned())],
             "the reason and the tab cross to the park verbatim",
         );
         let text = crate::mcp::test_support::block_text(&out.blocks[0]);
@@ -496,7 +522,8 @@ mod tests {
             slot: seat(),
         };
 
-        let out = tool.call(ToolInput { value: json!({ "reason": "sign in", "tab": "T2" }) }).await;
+        let out =
+            tool.call(ToolInput { value: json!({ "reason": "sign in", "tab": PAGE_ID }) }).await;
 
         assert!(out.is_error, "{:?}", out.blocks);
         let text = crate::mcp::test_support::block_text(&out.blocks[0]);
@@ -517,7 +544,8 @@ mod tests {
             slot: seat(),
         };
 
-        let out = tool.call(ToolInput { value: json!({ "reason": "sign in", "tab": "T2" }) }).await;
+        let out =
+            tool.call(ToolInput { value: json!({ "reason": "sign in", "tab": PAGE_ID }) }).await;
 
         assert!(!out.is_error, "{:?}", out.blocks);
         let text = crate::mcp::test_support::block_text(&out.blocks[0]);
@@ -578,6 +606,56 @@ mod tests {
         assert!(mock.hand_offs.lock().is_empty(), "and nothing was parked");
     }
 
+    /// **A stale seat's numeric tab fails by name, with its recovery.** A
+    /// resumed session's tool list is the one recorded in its transcript,
+    /// where `tab` was a number; under it a model has sent the digit run
+    /// inside a page id (`DD241...` became `241`). The refusal must not take
+    /// the number for a page, and only a fresh session refreshes the list.
+    #[tokio::test]
+    async fn a_stale_numeric_tab_fails_by_name_and_names_the_fresh_session() {
+        let mock = Arc::new(MockBrowserFacade::new());
+        let tool = BrowserTool {
+            spec: spec_named("browser_hand_off"),
+            facade: Arc::clone(&mock) as Arc<dyn BrowserFacade>,
+            slot: seat(),
+        };
+
+        let out = tool.call(ToolInput { value: json!({ "reason": "look", "tab": 241 }) }).await;
+
+        assert!(out.is_error, "{:?}", out.blocks);
+        let text = crate::mcp::test_support::block_text(&out.blocks[0]);
+        assert!(text.contains("page id string"), "{text}");
+        assert!(text.contains("not a number"), "{text}");
+        assert!(text.contains("fresh session in this slot"), "{text}");
+        assert!(mock.hand_offs.lock().is_empty(), "and nothing was parked");
+    }
+
+    /// **A tab that is not a page id is refused, not looked up.** The same
+    /// stale schema drove a model to send a digit run; a value of another
+    /// shape - short, long or non-hex - must fail before any tab is searched
+    /// or parked, and its refusal names the fresh-session recovery.
+    #[tokio::test]
+    async fn a_tab_that_is_not_a_page_id_is_refused_by_name() {
+        let mock = Arc::new(MockBrowserFacade::new());
+        let tool = BrowserTool {
+            spec: spec_named("browser_hand_off"),
+            facade: Arc::clone(&mock) as Arc<dyn BrowserFacade>,
+            slot: seat(),
+        };
+
+        let long = format!("{PAGE_ID}0");
+        let non_hex = format!("ZZ{}", &PAGE_ID[2..]);
+        for tab in ["241", &PAGE_ID[..31], long.as_str(), non_hex.as_str()] {
+            let out = tool.call(ToolInput { value: json!({ "reason": "look", "tab": tab }) }).await;
+            assert!(out.is_error, "{tab}: {:?}", out.blocks);
+            let text = crate::mcp::test_support::block_text(&out.blocks[0]);
+            assert!(text.contains("32 hex"), "{tab}: {text}");
+            assert!(text.contains(tab), "the refused value is named: {tab}: {text}");
+            assert!(text.contains("fresh session in this slot"), "{tab}: {text}");
+        }
+        assert!(mock.hand_offs.lock().is_empty(), "and nothing was parked");
+    }
+
     /// **A page id is trimmed before it parks.** A listing an agent copied
     /// with a stray space must not send the person to a page nobody named.
     #[tokio::test]
@@ -589,13 +667,16 @@ mod tests {
             slot: seat(),
         };
 
-        let out =
-            tool.call(ToolInput { value: json!({ "reason": "sign in", "tab": " T1 " }) }).await;
+        let out = tool
+            .call(ToolInput {
+                value: json!({ "reason": "sign in", "tab": format!(" {PAGE_ID} ") }),
+            })
+            .await;
 
         assert!(!out.is_error, "{:?}", out.blocks);
         assert_eq!(
             mock.hand_offs.lock().as_slice(),
-            [("sign in".to_owned(), "T1".to_owned())],
+            [("sign in".to_owned(), PAGE_ID.to_owned())],
             "the trimmed id is what parks",
         );
     }
@@ -611,7 +692,7 @@ mod tests {
             slot: seat(),
         };
 
-        let out = tool.call(ToolInput { value: json!({ "reason": "   ", "tab": "T2" }) }).await;
+        let out = tool.call(ToolInput { value: json!({ "reason": "   ", "tab": PAGE_ID }) }).await;
 
         assert!(out.is_error, "{:?}", out.blocks);
         let text = crate::mcp::test_support::block_text(&out.blocks[0]);
@@ -650,7 +731,8 @@ mod tests {
             slot: seat(),
         };
 
-        let out = tool.call(ToolInput { value: json!({ "reason": "sign in", "tab": "T2" }) }).await;
+        let out =
+            tool.call(ToolInput { value: json!({ "reason": "sign in", "tab": PAGE_ID }) }).await;
 
         assert!(out.is_error, "{:?}", out.blocks);
         let text = crate::mcp::test_support::block_text(&out.blocks[0]);
