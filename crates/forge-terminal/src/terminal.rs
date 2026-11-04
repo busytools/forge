@@ -531,6 +531,29 @@ fn read_loop(
             // would spin on the hung-up fd; end the terminal and kill what
             // still ran on it.
             inner.close();
+            // **The hangup is how a shell's exit first shows on Linux.** The
+            // SIGCHLD can land a moment after the hangup, so the reap is
+            // waited for and the shell's own code is kept; a child the kill
+            // ended reports its signal instead.
+            let deadline = Instant::now() + Duration::from_millis(200);
+            loop {
+                if let Some(ChildEvent::Exited(status)) = pty.next_child_event() {
+                    let exit = status
+                        .map(|status| Exit { code: status.code(), signal: exit_signal(status) });
+                    *inner.shell_exit.lock() = exit;
+                    tracing::debug!(
+                        event_name = "terminal_exited",
+                        pid = inner.child_pid,
+                        exit = ?exit,
+                        "a terminal's shell exited"
+                    );
+                    break;
+                }
+                if Instant::now() >= deadline {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
             break;
         }
     }
