@@ -339,8 +339,8 @@ variant's own name rather than on `kind`:
 }
 ```
 
-A command's variant is its name around its field bag - `Command` has 63
-variants, 57 of them struct variants; the six unit variants,
+A command's variant is its name around its field bag - `Command` has 64
+variants, 58 of them struct variants; the six unit variants,
 `dictate_catalogue_check`, `dictate_bench_stop`, `voice_bench_start`,
 `voice_bench_stop`, `plugin_update_all` and `plugin_check_updates`, cross as
 the name alone. An update is the same
