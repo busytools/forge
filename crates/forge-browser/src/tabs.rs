@@ -365,6 +365,7 @@ impl TabRegistry {
                 title: tab.title.clone(),
                 url: tab.url.clone(),
                 owner: tab.owner.clone(),
+                opener: tab.opener,
                 state: if held.contains(number) {
                     BrowserTabState::Held
                 } else if tab.busy || controlled.contains(number) {

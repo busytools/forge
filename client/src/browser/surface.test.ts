@@ -28,7 +28,7 @@ vi.mock('./link', () => ({
   usesPageHistory: vi.fn(() => false),
 }));
 
-import type { BrowserTabList } from '../protocol';
+import type { BrowserTabList, BrowserTabRow } from '../protocol';
 import {
   canAttach,
   drawsSurface,
@@ -36,6 +36,7 @@ import {
   listTabs,
   onConnection,
   onFailed,
+  onTabs,
   onView,
   reattachesOnReconnect,
   resizeBrowser,
@@ -97,15 +98,17 @@ beforeEach(() => {
 interface Pushes {
   failed: (payload: unknown) => void;
   view: (state: Record<string, unknown>) => void;
+  tabs: (list: BrowserTabList) => void;
 }
 
 /**
- * Install the surface's listeners over the mocked link, handing back the two
- * the server's failures and its `browser_view` push arrive on. A suite is
- * installed once per link, so the previous one is released first.
+ * Install the surface's listeners over the mocked link, handing back the
+ * pushes the server's failures, its `browser_view` and its tab list arrive
+ * on. A suite is installed once per link, so the previous one is released
+ * first.
  */
 async function pushes(): Promise<Pushes> {
-  const seen: Pushes = { failed: () => {}, view: () => {} };
+  const seen: Pushes = { failed: () => {}, view: () => {}, tabs: () => {} };
   vi.mocked(onFailed).mockImplementation((fn) => {
     seen.failed = fn;
     return Promise.resolve(() => {});
@@ -114,9 +117,38 @@ async function pushes(): Promise<Pushes> {
     seen.view = fn;
     return Promise.resolve(() => {});
   });
+  vi.mocked(onTabs).mockImplementation((fn) => {
+    seen.tabs = fn;
+    return Promise.resolve(() => {});
+  });
   uninstallBrowser();
   await installSurfaceEvents();
   return seen;
+}
+
+/** One tab row a pushed list can carry. */
+function row(over: Partial<BrowserTabRow> & { number: number }): BrowserTabRow {
+  return {
+    number: over.number,
+    title: over.title ?? `tab ${over.number}`,
+    url: over.url ?? `https://tab-${over.number}.test/`,
+    owner: over.owner ?? { org: 'Busytools', project: 'forge', label: 'lead' },
+    opener: over.opener ?? null,
+    state: over.state ?? 'idle',
+    dialog: over.dialog ?? null,
+  };
+}
+
+/** One pushed tab list. */
+function list(rows: BrowserTabRow[]): BrowserTabList {
+  return {
+    profile: 'hunt',
+    id: 1,
+    up: true,
+    connected: true,
+    closing_at_ms: null,
+    rows,
+  };
 }
 
 describe('the browser surface', () => {
@@ -743,5 +775,67 @@ describe('the browser surface', () => {
     expect(await closeSurface()).toBe('the browser host is gone');
     expect(surface.phase).toBe('failed');
     expect(surface.reason).toBe('the browser host is gone');
+  });
+
+  /// **A popup born from the tab this surface shows moves it.** The platform
+  /// puts the popup in front of its opener, and the person must see the
+  /// sign-in without hunting the strip. The ask is not touched.
+  it('follows a popup opened from the tab it is showing', async () => {
+    const seat = { org: 'Busytools', project: 'forge', label: 'lead' };
+    show.mockResolvedValueOnce({ profile: 'hunt', tab: 2 });
+    await openSurface('hunt', seat, 2);
+    const seen = await pushes();
+    // **The list the landing re-reads is the list the push carries**, or the
+    // mocked read empties the picker under the follow.
+    const both = list([row({ number: 2 }), row({ number: 5, opener: 2 })]);
+    tabs.mockResolvedValue(both);
+    show.mockResolvedValueOnce({ profile: 'hunt', tab: 5 });
+    seen.tabs(both);
+    await vi.waitFor(() => expect(surface.tab).toBe(5));
+    expect(show).toHaveBeenLastCalledWith('hunt', seat, 5);
+  });
+
+  /// **A popup that closed hands the surface back to the tab that opened
+  /// it**, and the failure for the closed tab does not fail the page it
+  /// handed back to: the row removal is the signal, the failure is stale.
+  it('hands back to the opener when the popup it shows closes', async () => {
+    const seat = { org: 'Busytools', project: 'forge', label: 'lead' };
+    show.mockResolvedValueOnce({ profile: 'hunt', tab: 2 });
+    await openSurface('hunt', seat, 2);
+    const seen = await pushes();
+    // **The view push names the profile and tab a failure is checked against.**
+    seen.view({ id: 1, tab: 2, profile: 'hunt', viewer: 7, controller: null });
+    const both = list([row({ number: 2 }), row({ number: 5, opener: 2 })]);
+    tabs.mockResolvedValue(both);
+    show.mockResolvedValueOnce({ profile: 'hunt', tab: 5 });
+    seen.tabs(both);
+    await vi.waitFor(() => expect(surface.tab).toBe(5));
+
+    const closed = list([row({ number: 2 })]);
+    tabs.mockResolvedValue(closed);
+    show.mockResolvedValueOnce({ profile: 'hunt', tab: 2 });
+    seen.tabs(closed);
+    await vi.waitFor(() => expect(surface.tab).toBe(2));
+    expect(show).toHaveBeenLastCalledWith('hunt', seat, 2);
+
+    seen.failed({ id: 1, tab: 5, reason: 'tab 5 was closed' });
+    expect(surface.phase, 'a failure for the closed popup is another pair').toBe('live');
+  });
+
+  /// **A failure while both tabs are open is drawn**, never mistaken for a
+  /// hand-back: only a row removal moves the surface.
+  it('draws a failure for the shown popup while its opener is still open', async () => {
+    const seat = { org: 'Busytools', project: 'forge', label: 'lead' };
+    show.mockResolvedValueOnce({ profile: 'hunt', tab: 2 });
+    await openSurface('hunt', seat, 2);
+    const seen = await pushes();
+    const both = list([row({ number: 2 }), row({ number: 5, opener: 2 })]);
+    tabs.mockResolvedValue(both);
+    show.mockResolvedValueOnce({ profile: 'hunt', tab: 5 });
+    seen.tabs(both);
+    await vi.waitFor(() => expect(surface.tab).toBe(5));
+    seen.failed({ id: 1, tab: 5, reason: 'the browser driver stopped answering' });
+    expect(surface.phase).toBe('failed');
+    expect(surface.reason).toBe('the browser driver stopped answering');
   });
 });

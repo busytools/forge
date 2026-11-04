@@ -4984,7 +4984,6 @@ impl Profile {
                         );
                         if let Some(profile) = profile.upgrade() {
                             profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).close(tab);
-                            profile.forget_tab(tab);
                             // **A dialog dies with its page**, so the tab's
                             // hold goes with it rather than outliving the
                             // number the host will never hand out again.
@@ -4993,13 +4992,19 @@ impl Profile {
                                 .lock()
                                 .unwrap_or_else(PoisonError::into_inner)
                                 .remove(&tab);
-                            // **The strip hears it now**, not at the next
-                            // call: a popup that closes itself, or a tab the
-                            // host gave up, has no call behind it, and a row
-                            // left drawn points at a tab nothing runs.
+                            // **The strip hears it before the viewer hears
+                            // the tab closed.** A surface showing a popup
+                            // hands back to its opener from this row removal;
+                            // publishing it after the per-tab senders drop
+                            // would race that hand-back against a failure for
+                            // the same tab, and the failure wins the screen.
+                            // A popup that closes itself, or a tab the host
+                            // gave up, has no call behind it, so this push is
+                            // the only thing that moves the strip.
                             profile.rows.send_modify(|list| {
                                 list.rows.retain(|row| row.number != tab);
                             });
+                            profile.forget_tab(tab);
                         }
                         let _ = tab_sender.send((generation, HostEvent::TabClosed { tab }));
                     }

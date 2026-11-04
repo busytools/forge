@@ -1022,6 +1022,7 @@ mod tests {
                 title: "portal".to_owned(),
                 url: "https://x/".to_owned(),
                 owner: SessionSlot::worker("TestOrg", "proj", "w"),
+                opener: None,
                 state: forge_primitives::browser::BrowserTabState::InUse,
                 dialog: Some(forge_primitives::browser::BrowserTabDialog {
                     kind: "confirm".to_owned(),

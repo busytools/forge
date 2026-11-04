@@ -1275,6 +1275,7 @@ fn frames_record() -> Value {
                 title: "portal".to_owned(),
                 url: "https://x/".to_owned(),
                 owner: seat.clone(),
+                opener: None,
                 state: forge_primitives::browser::BrowserTabState::InUse,
                 dialog: None,
             }],

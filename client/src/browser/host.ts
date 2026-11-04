@@ -162,6 +162,7 @@ function tabRowOf(value: unknown): BrowserTabList['rows'][number] {
   const url = row['url'];
   const state = row['state'];
   const owner = row['owner'];
+  const opener = row['opener'];
   if (typeof number !== 'number' || !Number.isInteger(number)) {
     throw new Error('a tab row names no number');
   }
@@ -170,6 +171,11 @@ function tabRowOf(value: unknown): BrowserTabList['rows'][number] {
   }
   if (typeof state !== 'string') {
     throw new Error(`tab ${number} names no state`);
+  }
+  // **A popup names the tab that opened it**, or null; the surface follows it
+  // in and hands back on that number.
+  if (opener !== null && typeof opener !== 'number') {
+    throw new Error(`tab ${number} names no readable opener`);
   }
   if (typeof owner !== 'object' || owner === null) {
     throw new Error(`tab ${number} names no owner`);
@@ -199,6 +205,7 @@ function tabRowOf(value: unknown): BrowserTabList['rows'][number] {
     title,
     url,
     owner: { org: slot['org'], project: slot['project'], label: slot['label'] },
+    opener,
     state,
     dialog,
   };
