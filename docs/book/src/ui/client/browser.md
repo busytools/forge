@@ -106,7 +106,8 @@ so its address cannot be preceded by a blank. The host starts the address the
 popup asked for as that first document; the veto patches that document's world
 as soon as its context is reported, which is the out-of-band case a tab
 another client creates directly at a URL is already in. A cross-origin popup
-does not need this: the host creates its browser at the address itself.
+does not need this: the host creates a browser of its own and starts the
+address once the bridge role is in place.
 
 **The browser offers no WebAuthn**: its pages expose no `PublicKeyCredential`,
 so passkey and security-key sign-in stop working and a site that checks for the
