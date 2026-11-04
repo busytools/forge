@@ -16,6 +16,9 @@
 
 import { SvelteMap } from 'svelte/reactivity';
 
+/** How many pairings are kept; one short string per fired prompt, and nothing pruned them. */
+const MAX_NAMES = 500;
+
 class CronNames {
   #byUuid = new SvelteMap<string, string>();
 
@@ -29,6 +32,12 @@ class CronNames {
     if (typeof uuid !== 'string' || uuid === '') return;
     if (typeof description !== 'string' || description.trim() === '') return;
     this.#byUuid.set(uuid, description);
+    // Insertion order is the age order, so the oldest pairings go first.
+    while (this.#byUuid.size > MAX_NAMES) {
+      const oldest = this.#byUuid.keys().next();
+      if (oldest.done === true) break;
+      this.#byUuid.delete(oldest.value);
+    }
   }
 
   /** The schedule a delivered prompt came from, or `null` for one never seen. */
