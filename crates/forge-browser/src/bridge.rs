@@ -62,7 +62,9 @@ impl Channels {
 
     /// Whether the opener document already minted this handle. **A page
     /// reusing one of its own handles is refused**, so a later message cannot
-    /// land on an earlier popup.
+    /// land on an earlier popup. Only the host's admission asks, and the test
+    /// build on a platform with no host would call it dead.
+    #[cfg(target_os = "macos")]
     pub(crate) fn handle_taken(&self, opener: u16, handle: &str) -> bool {
         self.handles.contains_key(&(opener, handle.to_owned()))
     }
