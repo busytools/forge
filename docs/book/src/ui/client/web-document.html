@@ -110,16 +110,17 @@
       .doc-page::-webkit-scrollbar-thumb:active {
         background: var(--muted);
       }
-      /* the sheet fills the route: prose keeps a readable measure of its own,
-         code and tables take the width the desk has */
+      /* the sheet is a centred reading column about 88 characters wide; the
+         page background stays the window's. prose keeps a readable measure of
+         its own, code and tables take the sheet's content width */
       .doc-body {
-        max-width: none;
-        margin: 0;
+        max-width: 88ch;
+        margin-inline: auto;
         container-type: inline-size;
         background: var(--s1);
         border: 1px solid var(--line);
         border-radius: 10px;
-        padding: 52px 60px 44px;
+        padding: 46px 48px 40px;
       }
       .doc-body :is(h1, h2, h3, p, li, blockquote) {
         max-width: 76ch;
@@ -128,8 +129,8 @@
         max-width: none;
       }
       /* a readable markdown or text document: every top-level block is a
-         comment target with a source-line gutter beside it - the block under
-         the pointer is marked, and a gutter number comments on its line */
+         comment target with a `+` on its own line - the block or the `+`
+         under the pointer is marked, and the `+` comments on its line */
       .doc-blocks {
         font-size: var(--fs-base);
       }
@@ -137,44 +138,45 @@
         position: relative;
         border-radius: 6px;
         cursor: pointer;
-        display: grid;
-        grid-template-columns: 3.4rem minmax(0, 1fr);
-        column-gap: 10px;
         padding: 0 10px 0 0;
         margin: 0 -10px 0 0;
       }
       .doc-block:hover,
-      .doc-block.target {
-        background: var(--s1);
-        box-shadow: inset 2px 0 0 var(--accent);
-      }
-      /* the gutter: one numbered target per source line the block spans */
-      .doc-lines {
-        display: flex;
-        flex-direction: column;
-        align-items: stretch;
-        border-right: 1px solid var(--line);
-        padding-right: 4px;
-      }
-      .doc-lnum {
-        font-family: var(--mono);
-        font-size: var(--fs-label);
-        color: var(--dim);
-        background: none;
-        border: 0;
-        border-radius: 4px;
-        padding: 0 4px;
-        cursor: pointer;
-        text-align: right;
-        flex: 1 1 0;
-        min-height: 1.5em;
-        line-height: 1.5;
-      }
-      .doc-lnum:hover,
-      .doc-lnum.target {
-        color: var(--text);
+      .doc-block.target,
+      .doc-block:focus-within {
         background: var(--s2);
         box-shadow: inset 2px 0 0 var(--accent);
+      }
+      /* the `+`: the line-level target, drawn on hover or focus and always on
+         a finger-driven surface */
+      .doc-add {
+        position: absolute;
+        left: -2.2rem;
+        top: 0.2rem;
+        width: 1.5rem;
+        height: 1.5rem;
+        display: grid;
+        place-items: center;
+        padding: 0;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        background: var(--s2);
+        color: var(--muted);
+        font-family: var(--mono);
+        font-size: 14px;
+        line-height: 1;
+        cursor: pointer;
+        opacity: 0;
+        transition: opacity 120ms ease;
+      }
+      .doc-block:hover .doc-add,
+      .doc-block:focus-within .doc-add,
+      .doc-block.target .doc-add {
+        opacity: 1;
+      }
+      .doc-add:hover {
+        color: var(--text);
+        border-color: var(--accent);
       }
       .doc-block-body {
         min-width: 0;
@@ -648,27 +650,27 @@
       <article class="doc-body">
         <div class="doc-blocks">
           <div class="doc-block prose">
-            <div class="doc-lines"><button class="doc-lnum">1</button></div>
+            <button class="doc-add" aria-label="comment on line 1">+</button>
             <div class="doc-block-body"><h1>Forge file hand-off &middot; the plan</h1></div>
           </div>
           <div class="doc-block prose">
-            <div class="doc-lines"><button class="doc-lnum">2</button></div>
+            <button class="doc-add" aria-label="comment on line 2">+</button>
             <div class="doc-block-body">
               <p>
                 The agent hands the reader a document, and it opens here: the
-                client's own viewer, on every surface the client runs. The route
-                fills the surface, and prose keeps a readable measure while code
-                and tables take the width.
+                client's own viewer, on every surface the client runs. The sheet
+                is one centred reading column; prose keeps a readable measure
+                while code and tables take its content width.
               </p>
             </div>
           </div>
           <div class="doc-block prose">
-            <div class="doc-lines"><button class="doc-lnum">3</button></div>
+            <button class="doc-add" aria-label="comment on line 3">+</button>
             <div class="doc-block-body">
               <p>
-                A press on a gutter number comments on that exact source line,
-                the line first in its captured context - so a revision can
-                re-find the thread by it.
+                A press on a block's <strong>+</strong> comments on that exact
+                source line, the line first in its captured context - so a
+                revision can re-find the thread by it.
               </p>
             </div>
           </div>
@@ -677,7 +679,7 @@
           <div class="doc-note">
             <div class="doc-notehead">
               <span class="doc-movedfrom">moved from 2</span>
-              <div class="rv-acts"><span class="rv-a">delete</span></div>
+              <div class="rv-acts"><span class="rv-a">resolve</span><span class="rv-a">delete</span></div>
             </div>
             <div class="rv-who"><span class="rv-nm">you</span><span class="rv-at">R1</span><span class="rv-a">edit</span></div>
             <div class="prose"><p>name which document this is</p></div>
@@ -685,14 +687,11 @@
             <div class="prose"><p>named at the top, and the address follows</p></div>
           </div>
           <div class="doc-block prose">
-            <div class="doc-lines"><button class="doc-lnum">4</button></div>
+            <button class="doc-add" aria-label="comment on line 4">+</button>
             <div class="doc-block-body"><h2>The ask, and the answer</h2></div>
           </div>
           <div class="doc-block prose">
-            <div class="doc-lines">
-              <button class="doc-lnum">5</button><button class="doc-lnum">6</button
-              ><button class="doc-lnum">7</button>
-            </div>
+            <button class="doc-add" aria-label="comment on line 5">+</button>
             <div class="doc-block-body">
               <ul>
                 <li>
@@ -702,7 +701,7 @@
                 </li>
                 <li>
                   The answer is <strong>approve</strong> or
-                  <strong>something is off</strong>: feedback means revise the
+                  <strong>send feedback</strong>: feedback means revise the
                   document and hand it off again, and a bare done is not an
                   answer.
                 </li>
@@ -715,7 +714,7 @@
             </div>
           </div>
           <div class="doc-block prose">
-            <div class="doc-lines"><button class="doc-lnum">8</button></div>
+            <button class="doc-add" aria-label="comment on line 8">+</button>
             <div class="doc-block-body">
               <blockquote>
                 <p>
@@ -726,10 +725,7 @@
             </div>
           </div>
           <div class="doc-block prose">
-            <div class="doc-lines">
-              <button class="doc-lnum">9</button><button class="doc-lnum">10</button
-              ><button class="doc-lnum">11</button><button class="doc-lnum">12</button>
-            </div>
+            <button class="doc-add" aria-label="comment on line 9">+</button>
             <div class="doc-block-body">
               <p>A fence takes the chat's own code panel:</p>
               <div class="code">
@@ -741,12 +737,7 @@ max_size_mib = 10</pre>
             </div>
           </div>
           <div class="doc-block prose">
-            <div class="doc-lines">
-              <button class="doc-lnum">13</button><button class="doc-lnum">14</button
-              ><button class="doc-lnum">15</button><button class="doc-lnum">16</button
-              ><button class="doc-lnum">17</button><button class="doc-lnum">18</button
-              ><button class="doc-lnum">19</button>
-            </div>
+            <button class="doc-add" aria-label="comment on line 13">+</button>
             <div class="doc-block-body">
               <table>
                 <thead>
@@ -773,14 +764,12 @@ max_size_mib = 10</pre>
             </div>
           </div>
           <div class="doc-block prose target">
-            <div class="doc-lines">
-              <button class="doc-lnum">20</button><button class="doc-lnum target">21</button>
-            </div>
+            <button class="doc-add" aria-label="comment on line 20">+</button>
             <div class="doc-block-body">
               <p>
-                The document sits on the app as a page on a desk, the window's
-                width its own - and its scroller wears the theme's bar, corner
-                included, so no white block shows at the bottom-right.
+                The document sits on the app as one centred page on a desk, its
+                scroller wearing the theme's bar, corner included, so no white
+                block shows at the bottom-right.
               </p>
             </div>
           </div>
@@ -788,7 +777,7 @@ max_size_mib = 10</pre>
           <div class="doc-note doc-outdated">
             <div class="doc-notehead">
               <span class="doc-cc">outdated</span>
-              <div class="rv-acts"><span class="rv-a">delete</span></div>
+              <div class="rv-acts"><span class="rv-a">resolve</span><span class="rv-a">delete</span></div>
             </div>
             <div class="rv-who"><span class="rv-nm">you</span><span class="rv-at">R2</span><span class="rv-a">edit</span></div>
             <div class="prose"><p>the address belongs in this paragraph</p></div>
@@ -807,7 +796,7 @@ max_size_mib = 10</pre>
             <p class="doc-why">line 42 is past this version's 21 lines</p>
             <div class="doc-notehead">
               <span class="doc-cc">outdated</span>
-              <div class="rv-acts"><span class="rv-a">delete</span></div>
+              <div class="rv-acts"><span class="rv-a">resolve</span><span class="rv-a">delete</span></div>
             </div>
             <div class="rv-who"><span class="rv-nm">you</span><span class="rv-at">R1</span></div>
             <div class="prose"><p>state the 10 MiB default here</p></div>
@@ -816,11 +805,10 @@ max_size_mib = 10</pre>
 
         <div class="doc-exit">
           <div class="doc-finish">
-            <div class="doc-exitbox">summary (optional)</div>
-            <div class="doc-exitbox">note (optional)</div>
+            <div class="doc-exitbox">feedback (optional)</div>
             <div class="doc-answeracts">
               <button class="doc-answer-btn">approve</button>
-              <button class="doc-answer-btn">something is off</button>
+              <button class="doc-answer-btn">send feedback</button>
               <span class="mic" title="dictation"
                 ><svg class="ic" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="10" height="12" x="7" y="3" rx="5"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v3"/></svg></span
               >
@@ -864,18 +852,19 @@ max_size_mib = 10</pre>
         </div>
         <div class="state">
           <div class="cap">
-            a comment on a line: the number is the target, the composer opens
-            under the block, and a written comment draws as drafted until an
-            answer files it
+            a comment on a line: the `+` on the block's own line is the target,
+            the composer opens under the block, and a written comment draws as
+            drafted until an answer files it
           </div>
           <div class="doc-blocks">
             <div class="doc-block prose">
               <h1>Forge file hand-off &middot; the plan</h1>
             </div>
             <div class="doc-block target prose">
+              <button class="doc-add" aria-label="comment on line 3">+</button>
               <p>
                 A review left arrives filed under the document's scope - the
-                number under the pointer is the line a press comments on.
+                `+` under the pointer is the line a press comments on.
               </p>
             </div>
             <div class="doc-note">
@@ -900,10 +889,10 @@ max_size_mib = 10</pre>
             both disable until the round files and the call is answered
           </div>
           <div class="doc-answers">
-            <div class="doc-exitbox">note (optional)</div>
+            <div class="doc-exitbox">feedback (optional)</div>
             <div class="doc-answeracts">
               <button class="doc-answer-btn">approving...</button>
-              <button class="doc-answer-btn">something is off</button>
+              <button class="doc-answer-btn">send feedback</button>
             </div>
           </div>
         </div>
@@ -916,7 +905,7 @@ max_size_mib = 10</pre>
           <div class="doc-answers">
             <div class="doc-answeracts">
               <button class="doc-answer-btn">approve</button>
-              <button class="doc-answer-btn">something is off</button>
+              <button class="doc-answer-btn">send feedback</button>
             </div>
             <p class="doc-said">the store is not open</p>
           </div>

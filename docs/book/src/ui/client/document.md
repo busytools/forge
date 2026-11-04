@@ -30,16 +30,16 @@ with no comment affordance anywhere.
 | --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
 | The ask               | the dock's card: `document hand-off`, the resolved path, **Open** and **Not now**                                                                                                                                                                           | the `document_hand_off_pending` update (and the seat's `pending_asks` read, for a client that attached while the ask waited) |
 | The document          | markdown rendered by the chat's own renderer; plain text as text; a PDF in the surface's own viewer; any other kind named as itself                                                                                                                         | the `document_read` answer: `document_kind` and the bytes                                                                    |
-| A readable markdown or text document | its top-level blocks, each one a comment target, with a source-line gutter beside it: one numbered target per raw source line                                                                                                                   | the answer's `threads` and the page's own drafts                                                                             |
-| A comment on a line   | the gutter number is the target: hover or focus marks it, and a press opens the composer anchored at that line, the line first in its captured context                                                                                                      | the source line the press named                                                                                              |
-| A comment on a section | a press on the rendered block (outside the gutter) opens the composer anchored at the block's first line, its whole span captured                                                                                                                          | the block's own source span                                                                                                  |
+| A readable markdown or text document | its top-level blocks, each one a comment target, with a `+` on the block's own line revealed on hover or focus                                                                                                                       | the answer's `threads` and the page's own drafts                                                                             |
+| A comment on a line   | the block's `+` is the target: hover or focus draws it, and a press opens the composer anchored at that line, the line first in its captured context                                                                                                        | the block's own source line                                                                                                  |
+| A comment on a section | a press on the rendered block (outside its `+`) opens the composer anchored at the block's first line, its whole span captured                                                                                                                              | the block's own source span                                                                                                  |
 | Threads               | every turn the thread carries - the reader's words and the agent's reply beside them - drawn under the block their placed line lives in; a draft-held echo draws neither, its draft row standing in | each thread's anchor and the answer's `resolution` |
 | A moved thread        | the thread at the line its first captured line was re-found on, with `moved from N` naming where it was written                                                                                                                                            | the landing's `line` and `moved_from`                                                                                        |
 | An outdated thread    | the thread at its captured line, marked `outdated` and drawn inline - never collected below the body                                                                                                                                                        | the landing's `outdated` state                                                                                               |
 | Could not be placed   | only a thread whose captured line is past this version's last line: its captured lines, the thread's turns, and the sentence saying why                                                                                                                     | the anchor's line against the document's line count                                                                          |
 | Editing and deleting  | `edit` on a user turn - filed or migrated with its thread - opens the page's own box over its words, mic and all, and `save` rewrites it; `delete` takes the thread or the draft away, asking first. Either way the document is re-read, so the card draws what the store now holds | `upsert_review_thread` and `delete_review_thread`; the reply, then the `document_read` re-ask                                                                 |
-| Resolved              | a resolved comment collapses to its marker line like every other surface's, opened by a press, where `reopen` and `collapse` sit                                                                                                                            | the thread's status, and the page's own opened set                                                                          |
-| The answer            | **approve** and **something is off**, with one optional note field above them. Approve is the one signal the agent may proceed on; something is off sends it back to revise and hand off again. Either files the drafts as one round and answers the parked call | `submit_review`'s reply, then `answer_document_hand_off` with the chosen ending, the review id and the note                    |
+| Resolved              | every open thread carries `resolve` beside its `delete`, writing the same status command the review page rides; the agent's reply never resolves. A resolved comment collapses to its marker line like every other surface's, opened by a press, where `reopen` and `collapse` sit | the thread's status, and the page's own opened set                                                                          |
+| The answer            | **approve** and **send feedback**, with one feedback box above them. Approve is the one signal the agent may proceed on; send feedback needs words and sends it back to revise and hand off again. The box's words are the answer's note and the review's description; either answer files the drafts as one round and answers the parked call | `submit_review`'s reply, then `answer_document_hand_off` with the chosen ending, the review id and the note                    |
 | The done              | a deep link has no call to answer, so it keeps one `done (n)` that files the drafts, pushes the review-ready line and returns                                                                                                                               | `submit_review`'s reply                                                                                                      |
 | The chat line         | `Review #N ready on the document - scope doc:<path>. Read it back under that scope, or hand the scope to your lead if you do not have the review tools`, the page's own nudge                                                                               | the page's own dispatch after the round is filed                                                                             |
 | A refusal             | the server's sentence as its own line - missing, unreadable, over the ceiling, outside the session's tree, a text kind that is not UTF-8 - and the two answers still draw for a parked call                                                                | the `error` naming `document_read`                                                                                           |
@@ -52,10 +52,11 @@ with no comment affordance anywhere.
 open.** The raise lands as the dock's card; **Not now** answers the parked
 call - the agent is told the reader declined and moves on - while **Open** is
 the client's own route and answers nothing. The call releases on one of two
-explicit outcomes: **approve** or **something is off**. Neither is a bare
+explicit outcomes: **approve** or **send feedback**. Neither is a bare
 done: **a reader who chooses neither leaves the call parked**, and nothing a
-press on the body does releases it. Both carry an optional note, which
-reaches the agent verbatim with the answer, and the review the finish filed.
+press on the body does releases it. Both carry the one feedback box's words,
+which reach the agent verbatim with the answer, and the review the finish
+filed; send feedback cannot be pressed while the box is empty.
 A detached client leaves the call parked, and the ask is re-readable when a
 client returns; only the waiter's own drop abandons it. A forge with no
 client attached never parks at all: the tool answers that nothing can open.
@@ -93,15 +94,17 @@ is the same WebKit engine that was measured; Firefox ships its own pdf.js.
 
 **A comment anchors to a source line, or to a block's span.** A reviewable
 document draws as its rendered blocks, each carrying the source span it came
-from and owning the blank lines up to the next block, so every source line
-has a gutter target. A press on the block anchors at its first line with the
-span captured as its context; a press on a gutter number anchors at that
-exact line with the line FIRST in its captured context, capped at 12 lines -
-the line and the ones after it. That first captured line is the thread's
-identity across a revision. The anchor also carries the line's own hash, the
-same FNV-1a a code anchor hashes its line with. A plain-text document has no
-blocks, so its rows are its own lines, drawn as the text they are, each with
-its number in the gutter.
+from and owning the blank lines up to the next block. There is no
+always-visible numbering: the block is the section target, and a `+` on the
+block's own line is the line target, drawn on hover or focus (and drawn
+always on a finger-driven surface). A press on the block anchors at its
+first line with the span captured as its context; a press on the `+`
+anchors at that exact line with the line FIRST in its captured context,
+capped at 12 lines - the line and the ones after it. That first captured
+line is the thread's identity across a revision. The anchor also carries the
+line's own hash, the same FNV-1a a code anchor hashes its line with. A
+plain-text document has no blocks, so its rows are its own lines, drawn as
+the text they are, each with its own `+`.
 
 **A thread re-anchors across a revision the way a code thread does.** The
 server resolves each doc thread against the document it is read with: the
@@ -128,26 +131,25 @@ module-wide, so a second hand-off that raises another document does not take
 the first's unsent comments with it - they wait in their own scope until an
 answer files them.
 
-**The block's box and the note dictate, the way the composer's does.** The
-comment box wears the composer's own mic control, and the answer's note does
-too: a press starts a take, a hold opens what dictation is set to, and the
-take's bar takes the box's own line while it runs. The words land at the end
-of the box that was open when the take settled, read off the seat's record.
-The comment composer is the exception to a closed box: words submitted
-before the reader closed it reopen the box at the row and line that began
-the take, where the reader sees them. The edit, summary and note boxes no
-longer draw once closed, so their words are dropped rather than written
+**The block's box and the feedback box dictate, the way the composer's
+does.** The comment box wears the composer's own mic control, and the
+feedback box does too: a press starts a take, a hold opens what dictation is
+set to, and the take's bar takes the box's own line while it runs. The words
+land at the end of the box that was open when the take settled, read off the
+seat's record. The comment composer is the exception to a closed box: words
+submitted before the reader closed it reopen the box at the row and line
+that began the take, where the reader sees them. The edit and feedback boxes
+no longer draw once closed, so their words are dropped rather than written
 where the reader is not, and a notice about a take this page never watched
 is not placed at all. The push-to-talk key is honoured while a box is open,
 the same press and release the composer's box reads.
 
-**The round keeps a description, and the answer keeps a note.** Once there
-is a review to file, a summary box sits above the answers - its own row, room
-to write, resizable - and its words ride the submit as the round's summary,
-the same one the review page's finish takes. The note above the answer
-buttons is separate: it rides the `answer_document_hand_off` that releases
-the parked call, so an agent without the review family still learns what the
-reader said.
+**One feedback box is the description and the note.** A single box sits
+above the answers when a hand-off is parked or there is a review to file.
+Its words ride the submit as the round's summary and the
+`answer_document_hand_off` as the note, so an agent without the review
+family still learns what the reader said. Approve may go with it empty;
+send feedback requires words.
 
 **The done is the review-left event on a deep link.** `done (n)` submits the
 drafted threads as one round through the same command a code review uses,
@@ -171,14 +173,14 @@ the page draws.
 - **Markdown**: rendered with the chat's renderer - raw HTML never reaches
   the page - as its top-level blocks, on the sheet below.
 - **The sheet**: the document rests on the app like a page on a desk - one
-  panel filling the surface, a hairline over every section, the reading
-  scale of the drawing beside this page. The PDF state is the one exception
-  (the platform's viewer takes the window).
-- **A readable markdown or text document**: the rendered blocks, every block
-  a focusable comment target with a numbered gutter beside it, its comments
-  placed under their blocks and its drafts under theirs, a draft-held echo
-  drawn by its draft row instead - a cold open included, which draws the
-  same body a hand-off's Open does.
+  centred panel about 88 characters wide, a hairline over every section, the
+  reading scale the drawing beside this page carries. The page background
+  stays the window's width. A PDF is the exception: it takes the window.
+- **A readable markdown or text document**: its rendered blocks, each one a
+  comment target with a `+` on its own line shown on hover or focus, its
+  comments placed under their blocks and its drafts under theirs, a
+  draft-held echo drawn by its draft row instead - a cold open included,
+  which draws the same body a hand-off's Open does.
 - **A comment being written**: the composer opens under the block, with its
   own comment and cancel pair and its mic; a written comment draws as
   `drafted` until an answer files it.
@@ -203,7 +205,7 @@ the page draws.
   with the captured lines and the sentence naming the line it was written at
   and how many this version has.
 - **Plain text**: wrapping rows, decoded once and each one a comment target
-  with its number; markup in it stays text.
+  with its own `+`; markup in it stays text.
 - **A PDF**: the platform's embed over a blob of the bytes, sized to the
   page. On the phone, pdf.js renders each page to a canvas at the column's
   width; a failure in that render draws its own line rather than an empty
@@ -247,24 +249,27 @@ the page draws.
 
 ## The widths
 
-**The route fills the surface.** The document is read at whatever width the
-reader's window gives it: the sheet is not capped to a column, and at 1600
-the reading area is the window's. **Prose keeps a readable measure** - a
+**The sheet is a centred reading column and the page background is the
+window's.** `.doc-body` is capped at about 88 characters and centred with
+`margin-inline: auto`, so at 1600 the document reads as one column on the
+desk rather than stretching to the window's edges; the answer row is capped
+and centred to the same column. **Prose keeps a readable measure** - a
 paragraph, a list and a heading stop at 76 characters - while code fences,
-tables and long unbroken tokens take the whole sheet. The document route is
-its own scroller and wears the theme's one scrollbar skin, its corner
-included, so the platform's white block no longer shows at the bottom-right.
-At 430 the sheet takes the page's padding, the table stacks at its container
-width, and long tokens wrap (`anywhere`) - the sheet has no sideways
-scroller and this page brings none.
+tables and long unbroken tokens take the sheet's whole content width. The
+document route is its own scroller and wears the theme's one scrollbar skin,
+its corner included, so the platform's white block no longer shows at the
+bottom-right. At 430 the sheet takes the page's padding, the table stacks at
+its container width, and long tokens wrap (`anywhere`) - the sheet has no
+sideways scroller and this page brings none.
 
 ## Touch
 
 Every control the page carries takes the 44px target under
 `@media (pointer: coarse)`: a rendered block (the section comment target),
-each gutter number (a line comment target), the composer's comment and
-cancel pair, the answer buttons and the one done. Nothing lives on hover
-alone - the block's own press opens the composer, a gutter number's press
-comments on that line, and the keyboard reaches both with a focus and Enter -
-and the read-only states carry only the answer row (the platform PDF
-viewer's own chrome is the viewer's).
+the `+` on the block's own line (the line comment target), the composer's
+comment and cancel pair, the answer buttons and the one done. Nothing lives
+on hover alone: the `+` is drawn always on a finger-driven surface, the
+block's own press opens the section composer, the `+`'s press comments on
+that line, and the keyboard reaches both with a focus and Enter. The
+read-only states carry only the answer row (the platform PDF viewer's own
+chrome is the viewer's).
