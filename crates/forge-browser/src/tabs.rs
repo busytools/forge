@@ -385,11 +385,17 @@ impl TabRegistry {
         self.tabs.keys().copied().collect()
     }
 
-    /// Whether any open tab is a page's popup. **A popup's target hangs a
-    /// fresh driver's connect whether or not its document has started**, so
-    /// the host is kept while one stands.
-    pub fn has_popup(&self) -> bool {
-        self.tabs.values().any(|tab| tab.opener.is_some())
+    /// The age of the youngest popup tab, or `None` when no popup is open.
+    /// **A popup's target hangs a fresh driver's connect whether or not its
+    /// document has started**, so the host is kept while one is inside its
+    /// window; past it, the popup is the wedge rather than a sign-in in
+    /// progress.
+    pub fn popup_age(&self, now: Instant) -> Option<Duration> {
+        self.tabs
+            .values()
+            .filter(|tab| tab.opener.is_some())
+            .map(|tab| now.saturating_duration_since(tab.since))
+            .min()
     }
 }
 
@@ -484,6 +490,33 @@ mod tests {
             registry.other_owners_at(&worker, now).iter().all(|(seat, _)| seat != &worker),
             "a seat is never its own holder",
         );
+    }
+
+    /// **The youngest popup sets the age.** A keep window is a popup's own
+    /// age, so an old popup beside a fresh sign-in must not age the fresh one
+    /// out and end the host under it. An ordinary tab is no popup at all.
+    #[test]
+    fn the_youngest_popup_sets_the_age() {
+        let seat = SessionSlot::lead("O", "p");
+        let mut registry = TabRegistry::default();
+        registry.adopt(1, seat.clone(), "opener", "", "").expect("the opener's row");
+        registry.create_under(1, 2, "old", "", "").expect("the old popup's row");
+        registry.create_under(1, 3, "fresh", "", "").expect("the fresh popup's row");
+        let now = Instant::now();
+        let old = now.checked_sub(Duration::from_secs(10 * 60)).expect("ten minutes back");
+        let fresh = now.checked_sub(Duration::from_secs(10)).expect("ten seconds back");
+        registry.tabs.get_mut(&2).expect("the old popup").since = old;
+        registry.tabs.get_mut(&3).expect("the fresh popup").since = fresh;
+
+        assert_eq!(
+            registry.popup_age(now),
+            Some(Duration::from_secs(10)),
+            "the freshest popup is the one a keep window is measured from",
+        );
+
+        let mut plain = TabRegistry::default();
+        plain.adopt(1, seat, "t1", "", "").expect("an ordinary tab");
+        assert_eq!(plain.popup_age(now), None, "an ordinary tab has no age");
     }
 
     /// **A page target outlives a tab number.** The replace case is the one

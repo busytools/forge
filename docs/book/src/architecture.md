@@ -294,9 +294,11 @@ may `list`, `tell`, `ask` and read its own identity, while the four verbs
 that act on the caller's own project - `spawn`, `despawn`, `update` and
 `capacity` - are lead-only; and inside `tasks`, `tasks__approve` is the
 lead's own door (it attests a look the user already gave) and is not
-offered to a worker. Reach is the same for both: a target is a
-slot, `(org, project, label)`, so a worker addresses another project's
-agent as directly as its own lead.
+offered to a worker. One tool does too: `browser_end_host` is a lead's own
+door, offered to every session and refused to a worker, because it ends a
+browser host every session on the profile shares. Reach is the same for
+both: a target is a slot, `(org, project, label)`, so a worker addresses
+another project's agent as directly as its own lead.
 
 ## Single instance per config directory
 
