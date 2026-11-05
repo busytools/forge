@@ -214,12 +214,12 @@ pub fn render(messages: &[Message], live: bool) -> Rendered {
                 // **A delivery's envelope row is the turn boundary.** The CLI
                 // runs a delivered prompt as a turn of its own, and the row it
                 // writes is the only marker of where that turn opens; a fold
-                // that opened none here joined every delivery's exchange to
-                // the turn above, and a reload drew them as one row. The row
-                // still DRAWS as its envelope - the cut is the server's, the
-                // header the client's.
+                // that opened none here joined a delivered turn's exchange to
+                // the turn above, and a reload drew the two as one turn. The
+                // row still DRAWS as its envelope - the cut is the server's,
+                // the header the client's.
                 ContentBlock::Text { text, .. } if !assistant && detect_inbound(text).is_some() => {
-                    // **A delivery pressed into a running turn stays in it**,
+                    // **A delivery with a call out stays in the running turn**,
                     // the rule a forge-minted row takes: a turn opened here
                     // cuts the call above off from the result below (#2379).
                     if open.is_some()
@@ -691,12 +691,12 @@ mod tests {
         message
     }
 
-    /// A delivery is its own turn: a Gotify delivery, a cron fire, a Slack
-    /// bundle, a failed delivery and a failed worker spawn each arrive as an
-    /// envelope row, and that row is where the generated turn opens. The row
+    /// A delivery is its own turn: the kinds the parser recognises - Gotify,
+    /// cron, Slack, a peer message and a delivery failure - each arrive as an
+    /// envelope row, and that row is where the delivery's turn opens. The row
     /// still draws as its envelope - the cut is the fold's, the header the
-    /// client's - and a fold that opened no turn here joined every delivery's
-    /// exchange to the turn above it.
+    /// client's - and a fold that opened no turn here joined a delivered
+    /// turn's exchange to the turn above it.
     #[test]
     fn an_external_envelope_opens_its_turn() {
         let quiet = user(vec![ContentBlock::Text {
@@ -1153,8 +1153,9 @@ mod tests {
     /// drew as something else would start the window inside a turn, which is
     /// the whole thing the window's front is for.
     ///
-    /// The other direction is pinned as the one place they are meant to differ:
-    /// a queued prompt opens a turn in the fold, and the scan leaves it alone.
+    /// The other direction is where they are meant to differ: a queued prompt
+    /// and a delivery's envelope row open a turn in the fold, and the scan
+    /// leaves both alone - the queued prompt is the one this fixture pins.
     #[test]
     fn the_windows_turn_scan_names_no_frame_the_fold_opens_no_turn_at() {
         let text = |text: &str| {
