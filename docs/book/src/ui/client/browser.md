@@ -84,15 +84,20 @@ and the host ending - except a tab a parked hand-off still holds. Nothing
 outlives the host.
 
 **A cross-origin popup is the same kind of tab, opened by the host.** A
-top-level page that opens a sign-in address on another origin gets a working
-window back: the host starts that address in a browser of its own, so the
-engine has no popup target to share the opener's renderer with, and the
-attached driver keeps working. `window.opener` in the popup is a matching
-proxy and `postMessage` is relayed in both directions with each side's own
-origin checked at delivery, so an OAuth flow's result reaches the app as a
-JSON payload. **A subframe never bridges**: its `window.open` for any address
-but the top frame's own origin answers null, so a sign-in started inside an
-iframe keeps the engine's own path. A same-origin popup keeps the engine's
+top-level page's first sign-in open on another origin gets a working window
+back: the host starts that address in a browser of its own, so the engine has
+no popup target to share the opener's renderer with, and the attached driver
+keeps working. `window.opener` in the popup is a matching proxy and
+`postMessage` is relayed in both directions with each side's own origin
+checked at delivery, so an OAuth flow's result reaches the app as a JSON
+payload. A `noopener` or `noreferrer` open answers null and its tab has no
+opener, which is the platform's own contract. A second cross-site popup from
+the same page does not commit while the first is live (#2869), a refused open
+answers a live proxy and the refusal arrives later as a `refused` event
+(#2898), and one page may hold sixteen popups at once. **A subframe never
+bridges**: a same-origin subframe answers null for every address but the top
+frame's own origin, and a cross-origin subframe answers null for every web
+address. A same-origin popup keeps the engine's
 own popup path and its real, scriptable `window.opener`. **The takeover
 follows a popup in**: a surface showing the opener moves to the popup when it
 appears, and hands back to the opener when the popup closes, so a sign-in is
