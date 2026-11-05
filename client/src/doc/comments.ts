@@ -15,7 +15,7 @@
  * comments on the first with it.
  */
 
-import { renderProseBlocks } from '../chat/prose';
+import { renderProseTargets } from '../chat/prose';
 import { anchorHash } from '../review/write';
 import type { ReviewThreadRecord } from '../session/wire';
 import type { ThreadPayload } from '../review/write';
@@ -50,11 +50,12 @@ const CONTEXT_CAP = 12;
 /**
  * The document as its comment targets.
  *
- * **A markdown document's rows are its rendered blocks**, because that is
- * what a reader points at: each block carries the source lines it came from,
- * the blank lines it owns, and a comment can anchor to its first line or to
- * any line its gutter names. A plain-text document has no blocks, so its
- * rows are its own lines.
+ * **A markdown document's rows are its rendered targets**, because that is
+ * what a reader points at: a paragraph or a heading, one item of a list, one
+ * paragraph of a quote. Each carries the source lines it came from and the
+ * blank lines it owns, and a comment can anchor at its own line (the `+`,
+ * line first in its context) or at the whole target. A plain-text document
+ * has no blocks, so its rows are its own lines.
  */
 export function rowsOf(text: string, kind: 'markdown' | 'text'): DocRow[] {
   const lines = linesOf(text);
@@ -67,7 +68,7 @@ export function rowsOf(text: string, kind: 'markdown' | 'text'): DocRow[] {
       text: line.text,
     }));
   }
-  const blocks = renderProseBlocks(text);
+  const blocks = renderProseTargets(text);
   const rows: DocRow[] = [];
   const first = blocks[0];
   // A document of blank lines has no rendered block at all; its lines are
@@ -83,9 +84,9 @@ export function rowsOf(text: string, kind: 'markdown' | 'text'): DocRow[] {
     return rows;
   }
   // **The lines before the first block are a row of their own**, so a
-  // comment placed there has somewhere to draw and the gutter starts at
-  // line 1. They have no rendered mark; they draw as the blank lines they
-  // are.
+  // comment placed there has somewhere to draw and the first target starts
+  // at line 1. They have no rendered mark; they draw as the blank lines
+  // they are.
   if (first.line > 1) {
     const lead = lines.slice(0, first.line - 1);
     rows.push({
@@ -100,11 +101,10 @@ export function rowsOf(text: string, kind: 'markdown' | 'text'): DocRow[] {
     const next = blocks[at + 1];
     rows.push({
       line: block.line,
-      // **Every source line is a target, so a block owns the blank lines
-      // between it and the next one.** Without them the gutter skips the
-      // gaps, and a document with a blank line between every paragraph
-      // carries no target for half its lines. The rendered span stays in
-      // `context`.
+      // **A block owns the blank lines between it and the next one**, so a
+      // comment placed there has a row to draw under. Without them a
+      // document with a blank line between every paragraph has no row for
+      // half its lines. The rendered span stays in `context`.
       end: next === undefined ? lines.length : Math.max(block.end, next.line - 1),
       context: lines
         .slice(block.line - 1, Math.min(block.end, block.line - 1 + CONTEXT_CAP))

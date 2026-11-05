@@ -172,49 +172,105 @@ export function renderInlineProse(text: string): string {
   return READER.renderInline(text);
 }
 
-/** One top-level block of `text`, rendered on its own. */
-interface ProseBlock {
-  /** 1-based first source line the block came from. */
+/** One comment target of `text`, rendered on its own. */
+interface ProseTarget {
+  /** 1-based first source line the target came from. */
   line: number;
   /** 1-based last source line, inclusive. */
   end: number;
-  /** The block's own HTML, through the same renderer as the body. */
+  /** The target's own HTML, through the same renderer as the body. */
   html: string;
 }
 
+/** The containers whose direct children are targets of their own: a list's
+ *  items, a quote's paragraphs. A table stays one target. */
+const SPLIT_CONTAINERS = new Set(['bullet_list_open', 'ordered_list_open', 'blockquote_open']);
+
 /**
- * `text` as its top-level blocks, each rendered on its own.
+ * `text` as its comment targets, each rendered on its own.
  *
- * The document viewer's comment target: a comment anchors to the block it was
- * written on, so the block's SOURCE span has to survive rendering. The tokens
- * carry it - markdown-it records the lines every block token came from - and
- * a slice cut at a top-level boundary is a whole block, opens and closes
- * together, which is what makes rendering the pieces the same as rendering
- * the text.
+ * **The document viewer's target is finer than a top-level block.** A list of
+ * ten states is ten things a reader may comment on, and a quote can carry
+ * several paragraphs; a container's direct children become the targets, so
+ * one anchor is one thing. The tokens carry the source span - markdown-it
+ * records the lines every block token came from - and every slice opens and
+ * closes together, which is what makes rendering the pieces draw what the
+ * whole would.
  */
-export function renderProseBlocks(text: string): ProseBlock[] {
+export function renderProseTargets(text: string): ProseTarget[] {
   const env = {};
   const tokens = READER.parse(text, env);
-  const starts: number[] = [];
+  const targets: ProseTarget[] = [];
   for (let at = 0; at < tokens.length; at += 1) {
     const token = tokens[at];
-    if (token === undefined || token.level !== 0) continue;
-    // A top-level block OPENS (nesting 1) or stands alone (0); a closer
-    // (nesting -1) is inside the block the opener began.
-    if (token.nesting >= 0) starts.push(at);
+    if (token === undefined || token.level !== 0 || token.nesting < 0) continue;
+    const map = token.map;
+    if (map === null || map === undefined) continue;
+    // A top-level block opens and closes (nesting 1); a fence, a rule or a
+    // table stands alone (nesting 0).
+    const close = token.nesting === 1 ? matchingClose(tokens, at) : at;
+    if (close < 0) continue;
+    if (!SPLIT_CONTAINERS.has(token.type)) {
+      targets.push({
+        line: map[0] + 1,
+        end: map[1],
+        html: READER.renderer.render(tokens.slice(at, close + 1), READER.options, env),
+      });
+      at = close;
+      continue;
+    }
+    let ordinal = 0;
+    for (let child = at + 1; child < close; child += 1) {
+      const inner = tokens[child];
+      if (inner === undefined || inner.level !== 1 || inner.nesting < 0) continue;
+      const innerMap = inner.map;
+      if (innerMap === null || innerMap === undefined) continue;
+      // A leaf inside the container (a fence, a code block, a rule) opens
+      // nothing, so it closes at itself; only a nesting child has a closer.
+      const innerClose = inner.nesting === 0 ? child : matchingClose(tokens, child);
+      if (innerClose < 0 || innerClose > close) continue;
+      ordinal += 1;
+      const body = READER.renderer.render(tokens.slice(child, innerClose + 1), READER.options, env);
+      targets.push({
+        line: innerMap[0] + 1,
+        end: innerMap[1],
+        html: wrapped(token, ordinal, body),
+      });
+      child = innerClose;
+    }
+    at = close;
   }
-  const blocks: ProseBlock[] = [];
-  for (let i = 0; i < starts.length; i += 1) {
-    const from = starts[i] as number;
-    const slice = tokens.slice(from, starts[i + 1] ?? tokens.length);
-    const head = slice[0];
-    const map = head?.map;
-    if (head === undefined || map === null || map === undefined) continue;
-    blocks.push({
-      line: map[0] + 1,
-      end: map[1],
-      html: READER.renderer.render(slice, READER.options, env),
-    });
+  return targets;
+}
+
+/** The index of the token that closes the block opened at `at`, by nesting. */
+function matchingClose(tokens: { level: number; nesting: number }[], at: number): number {
+  const open = tokens[at];
+  if (open === undefined) return -1;
+  let depth = 0;
+  for (let index = at; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    if (token === undefined || token.level !== open.level) continue;
+    if (token.nesting === 1) depth += 1;
+    else if (token.nesting === -1) {
+      depth -= 1;
+      if (depth === 0) return index;
+    }
   }
-  return blocks;
+  return -1;
+}
+
+/** A container child's own wrapper, so a one-item list still draws its marker
+ *  and an ordered list keeps each item's number. */
+function wrapped(
+  container: { type: string; attrs: [string, string | number][] | null },
+  ordinal: number,
+  body: string,
+): string {
+  if (container.type === 'bullet_list_open') return `<ul>${body}</ul>`;
+  if (container.type === 'blockquote_open') return `<blockquote>${body}</blockquote>`;
+  const start = container.attrs?.find(([name]) => name === 'start')?.[1];
+  const first = start === undefined ? 1 : Number(start);
+  const at = first + ordinal - 1;
+  return at === 1 ? `<ol>${body}</ol>` : `<ol start="${at}">${body}</ol>`;
 }

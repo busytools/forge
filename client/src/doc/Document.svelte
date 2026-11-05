@@ -9,10 +9,10 @@
    * and a refusal in the server's own sentence.
    *
    * **A reviewable document draws as its rendered BLOCKS, each one a
-   * comment target, with a source-line gutter beside it**: a press on the
-   * block comments on the whole section, a press on a line number comments
-   * on that exact line with the line first in its captured context. A
-   * plain-text document has no blocks, so its rows are its lines.
+   * comment target with a hover `+` on its own line**: a press on the block
+   * comments on the whole section, a press on the `+` comments on that
+   * exact line with the line first in its captured context. A plain-text
+   * document has no blocks, so its rows are its lines.
    *
    * **Threads draw where this version lets them.** The server re-anchors
    * each doc thread by its first captured line, the way a code thread is
@@ -23,9 +23,9 @@
    *
    * **The door is the hand-off's answer.** The drafts are filed as one
    * review through the same commands a code review rides, and the parked
-   * call is released with **approve** or **something is off** - each with
-   * the optional note - so the agent hears the reading's result and never
-   * reads a bare done as approval.
+   * call is released with **approve** or **send feedback** - each with the
+   * one feedback box, which is also the review's description - so the agent
+   * hears the reading's result and never reads a bare done as approval.
    */
   import { SvelteSet } from 'svelte/reactivity';
 
@@ -206,34 +206,31 @@
   });
 
   /**
-   * The comment target a composer is open on: the rendered block (today's
-   * whole-section comment) or one source line from the gutter. The line is
-   * the anchor; `target` is what decides which lines the comment captures.
+   * The comment target a composer is open on: the rendered block, or the
+   * block's own source line from its hover `+`. The line is the anchor;
+   * `target` is what decides which lines the comment captures.
    */
   let composing = $state<{ row: number; line: number; target: 'block' | 'line' } | null>(null);
   let commentText = $state('');
-  /** The block whose box began the current take, stamped when the take starts:
-   *  it is what says the take goes with that box and lands only there. */
-  let takeIn = $state<number | 'summary' | 'note' | 'edit' | null>(null);
+  /** The box whose take is running, stamped when the take starts: it is what
+   *  says the take goes with that box and lands only there. */
+  let takeIn = $state<number | 'feedback' | 'edit' | null>(null);
   /** The exact line and target the open block composer was on, kept with the
    *  take so words that land after the box closed reopen where the reader
    *  was - a line comment must not come back as a section comment. */
   let takeLine = $state<number | null>(null);
   let takeTarget = $state<'block' | 'line'>('block');
-  /** Whether the take being attempted began at the SUMMARY's mic - the box
-   *  its words are owed to. */
-  let pressedSummary = $state(false);
-  /** Whether the take being attempted began at the ANSWER's note box. */
-  let pressedNote = $state(false);
+  /** Whether the take being attempted began at the feedback box's mic. */
+  let pressedFeedback = $state(false);
   /** Whether the take being attempted began at an EDIT box's mic. */
   let pressedEdit = $state(false);
-  /** The review's own words, the round's description (Ved, 2026-10-17). */
-  let summaryText = $state('');
-  let summaryField = $state<HTMLElement | null>(null);
-  /** The answer's optional note: filed with whichever answer is chosen and
-   *  carried to the agent verbatim. */
-  let noteText = $state('');
-  let noteField = $state<HTMLElement | null>(null);
+  /** The one box: the answer's note, carried to the agent with whichever
+   *  answer is chosen, and the review's own description when drafts exist. */
+  let feedbackText = $state('');
+  let feedbackField = $state<HTMLElement | null>(null);
+  /** Whether send feedback was pressed with nothing written: the hint turns
+   *  into the requirement until the box has words. */
+  let feedbackHint = $state(false);
 
   /**
    * The box an EDIT opens, wherever a comment is drawn: the thread - or the
@@ -321,13 +318,7 @@
     onStart: () => {
       // The take belongs to the box the press came from, which is the open
       // one: the mic is drawn only inside a box.
-      takeIn = pressedEdit
-        ? 'edit'
-        : pressedSummary
-          ? 'summary'
-          : pressedNote
-            ? 'note'
-            : (composing?.row ?? null);
+      takeIn = pressedEdit ? 'edit' : pressedFeedback ? 'feedback' : (composing?.row ?? null);
       takeLine = composing?.line ?? null;
       takeTarget = composing?.target ?? 'block';
       dictateLine = null;
@@ -460,14 +451,9 @@
       editField?.focus();
       return;
     }
-    if (takeIn === 'summary') {
-      summaryText = joined(summaryText, words);
-      summaryField?.focus();
-      return;
-    }
-    if (takeIn === 'note') {
-      noteText = joined(noteText, words);
-      noteField?.focus();
+    if (takeIn === 'feedback') {
+      feedbackText = joined(feedbackText, words);
+      feedbackField?.focus();
       return;
     }
     // The words were submitted: a box closed or moved between the release
@@ -487,9 +473,9 @@
    * under another target, one press from being filed against the wrong part.
    */
   $effect(() => {
-    if (takeIn === null || takeIn === 'summary' || takeIn === 'note' || takeIn === 'edit') return;
-    // The take's identity is the whole target, not just the row: the gutter
-    // is live mid-take, and a press on another line is another box.
+    if (takeIn === null || takeIn === 'feedback' || takeIn === 'edit') return;
+    // The take's identity is the whole target, not just the row: the `+` is
+    // live mid-take, and a press on another line is another box.
     const still =
       composing?.row === takeIn && composing.line === takeLine && composing.target === takeTarget;
     if (still) return;
@@ -512,31 +498,24 @@
 
   /**
    * The box a key-begun take belongs to: the one the reader's caret is in,
-   * else the open block composer, else the round's summary - the box the
-   * exit row draws once there is a review to describe.
+   * else the open block composer, else the feedback box - the one the exit
+   * row draws.
    */
-  function pttBox(): 'composing' | 'summary' | 'note' | 'edit' | null {
+  function pttBox(): 'composing' | 'feedback' | 'edit' | null {
     const active = document.activeElement;
     if (active !== null && active !== document.body) {
       if (active === field) return 'composing';
-      if (active === summaryField) return 'summary';
-      if (active === noteField) return 'note';
+      if (active === feedbackField) return 'feedback';
       if (active === editField) return 'edit';
     }
     if (edit.thread !== null || edit.draftId !== null) return 'edit';
     if (composing !== null) return 'composing';
     // A take already running keeps its box, so the key's release can end it.
     if (takeIn !== null) {
-      return takeIn === 'summary'
-        ? 'summary'
-        : takeIn === 'note'
-          ? 'note'
-          : takeIn === 'edit'
-            ? 'edit'
-            : 'composing';
+      return takeIn === 'feedback' ? 'feedback' : takeIn === 'edit' ? 'edit' : 'composing';
     }
-    if (held.path !== null && drafts.length > 0) return 'summary';
-    return held.path !== null && handoff !== null ? 'note' : null;
+    if (held.path !== null && drafts.length > 0) return 'feedback';
+    return held.path !== null && handoff !== null ? 'feedback' : null;
   }
 
   // The push-to-talk key, once for the page: a hold begins a take in the box
@@ -553,17 +532,9 @@
     onBegin: () => {
       const at = pttBox();
       if (at === null) return;
-      pressedSummary = at === 'summary';
-      pressedNote = at === 'note';
+      pressedFeedback = at === 'feedback';
       pressedEdit = at === 'edit';
-      (at === 'summary'
-        ? summaryField
-        : at === 'note'
-          ? noteField
-          : at === 'edit'
-            ? editField
-            : field
-      )?.focus();
+      (at === 'feedback' ? feedbackField : at === 'edit' ? editField : field)?.focus();
     },
   });
 
@@ -586,8 +557,8 @@
         event.preventDefault();
         event.stopPropagation();
         dictate.panel = false;
-        // Back to the box the panel was opened off, whichever mic it was.
-        (pressedSummary ? summaryField : pressedNote ? noteField : field)?.focus();
+        // The box the take's mic belongs to gets the caret back.
+        (pressedFeedback ? feedbackField : field)?.focus();
       }
     };
     window.addEventListener('keydown', onDown, true);
@@ -638,9 +609,9 @@
     };
   });
 
-  /** Open the composer on a rendered block, or on one source line. A press
-   *  on the block is today's whole-section comment; a press on a gutter
-   *  number is a comment at that exact line. */
+  /** Open the composer on a rendered block, or on its own source line. A
+   *  press on the block is the whole-section comment; a press on its `+` is
+   *  a comment at that exact line. */
   function openComposer(row: DocRow, line: number, target: 'block' | 'line'): void {
     const same =
       composing?.row === row.line && composing.line === line && composing.target === target;
@@ -756,6 +727,11 @@
     await put(statusCommand(slot, scope, threadId, 'Open'));
   }
 
+  /** Resolve one comment: the reader's act, never the agent's reply. */
+  async function resolvedThread(threadId: string): Promise<void> {
+    await put(statusCommand(slot, scope, threadId, 'Resolved'));
+  }
+
   /** The retraction of a local draft: off the shelf, and out of the store. */
   function deletedDraft(draftId: string): void {
     clearDrafts(scope, [draftId]);
@@ -791,7 +767,7 @@
     if (held.path !== null && drafts.length > 0) {
       const ids = drafts.map((draft) => draft.id);
       let filed: unknown;
-      const summary = summaryText.trim();
+      const summary = feedbackText.trim();
       try {
         filed = await connection.dispatch(
           submitCommand(slot, scope, ids, summary === '' ? null : summary),
@@ -844,17 +820,28 @@
   }
 
   /**
-   * Answer the parked hand-off: **approve** or **something is off**, each
-   * with the note as written and the review the finish filed. Done is not
+   * Answer the parked hand-off: **approve** or **send feedback**, each with
+   * the feedback box's words and the review the finish filed. Done is not
    * one of them - a reader who presses neither leaves the call parked, and
    * the agent learns nothing it could read as approval.
+   *
+   * **Send feedback needs words**, and the button says so rather than
+   * disabling: a native disabled button leaves the tab order and explains
+   * nothing, so an empty press draws the requirement beside the box and
+   * sends nothing.
    */
   async function answer(outcome: 'approve' | 'feedback'): Promise<void> {
+    if (outcome === 'feedback' && feedbackText.trim() === '') {
+      feedbackHint = true;
+      feedbackField?.focus();
+      return;
+    }
+    feedbackHint = false;
     finishState = { kind: 'sending', answer: outcome };
     const filed = await fileDrafts(outcome);
     if (filed === null) return;
     if (handoff !== null) {
-      const note = noteText.trim();
+      const note = feedbackText.trim();
       try {
         await connection.dispatch(
           {
@@ -933,13 +920,6 @@
     return draft.line >= row.line && draft.line <= row.end;
   }
 
-  /** The source lines a rendered block spans, the gutter's own targets. */
-  function rowLines(row: DocRow): number[] {
-    const numbers: number[] = [];
-    for (let line = row.line; line <= row.end; line += 1) numbers.push(line);
-    return numbers;
-  }
-
   /**
    * A kind the viewer does not draw, said as itself: the extension it
    * carries, or that it carries none.
@@ -972,9 +952,9 @@
     <article class="doc-body"><Pdf bytes={held.bytes ?? new Uint8Array()} /></article>
   {:else if held.kind === 'markdown' || held.kind === 'text'}
     <!-- A reviewable document: its rendered blocks, each one a comment
-         target, and a source-line gutter beside it so a comment can land on
-         one line. A press on the block is today's whole-section comment; a
-         press on a gutter number is a comment at that exact line. -->
+         target with a `+` on its own line. A press on the block is the
+         whole-section comment; a press on the `+` is a comment at that exact
+         line. The always-visible source-line numbers are gone. -->
     <article class="doc-body doc-blocks">
       {#each rows as row (row.line)}
         <!-- The row itself is the target (Ved's shape): a pointer press
@@ -991,16 +971,16 @@
           tabindex="0"
           aria-label="comment on this part of the document"
           onclick={(event) => {
-            // A link inside the block is the link's, and a gutter number is
-            // its own target: neither press also opens the block's composer.
+            // A link inside the block is the link's, and the `+` is its own
+            // target: neither press also opens the block's composer.
             if (event.target instanceof Element && event.target.closest('a, button') !== null)
               return;
             openComposer(row, row.line, 'block');
           }}
           onkeydown={(event) => {
             // The keyboard half of the link rule: a reader tabbed onto a
-            // link or a gutter number is on that control, and Enter/Space
-            // there must reach it - the block answers only its own.
+            // link or the `+` is on that control, and Enter/Space there must
+            // reach it - the block answers only its own.
             if (event.target instanceof Element && event.target.closest('a, button') !== null)
               return;
             if (event.key === 'Enter' || event.key === ' ') {
@@ -1009,25 +989,22 @@
             }
           }}
         >
-          <!-- The gutter: one numbered target per source line the block
-               spans, so a comment lands on the line the reader points at. -->
-          <div class="doc-lines" role="group" aria-label="comment on a line">
-            {#each rowLines(row) as line (line)}
-              <button
-                class="doc-lnum"
-                class:target={composing?.row === row.line && composing.line === line}
-                type="button"
-                aria-label={`comment on line ${line}`}
-                onclick={(event) => {
-                  event.stopPropagation();
-                  openComposer(row, line, 'line');
-                }}>{line}</button
-              >
-            {/each}
-          </div>
+          <!-- The block's own line is the line-level target: a `+` shown on
+               hover or focus, drawn always for a finger. It hangs in the
+               sheet's left padding so it marks the line without pushing the
+               text. -->
+          <button
+            class="doc-add"
+            type="button"
+            aria-label={`comment on line ${row.line}`}
+            onclick={(event) => {
+              event.stopPropagation();
+              openComposer(row, row.line, 'line');
+            }}>+</button
+          >
           <div class="doc-block-body">
             {#if row.html !== null}
-              <!-- The rendered markdown, which `renderProseBlocks` produced
+              <!-- The rendered markdown, which `renderProseTargets` produced
                    from escaped input: the same renderer and the same rules
                    the chat's own Prose draws with, raw HTML off. -->
               <!-- eslint-disable-next-line svelte/no-at-html-tags -->
@@ -1065,6 +1042,12 @@
                     >
                     <button class="rv-a" type="button" onclick={() => opened.delete(thread.id)}
                       >collapse</button
+                    >
+                  {:else}
+                    <button
+                      class="rv-a"
+                      type="button"
+                      onclick={() => void resolvedThread(thread.id)}>resolve</button
                     >
                   {/if}
                   <ThreadDelete ondelete={() => void deletedThread(thread.id)} />
@@ -1165,6 +1148,10 @@
                   }}
                   field={(el: HTMLElement | null) => {
                     field = el;
+                    // Clicking the target opens a box that is already ready
+                    // to type: the reader types and presses Enter (Ved,
+                    // 2026-11-05).
+                    el?.focus();
                   }}
                 />
               {/if}
@@ -1180,13 +1167,11 @@
                 <DictateControl
                   {dictate}
                   onpress={() => {
-                    pressedSummary = false;
-                    pressedNote = false;
+                    pressedFeedback = false;
                     pressedEdit = false;
                   }}
                   onhold={() => {
-                    pressedSummary = false;
-                    pressedNote = false;
+                    pressedFeedback = false;
                     pressedEdit = false;
                   }}
                 />
@@ -1195,7 +1180,7 @@
             {#if blockLine !== null}
               <div class="doc-dictateline {blockLine.tone}">{blockLine.text}</div>
             {/if}
-            {#if dictate.panel && !pressedSummary && !pressedEdit}
+            {#if dictate.panel && !pressedFeedback && !pressedEdit}
               <DictationPanel
                 {connection}
                 {axes}
@@ -1236,6 +1221,19 @@
               <div class="doc-notehead">
                 <span class="doc-cc">outdated</span>
                 <div class="rv-acts">
+                  {#if statusName(thread.status) === 'resolved'}
+                    <button
+                      class="rv-a"
+                      type="button"
+                      onclick={() => void reopenedThread(thread.id)}>reopen</button
+                    >
+                  {:else}
+                    <button
+                      class="rv-a"
+                      type="button"
+                      onclick={() => void resolvedThread(thread.id)}>resolve</button
+                    >
+                  {/if}
                   <ThreadDelete ondelete={() => void deletedThread(thread.id)} />
                 </div>
               </div>
@@ -1263,8 +1261,8 @@
   {/if}
 
   <!-- **The door is the hand-off's answer.** A parked call is answered by
-       exactly two outcomes - approve, or something is off - each with an
-       optional note, and pressing neither leaves the call parked. A deep
+       exactly two outcomes - approve, or send feedback - both carrying the
+       one feedback box, and pressing neither leaves the call parked. A deep
        link has no call to answer, so it keeps the one `done` that files the
        comments and returns. The door opens even when the document never
        did: a refused read still has an answer to give. -->
@@ -1283,49 +1281,18 @@
             : ' - the agent has it.'}
         </p>
       {:else}
-        <!-- The round's description sits ABOVE the door, its own row and room
-             to write - and it is the review's description only when there is
-             a review to file (Ved, 2026-10-17: "the summary can be available
-             already right above the finish review button"). -->
-        {#if held.path !== null && drafts.length > 0}
-          {@const summaryPhase = takeIn === 'summary' ? rowPhase : null}
-          <div class="doc-wordline line" class:takeline={summaryPhase !== null}>
-            {#if summaryPhase !== null}
+        <!-- **One feedback box.** Its words are the answer's note, carried to
+             the agent with whichever answer is chosen, and the review's own
+             description when drafts exist: one box where the page used to
+             draw a summary and a note side by side. -->
+        {#if handoff !== null || (held.path !== null && drafts.length > 0)}
+          {@const feedbackPhase = takeIn === 'feedback' ? rowPhase : null}
+          <div class="doc-wordline line" class:takeline={feedbackPhase !== null}>
+            {#if feedbackPhase !== null}
               <TakeCard
                 take={composer.take}
                 wire={rowWire}
-                phase={summaryPhase}
-                oncancel={() => {
-                  landing.drop();
-                  dictate.act('cancel');
-                }}
-                spread
-              />
-            {:else}
-              <Field
-                editor="nowhere"
-                class="rv-txarea"
-                rows={3}
-                placeholder="summary (optional)"
-                aria={{ label: 'the round summary' }}
-                bind:value={summaryText}
-                field={(el: HTMLElement | null) => {
-                  summaryField = el;
-                }}
-              />
-            {/if}
-          </div>
-        {/if}
-        {#if handoff !== null}
-          <!-- The answer's note: one optional box, shared by both answers,
-               carried to the agent verbatim with whichever is chosen. -->
-          {@const notePhase = takeIn === 'note' ? rowPhase : null}
-          <div class="doc-wordline line" class:takeline={notePhase !== null}>
-            {#if notePhase !== null}
-              <TakeCard
-                take={composer.take}
-                wire={rowWire}
-                phase={notePhase}
+                phase={feedbackPhase}
                 oncancel={() => {
                   landing.drop();
                   dictate.act('cancel');
@@ -1338,15 +1305,26 @@
                 editor="nowhere"
                 class="rv-txarea"
                 rows={2}
-                placeholder="note (optional)"
-                aria={{ label: 'a note to carry with your answer' }}
-                bind:value={noteText}
+                placeholder="feedback on the document..."
+                aria={{ label: 'feedback on the document' }}
+                bind:value={feedbackText}
                 field={(el: HTMLElement | null) => {
-                  noteField = el;
+                  feedbackField = el;
                 }}
               />
             {/if}
           </div>
+          {#if handoff !== null}
+            <!-- The requirement, in words: the button stays in the tab order
+                 and an empty press turns this line into the warning. -->
+            <p class="doc-hint" class:warn={feedbackHint && feedbackText.trim() === ''}>
+              {feedbackHint && feedbackText.trim() === ''
+                ? 'write what is off before sending feedback'
+                : 'approve may carry this empty; send feedback needs words'}
+            </p>
+          {/if}
+        {/if}
+        {#if handoff !== null}
           <div class="rv-finishacts">
             <button
               class="doc-answer-btn"
@@ -1364,24 +1342,22 @@
               onclick={() => void answer('feedback')}
               >{finishState.kind === 'sending' && finishState.answer === 'feedback'
                 ? 'sending...'
-                : 'something is off'}</button
+                : 'send feedback'}</button
             >
             {#if dictation}
               <DictateControl
                 {dictate}
                 onpress={() => {
-                  pressedSummary = false;
-                  pressedNote = true;
+                  pressedFeedback = true;
                   pressedEdit = false;
                 }}
                 onhold={() => {
-                  pressedSummary = false;
-                  pressedNote = true;
+                  pressedFeedback = true;
                   pressedEdit = false;
                 }}
               />
             {/if}
-            {#if dictate.panel && pressedNote}
+            {#if dictate.panel && pressedFeedback}
               <DictationPanel
                 {connection}
                 {axes}
@@ -1393,7 +1369,7 @@
                 ondevice={setDevice}
                 onclose={() => {
                   dictate.panel = false;
-                  noteField?.focus();
+                  feedbackField?.focus();
                 }}
               />
             {/if}
@@ -1407,23 +1383,21 @@
               >done{drafts.length > 0 ? ` (${drafts.length})` : ''}</button
             >
             <!-- The mic lives with the box, not with the door: it draws only
-                 when there is a summary to dictate into. -->
+                 when there is a box to dictate into. -->
             {#if dictation && held.path !== null && drafts.length > 0}
               <DictateControl
                 {dictate}
                 onpress={() => {
-                  pressedSummary = true;
-                  pressedNote = false;
+                  pressedFeedback = true;
                   pressedEdit = false;
                 }}
                 onhold={() => {
-                  pressedSummary = true;
-                  pressedNote = false;
+                  pressedFeedback = true;
                   pressedEdit = false;
                 }}
               />
             {/if}
-            {#if dictate.panel && pressedSummary}
+            {#if dictate.panel && pressedFeedback}
               <DictationPanel
                 {connection}
                 {axes}
@@ -1435,7 +1409,7 @@
                 ondevice={setDevice}
                 onclose={() => {
                   dictate.panel = false;
-                  summaryField?.focus();
+                  feedbackField?.focus();
                 }}
               />
             {/if}
