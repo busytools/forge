@@ -225,7 +225,11 @@ export class Landing {
     if (notice.carried === true && inFlight === null && notice.generation !== undefined) {
       if (notice.generation !== lastTake(seat)) return null;
     }
-    if (inFlight !== null) keepTake(seat, inFlight);
+    // **Every landing this page places seeds the generation a reload reads**,
+    // whether a take was in flight or the start and end folded into one write.
+    // Seeding only from `inFlight` leaves a fold take unrecorded, and a reload
+    // after it would find no generation to match and drop the re-handed words.
+    if (notice.generation !== undefined) keepTake(seat, notice.generation);
     return notice.text;
   }
 
