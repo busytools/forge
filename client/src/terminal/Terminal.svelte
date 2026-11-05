@@ -431,16 +431,11 @@
   {/if}
 
   {#if touch && phase !== 'failed'}
-    <div
-      class="tn-keys"
-      role="toolbar"
-      aria-label="terminal keys"
-      aria-disabled={handOff.current === null}
-    >
+    <div class="tn-keys" role="toolbar" aria-label="terminal keys" aria-disabled={!typing}>
       <button
         type="button"
         aria-pressed={ctrlArmed}
-        disabled={handOff.current === null}
+        disabled={!typing}
         onclick={() => {
           ctrlArmed = !ctrlArmed;
         }}
@@ -450,41 +445,25 @@
       <button
         type="button"
         aria-pressed={altArmed}
-        disabled={handOff.current === null}
+        disabled={!typing}
         onclick={() => {
           altArmed = !altArmed;
         }}
       >
         Alt
       </button>
-      <button type="button" disabled={handOff.current === null} onclick={() => key('\x1b')}>
-        Esc
-      </button>
-      <button type="button" disabled={handOff.current === null} onclick={() => key('\t')}>
-        Tab
-      </button>
-      <button type="button" disabled={handOff.current === null} onclick={() => key('\x03')}>
-        ^C
-      </button>
-      <button type="button" disabled={handOff.current === null} onclick={() => key('\x1b[A')}>
-        ↑
-      </button>
-      <button type="button" disabled={handOff.current === null} onclick={() => key('\x1b[B')}>
-        ↓
-      </button>
-      <button type="button" disabled={handOff.current === null} onclick={() => key('\x1b[D')}>
-        ←
-      </button>
-      <button type="button" disabled={handOff.current === null} onclick={() => key('\x1b[C')}>
-        →
-      </button>
-      <button type="button" disabled={handOff.current === null} onclick={() => key('\r')}>
-        Enter
-      </button>
-      <button type="button" disabled={handOff.current === null} onclick={() => key('/')}>/</button>
-      <button type="button" disabled={handOff.current === null} onclick={() => key('-')}>-</button>
-      <button type="button" disabled={handOff.current === null} onclick={() => key('|')}>|</button>
-      <button type="button" disabled={handOff.current === null} onclick={() => key('~')}>~</button>
+      <button type="button" disabled={!typing} onclick={() => key('\x1b')}> Esc </button>
+      <button type="button" disabled={!typing} onclick={() => key('\t')}> Tab </button>
+      <button type="button" disabled={!typing} onclick={() => key('\x03')}> ^C </button>
+      <button type="button" disabled={!typing} onclick={() => key('\x1b[A')}> ↑ </button>
+      <button type="button" disabled={!typing} onclick={() => key('\x1b[B')}> ↓ </button>
+      <button type="button" disabled={!typing} onclick={() => key('\x1b[D')}> ← </button>
+      <button type="button" disabled={!typing} onclick={() => key('\x1b[C')}> → </button>
+      <button type="button" disabled={!typing} onclick={() => key('\r')}> Enter </button>
+      <button type="button" disabled={!typing} onclick={() => key('/')}>/</button>
+      <button type="button" disabled={!typing} onclick={() => key('-')}>-</button>
+      <button type="button" disabled={!typing} onclick={() => key('|')}>|</button>
+      <button type="button" disabled={!typing} onclick={() => key('~')}>~</button>
     </div>
   {/if}
 

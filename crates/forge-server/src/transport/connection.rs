@@ -2887,29 +2887,25 @@ where
                 )
                 .await;
             }
-            if let Some(viewing) = terminal.viewing.as_ref() {
-                if take {
-                    // **A parked hand-off owns the keyboard.** The bar hides
-                    // take while one waits, and a take that arrived anyway is
-                    // refused rather than handed a role the person cannot see.
-                    if state.surface.terminal_held(&seat) {
-                        return send(
-                            socket,
-                            ServerMessage::Error {
-                                what: "terminal_control".to_owned(),
-                                why:
-                                    "a terminal hand-off holds the keyboard; use the hand-off card"
-                                        .to_owned(),
-                                seat: Some(seat),
-                                dispatch_id: None,
-                            },
-                        )
-                        .await;
-                    }
-                    viewing.entry.take_control(me);
-                } else {
-                    viewing.entry.release_control(me);
+            if take {
+                // **A parked hand-off owns the keyboard.** The bar hides
+                // take while one waits, and the refusal is checked under the
+                // park's own lock, so a take cannot race a park into place
+                // and hand out a role the person cannot see.
+                if let Err(why) = state.surface.take_terminal_control(&seat, me) {
+                    return send(
+                        socket,
+                        ServerMessage::Error {
+                            what: "terminal_control".to_owned(),
+                            why,
+                            seat: Some(seat),
+                            dispatch_id: None,
+                        },
+                    )
+                    .await;
                 }
+            } else if let Some(viewing) = terminal.viewing.as_ref() {
+                viewing.entry.release_control(me);
             }
             Ok(())
         }
@@ -3693,12 +3689,13 @@ fn take_frame(
             let controlling = viewing.entry.controller() == Some(me);
             let owns = if controlling {
                 true
-            } else if answering && surface.terminal_held(&viewing.seat) {
+            } else if answering {
                 // **The hand-off's door is one client.** The first connection
                 // to type during a parked hand-off claims the keyboard, and a
                 // client that loses the race is a viewer - two clients must
-                // never type into one prompt.
-                viewing.entry.claim_control(me)
+                // never type into one prompt. The claim is atomic against the
+                // park's resolution, so an ending cannot leave it behind.
+                surface.claim_handoff_keyboard(&viewing.seat, me)
             } else {
                 false
             };

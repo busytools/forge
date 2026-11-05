@@ -65,10 +65,11 @@ while it is held, and lowering the surface or dropping the connection
 releases it. **A parked hand-off is one client's keyboard too**: the first
 client to type claims it, the bar of any other client reads `another client
 has the keyboard`, and the take control door is closed while the ask waits;
-the ending returns the keyboard to the agent. Outside both the raised
-surface is a viewer: the key bar and
-the terminal's own input are inert, and the server refuses a keystroke that
-arrives anyway, while the output frames keep it live. Inside the hold,
+the ending returns the keyboard to the agent. Outside both - and on any
+client that is not the hand-off's door - the raised surface is a viewer: the
+key bar and the terminal's own input are inert, and the server refuses a
+keystroke that arrives anyway, while the output frames keep it live. Inside
+the hold,
 Ctrl-C, Ctrl-D, Ctrl-Z and Ctrl-L reach the PTY untouched; Cmd+J raises and
 lowers the surface, Cmd+W lowers it rather than the window, and a browser
 tab's Back lowers it, because the surface pushes one history entry. **A finger cannot produce Escape, Tab or an arrow**, so the

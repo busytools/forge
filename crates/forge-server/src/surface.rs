@@ -125,6 +125,18 @@ impl ViewSurface {
         Ok(entry)
     }
 
+    /// Claim the keyboard for a client during a parked hand-off. The
+    /// workspace's own takes the hand-off lock, which is what makes the claim
+    /// atomic against the park's resolution.
+    pub fn claim_handoff_keyboard(&self, seat: &SessionSlot, viewer: u64) -> bool {
+        self.workspace.claim_handoff_keyboard(seat, viewer)
+    }
+
+    /// The person's own take, refused while a hand-off holds the keyboard.
+    pub fn take_terminal_control(&self, seat: &SessionSlot, viewer: u64) -> Result<(), String> {
+        self.workspace.take_terminal_control(seat, viewer)
+    }
+
     /// The person's close door: end the terminal's process group.
     pub fn terminal_close(&self, seat: &SessionSlot, id: u16) -> Result<(), String> {
         self.workspace.terminal_by_id(seat, id)?;

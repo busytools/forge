@@ -214,16 +214,21 @@ impl Workspace {
     /// The seat's terminal, spawned on first use. **The person's door**: a
     /// view can open one on a seat no agent has touched.
     ///
-    /// **A seat with no session holds no terminal.** The page cannot see one,
-    /// because its record is refused, so a door that opened one anyway would
-    /// run a shell nobody could draw or answer for; the person would be shown
-    /// a terminal that reads as closed.
+    /// **The door follows the seat read.** A declared seat answers a read
+    /// before anything starts in it (its directory resolves from the
+    /// declaration), so its door opens and the terminal it starts appears in
+    /// the record. A seat with no working tree - a worker never spawned, or a
+    /// slot naming no project - has its read refused, and the door refuses
+    /// with the same sentence rather than starting a shell nobody can draw.
     pub fn open_terminal(
         self: &Arc<Self>,
         slot: &SessionSlot,
     ) -> Result<Arc<TerminalEntry>, String> {
-        if self.domain_session_for(slot).is_none() {
-            return Err(format!("forge holds no session for {}; start it first", slot.display()));
+        if self.cwd_for_session(slot).is_none() {
+            return Err(format!(
+                "forge holds no session for {}; start it first",
+                slot.display()
+            ));
         }
         self.terminal_for(slot)
     }
@@ -272,6 +277,37 @@ impl Workspace {
     /// take-control, rather than through an agent's hand-off.
     pub fn terminal_controlled(&self, slot: &SessionSlot) -> bool {
         self.terminal_if_any(slot).is_some_and(|entry| entry.controller().is_some())
+    }
+
+    /// Claim the keyboard for a client during a parked hand-off, atomically
+    /// against the park's own resolution.
+    ///
+    /// **The claim and the ending take the same lock**, so a client that read
+    /// the park as live cannot land a claim after the ending has cleared it;
+    /// a hand-off never leaves the keyboard in a client's hands once it is
+    /// gone.
+    pub fn claim_handoff_keyboard(&self, slot: &SessionSlot, viewer: u64) -> bool {
+        let parked = self.terminal_handoffs.lock();
+        if !parked.values().any(|(owner, _, _)| owner == slot) {
+            return false;
+        }
+        let Some(entry) = self.terminal_if_any(slot) else { return false };
+        entry.claim_control(viewer)
+    }
+
+    /// The person's own take, refused while a hand-off holds the keyboard.
+    ///
+    /// **Checked under the hand-off lock**: a take racing a park either lands
+    /// before the park exists or is refused, never half of each.
+    pub fn take_terminal_control(&self, slot: &SessionSlot, viewer: u64) -> Result<(), String> {
+        let parked = self.terminal_handoffs.lock();
+        if parked.values().any(|(owner, _, _)| owner == slot) {
+            return Err("a terminal hand-off holds the keyboard; use the hand-off card".to_owned());
+        }
+        if let Some(entry) = self.terminal_if_any(slot) {
+            entry.take_control(viewer);
+        }
+        Ok(())
     }
 
     /// Close the seat's terminal, if it has one.
@@ -383,6 +419,12 @@ impl Workspace {
             return false;
         }
         let Some((owner, handoff, sender)) = parked.remove(&id) else { return false };
+        // **The ending takes the keyboard back while the park is still under
+        // the lock**, so a claim that saw the park as live cannot land after
+        // it and leave the agent blind behind a hand-off that is gone.
+        if let Some(entry) = self.terminal_if_any(&owner) {
+            entry.clear_control();
+        }
         drop(parked);
         tracing::debug!(
             event_name = "terminal_hand_off_resolved",
@@ -400,10 +442,8 @@ impl Workspace {
             id,
             answer,
         });
-        // The input is the agent's again: the strip stops saying it waits,
-        // and the keyboard the ask parked goes back with it.
+        // The strip stops saying the input waits.
         if let Some(entry) = self.terminal_if_any(&owner) {
-            entry.clear_control();
             self.announce_terminal(&owner, Some(entry.summary(&owner, false)));
         }
         true
@@ -836,16 +876,93 @@ mod tests {
         entry.terminal.close();
     }
 
-    /// **A seat with no session holds no terminal.** Its page is refused, so
-    /// a shell there would run with no record to draw and no way to answer;
-    /// the person's door refuses instead of opening one.
+    /// **The door follows the seat read.** A declared seat answers its read
+    /// before anything starts in it, so its door opens and the terminal it
+    /// starts appears in the record. A worker never spawned has no working
+    /// tree, its read is refused, and its door refuses with the same words.
     #[tokio::test]
-    async fn opening_a_terminal_on_a_sessionless_seat_is_refused() {
+    async fn opening_a_terminal_follows_the_seat_read() {
         let (workspace, _rx) = Workspace::testing_stub();
         workspace.seed_test_project("proj", "/tmp");
-        let slot = SessionSlot::worker("TestOrg", "proj", "nobody");
-        assert!(workspace.open_terminal(&slot).is_err(), "a sessionless seat opened a terminal");
-        assert!(workspace.terminal_if_any(&slot).is_none(), "and none was registered");
+
+        let declared = SessionSlot::lead("TestOrg", "proj");
+        let entry = workspace.open_terminal(&declared).expect("a declared seat answers its read");
+        drop(entry);
+        workspace.close_terminal(&declared);
+
+        let unstarted = SessionSlot::worker("TestOrg", "proj", "nobody");
+        assert!(
+            workspace.open_terminal(&unstarted).is_err(),
+            "a seat with no working tree opened a terminal",
+        );
+        assert!(workspace.terminal_if_any(&unstarted).is_none(), "and none was registered");
+    }
+
+    /// **The park's ending takes the keyboard even from a claim that landed.**
+    /// A claim read under the same lock as the ending cannot outlive it.
+    #[tokio::test]
+    async fn the_hand_off_ending_clears_a_claimed_keyboard() {
+        let (workspace, _rx) = Workspace::testing_stub();
+        workspace.seed_test_project("proj", "/tmp");
+        let slot = SessionSlot::lead("TestOrg", "proj");
+        let entry = workspace.terminal_for(&slot).expect("a terminal");
+        let (parked, _rx) = workspace
+            .register_terminal_hand_off(&slot, entry.id, "the sudo password")
+            .expect("a hand-off parks");
+
+        assert!(workspace.claim_handoff_keyboard(&slot, 7), "the door claims the keyboard");
+        assert!(workspace.terminal_controlled(&slot), "and the person holds it");
+
+        assert!(workspace.resolve_terminal_hand_off(
+            parked,
+            &slot,
+            TerminalHandOffAnswer {
+                ending: HandOffEnding::Done,
+                source: forge_primitives::browser::HandOffSource::Takeover,
+                client: Some(7),
+            },
+        ));
+        assert!(!workspace.terminal_controlled(&slot), "the ending gave the keyboard back");
+        assert!(
+            !workspace.claim_handoff_keyboard(&slot, 8),
+            "a claim after the ending cannot land",
+        );
+        entry.terminal.close();
+    }
+
+    /// **A take cannot land while a hand-off is parked**, checked under the
+    /// park's own lock; the ending opens the door again.
+    #[tokio::test]
+    async fn a_take_is_refused_while_a_hand_off_is_parked() {
+        let (workspace, _rx) = Workspace::testing_stub();
+        workspace.seed_test_project("proj", "/tmp");
+        let slot = SessionSlot::lead("TestOrg", "proj");
+        let entry = workspace.terminal_for(&slot).expect("a terminal");
+        let (parked, _rx) = workspace
+            .register_terminal_hand_off(&slot, entry.id, "the sudo password")
+            .expect("a hand-off parks");
+
+        assert!(
+            workspace.take_terminal_control(&slot, 7).is_err(),
+            "a take landed while a hand-off held the keyboard",
+        );
+        assert!(!workspace.terminal_controlled(&slot), "and no role was handed out");
+
+        assert!(workspace.resolve_terminal_hand_off(
+            parked,
+            &slot,
+            TerminalHandOffAnswer {
+                ending: HandOffEnding::Done,
+                source: forge_primitives::browser::HandOffSource::Takeover,
+                client: None,
+            },
+        ));
+        assert!(
+            workspace.take_terminal_control(&slot, 7).is_ok(),
+            "the person's own take is theirs again once the ask is answered",
+        );
+        assert!(workspace.terminal_controlled(&slot), "and they hold it");
+        entry.terminal.close();
     }
 
     /// The crate's state crosses to the wire unchanged, so a model reading the
