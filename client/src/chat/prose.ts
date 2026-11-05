@@ -225,7 +225,9 @@ export function renderProseTargets(text: string): ProseTarget[] {
       if (inner === undefined || inner.level !== 1 || inner.nesting < 0) continue;
       const innerMap = inner.map;
       if (innerMap === null || innerMap === undefined) continue;
-      const innerClose = matchingClose(tokens, child);
+      // A leaf inside the container (a fence, a code block, a rule) opens
+      // nothing, so it closes at itself; only a nesting child has a closer.
+      const innerClose = inner.nesting === 0 ? child : matchingClose(tokens, child);
       if (innerClose < 0 || innerClose > close) continue;
       ordinal += 1;
       const body = READER.renderer.render(tokens.slice(child, innerClose + 1), READER.options, env);

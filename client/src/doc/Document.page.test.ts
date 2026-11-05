@@ -412,6 +412,59 @@ describe('the reviewable document', () => {
     ).toEqual(['comment on line 1', 'comment on line 3']);
   });
 
+  /** **A leaf inside a quote is a target of its own.** A fence opens
+   *  nothing, so it must not be run through the closer search - a quote
+   *  ending in a fence would drop it and draw the raw markers. */
+  it('draws a fenced code block at the end of a quote', () => {
+    drawReviewable({
+      kind: 'landed',
+      document_kind: 'markdown',
+      bytes: enc('> intro\n>\n> ```\n> const x = 1;\n> ```\n'),
+      reviewable: true,
+      content_hash: '42',
+    });
+
+    const quotes = [...document.querySelectorAll('.doc-block')].filter(
+      (block) => block.querySelector('.doc-block-body > blockquote') !== null,
+    );
+    expect(quotes).toHaveLength(2);
+    const code = quotes[1]?.querySelector('.doc-block-body .code pre');
+    expect(code?.textContent, 'the fence is rendered as code').toContain('const x = 1;');
+    expect(
+      document.querySelector('.doc-body')?.textContent,
+      'no raw markdown markers reach the page',
+    ).not.toContain('```');
+    expect(
+      quotes[1]?.querySelector('.doc-add')?.getAttribute('aria-label'),
+      'and the fence keeps its own line',
+    ).toBe('comment on line 3');
+  });
+
+  /** **A quote's fence does not swallow the paragraph after it.** The leaf
+   *  is one target and the paragraph another, each anchored at its own line. */
+  it('keeps a quoted fence and its following paragraph as separate targets', () => {
+    drawReviewable({
+      kind: 'landed',
+      document_kind: 'markdown',
+      bytes: enc('> ```\n> const x = 1;\n> ```\n>\n> after the code\n'),
+      reviewable: true,
+      content_hash: '42',
+    });
+
+    const quotes = [...document.querySelectorAll('.doc-block')].filter(
+      (block) => block.querySelector('.doc-block-body > blockquote') !== null,
+    );
+    expect(quotes).toHaveLength(2);
+    const code = quotes[0]?.querySelector('.doc-block-body .code pre');
+    expect(code?.textContent, 'the fence renders first').toContain('const x = 1;');
+    const after = quotes[1]?.querySelector('.doc-block-body');
+    expect(after?.textContent?.trim(), 'the paragraph is its own target').toBe('after the code');
+    expect(
+      quotes[1]?.querySelector('.doc-add')?.getAttribute('aria-label'),
+      'and anchors at its own line',
+    ).toBe('comment on line 5');
+  });
+
   /**
    * **The hover target and the block are two anchors.** A press on the
    * rendered block is a comment on the section; a press on its `+` is a
