@@ -141,6 +141,18 @@ impl Healing {
             // The budget is spent: the seat stays failed with the last
             // diagnostic, and this line is the record of the giving-up.
             workspace.clear_heal_progress(slot);
+            if !slot.is_lead() {
+                // The row must stop saying Restarting even when no further
+                // death arrives to repaint it - a refused final attempt has
+                // none. The progress is already cleared, so the transition
+                // is not skipped as an in-flight heal.
+                crate::workspace::transition_worker_to_failed(
+                    workspace,
+                    project_key,
+                    slot,
+                    Some(diagnostic.to_owned()),
+                );
+            }
             tracing::warn!(
                 target: "forge_workspace::healing",
                 event_name = "seat_heal_exhausted",
@@ -733,6 +745,10 @@ mod tests {
         assert!(
             notices.iter().any(|(_, body)| body.contains("Left Failed after 3 restarts")),
             "the budget still escalates: {notices:?}",
+        );
+        assert!(
+            notices.iter().any(|(_, body)| body.contains("the worktree could not be re-created")),
+            "the refusal's own reason rides a notice: {notices:?}",
         );
         assert!(
             notices.iter().any(|(_, body)| body.contains("the worktree could not be re-created")),
