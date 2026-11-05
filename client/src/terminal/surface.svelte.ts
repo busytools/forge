@@ -170,6 +170,10 @@ export function installTerminalSurface(connection: Connection): () => void {
     surface.seq = view.seq;
     surface.viewer = view.viewer;
     surface.controller = view.controller;
+    // **A repaint is the server's current truth**: any press still waiting
+    // or refusal still drawn belongs to the attach that is being replaced.
+    surface.control_pending = null;
+    surface.control_reason = null;
     newestScreen = view.screen;
     for (const listener of views) {
       try {
