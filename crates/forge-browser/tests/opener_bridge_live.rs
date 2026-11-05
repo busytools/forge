@@ -930,6 +930,78 @@ async fn a_noopener_popup_whose_renderer_dies_is_reaped() {
     Ring::unlink(&ring_name);
 }
 
+/// **A `noopener` popup can close itself.** It carries the popup role so
+/// `window.close()` routes to the host, and no opener proxy; the tab goes the
+/// same way a bridged popup's does.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_noopener_popup_closes_itself() {
+    let scratch = tempfile::tempdir().expect("a temp dir");
+    let exe = support::host_executable(scratch.path());
+    let profile = scratch.path().join("profile");
+    std::fs::create_dir_all(&profile).expect("the profile dir");
+    let port = support::free_port();
+    let ring_name = format!("/forge-ob-noop-close-{}", std::process::id());
+    let log = scratch.path().join("host.log");
+
+    let (provider_port, _provider) = serve_on(
+        "::1",
+        "<!doctype html><meta charset=utf-8><title>provider</title>\
+         <script>setTimeout(function () { window.close(); }, 1200);</script>",
+    );
+    let provider_url = format!("http://[::1]:{provider_port}/");
+    let app = format!(
+        "<!doctype html><meta charset=utf-8>\
+         <style>html,body{{margin:0;padding:0}}\
+         button{{width:300px;height:120px;font-size:24px}}</style>\
+         <button id=signin>Sign in</button>\
+         <script>\
+         document.getElementById('signin').onclick=function() {{\
+           if (window.__opened) return;\
+           window.__opened = true;\
+           var w = window.open('{provider_url}', 'signin', 'noopener');\
+           document.title = w === null ? 'noopener-null' : 'noopener-object';\
+         }};\
+         document.title='ready';\
+         </script>"
+    );
+    let (app_port, _app) = serve_on("127.0.0.1", &app);
+
+    let mut host =
+        support::Host::start_with_events(&exe, &profile, port, &ring_name, "800x600", &[], &log);
+    let opener = support::wait_for_page(port, &log, BOUND);
+    let (mut cdp, _events) = connect(port, &format!("/devtools/page/{opener}"))
+        .await
+        .expect("the page's devtools endpoint accepts");
+    cdp.call("Page.navigate", json!({ "url": format!("http://127.0.0.1:{app_port}/") }), None)
+        .await
+        .expect("the app navigates");
+    wait_for_title(&mut cdp, &["ready"], BOUND).await;
+
+    let tab = click_until_popup(&mut host, BOUND).await;
+    wait_for_pages(port, 2, BOUND).await;
+
+    // **The popup closes itself and its tab ends**: a page target that leaves
+    // while the tab stays behind is the dead row this test exists to catch.
+    let deadline = Instant::now() + BOUND;
+    loop {
+        let closed = host.events().iter().any(|line| {
+            matches!(parse(line), Some(HostEvent::TabClosed { tab: closed }) if closed == tab)
+        });
+        if closed && pages(port).len() == 1 {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the noopener popup never closed itself (tab {tab}, log: {})",
+            host.log_tail(),
+        );
+        tokio::time::sleep(POLL).await;
+    }
+
+    assert!(host.terminate(Duration::from_secs(10)).success(), "the host ends on SIGTERM");
+    Ring::unlink(&ring_name);
+}
+
 /// **The opener closes first and the popup survives it.** The popup's
 /// `window.opener.closed` flips, its posts are dropped, and its tab stays; the
 /// same fact `TabRegistry` keeps as `is_popup` so an attach timeout still
