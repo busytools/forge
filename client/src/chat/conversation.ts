@@ -782,12 +782,12 @@ function outsidePage(merged: unknown[], here: Frames, fromPage: Frames): unknown
  * **A row the server joined two exchanges into is not evidence either is
  * outside the page.** A prompt no row opens - a `prompt_under` from another
  * client, a delivery - leaves the server's own fold with nothing to open its
- * turn at, so its page carries that exchange inside the row above it. Frames
- * say an exchange is in the row; the id says it is that turn's, because two
+ * turn at, so its page carries that exchange inside the row above it. The
+ * exchange's frames put it in the row; the ids say whose, because two
  * exchanges can say the same words.
  *
- * Only one that STARTS earlier counts: the row's order is the exchange order,
- * so a prefix is the only cut this row can be taken at.
+ * Only one that starts earlier counts: the row's order is the exchange order,
+ * so the earlier exchange is the row's front.
  *
  * **And only a row that cannot be the match's own.** A row carrying the
  * frame the match opened on is that exchange's row, however many of its
@@ -820,8 +820,8 @@ function carriedBefore(
  * The row's copy cut into the exchanges it carries, one piece per owner.
  *
  * Cut where each owner's first frame sits, in the row's own order; the frames
- * above the first cut belong to the first piece, so nothing the page carries
- * is dropped (rule 25). An owner with no frame in the copy takes no piece.
+ * above the first cut belong to the first piece, so nothing this copy carries
+ * is dropped. An owner with no frame in the copy takes no piece.
  */
 function splitCarried(
   copy: unknown[],
@@ -2713,15 +2713,8 @@ export class Chat {
           drawn.push(row);
           continue;
         }
-        // **A page row can carry two exchanges.** A prompt no row opens - a
-        // `prompt_under` from another client, a delivery - leaves the server's
-        // copy with nothing to open its turn at, so its fold joins that
-        // exchange to the turn above it and one row carries frames of both.
-        // The match above claims the row for the newest exchange, and an
-        // earlier turn the row also carries must keep its place: left out of
-        // the page it is placed above it, moving a settled turn to the head of
-        // the conversation and drawing its frames a second time inside the row
-        // that claimed them.
+        // A page row can carry two exchanges; split it so the earlier turn
+        // keeps its place.
         const borrowed = carriedBefore(copy, healed.turns, match, placed);
         const pieces = borrowed.length === 0 ? [] : splitCarried(copy, [...borrowed, match]);
         const own = pieces.find((piece) => piece.turn === match)?.messages ?? copy;
