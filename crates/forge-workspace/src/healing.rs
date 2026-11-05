@@ -643,6 +643,47 @@ mod tests {
         assert!(!body.contains("attempt 4"), "the escalation is not a fourth attempt: {body}");
     }
 
+    /// **A death that follows a stop is the stop's.** A close or a despawn
+    /// kills the child itself, and the death that arrives afterwards must
+    /// not schedule anything - the stop already owns the seat.
+    #[tokio::test(start_paused = true)]
+    async fn a_stopped_seat_is_not_healed() {
+        let (workspace, slot) = seeded_worker();
+        let (restart, calls) = recorder(Ok(None));
+        let (notify, notices) = notifier();
+        let healing = Healing::new(Arc::downgrade(&workspace), restart, notify);
+
+        healing.note_stopped(&slot);
+        healing.note_death(&slot, &SessionId::new("dead-1"), "the subprocess closed");
+
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_secs(60)).await;
+        tokio::task::yield_now().await;
+        assert!(calls.lock().expect("recorder").is_empty(), "the stop owns the seat");
+        assert!(notices.lock().expect("notices").is_empty(), "a stop's death is not news");
+        assert!(workspace.heal_progress(&slot).is_none(), "the row does not say restarting");
+    }
+
+    /// A seat with no durable row is not forge's to bring back: the death
+    /// schedules nothing at all, before any timer could re-check.
+    #[tokio::test(start_paused = true)]
+    async fn an_ad_hoc_death_schedules_nothing() {
+        let (workspace, _slot) = seeded_worker();
+        let (restart, calls) = recorder(Ok(None));
+        let (notify, notices) = notifier();
+        let healing = Healing::new(Arc::downgrade(&workspace), restart, notify);
+        let ad_hoc = SessionSlot::worker("TestOrg", "forge", "no-row");
+
+        healing.note_death(&ad_hoc, &SessionId::new("dead-1"), "the subprocess closed");
+
+        assert!(workspace.heal_progress(&ad_hoc).is_none(), "nothing is scheduled");
+        assert!(notices.lock().expect("notices").is_empty(), "and nobody is told");
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_secs(60)).await;
+        tokio::task::yield_now().await;
+        assert!(calls.lock().expect("recorder").is_empty(), "no restart was ever attempted");
+    }
+
     /// A lead has no lead above it: its death is drawn on the project row
     /// and is nobody's peer message.
     #[tokio::test(start_paused = true)]
