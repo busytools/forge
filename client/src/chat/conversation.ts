@@ -2907,13 +2907,13 @@ export class Chat {
       // under one key - which a keyed list throws on.
       //
       // **And a page can account for a live turn under a row that is not its
-      // own.** The fold opens no turn at a delivery's envelope row - the CLI
-      // pressed the prompt into the turn it was writing - while a frame that
-      // lands just after that turn's result builds one here. The page's row
-      // for the turn above carries the same message under the prompt's id and
-      // neither name finds the other, so the delivery drew twice: once in the
-      // turn carrying it and once below that turn's report (#2390). The frames
-      // the read came too early for join that row.
+      // own.** The fold opens no turn at an envelope row the CLI pressed into
+      // a running turn - it wrote the prompt into the turn it was writing -
+      // while a frame that lands just after that turn's result builds one
+      // here. The page's row for the turn above carries the same message under
+      // the prompt's id and neither name finds the other, so the delivery drew
+      // twice: once in the turn carrying it and once below that turn's report
+      // (#2390). The frames the read came too early for join that row.
       //
       // By the prompt's id, never by words: a delivery repeating earlier words
       // is still the reader's new row.

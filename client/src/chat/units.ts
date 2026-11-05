@@ -2419,8 +2419,9 @@ export function fold(
    * Whether a unit is nothing but messages that arrived after the last output.
    *
    * **The peer card is the shape the transcript keeps in the turn it
-   * interrupted** - a bracket-led envelope opens no turn - so the drawn row is
-   * what says one landed, and the reader's own words ride the same carrier. A
+   * interrupted** - a bracket-led envelope the CLI presses in opens no turn -
+   * so the drawn row is what says one landed, and the reader's own words ride
+   * the same carrier. A
    * delivery is the same: a cron fire, a Slack message or a Gotify push
    * carries its own prompt in; one taken at a turn's end belongs to the next,
    * and one absorbed mid-turn belongs to the turn it interrupted.

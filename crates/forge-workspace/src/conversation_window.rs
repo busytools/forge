@@ -761,15 +761,18 @@ mod tests {
         );
     }
 
-    /// A frame the fold draws as something other than a turn never takes the
-    /// cut: the window would start with a notice that opens nothing, and the
-    /// turn behind it would draw with its head missing.
+    /// The cut never starts on a frame the window's scan leaves alone: it
+    /// steps over every one of them, so the window's first frame is a frame
+    /// the fold opens a turn at.
+    ///
+    /// The run below is what the scan cannot name - a delivery's envelope row,
+    /// which the fold opens a turn at, and a queued prompt - so the cut has to
+    /// step past all of them.
     #[test]
-    fn a_frame_that_opens_no_turn_is_never_the_cut() {
+    fn a_frame_the_scan_leaves_alone_is_never_the_cut() {
         let mut messages = a_history_of(333, 3);
-        // The run of deliveries the line lands in. Each draws as a notice -
-        // and the queued prompt, which the fold opens a turn for and the scan
-        // leaves alone, is one too.
+        // The run of frames the scan leaves alone: a delivery's envelope row,
+        // which the fold opens a turn at, and the queued prompt after them.
         messages
             .extend((0..4).map(|at| a_said(&format!("[Gotify - app 'x', priority 1]\n\n{at}"))));
         messages.push(
@@ -792,7 +795,7 @@ mod tests {
 
         let (window, dropped) = Window::tail_of(&messages);
 
-        assert_eq!(dropped.frames, 1_004, "the cut passes every frame that opens no turn");
+        assert_eq!(dropped.frames, 1_004, "the cut passes every frame the scan leaves alone");
         assert!(
             opens_a_turn(&window.messages()[0]),
             "and the window starts on a turn's own first frame"
