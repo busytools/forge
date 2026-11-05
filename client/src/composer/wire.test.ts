@@ -150,7 +150,7 @@ describe('the ask as the composer reads it', () => {
 
     expect(
       held.request.thread,
-      'no thread name reads as none, so the card draws the ts',
+      'no thread name reads as none, so the card names a thread without a name',
     ).toBeNull();
     expect(held.request.tagged, 'and no tags reads as none, not as a placeholder').toEqual([]);
   });

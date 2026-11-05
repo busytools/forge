@@ -1325,7 +1325,7 @@ pub async fn read_thread(
 
 /// The parent message of the thread `ts` starts, which is the message a
 /// draft's card names. An error is the caller's to draw around: the card
-/// falls back to the raw ts rather than inventing a name.
+/// names the thread "a thread" rather than inventing a name.
 pub async fn thread_parent(
     api: &dyn SlackApi,
     channel: &str,
@@ -3835,7 +3835,7 @@ mod tests {
     }
 
     /// A failed thread read is surfaced rather than turned into a blank
-    /// thread: the card falls back to the raw ts, never to an invented name.
+    /// thread: the card names it "a thread", never an invented name.
     #[tokio::test]
     async fn a_thread_parent_read_that_fails_is_not_a_guess() {
         let fake = Arc::new(FakeHost::default());
