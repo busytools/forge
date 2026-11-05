@@ -1909,6 +1909,7 @@ dependencies = [
  "flate2",
  "forge-agent",
  "forge-browser",
+ "forge-connectors",
  "forge-dictate",
  "forge-primitives",
  "forge-sdk",

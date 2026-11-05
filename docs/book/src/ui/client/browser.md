@@ -117,7 +117,8 @@ never handed back as the driver's `_page` TypeError. A driver that cannot
 attach within its 30 s bound is replaced; a host no fresh driver can list is
 named and ended, except that a host another session's page is open on is left
 running and the holder is named back instead; when its endpoint has stopped
-answering, only the idle clock releases it.
+answering, the idle clock releases it, or the project lead's `browser_end_host`
+does when the profile is shared.
 
 **Every viewer is a watcher until it takes the role on that tab.** A surface
 attaches to one tab and receives every frame that tab paints; **exactly one
@@ -284,9 +285,10 @@ than a scaled copy of the surface.
 **There is no external-browser door.** Every page lives in the server's
 engine and nowhere else; no client hands one to another browser.
 
-**A host that ends takes its tabs.** A restart, an idle close and a stop all
-end the host, and its tabs end with it: the next call starts a fresh host,
-whose boot tab the first page call adopts before navigating. A profile's
+**A host that ends takes its tabs.** A restart, an idle close, a stop and a
+lead's `browser_end_host` all end the host, and its tabs end with it: the next
+call starts a fresh host, whose boot tab the first page call adopts before
+navigating. A profile's
 cache and logins stay, so a sign-in survives the host; a filled form does not.
 
 **An idle browser closes on the SERVER's clock.** After `[browser]

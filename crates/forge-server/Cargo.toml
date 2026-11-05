@@ -104,6 +104,9 @@ forge-workspace = { workspace = true, features = ["testing", "test-helpers"] }
 forge-dictate = { workspace = true }
 # The voice socket test drives a stub engine rather than loading a model.
 forge-tts = { workspace = true }
+# The log-filter test drives the Slack pump's throttle reporter through its
+# real site rather than a target written in the test.
+forge-connectors = { workspace = true, features = ["testing"] }
 # The connectors fixture seeds durable subscriptions, which are keyed by id.
 uuid = { workspace = true }
 # A test reads back the records a site emitted, which needs a subscriber to
