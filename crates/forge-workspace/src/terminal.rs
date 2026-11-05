@@ -214,19 +214,16 @@ impl Workspace {
     /// The seat's terminal, spawned on first use. **The person's door**: a
     /// view can open one on a seat no agent has touched.
     ///
-    /// **A seat with no session holds no terminal.** The page cannot see one
-    /// - its record is refused - so a door that opened one anyway would run a
-    /// shell nobody could draw or answer for, and the person would be shown a
-    /// terminal that reads as closed.
+    /// **A seat with no session holds no terminal.** The page cannot see one,
+    /// because its record is refused, so a door that opened one anyway would
+    /// run a shell nobody could draw or answer for; the person would be shown
+    /// a terminal that reads as closed.
     pub fn open_terminal(
         self: &Arc<Self>,
         slot: &SessionSlot,
     ) -> Result<Arc<TerminalEntry>, String> {
         if self.domain_session_for(slot).is_none() {
-            return Err(format!(
-                "forge holds no session for {}; start it first",
-                slot.display()
-            ));
+            return Err(format!("forge holds no session for {}; start it first", slot.display()));
         }
         self.terminal_for(slot)
     }

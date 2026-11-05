@@ -2897,8 +2897,9 @@ where
                             socket,
                             ServerMessage::Error {
                                 what: "terminal_control".to_owned(),
-                                why: "a terminal hand-off holds the keyboard; use the hand-off card"
-                                    .to_owned(),
+                                why:
+                                    "a terminal hand-off holds the keyboard; use the hand-off card"
+                                        .to_owned(),
                                 seat: Some(seat),
                                 dispatch_id: None,
                             },

@@ -12343,11 +12343,8 @@ async fn attach_answering(url: &str, seat: &SessionSlot, id: Option<u16>) -> (Cl
         },
     )
     .await;
-    send(
-        &mut socket,
-        ClientMessage::TerminalView { seat: seat.clone(), id, reply_to: Some(41) },
-    )
-    .await;
+    send(&mut socket, ClientMessage::TerminalView { seat: seat.clone(), id, reply_to: Some(41) })
+        .await;
     let deadline = Instant::now() + Duration::from_secs(10);
     let mut attached = None;
     while Instant::now() < deadline && attached.is_none() {
