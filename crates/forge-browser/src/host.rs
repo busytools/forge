@@ -717,6 +717,10 @@ struct PopupGate {
     /// **A noopener popup has no channel**, so this is what still lets its
     /// renderer death end its tab instead of leaving a dead row.
     bridged_tabs: Mutex<HashSet<u16>>,
+    /// Openers whose refusal has already been logged. **One line per opener,
+    /// not one per attempt**: a page can repeat a refused open, and the
+    /// host's stderr is a file.
+    refused_logged: Mutex<HashSet<u16>>,
     /// A bridged popup whose blank document has not acknowledged its role,
     /// with the address to start once it does. **The address waits**: the
     /// popup's first document must have `window.opener` before its own
@@ -1392,12 +1396,16 @@ impl PopupGate {
     ) {
         let id = self.bridge.lock().unwrap_or_else(PoisonError::into_inner).next_id();
         if let Err(why) = self.open_bridged(opener, handle, url, id, noopener) {
-            eprintln!(
-                "cef host: a cross-site popup was not bridged (event_name \
-                 cef_opener_bridge_refused, profile {}, opener {opener}, address {}): {why}",
-                self.profile,
-                origin_words(url)
-            );
+            let first =
+                self.refused_logged.lock().unwrap_or_else(PoisonError::into_inner).insert(opener);
+            if first {
+                eprintln!(
+                    "cef host: a cross-site popup was not bridged (event_name \
+                     cef_opener_bridge_refused, profile {}, opener {opener}, address {}): {why}",
+                    self.profile,
+                    origin_words(url)
+                );
+            }
             if !noopener {
                 self.send_bridge_event(opener, "refused", handle, "", "", "");
             }
@@ -1987,6 +1995,7 @@ pub fn run(args: &Args) -> ExitCode {
             holding_births: AtomicUsize::new(0),
             bridge: Mutex::new(Channels::default()),
             bridged_tabs: Mutex::new(HashSet::new()),
+            refused_logged: Mutex::new(HashSet::new()),
             pending_start: Mutex::new(Vec::new()),
             assigned_tabs: Mutex::new(HashSet::new()),
         }),
@@ -2510,6 +2519,7 @@ mod tests {
             holding_births: std::sync::atomic::AtomicUsize::new(0),
             bridge: std::sync::Mutex::new(super::Channels::default()),
             bridged_tabs: std::sync::Mutex::new(std::collections::HashSet::new()),
+            refused_logged: std::sync::Mutex::new(std::collections::HashSet::new()),
             pending_start: std::sync::Mutex::new(Vec::new()),
             assigned_tabs: std::sync::Mutex::new(std::collections::HashSet::new()),
         })
