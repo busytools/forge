@@ -11513,6 +11513,90 @@ describe('dictation in the send-back box', () => {
   });
 
   /**
+   * **The key lands in the box holding the caret.** A take begun with the
+   * push-to-talk key has no press on any box to name its destination, so the
+   * box the reader's caret is in is the one it lands in: with the send-back
+   * field open and holding the caret, the words are their feedback - not the
+   * draft behind the card - exactly as a press on the box's own mic leaves
+   * them.
+   */
+  it('lands a keyboard-started take in the open send-back box', async () => {
+    const write = clipboard(() => Promise.resolve());
+    const harness = open({ dictation: true, record: record({ pending_asks: [slackDraftAsk()] }) });
+
+    action('Send back with feedback').click();
+    flushSync();
+    expect(document.activeElement, 'the box holds the caret').toBe(feedbackBox());
+
+    key('ControlRight', 'keydown');
+    await opened();
+    key('ControlRight', 'keyup');
+    showTake(harness);
+    endTake(harness);
+    harness.page.record = record({
+      pending_asks: [slackDraftAsk()],
+      composer: {
+        take: null,
+        notice: { kind: 'landed', text: 'say staging, not prod', truncated: false },
+        machine: null,
+      },
+    });
+    flushSync();
+
+    expect(feedbackBox().value, 'the words land in the send-back box').toBe(
+      'say staging, not prod',
+    );
+    expect(write, 'and are copied once').toHaveBeenCalledTimes(1);
+    expect(write).toHaveBeenCalledWith('say staging, not prod');
+  });
+
+  /**
+   * **An open box claims a key take only while its field holds the caret.**
+   * A reader who opened the box and then moved on to the card is not
+   * dictating into it, so the words go to the composer's draft: the box being
+   * open is not on its own enough to take them.
+   */
+  it('keeps a keyboard take in the composer when the open box does not hold the caret', async () => {
+    const write = clipboard(() => Promise.resolve());
+    const harness = open({ dictation: true, record: record({ pending_asks: [slackDraftAsk()] }) });
+
+    action('Send back with feedback').click();
+    flushSync();
+    const post = action('Post');
+    post.focus();
+    flushSync();
+    expect(document.activeElement, 'the caret left the box').toBe(post);
+
+    key('ControlRight', 'keydown');
+    await opened();
+    key('ControlRight', 'keyup');
+    showTake(harness);
+    endTake(harness);
+    harness.page.record = record({
+      pending_asks: [slackDraftAsk()],
+      composer: {
+        take: null,
+        notice: { kind: 'landed', text: 'key words', truncated: false },
+        machine: null,
+      },
+    });
+    flushSync();
+
+    // The prompt still holds the slot, so the composer's field is not drawn.
+    expect(document.querySelector('[data-editor="composer"]')).toBeNull();
+    harness.page.record = record({
+      composer: {
+        take: null,
+        notice: { kind: 'landed', text: 'key words', truncated: false },
+        machine: null,
+      },
+    });
+    flushSync();
+    expect(field().value, 'the words were kept in the composer draft').toBe('key words');
+    expect(write).toHaveBeenCalledWith('key words');
+  });
+
+  /**
    * A take begun in the send-back box whose field closes before the words land
    * keeps them in the composer's draft, which is the box the card leaves
    * behind. Nothing is lost.
@@ -11822,13 +11906,13 @@ describe('dictation in the send-back box', () => {
   });
 
   /**
-   * **A refused press does not decide the next take's destination.** The
-   * send-back box's mic opens the box and records the intent, and a permission
-   * the reader refused leaves both behind: the next press from the composer's
-   * own key must land in the composer's draft, not in the box whose mic was
-   * refused.
+   * **A refused press leaves the box open, and the open box is what decides.**
+   * The press never started a take, so it names no destination of its own; the
+   * key take lands in the field the caret is in, which is the box the reader
+   * was already writing in. Nothing the refused press left behind moves the
+   * words, and the composer's draft keeps none of them.
    */
-  it('does not route the next take to the send-back box after its press was refused', async () => {
+  it('routes a key take to the box a refused press left open', async () => {
     const write = clipboard(() => Promise.resolve());
     const harness = open({ dictation: true, record: record({ pending_asks: [slackDraftAsk()] }) });
 
@@ -11845,9 +11929,9 @@ describe('dictation in the send-back box', () => {
     } finally {
       mic.held.refuse = false;
     }
+    expect(document.activeElement, 'the box still holds the caret').toBe(feedbackBox());
 
-    // The reader tries the key instead. The refused press must not decide
-    // where these words go.
+    // The reader tries the key instead.
     key('ControlRight', 'keydown');
     await opened();
     key('ControlRight', 'keyup');
@@ -11863,16 +11947,7 @@ describe('dictation in the send-back box', () => {
     });
     flushSync();
 
-    // The prompt is answered, so the composer's field returns with the words.
-    harness.page.record = record({
-      composer: {
-        take: null,
-        notice: { kind: 'landed', text: 'key words', truncated: false },
-        machine: null,
-      },
-    });
-    flushSync();
-    expect(field().value, 'the key took the words to the composer').toBe('key words');
+    expect(feedbackBox().value, 'the key took the words to the open box').toBe('key words');
     expect(write).toHaveBeenCalledWith('key words');
   });
 });
