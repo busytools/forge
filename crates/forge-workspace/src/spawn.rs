@@ -219,12 +219,13 @@ fn try_emit(workspace: &Workspace, label: &'static str, update: SessionUpdate) {
 /// `SessionUpdate::Spawning` under it, then spawn the agent. The
 /// `Connected` event from the resulting `SessionTask` lands under the
 /// same key, so the announced bucket is the one the child connects
-/// under.
+/// under. A spawn that fails names the reason, which the heal's own
+/// supervisor counts as a failed attempt; a command dispatch drops it.
 pub(crate) fn handle_spawn_project(
     workspace: &Arc<Workspace>,
     project_name: &str,
     mut launch_settings: SessionLaunchSettings,
-) {
+) -> Result<(), String> {
     let Some(project) = workspace.find_project_view_by_name(project_name) else {
         tracing::warn!(
             target: "forge_workspace::spawn",
@@ -239,7 +240,7 @@ pub(crate) fn handle_spawn_project(
                 message: format!("Unknown project: {project_name}"),
             },
         );
-        return;
+        return Err(format!("Unknown project: {project_name}"));
     };
 
     apply_lead_charter(&mut launch_settings);
@@ -262,16 +263,17 @@ pub(crate) fn handle_spawn_project(
                 &crate::SessionSlot::lead(&project.org, &project.name),
                 crate::mcp::peers::types::PeerFailureReason::TargetConnectionFailed,
             );
+            let message = format!("agent spawn failed: {err}");
             try_emit(
                 workspace,
                 "spawn_project::ConnectionFailed",
                 SessionUpdate::ConnectionFailed {
                     key: SessionSlot::lead(&project.org, &project.name),
-                    message: format!("agent spawn failed: {err}"),
+                    message: message.clone(),
                     fatal: false,
                 },
             );
-            return;
+            return Err(message);
         }
     };
     try_emit(
@@ -304,6 +306,7 @@ pub(crate) fn handle_spawn_project(
             // The lead's profile comes up with the session rather than
             // paying the launch on its first browser call.
             warm_browser_seat(workspace, &session_key);
+            Ok(())
         }
         Err(err) => {
             tracing::error!(
@@ -328,8 +331,13 @@ pub(crate) fn handle_spawn_project(
             try_emit(
                 workspace,
                 "spawn_project::ConnectionFailed",
-                SessionUpdate::ConnectionFailed { key: session_key, message, fatal: false },
+                SessionUpdate::ConnectionFailed {
+                    key: session_key,
+                    message: message.clone(),
+                    fatal: false,
+                },
             );
+            Err(message)
         }
     }
 }
@@ -3274,7 +3282,11 @@ provider = "anthropic"
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         let mut rx = workspace.subscribe_answerer();
 
-        handle_spawn_project(&workspace, "no-such-project", SessionLaunchSettings::default());
+        assert!(
+            handle_spawn_project(&workspace, "no-such-project", SessionLaunchSettings::default())
+                .is_err(),
+            "an unknown project is refused rather than ignored",
+        );
 
         // The user sees a typed notice naming the unknown project.
         assert!(
@@ -3299,7 +3311,7 @@ provider = "anthropic"
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         let mut rx = workspace.subscribe_answerer();
 
-        handle_spawn_project(&workspace, "forge", SessionLaunchSettings::default());
+        let _ = handle_spawn_project(&workspace, "forge", SessionLaunchSettings::default());
 
         let update = rx.try_recv().expect("Spawning emit");
         match std::sync::Arc::unwrap_or_clone(update.update) {
@@ -3331,7 +3343,7 @@ provider = "anthropic"
         workspace.seed_test_gateway_ready(false);
         let mut rx = workspace.subscribe_answerer();
 
-        handle_spawn_project(&workspace, "forge", SessionLaunchSettings::default());
+        let _ = handle_spawn_project(&workspace, "forge", SessionLaunchSettings::default());
 
         assert!(
             matches!(
@@ -5339,6 +5351,47 @@ heal_stable = "30s"
         forge_agent::set_test_sdk_binary(None);
     }
 
+    /// Wait until `done` holds, polling every 20 ms, up to `spawn_wait`.
+    async fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
+        tokio::time::timeout(spawn_wait(), async {
+            while !done() {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("timed out waiting for {what}"));
+    }
+
+    /// **A lead whose project tree is gone fails every attempt with the
+    /// tree's own reason and escalates at the cap**, rather than reporting a
+    /// generic failure or resting as if it had come back.
+    #[tokio::test]
+    async fn a_lead_whose_project_tree_is_gone_escalates_at_the_cap() {
+        let _binary = MOCK_BINARY.lock().await;
+        let (dir, project, ws) = heal_fixture();
+        // Run 1 is the lead, which then dies; its resumes never start.
+        forge_agent::set_test_sdk_binary(Some(heal_mock(dir.path(), 1, 1)));
+        let mut updates = ws.subscribe_mirror();
+        let lead = start_lead(&ws, &mut updates).await;
+        let root = std::fs::canonicalize(project.path()).expect("canonical tree");
+        fs::remove_dir_all(&root).expect("remove the tree");
+
+        // The lead's child dies of its own accord, the first attempt is
+        // scheduled, and then every attempt is refused by the gone tree
+        // until the budget runs out.
+        wait_until("the first attempt", || ws.heal_progress(&lead).is_some()).await;
+        wait_until("the budget to run out", || ws.heal_progress(&lead).is_none()).await;
+
+        let reason = ws.spawn_failure(&lead).expect("the last attempt's reason stays on the row");
+        assert!(reason.contains("spawn failed"), "the refusal's own words: {reason}");
+        assert!(
+            reason.contains(root.to_string_lossy().as_ref()),
+            "the tree the attempt could not enter: {reason}",
+        );
+        assert_eq!(mock_runs(dir.path()), 1, "no resume ever started a child");
+        forge_agent::set_test_sdk_binary(None);
+    }
+
     /// **A worker whose worktree is gone comes back anyway**: the heal
     /// resumes through the boot re-spawn path, which re-creates the tree the
     /// worker needs rather than refusing to start. This is the
@@ -5471,7 +5524,8 @@ heal_stable = "30s"
             ws,
             "forge",
             forge_agent::client::SessionLaunchSettings::default(),
-        );
+        )
+        .expect("the lead spawns");
         await_update(
             updates,
             "the lead's connect",
@@ -6239,7 +6293,7 @@ heal_stable = "30s"
             vec![slack_msg("parked while asleep")],
         );
 
-        crate::spawn::handle_spawn_project(
+        let _ = crate::spawn::handle_spawn_project(
             &ws,
             "overlayonly",
             forge_agent::client::SessionLaunchSettings::default(),
@@ -7469,7 +7523,7 @@ provider = "anthropic"
                 .to_owned(),
         ));
 
-        handle_spawn_project(&workspace, "forge", SessionLaunchSettings::default());
+        let _ = handle_spawn_project(&workspace, "forge", SessionLaunchSettings::default());
 
         let (what, args) = tokio::time::timeout(std::time::Duration::from_secs(5), heard.recv())
             .await
@@ -9945,7 +9999,7 @@ provider = "anthropic"
         let (handle, mut agent_rx) = Workspace::testing_stub_handle();
         ws.install_test_spawn_handle(handle);
 
-        handle_spawn_project(&ws, "proj", SessionLaunchSettings::default());
+        let _ = handle_spawn_project(&ws, "proj", SessionLaunchSettings::default());
 
         let Some(forge_primitives::AgentCommand::NewSession { launch_settings, .. }) =
             agent_rx.try_recv().ok()

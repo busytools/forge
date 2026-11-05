@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Instant, SystemTime};
 
-use forge_primitives::{SessionId, SessionSlot};
+use forge_primitives::SessionSlot;
 
 use crate::Workspace;
 use crate::crons::IST_OFFSET_MINUTES;
@@ -86,16 +86,9 @@ impl Healing {
     /// A seat that had been up died and its connection failed. Walks the
     /// policy and either schedules the next attempt or leaves the seat
     /// failed with its diagnostic.
-    pub(crate) fn note_death(
-        self: &Arc<Self>,
-        slot: &SessionSlot,
-        _occupant: &SessionId,
-        diagnostic: &str,
-    ) {
+    pub(crate) fn note_death(self: &Arc<Self>, slot: &SessionSlot, diagnostic: &str) {
         let Some(workspace) = self.workspace.upgrade() else { return };
         let Some(project_key) = workspace.project_key_for_name(slot.project()) else { return };
-        let died_at = SystemTime::now();
-        let policy = HealPolicy::from_config(&workspace.config_arc().sessions);
         // **The stop the seat's own door announced goes first.** A close or
         // a despawn snaps the subprocess, whose death then arrives here; it
         // is the stop's death, not a crash to heal.
@@ -108,6 +101,7 @@ impl Healing {
             workspace.clear_heal_progress(slot);
             return;
         }
+        let policy = HealPolicy::from_config(&workspace.config_arc().sessions);
         let facts = seat_facts(&workspace, slot, &project_key);
         if !policy.is_eligible(facts) {
             // A shutdown or an ad-hoc seat owns this seat now; a stale
@@ -115,6 +109,22 @@ impl Healing {
             self.forget(slot);
             return;
         }
+        self.schedule(&workspace, slot, &project_key, diagnostic, SystemTime::now());
+    }
+
+    /// Count one death and either schedule the next attempt or leave the
+    /// seat failed and escalate. A subprocess death and an attempt whose
+    /// resume was refused both walk this path, so both spend the same
+    /// budget and carry their own diagnostic.
+    fn schedule(
+        self: &Arc<Self>,
+        workspace: &Arc<Workspace>,
+        slot: &SessionSlot,
+        project_key: &crate::ProjectKey,
+        diagnostic: &str,
+        died_at: SystemTime,
+    ) {
+        let policy = HealPolicy::from_config(&workspace.config_arc().sessions);
         let (deaths, generation) = {
             let mut seats = self.seats.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             let seat = seats.entry(slot.clone()).or_default();
@@ -123,6 +133,7 @@ impl Healing {
             }
             seat.deaths += 1;
             seat.connected_at = None;
+            seat.stopped = false;
             seat.generation += 1;
             (seat.deaths, seat.generation)
         };
@@ -146,7 +157,7 @@ impl Healing {
         let next_at = SystemTime::now() + wait;
         workspace.set_heal_progress(slot, deaths, next_at);
         if !slot.is_lead() {
-            workspace.mark_worker_restarting(&project_key, slot);
+            workspace.mark_worker_restarting(project_key, slot);
         }
         tracing::info!(
             target: "forge_workspace::healing",
@@ -208,7 +219,7 @@ impl Healing {
     /// that was scheduled, and still dead, then restart it and tell the
     /// lead what happened.
     async fn fire(
-        &self,
+        self: Arc<Self>,
         slot: &SessionSlot,
         generation: u64,
         died_at: SystemTime,
@@ -233,6 +244,7 @@ impl Healing {
         if !slot.is_lead() {
             let Some(project_key) = workspace.project_key_for_name(slot.project()) else {
                 self.forget(slot);
+                workspace.clear_heal_progress(slot);
                 return;
             };
             let workers = workspace.list_live_workers(&project_key);
@@ -259,6 +271,14 @@ impl Healing {
                 slot,
                 &attempt_notice(slot, died_at, diagnostic, attempt, attempts, &outcome),
             );
+        }
+        if let Err(reason) = &outcome {
+            // **A refused resume is a failed attempt, not a quiet stop.**
+            // The budget keeps burning, and the reason rides the next
+            // attempt and the escalation exactly as a death's does.
+            if let Some(project_key) = workspace.project_key_for_name(slot.project()) {
+                self.schedule(&workspace, slot, &project_key, reason, SystemTime::now());
+            }
         }
     }
 }
@@ -300,16 +320,17 @@ impl SeatRestart for WorkspaceRestart {
             return Err("the workspace is gone".to_owned());
         };
         if slot.is_lead() {
-            // The same dispatch the cron wake uses: it resumes the lead
+            // The same handler `Command::SpawnProject` runs (the cron wake's
+            // own), called directly because the command bus drops the
+            // refusal and a failed attempt must count. It resumes the lead
             // under its stored session and re-spawns its workers on
-            // connect. The session id is the spawn's to know.
-            workspace
-                .dispatch(Command::SpawnProject {
-                    project_name: slot.project().to_owned(),
-                    launch_settings: forge_agent::client::SessionLaunchSettings::default(),
-                })
-                .map(|()| None)
-                .map_err(|error| error.to_string())
+            // connect.
+            crate::spawn::handle_spawn_project(
+                &workspace,
+                slot.project(),
+                forge_agent::client::SessionLaunchSettings::default(),
+            )
+            .map(|()| None)
         } else {
             restart_worker(&workspace, slot).await
         }
@@ -426,7 +447,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
-    use forge_primitives::{SessionId, SessionSlot};
+    use forge_primitives::SessionSlot;
 
     use super::*;
 
@@ -496,11 +517,7 @@ mod tests {
         let (notify, _notices) = notifier();
         let healing = Healing::new(Arc::downgrade(&workspace), restart, notify);
 
-        healing.note_death(
-            &slot,
-            &SessionId::new("dead-1"),
-            "the claude subprocess closed its output stream",
-        );
+        healing.note_death(&slot, "the claude subprocess closed its output stream");
 
         let progress = workspace.heal_progress(&slot).expect("the row draws restarting");
         assert_eq!(progress.attempt, 1, "the first restart after the death");
@@ -528,7 +545,7 @@ mod tests {
         let (notify, _notices) = notifier();
         let healing = Healing::new(Arc::downgrade(&workspace), restart, notify);
 
-        healing.note_death(&slot, &SessionId::new("dead-1"), "the subprocess closed");
+        healing.note_death(&slot, "the subprocess closed");
         // Arm the timer before the connect cancels it, or the test would
         // prove nothing about the cancel.
         tokio::task::yield_now().await;
@@ -550,13 +567,13 @@ mod tests {
         let (notify, _notices) = notifier();
         let healing = Healing::new(Arc::downgrade(&workspace), restart, notify);
 
-        healing.note_death(&slot, &SessionId::new("dead-1"), "closed");
+        healing.note_death(&slot, "closed");
         tokio::task::yield_now().await;
         tokio::time::advance(Duration::from_secs(5)).await;
         tokio::task::yield_now().await;
         assert_eq!(calls.lock().expect("recorder").len(), 1);
 
-        healing.note_death(&slot, &SessionId::new("dead-2"), "closed again");
+        healing.note_death(&slot, "closed again");
         let progress = workspace.heal_progress(&slot).expect("the second attempt is recorded");
         assert_eq!(progress.attempt, 2, "the second restart");
         tokio::task::yield_now().await;
@@ -580,11 +597,7 @@ mod tests {
         let (notify, notices) = notifier();
         let healing = Healing::new(Arc::downgrade(&workspace), restart, notify);
 
-        healing.note_death(
-            &slot,
-            &SessionId::new("dead-1"),
-            "the claude subprocess closed its output stream",
-        );
+        healing.note_death(&slot, "the claude subprocess closed its output stream");
         assert!(notices.lock().expect("notices").is_empty(), "the outcome is not in yet");
 
         tokio::task::yield_now().await;
@@ -613,13 +626,15 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_spent_budget_escalates_once() {
         let (workspace, slot) = seeded_worker();
-        // Every attempt is refused, so all three restarts are spent.
-        let (restart, calls) = recorder(Err("the worktree could not be re-created".to_owned()));
+        // Each restart works and the child dies again straight after it:
+        // the crash loop, where the deaths - not the attempts - spend the
+        // budget.
+        let (restart, calls) = recorder(Ok(Some("session-healed".to_owned())));
         let (notify, notices) = notifier();
         let healing = Healing::new(Arc::downgrade(&workspace), restart, notify);
 
         for attempt in 1..=3 {
-            healing.note_death(&slot, &SessionId::new("dead"), "the subprocess closed");
+            healing.note_death(&slot, "the subprocess closed");
             tokio::task::yield_now().await;
             let wait = match attempt {
                 1 => 5,
@@ -632,7 +647,7 @@ mod tests {
         }
         assert_eq!(calls.lock().expect("recorder").len(), 3, "three restarts were attempted");
 
-        healing.note_death(&slot, &SessionId::new("dead"), "the subprocess closed again");
+        healing.note_death(&slot, "the subprocess closed again");
         let notices = notices.lock().expect("notices");
         let (_, body) = notices.last().expect("the escalation reaches the lead");
         assert!(
@@ -654,7 +669,7 @@ mod tests {
         let healing = Healing::new(Arc::downgrade(&workspace), restart, notify);
 
         healing.note_stopped(&slot);
-        healing.note_death(&slot, &SessionId::new("dead-1"), "the subprocess closed");
+        healing.note_death(&slot, "the subprocess closed");
 
         tokio::task::yield_now().await;
         tokio::time::advance(Duration::from_secs(60)).await;
@@ -674,7 +689,7 @@ mod tests {
         let healing = Healing::new(Arc::downgrade(&workspace), restart, notify);
         let ad_hoc = SessionSlot::worker("TestOrg", "forge", "no-row");
 
-        healing.note_death(&ad_hoc, &SessionId::new("dead-1"), "the subprocess closed");
+        healing.note_death(&ad_hoc, "the subprocess closed");
 
         assert!(workspace.heal_progress(&ad_hoc).is_none(), "nothing is scheduled");
         assert!(notices.lock().expect("notices").is_empty(), "and nobody is told");
@@ -682,6 +697,47 @@ mod tests {
         tokio::time::advance(Duration::from_secs(60)).await;
         tokio::task::yield_now().await;
         assert!(calls.lock().expect("recorder").is_empty(), "no restart was ever attempted");
+    }
+
+    /// **A refused resume burns an attempt.** The seat does not stop at the
+    /// first refusal: the next attempt is scheduled carrying the refusal's
+    /// reason, and the budget still ends in the escalation. This is the
+    /// repository-that-is-gone case.
+    #[tokio::test(start_paused = true)]
+    async fn a_refused_resume_burns_an_attempt_and_keeps_going() {
+        let (workspace, slot) = seeded_worker();
+        let (restart, calls) = recorder(Err("the worktree could not be re-created".to_owned()));
+        let (notify, notices) = notifier();
+        let healing = Healing::new(Arc::downgrade(&workspace), restart, notify);
+
+        healing.note_death(&slot, "the subprocess closed");
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_secs(5)).await;
+        tokio::task::yield_now().await;
+        tokio::task::yield_now().await;
+        assert_eq!(calls.lock().expect("recorder").len(), 1, "the first attempt was made");
+        let progress = workspace.heal_progress(&slot).expect("the second attempt is scheduled");
+        assert_eq!(progress.attempt, 2, "the refusal counted as a death");
+
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_secs(30)).await;
+        tokio::task::yield_now().await;
+        tokio::task::yield_now().await;
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_secs(120)).await;
+        tokio::task::yield_now().await;
+        tokio::task::yield_now().await;
+
+        assert_eq!(calls.lock().expect("recorder").len(), 3, "all three attempts were made");
+        let notices = notices.lock().expect("notices");
+        assert!(
+            notices.iter().any(|(_, body)| body.contains("Left Failed after 3 restarts")),
+            "the budget still escalates: {notices:?}",
+        );
+        assert!(
+            notices.iter().any(|(_, body)| body.contains("the worktree could not be re-created")),
+            "the refusal's own reason rides a notice: {notices:?}",
+        );
     }
 
     /// A lead has no lead above it: its death is drawn on the project row
@@ -694,7 +750,7 @@ mod tests {
         let healing = Healing::new(Arc::downgrade(&workspace), restart, notify);
         let lead = SessionSlot::lead("TestOrg", "forge");
 
-        healing.note_death(&lead, &SessionId::new("dead-lead"), "the subprocess closed");
+        healing.note_death(&lead, "the subprocess closed");
         tokio::task::yield_now().await;
         tokio::time::advance(Duration::from_secs(5)).await;
         tokio::task::yield_now().await;

@@ -6216,7 +6216,9 @@ impl Workspace {
     ) -> Result<(), DispatchError> {
         if key.is_lead() {
             self.note_running_session_id(key, session_id);
-            crate::spawn::handle_spawn_project(self, key.project(), launch_settings);
+            // The failure is surfaced by the frame the handler emits; this
+            // recovery path has no caller to answer with it.
+            let _ = crate::spawn::handle_spawn_project(self, key.project(), launch_settings);
             return Ok(());
         }
         let Some(view) = self
@@ -6796,7 +6798,9 @@ impl Workspace {
                         project = %project_name,
                     );
                     let _enter = span.enter();
-                    spawn::handle_spawn_project(self, &project_name, launch_settings);
+                    // A command has no caller to answer: the failure reaches
+                    // the views through the frame the handler emits.
+                    let _ = spawn::handle_spawn_project(self, &project_name, launch_settings);
                 }
                 Command::DeliverPeerPrompt { caller, target_project, wrapped, respond } => {
                     let span = tracing::info_span!(
@@ -8669,14 +8673,11 @@ impl Workspace {
         self.healing.get_or_init(|| crate::healing::Healing::for_workspace(self)).clone()
     }
 
-    /// A seat that had been up died: hand the death to the supervisor.
-    pub(crate) fn note_seat_death(
-        self: &Arc<Self>,
-        slot: &SessionSlot,
-        occupant: &SessionId,
-        diagnostic: &str,
-    ) {
-        self.healing().note_death(slot, occupant, diagnostic);
+    /// A seat that had been up died: hand the death to the supervisor. A
+    /// resume's new occupant that never came up is a death here too - the
+    /// attempt failed rather than a first spawn being surfaced.
+    pub(crate) fn note_seat_death(self: &Arc<Self>, slot: &SessionSlot, diagnostic: &str) {
+        self.healing().note_death(slot, diagnostic);
     }
 
     /// A session came up on `slot`, which cancels any scheduled heal.
@@ -17345,7 +17346,8 @@ provider = "anthropic"
     fn respawn_of_connected_project_announces_the_live_key() {
         let (ws, mut update_rx, lead, _dir) = stub_with_connected_lead();
 
-        crate::spawn::handle_spawn_project(&ws, "companies", SessionLaunchSettings::default());
+        let _ =
+            crate::spawn::handle_spawn_project(&ws, "companies", SessionLaunchSettings::default());
 
         let announced = spawning_keys(&mut update_rx);
         assert_eq!(
@@ -17366,7 +17368,8 @@ provider = "anthropic"
         // pool entry alone.
         ws.set_session_id_in_domain(&lead, None);
 
-        crate::spawn::handle_spawn_project(&ws, "companies", SessionLaunchSettings::default());
+        let _ =
+            crate::spawn::handle_spawn_project(&ws, "companies", SessionLaunchSettings::default());
 
         assert_eq!(
             spawning_keys(&mut update_rx),
