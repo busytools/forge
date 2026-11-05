@@ -3640,8 +3640,12 @@ mod tests {
     /// would stop there, with the whole of it unreachable.
     #[test]
     fn a_conversation_with_no_turns_still_pages() {
+        // The interrupt marker is a user row the fold opens no turn at, so
+        // this conversation has content and no boundary: the shape the page's
+        // fallback is for. A delivery's envelope row is a boundary now, which
+        // is why it cannot stand in for one here.
         let (messages, rendered) = a_conversation(&[
-            r#"{"type":"user","uuid":"u1","message":{"role":"user","content":"[Cron]\n\nstand-up"},"session_id":"s"}"#,
+            r#"{"type":"user","uuid":"u1","message":{"role":"user","content":"[Request interrupted by user]"},"session_id":"s"}"#,
             r#"{"type":"assistant","uuid":"a1","message":{"id":"m1","role":"assistant","model":"claude-opus-5","content":[{"type":"text","text":"morning"}]}}"#,
             r#"{"type":"result","uuid":"r1","subtype":"success","duration_ms":1,"duration_api_ms":1,"is_error":false,"num_turns":1,"session_id":"s"}"#,
         ]);

@@ -23,7 +23,9 @@
 //! than the envelopes: a reader's own `[note] ...` row, and a bracket-led
 //! notice the parser rejects, are heads here that this leaves alone. The shapes
 //! read here are exempt from that, so an image note the fold opens a turn at is
-//! named.
+//! named. **A delivery's envelope row opens a turn in the fold, and this side
+//! answers none for it** - the accepted cost a queued prompt pays above: a head
+//! the window cannot start on, never a cut inside a turn.
 //!
 //! And a forge-minted row arriving at an open call is a delivery the CLI
 //! pressed into the running turn - the fold keeps it there and opens no turn
