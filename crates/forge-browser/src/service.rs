@@ -999,6 +999,7 @@ impl BrowserService {
             "browser_record_start" => return self.record_start(seat).await,
             "browser_record_stop" => return self.record_stop(seat).await,
             "browser_resize" => return self.resize_window(seat, &args).await,
+            "browser_end_host" => return self.end_host(seat).await,
             _ => {}
         }
         // **An agent's upload is bounded before a browser is opened for it.**
@@ -1255,8 +1256,8 @@ impl BrowserService {
         why: &str,
     ) -> Option<String> {
         let suspect = profile.host_suspect.lock().unwrap_or_else(PoisonError::into_inner).take()?;
-        let host = self.end_dead_host(profile, seat, suspect, why).await;
-        Some(dead_host_answer(profile, host, why))
+        let (host, why) = self.end_dead_host(profile, seat, suspect, why).await;
+        Some(dead_host_answer(profile, host, &why))
     }
 
     /// End a host a listing already found wedged, if this call marked one.
@@ -1271,7 +1272,7 @@ impl BrowserService {
     ) -> String {
         let suspect = profile.host_suspect.lock().unwrap_or_else(PoisonError::into_inner).take();
         let Some(drove) = suspect else { return why };
-        let host = self.end_dead_host(profile, seat, drove, &why).await;
+        let (host, why) = self.end_dead_host(profile, seat, drove, &why).await;
         dead_host_answer(profile, host, &why)
     }
 
@@ -2210,16 +2211,14 @@ impl BrowserService {
         // is not answering is torn down so the next call starts a fresh one.
         let host_up = spawn::probe(port).await;
         let _decision = profile.file_decision.lock().await;
-        // **A test profile has no host to probe**, so the fake driver is not
-        // a dead one to clear. The decision lock is still taken above, which
-        // is what keeps a caller that holds it (an upload) under test.
-        #[cfg(test)]
-        if profile.state.lock().await.host.is_none() {
-            return Err(why);
-        }
         let mut state = profile.state.lock().await;
         let alive = state.driver.as_ref().is_some_and(|driver| driver.is_running());
-        if clear_if_dead(&mut state, generation, alive && host_up, profile) && !host_up {
+        // **A host the state no longer names is not this call's to blame.**
+        // The call captured its identity before the state moved on - the door
+        // ended it, or a successor was started - so a sentence here would
+        // describe a host this call no longer drives.
+        let ours = state.host.as_ref().is_some_and(|host| host.pid == pid && host.port == port);
+        if ours && clear_if_dead(&mut state, generation, alive && host_up, profile) && !host_up {
             if !holders.is_empty() {
                 log_shared_host(profile, pid, port, &holders, true, &why);
                 let host = DeadHost::Shared { pid, port, holders, wedged: true };
@@ -2249,13 +2248,26 @@ impl BrowserService {
         seat: &SessionSlot,
         drove: HostIdentity,
         why: &str,
-    ) -> DeadHost {
+    ) -> (DeadHost, String) {
+        self.end_dead_host_at(profile, seat, drove, why, Instant::now()).await
+    }
+
+    /// [`Self::end_dead_host`] against a clock the caller owns, so a test can
+    /// show a popup's keep window has run out without waiting five minutes.
+    async fn end_dead_host_at(
+        &self,
+        profile: &Arc<Profile>,
+        seat: &SessionSlot,
+        drove: HostIdentity,
+        why: &str,
+        now: Instant,
+    ) -> (DeadHost, String) {
         let _decision = profile.file_decision.lock().await;
-        // **A popup is not a host's fault, its page named or not**: the
-        // attach waits on a target the host itself starts, and ending the
-        // browser would take the page the person signed in from: the driver
-        // goes and the next call attaches a fresh one.
-        if attach_blocked_by_popup(profile, why) {
+        // **A popup inside its window is not a host's fault, its page named
+        // or not**: the attach waits on a target the host itself starts, and
+        // ending the browser would take the page the person signed in from:
+        // the driver goes and the next call attaches a fresh one.
+        if attach_blocked_by_popup(profile, why, now) {
             tracing::debug!(
                 event_name = "browser_host_kept_for_popup",
                 profile = %profile.key,
@@ -2267,8 +2279,17 @@ impl BrowserService {
             // the next call, which would pay the same timeout without the
             // popup being any likelier to answer.
             Self::drop_dead_driver(profile, drove.generation, why).await;
-            return DeadHost::KeptForPopup;
+            return (DeadHost::KeptForPopup, why.to_owned());
         }
+        // **Only the timeout a popup explains carries its window.** A tool's
+        // own timeout was never excused by a popup, so a six-minute popup
+        // beside it changed nothing and must not be named; the keep's own
+        // attach timeout past the window is the one case where it did.
+        let why = if crate::driver::attach_timed_out(why) && popup_past_keep(profile, now) {
+            popup_past_keep_cause(why)
+        } else {
+            why.to_owned()
+        };
         // **A host another session's page is open on is never ended**: one
         // host per profile is what the browser requires, so ending it loses
         // that page with the sign-in behind it.
@@ -2286,17 +2307,15 @@ impl BrowserService {
                     if pid == drove.pid
                         && port == drove.port
                         && state.driver_generation == drove.generation => {}
-                Some(_) => return DeadHost::NotOurs,
-                None => return DeadHost::AlreadyGone,
+                Some(_) => return (DeadHost::NotOurs, why),
+                None => return (DeadHost::AlreadyGone, why),
             }
             if !holders.is_empty() {
-                log_shared_host(profile, drove.pid, drove.port, &holders, false, why);
-                return DeadHost::Shared {
-                    pid: drove.pid,
-                    port: drove.port,
-                    holders,
-                    wedged: false,
-                };
+                log_shared_host(profile, drove.pid, drove.port, &holders, false, &why);
+                return (
+                    DeadHost::Shared { pid: drove.pid, port: drove.port, holders, wedged: false },
+                    why,
+                );
             }
             state.driver = None;
             state.cdp.clear();
@@ -2330,7 +2349,7 @@ impl BrowserService {
             }
             host
         };
-        let Some(host) = host else { return DeadHost::AlreadyGone };
+        let Some(host) = host else { return (DeadHost::AlreadyGone, why) };
         // **A host that had already gone is not an end.** The monitor is left
         // to write its death, and `gone` leaves the status for it; only a
         // live host is ended here and recorded. Two narrow windows remain: a
@@ -2346,7 +2365,7 @@ impl BrowserService {
             // **A crashed host's staged files go with it**: the monitor
             // cannot clear them once the state no longer names the host.
             let _ = std::fs::remove_dir_all(profile.dir.join("uploads"));
-            return DeadHost::AlreadyGone;
+            return (DeadHost::AlreadyGone, why);
         }
         if let Some(monitor) = host.monitor {
             monitor.abort();
@@ -2356,11 +2375,11 @@ impl BrowserService {
             reader.stop();
         }
         let outcome = if ended { "ended" } else { "refused" };
-        log_host_ended(profile, host.pid, host.port, HostEnd::Undrivable, outcome, why, &tail);
+        log_host_ended(profile, host.pid, host.port, HostEnd::Undrivable, outcome, &why, &tail);
         if ended {
-            DeadHost::Ended { pid: host.pid, port: host.port }
+            (DeadHost::Ended { pid: host.pid, port: host.port }, why)
         } else {
-            DeadHost::NotEnded { pid: host.pid, port: host.port }
+            (DeadHost::NotEnded { pid: host.pid, port: host.port }, why)
         }
     }
 
@@ -2376,7 +2395,7 @@ impl BrowserService {
         why: String,
     ) -> String {
         let rebuilt = Self::live_host(profile, fresh_generation).await.unwrap_or(drove);
-        let host = self.end_dead_host(profile, seat, rebuilt, &why).await;
+        let (host, why) = self.end_dead_host(profile, seat, rebuilt, &why).await;
         dead_host_answer(profile, host, &why)
     }
 
@@ -2529,9 +2548,9 @@ impl BrowserService {
                 // **A replacement that cannot start leaves the host suspect**:
                 // end the host this call drove, if it is still the one there
                 // and no other session's page would go with it.
-                let host = self.end_dead_host(profile, seat, drove, &cannot).await;
+                let (host, why) = self.end_dead_host(profile, seat, drove, &cannot).await;
                 if matches!(&host, DeadHost::Shared { .. }) {
-                    return Err(dead_host_answer(profile, host, &cannot));
+                    return Err(dead_host_answer(profile, host, &why));
                 }
                 return Err(dead_driver_answer(DeadDriverOutcome::ReplaceFailed { why: &cannot }));
             }
@@ -2789,6 +2808,77 @@ impl BrowserService {
         profile.end(HostEnd::Closed).await;
         self.publish_rows(key.as_str()).await;
         Ok(())
+    }
+
+    /// End the seat's browser host now, whatever holds it, and answer what
+    /// happened. **The failure paths end a host only when no other session's
+    /// tab is on it, so a shared host or a popup inside its window can refuse
+    /// that end**; this door is the deliberate override. Every tab on the
+    /// profile goes with the host.
+    pub async fn end_host(&self, seat: &SessionSlot) -> Result<Vec<BrowserPart>, String> {
+        let key = self.target(seat)?;
+        let gate = self.gate(key.as_str());
+        let _held = gate.lock().await;
+        let profile = self.profiles.lock().await.get(key.as_str()).cloned();
+        let Some(profile) = profile else {
+            return Ok(vec![BrowserPart::Text { text: no_host_sentence(&key) }]);
+        };
+        // **A chooser decision is taken before the state**, the order every
+        // teardown keeps, so an upload's answer cannot publish against a host
+        // this door has ended.
+        let _decision = profile.file_decision.lock().await;
+        let mut state = profile.state.lock().await;
+        let Some(host) = state.host.as_ref() else {
+            return Ok(vec![BrowserPart::Text { text: no_host_sentence(&key) }]);
+        };
+        let (pid, port) = (host.pid, host.port);
+        let caller = seat.display();
+        // **The cause goes out before the tab senders close**: a viewer whose
+        // tab this end takes would otherwise read the transport's "tab N was
+        // closed" and never hear that the host went on purpose.
+        profile.failures.send_replace(Some(format!(
+            "the browser host (pid {pid}, port {port}, profile '{}') is being ended on request \
+             by {caller}; every session's tabs on it go with the host",
+            key.as_str()
+        )));
+        let why = format!("{caller} called the door");
+        let outcome = profile.teardown(&mut state, Some(HostEnd::Requested), &why).await;
+        // **The answer is the outcome, not the attempt.** A refused end
+        // leaves a process running after its state was let go, so only an end
+        // that happened may promise the next call a fresh browser.
+        let text = match outcome {
+            TeardownOutcome::Ended => format!(
+                "the browser host (pid {pid}, port {port}, profile '{}') was ended on request by \
+                 {caller}; every session's tabs on it went with the host, and the next call \
+                 starts a fresh browser with the profile's data intact",
+                key.as_str()
+            ),
+            TeardownOutcome::AlreadyGone => format!(
+                "the browser host (pid {pid}, port {port}, profile '{}') had already exited when \
+                 the door was called; every session's tabs on it went with the host, and the next \
+                 call starts a fresh browser with the profile's data intact",
+                key.as_str()
+            ),
+            TeardownOutcome::Refused => format!(
+                "the browser host (pid {pid}, port {port}, profile '{}') was not ended: a process \
+                 is still running at that pid and was not signalled. Its state and every \
+                 session's tabs were cleared, and the host's own record was kept so a later \
+                 sweep can find it",
+                key.as_str()
+            ),
+            // Defensive: the door took the state lock with a host installed.
+            TeardownOutcome::Nothing => no_host_sentence(&key),
+        };
+        // **The last value is the outcome**, so a subscriber reading after
+        // the door answers sees what happened, not only what was underway.
+        profile.failures.send_replace(Some(text.clone()));
+        // **A refused end is a refusal like any other**: it answers as an
+        // error, so the call record says ok=false and the session can act on
+        // it rather than reading a success.
+        match outcome {
+            TeardownOutcome::Refused => Err(text),
+            _ => Ok(vec![BrowserPart::Text { text }]),
+        }
     }
 
     /// Give `viewer` the controller role for one tab.
@@ -4056,8 +4146,8 @@ fn prune_recordings(dir: &Path, keep: usize) {
 }
 
 /// Why a host the service is ending is going, and the level that states it
-/// honestly. **An end forge caused by a fault is a warning; an idle release
-/// or a profile close is not** (rule 20).
+/// honestly. **An end forge caused by a fault is a warning; an idle release,
+/// a profile close or a deliberate door is not** (rule 20).
 #[derive(Debug, Clone, Copy)]
 enum HostEnd {
     /// No driver could drive it: a fresh one could not list or attach.
@@ -4072,6 +4162,8 @@ enum HostEnd {
     Closed,
     /// Forge stopped.
     Stopped,
+    /// A lead session ended it through the end-host door.
+    Requested,
 }
 
 impl HostEnd {
@@ -4079,7 +4171,7 @@ impl HostEnd {
     fn level(self) -> tracing::Level {
         match self {
             Self::Undrivable | Self::NeverReady | Self::Unresponsive => tracing::Level::WARN,
-            Self::Idle | Self::Closed | Self::Stopped => tracing::Level::INFO,
+            Self::Idle | Self::Closed | Self::Stopped | Self::Requested => tracing::Level::INFO,
         }
     }
 
@@ -4092,8 +4184,25 @@ impl HostEnd {
             Self::Idle => "the idle clock released it".to_owned(),
             Self::Closed => "its profile was closed".to_owned(),
             Self::Stopped => "forge stopped".to_owned(),
+            Self::Requested => format!("it was ended on request: {why}"),
         }
     }
+}
+
+/// What a teardown did with the host it took. **A deliberate end reports
+/// this rather than assuming it**: a refused signal leaves the process
+/// running while the profile's state has already let the host go, and a
+/// caller that promised a fresh browser would be wrong.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TeardownOutcome {
+    /// No host was installed on the profile.
+    Nothing,
+    /// The host's process had already exited.
+    AlreadyGone,
+    /// The host's process was ended.
+    Ended,
+    /// A process is still running after the end and was not signalled.
+    Refused,
 }
 
 /// The host's own last words, read off the async worker: the log is
@@ -5185,7 +5294,13 @@ impl Profile {
     ///
     /// `end` is why the host is going, and `why` is the fault behind it for
     /// the paths that have one. `None` for a host already known to be gone.
-    async fn teardown(&self, state: &mut State, end: Option<HostEnd>, why: &str) {
+    /// Answers what happened to the host, so a caller may report it.
+    async fn teardown(
+        &self,
+        state: &mut State,
+        end: Option<HostEnd>,
+        why: &str,
+    ) -> TeardownOutcome {
         // **The profile is down before its chooser is cleared.** A chooser
         // event parked inside the driver's cancel resumes after this and must
         // see the profile down, or it would publish an ask for a dead host.
@@ -5221,34 +5336,41 @@ impl Profile {
                 // cannot clear them once the state no longer names the host.
                 let _ = std::fs::remove_dir_all(self.dir.join("uploads"));
                 self.clear_host_trail(host.port);
-                return;
+                return TeardownOutcome::AlreadyGone;
             }
             if let Some(monitor) = host.monitor {
                 monitor.abort();
             }
-            let ended = spawn::end_verified(host.pid, host.port, &self.dir).await;
+            let _ = spawn::end_verified(host.pid, host.port, &self.dir).await;
             if let Some(reader) = reader {
                 reader.stop();
             }
+            // **One liveness read drives the record and the answer both**, so
+            // a refused end cannot be logged as an end and answered as one.
+            let alive = spawn::alive(host.pid);
             if let Some(end) = end {
                 let tail = host_tail(self).await;
-                let outcome = if ended { "ended" } else { "refused" };
+                let outcome = if alive { "refused" } else { "ended" };
                 log_host_ended(self, host.pid, host.port, end, outcome, why, &tail);
             }
-            if spawn::alive(host.pid) {
+            if alive {
                 // **A host that outlived its end keeps its trail.** The next
                 // boot's reaper needs the record to find it, and clearing it
                 // here would strand the process with nothing naming it.
                 tracing::warn!(
-                    "a browser host outlived its teardown (event_name \
-                     browser_host_survived_end, profile {}, pid {}, port {})",
-                    self.key,
-                    host.pid,
-                    host.port
+                    event_name = "browser_host_survived_end",
+                    profile = %self.key,
+                    pid = host.pid,
+                    port = host.port,
+                    "a browser host outlived its teardown",
                 );
+                TeardownOutcome::Refused
             } else {
                 self.clear_host_trail(host.port);
+                TeardownOutcome::Ended
             }
+        } else {
+            TeardownOutcome::Nothing
         }
     }
 
@@ -5339,6 +5461,12 @@ const POPUP_PAIR_EVERY: Duration = Duration::from_millis(250);
 /// paired. A popup the pass did pair is kept by its open tab, not by this
 /// bound, so only a birth that never became a row goes stale.
 const POPUP_BIRTH_KEEP: Duration = Duration::from_secs(60);
+
+/// How long a settled popup's tab may keep its host. **A sign-in needs
+/// minutes, not seconds; a popup that has stood this long while every attach
+/// pays its timeout is the wedge #2861 leaves behind**, and the host must
+/// fall back to the end path rather than hold for ever.
+const POPUP_TAB_KEEP: Duration = Duration::from_secs(5 * 60);
 
 /// A popup birth waiting to be paired, and whether its first pass warned.
 ///
@@ -5719,8 +5847,8 @@ enum DeadHost {
     AlreadyGone,
     /// Another host serves the profile now; this call ends nothing.
     NotOurs,
-    /// A popup was open or its page was not named yet, so the host was kept
-    /// and the next call attaches a fresh driver.
+    /// A popup inside its keep window, or its page not named yet, so the
+    /// host was kept and the next call attaches a fresh driver.
     KeptForPopup,
     /// Other sessions hold tabs on this host, so it was left running. Each
     /// entry is a session and how long it has held its oldest tab; `wedged`
@@ -5797,18 +5925,28 @@ fn dead_host_answer(profile: &Profile, host: DeadHost, why: &str) -> String {
         DeadHost::Shared { pid, port, holders, wedged: false } => format!(
             "the browser host (pid {pid}, port {port}, profile {}) is in use by {}, so it was left \
              running rather than ended: {why}. Call browser_tabs to see the tabs, or try again \
-             once it closes the tab it holds.",
+             once it closes the tab it holds; its project's lead can end it now with \
+             browser_end_host.",
             profile.dir.display(),
             holders_words(&holders),
         ),
         DeadHost::Shared { pid, port, holders, wedged: true } => format!(
             "the browser host (pid {pid}, port {port}, profile {}) stopped answering and holds \
              {}, so it was left running rather than ended: {why}. The idle clock releases it once \
-             nothing touches the profile.",
+             nothing touches the profile, or its project's lead can end it now with \
+             browser_end_host.",
             profile.dir.display(),
             holders_words(&holders),
         ),
     }
+}
+
+/// **What the profile knows, not what the machine is doing.** A refused end
+/// leaves no host in the profile's state while a process still runs, so this
+/// says only that no host is recorded, and that the next call tries one
+/// rather than promising it will start.
+fn no_host_sentence(key: &ProfileKey) -> String {
+    format!("no browser host is recorded for profile '{}'; the next call tries one", key.as_str())
 }
 
 /// **A shared host a failing call left running**, as the record a host that
@@ -6060,20 +6198,50 @@ async fn defer_unread_tab_events(profile: &Profile) {
 }
 
 /// Whether a driver failure is a popup's target, settled or not, rather than
-/// a host that cannot be driven. **The browser is kept**: the page the person
-/// signed in from is on it, and a fresh driver is attached on the next call
-/// to retry.
-fn attach_blocked_by_popup(profile: &Profile, why: &str) -> bool {
+/// a host that cannot be driven. **The browser is kept while the popup is
+/// inside its window**: the page the person signed in from is on it, and a
+/// fresh driver is attached on the next call to retry. A settled popup past
+/// [`POPUP_TAB_KEEP`] stops keeping the host, so a wedge falls back to the
+/// end path.
+fn attach_blocked_by_popup(profile: &Profile, why: &str, now: Instant) -> bool {
     crate::driver::attach_timed_out(why)
         && (popup_birth_waits(profile)
-            || profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).has_popup())
+            || profile
+                .tabs
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .popup_age(now)
+                .is_some_and(|age| age < POPUP_TAB_KEEP))
+}
+
+/// Whether an open popup tab has outlived its keep. **The host is endable
+/// then, and the caller is told why the keep stopped**: a sign-in popup that
+/// stood past its window is not the host failing to answer.
+fn popup_past_keep(profile: &Profile, now: Instant) -> bool {
+    profile
+        .tabs
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .popup_age(now)
+        .is_some_and(|age| age >= POPUP_TAB_KEEP)
+}
+
+/// The reason sentence an end adds when a popup outlived its keep. **The
+/// window is read from [`POPUP_TAB_KEEP`]**, so the words cannot drift from
+/// the bound they describe.
+fn popup_past_keep_cause(why: &str) -> String {
+    format!(
+        "{why}\na popup had been open past its {}-minute window, so the popup no longer keeps \
+         the host",
+        POPUP_TAB_KEEP.as_secs() / 60
+    )
 }
 
 /// The sentence a call answers with when a popup keeps its host up.
 fn popup_kept_host_answer(why: &str) -> String {
     format!(
-        "{why}\nthe browser is kept: a popup is open or its page is not named yet, so the next \
-         call attaches a fresh driver"
+        "{why}\nthe browser is kept: a popup is open inside its keep window or its page is not \
+         named yet, so the next call attaches a fresh driver"
     )
 }
 
@@ -7858,6 +8026,23 @@ mod tests {
         let ours = dead_host_answer(&profile, DeadHost::NotOurs, "a listing timed out");
         assert!(ours.contains("stopped answering"), "{ours}");
         assert!(!ours.contains("pid"), "a host this call does not own is not claimed: {ours}");
+
+        // **A shared host names the door that can end it**, whether or not
+        // its endpoint answered: the refusal is where the lead learns the way
+        // out.
+        for wedged in [false, true] {
+            let shared = dead_host_answer(
+                &profile,
+                DeadHost::Shared {
+                    pid: 1234,
+                    port: 9411,
+                    holders: vec![(SessionSlot::lead("Other", "p"), Duration::from_secs(5))],
+                    wedged,
+                },
+                "a listing timed out",
+            );
+            assert!(shared.contains("browser_end_host"), "the door is named: {shared}");
+        }
     }
 
     /// **A held tab is named in the coarsest unit that fits.** The refusal is
@@ -7885,22 +8070,7 @@ mod tests {
         service.install_fake(&seat, FakeDriver::with_blank("T1")).await;
         let profile = service.find("O/default").await.expect("the profile");
         // A process that answers as a browser on the recorded host's port.
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a port");
-        let port = listener.local_addr().expect("the address").port();
-        std::thread::spawn(move || {
-            for _ in 0..4 {
-                let Ok((mut stream, _)) = listener.accept() else { return };
-                let body = r#"{"Browser":"other"}"#;
-                let _ = std::io::Write::write_all(
-                    &mut stream,
-                    format!(
-                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                        body.len()
-                    )
-                    .as_bytes(),
-                );
-            }
-        });
+        let port = foreign_browser_endpoint();
         let ring_name = format!("/forge-not-ended-{}", std::process::id());
         let ring = crate::osr::Ring::create(&ring_name, 4, 4).expect("a test ring");
         let (input, _input_rx) = std::sync::mpsc::channel();
@@ -7923,7 +8093,7 @@ mod tests {
         let caught = Caught::default();
         let subscriber = tracing_subscriber::registry().with(caught.clone());
         let guard = tracing::subscriber::set_default(subscriber);
-        let host = service.end_dead_host(&profile, &seat, drove, why).await;
+        let (host, _why) = service.end_dead_host(&profile, &seat, drove, why).await;
         drop(guard);
         let answer = dead_host_answer(&profile, host, why);
 
@@ -7972,7 +8142,7 @@ mod tests {
         *profile.boot.lock().unwrap_or_else(PoisonError::into_inner) = Some((1, "T1".to_owned()));
         let stale =
             super::HostIdentity { pid: successor.pid + 1, port: successor.port + 1, generation: 0 };
-        let host = service.end_dead_host(&profile, &seat, stale, "a delayed timeout").await;
+        let (host, _why) = service.end_dead_host(&profile, &seat, stale, "a delayed timeout").await;
 
         assert!(matches!(host, DeadHost::NotOurs), "the successor is not this call's to end");
         assert!(profile.state.lock().await.host.is_some(), "the successor host is still there");
@@ -7991,7 +8161,8 @@ mod tests {
         // pid**: the pid alone must be enough to refuse it.
         let same_port =
             super::HostIdentity { pid: successor.pid + 1, port: successor.port, generation: 0 };
-        let host = service.end_dead_host(&profile, &seat, same_port, "a delayed timeout").await;
+        let (host, _why) =
+            service.end_dead_host(&profile, &seat, same_port, "a delayed timeout").await;
         assert!(matches!(host, DeadHost::NotOurs), "a same-port successor is not this call's");
         assert!(profile.state.lock().await.host.is_some(), "and it is still serving");
         crate::osr::Ring::unlink(&ring_name);
@@ -8026,7 +8197,7 @@ mod tests {
         let drove = super::HostIdentity { pid: std::process::id(), port: 9, generation: 0 };
         profile.state.lock().await.driver_generation = 7;
 
-        let host = service.end_dead_host(&profile, &seat, drove, "a delayed timeout").await;
+        let (host, _why) = service.end_dead_host(&profile, &seat, drove, "a delayed timeout").await;
 
         assert!(matches!(host, DeadHost::NotOurs), "a newer driver's host is not this call's");
         assert!(profile.state.lock().await.host.is_some(), "the host is still serving");
@@ -10487,6 +10658,29 @@ mod tests {
         );
     }
 
+    /// A process that answers as a browser on its own port, so an end aimed
+    /// at a recorded pid is refused: another process answers where the host
+    /// was.
+    pub(crate) fn foreign_browser_endpoint() -> u16 {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a port");
+        let port = listener.local_addr().expect("the address").port();
+        std::thread::spawn(move || {
+            for _ in 0..4 {
+                let Ok((mut stream, _)) = listener.accept() else { return };
+                let body = r#"{"Browser":"other"}"#;
+                let _ = std::io::Write::write_all(
+                    &mut stream,
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                    .as_bytes(),
+                );
+            }
+        });
+        port
+    }
+
     /// One tab on a profile a test made by hand, so the viewer and chooser
     /// tests can name the tab their roles and asks belong to.
     pub(crate) fn seed_tab(profile: &Arc<Profile>, seat: &SessionSlot) -> u16 {
@@ -11969,7 +12163,9 @@ mod tests {
 /// re-read spares the same pages, so the branch was redundant.
 #[cfg(test)]
 mod server_guards {
-    use super::tests::{ATTACH_TIMEOUT, Caught, FakeDriver, ended, records, saw, seed_tab};
+    use super::tests::{
+        ATTACH_TIMEOUT, Caught, FakeDriver, ended, foreign_browser_endpoint, records, saw, seed_tab,
+    };
     use super::{
         BrowserService, Call, DeferredTabEvent, Driven, Profile, ReconcilePass, pair_tab_events,
     };
@@ -12655,6 +12851,22 @@ mod server_guards {
         (pid, port)
     }
 
+    /// Spawn a stand-in host that stays running, so a test can show an end
+    /// really kills a child rather than taking a liveness check's word for it.
+    fn spawn_live_stub(
+        exe: &std::path::Path,
+        profile: &Arc<Profile>,
+        dir: &std::path::Path,
+    ) -> (u32, u16) {
+        let port = crate::spawn::free_port().expect("a free port");
+        let ring = format!("/forge-live-{}-{port}", std::process::id());
+        let frames = dir.join("frames.sock");
+        let (pid, _input, _events) =
+            crate::spawn::spawn_with(exe, &profile.dir, port, &ring, 4, 4, 0, (15, 75), &frames)
+                .expect("the live stand-in host spawns");
+        (pid, port)
+    }
+
     /// **One sweep at a time**: a sweep waits for the one in front of it rather
     /// than racing its writes.
     #[tokio::test]
@@ -12734,7 +12946,8 @@ mod server_guards {
             .adopt(1, seat.clone(), "T2", "", "")
             .expect("the successor's row");
 
-        let again = service.end_dead_host(&profile, &seat, first, "a second call ends it").await;
+        let (again, _why) =
+            service.end_dead_host(&profile, &seat, first, "a second call ends it").await;
 
         assert!(
             matches!(again, super::DeadHost::NotOurs),
@@ -12784,7 +12997,7 @@ mod server_guards {
         );
         let why = "### Error\nTimeoutError: async initializeServer: Timeout 30000ms exceeded.";
 
-        let host = service.end_dead_host(&profile, &seat, identity, why).await;
+        let (host, _why) = service.end_dead_host(&profile, &seat, identity, why).await;
 
         assert!(
             matches!(host, super::DeadHost::KeptForPopup),
@@ -12797,8 +13010,10 @@ mod server_guards {
         );
         let answer = super::dead_host_answer(&profile, host, why);
         assert!(
-            answer.contains("the browser is kept") && answer.contains("a fresh driver"),
-            "the answer names the keep and the next move: {answer}"
+            answer.contains("the browser is kept")
+                && answer.contains("inside its keep window")
+                && answer.contains("a fresh driver"),
+            "the answer names the keep, its window and the next move: {answer}"
         );
         crate::osr::Ring::unlink(&ring);
     }
@@ -12831,7 +13046,7 @@ mod server_guards {
         );
         let why = "### Error\nTimeoutError: async initializeServer: Timeout 30000ms exceeded.";
 
-        let host = service.end_dead_host(&profile, &seat, identity, why).await;
+        let (host, _why) = service.end_dead_host(&profile, &seat, identity, why).await;
 
         assert!(
             matches!(host, super::DeadHost::Ended { .. }),
@@ -12867,7 +13082,7 @@ mod server_guards {
         );
         let why = "### Error\nTimeoutError: async initializeServer: Timeout 30000ms exceeded.";
 
-        let host = service.end_dead_host(&profile, &seat, identity, why).await;
+        let (host, _why) = service.end_dead_host(&profile, &seat, identity, why).await;
 
         assert!(
             matches!(host, super::DeadHost::KeptForPopup),
@@ -12903,7 +13118,7 @@ mod server_guards {
         );
         let why = "### Error\nTimeoutError: async initializeServer: Timeout 30000ms exceeded.";
 
-        let host = service.end_dead_host(&profile, &seat, identity, why).await;
+        let (host, _why) = service.end_dead_host(&profile, &seat, identity, why).await;
 
         assert!(
             matches!(host, super::DeadHost::Ended { .. }),
@@ -12932,13 +13147,110 @@ mod server_guards {
         }
         let why = "### Error\nTimeoutError: async initializeServer: Timeout 30000ms exceeded.";
 
-        let host = service.end_dead_host(&profile, &seat, identity, why).await;
+        let (host, _why) = service.end_dead_host(&profile, &seat, identity, why).await;
 
         assert!(
             matches!(host, super::DeadHost::KeptForPopup),
             "a settled popup kept the host: {host:?}"
         );
         assert!(profile.state.lock().await.host.is_some(), "the host still stands");
+        crate::osr::Ring::unlink(&ring);
+    }
+
+    /// **A settled popup older than the keep falls back to the end path.**
+    /// The window is for a sign-in still in progress, not for a popup that
+    /// has stood past [`POPUP_TAB_KEEP`] while every attach pays its timeout:
+    /// that is the wedge, and the host must be endable again.
+    #[tokio::test]
+    async fn an_aged_settled_popup_does_not_keep_a_wedged_host() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let profile = profile_for_test(&service).await;
+        let seat = SessionSlot::lead("O", "p");
+        {
+            let mut tabs = profile.tabs.lock().unwrap_or_else(PoisonError::into_inner);
+            tabs.adopt(1, seat.clone(), "opener", "Sign in", "https://opener/")
+                .expect("the opener's row");
+            tabs.create_under(1, 2, "popup", "Auth", "https://auth/").expect("the popup's row");
+        }
+        let why = "### Error\nTimeoutError: async initializeServer: Timeout 30000ms exceeded.";
+        let aged = std::time::Instant::now() + super::POPUP_TAB_KEEP + Duration::from_secs(1);
+
+        assert!(
+            !super::attach_blocked_by_popup(&profile, why, aged),
+            "a popup past the keep is not a reason to hold the host"
+        );
+        assert!(
+            super::attach_blocked_by_popup(&profile, why, std::time::Instant::now()),
+            "the control: a popup inside the keep still holds it"
+        );
+    }
+
+    /// **An aged popup is named as the reason the host was endable.** Without
+    /// it the caller reads only the attach timeout and blames the host, when
+    /// a sign-in popup had been open past its five-minute window.
+    #[tokio::test]
+    async fn an_aged_popup_is_named_as_the_reason_the_host_can_be_ended() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let profile = profile_for_test(&service).await;
+        let seat = SessionSlot::lead("O", "p");
+        let (identity, ring) = install_host(&profile, dir.path(), 24).await;
+        profile.up.store(true, Ordering::Release);
+        {
+            let mut tabs = profile.tabs.lock().unwrap_or_else(PoisonError::into_inner);
+            tabs.adopt(1, seat.clone(), "opener", "Sign in", "https://opener/")
+                .expect("the opener's row");
+            tabs.create_under(1, 2, "popup", "Auth", "https://auth/").expect("the popup's row");
+        }
+        let why = "### Error\nTimeoutError: async initializeServer: Timeout 30000ms exceeded.";
+        let aged = std::time::Instant::now() + super::POPUP_TAB_KEEP + Duration::from_secs(1);
+
+        let (host, said) = service.end_dead_host_at(&profile, &seat, identity, why, aged).await;
+
+        assert!(
+            matches!(host, super::DeadHost::Ended { .. }),
+            "a popup past its keep no longer holds the host: {host:?}"
+        );
+        let window = format!("past its {}-minute window", super::POPUP_TAB_KEEP.as_secs() / 60);
+        assert!(said.contains(&window), "the reason names the popup: {said}");
+        assert!(
+            said.contains("initializeServer"),
+            "and keeps the attach timeout it explains: {said}"
+        );
+        let answer = super::dead_host_answer(&profile, host, &said);
+        assert!(answer.contains(&window), "{answer}");
+        assert!(answer.contains("initializeServer"), "{answer}");
+        crate::osr::Ring::unlink(&ring);
+    }
+
+    /// **A tool's own timeout is never explained by a popup.** The keep has
+    /// never excused one, and a six-minute popup beside a `page.click`
+    /// timeout changed nothing: naming it would tell the caller a window it
+    /// never touched ended the host.
+    #[tokio::test]
+    async fn an_aged_popup_does_not_explain_a_tools_own_timeout() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let profile = profile_for_test(&service).await;
+        let seat = SessionSlot::lead("O", "p");
+        let (identity, ring) = install_host(&profile, dir.path(), 25).await;
+        profile.up.store(true, Ordering::Release);
+        {
+            let mut tabs = profile.tabs.lock().unwrap_or_else(PoisonError::into_inner);
+            tabs.adopt(1, seat.clone(), "opener", "Sign in", "https://opener/")
+                .expect("the opener's row");
+            tabs.create_under(1, 2, "popup", "Auth", "https://auth/").expect("the popup's row");
+        }
+        let why = "### Error\nTimeoutError: page.click: Timeout 30000ms exceeded.";
+        let aged = std::time::Instant::now() + super::POPUP_TAB_KEEP + Duration::from_secs(1);
+
+        let (_host, said) = service.end_dead_host_at(&profile, &seat, identity, why, aged).await;
+
+        assert!(
+            !said.contains("popup had been open past"),
+            "a tool's timeout is not a popup's doing: {said}"
+        );
         crate::osr::Ring::unlink(&ring);
     }
 
@@ -12953,11 +13265,15 @@ mod server_guards {
         profile.up.store(true, Ordering::Release);
         let why = "### Error\nTimeoutError: async initializeServer: Timeout 30000ms exceeded.";
 
-        let host = service.end_dead_host(&profile, &seat, identity, why).await;
+        let (host, said) = service.end_dead_host(&profile, &seat, identity, why).await;
 
         assert!(
             matches!(host, super::DeadHost::Ended { .. }),
             "with no popup the timeout is the host's end: {host:?}"
+        );
+        assert!(
+            !said.contains("popup had been open past"),
+            "no popup is named when none is open: {said}"
         );
         assert!(profile.state.lock().await.host.is_none(), "the host is gone");
         crate::osr::Ring::unlink(&ring);
@@ -12982,14 +13298,277 @@ mod server_guards {
             .expect("an ordinary tab");
         let why = "### Error\nTimeoutError: async initializeServer: Timeout 30000ms exceeded.";
 
-        let host = service.end_dead_host(&profile, &seat, identity, why).await;
+        let (host, said) = service.end_dead_host(&profile, &seat, identity, why).await;
 
         assert!(
             matches!(host, super::DeadHost::Ended { .. }),
             "an ordinary tab is not the keep: {host:?}"
         );
+        assert!(
+            !said.contains("popup had been open past"),
+            "an ordinary tab is not a popup: {said}"
+        );
         assert!(profile.state.lock().await.host.is_none(), "the host is gone");
         crate::osr::Ring::unlink(&ring);
+    }
+
+    /// The text of a host-answered call's parts, joined.
+    fn text_of(parts: &[BrowserPart]) -> String {
+        parts
+            .iter()
+            .filter_map(|part| match part {
+                BrowserPart::Text { text } => Some(text.as_str()),
+                BrowserPart::Image { .. } => None,
+            })
+            .collect()
+    }
+
+    /// **The end-host door ends a host every page call is failing on.** The
+    /// failure paths refuse a shared host by name, so the door is the
+    /// deliberate override: it kills the process, takes every session's tabs,
+    /// publishes the cause before those tabs close, and answers what happened.
+    #[tokio::test]
+    async fn the_end_host_door_ends_a_shared_host() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let profile = profile_for_test(&service).await;
+        let lead = SessionSlot::lead("O", "p");
+        let worker = SessionSlot::worker("O", "p", "w");
+        let stub = dir.path().join("live-host.sh");
+        write_exec(&stub, "#!/bin/sh\nexec sleep 30\n");
+        let (pid, port) = spawn_live_stub(&stub, &profile, dir.path());
+        let (_, ring) = install_host_with_pid(&profile, dir.path(), pid, port).await;
+        profile.up.store(true, Ordering::Release);
+        {
+            let mut tabs = profile.tabs.lock().unwrap_or_else(PoisonError::into_inner);
+            tabs.adopt(1, lead.clone(), "opener", "Sign in", "https://opener/")
+                .expect("the opener's row");
+            tabs.create_under(1, 2, "popup", "Auth", "https://auth/").expect("the popup's row");
+            tabs.adopt(3, worker, "worker", "Docs", "https://docs/").expect("the worker's row");
+        }
+        let caught = Caught::default();
+        let subscriber = tracing_subscriber::registry().with(caught.clone());
+        let guard = tracing::subscriber::set_default(subscriber);
+        let mut failures = profile.failures.subscribe();
+
+        let parts =
+            service.call(&lead, "browser_end_host", json!({})).await.expect("the door answers");
+        drop(guard);
+
+        let said = failures.borrow_and_update().clone().unwrap_or_default();
+        assert!(said.contains("ended on request by O/p"), "the cause names the caller: {said}");
+        assert!(said.contains("every session's tabs"), "and the tabs it took: {said}");
+        assert!(said.contains("fresh browser"), "and the next move: {said}");
+        assert!(!crate::spawn::alive(pid), "the process is really gone");
+        assert!(saw(&caught, "browser_host_ended"), "the end is recorded");
+        let records = ended(&caught);
+        assert_eq!(records.len(), 1, "one end, one record: {records:?}");
+        let (_, fields) = &records[0];
+        assert!(
+            fields.contains("cause=it was ended on request: O/p/lead called the door"),
+            "the record names the door and its caller: {fields}",
+        );
+        assert!(fields.contains("outcome=ended"), "and what the end did: {fields}");
+        assert!(
+            !saw(&caught, "browser_host_survived_end"),
+            "a real kill does not leave the host running",
+        );
+        assert!(profile.state.lock().await.host.is_none(), "the host is ended");
+        assert!(
+            profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).is_empty(),
+            "every session's tabs go with it",
+        );
+        let answer = text_of(&parts);
+        assert!(answer.contains("was ended on request by O/p"), "the answer says why: {answer}");
+        assert!(answer.contains(&format!("pid {pid}")), "the host is named by pid: {answer}");
+        assert!(answer.contains(&format!("port {port}")), "and by port: {answer}");
+        assert!(answer.contains("profile 'O/default'"), "and by profile: {answer}");
+        assert!(answer.contains("fresh browser"), "and names the next move: {answer}");
+        crate::osr::Ring::unlink(&ring);
+    }
+
+    /// **The cause is in place while the end is still running.** A viewer
+    /// reads the failure watch the moment its tab's sender goes, so a cause
+    /// published only after teardown would leave it with "tab N was closed".
+    /// A silent endpoint keeps the end inside its probe, and the watch is
+    /// read there rather than after the door answers.
+    #[tokio::test]
+    async fn the_door_publishes_its_cause_before_the_tabs_close() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let profile = profile_for_test(&service).await;
+        let lead = SessionSlot::lead("O", "p");
+        // An endpoint that accepts and never answers: the end spends its
+        // probe's 2 s read timeout inside teardown.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a port");
+        let port = listener.local_addr().expect("the address").port();
+        std::thread::spawn(move || {
+            let mut held = Vec::new();
+            for _ in 0..2 {
+                let Ok((stream, _)) = listener.accept() else { return };
+                held.push(stream);
+            }
+            std::thread::sleep(Duration::from_secs(3));
+            drop(held);
+        });
+        let (_, ring) = install_host_with_pid(&profile, dir.path(), std::process::id(), port).await;
+        profile.up.store(true, Ordering::Release);
+        let mut failures = profile.failures.subscribe();
+
+        let runner = Arc::clone(&service);
+        let caller = lead.clone();
+        let door =
+            tokio::spawn(async move { runner.call(&caller, "browser_end_host", json!({})).await });
+
+        tokio::time::timeout(Duration::from_secs(1), failures.changed())
+            .await
+            .expect("the cause lands while the end is running")
+            .expect("the failure watch feeds");
+        let said = failures.borrow_and_update().clone().unwrap_or_default();
+        assert!(said.contains("is being ended on request"), "{said}");
+        assert!(!door.is_finished(), "the door is still inside teardown");
+
+        let refused = door.await.expect("the door task joins").expect_err("the end is refused");
+        assert!(refused.contains("was not ended"), "the end still finishes: {refused}");
+        crate::osr::Ring::unlink(&ring);
+    }
+
+    /// **A refused end is not reported as an end.** When another process
+    /// answers on the recorded host's port the signal is refused, and the
+    /// door names the pid still running rather than promising a fresh browser.
+    #[tokio::test]
+    async fn the_end_host_door_reports_a_refused_end() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let profile = profile_for_test(&service).await;
+        let lead = SessionSlot::lead("O", "p");
+        let port = foreign_browser_endpoint();
+        let (_, ring) = install_host_with_pid(&profile, dir.path(), std::process::id(), port).await;
+        profile
+            .tabs
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .adopt(1, lead.clone(), "opener", "Sign in", "https://opener/")
+            .expect("a tab goes with the end");
+        // The host's own record is the trail a refused end keeps.
+        let record = crate::spawn::record_path(&profile.dir);
+        std::fs::write(&record, b"the host record").expect("a host record");
+        profile.up.store(true, Ordering::Release);
+        let mut failures = profile.failures.subscribe();
+        let caught = Caught::default();
+        let subscriber = tracing_subscriber::registry().with(caught.clone());
+        let guard = tracing::subscriber::set_default(subscriber);
+
+        let answer = service
+            .call(&lead, "browser_end_host", json!({}))
+            .await
+            .expect_err("a refused end is an error");
+        drop(guard);
+
+        let records = ended(&caught);
+        assert_eq!(records.len(), 1, "one end, one record: {records:?}");
+        let (_, fields) = &records[0];
+        assert!(
+            fields.contains("cause=it was ended on request: O/p/lead called the door"),
+            "the record names the door and its caller: {fields}",
+        );
+        assert!(fields.contains("outcome=refused"), "and what the end did: {fields}");
+        let said = failures.borrow_and_update().clone().unwrap_or_default();
+        assert!(said.contains("was not ended"), "the published cause is the refusal: {said}");
+        assert!(answer.contains("was not ended"), "the refusal is not an end: {answer}");
+        assert!(
+            answer.contains(&format!("pid {}", std::process::id())),
+            "the pid still running is named: {answer}",
+        );
+        assert!(answer.contains(&format!("port {port}")), "the port is named: {answer}");
+        assert!(answer.contains("profile 'O/default'"), "the profile is named: {answer}");
+        assert!(answer.contains("still running"), "{answer}");
+        assert!(
+            !answer.contains("fresh browser"),
+            "a refused end does not promise the next call: {answer}",
+        );
+        assert!(
+            profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).is_empty(),
+            "every session's tabs go with the state, refused or not",
+        );
+        assert!(record.exists(), "a refused end keeps the host's record");
+
+        // The refused end left no host in the profile's state while the
+        // process runs, so a second call says what it knows rather than
+        // claiming nothing is running.
+        let parts =
+            service.call(&lead, "browser_end_host", json!({})).await.expect("the door answers");
+        let answer = text_of(&parts);
+        assert!(answer.contains("no browser host is recorded"), "{answer}");
+        crate::osr::Ring::unlink(&ring);
+    }
+
+    /// **A call that outlived the door does not blame the host it ended.**
+    /// The page call captured the host's identity before the door ran; its
+    /// failure path must see that the state no longer names that host rather
+    /// than publish "stopped answering" over the door's own cause.
+    #[tokio::test]
+    async fn a_call_in_flight_does_not_blame_a_host_the_door_ended() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let profile = profile_for_test(&service).await;
+        let seat = SessionSlot::lead("O", "p");
+        let (drove, ring) = install_host(&profile, dir.path(), 25).await;
+        profile.up.store(true, Ordering::Release);
+        // The door ended the host: its state is gone, the process may not be.
+        profile.state.lock().await.host = None;
+        let mut failures = profile.failures.subscribe();
+
+        let why = service
+            .after_failure(
+                &profile,
+                &seat,
+                Driven {
+                    generation: drove.generation,
+                    pid: drove.pid,
+                    port: drove.port,
+                    tab: 1,
+                    deadline: tokio::time::Instant::now() + crate::driver::CALL_TIMEOUT,
+                },
+                Call { tool: "browser_click", reported: "browser_click", args: &json!({}) },
+                Err("### Error\nError: the page said no".to_owned()),
+            )
+            .await
+            .expect_err("the call still fails");
+
+        assert!(!why.contains("stopped answering"), "the failure is the call's own: {why}");
+        assert!(
+            failures.borrow_and_update().clone().is_none(),
+            "no cause is published over the door's",
+        );
+        assert!(profile.state.lock().await.host.is_none(), "the state stays as the door left it");
+        crate::osr::Ring::unlink(&ring);
+    }
+
+    /// **A door with no host says what it knows.** A bare service has no
+    /// profile entry; a profile may be open with no host installed. Neither
+    /// asserts the machine has no browser process, because a refused end
+    /// leaves exactly that: no recorded host, and a process still running.
+    #[tokio::test]
+    async fn the_end_host_door_answers_when_nothing_is_recorded() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let lead = SessionSlot::lead("O", "p");
+
+        let parts =
+            service.call(&lead, "browser_end_host", json!({})).await.expect("the door answers");
+        let answer = text_of(&parts);
+        assert!(answer.contains("no browser host is recorded"), "{answer}");
+        assert!(answer.contains("profile 'O/default'"), "the profile is named: {answer}");
+        assert!(!answer.contains("is running"), "it does not claim the machine is idle: {answer}");
+
+        // The profile may be open with no host installed: the same sentence.
+        let _profile = profile_for_test(&service).await;
+        let parts =
+            service.call(&lead, "browser_end_host", json!({})).await.expect("the door answers");
+        let answer = text_of(&parts);
+        assert!(answer.contains("no browser host is recorded"), "{answer}");
+        assert!(answer.contains("profile 'O/default'"), "the profile is named: {answer}");
     }
 
     /// **The keep is both halves: the attach timeout and a popup.** A timeout
@@ -13003,11 +13582,11 @@ mod server_guards {
         let tool = "### Error\nTimeoutError: page.click: Timeout 30000ms exceeded.";
 
         assert!(
-            !super::attach_blocked_by_popup(&profile, ATTACH_TIMEOUT),
+            !super::attach_blocked_by_popup(&profile, ATTACH_TIMEOUT, std::time::Instant::now()),
             "no popup: the measured attach timeout is still the host's end"
         );
         assert!(
-            !super::attach_blocked_by_popup(&profile, tool),
+            !super::attach_blocked_by_popup(&profile, tool, std::time::Instant::now()),
             "no popup: a tool's own timeout is the host's end too"
         );
         let generation = profile.host_generation.load(Ordering::Acquire);
@@ -13023,11 +13602,11 @@ mod server_guards {
             ),
         );
         assert!(
-            !super::attach_blocked_by_popup(&profile, tool),
+            !super::attach_blocked_by_popup(&profile, tool, std::time::Instant::now()),
             "a popup does not excuse a tool's own timeout"
         );
         assert!(
-            super::attach_blocked_by_popup(&profile, ATTACH_TIMEOUT),
+            super::attach_blocked_by_popup(&profile, ATTACH_TIMEOUT, std::time::Instant::now()),
             "a waiting popup and the attach timeout are the keep"
         );
     }
@@ -13082,6 +13661,7 @@ mod server_guards {
             (super::HostEnd::Idle, tracing::Level::INFO),
             (super::HostEnd::Closed, tracing::Level::INFO),
             (super::HostEnd::Stopped, tracing::Level::INFO),
+            (super::HostEnd::Requested, tracing::Level::INFO),
         ] {
             assert_eq!(end.level(), level, "{end:?} reads at {level}");
         }
@@ -13107,7 +13687,7 @@ mod server_guards {
         let caught = Caught::default();
         let subscriber = tracing_subscriber::registry().with(caught.clone());
         let guard = tracing::subscriber::set_default(subscriber);
-        let host = service
+        let (host, _why) = service
             .end_dead_host(&profile, &seat, identity, "the driver's initializeServer timed out")
             .await;
         drop(guard);
@@ -13180,7 +13760,8 @@ mod server_guards {
         // **The capture is live**: the absence below is only as good as the
         // layer that would have seen a record.
         tracing::info!(event_name = "test_sentinel", "the capture is live");
-        let host = service.end_dead_host(&profile, &seat, identity, "a listing timed out").await;
+        let (host, _why) =
+            service.end_dead_host(&profile, &seat, identity, "a listing timed out").await;
         drop(guard);
 
         assert!(saw(&caught, "test_sentinel"), "the capture is not seeing records");
@@ -13629,7 +14210,8 @@ mod server_guards {
         let caught = Caught::default();
         let subscriber = tracing_subscriber::registry().with(caught.clone());
         let guard = tracing::subscriber::set_default(subscriber);
-        let host = service.end_dead_host(&profile, &seat, identity, "a listing timed out").await;
+        let (host, _why) =
+            service.end_dead_host(&profile, &seat, identity, "a listing timed out").await;
         tokio::time::advance(Duration::from_secs(2)).await;
         tokio::task::yield_now().await;
         tokio::task::yield_now().await;

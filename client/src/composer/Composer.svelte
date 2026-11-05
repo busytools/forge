@@ -26,7 +26,7 @@
   import TakeoverBar from './TakeoverBar.svelte';
   import { LIST_ID, offer, rowId, type Sources } from './autocomplete';
   import { axesFor, deviceFor, rememberAxes, rememberDevice } from './dictation';
-  import { focusOf, type Where } from './editors';
+  import { activeEditor, focusOf, type Where } from './editors';
   import {
     bindPushToTalk,
     Dictation,
@@ -226,12 +226,20 @@
       );
       const from = pressedFrom;
       pressedFrom = null;
+      // **A key take lands in the box holding the caret.** It is begun with no
+      // press on any box to name its destination, so the open send-back field
+      // is the reader's own answer to where the words go - the same one its
+      // mic names with a press. Read at the start, like every destination: the
+      // landing still checks the box is open when the words arrive.
+      const inFeedback = untrack(() => target.feedbackOpen && activeEditor() === 'feedback');
       target.tookFrom =
         from === 'feedback'
           ? 'feedback'
           : from === 'dock' || untrack(() => toDock())
             ? 'dock'
-            : 'composer';
+            : inFeedback
+              ? 'feedback'
+              : 'composer';
     },
     onLine: (line) => {
       const target = lineBox ?? box;

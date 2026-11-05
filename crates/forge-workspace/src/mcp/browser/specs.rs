@@ -756,7 +756,7 @@ pub(crate) fn specs() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "browser_hand_off",
-            description: "Ask the person at the client to act in the browser - solve a CAPTCHA, sign in, confirm something only they can - and wait for their word. **A visual artifact - an HTML mockup, a PNG - is raised here**: navigate to it first, then hand off the tab it landed on; a document - Markdown, PDF, plain text - goes through `documents__hand_off`, never this tool. The prompt sits with no timeout, like any other ask; it returns once they are done, send you a message about the page, or decline. The raise shows the page this session has been driving, exactly as it stands, and their answer does not close it: prepare the page first, and the person acts on the very page you prepared. Treat every return as an unverified claim: the ask has landed only when the person says so in chat, and a false done is worse than a false decline because you would proceed as though they answered.",
+            description: "Ask the person at the client to act in the browser - solve a CAPTCHA, sign in, confirm something only they can - and wait for their word. **A visual artifact - an HTML mockup, a PNG - is raised here**: navigate to it first, then hand off the tab it landed on; a document - Markdown, PDF, plain text - goes through `documents__hand_off`, never this tool. The prompt sits with no timeout, like any other ask; it returns once they are done, send you a message about the page, or decline. The raise shows the page this session has been driving, exactly as it stands, and their answer does not close it: prepare the page first, and the person acts on the very page you prepared.",
             schema: json!({
                 "$schema": "https://json-schema.org/draft/2020-12/schema",
                 "type": "object",
@@ -790,6 +790,18 @@ pub(crate) fn specs() -> Vec<ToolSpec> {
         ToolSpec {
             name: "browser_record_stop",
             description: "Stop the running recording, answer the file it wrote with its length and size, and put the controller's own view back.",
+            schema: json!({
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            }),
+        },
+        // The fleet's own door, not a driver call: a host no page call can
+        // drive is ended here rather than by a kill from outside.
+        ToolSpec {
+            name: "browser_end_host",
+            description: "End the browser host this session's profile resolves to and let the next call start a fresh one. Use it when page calls keep failing on a host that browser_tabs can still list, especially after a popup wedged the browser. The profile is the org's, or a project's override, so every session using it loses its tabs, including sessions in other projects; the profile's data is kept. Any lead whose project resolves to that profile can call it - a worker asks its lead instead.",
             schema: json!({
                 "$schema": "https://json-schema.org/draft/2020-12/schema",
                 "type": "object",
@@ -883,31 +895,26 @@ mod tests {
         );
     }
 
-    /// A hand-off's return has been measured inverted in both directions.
-    /// The description is read at the moment of the call, so it is where the
-    /// caller learns not to proceed on a "done" the person never gave.
+    /// **The door states whose profile it takes and who may call it.** The
+    /// description is read at the moment of the call, so the scope - every
+    /// session on the resolved profile, other projects included - and the
+    /// lead-only rule are pinned there.
     #[test]
-    fn a_hand_off_return_is_a_claim_not_a_confirmation() {
+    fn the_end_host_door_states_its_scope_and_its_caller() {
         let spec =
-            specs().into_iter().find(|spec| spec.name == "browser_hand_off").expect("the tool");
-        assert!(
-            spec.description.contains("Treat every return as an unverified claim"),
-            "the return's status is pinned: {}",
-            spec.description,
-        );
-        assert!(
-            spec.description.contains("the ask has landed only when the person says so in chat"),
-            "the confirmation that lands the ask is pinned: {}",
-            spec.description,
-        );
-        assert!(
-            spec.description.contains(
-                "a false done is worse than a false decline because you would proceed as though \
-                 they answered"
-            ),
-            "the asymmetry and its reason are pinned: {}",
-            spec.description,
-        );
+            specs().into_iter().find(|spec| spec.name == "browser_end_host").expect("the tool");
+        for phrase in [
+            "The profile is the org's, or a project's override",
+            "including sessions in other projects",
+            "Any lead whose project resolves to that profile can call it",
+            "a worker asks its lead instead",
+        ] {
+            assert!(
+                spec.description.contains(phrase),
+                "the description states `{phrase}`: {}",
+                spec.description,
+            );
+        }
     }
 
     /// **The advertised names and the live tables agree.** The parity check
@@ -924,13 +931,13 @@ mod tests {
         assert_eq!(table, advertised, "the const carries every advertised name and nothing else");
     }
 
-    /// The surface is thirty-one tools: the 25 upstream published and the
-    /// six this family adds. A count is the cheap half; the shape of each is
-    /// pinned below.
+    /// The surface is thirty-two tools: the 25 upstream published and the
+    /// seven this family adds. A count is the cheap half; the shape of each
+    /// is pinned below.
     #[test]
     fn the_surface_is_the_captures_tools_and_the_additions() {
         let names: Vec<&str> = specs().iter().map(|spec| spec.name).collect();
-        assert_eq!(names.len(), 31, "25 upstream tools and six additions: {names:?}");
+        assert_eq!(names.len(), 32, "25 upstream tools and seven additions: {names:?}");
         for upstream in [
             "browser_close",
             "browser_resize",
@@ -966,8 +973,9 @@ mod tests {
                 && names.contains(&"browser_challenge_state")
                 && names.contains(&"browser_hand_off")
                 && names.contains(&"browser_record_start")
-                && names.contains(&"browser_record_stop"),
-            "the six beyond-upstream tools are on the surface: {names:?}",
+                && names.contains(&"browser_record_stop")
+                && names.contains(&"browser_end_host"),
+            "the seven beyond-upstream tools are on the surface: {names:?}",
         );
     }
 
