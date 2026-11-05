@@ -25,6 +25,36 @@
 import type { Notice, Surface } from './wire';
 
 /**
+ * The generation of the last take this client dictated on a seat, kept in the
+ * browser's own storage so a reload finds it. It is what tells a carried
+ * notice this client's own from another client's on the same seat: the record
+ * re-hands landed words to every reader of the seat, and without this a web
+ * dictation lands in the desktop's composer as well.
+ */
+function lastTakeKey(seat: string): string {
+  return `forge.dictate.take.${seat}`;
+}
+
+function lastTake(seat: string): number | null {
+  try {
+    const raw = globalThis.localStorage?.getItem(lastTakeKey(seat));
+    if (raw === null || raw === undefined) return null;
+    const value = Number(raw);
+    return Number.isFinite(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function keepTake(seat: string, generation: number): void {
+  try {
+    globalThis.localStorage?.setItem(lastTakeKey(seat), String(generation));
+  } catch {
+    // Storage refused; the arm still guards this session.
+  }
+}
+
+/**
  * What a notice IS, for a memory that has to tell one from another.
  *
  * The take's `generation` where the record carries it: two notices with the
@@ -182,6 +212,20 @@ export class Landing {
     // nothing (#1358's rule, and what keeps words already sent from coming
     // back).
     if (!armed && notice.carried !== true) return null;
+    // **A carried notice places only on the client that dictated it.** The
+    // record re-hands the seat's landed words to every reader, so without this
+    // check a web dictation lands in the desktop's composer as well, and the
+    // words pile up when the reader goes to the other client. The generation
+    // this client last dictated on the seat is what tells its own re-hand from
+    // another client's.
+    // A take in flight already proves the words are this client's own. Only
+    // the reload case - no take in flight - needs the stored generation. A
+    // server older than the generation field cannot route per client, so its
+    // re-hand places as it always did.
+    if (notice.carried === true && inFlight === null && notice.generation !== undefined) {
+      if (notice.generation !== lastTake(seat)) return null;
+    }
+    if (inFlight !== null) keepTake(seat, inFlight);
     return notice.text;
   }
 

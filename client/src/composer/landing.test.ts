@@ -4,10 +4,28 @@
  * notice handed over again differs from a take that spoke the same words.
  */
 
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 
 import { Landing } from './landing';
 import type { Notice } from './wire';
+
+// The storage the production code reads to tell its own re-hand from another
+// client's. A fresh map per test keeps one test's take out of the next.
+const store = new Map<string, string>();
+globalThis.localStorage = {
+  getItem: (key: string) => store.get(key) ?? null,
+  setItem: (key: string, value: string) => void store.set(key, value),
+  removeItem: (key: string) => void store.delete(key),
+  clear: () => store.clear(),
+  key: (index: number) => [...store.keys()][index] ?? null,
+  get length() {
+    return store.size;
+  },
+} as Storage;
+
+beforeEach(() => {
+  store.clear();
+});
 
 const words: Notice = {
   kind: 'landed',
@@ -115,6 +133,9 @@ describe('a landing', () => {
    * have placed live - once, by identity, like any other landing.
    */
   it("places the seat's carried words without an arm of its own", () => {
+    // A reloaded page still holds the generation it dictated, so the record's
+    // re-hand is its own to place. Seed the storage a live take would have left.
+    globalThis.localStorage?.setItem(`forge.dictate.take.${SEAT}`, '1');
     const carried: Notice = {
       kind: 'landed',
       text: 'this read is the whole input',
@@ -250,6 +271,9 @@ describe('a landing', () => {
     expect(live.place(SEAT, { ...words, surface: 'review' }), 'live').toBe(
       'this read is the whole input',
     );
+    // A reloaded page still holds the generation it dictated, so its own
+    // re-hand places. Seed the storage the live take above would have left.
+    globalThis.localStorage?.setItem(`forge.dictate.take.${SEAT}`, '1');
     const carried = new Landing('review');
     expect(
       carried.place(SEAT, { ...words, surface: 'review', carried: true }),
