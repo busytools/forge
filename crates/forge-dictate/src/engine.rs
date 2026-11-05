@@ -80,16 +80,18 @@ pub struct Transcript {
     pub asr: String,
     /// Where the time went.
     pub stages: Stages,
-    /// This is what fitted rather than what was said - either the
-    /// recording hit [`Config::max_capture`], or the decode ran out of
-    /// its output budget. Carried here rather than only logged: a host
-    /// cannot offer to keep going from a log line it may not be routing.
+    /// This is what fitted rather than what was said: the recording hit
+    /// [`Config::max_capture`], the decode ran out of its output budget,
+    /// a window stopped on a repetition loop, or a window failed after
+    /// earlier windows produced words. Carried here rather than only
+    /// logged: a host cannot tell from a log line it may not be routing
+    /// that part of the take is missing.
     ///
-    /// Which of the two it was depends on the path. Audio that arrived
-    /// through [`Engine::transcribe`] or [`Engine::transcribe_with`] was
-    /// never capped, so `true` there always means the decode budget. Only
-    /// on the capture path can it be either, and there a host can compare
-    /// [`Stages::audio`] against its configured cap.
+    /// Which cause it was depends on the path. Audio that arrived through
+    /// [`Engine::transcribe`] or [`Engine::transcribe_with`] was never
+    /// capped, so a cap is not among its causes; on the capture path a
+    /// host can compare [`Stages::audio`] against its configured cap to
+    /// tell the cap from the rest.
     pub truncated: bool,
 }
 
@@ -951,7 +953,8 @@ enum WindowAction {
     /// Stop the take: the user cancelled.
     Cancelled,
     /// Stop the take: this window failed, but earlier windows produced words.
-    /// The take finalizes what it has and carries the error into diagnostics.
+    /// The take finalizes what it has, marks itself truncated, and carries
+    /// the error into diagnostics.
     FinalizeWithError { message: String },
     /// Stop the take: this window failed and nothing was transcribed, so the
     /// take fails.
@@ -975,6 +978,69 @@ fn window_action(
                 WindowAction::FinalizeWithError { message }
             } else {
                 WindowAction::Failed { message }
+            }
+        }
+    }
+}
+
+/// The take's accumulated state across its windows.
+///
+/// Extracted from the loop so the side effects of each outcome can be
+/// tested: a `FinalizeWithError` keeps the take alive, a `Failed` fails it.
+#[derive(Default)]
+struct TakeState {
+    asr_parts: Vec<String>,
+    window_records: Vec<diagnostics::WindowRecord>,
+    truncated: bool,
+    failure: Option<Error>,
+    recognition_error: Option<(usize, String)>,
+}
+
+impl TakeState {
+    fn new(truncated: bool) -> Self {
+        Self { truncated, ..Self::default() }
+    }
+
+    /// Whether any earlier window produced words.
+    fn has_prior_text(&self) -> bool {
+        self.asr_parts.iter().any(|part| !part.trim().is_empty())
+    }
+
+    /// Apply one window's outcome. Answers `false` when the loop should stop.
+    fn apply(&mut self, action: WindowAction, index: usize, start_ms: u64, end_ms: u64) -> bool {
+        match action {
+            WindowAction::Continue(text) => {
+                self.window_records.push(diagnostics::WindowRecord {
+                    start_ms,
+                    end_ms,
+                    raw: text.clone(),
+                });
+                self.asr_parts.push(text);
+                true
+            }
+            WindowAction::Truncated(text) => {
+                self.window_records.push(diagnostics::WindowRecord {
+                    start_ms,
+                    end_ms,
+                    raw: text.clone(),
+                });
+                self.asr_parts.push(text);
+                self.truncated = true;
+                true
+            }
+            WindowAction::Cancelled => {
+                self.failure = Some(Error::Cancelled);
+                false
+            }
+            WindowAction::FinalizeWithError { message } => {
+                self.truncated = true;
+                self.recognition_error = Some((index, message));
+                false
+            }
+            WindowAction::Failed { message } => {
+                self.failure = Some(Error::Recognition { message: message.clone() });
+                self.recognition_error = Some((index, message));
+                false
             }
         }
     }
@@ -1060,11 +1126,7 @@ fn worker(
         // window that outruns the decode budget keeps what it recognised
         // and hands the flag up, where today the whole rest of the take
         // would have been lost with it.
-        let mut asr_parts: Vec<String> = Vec::new();
-        let mut window_records: Vec<diagnostics::WindowRecord> = Vec::new();
-        let mut truncated = job.truncated;
-        let mut failure: Option<Error> = None;
-        let mut recognition_error: Option<(usize, String)> = None;
+        let mut state = TakeState::new(job.truncated);
         let started = Instant::now();
         // How long the take sat before its first window ran: the queue,
         // and for early takes the tail of the model load. The felt lag
@@ -1076,7 +1138,7 @@ fn worker(
         // so the join is normalized on the worker, where the normalizer
         // lives. Everything else recognizes its windows.
         if let Some(raw) = job.prejoined {
-            asr_parts.push(raw);
+            state.asr_parts.push(raw);
         } else {
             let windows = window_bounds(&job.pcm);
             for (k, &(start, end)) in windows.iter().enumerate() {
@@ -1092,10 +1154,6 @@ fn worker(
                         f64::from(out.timings.decode_ms) / 1000.0,
                     ));
                 }
-                // Whether any earlier window produced words: the one fact that
-                // decides whether a failed window discards the take or only
-                // stops it.
-                let has_prior_text = asr_parts.iter().any(|part| !part.trim().is_empty());
                 // Discriminated on the ERROR VARIANT rather than on
                 // `was_aborted`/`was_truncated`. Those report "the most
                 // recent run", and `run` has early returns that never reach
@@ -1103,41 +1161,13 @@ fn worker(
                 // oversized buffer, a busy session - on which the flags still
                 // hold the PREVIOUS job's value. Per-error state cannot go
                 // stale.
-                match window_action(result, has_prior_text) {
-                    WindowAction::Continue(text) => {
-                        window_records.push(diagnostics::WindowRecord {
-                            start_ms: window_ms(start),
-                            end_ms: window_ms(end),
-                            raw: text.clone(),
-                        });
-                        asr_parts.push(text);
-                    }
-                    WindowAction::Truncated(text) => {
-                        window_records.push(diagnostics::WindowRecord {
-                            start_ms: window_ms(start),
-                            end_ms: window_ms(end),
-                            raw: text.clone(),
-                        });
-                        asr_parts.push(text);
-                        truncated = true;
-                    }
-                    WindowAction::Cancelled => {
-                        failure = Some(Error::Cancelled);
-                        break;
-                    }
-                    WindowAction::FinalizeWithError { message } => {
-                        truncated = true;
-                        recognition_error = Some((k, message));
-                        break;
-                    }
-                    WindowAction::Failed { message } => {
-                        failure = Some(Error::Recognition { message: message.clone() });
-                        recognition_error = Some((k, message));
-                        break;
-                    }
+                let action = window_action(result, state.has_prior_text());
+                if !state.apply(action, k, window_ms(start), window_ms(end)) {
+                    break;
                 }
             }
         }
+        let TakeState { asr_parts, window_records, truncated, failure, recognition_error } = state;
         // The diagnostics record's copy of the stages is taken beside
         // the answer rather than before it: the cleanup pass sets
         // `Stages::normalize` on the way, so a clone made first would
@@ -1253,9 +1283,12 @@ enum Part {
 /// What a take's settled parts come to, before normalization.
 #[derive(Debug)]
 enum Aggregate {
-    /// Raw texts to join and normalize once.
+    /// Raw texts to join and normalize once. `failed` is set when a segment
+    /// failed after the take already had words: the take keeps what it
+    /// transcribed and marks itself truncated.
     Join {
         raws: Vec<String>,
+        failed: Option<Error>,
     },
     NoAudio {
         peak: f32,
@@ -1286,45 +1319,46 @@ fn fold_stages(parts: &[Part]) -> (Stages, Duration, bool) {
     (stages, audio, truncated)
 }
 
-/// Fold a take's parts in submission order. The first failure wins, as
-/// the whole-take job's first window error did; any recognized part
-/// sends the take down the join path, and only a take with nothing
-/// above the floor anywhere reads as silence.
+/// Fold a take's parts in submission order. A recognition failure fails the
+/// take only when no part produced words; when earlier parts did, the take
+/// keeps them and carries the first failure to the caller, which marks the
+/// transcript truncated. Any recognized part sends the take down the join
+/// path, and only a take with nothing above the floor anywhere reads as
+/// silence.
 fn aggregate_parts(parts: Vec<Part>) -> Aggregate {
-    if let Some(index) = parts.iter().position(|part| matches!(part, Part::Failed(_))) {
-        let mut parts = parts;
-        return match parts.swap_remove(index) {
-            Part::Failed(error) => Aggregate::Failed(error),
-            // The position above named a failed part, so this arm is
-            // unreachable; a stopped engine is the honest stand-in.
-            _ => Aggregate::Failed(Error::EngineStopped),
-        };
+    let mut raws = Vec::new();
+    let mut peak = f32::NEG_INFINITY;
+    let mut audio = Duration::ZERO;
+    let mut failed = None;
+    let mut saw_transcript = false;
+    for part in parts {
+        match part {
+            Part::Transcript { raw, .. } => {
+                saw_transcript = true;
+                raws.push(raw);
+            }
+            Part::NoAudio { peak: p, audio: a } => {
+                peak = peak.max(p);
+                audio += a;
+            }
+            Part::Failed(error) => {
+                if failed.is_none() {
+                    failed = Some(error);
+                }
+            }
+        }
     }
-    if !parts.iter().any(|part| matches!(part, Part::Transcript { .. })) {
-        let peak = parts
-            .iter()
-            .filter_map(|part| match part {
-                Part::NoAudio { peak, .. } => Some(*peak),
-                _ => None,
-            })
-            .fold(f32::NEG_INFINITY, f32::max);
-        let audio = parts
-            .iter()
-            .filter_map(|part| match part {
-                Part::NoAudio { audio, .. } => Some(*audio),
-                _ => None,
-            })
-            .sum();
+    let has_text = raws.iter().any(|raw| !raw.trim().is_empty());
+    if let Some(error) = failed {
+        if !has_text {
+            return Aggregate::Failed(error);
+        }
+        return Aggregate::Join { raws, failed: Some(error) };
+    }
+    if !saw_transcript {
         return Aggregate::NoAudio { peak, audio };
     }
-    let raws = parts
-        .into_iter()
-        .filter_map(|part| match part {
-            Part::Transcript { raw, .. } => Some(raw),
-            _ => None,
-        })
-        .collect();
-    Aggregate::Join { raws }
+    Aggregate::Join { raws, failed: None }
 }
 
 /// One capture's segmenter: cuts windows off the growing recording as
@@ -1530,10 +1564,12 @@ impl TakeSegmenter {
             })
             .collect();
         let (folded_stages, audio, folded_truncated) = fold_stages(&self.parts);
-        let answer = match aggregate_parts(std::mem::take(&mut self.parts)) {
+        let aggregate = aggregate_parts(std::mem::take(&mut self.parts));
+        let failed_before_join = matches!(&aggregate, Aggregate::Join { failed: Some(_), .. });
+        let answer = match aggregate {
             Aggregate::Failed(error) => Err(error),
             Aggregate::NoAudio { peak, audio } => Ok(Outcome::NoAudio { peak, audio }),
-            Aggregate::Join { raws: join_raws, .. } => {
+            Aggregate::Join { raws: join_raws, failed } => {
                 let joined = join_window_texts(&join_raws);
                 match self.normalize_join(&joined, finish.options) {
                     Ok(Outcome::Transcript(mut transcript)) => {
@@ -1544,7 +1580,8 @@ impl TakeSegmenter {
                         transcript.stages = folded_stages.clone();
                         transcript.stages.normalize = normalize;
                         transcript.stages.audio = audio;
-                        transcript.truncated |= folded_truncated | finish.truncated;
+                        transcript.truncated |=
+                            folded_truncated | finish.truncated | failed.is_some();
                         Ok(Outcome::Transcript(transcript))
                     }
                     Ok(other) => Ok(other),
@@ -1596,7 +1633,7 @@ impl TakeSegmenter {
                 models: &self.models,
                 start_lag_ms,
                 processing_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
-                truncated: folded_truncated || finish.truncated,
+                truncated: folded_truncated || finish.truncated || failed_before_join,
                 outcome,
                 recognition_error: self.failed,
             };
@@ -1847,7 +1884,8 @@ mod tests_engine {
             Part::Transcript { raw: "second".into(), stages: Stages::default(), truncated: true },
         ];
         match aggregate_parts(parts) {
-            Aggregate::Join { raws } => {
+            Aggregate::Join { raws, failed } => {
+                assert!(failed.is_none(), "no part failed");
                 assert_eq!(
                     raws,
                     ["first", "second"],
@@ -1884,18 +1922,51 @@ mod tests_engine {
     }
 
     #[test]
-    fn the_first_recognition_failure_is_the_take_answer() {
+    fn a_failure_after_a_segment_with_words_keeps_the_words() {
         let parts = vec![
             Part::Transcript { raw: "early".into(), stages: Stages::default(), truncated: false },
             Part::Failed(Error::Recognition { message: "one".into() }),
             Part::Failed(Error::Recognition { message: "two".into() }),
         ];
         match aggregate_parts(parts) {
+            Aggregate::Join { raws, failed: Some(Error::Recognition { message }) } => {
+                assert_eq!(raws, ["early"], "the words before the failure are kept");
+                assert_eq!(
+                    message, "one",
+                    "the first failure in submission order is the one carried"
+                );
+            }
+            other => {
+                panic!("a failure after words must keep them and carry the error, got {other:?}")
+            }
+        }
+    }
+
+    #[test]
+    fn a_failure_before_any_words_fails_the_take() {
+        let parts = vec![
+            Part::NoAudio { peak: -40.0, audio: Duration::from_millis(500) },
+            Part::Failed(Error::Recognition { message: "one".into() }),
+            Part::Failed(Error::Recognition { message: "two".into() }),
+        ];
+        match aggregate_parts(parts) {
             Aggregate::Failed(Error::Recognition { message }) => assert_eq!(
                 message, "one",
-                "the first failure in submission order wins, as the first window error did"
+                "the first failure in submission order wins when there is nothing to keep"
             ),
-            other => panic!("a failed part must fail the take, got {other:?}"),
+            other => panic!("a failure before any words must fail the take, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_failure_after_only_whitespace_still_fails_the_take() {
+        let parts = vec![
+            Part::Transcript { raw: " ".into(), stages: Stages::default(), truncated: false },
+            Part::Failed(Error::Recognition { message: "one".into() }),
+        ];
+        match aggregate_parts(parts) {
+            Aggregate::Failed(Error::Recognition { message }) => assert_eq!(message, "one"),
+            other => panic!("whitespace is not words, got {other:?}"),
         }
     }
 
@@ -2331,6 +2402,38 @@ mod tests_window_outcomes {
             WindowAction::Failed { message: "decode failed".to_owned() },
             "with no text to keep, the take must fail so the client draws the failure notice"
         );
+    }
+
+    /// The loop's side effects, not just the classification: a
+    /// finalize-with-error must keep the take alive and mark it truncated.
+    /// Merging its arm with `Failed` keeps the classification tests green
+    /// while re-losing the words, so this pins the transition itself.
+    #[test]
+    fn a_finalize_with_error_does_not_fail_the_take() {
+        let mut state = TakeState::new(false);
+        let keep_going = state.apply(
+            WindowAction::FinalizeWithError { message: "decode failed".to_owned() },
+            1,
+            0,
+            1000,
+        );
+        assert!(!keep_going, "the loop stops after a finalize");
+        assert!(state.failure.is_none(), "a finalize must not fail the take");
+        assert!(state.truncated, "a finalize must mark the take truncated");
+        assert_eq!(state.recognition_error, Some((1, "decode failed".to_owned())));
+    }
+
+    #[test]
+    fn a_failed_action_fails_the_take() {
+        let mut state = TakeState::new(false);
+        let keep_going =
+            state.apply(WindowAction::Failed { message: "decode failed".to_owned() }, 0, 0, 1000);
+        assert!(!keep_going);
+        assert!(
+            matches!(state.failure, Some(Error::Recognition { .. })),
+            "a failed window must fail the take"
+        );
+        assert!(!state.truncated, "a failed first window is not truncated");
     }
 }
 

@@ -348,7 +348,7 @@ export function blocked(
 }
 
 /** What a take says when it hit its cap and landed only part of what was said. */
-export const TRUNCATED = 'this is what fitted · keep going from the end';
+export const TRUNCATED = 'this is what fitted · part of the take is missing';
 
 /**
  * The line a notice draws, or `null` when it draws words instead.
