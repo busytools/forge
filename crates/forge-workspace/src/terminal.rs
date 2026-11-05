@@ -225,10 +225,7 @@ impl Workspace {
         slot: &SessionSlot,
     ) -> Result<Arc<TerminalEntry>, String> {
         if self.cwd_for_session(slot).is_none() {
-            return Err(format!(
-                "forge holds no session for {}; start it first",
-                slot.display()
-            ));
+            return Err(format!("forge holds no session for {}; start it first", slot.display()));
         }
         self.terminal_for(slot)
     }
