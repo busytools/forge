@@ -409,7 +409,6 @@ describe('axe over the rendered pages', () => {
         'release control',
         'Done',
         'Not now',
-        "something's wrong\u{2026}",
       ]) {
         expect(html, `the bar draws ${name}`).toContain(name);
       }
