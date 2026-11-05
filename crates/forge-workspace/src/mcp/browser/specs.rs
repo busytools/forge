@@ -797,6 +797,18 @@ pub(crate) fn specs() -> Vec<ToolSpec> {
                 "additionalProperties": false
             }),
         },
+        // The fleet's own door, not a driver call: a host no page call can
+        // drive is ended here rather than by a kill from outside.
+        ToolSpec {
+            name: "browser_end_host",
+            description: "End the browser host this session's profile resolves to and let the next call start a fresh one. Use it when page calls keep failing on a host that browser_tabs can still list, especially after a popup wedged the browser. The profile is the org's, or a project's override, so every session using it loses its tabs, including sessions in other projects; the profile's data is kept. Any lead whose project resolves to that profile can call it - a worker asks its lead instead.",
+            schema: json!({
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            }),
+        },
     ];
     specs
 }
@@ -883,6 +895,28 @@ mod tests {
         );
     }
 
+    /// **The door states whose profile it takes and who may call it.** The
+    /// description is read at the moment of the call, so the scope - every
+    /// session on the resolved profile, other projects included - and the
+    /// lead-only rule are pinned there.
+    #[test]
+    fn the_end_host_door_states_its_scope_and_its_caller() {
+        let spec =
+            specs().into_iter().find(|spec| spec.name == "browser_end_host").expect("the tool");
+        for phrase in [
+            "The profile is the org's, or a project's override",
+            "including sessions in other projects",
+            "Any lead whose project resolves to that profile can call it",
+            "a worker asks its lead instead",
+        ] {
+            assert!(
+                spec.description.contains(phrase),
+                "the description states `{phrase}`: {}",
+                spec.description,
+            );
+        }
+    }
+
     /// **The advertised names and the live tables agree.** The parity check
     /// is `forge-server`'s `surface_parity_live` test, which may not depend on
     /// this crate, so it reads `forge_primitives::browser::ADVERTISED_TOOLS`;
@@ -897,13 +931,13 @@ mod tests {
         assert_eq!(table, advertised, "the const carries every advertised name and nothing else");
     }
 
-    /// The surface is thirty-one tools: the 25 upstream published and the
-    /// six this family adds. A count is the cheap half; the shape of each is
-    /// pinned below.
+    /// The surface is thirty-two tools: the 25 upstream published and the
+    /// seven this family adds. A count is the cheap half; the shape of each
+    /// is pinned below.
     #[test]
     fn the_surface_is_the_captures_tools_and_the_additions() {
         let names: Vec<&str> = specs().iter().map(|spec| spec.name).collect();
-        assert_eq!(names.len(), 31, "25 upstream tools and six additions: {names:?}");
+        assert_eq!(names.len(), 32, "25 upstream tools and seven additions: {names:?}");
         for upstream in [
             "browser_close",
             "browser_resize",
@@ -939,8 +973,9 @@ mod tests {
                 && names.contains(&"browser_challenge_state")
                 && names.contains(&"browser_hand_off")
                 && names.contains(&"browser_record_start")
-                && names.contains(&"browser_record_stop"),
-            "the six beyond-upstream tools are on the surface: {names:?}",
+                && names.contains(&"browser_record_stop")
+                && names.contains(&"browser_end_host"),
+            "the seven beyond-upstream tools are on the surface: {names:?}",
         );
     }
 
