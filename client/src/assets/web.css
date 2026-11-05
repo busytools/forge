@@ -904,7 +904,12 @@ button.b-epic-pill { cursor: pointer; }
   text-overflow: ellipsis; white-space: nowrap; }
 /* The name and its wait mark share one track: a cell of their own would have
    shifted every cell after it onto an implicit row. */
-.fleet-name-cell { display: inline-flex; align-items: center; gap: 8px; min-width: 0; }
+.fleet-name-cell { display: inline-flex; align-items: center; gap: 8px; min-width: 0;
+  flex-wrap: wrap; }
+/* A restarting seat's own line, under the project name: the mark says the
+   seat is working, this says what it is doing. */
+.fleet-why { flex-basis: 100%; font-family: var(--mono); font-size: var(--fs-data);
+  color: var(--muted); }
 /* The row is the way into the lead's chat: this link's box stretches over
    the whole row, and the controls with targets of their own (a seat chip,
    the board) ride above it. */
@@ -1019,6 +1024,12 @@ button.b-epic-pill { cursor: pointer; }
   border: 1.6px solid rgba(93,102,117,.45);
   border-top-color: var(--muted);
   animation-duration: 1500ms;
+}
+/* A seat between heal attempts: the ring is broken rather than spinning,
+   because the subprocess is not there - forge is between restarts. */
+.dot.restarting, .row.restarting .dot {
+  width: 11px; height: 11px; flex: 0 0 11px;
+  border: 1.6px dashed var(--muted); border-radius: 50%;
 }
 .row.idle .dot {
   width: 7px; height: 7px; flex: 0 0 7px;

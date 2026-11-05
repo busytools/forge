@@ -163,6 +163,7 @@ const MARKS: [RowState, string][] = [
   [{ kind: 'lifecycle', lifecycle: 'Attention' }, 'needs'],
   [{ kind: 'lifecycle', lifecycle: 'AuthRequired' }, 'auth'],
   [{ kind: 'lifecycle', lifecycle: 'Failed' }, 'failed'],
+  [{ kind: 'lifecycle', lifecycle: 'Restarting' }, 'restarting'],
   [{ kind: 'lifecycle', lifecycle: 'Sleeping' }, 'asleep'],
   [{ kind: 'lifecycle', lifecycle: 'LoggedOut' }, 'asleep'],
   [{ kind: 'unseen' }, 'unseen'],
@@ -315,6 +316,7 @@ function agent(
     label,
     lifecycle,
     heal_attempt: null,
+    heal_attempts: null,
     heal_next_at: null,
     has_background_work: false,
     pending: null,
@@ -374,6 +376,7 @@ const LEAD_ROW: Row = {
   task: null,
   pending: null,
   reason: null,
+  heal: null,
   lastActivity: null,
   failedTurn: null,
 };
@@ -1381,6 +1384,38 @@ describe('what a row says', () => {
    * property off it: an unknown string there is not a card drawn wrongly,
    * it is a page that does not draw.
    */
+  /**
+   * A restarting worker is work in flight: the project groups under working
+   * rather than needs-you, and its row says which attempt is coming. Catches
+   * a row that drops the seat into needs-you, or one that leaves the reader
+   * with no word for what is happening.
+   */
+  it('draws a restarting seat under working with its attempt', () => {
+    const restarting = {
+      ...agent('Busytools', 'forge', 'w1', 'Restarting'),
+      heal_attempt: 1,
+      heal_attempts: 3,
+      heal_next_at: { secs_since_epoch: 1_790_000_000, nanos_since_epoch: 0 },
+    };
+    const wire = homeFrom({
+      ...FLEET,
+      agents: [agent('Busytools', 'forge', 'lead', 'Idle'), restarting],
+    });
+    const rows = fleetRows(wire);
+    const forge = rows.find((row) => row.name === 'forge');
+    expect(forge?.restart).toBe('w1 restarting (1 of 3)');
+
+    const groups = fleetGroups(rows);
+    expect(
+      groups.find((group) => group.heading === 'working')?.rows.map((row) => row.name),
+      'a seat between attempts is work in flight',
+    ).toContain('forge');
+    expect(
+      groups.find((group) => group.heading === 'needs you')?.rows.map((row) => row.name) ?? [],
+      "nothing is a person's to act on while it comes back",
+    ).not.toContain('forge');
+  });
+
   it('narrows a lifecycle it does not know as the snapshot is read', () => {
     const unknown = { ...FLEET, agents: [{ ...FLEET_AGENT, lifecycle: 'Resting' as never }] };
     const lead = rowsOf(homeFrom(unknown)).lead;

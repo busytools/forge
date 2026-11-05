@@ -28,6 +28,7 @@ import {
   placeOf,
   projectRows,
   rankOf,
+  restartLine,
   seatMark,
   stateOf,
   whenOf,
@@ -764,6 +765,11 @@ export function failedLine(row: Row): string | null {
   if (row.state.kind === 'died') return row.reason ?? 'the session ended';
   if (row.state.kind !== 'lifecycle') return null;
   const lifecycle = row.state.lifecycle;
+  // A restart is forge's own work, not a failure: the line says how far it
+  // has got, so a reader is not left with a seat that says nothing.
+  if (lifecycle === 'Restarting') {
+    return row.heal === null ? 'restarting' : restartLine(row.heal.attempt, row.heal.attempts);
+  }
   if (lifecycle !== 'Failed' && lifecycle !== 'AuthRequired') return null;
   return row.reason ?? (lifecycle === 'Failed' ? 'spawn failed' : 'not running');
 }

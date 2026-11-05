@@ -8658,6 +8658,12 @@ impl Workspace {
         self.heal_progress.lock().get(slot).copied()
     }
 
+    /// How many restarts a heal may make, from the current config: the row
+    /// says `restarting (attempt 1 of 3)` from this.
+    pub fn heal_attempts(&self) -> Option<u32> {
+        u32::try_from(self.config_arc().sessions.heal_attempts).ok()
+    }
+
     /// The supervisor, built on first use.
     fn healing(self: &Arc<Self>) -> Arc<crate::healing::Healing> {
         self.healing.get_or_init(|| crate::healing::Healing::for_workspace(self)).clone()

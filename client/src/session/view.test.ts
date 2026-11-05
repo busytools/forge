@@ -476,6 +476,32 @@ describe('the rail', () => {
   });
 
   /**
+   * A seat between heal attempts says so on its own line, in the numbers
+   * forge is working with, and groups under working rather than needs-you:
+   * the reader has nothing to do while it comes back.
+   */
+  it('names a restarting seat and its attempt on the row', () => {
+    const restarting: AgentRow = {
+      ...lead(),
+      lifecycle: 'Restarting',
+      heal_attempt: 1,
+      heal_attempts: 3,
+      pending: null,
+    };
+    const home = withHome({ agents: [restarting] });
+
+    const groups = railGroups(home, LEAD);
+    const working = groups.find((group) => group.heading === 'working');
+    const block = working?.projects[0];
+    if (block === undefined) throw new Error('the rail drew no working block for the seat');
+    expect(failedLine(block.row), 'the row names the attempt').toBe('restarting (1 of 3)');
+    expect(
+      groups.find((group) => group.heading === 'needs you'),
+      "a restart is not a person's to act on",
+    ).toBeUndefined();
+  });
+
+  /**
    * **A failure line is the failing seat's own.** A worker's spawn diagnostic
    * searched onto the project's line put it under the lead's row, reading as
    * the lead having failed while the worker's own row said nothing.
@@ -1119,6 +1145,7 @@ describe('the projects chip', () => {
     label,
     lifecycle: 'Idle',
     heal_attempt: null,
+    heal_attempts: null,
     heal_next_at: null,
     has_background_work: false,
     pending: null,
@@ -1191,6 +1218,7 @@ describe("the palette's rows", () => {
     label,
     lifecycle: 'Idle',
     heal_attempt: null,
+    heal_attempts: null,
     heal_next_at: null,
     has_background_work: false,
     pending: null,

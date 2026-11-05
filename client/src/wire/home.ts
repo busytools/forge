@@ -343,6 +343,8 @@ export interface AgentRow {
    * every other lifecycle, and for a server that predates the field.
    */
   heal_attempt: number | null;
+  /** How many restarts a heal may make, for the row's "1 of 3". */
+  heal_attempts: number | null;
   /** When that attempt fires; `null` when no attempt is scheduled. */
   heal_next_at: WireTime | null;
   has_background_work: boolean;
@@ -840,6 +842,7 @@ export function homeFrom(data: HomeWire): HomeWire {
       // A server that predates the heal states neither, and a count the row
       // reads must never arrive as `undefined`.
       heal_attempt: typeof agent.heal_attempt === 'number' ? agent.heal_attempt : null,
+      heal_attempts: typeof agent.heal_attempts === 'number' ? agent.heal_attempts : null,
       heal_next_at: agent.heal_next_at ?? null,
       pending: agent.pending === null ? null : narrow(agent.pending, PENDING, 'permission'),
       pending_seq: typeof agent['pending_seq'] === 'number' ? agent['pending_seq'] : 0,

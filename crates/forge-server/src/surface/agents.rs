@@ -21,6 +21,9 @@ pub struct AgentRow {
     /// Which heal attempt is next while the seat is `Restarting`; `None`
     /// for every other lifecycle.
     pub heal_attempt: Option<u32>,
+    /// How many restarts a heal may make, so the row can say "1 of 3"
+    /// without the client holding a policy of its own.
+    pub heal_attempts: Option<u32>,
     /// When that attempt fires; `None` when no attempt is scheduled.
     pub heal_next_at: Option<SystemTime>,
     pub has_background_work: bool,
@@ -157,6 +160,7 @@ fn row_for(
     let heal = workspace.heal_progress(&slot);
     AgentRow {
         heal_attempt: heal.map(|progress| progress.attempt),
+        heal_attempts: heal.and_then(|_| workspace.heal_attempts()),
         heal_next_at: heal.map(|progress| progress.next_at),
         has_background_work: workspace.has_background_work(&slot),
         last_activity: workspace.session_last_activity(&slot),

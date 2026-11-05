@@ -225,6 +225,12 @@
         <span class="fleet-name-cell">
           <a class="fleet-name fleet-go" href={row.leadHref}>{row.name}</a>
           <AttentionMark waits={row.waits} org={row.org} project={row.name} {now} />
+          <!-- A seat forge is bringing back says so on its own row: without
+               the line the row draws a calm working mark and nothing about
+               what is happening. -->
+          {#if row.restart !== null}
+            <span class="fleet-why">{row.restart}</span>
+          {/if}
         </span>
         <span class="fleet-where">
           {#if row.gate}{row.gate}{:else}

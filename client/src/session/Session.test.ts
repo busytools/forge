@@ -217,6 +217,7 @@ describe('the session shell as it draws', () => {
       label,
       lifecycle: 'Idle',
       heal_attempt: null,
+      heal_attempts: null,
       heal_next_at: null,
       has_background_work: false,
       pending: 'permission',

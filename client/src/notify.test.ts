@@ -25,6 +25,7 @@ function row(slot: SessionSlot, over: Partial<AgentRow> = {}): AgentRow {
     label: slot.label,
     lifecycle: 'Running',
     heal_attempt: null,
+    heal_attempts: null,
     heal_next_at: null,
     has_background_work: false,
     pending: null,
