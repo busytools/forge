@@ -87,7 +87,7 @@ for anything:
 ```json
 {
   "kind": "greeting",
-  "version": 28,
+  "version": 29,
   "forge_version": "1.1.25 · abc1234",
   "forge_version_short": "1.1.25+abc1234",
   "settings": {
