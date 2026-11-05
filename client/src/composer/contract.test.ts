@@ -31,6 +31,7 @@ describe("the composer's props as the session page builds them", () => {
       record: sessionFrom(session),
       slot,
       seat: seatState(homeWire, slot),
+      refused: null,
       connection: idle,
       // Read the way the router reads it, so the seam covers the whole prop
       // set rather than the four the record carries.

@@ -48,10 +48,13 @@ afterEach(() => {
   host.remove();
 });
 
-function draw(terminal: TerminalSummary | null): string {
+function draw(terminal: TerminalSummary | null, sessionless = false): string {
   host = document.createElement('div');
   document.body.appendChild(host);
-  instance = mount(TerminalSegment, { target: host, props: { slot: seat, terminal } });
+  instance = mount(TerminalSegment, {
+    target: host,
+    props: { slot: seat, terminal, sessionless },
+  });
   flushSync();
   return host.textContent ?? '';
 }
@@ -74,6 +77,13 @@ describe('the terminal strip row', () => {
     expect(text).toContain('terminal');
     expect(text).toContain('off');
     expect(text).toContain('start');
+  });
+
+  it('draws no door and says why when the seat holds no session', () => {
+    const text = draw(null, true);
+    expect(text).toContain('terminal');
+    expect(text).toContain('the seat has no session yet - start it first');
+    expect(host.querySelector('button'), 'a seat with no session gets no door').toBeNull();
   });
 
   it('is one pill with the terminal glyph, the state dot and its door', () => {

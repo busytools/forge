@@ -575,7 +575,10 @@
         event.preventDefault();
         if (terminalSurface.phase !== 'closed') {
           void closeTerminal();
-        } else {
+        } else if (read.refused === null) {
+          // **A sessionless seat has no terminal door**: its read is refused,
+          // so a surface raised here would run with no record to draw. The
+          // strip's row says why; the chord stays quiet rather than undoing it.
           void openTerminal(slot, record?.terminal?.id ?? null);
         }
         return;
@@ -931,6 +934,7 @@
         record: record ?? emptyComposer(slot),
         slot,
         seat,
+        refused: read.refused,
         connection,
         voice: wire.voice.enabled,
         reading,

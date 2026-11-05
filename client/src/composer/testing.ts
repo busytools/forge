@@ -44,6 +44,7 @@ export function props(over: Partial<ComposerProps> = {}): ComposerProps {
     record: record(),
     slot: SLOT,
     seat: seatRead(),
+    refused: null,
     connection: wire().connection,
     dictation: false,
     voice: false,

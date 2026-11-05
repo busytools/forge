@@ -504,6 +504,8 @@ export interface ComposerProps {
   slot: SessionSlot;
   /** The seat behind the page, which its blocked states read. */
   seat: SeatState;
+  /** The server's refusal of the seat's read; a seat with no session gets one. */
+  refused: string | null;
   connection: Connection;
   /** Whether the conversation's first page is still out, which the band says. */
   reading: boolean;

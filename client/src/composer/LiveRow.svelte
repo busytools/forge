@@ -52,6 +52,7 @@
   let {
     info,
     slot = null,
+    sessionless = false,
     ask = null,
     draft = null,
     onask = () => {},
@@ -59,6 +60,8 @@
   }: {
     info: TurnInfo | null;
     slot?: SessionSlot | null;
+    /** Whether the seat holds no session, so its terminal has no door. */
+    sessionless?: boolean;
     /**
      * What waits in the body, said on the row: the ask's kind, the mark it
      * wears, and whether it is something the reader owes an answer.
@@ -283,7 +286,7 @@
   {#if name === 'browser'}
     <BrowserSegment {slot} />
   {:else if name === 'terminal'}
-    <TerminalSegment {slot} />
+    <TerminalSegment {slot} {sessionless} />
   {:else if name === 'subagents'}
     <SubagentSegment />
   {:else if name === 'processes'}

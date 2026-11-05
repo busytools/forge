@@ -4305,6 +4305,17 @@ describe('the strip lane', () => {
     expect(lane).toContain('start');
   });
 
+  it('draws no terminal door on a seat that holds no session', () => {
+    open({ refused: 'forge holds no session for Busytools/forge/lead' });
+
+    const lane = document.querySelector('.live-row')?.textContent ?? '';
+    expect(lane).toContain('the seat has no session yet - start it first');
+    expect(
+      document.querySelector('.live-row button.tm-tog'),
+      'a seat with no session gets no door',
+    ).toBeNull();
+  });
+
   it('follows the seat when the page moves', () => {
     // The pin is read under the SHOWN seat: a page that moves must swap the
     // lanes with it, never keep drawing the seat being left's figures.

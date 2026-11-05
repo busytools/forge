@@ -201,6 +201,7 @@
       record: over.record ?? blank(),
       slot: over.slot ?? SLOT,
       seat: over.seat ?? seat(),
+      refused: over.refused ?? null,
       connection: idle,
       dictation: over.dictation ?? false,
       voice: over.voice ?? false,
