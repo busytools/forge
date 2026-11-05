@@ -721,6 +721,29 @@ describe('the shell at launch', () => {
       'the unset font to draw the built-in stack',
     );
   });
+
+  /**
+   * **A new server run drops the takes the last one left.** The boot id rides
+   * the home wire, and the Shell is what applies it: without this the wipe is
+   * a function nothing calls, and a restart's fresh generation 1 can match a
+   * stored take from the last run.
+   */
+  it('drops the stored dictation takes when the server run changes', async () => {
+    const take = 'forge.dictate.take.session:TestOrg\u0000proj\u0000lead';
+    const boot = 'forge.dictate.boot';
+    // The launch's own home read carries the fixture's boot id, so seeding the
+    // same one keeps the first apply a no-op and leaves the take standing.
+    localStorage.setItem(take, '3');
+    localStorage.setItem(boot, '<boot-id>');
+    const forge = await stubForge({ font: 'system' });
+    forges.push(forge);
+    await openAt('/session/TestOrg/proj/lead', forge.address);
+    await until(() => forge.homeReads() >= 1, 'the launch to take');
+    expect(localStorage.getItem(take), 'the same run keeps the take').toBe('3');
+
+    forge.home({ ...homeWire, boot_id: 'run-b' });
+    await until(() => localStorage.getItem(take) === null, 'the new run to drop the take');
+  });
 });
 
 describe('a shell that is torn down', () => {

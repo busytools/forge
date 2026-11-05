@@ -211,16 +211,31 @@ pub fn render(messages: &[Message], live: bool) -> Rendered {
                 // failing `Result` from the call it ended, so the report and
                 // the failure line land in a turn holding no call (#1323).
                 ContentBlock::Text { text, .. } if !assistant && is_interrupt_marker(text) => {}
-                ContentBlock::Text { text, .. } => {
-                    // An envelope is not the reader's own words: a peer message
-                    // is a user row the CLI answered as a turn of its own, so
-                    // the work above it belongs to the turn before, and every
-                    // other kind the workspace injects - a delivery, a fire, a
-                    // failure - opens no turn either.
-                    if !assistant && detect_inbound(text).is_some() {
-                        close_traced(&mut traced, true, &mut keys, &mut turns, open);
+                // **A delivery's envelope row is the turn boundary.** The CLI
+                // runs a delivered prompt as a turn of its own, and the row it
+                // writes is the only marker of where that turn opens; a fold
+                // that opened none here joined a delivered turn's exchange to
+                // the turn above, and a reload drew the two as one turn. The
+                // row still DRAWS as its envelope - the cut is the server's,
+                // the header the client's.
+                ContentBlock::Text { text, .. } if !assistant && detect_inbound(text).is_some() => {
+                    // **A delivery with a call out stays in the running turn**,
+                    // the rule a forge-minted row takes: a turn opened here
+                    // cuts the call above off from the result below (#2379).
+                    if open.is_some()
+                        && !open_calls.is_empty()
+                        && (live || answered_later(messages, index, &open_calls))
+                    {
                         continue;
                     }
+                    close_traced(&mut traced, true, &mut keys, &mut turns, open);
+                    open = Some(open_turn(&mut turns, index));
+                    turn_skills.clear();
+                    turn_boundary = false;
+                    turn_calls = false;
+                    open_calls.clear();
+                }
+                ContentBlock::Text { .. } => {
                     // **A forge-minted row arriving while the open turn waits
                     // on a call was delivered INTO it**: the CLI presses a
                     // mid-turn write into the running turn, and the chase's
@@ -676,12 +691,14 @@ mod tests {
         message
     }
 
-    /// An envelope that is not agent traffic is not the user's own turn: a
-    /// Gotify delivery, a cron fire, a Slack bundle, a failed delivery and a
-    /// failed worker spawn each arrive as an envelope, and a turn opened for
-    /// one draws a protocol header under the reader's own name.
+    /// A delivery is its own turn: the kinds the parser recognises - Gotify,
+    /// cron, Slack, a peer message and a delivery failure - each arrive as an
+    /// envelope row, and that row is where the delivery's turn opens. The row
+    /// still draws as its envelope - the cut is the fold's, the header the
+    /// client's - and a fold that opened no turn here joined a delivered
+    /// turn's exchange to the turn above it.
     #[test]
-    fn an_external_envelope_opens_no_turn() {
+    fn an_external_envelope_opens_its_turn() {
         let quiet = user(vec![ContentBlock::Text {
             text: "[Gotify - app 'watcher', priority 3]\n\ndeploy finished".to_owned(),
             extras: serde_json::Map::new(),
@@ -703,9 +720,86 @@ mod tests {
 
         let rendered = settled(&[quiet, loud, slack, failed]);
 
-        assert!(
-            rendered.turns.is_empty(),
-            "a delivery, a fire and a failure each open no turn of their own",
+        assert_eq!(
+            rendered.turns.iter().map(|turn| turn.opens_at).collect::<Vec<_>>(),
+            vec![0, 1, 2, 3],
+            "a delivery, a fire and a failure each open a turn on their own row",
+        );
+    }
+
+    /// **A delivery pressed into a running turn stays in that turn.** The CLI
+    /// fuses a mid-turn write into the turn it interrupted, and the row lands
+    /// between the call and the result the call waits on. A turn opened there
+    /// cuts the call off from its answer, and every reader of the fold draws
+    /// it failed with no result (#2379).
+    #[test]
+    fn a_mid_call_envelope_stays_in_the_turn_it_was_pressed_into() {
+        let rendered = settled(&[
+            reader_row("despawn probe"),
+            despawn_call(),
+            user(vec![ContentBlock::Text {
+                text:
+                    "[Slack - workspace 'Busytools', #forge] id ts\n\nsteward: the gate is green\n"
+                        .to_owned(),
+                extras: serde_json::Map::new(),
+            }]),
+            tool_result("call_1", false),
+        ]);
+
+        assert_eq!(
+            rendered.turns.len(),
+            1,
+            "the delivery opens no turn of its own while the call is out",
+        );
+        assert_eq!(rendered.turns[0].opens_at, 0, "the turn still opens on the prompt row");
+    }
+
+    /// **A crash-shaped call does not latch the delivery rule.** The restart
+    /// shape (#1836) leaves a `tool_use` with no result and no `Result` frame,
+    /// so a settled fold cannot read that turn as running - the delivery after
+    /// it opens its own turn, as it does after any settled turn.
+    #[test]
+    fn a_delivery_after_a_crash_shaped_call_opens_its_turn() {
+        let rendered = settled(&[
+            reader_row("despawn probe"),
+            despawn_call(),
+            user(vec![ContentBlock::Text {
+                text:
+                    "[Slack - workspace 'Busytools', #forge] id ts\n\nsteward: the gate is green\n"
+                        .to_owned(),
+                extras: serde_json::Map::new(),
+            }]),
+        ]);
+
+        assert_eq!(
+            rendered.turns.len(),
+            2,
+            "the delivery opens a turn after the crash-shaped call"
+        );
+        assert_eq!(rendered.turns[1].opens_at, 2, "on the row it arrived in");
+    }
+
+    /// The live half of the same bound: until the call's result lands the list
+    /// cannot say the turn is still waiting, and the caller's flag does.
+    #[test]
+    fn a_live_turns_open_call_protects_the_envelope_too() {
+        let rendered = render(
+            &[
+                reader_row("despawn probe"),
+                despawn_call(),
+                user(vec![ContentBlock::Text {
+                    text: "[Slack - workspace 'Busytools', #forge] id ts\n\nsteward: the gate is green\n"
+                        .to_owned(),
+                    extras: serde_json::Map::new(),
+                }]),
+            ],
+            true,
+        );
+
+        assert_eq!(
+            rendered.turns.len(),
+            1,
+            "the delivery stays in the turn the caller reports live",
         );
     }
 
@@ -1084,8 +1178,9 @@ mod tests {
     /// drew as something else would start the window inside a turn, which is
     /// the whole thing the window's front is for.
     ///
-    /// The other direction is pinned as the one place they are meant to differ:
-    /// a queued prompt opens a turn in the fold, and the scan leaves it alone.
+    /// The other direction is where they are meant to differ: a queued prompt
+    /// and a delivery's envelope row open a turn in the fold, and the scan
+    /// leaves both alone - the queued prompt is the one this fixture pins.
     #[test]
     fn the_windows_turn_scan_names_no_frame_the_fold_opens_no_turn_at() {
         let text = |text: &str| {
@@ -1467,12 +1562,12 @@ mod tests {
         );
     }
 
-    /// Peer traffic is not the reader's own turn on either side: an envelope
-    /// that arrived as the user turn's prose, and a call the session made.
-    /// Folded as a turn, the page would show the protocol instead of the
-    /// message.
+    /// Peer traffic on the wire: an envelope that arrived is where the turn
+    /// the CLI ran for it opens, and a call the session made opens none. The
+    /// row still draws as the envelope - the header is the view's, not the
+    /// reader's own words.
     #[test]
-    fn peer_traffic_opens_no_turn() {
+    fn a_peer_envelope_opens_its_turn() {
         let arrived = user(vec![ContentBlock::Text {
             text: "[Message id=m-1 from agent 'companies' (org 'Busytools')]\n\nis the cron issue filed?"
                 .to_owned(),
@@ -1485,7 +1580,11 @@ mod tests {
             extras: serde_json::Map::new(),
         }]);
 
-        assert!(settled(&[arrived]).turns.is_empty(), "the envelope that arrived opens no turn");
+        assert_eq!(
+            settled(&[arrived]).turns.len(),
+            1,
+            "the envelope that arrived opens the turn it ran",
+        );
         assert!(
             settled(&[sent]).turns.is_empty(),
             "and the call the session made opens none either",

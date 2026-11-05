@@ -4359,13 +4359,13 @@ describe('the conversation the chat draws', () => {
 
   /**
    * **The live fold and the page's fold can cut one turn at different rows.**
-   * A delivered prompt's result ends a CLI turn where the transcript fold keeps
-   * one - the delivery was pressed into the running turn - so the client holds
-   * two rows where the page has one. The page's first row then carries the
-   * frames between the two cuts itself, and the page row that opens at the
-   * later cut matches the held row whose own leading frames are those same
-   * ones. A merge that read each row's copy alone drew that stretch in both
-   * rows: one section of the conversation, twice.
+   * A delivered prompt the CLI pressed into the running turn ends a CLI turn
+   * where the transcript fold keeps one, so the client holds two rows where
+   * the page has one. The page's first row then carries the frames between the
+   * two cuts itself, and the page row that opens at the later cut matches the
+   * held row whose own leading frames are those same ones. A merge that read
+   * each row's copy alone drew that stretch in both rows: one section of the
+   * conversation, twice.
    */
   it('draws the stretch between two different cuts once', () => {
     const server = fakeConnection();
@@ -6046,9 +6046,9 @@ describe('the conversation the chat draws', () => {
     // The CLI's turn carries on before the read: the page cannot hold this.
     server.update({ chat_appended: { key: LEAD, msg: said('carried on') } });
 
-    // The page read that follows: the fold opens no turn at an envelope row,
-    // so its row rides the turn above, and the page's copy carries the
-    // prompt's id. A later turn rides below it.
+    // The page read that follows: the fold keeps a pressed-in row in the turn
+    // it was writing, so its row rides the turn above, and the page's copy
+    // carries the prompt's id. A later turn rides below it.
     server.send(
       page(
         [

@@ -198,9 +198,9 @@ hand-off; a code change, a PR and an answer that belongs in the chat \
 do not need one.\n\
 \n\
 **A document hand-off's answer is approve or feedback.** Feedback means revise the \
-document and hand it off again; approval is the one signal to proceed, \
-and never proceed on feedback. Both may carry a note, and the note \
-reaches you with the answer.\n\
+document and hand it off again, and keep handing it off until the reader \
+approves; approval is the one signal to proceed, and never proceed on \
+feedback. Both may carry a note, and the note reaches you with the answer.\n\
 \n\
 The review gate is not the worker's to run: do your own checks - the \
 project's tests and its check command - then hand the PR over and \
@@ -330,10 +330,7 @@ launch a browser \
 to drive a page, and never drive the \
 person's own browser or its tabs - the family reaches only the server's \
 browser, through this session's own tab. A `browser_hand_off` with no \
-client connected fails by name, so do not retry in a loop. Treat a \
-hand-off's return as an unverified claim: the ask has landed only when \
-the person says so in chat, and a false done is worse than a false \
-decline because you would proceed as though they answered.\n\
+client connected fails by name, so do not retry in a loop.\n\
 \n\
 forge's configuration is read and edited through the `settings__*` tools \
 and no other way. `settings__index` and `settings__get` read it, and \
@@ -3706,31 +3703,6 @@ mod tests {
         );
     }
 
-    /// A hand-off's return has been measured inverted in both directions, and
-    /// the affirmative one is the dangerous half: an agent told "done" acts on
-    /// a form nobody touched. Pinned with the chat confirmation that lands it
-    /// and the asymmetry that makes a false done worse than a false decline.
-    #[test]
-    fn the_conduct_block_carries_the_hand_off_return_rule() {
-        assert!(
-            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
-                .contains("Treat a hand-off's return as an unverified claim"),
-            "the rule's handle is pinned",
-        );
-        assert!(
-            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
-                .contains("the ask has landed only when the person says so in chat"),
-            "the confirmation that lands the ask is pinned",
-        );
-        assert!(
-            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
-                "a false done is worse than a false decline because you would proceed as though \
-                 they answered"
-            ),
-            "the asymmetry and its reason are pinned",
-        );
-    }
-
     /// The Slack tools are the only sanctioned route to Slack, and a
     /// failed `slack__*` call is exactly when the out-of-band route
     /// feels reasonable. Pinned on the rule's handle, the hold the
@@ -4273,8 +4245,9 @@ mod tests {
         );
         assert!(
             FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
-                "Feedback means revise the document and hand it off again; approval is the one \
-                 signal to proceed, and never proceed on feedback."
+                "Feedback means revise the document and hand it off again, and keep handing it \
+                 off until the reader approves; approval is the one signal to proceed, and never \
+                 proceed on feedback."
             ),
             "the loop's next step and its one signal are pinned",
         );
