@@ -18,7 +18,8 @@ if (!target) {
 startPerfProbe();
 
 // **The page's history belongs to the router**, so the webview's own
-// Backspace-navigation is cancelled before any surface mounts.
+// Backspace-navigation is cancelled before any surface mounts. The disposer is
+// deliberately unused: the page lives as long as the app.
 guardBackspaceNavigation();
 
 mount(App, { target });
