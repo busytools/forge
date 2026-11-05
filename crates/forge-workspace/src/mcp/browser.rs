@@ -14,8 +14,10 @@
 //!
 //! **The family is any-caller, and it is not a toggleable one.** The browser
 //! is one machine-global one, not a scope like reviews or crons: every
-//! session may drive it, and a workspace with no fleet answers the no-host
-//! refusal rather than pretending the surface is absent.
+//! session may drive it, with one exception - `browser_end_host` belongs to a
+//! project's lead, because it ends a host every session on the profile
+//! shares, and a worker is refused by name. A workspace with no fleet answers
+//! the no-host refusal rather than pretending the surface is absent.
 //!
 //! **The tool carries no logic.** It forwards the call to the fleet and
 //! hands back the parts it returned - refs only mean something inside that
@@ -95,10 +97,19 @@ impl Tool for BrowserTool {
 
     async fn call(&self, input: ToolInput) -> ToolOutput {
         let started = std::time::Instant::now();
-        let outcome = if self.spec.name == "browser_hand_off" {
-            self.hand_off(input.value).await
-        } else {
-            self.facade.call(&self.slot, self.spec.name, input.value).await
+        let outcome = match (self.spec.name, self.slot.is_lead()) {
+            // **The end-host door is the lead's**: it takes every session's
+            // tabs on the profile, so a worker asks its lead rather than
+            // ending a host other sessions are using. The refusal is an
+            // outcome like any other, so the record below counts it.
+            ("browser_end_host", false) => {
+                Err("browser_end_host is the project lead's: it ends the browser host shared by \
+                 every session on the profile this project resolves to, including sessions in \
+                 other projects. Ask your lead to call it."
+                    .to_owned())
+            }
+            ("browser_hand_off", _) => self.hand_off(input.value).await,
+            _ => self.facade.call(&self.slot, self.spec.name, input.value).await,
         };
         // The record of calls: what ran, for whom, and how it ended. `debug`
         // because a browser call is the session's own work rather than a
@@ -384,6 +395,108 @@ mod tests {
             out.blocks,
             vec![ToolOutputBlock::Text { text: crate::browser::NO_BROWSER_HOST.to_owned() }],
             "and it carries the reason a session can act on",
+        );
+    }
+
+    /// **The end-host door belongs to the lead.** It ends the browser host
+    /// every session on the profile shares, so a worker is refused in words
+    /// and the fleet is never asked; the project's lead is the caller that
+    /// can take every session's tabs.
+    #[tokio::test]
+    async fn the_end_host_door_is_the_leads_and_reaches_the_fleet() {
+        let mock = Arc::new(MockBrowserFacade::new());
+        let worker = BrowserTool {
+            spec: spec_named("browser_end_host"),
+            facade: Arc::clone(&mock) as Arc<dyn BrowserFacade>,
+            slot: seat(),
+        };
+
+        let out = worker.call(ToolInput { value: json!({}) }).await;
+
+        assert!(out.is_error, "a worker cannot end a host other sessions are using");
+        assert!(mock.calls.lock().is_empty(), "the fleet is never asked");
+        let refusal = match out.blocks.as_slice() {
+            [ToolOutputBlock::Text { text }] => text.clone(),
+            other => panic!("the refusal is one text block: {other:?}"),
+        };
+        assert!(refusal.contains("lead"), "the refusal names who can end it: {refusal}");
+
+        let lead = BrowserTool {
+            spec: spec_named("browser_end_host"),
+            facade: Arc::clone(&mock) as Arc<dyn BrowserFacade>,
+            slot: SessionSlot::lead("TestOrg", "test-project"),
+        };
+
+        let out = lead.call(ToolInput { value: json!({}) }).await;
+
+        assert!(!out.is_error, "the lead's call reaches the fleet: {:?}", out.blocks);
+        assert_eq!(
+            mock.calls.lock().as_slice(),
+            [("browser_end_host".to_owned(), json!({}))],
+            "the door is the tool the fleet hears",
+        );
+    }
+
+    /// A record capture: level, target and the event's fields as text.
+    #[derive(Clone, Default)]
+    struct Caught(std::sync::Arc<parking_lot::Mutex<Vec<(tracing::Level, String, String)>>>);
+
+    #[derive(Default)]
+    struct CaughtFields(String);
+
+    impl tracing::field::Visit for CaughtFields {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            use std::fmt::Write as _;
+            if !self.0.is_empty() {
+                self.0.push(' ');
+            }
+            let _ = write!(&mut self.0, "{}={value:?}", field.name());
+        }
+    }
+
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Caught {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _ctx: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            let mut fields = CaughtFields::default();
+            event.record(&mut fields);
+            self.0.lock().push((
+                *event.metadata().level(),
+                event.metadata().target().to_owned(),
+                fields.0,
+            ));
+        }
+    }
+
+    /// **A refused door leaves its trace.** The call record is what makes a
+    /// refusal visible after the fact, so the lead gate runs below it.
+    #[tokio::test]
+    async fn a_refused_end_host_call_is_recorded() {
+        use tracing_subscriber::layer::SubscriberExt as _;
+        let mock = Arc::new(MockBrowserFacade::new());
+        let tool = BrowserTool {
+            spec: spec_named("browser_end_host"),
+            facade: Arc::clone(&mock) as Arc<dyn BrowserFacade>,
+            slot: seat(),
+        };
+        let caught = Caught::default();
+        let subscriber = tracing_subscriber::registry().with(caught.clone());
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let out = tool.call(ToolInput { value: json!({}) }).await;
+
+        assert!(out.is_error, "the worker is refused");
+        let records = caught.0.lock();
+        assert!(
+            records.iter().any(|(level, target, fields)| {
+                *level == tracing::Level::DEBUG
+                    && target == "forge_workspace::browser"
+                    && fields.contains("event_name=\"browser_call\"")
+                    && fields.contains("ok=false")
+            }),
+            "the refusal is recorded: {records:?}",
         );
     }
 

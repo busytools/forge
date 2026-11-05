@@ -367,7 +367,7 @@ pub struct HandOffAnswer {
 /// this crate may not depend on: a unit test there asserts the two lists
 /// agree, and the live check in `forge-server`'s `surface_parity_live` test
 /// asserts every name is answered by the pinned driver or by a host arm.
-pub const ADVERTISED_TOOLS: [&str; 31] = [
+pub const ADVERTISED_TOOLS: [&str; 32] = [
     "browser_close",
     "browser_resize",
     "browser_console_messages",
@@ -399,6 +399,7 @@ pub const ADVERTISED_TOOLS: [&str; 31] = [
     "browser_hand_off",
     "browser_record_start",
     "browser_record_stop",
+    "browser_end_host",
 ];
 
 #[cfg(test)]
