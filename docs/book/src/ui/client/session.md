@@ -283,7 +283,9 @@ were, kept per conversation - the seat plus the claude session id it runs as
 document, the review, the files, the home or the settings, leaves the
 connection keeping the conversation, so the mount that comes back puts the
 reader on their row; switching away to another seat and back does the same,
-and so does a socket that reconnects as a new connection. A replacement that
+and so does a socket that reconnects as a new connection, when the saved row
+is in the page the socket sent - a place deeper than that page goes to the
+latest. A replacement that
 names the SAME claude session id is that conversation reloading, so the place
 survives it. A place the reader gave up, by sending or by scrolling back to
 the latest, is not restored; a `/new` or a `/resume` to a different claude

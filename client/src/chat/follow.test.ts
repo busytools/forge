@@ -45,7 +45,7 @@ const {
   setMeasured,
   setModel,
 } = await import('./testing/records');
-const { conversationsFor, places } = await import('./conversations');
+const { conversationsFor, places, releaseConversation } = await import('./conversations');
 const { echoes } = await import('./echoes.svelte');
 const { subjectKey } = await import('../protocol');
 const { default: Chat } = await import('./Chat.svelte');
@@ -2245,6 +2245,61 @@ describe('whether the column follows the newest end', () => {
     expect(element.offset, "the reader's row carried them down with it").toBe(250);
   });
 
+  it('takes the place again once the list has re-windowed for a jump', async () => {
+    // **A jump can outrun the list's window.** The capture reads the rows the
+    // last window left drawn, finds none under the edge, and asks again once
+    // the list has re-windowed - and only two frames that agree are a place.
+    const server = stub();
+    clear();
+    clearObservers();
+    setMeasured(TOTAL, VIEWPORT);
+    app = mount(Chat, {
+      target: document.body,
+      props: { slot: LEAD, connection: server.connection },
+    });
+    flushSync();
+    server.page([spoken('t1'), spoken('t2'), spoken('t3')]);
+    await settle();
+    layOut(40);
+    readerAt(50);
+    await settle();
+    clear();
+    places.forget(subjectKey({ session: LEAD }));
+
+    // Every drawn row sits below the top edge, further than the room: the
+    // capture finds no row to hold.
+    const root = document.querySelector('.conv');
+    const rows = [...(root?.querySelectorAll('.turn [data-k]') ?? [])];
+    rows.forEach((row) => {
+      row.getBoundingClientRect = () => ({
+        top: 2000,
+        bottom: 2040,
+        height: 40,
+        width: 0,
+        left: 0,
+        right: 0,
+        x: 0,
+        y: 0,
+        toJSON: () => ({}),
+      });
+    });
+    readerAt(50);
+    await settle();
+    expect(
+      places.of(subjectKey({ session: LEAD })),
+      'no row under the edge is no place',
+    ).toBeUndefined();
+
+    // The list re-windows: the rows are back under the edge, and the retry
+    // takes the place once two frames agree.
+    layOut(40);
+    await settle();
+    expect(
+      places.of(subjectKey({ session: LEAD })),
+      'the retry took the place once the rows agreed',
+    ).toBeDefined();
+  });
+
   it('restores the row of a reader whose follow is on but not pinning', async () => {
     // **The other half of the third state.** A follow can be on while the
     // column holds position; the observer's pass must not read that flag
@@ -3798,9 +3853,11 @@ describe('a saved place outliving the connection', () => {
 
     // The document goes, and the socket comes back as a NEW connection: the
     // conversation it held went with the old one, and so did every map the
-    // connection owned.
+    // connection owned. The production release step runs first, so the test
+    // exercises the path a closed seat takes rather than only the unmount.
     if (app !== null) await unmount(app);
     app = null;
+    releaseConversation(first.connection, subjectKey({ session: LEAD }));
     document.body.innerHTML = '';
     element.offset = 0;
     clear();
@@ -3818,6 +3875,22 @@ describe('a saved place outliving the connection', () => {
     await settle();
 
     expect(element.offset, 'the reconnect reopened the place the reader left').toBe(50);
+  });
+
+  it("releases a seat's conversation and keeps its place", async () => {
+    const server = stub();
+    await parkedColumn(server);
+    const key = subjectKey({ session: LEAD });
+    const held = conversationsFor(server.connection);
+    expect(held.live.get(key), 'precondition: the seat is live').toBeDefined();
+    expect(held.kept.get(key), 'precondition: the conversation is kept').toBeDefined();
+    expect(places.of(key), 'precondition: the place is recorded').toBeDefined();
+
+    releaseConversation(server.connection, key);
+
+    expect(held.live.get(key), "the seat's listeners stopped with it").toBeUndefined();
+    expect(held.kept.get(key), 'the conversation went with the seat').toBeUndefined();
+    expect(places.of(key), 'the place stays for a reconnect').toBeDefined();
   });
 
   it('opens a different claude session at the latest, whatever the slot was left holding', async () => {
@@ -3992,6 +4065,28 @@ describe('a saved place outliving the connection', () => {
       places.of(subjectKey({ session: LEAD })),
       'and the place went with the occupant that left',
     ).toBeUndefined();
+  });
+
+  it('lands a same-seat occupant change at once, not on a glide', async () => {
+    // **A successor's first pin is a first pin.** The previous conversation's
+    // foot is not this one's, so the new conversation lands at once rather
+    // than sliding in from the old offset (the book's "a first pin, a
+    // switch's or a return's, lands at once").
+    const server = stub();
+    await parkedWith(server, 's1');
+    clear();
+
+    vi.stubGlobal('matchMedia', () => ({ matches: false }));
+    server.replaced('another-session');
+    await settle();
+    clear();
+
+    server.page([spoken('n1'), spoken('n2'), spoken('n3')]);
+    layOut(40);
+    await settle();
+
+    expect(element.offset, 'the successor opened at the latest').toBe(FOOT);
+    expect(pinned().length, 'the first pin was one write, not a glide').toBe(1);
   });
 });
 
@@ -4195,6 +4290,51 @@ describe('the motion of a following column', () => {
 
       for (let at = 0; at < 12; at += 1) await hand.pump(16);
       expect(element.offset, 'the column still carried the reader to the foot').toBe(FOOT);
+    } finally {
+      hand.stop();
+    }
+  });
+
+  it('disarms when a small up-scroll stops a glide mid-stream', async () => {
+    // **A gesture that stops a glide leaves the reader where it reached.**
+    // `placed` is the offset the disarm compares against; a stale foot from
+    // before the growth would let a small up-scroll inside the notch fail the
+    // disarm, and the next growth would carry the reader back (#1673).
+    const server = stub();
+    await draw(server);
+    layOut(40);
+    expect(element.offset, 'precondition: the landing is at the foot').toBe(FOOT);
+    clear();
+
+    vi.stubGlobal('matchMedia', () => ({ matches: false }));
+    const hand = clock();
+    try {
+      // A stream growth starts a glide toward the new foot.
+      const grown = Math.floor(TOTAL + 200) - VIEWPORT;
+      reported.size = TOTAL + 200;
+      setElement(TOTAL + 200, VIEWPORT);
+      server.forged('one');
+      await hand.pump(0);
+      await hand.pump(16);
+      const mid = element.offset;
+      expect(mid, 'precondition: the glide is in flight').toBeGreaterThan(FOOT);
+      expect(mid, 'precondition: and it has not arrived').toBeLessThan(grown);
+
+      // The reader wheels up a little, stopping the glide inside the notch.
+      document
+        .querySelector('.conv')
+        ?.dispatchEvent(new WheelEvent('wheel', { deltaY: -10, bubbles: true }));
+      list()?.scrolledTo(mid - 10, TOTAL + 200, VIEWPORT);
+      await hand.pump(16);
+
+      expect(following(server), 'the small up-scroll disarmed the follow').toBe(false);
+
+      // The next growth must not carry them back.
+      reported.size = TOTAL + 400;
+      setElement(TOTAL + 400, VIEWPORT);
+      server.forged('two');
+      for (let at = 0; at < 12; at += 1) await hand.pump(16);
+      expect(element.offset, 'the next growth left the reader where they stopped').toBe(mid - 10);
     } finally {
       hand.stop();
     }

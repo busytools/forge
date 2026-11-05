@@ -892,10 +892,17 @@
     // the column moving on their behalf, and they are moving themselves now.
     const arm = () => {
       stopGlide();
+      // **A gesture that stops a glide leaves the reader where it reached.**
+      // `placed` is the offset the disarm compares against, and a glide's
+      // completion is the only other write on that path; a stale foot from
+      // before a growth would let a small up-scroll during a stream fail the
+      // disarm, and the next growth would carry the reader back (#1673).
+      if (viewport !== null) placed = viewport.scrollTop;
       readerAt = performance.now();
     };
     const aim = () => {
       stopGlide();
+      if (viewport !== null) placed = viewport.scrollTop;
       aimedAt = performance.now();
     };
     const onWheel = (event: WheelEvent) => {
@@ -1429,8 +1436,8 @@
       // way**, so only a loaded one that lacks it is a stale place.
       const holdsRow =
         place !== null && turning.some((turn) => place.anchor.key.startsWith(`${turn.key}:`));
-      const open = place !== null && (holdsRow || arriving === undefined || !arriving.loaded);
-      if (open && place !== null) {
+      const reopen = place !== null && (holdsRow || arriving === undefined || !arriving.loaded);
+      if (reopen && place !== null) {
         // A returning reader is parked where they left, not at the foot, so
         // the pin's own condition must not carry them down while the row is
         // being drawn back. The follow flag goes off with it, as it was when
@@ -1538,6 +1545,12 @@
     anchor = null;
     rememberPlace();
     footHeld = true;
+    // **A successor's first pin is a first pin.** `placed` is the offset the
+    // glide branch compares against, and the previous conversation's foot is
+    // not this one's: leaving it set slides the new conversation in from the
+    // old offset instead of landing at once (the book's "a first pin, a
+    // switch's or a return's, lands at once").
+    placed = null;
     stopGlide();
     working?.following(true);
   });
