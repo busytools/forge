@@ -3,6 +3,7 @@ import { mount } from 'svelte';
 import './assets/web.css';
 import App from './App.svelte';
 import { startPerfProbe } from './perf';
+import { guardBackspaceNavigation } from './shell/backspace';
 
 const target = document.getElementById('app');
 if (!target) {
@@ -15,5 +16,9 @@ if (!target) {
 // socket once the connection is taken (`perf.ts` holds the run's opening
 // line until then).
 startPerfProbe();
+
+// **The page's history belongs to the router**, so the webview's own
+// Backspace-navigation is cancelled before any surface mounts.
+guardBackspaceNavigation();
 
 mount(App, { target });
