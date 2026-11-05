@@ -1832,6 +1832,51 @@ describe('whether the column follows the newest end', () => {
     expect(element.offset, 'and the reader is there').toBe(FOOT);
   });
 
+  it('opens a kept conversation at the element foot when the model lags on the way back', async () => {
+    // **The entry's own lag.** A kept conversation's rows are already in the
+    // element, and the list measures them a pass later - so on the way back
+    // the element's scrollHeight runs ahead of the model's size. A first pin
+    // that holds at the model lands the reader near the top of the
+    // conversation and then follows the growth down in view: "it starts
+    // somewhere up and then it scrolls down to the bottom". An open PLACES
+    // its reader rather than following a foot that moved, so the first pin
+    // must write the element's own foot, not the model's short one.
+    const seat = writable(LEAD);
+    const server = stub();
+    clear();
+    clearObservers();
+    setMeasured(TOTAL, VIEWPORT);
+    app = mount(Seats, {
+      target: document.body,
+      props: { seat, connection: server.connection },
+    });
+    flushSync();
+    server.page([turn('t1'), turn('t2')]);
+    await settle();
+    readerAt(FOOT);
+    await settle();
+    clear();
+
+    seat.set(OTHER);
+    flushSync();
+    server.page([turn('o1'), turn('o2')], OTHER);
+    await settle();
+    clear();
+
+    // The way back: the element counts the kept conversation's rows before
+    // the list has measured them.
+    setElement(TOTAL + 2000, VIEWPORT);
+    seat.set(LEAD);
+    flushSync();
+    await settle();
+
+    const grown = Math.floor(TOTAL + 2000);
+    expect(pinned(), "the entry places the reader at the element's foot").toEqual([
+      { asked: grown, landed: grown - VIEWPORT },
+    ]);
+    expect(element.offset, 'and the reader is there, not near the top').toBe(grown - VIEWPORT);
+  });
+
   it('opens a plain new conversation at the foot for a parked reader', async () => {
     // **A plain swap unmounts the list, and what mounts opens following.**
     // The rows are new and the reader has no place in them, so the column

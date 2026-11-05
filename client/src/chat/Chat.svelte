@@ -2150,7 +2150,18 @@
     const max = foot - viewport.clientHeight;
     const model = modelFoot();
     let target = foot;
-    if (model !== null && max > model) {
+    // **An open PLACES its reader; only a following column holds.** The hold
+    // stops the pin at the end the list has measured, so a row that grew in
+    // this update is not scrolled past before the measurement lands. That is
+    // the right answer while a turn is live and the reader is following it.
+    // It is the wrong answer on an open: a kept conversation's rows are
+    // already in the element while the list measures them a pass later, so
+    // the model's foot sits far ABOVE the element's - and holding there lands
+    // the reader near the top of the conversation and then walks them down as
+    // the measurement catches up. `placed` is null until an open's first pin
+    // has landed, so a null here is the open placing its reader: write the
+    // element's own foot and do not schedule the retries a hold would.
+    if (model !== null && max > model && placed !== null) {
       // **The pin never passes the end the list has measured.** It holds
       // there and comes back for the growth on a later frame; the two-frame
       // budget bounds only the deferred retries, never the hold, so a stream
