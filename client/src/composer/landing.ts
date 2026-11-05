@@ -24,6 +24,12 @@
 
 import type { Notice, Surface } from './wire';
 
+/** The prefix every stored take shares, so a new server run can drop them all. */
+const LAST_TAKE_PREFIX = 'forge.dictate.take.';
+
+/** The server run the stored takes belong to. */
+const BOOT_KEY = 'forge.dictate.boot';
+
 /**
  * The generation of the last take this client dictated on a seat, kept in the
  * browser's own storage so a reload finds it. It is what tells a carried
@@ -32,7 +38,34 @@ import type { Notice, Surface } from './wire';
  * dictation lands in the desktop's composer as well.
  */
 function lastTakeKey(seat: string): string {
-  return `forge.dictate.take.${seat}`;
+  return `${LAST_TAKE_PREFIX}${seat}`;
+}
+
+/**
+ * Remember which server run the stored takes belong to, dropping the ones a
+ * previous run left.
+ *
+ * **A restart starts the take generations at 1 again**, while this browser's
+ * storage survives - so a generation kept from the last run can match a fresh
+ * take's number and let another client's carried words land here. A different
+ * boot id is what tells the two runs apart; its takes cannot be compared with
+ * the last one's, so they go before any comparison can happen.
+ */
+export function rememberBoot(bootId: string): void {
+  try {
+    const storage = globalThis.localStorage;
+    if (storage === null || storage === undefined) return;
+    if (storage.getItem(BOOT_KEY) === bootId) return;
+    const stale: string[] = [];
+    for (let index = 0; index < storage.length; index += 1) {
+      const key = storage.key(index);
+      if (key !== null && key.startsWith(LAST_TAKE_PREFIX)) stale.push(key);
+    }
+    for (const key of stale) storage.removeItem(key);
+    storage.setItem(BOOT_KEY, bootId);
+  } catch {
+    // Storage refused; the guard fails closed on its own.
+  }
 }
 
 function lastTake(seat: string): number | null {
@@ -50,7 +83,10 @@ function keepTake(seat: string, generation: number): void {
   try {
     globalThis.localStorage?.setItem(lastTakeKey(seat), String(generation));
   } catch {
-    // Storage refused; the arm still guards this session.
+    // The arm guards this session, but a reload loses it: a refused write
+    // means the words will not be placed back. Say so rather than dropping
+    // them silently.
+    console.warn('dictation: storage refused the take, so a reload cannot place its words');
   }
 }
 

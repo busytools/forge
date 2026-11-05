@@ -6,7 +6,7 @@
 
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { Landing } from './landing';
+import { Landing, rememberBoot } from './landing';
 import type { Notice } from './wire';
 
 // The storage the production code reads to tell its own re-hand from another
@@ -369,6 +369,27 @@ describe('a landing', () => {
       reloaded.place(SEAT, { ...words, carried: true }),
       'so a reload after it places the re-handed words',
     ).toBe('this read is the whole input');
+  });
+
+  /**
+   * **A new server run drops the takes the last one left.** Generations start
+   * at 1 again on a restart, so a generation kept from the last run would
+   * match a fresh take's number and let another client's carried words land
+   * here. The boot id is what tells the runs apart.
+   */
+  it('drops the stored takes when the server run changes', () => {
+    rememberBoot('run-a');
+    globalThis.localStorage?.setItem(`forge.dictate.take.${SEAT}`, '3');
+    rememberBoot('run-a');
+    expect(
+      globalThis.localStorage?.getItem(`forge.dictate.take.${SEAT}`),
+      'the same run keeps the take',
+    ).toBe('3');
+    rememberBoot('run-b');
+    expect(
+      globalThis.localStorage?.getItem(`forge.dictate.take.${SEAT}`),
+      'a new run drops the take',
+    ).toBeNull();
   });
 
   it('places only for the seat its arm was set on, and keeps that arm', () => {
