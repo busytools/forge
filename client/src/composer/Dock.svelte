@@ -1737,7 +1737,7 @@
             <TakeCard {take} phase={take.phase} {wire} oncancel={onabandon} {silent} spread />
           {:else}
             <Field
-              editor="dock"
+              editor="feedback"
               class="notes"
               bind:value={feedback}
               rows={2}
