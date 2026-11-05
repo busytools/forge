@@ -968,8 +968,11 @@
         "key"
       ],
       "/update/settings_write_pending/ask": [
+        "edits",
+        "id"
+      ],
+      "/update/settings_write_pending/ask/edits[]": [
         "current",
-        "id",
         "key",
         "proposed",
         "unset"
