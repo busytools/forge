@@ -104,9 +104,12 @@ impl Healing {
         let policy = HealPolicy::from_config(&workspace.config_arc().sessions);
         let facts = seat_facts(&workspace, slot, &project_key);
         if !policy.is_eligible(facts) {
-            // A shutdown or an ad-hoc seat owns this seat now; a stale
-            // attempt from an earlier death must not survive it.
+            // A shutdown, an ad-hoc seat or a heal turned off mid-flight
+            // owns this seat now; a stale attempt from an earlier death
+            // must not survive it, and the row must stop saying restarting
+            // when no attempt is coming.
             self.forget(slot);
+            workspace.clear_heal_progress(slot);
             return;
         }
         self.schedule(&workspace, slot, &project_key, diagnostic, SystemTime::now());
@@ -124,6 +127,14 @@ impl Healing {
         diagnostic: &str,
         died_at: SystemTime,
     ) {
+        // **A shutdown owns the return**, including one that began after
+        // this death was accepted or while its attempt was running: nothing
+        // new is armed, and the boot re-spawn brings a durable seat back.
+        if workspace.is_shutting_down() {
+            self.forget(slot);
+            workspace.clear_heal_progress(slot);
+            return;
+        }
         let policy = HealPolicy::from_config(&workspace.config_arc().sessions);
         let (deaths, generation) = {
             let mut seats = self.seats.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -317,8 +328,9 @@ fn seat_facts(
     };
     SeatFacts {
         durable,
-        // The supervisor is fed only by the death path, which fires after
-        // `Connected`.
+        // A death reaches here from a seat that had connected, or from a
+        // failed resume of a seat already healing; both mean the seat was
+        // up and is now down, which is what this fact answers.
         connected_once: true,
         // The stop flag and the despawn cleanup are checked by `note_death`
         // before this is built; what is left here is a non-issue.
@@ -697,6 +709,55 @@ mod tests {
         assert!(calls.lock().expect("recorder").is_empty(), "the stop owns the seat");
         assert!(notices.lock().expect("notices").is_empty(), "a stop's death is not news");
         assert!(workspace.heal_progress(&slot).is_none(), "the row does not say restarting");
+    }
+
+    /// **A shutdown owns the return.** A timer armed before the wind-down
+    /// must not write a fresh attempt over the teardown; the boot re-spawn
+    /// is what brings a durable seat back after a restart.
+    #[tokio::test(start_paused = true)]
+    async fn a_scheduled_heal_does_not_fire_after_a_shutdown_begins() {
+        let (workspace, slot) = seeded_worker();
+        let (restart, calls) = recorder(Ok(None));
+        let (notify, notices) = notifier();
+        let healing = Healing::new(Arc::downgrade(&workspace), restart, notify);
+
+        healing.note_death(&slot, "the subprocess closed");
+        tokio::task::yield_now().await;
+        assert!(workspace.heal_progress(&slot).is_some(), "the attempt is scheduled");
+        let _ = workspace.shutdown_within(Duration::from_millis(10)).await;
+
+        tokio::time::advance(Duration::from_secs(60)).await;
+        tokio::task::yield_now().await;
+        assert!(calls.lock().expect("recorder").is_empty(), "the shutdown stops the attempt");
+        assert!(notices.lock().expect("notices").is_empty(), "and nothing is announced");
+        assert!(
+            workspace.heal_progress(&slot).is_none(),
+            "the row does not keep saying restarting"
+        );
+    }
+
+    /// **A death that is no longer eligible takes the row's mark with it.**
+    /// A heal in flight whose seat stops being durable - its row gone, or
+    /// `heal` turned off in a reload - must not leave the row saying
+    /// restarting with no attempt coming.
+    #[tokio::test(start_paused = true)]
+    async fn an_ineligible_death_clears_the_heal_progress() {
+        let (workspace, slot) = seeded_worker();
+        let (restart, _calls) = recorder(Ok(None));
+        let (notify, _notices) = notifier();
+        let healing = Healing::new(Arc::downgrade(&workspace), restart, notify);
+
+        healing.note_death(&slot, "the subprocess closed");
+        assert!(workspace.heal_progress(&slot).is_some(), "the first attempt is scheduled");
+
+        // The row goes while the seat is healing, and the occupant the
+        // attempt brings up dies before connecting: the seat is no longer
+        // durable, so the death is refused.
+        let key = workspace.project_key_for_name("forge").expect("the fixture project");
+        assert!(workspace.delete_worker_row(&key, "probe-heal").expect("the row is deleted"));
+        healing.note_death(&slot, "the subprocess closed again");
+
+        assert!(workspace.heal_progress(&slot).is_none(), "the row stops saying restarting");
     }
 
     /// A seat with no durable row is not forge's to bring back: the death
