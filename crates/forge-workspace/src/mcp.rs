@@ -374,7 +374,9 @@ pub fn build_forge_server(
     // Unconditional for both kinds: the browser is the SERVER's fleet rather
     // than a per-project scope, so every session may drive it, and a server
     // with no host answers with its own sentence rather than a tool that
-    // varies by who is running.
+    // varies by who is running. The one exception is `browser_end_host`: every
+    // session is offered it, and only a lead may use it, because it ends a
+    // host every session on the profile shares.
     builder = browser::add_tools(builder, browser, slot.clone());
     // Unconditional for the same reason: a hand-off reads the caller's own
     // tree, so every session may hand a document and no project has anything

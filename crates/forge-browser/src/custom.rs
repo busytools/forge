@@ -41,6 +41,8 @@ pub(crate) enum Routed {
 ///   evaluate.
 /// - `browser_hand_off` parks on the person at the MCP tool layer
 ///   (`forge-workspace`), so it never reaches this crate.
+/// - `browser_end_host` ends the profile's host at the fleet, never at a
+///   driver.
 /// - `browser_record_start` and `browser_record_stop` are arms of
 ///   `BrowserService::call`, answered by the host's own encoder.
 ///
@@ -48,9 +50,10 @@ pub(crate) enum Routed {
 /// arm is deleted and whose name is left here is the one gap it cannot see;
 /// each name's own test drives it through the same dispatch, so the arm and
 /// the name fail together.
-pub const HOST_ANSWERED: [&str; 6] = [
+pub const HOST_ANSWERED: [&str; 7] = [
     "browser_challenge_state",
     "browser_click_and_capture",
+    "browser_end_host",
     "browser_form_state",
     "browser_hand_off",
     "browser_record_start",
@@ -474,6 +477,7 @@ mod tests {
             &[
                 "browser_challenge_state",
                 "browser_click_and_capture",
+                "browser_end_host",
                 "browser_form_state",
                 "browser_hand_off",
                 "browser_record_start",
