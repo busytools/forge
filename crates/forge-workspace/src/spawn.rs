@@ -5388,6 +5388,15 @@ heal_stable = "30s"
             reason.contains(root.to_string_lossy().as_ref()),
             "the tree the attempt could not enter: {reason}",
         );
+        // The first spawn's Spawning frame went with the connect; every
+        // frame left on the stream is one heal attempt taking the tree on.
+        let mut attempts = 0;
+        while let Ok(seat) = updates.try_recv() {
+            if matches!(&*seat.update, SessionUpdate::Spawning { key, .. } if *key == lead) {
+                attempts += 1;
+            }
+        }
+        assert_eq!(attempts, 3, "the cap's three attempts were each made, then it escalated");
         assert_eq!(mock_runs(dir.path()), 1, "no resume ever started a child");
         forge_agent::set_test_sdk_binary(None);
     }

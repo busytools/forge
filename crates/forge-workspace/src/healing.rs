@@ -246,6 +246,14 @@ impl Healing {
             }
         }
         let Some(workspace) = self.workspace.upgrade() else { return };
+        // **A shutdown owns the return.** A timer armed before the wind-down
+        // must not write a fresh attempt over the teardown; the boot
+        // re-spawn is what brings a durable seat back after a restart.
+        if workspace.is_shutting_down() {
+            self.forget(slot);
+            workspace.clear_heal_progress(slot);
+            return;
+        }
         // A reader opened the seat, a peer woke it, or a new worker took
         // the label: the race the re-check exists for.
         if workspace.session_is_live(slot) {
@@ -745,10 +753,6 @@ mod tests {
         assert!(
             notices.iter().any(|(_, body)| body.contains("Left Failed after 3 restarts")),
             "the budget still escalates: {notices:?}",
-        );
-        assert!(
-            notices.iter().any(|(_, body)| body.contains("the worktree could not be re-created")),
-            "the refusal's own reason rides a notice: {notices:?}",
         );
         assert!(
             notices.iter().any(|(_, body)| body.contains("the worktree could not be re-created")),
