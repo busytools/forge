@@ -232,7 +232,7 @@ the page draws.
 ## The pieces it takes from the pages beside it
 
 - The `.wrap` column and the shared `.pending` line, from every page.
-- `Prose`, `renderProse` and `renderProseBlocks` are the chat's own: one
+- `Prose`, `renderProse` and `renderProseTargets` are the chat's own: one
   markdown upstream (`markdown-it`, raw HTML off), one set of `.prose`
   rules, so a document and a quote from one render alike - and the targets a
   comment anchors to are rendered by the same instance the body is.

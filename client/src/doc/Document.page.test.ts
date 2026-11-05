@@ -188,8 +188,8 @@ describe('the document viewer', () => {
  * answers what the DOCUMENT is: a readable markdown or text document is
  * reviewable, so the page draws its blocks and the comments it already
  * carries exactly as a hand-off's Open does. The parked call is the only
- * thing a hand-off adds, and it is the answer row - approve or something is
- * off - that releases it; a cold open keeps the one done.
+ * thing a hand-off adds, and it is the answer row - approve or send feedback
+ * - that releases it; a cold open keeps the one done.
  */
 describe('the cold open', () => {
   /** A comment the document already carries, and where the read put it. */
