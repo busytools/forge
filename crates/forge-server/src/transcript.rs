@@ -754,6 +754,31 @@ mod tests {
         assert_eq!(rendered.turns[0].opens_at, 0, "the turn still opens on the prompt row");
     }
 
+    /// **A crash-shaped call does not latch the delivery rule.** The restart
+    /// shape (#1836) leaves a `tool_use` with no result and no `Result` frame,
+    /// so a settled fold cannot read that turn as running - the delivery after
+    /// it opens its own turn, as it does after any settled turn.
+    #[test]
+    fn a_delivery_after_a_crash_shaped_call_opens_its_turn() {
+        let rendered = settled(&[
+            reader_row("despawn probe"),
+            despawn_call(),
+            user(vec![ContentBlock::Text {
+                text:
+                    "[Slack - workspace 'Busytools', #forge] id ts\n\nsteward: the gate is green\n"
+                        .to_owned(),
+                extras: serde_json::Map::new(),
+            }]),
+        ]);
+
+        assert_eq!(
+            rendered.turns.len(),
+            2,
+            "the delivery opens a turn after the crash-shaped call"
+        );
+        assert_eq!(rendered.turns[1].opens_at, 2, "on the row it arrived in");
+    }
+
     /// The live half of the same bound: until the call's result lands the list
     /// cannot say the turn is still waiting, and the caller's flag does.
     #[test]
