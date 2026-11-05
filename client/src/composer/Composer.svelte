@@ -47,6 +47,7 @@
     pendingAsk,
     settingsWriteEndingLine,
     SIGN_IN_FALLBACK,
+    vaultAskEndingLine,
     type ComposerProps,
   } from './view';
   import {
@@ -147,6 +148,12 @@
    */
   let fromMic = false;
   /**
+   * The box the press came from, captured at the press and consumed when the
+   * take begins. The send-back box is a third destination: a press on its
+   * mic is the reader asking for words there, not in the composer behind it.
+   */
+  let pressedFrom: 'dock' | 'feedback' | null = null;
+  /**
    * The counts of the take this page last finished, kept while the record
    * still shows it transcribing.
    *
@@ -217,7 +224,14 @@
         boxKey(untrack(() => slot)),
         untrack(() => composer.notice),
       );
-      target.tookFrom = untrack(() => toDock()) ? 'dock' : 'composer';
+      const from = pressedFrom;
+      pressedFrom = null;
+      target.tookFrom =
+        from === 'feedback'
+          ? 'feedback'
+          : from === 'dock' || untrack(() => toDock())
+            ? 'dock'
+            : 'composer';
     },
     onLine: (line) => {
       const target = lineBox ?? box;
@@ -335,7 +349,8 @@
       !(
         (ask.kind === 'slack_draft' ||
           ask.kind === 'browser_hand_off' ||
-          ask.kind === 'settings_write') &&
+          ask.kind === 'settings_write' ||
+          ask.kind === 'vault') &&
         box.answered === ask.request.id &&
         box.refusal === null
       )
@@ -380,6 +395,9 @@
     }
     if (held.kind === 'settings_write') {
       return { mark: 'settings', label: 'config write waiting', tone: 'att' as const };
+    }
+    if (held.kind === 'vault') {
+      return { mark: 'decide', label: 'vault waiting', tone: 'att' as const };
     }
     return { mark: 'bell', label: 'browser waiting', tone: 'att' as const };
   });
@@ -517,6 +535,18 @@
   });
 
   /**
+   * The held vault call this box is drawing, on the write's own terms: the
+   * record drops it from `pending_asks` on the same update that says it ended.
+   */
+  $effect(() => {
+    const held = ask;
+    if (held !== null && held.kind === 'vault') {
+      box.shownVault = held.request.id;
+      box.ended = null;
+    }
+  });
+
+  /**
    * A held write leaving the core, read on the draft's own terms: the ending
    * rides the update alone, and it is what tells a reader who did not answer
    * it what happened.
@@ -534,6 +564,33 @@
       if (id === null || id !== held.shownWrite) return;
       if (held.answered === id) return;
       held.ended = settingsWriteEndingLine(payload['ending']);
+    });
+  });
+
+  /**
+   * A held vault call leaving the core, read on the same terms: the ending
+   * rides the update alone, so a reader who did not answer it is told what
+   * became of the card they were looking at.
+   */
+  $effect(() => {
+    return connection.onMessage((message) => {
+      if (message.kind !== 'update') return;
+      const [name, payload] = variantOf(message.update);
+      if (name !== 'vault_ask_resolved') return;
+      const at = slotOf(message.update);
+      if (at === null) return;
+      const held = boxes.held(boxKey(at));
+      if (held === undefined) return;
+      const id = typeof payload['id'] === 'string' ? payload['id'] : null;
+      if (id === null || id !== held.shownVault) return;
+      // The reader's own answer: the sending line goes with the settled call,
+      // and the ending would only repeat the click. A send-back's line is not
+      // an ending, so it is cleared here rather than stranded.
+      if (held.answered === id) {
+        held.ended = null;
+        return;
+      }
+      held.ended = vaultAskEndingLine(payload['ending']);
     });
   });
 
@@ -590,9 +647,6 @@
       if (active instanceof HTMLElement && active.closest('.surf') !== null) {
         active.blur();
       }
-      // The line starts shut on every takeover, as the bar's own state did
-      // when it was mounted per open.
-      barOpen = false;
     }
     surfaceWasClosed = !open;
   });
@@ -706,6 +760,12 @@
     box.dockLanded = null;
     box.barLanded = null;
     box.carried = null;
+    // **The send-back box belongs to the prompt too.** Its open state and the
+    // words written for the last held post do not come back in the box that
+    // replaces it.
+    box.feedbackOpen = false;
+    box.feedbackDraft = '';
+    box.feedbackLanded = null;
     barRefused = null;
   });
 
@@ -781,7 +841,7 @@
    * the notes option, and a held post never.
    */
   function toDock(): boolean {
-    // **The takeover's feedback line is this dock's words box** while the
+    // **The takeover's note line is this dock's words box** while the
     // takeover stands for this seat's hand-off: the only text box on screen is
     // the bar's, so a take started at it belongs there - the same `notes` the
     // dock binds.
@@ -820,6 +880,18 @@
       return;
     }
     const words = box.landing.place(boxKey(slot), held, composer.take?.generation ?? null);
+    // Read untracked so the effect still runs on the notice alone.
+    // **A box the answer took away is not a box to land in.** Answering a held
+    // draft unmounts the dock before the core drops the ask, and the words
+    // belong in the composer then - the send-back field's state is about to be
+    // cleared with the prompt.
+    const feedbackHolds = untrack(
+      () => box.tookFrom === 'feedback' && box.feedbackOpen && dockAsk !== null,
+    );
+    // **A landing the memory already placed is not a second one.** The record
+    // hands the same notice over on every write, so the memory - not a re-read
+    // of the text - is what keeps the send-back box from taking the words
+    // twice and the clipboard from being written twice.
     if (words === null) return;
     // **Where the words go is where the take began, checked against what is
     // still on screen.** A take the dock's own row never touched still belongs
@@ -827,10 +899,16 @@
     // the reader's last touch wrote it into a draft nobody could see - and a
     // take begun in the composer keeps its words even when a prompt arrived
     // mid-flight.
-    // Read untracked so the effect still runs on the notice alone.
     const barHolds = untrack(() => box.tookFrom === 'dock' && toDock());
     const onBar = untrack(() => barLineHolds);
-    if (barHolds) {
+    if (feedbackHolds) {
+      box.feedbackDraft = joined(
+        untrack(() => box.feedbackDraft),
+        words,
+      );
+      box.feedbackLanded = words;
+      box.landing.placed(held);
+    } else if (barHolds) {
       box.dockDraft = joined(
         untrack(() => box.dockDraft),
         words,
@@ -854,12 +932,19 @@
       box.barLanded = null;
     }
     box.beatAt = Date.now();
+    // **Every landing copies its words.** One write per landing, overwriting
+    // what the clipboard held; a page with no clipboard or a refused write
+    // costs the reader nothing that just landed.
+    void navigator.clipboard?.writeText(words).catch((error: unknown) => {
+      console.debug('the clipboard refused the landed words', error);
+    });
     // The words come with the keyboard, so an immediate Enter sends what just
     // landed. The guards above already make this the landing rather than every
     // frame. When the words went to the dock this handle still holds the element
     // the prompt replaced - destroyed with the box, so detached, and taking no
-    // focus - and the dock brings its own box back from its `land`.
-    field?.focus();
+    // focus - and the dock brings its own box back from its `land`. The
+    // send-back box brings its own back from its `feedbackLand`.
+    if (!feedbackHolds) field?.focus();
   });
 
   /**
@@ -989,6 +1074,10 @@
         return;
       }
       if (message.what === 'respond_settings_write') {
+        box.ended = { tone: 'warn', text: message.why };
+        return;
+      }
+      if (message.what === 'respond_vault_ask') {
         box.ended = { tone: 'warn', text: message.why };
         return;
       }
@@ -1217,10 +1306,12 @@
     // or on a tab the hand-off did not name).
     barLine: () => barTakesKey,
     onBegin: () => {
+      // **A key press is the composer's own**, so a destination a refused
+      // press left behind is not this take's to inherit.
+      pressedFrom = null;
       if (barTakesKey) {
-        barOpen = true;
-        // The field is drawn by that state, so it takes the keyboard once
-        // the render lands.
+        // The line is always drawn, so the field takes the keyboard once the
+        // render lands.
         void tick().then(() => barField?.focus({ preventScroll: true }));
         return;
       }
@@ -1415,7 +1506,10 @@
   function sendingBack(): void {
     box.ended = {
       tone: 'q',
-      text: 'Sending your feedback to the agent. Nothing was sent.',
+      text:
+        ask?.kind === 'vault'
+          ? 'Sending your note to the agent. No operation runs in the vault.'
+          : 'Sending your feedback to the agent. Nothing was sent.',
     };
   }
 
@@ -1450,17 +1544,15 @@
   let barRefused = $state<string | null>(null);
 
   /**
-   * Whether the takeover bar's feedback line is open, and its field.
+   * The takeover bar's note field.
    *
-   * **Held here rather than in the bar** because the push-to-talk key opens
-   * the line: the bar's field is the only text box above the page, so a press
-   * with the caret anywhere on that page begins a take there, and a begin that
-   * needed a click into the field first is the click the key exists to spare.
+   * **Held here rather than in the bar** because the push-to-talk key needs
+   * the bar's field: it is the only text box above the page, so a press with
+   * the caret anywhere on that page begins a take there.
    */
-  let barOpen = $state(false);
   let barField: HTMLElement | null = null;
 
-  /** The bar's feedback field, handed over on mount and given back on
+  /** The bar's note field, handed over on mount and given back on
    *  teardown. A stable function, so the field's own effect does not re-run
    *  on every render of this box. */
   function keepBarField(el: HTMLElement | null): void {
@@ -1480,7 +1572,7 @@
   let barRowWas = false;
   $effect(() => {
     const drawn = rowPhase !== null;
-    if (barRowWas && !drawn && barOpen && barLineHolds) {
+    if (barRowWas && !drawn && barLineHolds) {
       // **The field returns with the words**, and a reader who just dictated
       // them is about to type or press Enter; the dock's landing takes the
       // keyboard back the same way.
@@ -1489,14 +1581,17 @@
     barRowWas = drawn;
   });
 
-  /** Done, Not now or feedback: the hand-off's answer, and the takeover comes down. */
-  function takeoverAnswer(ending: 'done' | 'not_now' | 'feedback'): void {
-    if (takeoverAsk === null || !answering) return;
+  /**
+   * Done, Not now or feedback: the hand-off's answer, and the takeover comes
+   * down. **A failed dispatch is not an answer**: the park stays up so it can
+   * be sent again.
+   */
+  async function takeoverAnswer(ending: 'done' | 'not_now' | 'feedback'): Promise<boolean> {
+    if (takeoverAsk === null || !answering) return false;
     const id = takeoverAsk.request.id;
-    remember(id);
     const source = ending === 'feedback' ? 'feedback' : 'takeover';
     try {
-      void connection.dispatch(
+      await connection.dispatch(
         {
           respond_browser_hand_off: {
             key: slot,
@@ -1507,52 +1602,70 @@
         slot,
       );
     } catch (error) {
+      barRefused = 'Not sent - the connection is down.';
       report('the answer was not sent', error);
+      return false;
     }
+    // A hand-off answered from another view while the frame crossed is not
+    // this send's to remember or lower.
+    if (takeoverAsk === null || takeoverAsk.request.id !== id) return true;
+    remember(id);
     void closeSurface(null, slot);
+    return true;
   }
 
   /**
-   * The feedback line's send: the words go to the session as a prompt, and
-   * the hand-off ends as **feedback** rather than as a decline.
-   *
-   * **A person reporting a problem is still working the page**, so the
-   * recorded ending must say they spoke: `not_now` told the session "the
-   * person declined, decide what to do instead" while they were mid-task
-   * (live, 2026-10-26, twice on one CAPTCHA).
+   * The ask whose answer is crossing. **A second press for the same ask is
+   * not another send**: the door and `answering` stay live across the
+   * dispatch, and the draft clears only after the await, so two quick presses
+   * would send the same words under two uuids.
    */
-  async function takeoverFeedback(text: string): Promise<void> {
-    if (takeoverAsk === null || !answering) return;
+  let answeredFor: string | null = null;
+
+  /** The note goes as a prompt before the ending, so the session reads it beside the answer. */
+  async function takeoverAnswerWithText(
+    ending: 'done' | 'not_now' | 'feedback',
+    text: string,
+  ): Promise<void> {
+    if (takeoverAsk === null || !answering || answeredFor === takeoverAsk.request.id) return;
     // **The ask the words were written for**, read before the wait: a
     // hand-off answered from another view while the frame crosses is not
     // this send's to answer.
     const answered = takeoverAsk.request.id;
-    const uuid = mintPromptId();
-    barRefused = null;
-    try {
-      // **The crossing, not the send.** The dispatch answers once the frame
-      // has left; a socket that went while the page still read open refuses
-      // here rather than after the bar was cleared.
-      await connection.dispatch(
-        { prompt_under: { key: slot, text, attachments: [], uuid, source: 'you' } },
-        slot,
-      );
-    } catch (error) {
-      // **Nothing left, so there is nothing to read.** Answering feedback here
-      // would tell the session to read a message that never went, and the
-      // park would end on words nobody sent; the dock stays live to retry.
-      barRefused = 'Not sent - the connection is down.';
-      report('the feedback was not sent', error);
-      return;
+    const trimmed = text.trim();
+    // **Feedback is the words**: an empty one would name a message nobody sent.
+    if (ending === 'feedback' && trimmed === '') return;
+    answeredFor = answered;
+    if (trimmed !== '') {
+      const uuid = mintPromptId();
+      barRefused = null;
+      try {
+        // **The crossing, not the send.** The dispatch answers once the frame
+        // has left; a socket that went while the page still read open refuses
+        // here rather than after the bar was cleared.
+        await connection.dispatch(
+          { prompt_under: { key: slot, text: trimmed, attachments: [], uuid, source: 'you' } },
+          slot,
+        );
+      } catch (error) {
+        // **Nothing left, so there is nothing to read.** Answering here would
+        // tell the session to read a message that never went, and the park
+        // would end on words nobody sent; the dock stays live to retry.
+        barRefused = 'Not sent - the connection is down.';
+        answeredFor = null;
+        report('the answer was not sent', error);
+        return;
+      }
+      if (takeoverAsk === null || takeoverAsk.request.id !== answered) return;
+      // **The words left, so the line owes the chat nothing.** A dictated line
+      // is a landed take, and the ask resolving runs the carry: left standing,
+      // it wrote the words the agent just read into the composer's draft.
+      box.dockDraft = '';
+      box.barLanded = null;
+      box.carried = null;
     }
-    if (takeoverAsk === null || takeoverAsk.request.id !== answered) return;
-    // **The words left, so the line owes the chat nothing.** A dictated line
-    // is a landed take, and the ask resolving runs the carry: left standing,
-    // it wrote the words the agent just read into the composer's draft.
-    box.dockDraft = '';
-    box.barLanded = null;
-    box.carried = null;
-    takeoverAnswer('feedback');
+    const sent = await takeoverAnswer(ending);
+    if (!sent) answeredFor = null;
   }
 
   /** Back to chat answers nothing: the hand-off stays parked for the next Open. */
@@ -1618,6 +1731,7 @@
     }
     if (current.kind === 'browser_hand_off') return `handoff:${current.request.id}`;
     if (current.kind === 'settings_write') return `settings:${current.request.id}`;
+    if (current.kind === 'vault') return `vault:${current.request.id}`;
     return `slack:${current.request.id}`;
   }
 
@@ -1635,7 +1749,8 @@
       current.kind === 'slack_draft' ||
       current.kind === 'browser_hand_off' ||
       current.kind === 'document_hand_off' ||
-      current.kind === 'settings_write'
+      current.kind === 'settings_write' ||
+      current.kind === 'vault'
     ) {
       return current.request.id;
     }
@@ -1655,11 +1770,15 @@
       silent={silentLine}
       nav={surface.nav}
       onabandon={abandon}
-      onmic={() => dictate.toggle()}
+      {dictate}
+      onpress={() => {
+        // **The bar's own mic is the composer's destination too.** A press
+        // here clears a destination an earlier press left behind.
+        pressedFrom = null;
+      }}
       {dictation}
       takeline={barRefused !== null ? { tone: 'bad', text: barRefused } : takeoverLine}
       opening={openingShown}
-      bind:open={barOpen}
       field={keepBarField}
       ondismiss={() => {
         // **Only a line that is there is dismissed.** Typing with no take
@@ -1668,11 +1787,13 @@
         barRefused = null;
         if (box.dictateLine !== null) box.dismissed = box.dictateLine.text;
       }}
-      ondone={answering ? () => takeoverAnswer('done') : null}
-      onnotnow={answering ? () => takeoverAnswer('not_now') : null}
+      ondone={answering ? (text: string) => void takeoverAnswerWithText('done', text) : null}
+      onnotnow={answering ? (text: string) => void takeoverAnswerWithText('not_now', text) : null}
       onback={takeoverBack}
       onnav={takeoverNav}
-      onfeedback={barLineHolds ? takeoverFeedback : null}
+      onfeedback={barLineHolds
+        ? (text: string) => void takeoverAnswerWithText('feedback', text)
+        : null}
       cansend={answering}
       onretry={surface.phase === 'failed' ? takeoverRetry : null}
     />
@@ -1688,6 +1809,10 @@
           {dictate}
           onpress={() => {
             fromMic = true;
+            // **The composer's own mic is the composer's destination.** A
+            // press here clears a destination an earlier press left behind: a
+            // refused send-back press must not decide where these words go.
+            pressedFrom = null;
           }}
           element={(el: HTMLElement | null) => {
             micEl = el;
@@ -1833,13 +1958,25 @@
               take={composer.take}
               {wire}
               bind:notes={box.dockDraft}
+              bind:feedback={box.feedbackDraft}
+              bind:feedbackOpen={box.feedbackOpen}
               bind:ownOpen={dockOpen}
               land={box.dockLanded}
+              feedbackLand={box.feedbackLanded}
               carried={box.carried}
               onanswer={remember}
               onabandon={abandon}
               onsending={sendingBack}
-              onmic={() => dictate.toggle()}
+              onmic={(from: 'dock' | 'feedback') => {
+                pressedFrom = from;
+                // **A press on the send-back mic means the send-back box.**
+                // Its field is open under the press, and the words land there:
+                // the bound prop can lag a frame behind the press on a fresh
+                // mount, so the landing reads the same intent the press stated.
+                if (from === 'feedback') box.feedbackOpen = true;
+              }}
+              {dictate}
+              tookFrom={box.tookFrom}
               {dictation}
               silent={silentLine}
               takeline={box.dictateLine}

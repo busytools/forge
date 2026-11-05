@@ -442,6 +442,28 @@ export function settingsWriteEndingLine(ending: unknown): { tone: string; text: 
 }
 
 /**
+ * What one held vault call's ending says, drawn where the dock stood - the
+ * config write's own twin, naming the call rather than the write.
+ */
+export function vaultAskEndingLine(ending: unknown): { tone: string; text: string } {
+  if (ending === 'approved') {
+    return { tone: 'q', text: 'The vault call was approved from another view.' };
+  }
+  if (ending === 'sent_back') {
+    return { tone: 'q', text: 'The vault call was sent back with a note in another view.' };
+  }
+  if (ending === 'declined') {
+    return { tone: 'q', text: 'The vault call was declined in another view.' };
+  }
+  if (ending === 'abandoned') {
+    return { tone: 'q', text: "The vault call's asking session went away." };
+  }
+  // An ending this client is older than still means the call is gone, and
+  // saying less than that would leave the dock's disappearance unexplained.
+  return { tone: 'q', text: 'The vault call is no longer waiting.' };
+}
+
+/**
  * What one browser hand-off ending says, drawn where the dock stood - the
  * draft line's own twin, and the same subject: this view did not answer it,
  * or its dock would be gone by its own doing.
@@ -455,7 +477,7 @@ export function handOffEndingLine(answer: unknown): { tone: string; text: string
     return { tone: 'q', text: 'The browser hand-off was settled in another view.' };
   }
   if (kind === 'not_now') {
-    return { tone: 'q', text: 'The browser hand-off was declined in another view.' };
+    return { tone: 'q', text: 'The browser hand-off was left for later in another view.' };
   }
   if (kind === 'feedback') {
     return { tone: 'q', text: 'The browser hand-off was settled with a message in another view.' };

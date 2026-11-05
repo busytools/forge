@@ -3,7 +3,7 @@
 //!
 //! Resolution is against the session's own working directory, and nothing
 //! outside that tree reads unless it sits under one of the project's
-//! configured vault roots - the check is on the canonicalized path, so a
+//! configured document roots - the check is on the canonicalized path, so a
 //! `..` walk, an absolute path and a symlink pointing out are all refused
 //! the same way, and a spell the filesystem will not resolve is refused
 //! rather than read through its lexical collapse. The read is bounded by
@@ -35,7 +35,7 @@ pub enum DocumentRefusal {
     NotUtf8 { path: String },
 }
 
-/// Read one document out of `cwd`'s tree, or under one of `vault_roots`.
+/// Read one document out of `cwd`'s tree, or under one of `document_roots`.
 ///
 /// `path` resolves against `cwd`. The read answers whether the DOCUMENT is
 /// reviewable - the commentable set the hand-off has always offered, by
@@ -48,15 +48,15 @@ pub enum DocumentRefusal {
 /// PDF, whose kind can never carry a review. The read is bounded by
 /// `ceiling_bytes`, and a refusal names its reason.
 ///
-/// `vault_roots` are the extra roots the project allows - the
-/// `vault_roots` entries of its `forge.toml` project. Each is
+/// `document_roots` are the extra roots the project allows - the
+/// `document_roots` entries of its `forge.toml` project. Each is
 /// canonicalized before the comparison, like the requested path, so a
 /// root behind a symlink is judged by where it really points; a root
 /// that cannot be canonicalized is compared lexically, which refuses
 /// nothing a resolvable path would have been allowed under.
 pub fn read(
     cwd: &Path,
-    vault_roots: &[PathBuf],
+    document_roots: &[PathBuf],
     path: &str,
     reviewable: bool,
     ceiling_bytes: u64,
@@ -69,7 +69,7 @@ pub fn read(
         Landed::Walked(resolved) => (resolved, true),
         Landed::Collapsed(resolved) => (resolved, false),
     };
-    if !resolved.starts_with(&root) && !under_any_root(vault_roots, &resolved) {
+    if !resolved.starts_with(&root) && !under_any_root(document_roots, &resolved) {
         return Err(DocumentRefusal::OutsideTheTree { path: path.to_owned() });
     }
     if !walked {
@@ -149,7 +149,7 @@ fn reviewable_kind(kind: &DocumentKind) -> bool {
     }
 }
 
-/// Whether `resolved` sits under one of the vault roots. The comparison
+/// Whether `resolved` sits under one of the document roots. The comparison
 /// is by path component - `Path::starts_with` - so `MadnessX` is not
 /// under a `Madness` root.
 ///
@@ -159,10 +159,10 @@ fn reviewable_kind(kind: &DocumentKind) -> bool {
 /// refuse a missing document as an escape that its in-tree twin reports
 /// missing. The spelled arm can only ever match a path that is not on
 /// disk, which is what keeps it from admitting an escape.
-fn under_any_root(vault_roots: &[PathBuf], resolved: &Path) -> bool {
-    vault_roots.iter().any(|vault| {
-        let canonical = vault.canonicalize().unwrap_or_else(|_| lexical(vault));
-        resolved.starts_with(&canonical) || resolved.starts_with(lexical(vault))
+fn under_any_root(document_roots: &[PathBuf], resolved: &Path) -> bool {
+    document_roots.iter().any(|root| {
+        let canonical = root.canonicalize().unwrap_or_else(|_| lexical(root));
+        resolved.starts_with(&canonical) || resolved.starts_with(lexical(root))
     })
 }
 
@@ -430,13 +430,13 @@ mod tests {
         assert!(matches!(refusal, DocumentRefusal::Missing { .. }), "{refusal:?}");
     }
 
-    /// A file under a configured vault root reads exactly as an in-tree
+    /// A file under a configured document root reads exactly as an in-tree
     /// one does, and the root is handed in UNCANONICALIZED - on this
     /// machine `dir.path()` is the `/var` -> `/private/var` case - so
     /// the check canonicalizes both sides. An in-tree read with roots
     /// configured is the control: roots widen, they never narrow.
     #[test]
-    fn a_document_under_a_vault_root_reads_as_an_in_tree_one() {
+    fn a_document_under_a_document_root_reads_as_an_in_tree_one() {
         let dir = fixture();
         let base = dir.path().canonicalize().expect("canonical");
         let cwd = base.join("tree");
@@ -515,13 +515,13 @@ mod tests {
         assert!(matches!(refusal, DocumentRefusal::Missing { .. }), "{refusal:?}");
     }
 
-    /// A missing document under a vault root reports MISSING, exactly as
+    /// A missing document under a document root reports MISSING, exactly as
     /// it does in-tree. The root here is reached through a symlink and
     /// the request is spelled the same way, with no chain below it on
     /// disk - the case where a canonical root compared against a
     /// lexically-collapsed path would refuse as an escape instead.
     #[test]
-    fn a_missing_document_under_a_symlinked_vault_root_reports_missing() {
+    fn a_missing_document_under_a_symlinked_document_root_reports_missing() {
         let dir = fixture();
         let base = dir.path().canonicalize().expect("canonical");
         let cwd = base.join("tree");

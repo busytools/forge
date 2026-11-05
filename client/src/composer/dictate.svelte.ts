@@ -77,7 +77,7 @@ export interface PushToTalk {
   /**
    * Whether a live takeover's bar is this surface's dictation box right now.
    *
-   * The bar's feedback line is the only text box above the page it stands
+   * The bar's note line is the only text box above the page it stands
    * for, so a press belongs there whatever the caret is on - including the
    * page itself, which is where a reader driving it leaves the keyboard.
    *
@@ -234,7 +234,7 @@ export function pushToTalkHandlers(wiring: PushToTalk): {
     // another seat is not this press's to stop.
     const inFlight = dictate.held || dictate.openingHere;
     // **A live takeover owns the keyboard, except for the presses that are
-    // this client's own**: the bar's feedback line, which is the only text
+    // this client's own**: the bar's note line, which is the only text
     // box above the page and so belongs to a take wherever the caret is, and
     // a take this page is capturing, which always ends on the key. Every
     // other press belongs to the page under the bar - on the web, a take

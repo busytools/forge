@@ -3,7 +3,10 @@
   import Icon from '../components/Icon.svelte';
   import { closeSurface, openSurface, surface } from '../browser/surface.svelte';
   import Field from './Field.svelte';
+  import SendBack from './SendBack.svelte';
   import TakeCard from './TakeCard.svelte';
+  import DictateControl from './DictateControl.svelte';
+  import type { Dictation } from './dictate.svelte';
   import type { Command } from '../protocol';
   import { goTo } from '../routes';
   import { report, type Connection } from '../socket';
@@ -27,12 +30,17 @@
     take = null,
     wire = null,
     notes = $bindable(''),
+    feedback = $bindable(''),
+    feedbackOpen = $bindable(false),
     ownOpen = $bindable(false),
     land = null,
+    feedbackLand = null,
     onanswer = () => {},
     onabandon = () => {},
     onsending = () => {},
     onmic = () => {},
+    dictate = null,
+    tookFrom = null,
     dictation = false,
     silent = null,
     takeline = null,
@@ -77,7 +85,17 @@
      * exist on a phone, so a row that could only SHOW a take would leave a
      * finger no way to dictate an answer at all.
      */
-    onmic?: () => void;
+    onmic?: (from: 'dock' | 'feedback') => void;
+    /** The send-back box's own words, held by the composer like `notes`. */
+    feedback?: string;
+    /** Whether the send-back box is open, which makes it a destination. */
+    feedbackOpen?: boolean;
+    /** A take's words that landed in the send-back box, which come with the keyboard. */
+    feedbackLand?: string | null;
+    /** The dictation control both boxes wear, which the composer owns. */
+    dictate?: Dictation | null;
+    /** Which box the take began in, captured per take. */
+    tookFrom?: 'dock' | 'composer' | 'feedback' | null;
     /**
      * Whether this install can dictate at all, which gates the mic.
      *
@@ -551,6 +569,13 @@
     if (field !== null) field.focus();
   });
 
+  // The send-back box's own landing: a take begun there focuses its field,
+  // the same way the composer's does.
+  $effect(() => {
+    if (feedbackLand === null) return;
+    if (feedbackEl !== null) feedbackEl.focus();
+  });
+
   /** The tool the prompt is waiting on, which an answer is addressed by. */
   const toolId = $derived(
     ask.kind === 'permission' || ask.kind === 'question' ? ask.request.toolId : null,
@@ -693,6 +718,12 @@
       write(false);
       return;
     }
+    if (ask.kind === 'vault') {
+      // A held vault call refuses with its own decline, which is the answer
+      // the core reads as nothing reaching the vault.
+      answerVault('decline');
+      return;
+    }
     // A held draft refuses with its own decline, which is the answer the
     // core reads as the draft going nowhere.
     post('decline');
@@ -746,9 +777,6 @@
     answer({ respond_slack_post: { key: slot, id, answer: decision } });
   }
 
-  /** Whether the send-back field is open, and the words it holds. */
-  let feedbackOpen = $state(false);
-  let feedback = $state('');
   let feedbackEl = $state<HTMLElement | null>(null);
   let sendBackButton = $state<HTMLButtonElement | null>(null);
 
@@ -822,6 +850,95 @@
   }
 
   /**
+   * The vault card's unlock material, which rides only an approval.
+   *
+   * **The master password never enters the transcript**: it is typed in a
+   * masked field here and travels in this answer alone, where the core hands
+   * it to the unlock path. A send-back or a decline runs nothing, so it
+   * carries neither.
+   */
+  let masterPassword = $state('');
+  let twoFactor = $state('');
+
+  /** Whether the vault's send-back field is open, and the note it holds. */
+  let vaultNoteOpen = $state(false);
+  let vaultNote = $state('');
+  let vaultNoteEl = $state<HTMLElement | null>(null);
+  let vaultSendBackButton = $state<HTMLButtonElement | null>(null);
+
+  // **The field arrives with the keyboard**, the same rule the words row and
+  // a held post's feedback field follow.
+  $effect(() => {
+    if (vaultNoteOpen) vaultNoteEl?.focus();
+  });
+
+  function openVaultNote(): void {
+    if (answered || ask.kind !== 'vault') return;
+    vaultNoteOpen = true;
+  }
+
+  /** Escape closes the field without sending, and the button that opened it
+   *  takes the keyboard back so the card is not left with nowhere to land. */
+  function closeVaultNote(): void {
+    vaultNoteOpen = false;
+    vaultSendBackButton?.focus();
+  }
+
+  /** The send-back field's own keys: Enter sends, Shift+Enter is the editor's
+   *  newline, Escape closes without sending. */
+  function onVaultNoteKey(event: KeyboardEvent): void {
+    event.stopPropagation();
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault();
+      answerVault('send_back');
+      return;
+    }
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      closeVaultNote();
+    }
+  }
+
+  /** A locked card's fields: Enter approves and Escape hands the keyboard
+   *  back to the card, so a reader is never stuck inside a masked box. */
+  function onUnlockKey(event: KeyboardEvent): void {
+    event.stopPropagation();
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      answerVault('approve');
+      return;
+    }
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      answerVault('decline');
+    }
+  }
+
+  /**
+   * A held vault call's verbs: approve runs the call, send-back hands it to
+   * the agent with the reader's words, and decline runs nothing.
+   *
+   * **A locked card cannot approve without the master password**, because
+   * the approval is what performs the unlock; a card whose session is already
+   * unlocked sends no unlock material at all.
+   */
+  function answerVault(decision: 'approve' | 'send_back' | 'decline'): void {
+    if (answered || ask.kind !== 'vault') return;
+    if (decision === 'approve' && ask.request.needsUnlock && masterPassword === '') return;
+    if (decision === 'send_back' && vaultNote.trim() === '') return;
+    const id = ask.request.id;
+    const code = twoFactor.trim();
+    const unlock =
+      decision === 'approve' && ask.request.needsUnlock
+        ? { master_password: masterPassword, ...(code === '' ? {} : { two_factor: code }) }
+        : {};
+    const outcome = decision === 'send_back' ? { decision, note: vaultNote } : { decision };
+    onanswer(id);
+    if (decision === 'send_back') onsending();
+    answer({ respond_vault_ask: { key: slot, id, answer: { ...outcome, ...unlock } } });
+  }
+
+  /**
    * The hand-off's own header line, built here rather than in the markup: a
    * `{' · '}` interpolation beside an `{#if}` keeps its spacing - Svelte
    * trims the block's own edges - and is a literal a lint (rightly) calls
@@ -843,6 +960,7 @@
     if (ask.kind === 'slack_draft') return 'plane';
     if (ask.kind === 'document_hand_off') return 'file';
     if (ask.kind === 'settings_write') return 'settings';
+    if (ask.kind === 'vault') return 'decide';
     return 'bell';
   });
   const barText = $derived.by(() => {
@@ -857,6 +975,7 @@
     }
     if (ask.kind === 'document_hand_off') return ask.request.path;
     if (ask.kind === 'settings_write') return ask.request.key;
+    if (ask.kind === 'vault') return ask.request.summary;
     return handOffTitle;
   });
   /** Which hand-off's view Open was asked for and did not open, by its id. */
@@ -1130,6 +1249,10 @@
         closeFeedback();
         return;
       }
+      if (vaultNoteOpen) {
+        closeVaultNote();
+        return;
+      }
       reject();
     }
   }
@@ -1178,22 +1301,18 @@
           }}
         />
       {/if}
-      {#if dictation}
-        <button
-          class="micb"
-          type="button"
-          aria-label={take === null ? 'dictate the answer' : 'stop dictating'}
-          onclick={() => {
+      {#if dictation && dictate !== null}
+        <DictateControl
+          {dictate}
+          onpress={() => {
             // **Pressing the mic is being in the row.** It counts as use
             // whether or not the caret follows it, so the caret comes back to
             // the words row when the take's card leaves - which a touch screen
             // cannot reach any other way.
             visited = true;
-            onmic();
+            onmic('dock');
           }}
-        >
-          <Icon name="mic" />
-        </button>
+        />
       {/if}
       {#if take === null && notes.trim() !== ''}
         <button
@@ -1432,6 +1551,66 @@
         <div class="desc">would become</div>
         {@render valueBlock('the value this write would leave', ask.request.proposed)}
       {/if}
+    {:else if ask.kind === 'vault'}
+      <div class="d-head">
+        <span class="tag warn">&#9888; needs you</span>
+        <span class="q mono">vault &middot; {ask.request.tool}</span>
+        {@render foldButton()}
+      </div>
+      <!-- The summary and the facts below are the whole draft, and the draft
+           carries no secret value: the card draws what the call would do,
+           never what it would read. -->
+      <div class="d-q">{ask.request.summary}</div>
+      {#if ask.request.itemName !== null}
+        <div class="desc">item: {ask.request.itemName}</div>
+      {/if}
+      {#if ask.request.itemId !== null}
+        <div class="desc mono">id: {ask.request.itemId}</div>
+      {/if}
+      {#if ask.request.field !== null}
+        <div class="desc">field: {ask.request.field}</div>
+      {/if}
+      {#if ask.request.maskedDiff !== null}
+        <div class="desc">the change, with every secret value masked</div>
+        {@render valueBlock('the change with every secret value masked', ask.request.maskedDiff)}
+      {/if}
+      {#if ask.request.attachment !== null}
+        {@const attachment = ask.request.attachment}
+        <div class="desc">
+          attachment: {attachment.name} ({attachment.size} bytes){attachment.replaces !== null
+            ? ` · replaces '${attachment.replaces}'`
+            : ''}
+        </div>
+      {/if}
+      {#if ask.request.needsUnlock}
+        <div class="unlock">
+          <Field
+            editor="dock"
+            class="fld"
+            element="input"
+            type="password"
+            bind:value={masterPassword}
+            placeholder="master password"
+            aria={{ label: 'the vault master password' }}
+            onkeydown={(event: KeyboardEvent) => {
+              onUnlockKey(event);
+            }}
+          />
+          <Field
+            editor="dock"
+            class="fld"
+            element="input"
+            bind:value={twoFactor}
+            placeholder="2FA code (optional)"
+            autocomplete="one-time-code"
+            inputmode="numeric"
+            aria={{ label: 'the two-factor code' }}
+            onkeydown={(event: KeyboardEvent) => {
+              onUnlockKey(event);
+            }}
+          />
+        </div>
+      {/if}
     {:else}
       <div class="d-head">
         <span class="tag warn">&#9888; needs you</span>
@@ -1545,28 +1724,44 @@
         <!-- The send-back's words, on the card the draft is drawn on: the
              reader says what is wrong where they read what would go out. -->
         <div class="sendback">
-          <Field
-            editor="dock"
-            class="notes"
-            bind:value={feedback}
-            rows={2}
-            placeholder="What should change?"
-            aria={{ label: 'feedback for the agent' }}
-            onkeydown={(event: KeyboardEvent) => {
-              onFeedbackKey(event);
-            }}
-            field={(el: HTMLElement | null) => {
-              feedbackEl = el;
-            }}
-          />
+          {#if take !== null && tookFrom === 'feedback'}
+            <!-- The take's card draws where the words will land, so a reader
+                 who pressed the send-back mic sees their recording where the
+                 words are going. -->
+            <TakeCard {take} phase={take.phase} {wire} oncancel={onabandon} {silent} spread />
+          {:else}
+            <Field
+              editor="dock"
+              class="notes"
+              bind:value={feedback}
+              rows={2}
+              placeholder="What should change?"
+              aria={{ label: 'feedback for the agent' }}
+              onkeydown={(event: KeyboardEvent) => {
+                onFeedbackKey(event);
+              }}
+              field={(el: HTMLElement | null) => {
+                feedbackEl = el;
+              }}
+            />
+            {#if dictation && dictate !== null}
+              <DictateControl
+                {dictate}
+                onpress={() => {
+                  onmic('feedback');
+                }}
+              />
+            {/if}
+          {/if}
           <button class="btn" disabled={feedback.trim() === ''} onclick={sendBack}>Send back</button
           >
         </div>
       {/if}
-      {#if take !== null}
+      {#if take !== null && !(tookFrom === 'feedback' && feedbackOpen)}
         <!-- A take still running behind a held draft: this branch draws no words
            row, so without this line a prompt would swallow a recording that is
-           still going. -->
+           still going. The send-back box draws its own card while it is open,
+           so the line stands down there. -->
         <div class="blip">
           <span class="dot" class:tr={take.phase === 'transcribing'}></span>
           dictating · the words land in your draft either way
@@ -1579,7 +1774,7 @@
         <!-- **The takeover carries the actions once it is up.** Open is the
            client's own act, not the core's: it replaces the window with the
            browser the sessions drive and answers nothing; Done, Not now, the
-           feedback line and back-to-chat live on the takeover's own bar.
+           note line and back-to-chat live on the takeover's own bar.
            Before it opens, the card carries Open, Done and Not now - the
            session waits with no timeout, so a way out must be reachable. -->
         {#if surface.phase === 'live' && (ask.request.tab === null || surface.tab === ask.request.tab)}
@@ -1587,7 +1782,7 @@
         {:else}
           <!-- **The card's three, as Ved asked (2026-10-19):** Open browser,
                Done and Not now before the takeover; inside it the bar adds
-               the feedback line and back to chat. -->
+               the note line and back to chat. -->
           <button class="btn p" onclick={open}>Open browser</button>
           <button class="btn" onclick={() => handOff('done', 'dock')}>Done</button>
           <button class="btn d" onclick={() => handOff('not_now', 'dock')}>Not now</button>
@@ -1612,6 +1807,38 @@
         <button class="btn p" onclick={() => write(true)}>Write it</button>
         <button class="btn d" onclick={() => write(false)}>Don't write</button>
       </div>
+    {/if}
+
+    {#if ask.kind === 'vault'}
+      <div class="acts">
+        <!-- The call runs or it does not, and the send-back is the middle
+           door. A locked card's Approve waits for the master password, since
+           the approval is what performs the unlock. -->
+        <button
+          class="btn p"
+          disabled={ask.request.needsUnlock && masterPassword === ''}
+          onclick={() => answerVault('approve')}>Approve</button
+        >
+        <button class="btn" bind:this={vaultSendBackButton} onclick={openVaultNote}
+          >Send back with a note</button
+        >
+        <button class="btn d" onclick={() => answerVault('decline')}>Decline</button>
+      </div>
+      {#if vaultNoteOpen}
+        <!-- The send-back's words, on the card the call is drawn on: the
+           reader says what should change where they read what would run. -->
+        <SendBack
+          bind:value={vaultNote}
+          label="the note for the agent"
+          onkeydown={(event: KeyboardEvent) => {
+            onVaultNoteKey(event);
+          }}
+          field={(el: HTMLElement | null) => {
+            vaultNoteEl = el;
+          }}
+          onsend={() => answerVault('send_back')}
+        />
+      {/if}
     {/if}
 
     {#if !answered}
@@ -1641,12 +1868,17 @@
         {:else if ask.kind === 'settings_write'}
           <span><kbd>Tab</kbd> between the fold, Write it and Don't write</span>
           <span><kbd>Enter</kbd> activates</span>
+        {:else if ask.kind === 'vault'}
+          <span><kbd>Tab</kbd> between the fields and the card's verbs</span>
+          <span><kbd>Enter</kbd> activates</span>
         {:else}
           <span><kbd>Tab</kbd> between the actions</span>
           <span><kbd>Enter</kbd> activates</span>
         {/if}
         {#if take !== null}
           <span><kbd>Esc</kbd> cancels the take, then rejects</span>
+        {:else if ask.kind === 'vault'}
+          <span><kbd>Esc</kbd> declines</span>
         {:else}
           <span><kbd>Esc</kbd> reject</span>
         {/if}

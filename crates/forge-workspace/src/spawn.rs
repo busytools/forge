@@ -1242,10 +1242,16 @@ fn spawn_prompt_charter(
     families: Option<&[String]>,
     systemone_available: bool,
     voice_available: bool,
+    vault_available: bool,
 ) -> String {
     charter_with_withheld_families(
         charter,
-        &crate::mcp::effective_mcp_families(families, systemone_available, voice_available),
+        &crate::mcp::effective_mcp_families(
+            families,
+            systemone_available,
+            voice_available,
+            vault_available,
+        ),
     )
 }
 
@@ -1700,6 +1706,7 @@ pub(crate) fn handle_spawn_worker(
             families.as_deref(),
             workspace.systemone.read().is_some(),
             workspace.voice_enabled(),
+            workspace.vault.read().is_some(),
         )),
         extra_args: build_worker_extra_args(is_git, label, interactive),
         ..Default::default()
@@ -5549,9 +5556,9 @@ provider = "anthropic"
     #[test]
     fn the_spawn_prompt_charter_follows_the_config_gate() {
         let line = "This session has no `systemone__*` decision tools. When a decision is material and not obvious, route it to your lead instead of guessing.";
-        let without = spawn_prompt_charter("charter", None, false, true);
+        let without = spawn_prompt_charter("charter", None, false, true, true);
         assert!(without.contains(line), "[systemone] off composes the line: {without}");
-        let with = spawn_prompt_charter("charter", None, true, true);
+        let with = spawn_prompt_charter("charter", None, true, true, true);
         assert!(!with.contains(line), "the section on composes none: {with}");
     }
 
@@ -10291,6 +10298,59 @@ mod lead_charter_tests {
             assert!(
                 DEFAULT_LEAD_CHARTER.contains(clause),
                 "the charter owes the backlog rule ({clause}): {DEFAULT_LEAD_CHARTER}",
+            );
+        }
+    }
+
+    /// The board bullets above say how a row is worked, but never that a
+    /// sweep is a standing duty. What no bullet or `tasks__*` description
+    /// supplies is the cadence, the schedule, `wake: false`, the prompt
+    /// carrying the sweep's steps, and the one-line report - pinned here
+    /// so a rewrite cannot drop them.
+    #[test]
+    fn the_charter_carries_the_board_sweep() {
+        for (clause, why) in [
+            (
+                "Sweep the board at the start of every session, and on a standing sweep you \
+                 create yourself",
+                "the cadence and its two triggers",
+            ),
+            (
+                "`cron__list` first, then a `cron__create` with `*/30 * * * *` and `wake: false` \
+                 only when no sweep entry exists",
+                "one standing entry, never a new one each session",
+            ),
+            (
+                "the sweep runs only on an awake session, never waking a sleeping one",
+                "the rule, stated rather than left to the parameter's default",
+            ),
+            (
+                "settle every row waiting on the user through one door",
+                "the sweep's scope: a dependency or resource wait has no door here",
+            ),
+            ("attest a look the user already gave", "the look door"),
+            (
+                "withdraw a moot ask (`tasks__update` canceled, its `detail` a reason the row \
+                 does not already carry)",
+                "the withdraw door, and the new-reason requirement",
+            ),
+            ("park a wait the user deferred (`parked: true`)", "the park door"),
+            ("leave a genuine decision for the user and name it in your line", "the decision door"),
+            (
+                "close every epic reading `to_close`, a `verify: user` root parking on the look \
+                 first and then being attested",
+                "the epic close, including the gate's park-then-attest order",
+            ),
+            ("dispatch the next ready and unowned row", "the dispatch pick"),
+            (
+                "report one line: attested, withdrawn, parked, closed, dispatched, and the \
+                 decisions still waiting on the user",
+                "the sweep answers in one line",
+            ),
+        ] {
+            assert!(
+                DEFAULT_LEAD_CHARTER.contains(clause),
+                "the lead charter does not carry the board sweep ({why}): {clause}",
             );
         }
     }

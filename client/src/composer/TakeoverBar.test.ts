@@ -6,7 +6,30 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { focusBar, focusPage, pageHoldsKeyboard } from '../browser/link';
 import { selectTab, surface } from '../browser/surface.svelte';
+import type { Dictation } from './dictate.svelte';
 import TakeoverBar from './TakeoverBar.svelte';
+import type { Take } from './wire';
+
+/** A stand-in for the page's dictation: the bar only reads its take and
+ *  toggles it, so a plain object is enough and needs no microphone. */
+function mockDictate(): Dictation {
+  return {
+    take: null,
+    held: false,
+    panel: false,
+    toggle: vi.fn(),
+  } as unknown as Dictation;
+}
+
+/** A take the bar can draw while it decides whether the answers are offered. */
+const barTake: Take = {
+  phase: 'recording',
+  levels: [0.2, 0.4, 0.3],
+  peakDb: -18,
+  progress: { done: 0, total: null },
+  elapsedMs: 2400,
+  floorDb: -55,
+};
 
 const SHEET = readFileSync('src/assets/web.css', 'utf8');
 
@@ -255,7 +278,7 @@ function ruleWith(selector: string): { selectors: string[]; body: string } | nul
 }
 
 /**
- * **The feedback line's mic and send are the dock's own controls**, so their
+ * **The note line's mic and send are the dock's own controls**, so their
  * rules have to be bare and keep the box they give: a rule scoped under
  * `.dock .qrow` reaches the dock's row and nothing in this bar, and a bare
  * rule that lost its 26px box falls back to UA sizing in both rows - the same
@@ -265,19 +288,22 @@ function ruleWith(selector: string): { selectors: string[]; body: string } | nul
  * markup that wears it, not a measured box; the 390x844 pointer:coarse
  * measurement is the PR's.
  */
-describe("the takeover bar's feedback controls", () => {
-  it("takes the dock's mic and send box at the sheet's root", () => {
-    for (const control of ['micb', 'sendb']) {
-      expect(
-        SHEET,
-        `.${control} is scoped to the dock, or lost the 26px box the dock gives it`,
-      ).toMatch(new RegExp(`(^|\\n)\\.${control} \\{ flex: none; width: 26px; height: 26px;`));
-      expect(SHEET, `.${control} loses its width floor on a finger`).toMatch(
-        new RegExp(
-          `@media \\(pointer: coarse\\) \\{\\n(?: {2}[^\\n]*\\n)*? {2}\\.${control} \\{ min-height: 44px; min-width: 44px; \\}`,
-        ),
-      );
-    }
+describe("the takeover bar's note controls", () => {
+  it('takes the shared send box at the sheet root', () => {
+    expect(SHEET, '.sendb is scoped to the dock, or lost the 26px box the dock gives it').toMatch(
+      new RegExp(`(^|\\n)\\.sendb \\{ flex: none; width: 26px; height: 26px;`),
+    );
+    expect(SHEET, '.sendb loses its width floor on a finger').toMatch(
+      new RegExp(
+        `@media \\(pointer: coarse\\) \\{\\n(?: {2}[^\\n]*\\n)*? {2}\\.sendb \\{ min-height: 44px; min-width: 44px; \\}`,
+      ),
+    );
+    // **The note line's mic is the shared DictateControl**, so its box is
+    // the composer's own `.mic` and takes the same finger floor; a bespoke
+    // `.micb` here would be the second implementation this cut removes.
+    expect(SHEET, 'the shared mic loses its finger floor').toMatch(
+      new RegExp(`\\.mic, \\.voice, \\.send, \\.stop \\{ min-height: 44px; min-width: 44px; \\}`),
+    );
   });
 
   /// **The take card replaces the field, so it has to take the field's line**,
@@ -287,7 +313,7 @@ describe("the takeover bar's feedback controls", () => {
   /// tick row keep the pill's 116px and their own width, which is the same
   /// empty-row defect one phase later. Each selector is pinned by membership
   /// so a rewrap or a reorder does not read as a lost property.
-  it('gives the take card and its graph the line the feedback field gives up', () => {
+  it('gives the take card and its graph the line the note field gives up', () => {
     for (const selector of ['.takeline .tc', '.dock .qrow .tc', '.tb-feedback .tc']) {
       const rule = ruleWith(selector);
       expect(rule, `${selector} is in no rule, so the card sizes to its content`).not.toBeNull();
@@ -336,7 +362,7 @@ describe("the takeover bar's feedback controls", () => {
   it('styles the line the bar says a take by', () => {
     const base = ruleWith('.tb-line');
     expect(base, 'no .tb-line rule, so the line draws as bare text').not.toBeNull();
-    expect(base?.body, 'the line lost the band the feedback row wears').toMatch(
+    expect(base?.body, 'the line lost the band the note row wears').toMatch(
       /border-top: 1px solid var\(--line\)/,
     );
     expect(base?.body, 'the line lost its padding').toMatch(/padding: 7px 12px/);
@@ -368,7 +394,7 @@ describe("the takeover bar's feedback controls", () => {
   /// **The rules reach the bar only through the class the markup wears**, and
   /// dropping one passes every rule pin above: the sheet would style a class
   /// no control carries.
-  it('draws both controls in the feedback line, under the shared classes', async () => {
+  it('draws the shared mic in the note line', async () => {
     await stop();
     surface.viewer = 1;
     surface.controller = 1;
@@ -382,31 +408,224 @@ describe("the takeover bar's feedback controls", () => {
         ondone: () => {},
         onnotnow: () => {},
         onfeedback: () => {},
+        dictate: mockDictate(),
         dictation: true,
         notes: 'the upload form rejected the file',
       },
     });
     flushSync();
-    const wrong = [...target.querySelectorAll('button')].find((button) =>
-      button.textContent.includes('wrong'),
-    );
-    if (wrong === undefined) throw new Error('the bar draws no feedback door');
-    wrong.click();
-    flushSync();
     expect(
-      target.querySelector('.tb-feedback .micb'),
-      'the feedback line lost the mic, so the sheet styles nothing here',
+      target.querySelector('.tb-feedback .mic'),
+      'the note line lost the shared DictateControl',
     ).not.toBeNull();
     expect(
       target.querySelector('.tb-feedback .sendb'),
-      'the feedback line lost the send, so the sheet styles nothing here',
+      'the line draws its send when the note has words',
     ).not.toBeNull();
+  });
+
+  /// **The line's send is the note's**: an empty note offers no send, and the
+  /// bar offers no feedback door either, so the two doors never disagree.
+  it('draws no send while the note is empty', async () => {
+    await stop();
+    surface.viewer = 1;
+    surface.controller = 1;
+    const target = document.createElement('div');
+    document.body.appendChild(target);
+    shown = mount(TakeoverBar, {
+      target,
+      props: {
+        title: 'browser hand-off',
+        onback: () => {},
+        ondone: () => {},
+        onnotnow: () => {},
+        onfeedback: () => {},
+        dictate: mockDictate(),
+        dictation: true,
+        notes: '   ',
+      },
+    });
+    flushSync();
+    expect(target.querySelector('.tb-feedback .sendb'), 'an empty note offers no send').toBeNull();
+    expect(
+      [...target.querySelectorAll('button')].some((button) =>
+        button.textContent.includes('send feedback'),
+      ),
+      'and the bar offers no feedback door either',
+    ).toBe(false);
+  });
+
+  /// **The feedback answer carries the line's words**: the person's note goes
+  /// to the agent as their message, and the ending is feedback rather than a
+  /// decline.
+  it('sends the feedback with the line note when the feedback door is pressed', async () => {
+    await stop();
+    surface.viewer = 1;
+    surface.controller = 1;
+    const target = document.createElement('div');
+    document.body.appendChild(target);
+    const onfeedback = vi.fn();
+    shown = mount(TakeoverBar, {
+      target,
+      props: {
+        title: 'browser hand-off',
+        onback: () => {},
+        ondone: () => {},
+        onnotnow: () => {},
+        onfeedback,
+        dictation: true,
+        notes: 'the upload form rejected the file',
+      },
+    });
+    flushSync();
+    const feedback = [...target.querySelectorAll('button')].find((button) =>
+      button.textContent.includes('send feedback'),
+    );
+    if (feedback === undefined) throw new Error('the bar draws no feedback door');
+    feedback.click();
+    flushSync();
+    expect(onfeedback).toHaveBeenCalledWith('the upload form rejected the file');
+  });
+
+  /// **Done and Not now carry the line's words too**: the note is optional for
+  /// every answer, not only feedback.
+  it('sends the line note with Done and Not now', async () => {
+    await stop();
+    surface.viewer = 1;
+    surface.controller = 1;
+    const target = document.createElement('div');
+    document.body.appendChild(target);
+    const ondone = vi.fn();
+    const onnotnow = vi.fn();
+    shown = mount(TakeoverBar, {
+      target,
+      props: {
+        title: 'browser hand-off',
+        onback: () => {},
+        ondone,
+        onnotnow,
+        onfeedback: () => {},
+        notes: 'the staging chip is missing',
+      },
+    });
+    flushSync();
+    const done = [...target.querySelectorAll('button')].find((button) =>
+      button.textContent.includes('Done'),
+    );
+    if (done === undefined) throw new Error('the bar draws no Done');
+    done.click();
+    flushSync();
+    expect(ondone).toHaveBeenCalledWith('the staging chip is missing');
+
+    const notNow = [...target.querySelectorAll('button')].find((button) =>
+      button.textContent.includes('Not now'),
+    );
+    if (notNow === undefined) throw new Error('the bar draws no Not now');
+    notNow.click();
+    flushSync();
+    expect(onnotnow).toHaveBeenCalledWith('the staging chip is missing');
+  });
+
+  /// **The answers wait for the take**: a person dictating the note finishes
+  /// before picking an ending, so the three doors are not drawn mid-take.
+  it('waits for a running take before offering the answers', async () => {
+    await stop();
+    surface.viewer = 1;
+    surface.controller = 1;
+    const target = document.createElement('div');
+    document.body.appendChild(target);
+    shown = mount(TakeoverBar, {
+      target,
+      props: {
+        title: 'browser hand-off',
+        onback: () => {},
+        ondone: () => {},
+        onnotnow: () => {},
+        onfeedback: () => {},
+        phase: 'recording',
+        take: barTake,
+        notes: 'the staging chip is missing',
+      },
+    });
+    flushSync();
+    const labels = [...target.querySelectorAll('button')].map((button) =>
+      button.textContent.trim(),
+    );
+    expect(labels, 'no answers mid-take').not.toContain('Done');
+    expect(labels, 'and no deferral either').not.toContain('Not now');
+    expect(
+      labels.some((label) => label.includes('send feedback')),
+      'and no feedback door',
+    ).toBe(false);
+  });
+
+  /// **The answers wait for the take's open too**: the microphone is opening,
+  /// so the line is not answerable yet.
+  it('waits for the mic open before offering the answers', async () => {
+    await stop();
+    surface.viewer = 1;
+    surface.controller = 1;
+    const target = document.createElement('div');
+    document.body.appendChild(target);
+    shown = mount(TakeoverBar, {
+      target,
+      props: {
+        title: 'browser hand-off',
+        onback: () => {},
+        ondone: () => {},
+        onnotnow: () => {},
+        onfeedback: () => {},
+        opening: true,
+        notes: 'the staging chip is missing',
+      },
+    });
+    flushSync();
+    const labels = [...target.querySelectorAll('button')].map((button) =>
+      button.textContent.trim(),
+    );
+    expect(labels, 'no answers while the mic opens').not.toContain('Done');
+    expect(labels, 'and no deferral either').not.toContain('Not now');
+    expect(
+      labels.some((label) => label.includes('send feedback')),
+      'and no feedback door',
+    ).toBe(false);
+  });
+
+  /// **A refusal is the take's, not the ask's**: the answers stay live while
+  /// the line says why the mic did not open.
+  it('answers while a take refusal is drawn', async () => {
+    await stop();
+    surface.viewer = 1;
+    surface.controller = 1;
+    const target = document.createElement('div');
+    document.body.appendChild(target);
+    const ondone = vi.fn();
+    shown = mount(TakeoverBar, {
+      target,
+      props: {
+        title: 'browser hand-off',
+        onback: () => {},
+        ondone,
+        onnotnow: () => {},
+        onfeedback: () => {},
+        takeline: { tone: 'bad', text: 'the microphone did not open' },
+        notes: 'the staging chip is missing',
+      },
+    });
+    flushSync();
+    const done = [...target.querySelectorAll('button')].find((button) =>
+      button.textContent.includes('Done'),
+    );
+    if (done === undefined) throw new Error('the bar draws no Done');
+    done.click();
+    flushSync();
+    expect(ondone).toHaveBeenCalledWith('the staging chip is missing');
   });
 
   /// **The line names its own box.** The caret table routes by this name, so
   /// a line wearing the dock's is indistinguishable from the dock's box in
   /// every rule that reads it.
-  it('names the feedback line as the bar, not the dock', async () => {
+  it('names the note line as the bar, not the dock', async () => {
     await stop();
     surface.viewer = 1;
     surface.controller = 1;
@@ -423,14 +642,8 @@ describe("the takeover bar's feedback controls", () => {
       },
     });
     flushSync();
-    const wrong = [...target.querySelectorAll('button')].find((button) =>
-      button.textContent.includes('wrong'),
-    );
-    if (wrong === undefined) throw new Error('the bar draws no feedback door');
-    wrong.click();
-    flushSync();
     const line = target.querySelector('.tb-feedback textarea');
-    if (!(line instanceof HTMLTextAreaElement)) throw new Error('the bar drew no feedback line');
+    if (!(line instanceof HTMLTextAreaElement)) throw new Error('the bar drew no note line');
     expect(line.dataset['editor'], 'the line is its own box in the caret table').toBe('bar');
   });
 });
@@ -474,9 +687,12 @@ describe("the takeover bar's keyboard", () => {
     flushSync();
   }
 
-  function controls(target: HTMLElement): HTMLButtonElement[] {
-    const all = [...target.querySelectorAll<HTMLButtonElement>('.takeover-bar button')];
-    return all.filter((button) => !button.disabled);
+  function controls(target: HTMLElement): HTMLElement[] {
+    return [
+      ...target.querySelectorAll<HTMLElement>(
+        '.takeover-bar a[href], .takeover-bar button, .takeover-bar select, .takeover-bar textarea, .takeover-bar input, .takeover-bar [tabindex]:not([tabindex="-1"])',
+      ),
+    ].filter((el) => !el.hasAttribute('disabled') && el.getAttribute('aria-hidden') !== 'true');
   }
 
   it('takes the keyboard into the bar when it opens', async () => {
@@ -523,20 +739,14 @@ describe("the takeover bar's keyboard", () => {
   });
 
   /**
-   * **The feedback field stops its own keys**, so the bar has to trap them
+   * **The note field stops its own keys**, so the bar has to trap them
    * before that: the field is the last stop, and a Tab from it used to leave
    * the takeover (#2571).
    */
-  it('wraps Tab from the feedback field, whose keys stop inside it', async () => {
+  it('wraps Tab from the note field, whose keys stop inside it', async () => {
     const target = await full();
-    const wrong = [...target.querySelectorAll('button')].find((button) =>
-      button.textContent.includes('wrong'),
-    );
-    if (wrong === undefined) throw new Error('the bar draws no feedback door');
-    wrong.click();
-    flushSync();
     const field = target.querySelector('.tb-feedback textarea');
-    if (!(field instanceof HTMLTextAreaElement)) throw new Error('the bar drew no feedback field');
+    if (!(field instanceof HTMLTextAreaElement)) throw new Error('the bar drew no note field');
     // **The field's own handler ends the event for its ancestors**, so the
     // bar only sees a Tab pressed there from the capture phase.
     field.addEventListener('keydown', (event) => event.stopPropagation());
@@ -760,7 +970,7 @@ describe("the takeover bar's keyboard over a native page", () => {
   });
 
   /// **A focus inside the bar is the keyboard's too**: a take's landing puts
-  /// the caret in the feedback field while the picture still holds AppKit's
+  /// the caret in the note field while the picture still holds AppKit's
   /// first responder, so the shell has to hand the keys over.
   it('asks the shell for the keyboard when focus lands inside it', async () => {
     const target = await nativeBar('live');

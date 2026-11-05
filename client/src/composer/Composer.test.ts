@@ -6,6 +6,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { hideBrowser, onModifier, onModifierChord, showBrowser } from '../browser/link';
 import { openSurface, selectTab, surface } from '../browser/surface.svelte';
 import { repoPath } from '../repo';
+// One frame shared with forge-server's decode test, so the dock's literal and
+// the Rust decoder cannot drift into different nesting.
+import vaultAnswerFrames from './vault-answer-frames.json';
 
 /**
  * The shell's own door, mock-able so both halves of Open's claim are testable
@@ -130,6 +133,7 @@ import {
   SLOT,
   slackDraftAsk,
   take,
+  vaultAsk,
   wire,
   type Wire,
 } from './testing';
@@ -178,6 +182,19 @@ function writeFeedback(text: string): void {
   box.value = text;
   box.dispatchEvent(new Event('input', { bubbles: true }));
   flushSync();
+}
+
+/** The clipboard jsdom does not carry, where a case wants one. */
+function clipboard(write: (text: string) => Promise<void>): ReturnType<typeof vi.fn> {
+  const stub = vi.fn(write);
+  // **The clipboard is added, not the navigator replaced.** The page reads
+  // `navigator.platform` to decide its key substitutions, and a whole-object
+  // stub would take that away with jsdom's clipboard-less one.
+  Object.defineProperty(navigator, 'clipboard', {
+    configurable: true,
+    value: { writeText: stub },
+  });
+  return stub;
 }
 
 /** The verb inside the send-back row, which is not one of the card's acts. */
@@ -275,6 +292,10 @@ afterEach(() => {
   // left in the history would answer the next case's mount.
   vi.mocked(onModifier).mockClear();
   vi.mocked(onModifierChord).mockClear();
+  // A clipboard a case stubbed is jsdom's no longer: the next case's landing
+  // would write into a spy the case before still owns.
+  vi.unstubAllGlobals();
+  delete (navigator as unknown as { clipboard?: unknown }).clipboard;
 });
 
 /** The send a seat is waiting on, which the conversation draws and the box does not. */
@@ -517,7 +538,7 @@ async function surfaceOn(seat: SessionSlot, tab: number): Promise<void> {
 
 /**
  * Let an Open land. **The bar's answers ride the page, not the press**: Done,
- * Not now and the feedback line are offered once the surface is live on the
+ * Not now and the note line are offered once the surface is live on the
  * tab the ask named, which is the shell's answer away.
  */
 async function raised(): Promise<void> {
@@ -533,7 +554,7 @@ async function beginBarTake(harness: {
   page: { record: ComposerRecord };
   say: (message: ServerMessage) => void;
 }): Promise<void> {
-  const mic = document.querySelector('.takeover-bar .micb');
+  const mic = document.querySelector('.takeover-bar .mic');
   if (!(mic instanceof HTMLElement)) throw new Error('the bar drew no mic');
   mic.click();
   await opened();
@@ -543,7 +564,7 @@ async function beginBarTake(harness: {
 
 /** Start a take at the bar's mic and leave it recording. */
 async function startBarTake(): Promise<void> {
-  const mic = document.querySelector('.takeover-bar .micb');
+  const mic = document.querySelector('.takeover-bar .mic');
   if (!(mic instanceof HTMLElement)) throw new Error('the bar drew no mic');
   mic.click();
   await opened();
@@ -6678,6 +6699,201 @@ describe('the dock', () => {
     ]);
   });
 
+  it('draws a held vault call with the facts it would act on, and no secret value', () => {
+    open({
+      record: record({
+        pending_asks: [
+          vaultAsk({
+            tool: 'vault__update',
+            summary: "change the login for 'bank'",
+            masked_diff: 'password: ********',
+            attachment: { name: 'notes.txt', size: 97, replaces: null },
+            // **A value planted on an unknown key must never reach the card.**
+            // The draft's contract is that it carries no secret, and drawing
+            // only the fields the card names is what keeps that true whatever
+            // a newer server puts beside them.
+            secret: 'hunter2-never-drawn',
+          }),
+        ],
+      }),
+    });
+
+    expect(drawn(), 'the summary leads').toContain("change the login for 'bank'");
+    expect(drawn(), 'the tool is named as its wire spelling').toContain('vault__update');
+    expect(drawn(), 'the item').toContain('bank');
+    expect(drawn(), 'and its id').toContain('cipher-id');
+    expect(drawn(), 'the field').toContain('password');
+    expect(drawn(), 'the masked diff').toContain('password: ********');
+    expect(drawn(), 'the attachment').toContain('notes.txt (97 bytes)');
+    expect(drawn(), 'no secret planted beside the draft is drawn').not.toContain('hunter2');
+    expect(
+      document.querySelector('.dock input[type="password"]'),
+      'an unlocked card draws no unlock field',
+    ).toBeNull();
+  });
+
+  it('approves a vault call by its own id, with no unlock material when the session is open', () => {
+    const harness = open({ record: record({ pending_asks: [vaultAsk()] }) });
+
+    action('Approve').click();
+    flushSync();
+
+    expect(commands(harness)).toEqual([
+      {
+        respond_vault_ask: {
+          key: SLOT,
+          id: '0192e1c0-0000-7000-8000-0000000000cc',
+          answer: { decision: 'approve' },
+        },
+      },
+    ]);
+    expect(document.querySelector('.dock'), 'the dock goes with the answer').toBeNull();
+  });
+
+  it('unlocks before approving a locked vault call, and carries the password and 2FA', () => {
+    const harness = open({
+      record: record({ pending_asks: [vaultAsk({ needs_unlock: true })] }),
+    });
+
+    const password = document.querySelector('.dock input[type="password"]');
+    if (!(password instanceof HTMLInputElement)) {
+      throw new Error('the locked card drew no masked password field');
+    }
+    expect(
+      [...document.querySelectorAll('.dock .unlock input')],
+      'the optional 2FA field is drawn beside it',
+    ).toHaveLength(2);
+    expect(
+      action('Approve').hasAttribute('disabled'),
+      'the approval is what unlocks, so it waits for the password',
+    ).toBe(true);
+
+    password.value = 'open sesame';
+    password.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    expect(action('Approve').hasAttribute('disabled'), 'a password makes it available').toBe(false);
+
+    const twoFactor = [...document.querySelectorAll<HTMLInputElement>('.dock .unlock input')][1];
+    if (twoFactor === undefined) throw new Error('the locked card drew no 2FA field');
+    twoFactor.value = '123456';
+    twoFactor.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+
+    action('Approve').click();
+    flushSync();
+
+    expect(commands(harness)).toEqual([vaultAnswerFrames.approve]);
+  });
+
+  it('declines a locked vault call with Escape in a masked field', () => {
+    const harness = open({
+      record: record({ pending_asks: [vaultAsk({ needs_unlock: true })] }),
+    });
+
+    const password = document.querySelector('.dock input[type="password"]');
+    if (!(password instanceof HTMLInputElement)) {
+      throw new Error('the locked card drew no masked password field');
+    }
+    password.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    flushSync();
+
+    expect(commands(harness)).toEqual([
+      {
+        respond_vault_ask: {
+          key: SLOT,
+          id: '0192e1c0-0000-7000-8000-0000000000cc',
+          answer: { decision: 'decline' },
+        },
+      },
+    ]);
+  });
+
+  it('sends a vault call back with the note the reader writes', () => {
+    const harness = open({ record: record({ pending_asks: [vaultAsk()] }) });
+
+    action('Send back with a note').click();
+    flushSync();
+
+    const note = document.querySelector('.dock .sendback textarea');
+    if (!(note instanceof HTMLTextAreaElement)) throw new Error('the dock drew no note field');
+    expect(document.activeElement, 'the field arrives with the keyboard').toBe(note);
+    expect(sendBackAction().hasAttribute('disabled'), 'no words, no answer').toBe(true);
+
+    note.value = 'ask for the password, not the TOTP';
+    note.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    expect(sendBackAction().hasAttribute('disabled'), 'words make it available').toBe(false);
+
+    sendBackAction().click();
+    flushSync();
+
+    expect(commands(harness)).toEqual([vaultAnswerFrames.send_back]);
+  });
+
+  it('declines a vault call without running it', () => {
+    const harness = open({ record: record({ pending_asks: [vaultAsk()] }) });
+
+    action('Decline').click();
+    flushSync();
+
+    expect(commands(harness)).toEqual([
+      {
+        respond_vault_ask: {
+          key: SLOT,
+          id: '0192e1c0-0000-7000-8000-0000000000cc',
+          answer: { decision: 'decline' },
+        },
+      },
+    ]);
+  });
+
+  it('clears the vault sending line when the call resolves, even for its own answer', () => {
+    const harness = open({ record: record({ pending_asks: [vaultAsk()] }) });
+
+    action('Send back with a note').click();
+    flushSync();
+    const note = document.querySelector('.dock .sendback textarea');
+    if (!(note instanceof HTMLTextAreaElement)) throw new Error('the dock drew no note field');
+    note.value = 'ask for the password, not the TOTP';
+    note.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    sendBackAction().click();
+    flushSync();
+    expect(drawn(), 'the press is acknowledged while it is in flight').toContain(
+      'Sending your note to the agent',
+    );
+
+    harness.say({
+      kind: 'update',
+      update: {
+        vault_ask_resolved: {
+          key: { org: 'Busytools', project: 'forge', label: 'lead' },
+          id: '0192e1c0-0000-7000-8000-0000000000cc',
+          ending: 'sent_back',
+        },
+      },
+    });
+    flushSync();
+    expect(drawn(), 'the sending line goes with the settled call').not.toContain(
+      'Sending your note to the agent',
+    );
+  });
+
+  it('draws a vault refusal where the card stood', () => {
+    const harness = open({ record: record({ pending_asks: [vaultAsk()] }) });
+
+    action('Decline').click();
+    flushSync();
+    harness.say({
+      kind: 'error',
+      what: 'respond_vault_ask',
+      why: 'that vault call is no longer waiting: it has been answered',
+    });
+    flushSync();
+
+    expect(drawn(), 'the reason is not dropped').toContain('no longer waiting');
+  });
+
   it('posts the held draft from the verb the reader picks, addressed by its own id', () => {
     const harness = open({ record: record({ pending_asks: [slackDraftAsk()] }) });
 
@@ -7278,8 +7494,10 @@ describe('the dock', () => {
     action('Open browser').click();
     await raised();
     barAction('Done').click();
-    flushSync();
-    expect(document.querySelector('.dock'), 'the dock stands down for the click').toBeNull();
+    await vi.waitFor(() => {
+      flushSync();
+      expect(document.querySelector('.dock'), 'the dock stands down for the click').toBeNull();
+    });
 
     // The core resolved it elsewhere, so the click's answer is refused: the
     // reason rides the hand-off's own operation name and is drawn where the
@@ -7322,7 +7540,9 @@ describe('the dock', () => {
     action('Open browser').click();
     await raised();
     barAction('Done').click();
-    flushSync();
+    await vi.waitFor(() =>
+      expect(hideBrowser, 'the window comes down with the answer').toHaveBeenCalledTimes(1),
+    );
 
     expect(commands(harness)).toEqual([
       {
@@ -7363,11 +7583,11 @@ describe('the dock', () => {
     );
     await raised();
     barAction('Done').click();
-    flushSync();
-
-    expect(hideBrowser, 'Done carries the seat for the raise it is lowering').toHaveBeenCalledWith(
-      null,
-      SLOT,
+    await vi.waitFor(() =>
+      expect(
+        hideBrowser,
+        'Done carries the seat for the raise it is lowering',
+      ).toHaveBeenCalledWith(null, SLOT),
     );
   });
 
@@ -7470,7 +7690,7 @@ describe('the dock', () => {
 
   /**
    * **The tab is half of the ask.** A surface showing another tab is a page
-   * the session did not prepare, so its Done and feedback line are not this
+   * the session did not prepare, so its Done and note line are not this
    * ask's answers - but the ask itself must still be named, with the tab it
    * wants, because the card carrying it is behind the page.
    */
@@ -7479,9 +7699,7 @@ describe('the dock', () => {
     open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
 
     expect(barButtons(), 'the wrong tab does not answer').not.toContain('Done');
-    expect(barButtons(), 'and the feedback line is not offered for it').not.toContain(
-      "something's wrong…",
-    );
+    expect(barButtons(), 'and the note line is not offered for it').not.toContain('send feedback');
     expect(barText(), 'and the ask is still named, with the tab it wants').toContain(
       'browser hand-off · tab 2',
     );
@@ -7508,7 +7726,7 @@ describe('the dock', () => {
   /** **A page that failed is still the ask's page.** The host dying under a
    *  parked hand-off is the one case the person most needs to report - "the
    *  browser exited" is a message to the session, not a decline - so the ask
-   *  and the feedback line stay on the bar. */
+   *  and the note line stay on the bar. */
   it('keeps the ask and its answers when the page fails under it', async () => {
     open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
     vi.mocked(showBrowser).mockResolvedValueOnce('the browser host exited (signal 11)');
@@ -7521,22 +7739,26 @@ describe('the dock', () => {
       'The sign-in page is showing a CAPTCHA.',
     );
     expect(barButtons(), 'and the person can still answer it').toContain('Done');
-    expect(barButtons(), 'and can say the host died').toContain("something's wrong…");
+    const field = document.querySelector<HTMLTextAreaElement>('.takeover-bar textarea');
+    if (!(field instanceof HTMLTextAreaElement)) throw new Error('the bar drew no note line');
+    field.value = 'the browser host exited';
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    expect(barButtons(), 'and can say the host died').toContain('send feedback');
   });
 
   /**
    * **A take begun at the bar belongs to the bar.** Its mic is the only door
    * a take has while the page owns the keyboard, and the words it brings are
-   * the feedback line's - not the chat draft's, which is hidden behind the
+   * the note line's - not the chat draft's, which is hidden behind the
    * page.
    */
-  it("lands a take's words in the feedback line the bar stands for", async () => {
+  it("lands a take's words in the note line the bar stands for", async () => {
     await surfaceOn(SLOT, 2);
     const harness = open({
       dictation: true,
       record: record({ pending_asks: [browserHandOffAsk()] }),
     });
-    barAction('something').click();
     flushSync();
 
     await beginBarTake(harness);
@@ -7551,7 +7773,7 @@ describe('the dock', () => {
     flushSync();
 
     const field = document.querySelector<HTMLTextAreaElement>('.takeover-bar textarea');
-    expect(field, 'the bar keeps its feedback line').not.toBeNull();
+    expect(field, 'the bar keeps its note line').not.toBeNull();
     expect(field?.value, "and the take's words land in it").toBe('the words');
   });
 
@@ -7681,18 +7903,15 @@ describe('the dock', () => {
 
     action('Open browser').click();
     await raised();
-    barAction('something').click();
     flushSync();
 
     const field = document.querySelector<HTMLTextAreaElement>('.takeover-bar textarea');
-    if (!(field instanceof HTMLTextAreaElement)) throw new Error('the bar drew no feedback line');
+    if (!(field instanceof HTMLTextAreaElement)) throw new Error('the bar drew no note line');
     field.value = 'the submit button did nothing';
     field.dispatchEvent(new Event('input', { bubbles: true }));
     flushSync();
 
-    const send = document.querySelector('.takeover-bar .sendb');
-    if (!(send instanceof HTMLElement)) throw new Error('the bar drew no send');
-    send.click();
+    barAction('send').click();
     // The ending answers only once the connection says the prompt crossed.
     await vi.waitFor(() => expect(commands(harness)).toHaveLength(2));
     flushSync();
@@ -7710,6 +7929,166 @@ describe('the dock', () => {
     });
   });
 
+  /// **A second press while the first is crossing is not another send**: the
+  /// door and `answering` stay live across the await, and the draft clears
+  /// only after it, so two quick presses would send the same words twice.
+  it('sends the note once when the answer is pressed twice while it crosses', async () => {
+    const shared = wire();
+    const original = shared.connection.dispatch;
+    const heldGate = { release: (): void => undefined };
+    const gate = new Promise<void>((resolve) => {
+      heldGate.release = () => resolve();
+    });
+    let heldPrompt = false;
+    shared.connection.dispatch = (command, slot) => {
+      const isPrompt = typeof command === 'object' && command !== null && 'prompt_under' in command;
+      if (!heldPrompt && isPrompt) {
+        heldPrompt = true;
+        return gate.then(() => original(command, slot));
+      }
+      return original(command, slot);
+    };
+    const harness = open({ record: record({ pending_asks: [browserHandOffAsk()] }) }, shared);
+
+    action('Open browser').click();
+    await raised();
+    flushSync();
+    const field = document.querySelector<HTMLTextAreaElement>('.takeover-bar textarea');
+    if (!(field instanceof HTMLTextAreaElement)) throw new Error('the bar drew no note line');
+    field.value = 'the submit button did nothing';
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+
+    barAction('send').click();
+    flushSync();
+    barAction('send').click();
+    flushSync();
+    heldGate.release();
+    await vi.waitFor(() => expect(commands(harness)).toHaveLength(2));
+
+    expect(
+      commands(harness).map((command) => Object.keys(command)[0]),
+      'one prompt and one ending, not two of each',
+    ).toEqual(['prompt_under', 'respond_browser_hand_off']);
+  });
+
+  /// **A note of spaces is no note**: the feedback ending is not offered and
+  /// Enter sends nothing, so the session is never told to read an empty line.
+  it('answers nothing when the note is only spaces', async () => {
+    const harness = open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
+
+    action('Open browser').click();
+    await raised();
+    flushSync();
+    const field = document.querySelector<HTMLTextAreaElement>('.takeover-bar textarea');
+    if (!(field instanceof HTMLTextAreaElement)) throw new Error('the bar drew no note line');
+    field.value = '   ';
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    field.focus();
+    field.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    flushSync();
+    expect(commands(harness), 'a whitespace-only note answers nothing').toEqual([]);
+  });
+
+  /// **A prompt that crossed is not an answer**: the ending's own dispatch
+  /// failing leaves the park up and answerable, not closed on a lie.
+  it('keeps the hand-off answerable when the ending never left', async () => {
+    const shared = wire();
+    const original = shared.connection.dispatch;
+    shared.connection.dispatch = (command, slot) => {
+      if (
+        typeof command === 'object' &&
+        command !== null &&
+        'respond_browser_hand_off' in command
+      ) {
+        throw new Error('the socket is closed');
+      }
+      return original(command, slot);
+    };
+    const harness = open({ record: record({ pending_asks: [browserHandOffAsk()] }) }, shared);
+
+    action('Open browser').click();
+    await raised();
+    flushSync();
+    const field = document.querySelector<HTMLTextAreaElement>('.takeover-bar textarea');
+    if (!(field instanceof HTMLTextAreaElement)) throw new Error('the bar drew no note line');
+    field.value = 'the submit button did nothing';
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+
+    barAction('send').click();
+    // The bar's own line is what the failure leaves, so once it is drawn the
+    // catch has run and the assertions below are safe to make.
+    await vi.waitFor(() => expect(drawn()).toContain('Not sent - the connection is down.'));
+    flushSync();
+
+    expect(
+      commands(harness).map((command) => Object.keys(command)[0]),
+      'the words left, the answer did not',
+    ).toEqual(['prompt_under']);
+    expect(surface.phase, 'the takeover stays up for the retry').toBe('live');
+    expect(barButtons(), 'and the answers are still there').toContain('Done');
+  });
+
+  /// **Done carries the note too**, and the ending still reads as approval:
+  /// the words go to the agent as a prompt and the park ends as `done`.
+  it('sends the note with Done and keeps the ending as approval', async () => {
+    const harness = open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
+
+    action('Open browser').click();
+    await raised();
+    flushSync();
+    const field = document.querySelector<HTMLTextAreaElement>('.takeover-bar textarea');
+    if (!(field instanceof HTMLTextAreaElement)) throw new Error('the bar drew no note line');
+    field.value = 'the page looks right now';
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+
+    barAction('Done').click();
+    await vi.waitFor(() => expect(commands(harness)).toHaveLength(2));
+    const [prompt, answer] = commands(harness);
+    expect((prompt?.['prompt_under'] as Record<string, unknown>)['text']).toBe(
+      'the page looks right now',
+    );
+    expect(answer).toEqual({
+      respond_browser_hand_off: {
+        key: { org: 'Busytools', project: 'forge', label: 'lead' },
+        id: '0192e1c0-0000-7000-8000-0000000000aa',
+        answer: { ending: { type: 'done' }, source: 'takeover' },
+      },
+    });
+  });
+
+  /// **Not now carries the note too**, and the ending still reads as a
+  /// deferral rather than a spoken refusal.
+  it('sends the note with Not now and keeps the ending as a deferral', async () => {
+    const harness = open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
+
+    action('Open browser').click();
+    await raised();
+    flushSync();
+    const field = document.querySelector<HTMLTextAreaElement>('.takeover-bar textarea');
+    if (!(field instanceof HTMLTextAreaElement)) throw new Error('the bar drew no note line');
+    field.value = 'come back to this after the deploy';
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+
+    barAction('Not now').click();
+    await vi.waitFor(() => expect(commands(harness)).toHaveLength(2));
+    const [prompt, answer] = commands(harness);
+    expect((prompt?.['prompt_under'] as Record<string, unknown>)['text']).toBe(
+      'come back to this after the deploy',
+    );
+    expect(answer).toEqual({
+      respond_browser_hand_off: {
+        key: { org: 'Busytools', project: 'forge', label: 'lead' },
+        id: '0192e1c0-0000-7000-8000-0000000000aa',
+        answer: { ending: { type: 'not_now' }, source: 'takeover' },
+      },
+    });
+  });
+
   /** **Words that never left are not a message to read.** A send the socket
    *  refused used to answer `feedback` anyway, telling the session to read a
    *  prompt nobody sent and ending the park on nothing; the dock stays live,
@@ -7720,23 +8099,19 @@ describe('the dock', () => {
 
     action('Open browser').click();
     await raised();
-    barAction('something').click();
     flushSync();
     const field = document.querySelector<HTMLTextAreaElement>('.takeover-bar textarea');
-    if (!(field instanceof HTMLTextAreaElement)) throw new Error('the bar drew no feedback line');
+    if (!(field instanceof HTMLTextAreaElement)) throw new Error('the bar drew no note line');
     field.value = 'the submit button did nothing';
     field.dispatchEvent(new Event('input', { bubbles: true }));
     flushSync();
-    const send = document.querySelector('.takeover-bar .sendb');
-    if (!(send instanceof HTMLElement)) throw new Error('the bar drew no send');
-
     shared.down = true;
-    send.click();
+    barAction('send').click();
     flushSync();
     expect(commands(harness), 'the refused send answers nothing').toEqual([]);
 
     shared.down = false;
-    send.click();
+    barAction('send').click();
     await vi.waitFor(() =>
       expect(
         commands(harness).map((command) => Object.keys(command)[0]),
@@ -7757,18 +8132,14 @@ describe('the dock', () => {
 
     action('Open browser').click();
     await raised();
-    barAction('something').click();
     flushSync();
     const field = document.querySelector<HTMLTextAreaElement>('.takeover-bar textarea');
-    if (!(field instanceof HTMLTextAreaElement)) throw new Error('the bar drew no feedback line');
+    if (!(field instanceof HTMLTextAreaElement)) throw new Error('the bar drew no note line');
     field.value = 'the submit button did nothing';
     field.dispatchEvent(new Event('input', { bubbles: true }));
     flushSync();
-    const send = document.querySelector('.takeover-bar .sendb');
-    if (!(send instanceof HTMLElement)) throw new Error('the bar drew no send');
-
     shared.dead = true;
-    send.click();
+    barAction('send').click();
     // The bar's own line is what the failure leaves, so once it is drawn the
     // catch has run and the assertions below are safe to make.
     await vi.waitFor(() => expect(drawn()).toContain('Not sent - the connection is down.'));
@@ -7780,7 +8151,7 @@ describe('the dock', () => {
     );
 
     shared.dead = false;
-    send.click();
+    barAction('send').click();
     await vi.waitFor(() =>
       expect(
         commands(harness).map((command) => Object.keys(command)[0]),
@@ -7803,11 +8174,10 @@ describe('the dock', () => {
 
     action('Open browser').click();
     await raised();
-    barAction('something').click();
     flushSync();
 
     const field = document.querySelector<HTMLTextAreaElement>('.takeover-bar textarea');
-    if (!(field instanceof HTMLTextAreaElement)) throw new Error('the bar drew no feedback line');
+    if (!(field instanceof HTMLTextAreaElement)) throw new Error('the bar drew no note line');
     field.focus();
     press('Escape');
 
@@ -7816,7 +8186,7 @@ describe('the dock', () => {
 
   /**
    * **A take begun at the bar stays the bar's while its takeover stands.**
-   * A failed page keeps the feedback line (the person can say the host died),
+   * A failed page keeps the note line (the person can say the host died),
    * and its retry puts the surface back into opening with the take still
    * recording. The words were spoken for that line, so they land there: the
    * composer's draft is behind the picture, where a press reads as dead.
@@ -7832,10 +8202,9 @@ describe('the dock', () => {
       document.querySelector<HTMLTextAreaElement>('.takeover-bar textarea')?.value,
       'the words are on the line while the retry opens the page',
     ).toBe('the words');
-    expect(
-      document.querySelector('.takeover-bar .sendb'),
-      'a line that cannot answer offers no send',
-    ).toBeNull();
+    expect(barButtons(), 'a line that cannot answer offers no ending').not.toContain(
+      'send feedback',
+    );
 
     // The retry asked for tab null; the shell answers with the ask's own tab,
     // so the page is answerable again and the line stays it.
@@ -7843,14 +8212,13 @@ describe('the dock', () => {
     await vi.waitFor(() => expect(surface.phase, 'the retried page is up').toBe('live'));
     flushSync();
     const line = document.querySelector<HTMLTextAreaElement>('.takeover-bar textarea');
-    if (!(line instanceof HTMLTextAreaElement)) throw new Error('the bar drew no feedback line');
+    if (!(line instanceof HTMLTextAreaElement)) throw new Error('the bar drew no note line');
     expect(line.value, 'the words were held for the line the reader spoke them into').toBe(
       'the words',
     );
-    expect(
-      document.querySelector('.takeover-bar .sendb'),
-      'the page answers again, so the send is back',
-    ).not.toBeNull();
+    expect(barButtons(), 'the page answers again, so the ending is back').toContain(
+      'send feedback',
+    );
 
     // The ask resolves: the line goes with it, so the words land in the
     // composer once - and no second copy stays behind.
@@ -7859,7 +8227,7 @@ describe('the dock', () => {
     expect(field().value, 'the words land in the composer, once').toBe('the words');
   });
 
-  /** A page that fails its first open, with the feedback line open and a take
+  /** A page that fails its first open, with the note line open and a take
    *  running at the bar's mic, which is where every carry case starts. */
   async function failedPageTaking(): Promise<ReturnType<typeof open>> {
     vi.mocked(showBrowser).mockResolvedValueOnce('the browser host exited');
@@ -7870,7 +8238,6 @@ describe('the dock', () => {
     action('Open browser').click();
     await vi.waitFor(() => expect(surface.phase, 'the page failed').toBe('failed'));
     flushSync();
-    barAction('something').click();
     flushSync();
     await startBarTake();
     return harness;
@@ -7896,10 +8263,9 @@ describe('the dock', () => {
       document.querySelector<HTMLTextAreaElement>('.takeover-bar textarea')?.value,
       'the words are still on the line',
     ).toBe('the words');
-    expect(
-      document.querySelector('.takeover-bar .sendb'),
-      'and the line offers no send it cannot honour',
-    ).toBeNull();
+    expect(barButtons(), 'and the line offers no ending it cannot honour').not.toContain(
+      'send feedback',
+    );
   });
 
   /** The same when the retry lands on a page the ask did not name. */
@@ -7916,10 +8282,9 @@ describe('the dock', () => {
       document.querySelector<HTMLTextAreaElement>('.takeover-bar textarea')?.value,
       'the words are still on the line',
     ).toBe('the words');
-    expect(
-      document.querySelector('.takeover-bar .sendb'),
-      'and the line offers no send it cannot honour',
-    ).toBeNull();
+    expect(barButtons(), 'and the line offers no ending it cannot honour').not.toContain(
+      'send feedback',
+    );
   });
 
   /** **The line is the ask's, not the phase's.** Another view answering the
@@ -7949,7 +8314,6 @@ describe('the dock', () => {
       dictation: true,
       record: record({ pending_asks: [browserHandOffAsk()] }),
     });
-    barAction('something').click();
     flushSync();
     await startBarTake();
 
@@ -7963,10 +8327,9 @@ describe('the dock', () => {
       document.querySelector<HTMLTextAreaElement>('.takeover-bar textarea')?.value,
       'the words are on the line',
     ).toBe('the words');
-    expect(
-      document.querySelector('.takeover-bar .sendb'),
-      'and the line offers no send it cannot honour',
-    ).toBeNull();
+    expect(barButtons(), 'and the line offers no ending it cannot honour').not.toContain(
+      'send feedback',
+    );
   });
 
   /**
@@ -7990,7 +8353,6 @@ describe('the dock', () => {
     action('Open browser').click();
     await vi.waitFor(() => expect(surface.phase, 'the page is up again').toBe('live'));
     flushSync();
-    barAction('something').click();
     flushSync();
     expect(
       document.querySelector<HTMLTextAreaElement>('.takeover-bar textarea')?.value,
@@ -8037,13 +8399,12 @@ describe('the dock', () => {
     action('Open browser').click();
     await vi.waitFor(() => expect(surface.phase, 'the page failed').toBe('failed'));
     flushSync();
-    barAction('something').click();
     flushSync();
     await startBarTake();
     landBarTake(harness);
 
     const line = document.querySelector<HTMLTextAreaElement>('.takeover-bar textarea');
-    if (!(line instanceof HTMLTextAreaElement)) throw new Error('the bar drew no feedback line');
+    if (!(line instanceof HTMLTextAreaElement)) throw new Error('the bar drew no note line');
     line.value = '   ';
     line.dispatchEvent(new Event('input', { bubbles: true }));
     flushSync();
@@ -8069,7 +8430,6 @@ describe('the dock', () => {
     action('Open browser').click();
     await vi.waitFor(() => expect(surface.phase, 'the page failed').toBe('failed'));
     flushSync();
-    barAction('something').click();
     flushSync();
     await startBarTake();
     landBarTake(harness);
@@ -8179,8 +8539,10 @@ describe('the dock', () => {
     action('Open browser').click();
     await raised();
     barAction('Done').click();
-    flushSync();
-    expect(document.querySelector('.dock'), 'the dock stands down for the click').toBeNull();
+    await vi.waitFor(() => {
+      flushSync();
+      expect(document.querySelector('.dock'), 'the dock stands down for the click').toBeNull();
+    });
 
     // The stand-down for THIS answer lands: the record drops the ask, and the
     // ending must not be read as another view's - that sentence would be
@@ -8332,7 +8694,7 @@ describe('the dock', () => {
 
   /** Press the dock's mic and let the take it starts settle. */
   async function micPress(): Promise<void> {
-    const button = document.querySelector('.dock .micb');
+    const button = document.querySelector('.dock .mic');
     if (!(button instanceof HTMLElement)) throw new Error('the dock drew no mic');
     button.click();
     for (let turn = 0; turn < 4; turn += 1) await Promise.resolve();
@@ -8359,12 +8721,12 @@ describe('the dock', () => {
     for (const held of [questionAsk(), permissionAsk()]) {
       again(held, false);
       expect(
-        document.querySelector('.dock .micb'),
+        document.querySelector('.dock .mic'),
         'a control this install cannot honour is worse than none',
       ).toBeNull();
 
       again(held, true);
-      expect(document.querySelector('.dock .micb'), 'and the door where it can').not.toBeNull();
+      expect(document.querySelector('.dock .mic'), 'and the door where it can').not.toBeNull();
     }
   });
 
@@ -8372,7 +8734,7 @@ describe('the dock', () => {
     open({ record: record({ pending_asks: [slackDraftAsk()] }), dictation: true });
 
     expect(
-      document.querySelector('.dock .micb'),
+      document.querySelector('.dock .mic'),
       'the words are approved, not composed, and the box is where they are edited',
     ).toBeNull();
   });
@@ -8803,11 +9165,11 @@ describe('the dock', () => {
 });
 
 /**
- * The takeover bar's feedback line: the one words row the bar owns, and the
+ * The takeover bar's note line: the one words row the bar owns, and the
  * only place a take pressed there can say what it is doing - the composer's
  * band and notice rows are behind the picture while the takeover is up.
  */
-describe("the takeover bar's feedback line", () => {
+describe("the takeover bar's note line", () => {
   const commands = (harness: { sent: { command: Record<string, unknown> }[] }) =>
     harness.sent.map((entry) => entry.command);
 
@@ -8816,7 +9178,7 @@ describe("the takeover bar's feedback line", () => {
    *  has to open the microphone exactly as the box's mic does. The case passes
    *  on the tree before this cut too: what it pins is the contract the fix
    *  keeps, not the defect. */
-  it('starts a take from the bar feedback line, and ends it there', async () => {
+  it('starts a take from the bar note line, and ends it there', async () => {
     vi.useFakeTimers();
     try {
       const harness = open({
@@ -8826,9 +9188,8 @@ describe("the takeover bar's feedback line", () => {
 
       action('Open browser').click();
       await opened();
-      barAction('something').click();
       flushSync();
-      const micButton = document.querySelector('.takeover-bar .micb');
+      const micButton = document.querySelector('.takeover-bar .mic');
       if (!(micButton instanceof HTMLElement)) throw new Error('the bar drew no mic');
 
       micButton.click();
@@ -8848,7 +9209,7 @@ describe("the takeover bar's feedback line", () => {
   });
 
   /** **The key is the bar's second door.** The takeover owns the keyboard for
-   *  the page under it, but the feedback line is this client's own box: with
+   *  the page under it, but the note line is this client's own box: with
    *  the caret in it a press of the push-to-talk key begins the take there
    *  exactly as the mic does - and its words land on that line, because the
    *  bar is the box the take began in. With the caret anywhere else the page
@@ -8864,10 +9225,9 @@ describe("the takeover bar's feedback line", () => {
 
     action('Open browser').click();
     await opened();
-    barAction('something').click();
     flushSync();
     const line = document.querySelector<HTMLTextAreaElement>('.takeover-bar textarea');
-    if (!(line instanceof HTMLTextAreaElement)) throw new Error('the bar drew no feedback line');
+    if (!(line instanceof HTMLTextAreaElement)) throw new Error('the bar drew no note line');
 
     line.focus();
     key('ControlRight', 'keydown');
@@ -8897,15 +9257,12 @@ describe("the takeover bar's feedback line", () => {
     action('Open browser').click();
     await vi.waitFor(() => expect(surface.phase, 'the page failed').toBe('failed'));
     flushSync();
-    barAction('something').click();
     flushSync();
     await startBarTake();
     landBarTake(harness);
 
-    const send = document.querySelector('.takeover-bar .sendb');
-    if (!(send instanceof HTMLElement)) throw new Error('the bar drew no send');
     const before = commands(harness).length;
-    send.click();
+    barAction('send').click();
     // The ending answers only once the connection says the prompt crossed.
     await vi.waitFor(() =>
       expect(
@@ -8943,17 +9300,14 @@ describe("the takeover bar's feedback line", () => {
     action('Open browser').click();
     await vi.waitFor(() => expect(surface.phase, 'the page failed').toBe('failed'));
     flushSync();
-    barAction('something').click();
     flushSync();
     await startBarTake();
     landBarTake(harness);
 
-    const send = document.querySelector('.takeover-bar .sendb');
-    if (!(send instanceof HTMLElement)) throw new Error('the bar drew no send');
     const before = commands(harness).length;
     shared.down = true;
     try {
-      send.click();
+      barAction('send').click();
       flushSync();
     } finally {
       shared.down = false;
@@ -8988,9 +9342,8 @@ describe("the takeover bar's feedback line", () => {
 
     action('Open browser').click();
     await opened();
-    barAction('something').click();
     flushSync();
-    const button = document.querySelector('.takeover-bar .micb');
+    const button = document.querySelector('.takeover-bar .mic');
     if (!(button instanceof HTMLElement)) throw new Error('the bar drew no mic');
 
     shared.down = true;
@@ -9009,7 +9362,7 @@ describe("the takeover bar's feedback line", () => {
   });
 
   /** **A take that will not open says so where it was pressed.** The bar's
-   *  feedback row is the words row a take here belongs to, and the composer's
+   *  note row is the words row a take here belongs to, and the composer's
    *  own notice row is behind the picture while the takeover is up - so a
    *  refusal routed there was a press that looked dead, while the same press
    *  in the box drew its line. */
@@ -9018,9 +9371,8 @@ describe("the takeover bar's feedback line", () => {
 
     action('Open browser').click();
     await opened();
-    barAction('something').click();
     flushSync();
-    const button = document.querySelector('.takeover-bar .micb');
+    const button = document.querySelector('.takeover-bar .mic');
     if (!(button instanceof HTMLElement)) throw new Error('the bar drew no mic');
 
     mic.held.refuse = true;
@@ -9069,9 +9421,8 @@ describe("the takeover bar's feedback line", () => {
 
       action('Open browser').click();
       await opened();
-      barAction('something').click();
       flushSync();
-      const button = document.querySelector('.takeover-bar .micb');
+      const button = document.querySelector('.takeover-bar .mic');
       if (!(button instanceof HTMLElement)) throw new Error('the bar drew no mic');
 
       button.click();
@@ -9117,7 +9468,7 @@ describe("the takeover bar's feedback line", () => {
   /** **The bar's line is dictatable without a click.** A reader driving the
    *  page under the takeover leaves the caret on the page - the body, not one
    *  of this client's boxes - and the key presses there were dropped unless
-   *  the reader had first clicked into the feedback field. The press has to
+   *  the reader had first clicked into the note field. The press has to
    *  begin the bar's take instead: its line opens if it was shut, and its
    *  field takes the keyboard so the words have a home and the release is the
    *  natural one. */
@@ -9132,8 +9483,8 @@ describe("the takeover bar's feedback line", () => {
       await opened();
       expect(
         document.querySelector('.takeover-bar textarea'),
-        'precondition: the feedback line is shut',
-      ).toBeNull();
+        'precondition: the note line is drawn',
+      ).not.toBeNull();
       (document.activeElement as HTMLElement | null)?.blur();
       expect(document.activeElement, 'precondition: the caret sits on the page').toBe(
         document.body,
@@ -9178,7 +9529,6 @@ describe("the takeover bar's feedback line", () => {
       });
       action('Open browser').click();
       await opened();
-      barAction('something').click();
       flushSync();
       await startBarTake();
       expect(
@@ -9229,7 +9579,6 @@ describe("the takeover bar's feedback line", () => {
     });
     action('Open browser').click();
     await opened();
-    barAction('something').click();
     flushSync();
 
     key('ControlRight', 'keydown');
@@ -9243,8 +9592,8 @@ describe("the takeover bar's feedback line", () => {
 
   /** **A line the reader cannot close is not a door for the key.** While the
    *  page is still opening the bar draws no toggle, so a press that opened the
-   *  feedback line there would leave words in a row with no way to shut it. */
-  it('begins nothing while the page has no line to close', async () => {
+   *  note line there would leave words in a row with no way to shut it. */
+  it('begins nothing while the page has no controls', async () => {
     let land: (answer: { profile: string; tab: number }) => void = () => {};
     vi.mocked(showBrowser).mockReturnValueOnce(
       new Promise((resolve) => {
@@ -9266,8 +9615,8 @@ describe("the takeover bar's feedback line", () => {
     expect(commands(harness), 'the press opens no take under a page with no controls').toEqual([]);
     expect(
       document.querySelector('.takeover-bar textarea'),
-      'and no line is drawn for it',
-    ).toBeNull();
+      'the note line stays drawn, but no take begins under a page with no controls',
+    ).not.toBeNull();
 
     land({ profile: 'job-hunt', tab: 2 });
     await raised();
@@ -9315,7 +9664,6 @@ describe("the takeover bar's feedback line", () => {
       });
       action('Open browser').click();
       await opened();
-      barAction('something').click();
       flushSync();
       await startBarTake();
       const pressed = await modifierRoute();
@@ -9419,7 +9767,6 @@ describe("the takeover bar's feedback line", () => {
     });
     action('Open browser').click();
     await opened();
-    barAction('something').click();
     flushSync();
     await startBarTake();
 
@@ -9521,7 +9868,6 @@ describe("the takeover bar's feedback line", () => {
       });
       action('Open browser').click();
       await opened();
-      barAction('something').click();
       flushSync();
 
       key('ControlRight', 'keydown');
@@ -11087,5 +11433,427 @@ describe('the voice switch across a body swap', () => {
       (off[0]?.command as { voice_mode: { explicit: boolean } }).voice_mode.explicit,
       'a seat change pauses; only the reader own off tells the agent it stopped',
     ).toBe(false);
+  });
+});
+
+describe('dictation in the send-back box', () => {
+  /**
+   * **The send-back box is a dictation box.** Its words belong to the reader
+   * who is correcting a held post, not to the composer behind the card: a take
+   * begun there lands in the feedback field, and the words are copied so the
+   * reader can carry them elsewhere.
+   */
+  it('lands a take in the send-back box and copies the words to the clipboard', async () => {
+    const write = clipboard(() => Promise.resolve());
+    const harness = open({ dictation: true, record: record({ pending_asks: [slackDraftAsk()] }) });
+
+    action('Send back with feedback').click();
+    flushSync();
+
+    const mic = document.querySelector('.dock .sendback .mic');
+    if (!(mic instanceof HTMLElement)) throw new Error('the send-back box drew no mic');
+    mic.click();
+    flushSync();
+    await opened();
+
+    harness.say({
+      kind: 'update',
+      update: {
+        dictate_ended: {
+          key: SLOT,
+          outcome: { landed: { text: 'say staging, not prod', truncated: false } },
+          generation: 1,
+        },
+      },
+    });
+    // The core's own word releases the take and the seat's record carries the
+    // landing; the page is handed that record, as a re-render hands one over.
+    harness.page.record = record({
+      pending_asks: [slackDraftAsk()],
+      composer: {
+        take: null,
+        notice: { kind: 'landed', text: 'say staging, not prod', truncated: false },
+        machine: null,
+      },
+    });
+    flushSync();
+
+    expect(feedbackBox().value, 'the words land in the send-back box').toBe(
+      'say staging, not prod',
+    );
+    expect(write, 'one write per landing').toHaveBeenCalledTimes(1);
+    expect(write).toHaveBeenCalledWith('say staging, not prod');
+
+    // The prompt is answered, so the composer's field returns. The words did
+    // not go there: the send-back box was the target.
+    harness.page.record = record({
+      composer: { take: null, notice: null, machine: null },
+    });
+    flushSync();
+    expect(field().value, 'the composer draft did not take the words').toBe('');
+  });
+
+  /**
+   * A take begun in the send-back box whose field closes before the words land
+   * keeps them in the composer's draft, which is the box the card leaves
+   * behind. Nothing is lost.
+   */
+  it('falls back to the composer draft when the send-back box closes before landing', async () => {
+    const write = clipboard(() => Promise.resolve());
+    const harness = open({ dictation: true, record: record({ pending_asks: [slackDraftAsk()] }) });
+
+    action('Send back with feedback').click();
+    flushSync();
+
+    const mic = document.querySelector('.dock .sendback .mic');
+    if (!(mic instanceof HTMLElement)) throw new Error('the send-back box drew no mic');
+    mic.click();
+    flushSync();
+    await opened();
+
+    press('Escape');
+    flushSync();
+    expect(document.querySelector('.dock .sendback'), 'the field closed before landing').toBeNull();
+
+    // The take still runs after its box closed - the core's own word ends it,
+    // and the words land behind the card, in the composer's draft.
+    harness.say({
+      kind: 'update',
+      update: {
+        dictate_ended: {
+          key: SLOT,
+          outcome: { landed: { text: 'kept words', truncated: false } },
+          generation: 1,
+        },
+      },
+    });
+    flushSync();
+    harness.page.record = record({
+      pending_asks: [slackDraftAsk()],
+      composer: {
+        take: null,
+        notice: { kind: 'landed', text: 'kept words', truncated: false },
+        machine: null,
+      },
+    });
+    flushSync();
+
+    // The prompt still holds the slot, so the composer's field is not drawn.
+    // The words are in the draft, and the prompt's answer leaves them there.
+    expect(document.querySelector('[data-editor="composer"]')).toBeNull();
+    harness.page.record = record({
+      composer: {
+        take: null,
+        notice: { kind: 'landed', text: 'kept words', truncated: false },
+        machine: null,
+      },
+    });
+    flushSync();
+    expect(field().value, 'the words were kept in the composer draft').toBe('kept words');
+    expect(write).toHaveBeenCalledWith('kept words');
+  });
+
+  /**
+   * **An answered draft takes the send-back box with it.** Posting or
+   * declining while the take still runs unmounts the dock, so the words have
+   * no box there to land in; they fall through to the composer's draft rather
+   * than into state the next prompt clears.
+   */
+  it('falls back to the composer draft when the draft is answered while the take runs', async () => {
+    const write = clipboard(() => Promise.resolve());
+    const harness = open({ dictation: true, record: record({ pending_asks: [slackDraftAsk()] }) });
+
+    action('Send back with feedback').click();
+    flushSync();
+
+    const button = document.querySelector('.dock .sendback .mic');
+    if (!(button instanceof HTMLElement)) throw new Error('the send-back box drew no mic');
+    button.click();
+    flushSync();
+    await opened();
+
+    // The reader answers the draft before the take lands.
+    action('Post').click();
+    flushSync();
+    expect(document.querySelector('.dock'), 'the dock went with the answer').toBeNull();
+
+    // The core's own word ends the take, and the seat's record carries the
+    // landing.
+    harness.say({
+      kind: 'update',
+      update: {
+        dictate_ended: {
+          key: SLOT,
+          outcome: { landed: { text: 'answered mid-take', truncated: false } },
+          generation: 1,
+        },
+      },
+    });
+    flushSync();
+    // The landing arrives while the core still lists the answered draft, so
+    // the prompt-key reset has not run yet and the send-back box's state is
+    // still standing behind the unmounted dock.
+    harness.page.record = record({
+      pending_asks: [slackDraftAsk()],
+      composer: {
+        take: null,
+        notice: { kind: 'landed', text: 'answered mid-take', truncated: false },
+        machine: null,
+      },
+    });
+    flushSync();
+    // The answer settles and the ask leaves; the prompt-key reset clears the
+    // send-back box's state.
+    harness.page.record = record({
+      composer: {
+        take: null,
+        notice: { kind: 'landed', text: 'answered mid-take', truncated: false },
+        machine: null,
+      },
+    });
+    flushSync();
+
+    expect(field().value, 'the words were kept in the composer draft').toBe('answered mid-take');
+    expect(write).toHaveBeenCalledWith('answered mid-take');
+  });
+
+  /**
+   * **The running take draws on the send-back row.** A reader who pressed its
+   * mic sees the card where the words will land, the field stands down under
+   * it, and the card's way out abandons the take.
+   */
+  it('draws the running take on the send-back row, and its cancel abandons it', async () => {
+    const harness = open({ dictation: true, record: record({ pending_asks: [slackDraftAsk()] }) });
+
+    action('Send back with feedback').click();
+    flushSync();
+
+    const button = document.querySelector('.dock .sendback .mic');
+    if (!(button instanceof HTMLElement)) throw new Error('the send-back box drew no mic');
+    button.click();
+    flushSync();
+    await opened();
+    showTake(harness);
+
+    expect(
+      document.querySelector('.dock .sendback .tc'),
+      'the take draws where its words will land',
+    ).not.toBeNull();
+    expect(
+      document.querySelector('.dock .sendback textarea'),
+      'the card stands in the field while it runs',
+    ).toBeNull();
+    expect(
+      document.querySelector('.dock .blip'),
+      'the foot says nothing about the draft while the card holds the send-back row',
+    ).toBeNull();
+
+    const stops = mic.held.stops;
+    const close = document.querySelector('.dock .sendback .tc .x');
+    if (!(close instanceof HTMLElement)) throw new Error('the take card drew no way out');
+    close.click();
+    flushSync();
+
+    expect(harness.sent.at(-1)?.command, 'the stop goes out as an abandon').toEqual({
+      dictate_stop: { key: SLOT, submit: false },
+    });
+    expect(mic.held.stops, 'and the microphone is let go of on this side too').toBe(stops + 1);
+  });
+
+  /**
+   * **The landing stands when the clipboard refuses the write.** A page over a
+   * plain-http origin has no clipboard at all, and a live one can still refuse;
+   * neither may cost the reader the words that just landed.
+   */
+  it('keeps the landing when the clipboard refuses the write', async () => {
+    const write = clipboard(() => Promise.reject(new Error('refused')));
+    const harness = open({ dictation: true });
+    await beginTake(harness);
+    harness.page.record = record({
+      composer: {
+        take: null,
+        notice: { kind: 'landed', text: 'still lands', truncated: false },
+        machine: null,
+      },
+    });
+    flushSync();
+
+    expect(field().value, 'the words land').toBe('still lands');
+    expect(write).toHaveBeenCalledWith('still lands');
+  });
+
+  /**
+   * **The composer's own take still lands in the composer.** The send-back box
+   * is a third destination, not a replacement for the draft.
+   */
+  it("keeps the composer's take landing in the draft", async () => {
+    const write = clipboard(() => Promise.resolve());
+    const harness = open({ dictation: true });
+    await beginTake(harness);
+    harness.page.record = record({
+      composer: {
+        take: null,
+        notice: { kind: 'landed', text: 'fix the flaky test', truncated: false },
+        machine: null,
+      },
+    });
+    flushSync();
+
+    expect(field().value, 'the words land in the draft').toBe('fix the flaky test');
+    expect(write).toHaveBeenCalledWith('fix the flaky test');
+  });
+
+  /**
+   * **The dock's words row still lands in its notes.** The send-back box is a
+   * third destination, not a replacement for the dock's own row.
+   */
+  it("keeps the dock's words row landing in its notes", async () => {
+    const write = clipboard(() => Promise.resolve());
+    const harness = open({ dictation: true, record: record({ pending_asks: [questionAsk()] }) });
+    await beginTake(harness);
+    harness.page.record = record({
+      pending_asks: [questionAsk()],
+      composer: {
+        take: null,
+        notice: { kind: 'landed', text: 'the dock words', truncated: false },
+        machine: null,
+      },
+    });
+    flushSync();
+
+    const dockBox = document.querySelector('.dock [data-editor="dock"]');
+    expect(
+      dockBox instanceof HTMLTextAreaElement ? dockBox.value : null,
+      'the words land in the dock',
+    ).toBe('the dock words');
+    expect(write).toHaveBeenCalledWith('the dock words');
+  });
+
+  /**
+   * **A record hands the same landing over on every write.** The memory places
+   * it once; a later read carrying the same words is the same landing, not a
+   * second one, so the send-back box does not grow the words twice and the
+   * clipboard is written once.
+   */
+  it('does not append or copy the same landing twice when the record hands it over again', async () => {
+    const write = clipboard(() => Promise.resolve());
+    const harness = open({ dictation: true, record: record({ pending_asks: [slackDraftAsk()] }) });
+
+    action('Send back with feedback').click();
+    flushSync();
+
+    const mic = document.querySelector('.dock .sendback .mic');
+    if (!(mic instanceof HTMLElement)) throw new Error('the send-back box drew no mic');
+    mic.click();
+    flushSync();
+    await opened();
+
+    const landed = { kind: 'landed', text: 'say staging, not prod', truncated: false };
+    harness.page.record = record({
+      pending_asks: [slackDraftAsk()],
+      composer: { take: null, notice: landed, machine: null },
+    });
+    flushSync();
+
+    expect(feedbackBox().value, 'the words land once').toBe('say staging, not prod');
+    expect(write, 'and are copied once').toHaveBeenCalledTimes(1);
+
+    // A later write re-hands the same landing. Its words are already here.
+    harness.page.record = record({
+      pending_asks: [slackDraftAsk()],
+      composer: { take: null, notice: { ...landed }, machine: null },
+    });
+    flushSync();
+
+    expect(feedbackBox().value, 'the words are not appended twice').toBe('say staging, not prod');
+    expect(write, 'and not copied twice').toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * **The send-back box belongs to the prompt.** A new held post is a new
+   * prompt, so what was written for the last one does not come back in the box
+   * that replaces it.
+   */
+  it('clears the send-back box when a new held post arrives', () => {
+    const write = clipboard(() => Promise.resolve());
+    const harness = open({ dictation: true, record: record({ pending_asks: [slackDraftAsk()] }) });
+
+    action('Send back with feedback').click();
+    flushSync();
+    writeFeedback('half a thought');
+
+    expect(feedbackBox().value, 'the words are in the box').toBe('half a thought');
+
+    // The next held post arrives, keyed by its own id, so the dock is a fresh
+    // one and the send-back box must be shut and empty behind it.
+    harness.page.record = record({
+      pending_asks: [slackDraftAsk({ id: '0192e1c0-0000-7000-8000-000000000001' })],
+    });
+    flushSync();
+
+    expect(
+      document.querySelector('.dock .sendback'),
+      'the send-back box did not survive the prompt it belonged to',
+    ).toBeNull();
+
+    action('Send back with feedback').click();
+    flushSync();
+    expect(feedbackBox().value, 'and it opens empty for the new post').toBe('');
+    expect(write, 'no landing happened, so nothing was copied').not.toHaveBeenCalled();
+  });
+
+  /**
+   * **A refused press does not decide the next take's destination.** The
+   * send-back box's mic opens the box and records the intent, and a permission
+   * the reader refused leaves both behind: the next press from the composer's
+   * own key must land in the composer's draft, not in the box whose mic was
+   * refused.
+   */
+  it('does not route the next take to the send-back box after its press was refused', async () => {
+    const write = clipboard(() => Promise.resolve());
+    const harness = open({ dictation: true, record: record({ pending_asks: [slackDraftAsk()] }) });
+
+    action('Send back with feedback').click();
+    flushSync();
+
+    const button = document.querySelector('.dock .sendback .mic');
+    if (!(button instanceof HTMLElement)) throw new Error('the send-back box drew no mic');
+    mic.held.refuse = true;
+    try {
+      button.click();
+      await opened();
+      expect(drawn(), 'the refusal draws its line').toContain('the microphone was refused');
+    } finally {
+      mic.held.refuse = false;
+    }
+
+    // The reader tries the key instead. The refused press must not decide
+    // where these words go.
+    key('ControlRight', 'keydown');
+    await opened();
+    key('ControlRight', 'keyup');
+    showTake(harness);
+    endTake(harness);
+    harness.page.record = record({
+      pending_asks: [slackDraftAsk()],
+      composer: {
+        take: null,
+        notice: { kind: 'landed', text: 'key words', truncated: false },
+        machine: null,
+      },
+    });
+    flushSync();
+
+    // The prompt is answered, so the composer's field returns with the words.
+    harness.page.record = record({
+      composer: {
+        take: null,
+        notice: { kind: 'landed', text: 'key words', truncated: false },
+        machine: null,
+      },
+    });
+    flushSync();
+    expect(field().value, 'the key took the words to the composer').toBe('key words');
+    expect(write).toHaveBeenCalledWith('key words');
   });
 });
