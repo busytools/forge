@@ -8091,6 +8091,9 @@ impl Workspace {
                 // An entry whose label has no persisted row is only here.
                 self.clear_spawn_failure(&entry.slot);
                 self.spend_death(&entry.slot);
+                // The cascade is the lead's close taking its workers with
+                // it: their deaths are the stop's, not crashes to heal.
+                self.healing().note_stopped(&entry.slot);
                 let worktree =
                     crate::protocol::WorktreeDisposition::untouched(entry.is_git_repo_at_spawn);
                 let _ = self.update_tx.send(SessionUpdate::WorkerStatusChanged {
@@ -8125,11 +8128,10 @@ impl Workspace {
         self.spend_death(key);
         // A stop owns the seat from here: any heal attempt standing for it
         // - a backoff already counted down - is cancelled rather than left
-        // to resurrect what the stop is taking down.
+        // to resurrect what the stop is taking down, and the subprocess
+        // death the stop causes is not read as a crash.
         self.clear_heal_progress(key);
-        if let Some(healing) = self.healing.get() {
-            healing.note_stopped(key);
-        }
+        self.healing().note_stopped(key);
         let _ = self.update_tx.send(SessionUpdate::Releasing { key: key.clone() });
     }
 
