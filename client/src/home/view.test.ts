@@ -317,7 +317,6 @@ function agent(
     lifecycle,
     heal_attempt: null,
     heal_attempts: null,
-    heal_next_at: null,
     has_background_work: false,
     pending: null,
     pending_depth: 0,
@@ -1395,7 +1394,6 @@ describe('what a row says', () => {
       ...agent('Busytools', 'forge', 'w1', 'Restarting'),
       heal_attempt: 1,
       heal_attempts: 3,
-      heal_next_at: { secs_since_epoch: 1_790_000_000, nanos_since_epoch: 0 },
     };
     const wire = homeFrom({
       ...FLEET,
@@ -1423,20 +1421,20 @@ describe('what a row says', () => {
   });
 
   /**
-   * The restarting state and its two fields survive the read: a client that
+   * The restarting state and its attempt survive the read: a client that
    * dropped them would draw a seat between attempts as a calm idle row.
    */
-  it('narrows a restarting seat with its attempt and next stamp', () => {
+  it('narrows a restarting seat with its attempt', () => {
     const restarting = {
       ...FLEET_AGENT,
       lifecycle: 'Restarting' as const,
       heal_attempt: 1,
-      heal_next_at: { secs_since_epoch: 1_790_000_000, nanos_since_epoch: 0 },
+      heal_attempts: 3,
     };
     const row = homeFrom({ ...FLEET, agents: [restarting] }).agents[0];
     expect(row?.lifecycle).toBe('Restarting');
     expect(row?.heal_attempt).toBe(1);
-    expect(row?.heal_next_at?.secs_since_epoch).toBe(1_790_000_000);
+    expect(row?.heal_attempts).toBe(3);
   });
 
   /**
@@ -1447,7 +1445,7 @@ describe('what a row says', () => {
     const old = { ...FLEET, agents: [{ ...FLEET_AGENT, heal_attempt: undefined }] };
     const row = homeFrom(old as unknown as HomeWire).agents[0];
     expect(row?.heal_attempt).toBe(null);
-    expect(row?.heal_next_at).toBe(null);
+    expect(row?.heal_attempts).toBe(null);
   });
 
   /**
