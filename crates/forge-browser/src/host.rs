@@ -717,10 +717,10 @@ struct PopupGate {
     /// **A noopener popup has no channel**, so this is what still lets its
     /// renderer death end its tab instead of leaving a dead row.
     bridged_tabs: Mutex<HashSet<u16>>,
-    /// Openers whose refusal has already been logged. **One line per opener,
-    /// not one per attempt**: a page can repeat a refused open, and the
-    /// host's stderr is a file.
-    refused_logged: Mutex<HashSet<u16>>,
+    /// Refusals already logged, by tab or opener and kind. **One line per
+    /// reason, not one per attempt**: a page can repeat a refused open, and
+    /// the host's stderr is an append-only file nobody rotates.
+    refused_logged: Mutex<HashSet<(u16, &'static str)>>,
     /// A bridged popup whose blank document has not acknowledged its role,
     /// with the address to start once it does. **The address waits**: the
     /// popup's first document must have `window.opener` before its own
@@ -825,12 +825,14 @@ impl PopupGate {
             let mut live = self.live.lock().unwrap_or_else(PoisonError::into_inner);
             let held = live.entry(opener).or_default();
             if *held >= MAX_POPUP_TABS {
-                eprintln!(
-                    "cef host: a page's popup was refused (event_name cef_popup_refused, \
-                     profile {}, opener {opener}, popup {popup_id}, address {})",
-                    self.profile,
-                    origin_words(url)
-                );
+                if self.first_refusal(opener, "cap") {
+                    eprintln!(
+                        "cef host: a page's popup was refused (event_name cef_popup_refused, \
+                         profile {}, opener {opener}, popup {popup_id}, address {})",
+                        self.profile,
+                        origin_words(url)
+                    );
+                }
                 return None;
             }
             *held += 1;
@@ -1100,6 +1102,21 @@ impl PopupGate {
         }
     }
 
+    /// Whether this refusal is the first of its kind for the tab or opener.
+    /// **The line is written once until the opener navigates or a popup is
+    /// admitted**, because a page can repeat a refusal and the host's stderr
+    /// is an append-only file.
+    fn first_refusal(&self, who: u16, kind: &'static str) -> bool {
+        self.refused_logged.lock().unwrap_or_else(PoisonError::into_inner).insert((who, kind))
+    }
+
+    fn clear_refusals(&self, who: u16) {
+        self.refused_logged
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retain(|(tab, _)| *tab != who);
+    }
+
     /// **A popup CEF never created gives its place back**, or a page that
     /// opened one that failed would hold a count against itself for the life
     /// of the host. The place is the one CEF's own popup id names.
@@ -1333,12 +1350,14 @@ impl PopupGate {
             let mut live = self.live.lock().unwrap_or_else(PoisonError::into_inner);
             let held = live.entry(opener).or_default();
             if *held >= MAX_POPUP_TABS {
-                eprintln!(
-                    "cef host: a page's popup was refused (event_name cef_popup_refused, \
-                     profile {}, opener {opener}, popup {id}, address {})",
-                    self.profile,
-                    origin_words(url)
-                );
+                if self.first_refusal(opener, "cap") {
+                    eprintln!(
+                        "cef host: a page's popup was refused (event_name cef_popup_refused, \
+                         profile {}, opener {opener}, popup {id}, address {})",
+                        self.profile,
+                        origin_words(url)
+                    );
+                }
                 return Err("the page already holds its open popups' limit".to_owned());
             }
             *held += 1;
@@ -1356,6 +1375,9 @@ impl PopupGate {
             self.release(&place);
             return Err("the popup's browser could not be created".to_owned());
         };
+        // **A popup admitted clears the opener's refusal lines**: one line on
+        // entering a refusal and one on leaving it, not one per attempt.
+        self.clear_refusals(opener);
         if !noopener {
             // **The address waits for the role.** The renderer acknowledges
             // once `window.opener` is installed in its document; only then
@@ -1396,9 +1418,7 @@ impl PopupGate {
     ) {
         let id = self.bridge.lock().unwrap_or_else(PoisonError::into_inner).next_id();
         if let Err(why) = self.open_bridged(opener, handle, url, id, noopener) {
-            let first =
-                self.refused_logged.lock().unwrap_or_else(PoisonError::into_inner).insert(opener);
-            if first {
+            if self.first_refusal(opener, "bridged") {
                 eprintln!(
                     "cef host: a cross-site popup was not bridged (event_name \
                      cef_opener_bridge_refused, profile {}, opener {opener}, address {}): {why}",
@@ -1416,12 +1436,14 @@ impl PopupGate {
     /// message arrived on**, never a field the page supplies.
     fn bridge_post(&self, from: u16, handle: &str, target: &str, data: &str) {
         if data.len() > bridge::MAX_MESSAGE_BYTES {
-            eprintln!(
-                "cef host: a bridged message was too large (event_name \
-                 cef_opener_bridge_too_large, profile {}, tab {from}, bytes {})",
-                self.profile,
-                data.len()
-            );
+            if self.first_refusal(from, "too_large") {
+                eprintln!(
+                    "cef host: a bridged message was too large (event_name \
+                     cef_opener_bridge_too_large, profile {}, tab {from}, bytes {})",
+                    self.profile,
+                    data.len()
+                );
+            }
             return;
         }
         let channel = {
@@ -1507,6 +1529,13 @@ impl PopupGate {
         };
         if let Some(tab) = popup {
             self.close_tab(tab);
+            return;
+        }
+        // **A noopener popup that took the shim's role through `window.name`
+        // has no channel**, so the tab's own record that it was ours to close
+        // is the one this side keeps.
+        if self.bridged_tabs.lock().unwrap_or_else(PoisonError::into_inner).contains(&from) {
+            self.close_tab(from);
         }
     }
 
@@ -1514,6 +1543,7 @@ impl PopupGate {
     /// opener hears `closed`; an opener's popups hear it too, because the
     /// window they opened cannot answer any more.
     fn bridge_tab_ended(&self, tab: u16) {
+        self.clear_refusals(tab);
         self.bridged_tabs.lock().unwrap_or_else(PoisonError::into_inner).remove(&tab);
         self.assigned_tabs.lock().unwrap_or_else(PoisonError::into_inner).remove(&tab);
         self.pending_start
@@ -1536,6 +1566,9 @@ impl PopupGate {
     /// handles die with it. The popups stay, as platform popups do.
     fn bridge_opener_navigated(&self, tab: u16) {
         self.bridge.lock().unwrap_or_else(PoisonError::into_inner).opener_navigated(tab);
+        // A new document may refuse for a new reason; its first line is worth
+        // having.
+        self.clear_refusals(tab);
     }
 
     /// A bridged popup's main frame started a navigation in a renderer that
