@@ -24,8 +24,6 @@ pub struct AgentRow {
     /// How many restarts a heal may make, so the row can say "1 of 3"
     /// without the client holding a policy of its own.
     pub heal_attempts: Option<u32>,
-    /// When that attempt fires; `None` when no attempt is scheduled.
-    pub heal_next_at: Option<SystemTime>,
     pub has_background_work: bool,
     pub pending: Option<PendingKind>,
     /// How many prompts the session is holding. Zero when it holds none,
@@ -161,7 +159,6 @@ fn row_for(
     AgentRow {
         heal_attempt: heal.map(|progress| progress.attempt),
         heal_attempts: heal.and_then(|_| workspace.heal_attempts()),
-        heal_next_at: heal.map(|progress| progress.next_at),
         has_background_work: workspace.has_background_work(&slot),
         last_activity: workspace.session_last_activity(&slot),
         failed_turn: workspace.session_failed_turn(&slot),
@@ -350,7 +347,6 @@ mod tests {
             "a seat between attempts is restarting, not failed or asleep",
         );
         assert_eq!(worker_row.heal_attempt, Some(1), "the attempt the row names");
-        assert_eq!(worker_row.heal_next_at, Some(next_at), "when the next attempt fires");
 
         let lead_row = rows.iter().find(|row| row.slot == lead).expect("the lead's row");
         assert_eq!(

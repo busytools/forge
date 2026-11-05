@@ -274,8 +274,6 @@ pub struct AgentWire {
     pub heal_attempt: Option<u32>,
     /// How many restarts a heal may make, so the row can say "1 of 3".
     pub heal_attempts: Option<u32>,
-    /// When that attempt fires; `None` when no attempt is scheduled.
-    pub heal_next_at: Option<std::time::SystemTime>,
     pub has_background_work: bool,
     pub pending: Option<forge_workspace::PendingInteractionKind>,
     pub pending_depth: usize,
@@ -313,7 +311,6 @@ impl From<&AgentRow> for AgentWire {
             lifecycle: row.lifecycle,
             heal_attempt: row.heal_attempt,
             heal_attempts: row.heal_attempts,
-            heal_next_at: row.heal_next_at,
             has_background_work: row.has_background_work,
             pending: row.pending,
             pending_depth: row.pending_depth,
@@ -4246,11 +4243,6 @@ mod tests {
         assert_eq!(row["lifecycle"], serde_json::json!("Restarting"), "the state the row draws");
         assert_eq!(row["heal_attempt"], serde_json::json!(1), "the attempt it names");
         assert_eq!(row["heal_attempts"], serde_json::json!(3), "the cap the row's 'of 3' reads");
-        assert_eq!(
-            row["heal_next_at"]["secs_since_epoch"],
-            serde_json::json!(1_790_000_000_u64),
-            "when the next attempt fires",
-        );
     }
 
     /// **The home carries the fleet glance and the board carries the board**

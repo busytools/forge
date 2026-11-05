@@ -1206,7 +1206,6 @@
         "has_background_work",
         "heal_attempt",
         "heal_attempts",
-        "heal_next_at",
         "label",
         "last_activity",
         "lifecycle",
