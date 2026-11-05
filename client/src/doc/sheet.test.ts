@@ -161,6 +161,12 @@ describe('the document sheet', () => {
     expect(hover?.body, 'the highlight is neutral, with no accent bar').not.toMatch(
       /--accent|box-shadow/,
     );
+
+    const block = rulesFor('.doc-page .doc-block').find(
+      (rule) => rule.selector.trim() === '.doc-page .doc-block',
+    );
+    expect(block?.body, 'the highlight band gives both sides air').toMatch(/padding:\s*0 12px/);
+    expect(block?.body, 'and is the same width on both sides').toMatch(/margin:\s*0 -12px/);
   });
 
   /** **A table's first column keeps room to read as a name.** Auto layout

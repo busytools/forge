@@ -5394,13 +5394,16 @@ details[open] > summary .arw { opacity: 1; }
    child margins collapse through the box - the block boxes then space
    themselves by the sheet's own rhythm instead of stacking flush. */
 .doc-page .doc-block { position: relative; border-radius: 6px; cursor: pointer;
-  padding: 0 10px 0 0; margin: 0 -10px 0 0; }
+  /* The highlight band gives the text the same air on both sides; a
+     right-only overhang read as clamping the text on the left (Ved,
+     2026-11-05). */
+  padding: 0 12px; margin: 0 -12px; }
 .doc-page .doc-block:hover, .doc-page .doc-block.target, .doc-page .doc-block:focus-within {
   background: var(--s2); outline: none; }
 /* The `+` is a plain mark in the margin - no chip, no rule (Ved, 2026-11-04) -
    shown on hover or focus, and drawn always for a finger, because an
    affordance that exists only on hover is unreachable on touch. */
-.doc-page .doc-add { position: absolute; left: -2.2rem; top: 0.15rem; width: 1.4rem;
+.doc-page .doc-add { position: absolute; left: -1.4rem; top: 0.15rem; width: 1.4rem;
   height: 1.4rem; display: grid; place-items: center; padding: 0;
   border: 0; background: none; color: var(--dim);
   font-family: var(--mono); font-size: 16px; line-height: 1; cursor: pointer;
@@ -5534,7 +5537,7 @@ details[open] > summary .arw { opacity: 1; }
      layout; the coarse one states its own gaps. */
   .doc-page .doc-block, .doc-page .doc-comment-btn, .doc-page .doc-cancel-btn,
   .doc-page .doc-finish-btn, .doc-page .doc-answer-btn { min-height: 44px; }
-  .doc-page .doc-add { width: 44px; height: 44px; left: -2.9rem; top: 0;
+  .doc-page .doc-add { width: 44px; height: 44px; left: -2.2rem; top: 0;
     opacity: 1; }
   .doc-page .doc-block { margin-bottom: 20px; }
   .doc-page .doc-block-body > :first-child { margin-top: 0; }

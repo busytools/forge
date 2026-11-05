@@ -1148,6 +1148,10 @@
                   }}
                   field={(el: HTMLElement | null) => {
                     field = el;
+                    // Clicking the target opens a box that is already ready
+                    // to type: the reader types and presses Enter (Ved,
+                    // 2026-11-05).
+                    el?.focus();
                   }}
                 />
               {/if}
