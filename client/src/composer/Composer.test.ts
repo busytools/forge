@@ -6638,10 +6638,43 @@ describe('the dock', () => {
     expect(drawn()).toContain("Don't write");
   });
 
+  it('draws every key of a batch in the one card that would write them', () => {
+    open({
+      record: record({
+        pending_asks: [
+          settingsWriteAsk({
+            edits: [
+              { key: 'vault.url', current: null, proposed: 'https://vault.test', unset: false },
+              { key: 'vault.email', current: null, proposed: 'me@vault.test', unset: false },
+            ],
+          }),
+        ],
+      }),
+    });
+
+    const text = drawn();
+    expect(text).toContain('vault.url');
+    expect(text).toContain('vault.email');
+    expect(text).toContain('https://vault.test');
+    expect(text).toContain('me@vault.test');
+    expect(text).toContain('Write it');
+  });
+
   it('draws an unset write as a removal, not as a null value', () => {
     open({
       record: record({
-        pending_asks: [settingsWriteAsk({ unset: true, proposed: null })],
+        pending_asks: [
+          settingsWriteAsk({
+            edits: [
+              {
+                key: 'orgs.Default.projects.forge.max_workers',
+                current: 2,
+                proposed: null,
+                unset: true,
+              },
+            ],
+          }),
+        ],
       }),
     });
 
@@ -6654,7 +6687,9 @@ describe('the dock', () => {
     open({
       record: record({
         pending_asks: [
-          settingsWriteAsk({ key: 'gotify.url', current: null, proposed: 'https://x' }),
+          settingsWriteAsk({
+            edits: [{ key: 'gotify.url', current: null, proposed: 'https://x', unset: false }],
+          }),
         ],
       }),
     });

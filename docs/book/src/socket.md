@@ -280,14 +280,17 @@ file's comments and order, replaces the file by rename in the
 destination's own mode and through a symlink, and the guards live on the
 server so a hand-rolled client cannot force them.
 
-**The same writer backs the settings MCP tools.** A `settings__set` or
-`settings__unset` call from a session parks as `settings_write_pending` on
-that seat, carrying the key and the current and proposed value, and the
-blocked tool call waits for `respond_settings_write { key, id, approved }`.
-Approving applies the one edit through the save path above and the
-watcher's reload push follows; declining writes nothing. A
-`settings_write_resolved` names the ending, so a view that did not answer
-it can close the dock.
+**The same writer backs the settings MCP tools.** A `settings__set` call
+carries one or more edits - a section's mutually required keys go in the
+same one - and a `settings__unset` call one clear. Either parks as
+`settings_write_pending` on that seat, carrying every key with the value it
+holds now and the value the write would leave, and the blocked tool call
+waits for `respond_settings_write { key, id, approved }`. The batch is
+validated against the loader before the prompt is minted, so a save the
+file would refuse is refused without asking. Approving applies the whole
+batch through the save path above and the watcher's reload push follows;
+declining writes nothing. A `settings_write_resolved` names the ending, so
+a view that did not answer it can close the dock.
 
 **A vault call parks the same way.** Every `vault__*` call parks as
 `vault_ask_pending` on the seat, carrying a draft that draws no secret: the

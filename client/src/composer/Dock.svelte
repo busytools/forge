@@ -974,7 +974,9 @@
       return `${ask.request.workspace} · ${ask.request.conversationLabel}`;
     }
     if (ask.kind === 'document_hand_off') return ask.request.path;
-    if (ask.kind === 'settings_write') return ask.request.key;
+    if (ask.kind === 'settings_write') {
+      return ask.request.edits.map((edit) => edit.key).join(', ');
+    }
     if (ask.kind === 'vault') return ask.request.summary;
     return handOffTitle;
   });
@@ -1536,21 +1538,25 @@
         <span class="q mono">config write</span>
         {@render foldButton()}
       </div>
-      <!-- The key and both values verbatim: approving a summary of an edit
-         nobody drew would be approving something the reader never saw. -->
-      <div class="d-q mono">{ask.request.key}</div>
-      {#if ask.request.current === null}
-        <div class="desc">currently unset</div>
-      {:else}
-        <div class="desc">currently</div>
-        {@render valueBlock('the value this key holds now', ask.request.current)}
-      {/if}
-      {#if ask.request.unset}
-        <div class="desc">cleared to its default</div>
-      {:else}
-        <div class="desc">would become</div>
-        {@render valueBlock('the value this write would leave', ask.request.proposed)}
-      {/if}
+      <!-- Every key and both values verbatim: approving a summary of an edit
+         nobody drew would be approving something the reader never saw. A
+         section's mutually required keys ride one card because they are one
+         save. -->
+      {#each ask.request.edits as edit (edit.key)}
+        <div class="d-q mono">{edit.key}</div>
+        {#if edit.current === null}
+          <div class="desc">currently unset</div>
+        {:else}
+          <div class="desc">currently</div>
+          {@render valueBlock('the value this key holds now', edit.current)}
+        {/if}
+        {#if edit.unset}
+          <div class="desc">cleared to its default</div>
+        {:else}
+          <div class="desc">would become</div>
+          {@render valueBlock('the value this write would leave', edit.proposed)}
+        {/if}
+      {/each}
     {:else if ask.kind === 'vault'}
       <div class="d-head">
         <span class="tag warn">&#9888; needs you</span>
