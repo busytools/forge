@@ -895,6 +895,35 @@ the default.
 | -------------- | ------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `poll_seconds` | integer | `60`    | The refresh interval, in seconds. The session page draws its 5h/7d utilization from the cache this fills, and the gateway's account selection reads it too, so the interval is an upper bound on how stale a "which account has more headroom" decision can be. `0` fails the load: a zero interval would probe continuously. |
 
+## `[sessions]`
+
+What happens when a durable seat - a project's own agent, or a worker with
+a stored row - loses its subprocess while it is supposed to be up. Absent
+means the defaults, which bring the seat back by itself.
+
+| Key             | Type              | Default                 | Notes                                                                                                                                                                                                                                                                                                                                                                           |
+| --------------- | ----------------- | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `heal`          | boolean           | `true`                  | Whether forge restarts a dead durable seat at all. `false` leaves the death on the row with its diagnostic, the way a failure always did.                                                                                                                                                                                                                                       |
+| `heal_attempts` | integer           | `3`                     | How many restarts one run gets before the seat is left Failed with the last diagnostic and its project's agent is told. The minimum is `1`; `0` fails the load (`sessions.heal_attempts = 0 ... is not usable; it must name at least one restart`), because healing would be on with nothing to attempt.                                                                       |
+| `heal_backoff`  | list of durations | `["5s", "30s", "2m"]`   | How long forge waits before each restart, in order. A list shorter than `heal_attempts` repeats its last interval; an empty list fails the load. A duration is digits and one unit - `ms`, `s`, `m` or `h` - and a bare number fails the load naming the key.                                                                                                                  |
+| `heal_stable`   | duration          | `10m`                   | How long a restarted seat must stay up before its death count resets, so a seat that dies every few minutes still runs out of its restarts.                                                                                                                                                                                                                                    |
+
+A durable seat is a project's own agent or a worker with a stored row. An
+ad-hoc session has no row of its own, so opening its seat is what wakes it.
+A despawn, a close and a forge shutdown never heal: the stop owns the seat,
+and the boot re-spawn owns the return after a restart. `/exit` typed into a
+durable seat does heal - a durable seat is up until it is despawned.
+
+A worker's death is delivered to its project's agent as one peer message,
+whatever the attempt does: the time in IST with UTC in parentheses, the
+diagnostic, the attempt and its outcome. A delivery to a sleeping agent
+parks and lands when it wakes, like any peer message. A lead has no agent
+above it, so its project's row draws `restarting (N of M)` while it is
+between attempts, then `restarted` or the failure with its diagnostic.
+
+`heal_attempts`, `heal_backoff` and `heal_stable` are read at each death,
+so an edit applies to the next seat that dies.
+
 ## Unknown keys
 
 Every table rejects unknown fields, so a mistyped key fails the load
@@ -904,7 +933,7 @@ fallbacks". That covers the top level, `[[orgs]]`, `[[orgs.projects]]`,
 `[[accounts]]`, `[models."<name>"]`, `[handoff]` and
 `[orgs.projects.handoff]`, `[[slack]]`, `[gotify]`, `[systemone]`,
 `[gateway]`, `[dictate]`, `[tts]`, `[huggingface]`, `[plugins]`, `[server]`,
-`[browser]` and `[client]`.
+`[browser]`, `[client]` and `[sessions]`.
 
 A key forge itself retired is a declared ghost rather than an unknown
 key, so a stale `forge.toml` still boots and warns instead of failing:
@@ -1084,6 +1113,7 @@ accepts has no class.
 | `[client] mark`, `theme`, `font` | Live. The server pushes the whole effective config on every applied reload, and an open client re-themes, re-fonts and re-marks itself from it without a reconnect. |
 | `[documents] max_size_mib` | Live. The next document read uses the new ceiling. |
 | `[usage] poll_seconds` | Live. The poller adopts the new interval on its next tick. |
+| `[sessions]` | Live. Each death reads the policy, so an edit applies to the next seat that dies. |
 | `[dictate]` `bind`, `mode` | Live. The server reads them on every key decision; a client's key handler holds the composer record it last read, so a new occupant or reconnect refreshes what it starts from. |
 | `[dictate]` `styling`, `structure`, `context` | Next session: applies to the next connection, which is when a client takes its capture axes. |
 | `[dictate]` `enabled`, `models_dir`, `language`, `normalizer`, `max_capture_minutes`, `transcribe_model`, `cleanup_model` | Restart-only. The preflight and the engine's own configuration are built once at boot; the log names it. |

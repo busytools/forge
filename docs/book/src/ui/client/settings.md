@@ -51,7 +51,7 @@ comes from the settings document above.
 | Piece | What it is |
 | --- | --- |
 | Header | The mark, `settings`, the server / socket / claude versions, the totals (keys, areas, the resolved `forge.toml` path), the back link and the edit button. |
-| Sub-nav | The twelve areas, each with its key count and every class its keys hold. On desktop it stays in place while the pane scrolls. |
+| Sub-nav | The thirteen areas, each with its key count and every class its keys hold. On desktop it stays in place while the pane scrolls. |
 | Pane head | The area's name and note, its key count and, where the area names entries, how many (projects counts projects, not the orgs that carry them); the area's add doors in edit mode. It stays above the scroll. |
 | A card | One entry or table (an account, a model, an org or a project, a Slack workspace, a vault, a server table): its name, key count and own doors, then one line per key. Keys with no instance draw one card with no head band. |
 | A setting line | The key's leaf, its class badge, and the value right-aligned to the card's edge on desktop (stacked under the key at a phone width); the whole path is its title. In edit mode the value is the control, the required mark rides the key, and a changed line keeps an accent edge. |
