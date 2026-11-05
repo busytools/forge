@@ -197,12 +197,22 @@ pub struct WorkerEntry {
 }
 
 impl WorkerEntry {
-    /// Live in the label-gate and cap-count sense: `Spawning` or `Running`.
-    /// Both rules must agree on this, or a respawnable label still eats a
-    /// cap slot. A `Restarting` entry is not live: the heal's own resume
-    /// takes the label, and a seat with no subprocess is not holding one.
+    /// Live in the label-gate sense: a subprocess holds the label, so a
+    /// spawn for it is a duplicate. A `Restarting` entry is excluded - the
+    /// heal's own resume takes the label, and a seat with no subprocess is
+    /// not holding one. The cap count is [`Self::holds_slot`]'s, not this.
     pub(crate) fn is_live(&self) -> bool {
         matches!(self.status, WorkerLiveness::Spawning | WorkerLiveness::Running)
+    }
+
+    /// Holding a cap slot: a `Restarting` worker still spends the user's
+    /// worker budget until its heal gives up, so the cap does not free a
+    /// slot the heal's own resume is about to take.
+    fn holds_slot(&self) -> bool {
+        matches!(
+            self.status,
+            WorkerLiveness::Spawning | WorkerLiveness::Running | WorkerLiveness::Restarting
+        )
     }
 
     /// Project the workspace-internal entry to the wire shape.
@@ -235,12 +245,13 @@ impl WorkerEntry {
     }
 }
 
-/// First non-`Failed` worker carrying `label`, if any. The one-live-
-/// worker-per-label guard: a `Spawning`/`Running` worker already holds
-/// the label so another spawn for it is a duplicate, while a `Failed`
-/// entry is ignored (its label may be re-spawned). Enforced at the
-/// shared `handle_spawn_worker` core so no dispatch source can
-/// double-insert a label.
+/// The first worker holding `label` in the label-gate sense, if any. The
+/// one-live-worker-per-label guard: a `Spawning`/`Running` worker already
+/// holds the label so another spawn for it is a duplicate, while a
+/// `Failed` entry is ignored (its label may be re-spawned) and a
+/// `Restarting` one too - the heal's own resume is the spawn that takes
+/// that label. Enforced at the shared `handle_spawn_worker` core so no
+/// dispatch source can double-insert a label.
 pub(crate) fn live_worker_with_label<'a>(
     entries: &'a [WorkerEntry],
     label: &str,
@@ -248,11 +259,12 @@ pub(crate) fn live_worker_with_label<'a>(
     entries.iter().find(|w| w.label == label && w.is_live())
 }
 
-/// Workers that count against the cap. The cap check and the
-/// `agents__capacity` read both go through here, so the reported
+/// Workers that count against the cap, a seat between heal attempts
+/// included: its slot is not free until the heal gives up. The cap check
+/// and the `agents__capacity` read both go through here, so the reported
 /// number cannot drift from the enforced one.
 pub(crate) fn live_worker_count(entries: &[WorkerEntry]) -> usize {
-    entries.iter().filter(|w| w.is_live()).count()
+    entries.iter().filter(|w| w.holds_slot()).count()
 }
 
 #[cfg(test)]
@@ -288,6 +300,22 @@ mod is_git_repo_at_spawn_tests {
     fn worker_entry_carries_is_git_repo_at_spawn_false() {
         let entry = fake_entry(false);
         assert!(!entry.is_git_repo_at_spawn);
+    }
+
+    /// **A seat between heal attempts frees the label but not its cap
+    /// slot.** The label gate must let the heal's own resume through, while
+    /// the cap still counts a seat the user's budget is holding until the
+    /// heal gives up.
+    #[test]
+    fn a_restarting_worker_frees_the_label_but_holds_its_cap_slot() {
+        let mut entry = fake_entry(false);
+        entry.status = WorkerLiveness::Restarting;
+
+        assert!(
+            live_worker_with_label(std::slice::from_ref(&entry), "reviewer").is_none(),
+            "the heal's resume must be allowed to take the label",
+        );
+        assert_eq!(live_worker_count(std::slice::from_ref(&entry)), 1, "the cap still counts it");
     }
 }
 
