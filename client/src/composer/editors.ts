@@ -26,6 +26,7 @@
 export const EDITORS = [
   'composer',
   'dock',
+  'feedback',
   'bar',
   'connect',
   'palette',
@@ -76,9 +77,11 @@ export function focusOf(where: Where): Editor {
     case 'board':
     case 'palette':
     case 'bar':
+    case 'feedback':
     case 'settings':
       // The composer is this table's one caller and never names these: they are
-      // boxes that exist, not boxes this table routes to.
+      // boxes that exist, not boxes this table routes to. The send-back box is
+      // focused by the dock that draws it, and a landing reads it by name.
       return 'nowhere';
     default: {
       // A new Editor with no case here fails the build, which is what the
@@ -93,13 +96,31 @@ function fallback(where: Where): Editor {
   return where.composerPresent === false ? 'nowhere' : 'composer';
 }
 
+/** Whether a name a box gave itself is one of the editors the set knows. */
+function isEditor(name: string): name is Editor {
+  return (EDITORS as readonly string[]).includes(name);
+}
+
+/**
+ * The box holding the caret right now, by the name it gave itself, or `null`
+ * when the caret is in none of them.
+ *
+ * **A take begun with the push-to-talk key has no press on a box** to name its
+ * destination, so the landing reads this: the box the reader's caret is in is
+ * the one the words belong to.
+ */
+export function activeEditor(): Editor | null {
+  const active = document.activeElement;
+  const box = active instanceof HTMLElement ? active.closest('[data-editor]') : null;
+  const named = box?.getAttribute('data-editor') ?? null;
+  return named !== null && isEditor(named) ? named : null;
+}
+
 /**
  * Whether the caret is in one of this client's own dictation boxes: the one
  * thing a takeover's page does not take, its bar being drawn above the page.
  */
 export function caretTakesDictation(): boolean {
-  const active = document.activeElement;
-  const box = active instanceof HTMLElement ? active.closest('[data-editor]') : null;
-  const named = box?.getAttribute('data-editor') ?? null;
-  return named === 'composer' || named === 'dock' || named === 'bar';
+  const named = activeEditor();
+  return named === 'composer' || named === 'dock' || named === 'feedback' || named === 'bar';
 }
