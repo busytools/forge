@@ -966,6 +966,30 @@ provider = "anthropic"
         assert_eq!(read_config(&ws), CONFIG, "the good pair was not written");
     }
 
+    /// **A batch naming one key twice is refused before the ask.** The pair
+    /// that would net back to the value already in the file must not slip
+    /// past the "changes nothing" guard as a write the reader approves.
+    #[tokio::test]
+    async fn a_batch_naming_one_key_twice_is_refused_before_the_ask() {
+        let (ws, _dir) = fixture();
+        let _answerer = ws.subscribe_answerer();
+        let facade = facade(&ws);
+        let key = "orgs.Default.projects.forge.max_workers";
+
+        let error = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            facade.set(&caller(), vec![item(key, json!(4)), item(key, json!(2))]),
+        )
+        .await
+        .expect("the refusal precedes the ask, so nothing waits on an approval")
+        .expect_err("a duplicate key is refused");
+
+        assert!(error.message().contains("max_workers"), "{}", error.message());
+        assert!(error.message().contains("twice"), "{}", error.message());
+        assert!(ws.settings_writes.lock().is_empty(), "no ask was minted");
+        assert_eq!(read_config(&ws), CONFIG, "nothing was written");
+    }
+
     /// The hold is the whole batch's: a decline writes neither key.
     #[tokio::test]
     async fn a_declined_batch_writes_nothing() {
