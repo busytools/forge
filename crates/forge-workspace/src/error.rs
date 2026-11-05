@@ -123,6 +123,25 @@ pub enum WorkspaceError {
     UsagePollIntervalInvalid { path: PathBuf },
 
     #[error(
+        "sessions.heal_attempts = 0 in forge.toml at {} is not usable; it must name at least one restart, so remove the key for the {} default",
+        path.display(),
+        crate::config::DEFAULT_HEAL_ATTEMPTS
+    )]
+    SessionsHealAttemptsInvalid { path: PathBuf },
+
+    #[error(
+        "sessions.{key} = \"{value}\" in forge.toml at {} is not a duration; write a number with its unit, as in \"5s\", \"30s\" or \"2m\"",
+        path.display()
+    )]
+    SessionsDurationInvalid { path: PathBuf, key: &'static str, value: String },
+
+    #[error(
+        "[sessions] heal_backoff in forge.toml at {} is empty; list at least one interval, or remove the key for the defaults",
+        path.display()
+    )]
+    SessionsBackoffEmpty { path: PathBuf },
+
+    #[error(
         "server port 0 in forge.toml at {} is not usable; the socket needs a port a client can be pointed at",
         path.display()
     )]
