@@ -3687,36 +3687,39 @@ fn take_frame(
             // viewer and the bytes are refused, so an observer's keystrokes
             // never join a command they did not ask for.
             let controlling = viewing.entry.controller() == Some(me);
-            let owns = if controlling {
-                true
-            } else if answering {
-                // **The hand-off's door is one client.** The first connection
-                // to type during a parked hand-off claims the keyboard, and a
-                // client that loses the race is a viewer - two clients must
-                // never type into one prompt. The claim is atomic against the
-                // park's resolution, so an ending cannot leave it behind.
-                surface.claim_handoff_keyboard(&viewing.seat, me)
-            } else {
-                false
-            };
-            if !owns {
-                tracing::debug!(
-                    event_name = "terminal_input_outside_handoff",
-                    id,
-                    answering,
-                    controlling,
-                    "a terminal input frame arrived outside the hand-off or controller that owns the keyboard",
-                );
+            if controlling {
+                if let Err(why) = surface.terminal_write(&viewing.seat, id, &bytes) {
+                    tracing::debug!(
+                        event_name = "terminal_input_failed",
+                        id,
+                        reason = %why,
+                        "a terminal input frame could not be written",
+                    );
+                }
                 return;
             }
-            if let Err(why) = surface.terminal_write(&viewing.seat, id, &bytes) {
-                tracing::debug!(
-                    event_name = "terminal_input_failed",
-                    id,
-                    reason = %why,
-                    "a terminal input frame could not be written",
-                );
+            if answering {
+                // **The hand-off's door is one client**, and the claim and
+                // the write are one step under the park's own lock: a client
+                // that loses the claim views, and a byte typed as the ask
+                // ended never lands after it.
+                if let Err(why) = surface.write_handoff_keyboard(&viewing.seat, id, me, &bytes) {
+                    tracing::debug!(
+                        event_name = "terminal_input_refused",
+                        id,
+                        reason = %why,
+                        "a terminal input frame was refused",
+                    );
+                }
+                return;
             }
+            tracing::debug!(
+                event_name = "terminal_input_outside_handoff",
+                id,
+                answering,
+                controlling,
+                "a terminal input frame arrived outside the hand-off or controller that owns the keyboard",
+            );
         }
         FrameRoute::Audio(samples) => {
             // Offered to each seat this connection started, kept only where

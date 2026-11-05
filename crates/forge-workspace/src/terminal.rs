@@ -276,20 +276,30 @@ impl Workspace {
         self.terminal_if_any(slot).is_some_and(|entry| entry.controller().is_some())
     }
 
-    /// Claim the keyboard for a client during a parked hand-off, atomically
-    /// against the park's own resolution.
+    /// The hand-off door's keystrokes: the first client to type claims the
+    /// keyboard, and the claim and the write are one step under the park's
+    /// own lock.
     ///
-    /// **The claim and the ending take the same lock**, so a client that read
-    /// the park as live cannot land a claim after the ending has cleared it;
-    /// a hand-off never leaves the keyboard in a client's hands once it is
-    /// gone.
-    pub fn claim_handoff_keyboard(&self, slot: &SessionSlot, viewer: u64) -> bool {
+    /// **A byte typed as the ask ended is refused**, so nothing typed during
+    /// the park lands after the agent has its keyboard back, and a client
+    /// that loses the claim is a viewer rather than a second hand on the
+    /// secret.
+    pub fn write_handoff_keyboard(
+        &self,
+        slot: &SessionSlot,
+        id: u16,
+        viewer: u64,
+        bytes: &[u8],
+    ) -> Result<(), String> {
         let parked = self.terminal_handoffs.lock();
         if !parked.values().any(|(owner, _, _)| owner == slot) {
-            return false;
+            return Err("the terminal hand-off has ended".to_owned());
         }
-        let Some(entry) = self.terminal_if_any(slot) else { return false };
-        entry.claim_control(viewer)
+        let entry = self.terminal_by_id(slot, id)?;
+        if entry.controller() != Some(viewer) && !entry.claim_control(viewer) {
+            return Err("another client holds the keyboard".to_owned());
+        }
+        entry.terminal.write_bytes(bytes).map_err(|error| error.to_string())
     }
 
     /// The person's own take, refused while a hand-off holds the keyboard.
@@ -907,7 +917,10 @@ mod tests {
             .register_terminal_hand_off(&slot, entry.id, "the sudo password")
             .expect("a hand-off parks");
 
-        assert!(workspace.claim_handoff_keyboard(&slot, 7), "the door claims the keyboard");
+        assert!(
+            workspace.write_handoff_keyboard(&slot, entry.id, 7, b"echo door\r").is_ok(),
+            "the door claims the keyboard with its first byte",
+        );
         assert!(workspace.terminal_controlled(&slot), "and the person holds it");
 
         assert!(workspace.resolve_terminal_hand_off(
@@ -921,8 +934,8 @@ mod tests {
         ));
         assert!(!workspace.terminal_controlled(&slot), "the ending gave the keyboard back");
         assert!(
-            !workspace.claim_handoff_keyboard(&slot, 8),
-            "a claim after the ending cannot land",
+            workspace.write_handoff_keyboard(&slot, entry.id, 8, b"echo late\r").is_err(),
+            "a byte after the ending cannot land",
         );
         entry.terminal.close();
     }

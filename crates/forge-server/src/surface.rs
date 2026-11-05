@@ -125,11 +125,16 @@ impl ViewSurface {
         Ok(entry)
     }
 
-    /// Claim the keyboard for a client during a parked hand-off. The
-    /// workspace's own takes the hand-off lock, which is what makes the claim
-    /// atomic against the park's resolution.
-    pub fn claim_handoff_keyboard(&self, seat: &SessionSlot, viewer: u64) -> bool {
-        self.workspace.claim_handoff_keyboard(seat, viewer)
+    /// The hand-off door's keystrokes, claimed and written under the park's
+    /// own lock so a byte typed as the ask ends cannot land after it.
+    pub fn write_handoff_keyboard(
+        &self,
+        seat: &SessionSlot,
+        id: u16,
+        viewer: u64,
+        bytes: &[u8],
+    ) -> Result<(), String> {
+        self.workspace.write_handoff_keyboard(seat, id, viewer, bytes)
     }
 
     /// The person's own take, refused while a hand-off holds the keyboard.
