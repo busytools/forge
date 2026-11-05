@@ -91,13 +91,13 @@ keeps working. `window.opener` in the popup is a matching proxy and
 `postMessage` is relayed in both directions with each side's own origin
 checked at delivery, so an OAuth flow's result reaches the app as a JSON
 payload. A `noopener` or `noreferrer` open answers null and its tab has no
-opener, which is the platform's own contract. A second cross-site popup from
-the same page does not commit while the first is live (#2869), a refused open
-answers a live proxy and the refusal arrives later as a `refused` event
-(#2898), and one page may hold sixteen popups at once. **A subframe never
-bridges**: a same-origin subframe answers null for every address but the top
-frame's own origin, and a cross-origin subframe answers null for every web
-address. A same-origin popup keeps the engine's
+opener unless the page sets the shim's `window.name` marker itself. A second
+cross-site popup from the same page does not commit while the first is live
+(#2869), a bridged refused open answers a live proxy and the refusal arrives
+later as a `refused` event (#2898), and one page may hold sixteen popups at
+once. **A subframe never bridges**: a same-origin subframe answers null for
+every web address but the top frame's own origin, and a cross-origin subframe
+answers null for every web address. A same-origin popup keeps the engine's
 own popup path and its real, scriptable `window.opener`. **The takeover
 follows a popup in**: a surface showing the opener moves to the popup when it
 appears, and hands back to the opener when the popup closes, so a sign-in is
@@ -112,8 +112,8 @@ first one, and a popup an attached client holds commits exactly one navigation,
 so its address cannot be preceded by a blank. The host starts the address the
 popup asked for as that first document; the veto patches that document's world
 as soon as its context is reported, which is the out-of-band case a tab
-another client creates directly at a URL is already in. A cross-origin popup
-does not need this: the host creates a browser of its own and starts the
+another client creates directly at a URL is already in. A bridged cross-origin
+popup does not need this: the host creates a browser of its own and starts the
 address once the bridge role is in place.
 
 **The browser offers no WebAuthn**: its pages expose no `PublicKeyCredential`,
