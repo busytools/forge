@@ -197,11 +197,12 @@ pub struct WorkerEntry {
 }
 
 impl WorkerEntry {
-    /// Live in the label-gate and cap-count sense: not `Failed`. Both
-    /// rules must agree on this, or a respawnable label still eats a
-    /// cap slot.
+    /// Live in the label-gate and cap-count sense: `Spawning` or `Running`.
+    /// Both rules must agree on this, or a respawnable label still eats a
+    /// cap slot. A `Restarting` entry is not live: the heal's own resume
+    /// takes the label, and a seat with no subprocess is not holding one.
     pub(crate) fn is_live(&self) -> bool {
-        !matches!(self.status, WorkerLiveness::Failed)
+        matches!(self.status, WorkerLiveness::Spawning | WorkerLiveness::Running)
     }
 
     /// Project the workspace-internal entry to the wire shape.
@@ -227,6 +228,8 @@ impl WorkerEntry {
             spawned_at: self.spawned_at,
             spawned_by: self.spawned_by.clone(),
             diagnostic: self.diagnostic.clone(),
+            heal_attempt: None,
+            heal_next_at: None,
             activity: None,
         }
     }

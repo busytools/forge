@@ -1220,6 +1220,8 @@ mod tests {
             spawned_at: std::time::SystemTime::UNIX_EPOCH,
             spawned_by: SessionSlot::lead(org, project),
             diagnostic: None,
+            heal_attempt: None,
+            heal_next_at: None,
             activity: None,
         }
     }

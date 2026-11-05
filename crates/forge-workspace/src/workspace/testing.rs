@@ -483,6 +483,8 @@ impl Workspace {
             despawn_cleanups: Mutex::new(HashSet::new()),
             spawn_failures: Mutex::new(HashMap::new()),
             deaths: Mutex::new(HashMap::new()),
+            heal_progress: Mutex::new(HashMap::new()),
+            healing: std::sync::OnceLock::new(),
             held_work_seats: crate::work::HeldSeats::default(),
             domain_handles: Mutex::new(HashMap::new()),
             review_origin: Mutex::new(HashMap::new()),

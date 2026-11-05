@@ -415,7 +415,7 @@ reviewer kept on as a long-lived worker.";
 /// `resume_kick` of its own. On a resuming re-spawn forge delivers this
 /// constant as the worker's first turn - telling it to continue rather
 /// than start the task over.
-const DYNAMIC_WORKER_RESTART_NOTE: &str = "This session was restarted by forge. Your prior conversation and progress are in the history above. Continue where you left off; do not restart the task. If the history's timestamps disagree with the clock and the live schedules, believe the clock and the schedules, and still do the concrete asks.";
+pub(crate) const DYNAMIC_WORKER_RESTART_NOTE: &str = "This session was restarted by forge. Your prior conversation and progress are in the history above. Continue where you left off; do not restart the task. If the history's timestamps disagree with the clock and the live schedules, believe the clock and the schedules, and still do the concrete asks.";
 
 /// The first turn a boot spawn delivers to a lead it hands a stored
 /// session id to. A lead has no kick of its own, so this note is what
@@ -554,6 +554,14 @@ struct SeatDeath {
     announced: bool,
     /// Whether a reader has been shown the seat since.
     shown: bool,
+}
+
+/// Where a dead seat's heal has got to while it is between attempts: the
+/// attempt number the row names, and when the next one fires.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HealProgress {
+    pub attempt: u32,
+    pub next_at: SystemTime,
 }
 
 /// Which operation holds a composed path. Re-entrancy needs the same
@@ -840,6 +848,15 @@ pub struct Workspace {
     /// a new id rather than reading as a plain connect - and what keeps
     /// the failure and its reason on the row until someone has looked.
     deaths: Mutex<HashMap<SessionSlot, SeatDeath>>,
+    /// Where each dead seat's heal has got to while it is restarting,
+    /// keyed by slot. The healing supervisor writes it between attempts;
+    /// every row that draws the seat reads it, and a lead has no worker
+    /// entry for the state to live on instead.
+    heal_progress: Mutex<HashMap<SessionSlot, HealProgress>>,
+    /// The auto-heal supervisor, built on the first death that reaches it.
+    /// It holds a `Weak<Workspace>`, which does not exist while the value
+    /// is still being constructed.
+    healing: std::sync::OnceLock<Arc<crate::healing::Healing>>,
     /// The seats a view is showing, each with the working-tree scan loop it
     /// runs. Empty is the quiet case: a seat nobody holds is not scanned.
     pub(crate) held_work_seats: crate::work::HeldSeats,
@@ -2534,6 +2551,8 @@ impl Workspace {
             despawn_cleanups: Mutex::new(HashSet::new()),
             spawn_failures: Mutex::new(HashMap::new()),
             deaths: Mutex::new(HashMap::new()),
+            heal_progress: Mutex::new(HashMap::new()),
+            healing: std::sync::OnceLock::new(),
             held_work_seats: crate::work::HeldSeats::default(),
             domain_handles: Mutex::new(HashMap::new()),
             review_origin: Mutex::new(HashMap::new()),
@@ -8104,6 +8123,13 @@ impl Workspace {
     pub(crate) fn announce_release(self: &Arc<Self>, key: &SessionSlot) {
         self.clear_spawn_failure(key);
         self.spend_death(key);
+        // A stop owns the seat from here: any heal attempt standing for it
+        // - a backoff already counted down - is cancelled rather than left
+        // to resurrect what the stop is taking down.
+        self.clear_heal_progress(key);
+        if let Some(healing) = self.healing.get() {
+            healing.note_stopped(key);
+        }
         let _ = self.update_tx.send(SessionUpdate::Releasing { key: key.clone() });
     }
 
@@ -8530,10 +8556,11 @@ impl Workspace {
     ) -> forge_primitives::SessionLifecycleState {
         use forge_primitives::{SessionLifecycleState as L, WorkerLiveness};
 
-        // Neither has a connected session to interrogate.
+        // None of these has a connected session to interrogate.
         match entry.status {
             WorkerLiveness::Spawning => return L::Spawning,
             WorkerLiveness::Failed => return L::Failed,
+            WorkerLiveness::Restarting => return L::Restarting,
             WorkerLiveness::Running => {}
         }
         self.session_activity(&entry.slot)
@@ -8610,6 +8637,72 @@ impl Workspace {
         self.deaths.lock().get(slot).filter(|death| !death.shown).map(|death| death.reason.clone())
     }
 
+    /// Record that `slot` is between heal attempts: which attempt is next
+    /// and when it fires. Written by the healing supervisor and read by
+    /// every row that draws the seat.
+    pub fn set_heal_progress(&self, slot: &SessionSlot, attempt: u32, next_at: SystemTime) {
+        self.heal_progress.lock().insert(slot.clone(), HealProgress { attempt, next_at });
+    }
+
+    /// Forget `slot`'s heal progress: an occupant connected, or the seat
+    /// gave up and its row now draws the failure instead.
+    pub fn clear_heal_progress(&self, slot: &SessionSlot) {
+        let _ = self.heal_progress.lock().remove(slot);
+    }
+
+    /// Where `slot`'s heal has got to, or `None` when the seat is not
+    /// restarting.
+    pub fn heal_progress(&self, slot: &SessionSlot) -> Option<HealProgress> {
+        self.heal_progress.lock().get(slot).copied()
+    }
+
+    /// The supervisor, built on first use.
+    fn healing(self: &Arc<Self>) -> Arc<crate::healing::Healing> {
+        self.healing.get_or_init(|| crate::healing::Healing::for_workspace(self)).clone()
+    }
+
+    /// A seat that had been up died: hand the death to the supervisor.
+    pub(crate) fn note_seat_death(
+        self: &Arc<Self>,
+        slot: &SessionSlot,
+        occupant: &SessionId,
+        diagnostic: &str,
+    ) {
+        self.healing().note_death(slot, occupant, diagnostic);
+    }
+
+    /// A session came up on `slot`, which cancels any scheduled heal.
+    pub(crate) fn note_seat_connected(self: &Arc<Self>, slot: &SessionSlot) {
+        if let Some(healing) = self.healing.get() {
+            healing.note_connected(slot);
+        }
+    }
+
+    /// `slot`'s worker is between heal attempts: its row draws
+    /// `Restarting`, and the label is free for the resume.
+    pub(crate) fn mark_worker_restarting(&self, project_key: &ProjectKey, slot: &SessionSlot) {
+        let entry = {
+            let mut workers = self.live_workers.lock();
+            workers.get_mut(project_key).and_then(|entries| {
+                entries.iter_mut().find(|entry| entry.slot == *slot).map(|entry| {
+                    entry.status = forge_primitives::WorkerLiveness::Restarting;
+                    entry.clone()
+                })
+            })
+        };
+        if let Some(entry) = entry {
+            let status = self.worker_status_snapshot(&entry);
+            let _ = self.update_tx.send(SessionUpdate::WorkerStatusChanged {
+                project_key: project_key.clone(),
+                action: crate::protocol::WorkerStatusAction::StatusChanged,
+                status,
+                worktree: crate::protocol::WorktreeDisposition::untouched(
+                    entry.is_git_repo_at_spawn,
+                ),
+            });
+        }
+    }
+
     /// A reader has been shown the death on `slot` - the seat's page was
     /// opened: the row's trace goes (whether or not the recovery has
     /// announced itself yet), and the answer says whether there was one to
@@ -8643,6 +8736,12 @@ impl Workspace {
     pub fn session_activity(&self, slot: &SessionSlot) -> forge_primitives::SessionLifecycleState {
         use forge_primitives::SessionLifecycleState as L;
 
+        // A seat between heal attempts outranks the failure that started
+        // the heal: the failure is being answered, and drawing it would
+        // tell a reader nothing is happening when something is.
+        if self.heal_progress(slot).is_some() {
+            return L::Restarting;
+        }
         // Both of these are terminal for the session's own progress, so
         // they answer before anything about turns: a session waiting to
         // be let in, and one whose last attempt to start is still the
@@ -8723,8 +8822,11 @@ impl Workspace {
         &self,
         entry: &crate::mcp::workers::types::WorkerEntry,
     ) -> forge_primitives::WorkerStatus {
+        let heal = self.heal_progress(&entry.slot);
         forge_primitives::WorkerStatus {
             activity: Some(self.worker_activity(entry)),
+            heal_attempt: heal.map(|progress| progress.attempt),
+            heal_next_at: heal.map(|progress| progress.next_at),
             ..entry.to_status()
         }
     }
@@ -11062,6 +11164,12 @@ pub(crate) fn transition_worker_to_failed(
         let mut workers = workspace.live_workers.lock();
         workers.get_mut(project_key).and_then(|entries| {
             entries.iter_mut().find(|e| e.slot == *session_key).and_then(|entry| {
+                // A seat the supervisor is already bringing back keeps its
+                // `Restarting`: this failure is the death it is healing, and
+                // the row must not be repainted failed under it.
+                if workspace.heal_progress(&entry.slot).is_some() {
+                    return None;
+                }
                 // Idempotency: same status + same diagnostic -> no-op.
                 if entry.status == forge_primitives::WorkerLiveness::Failed
                     && entry.diagnostic == diagnostic

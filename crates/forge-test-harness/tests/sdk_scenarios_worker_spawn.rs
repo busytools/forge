@@ -72,6 +72,8 @@ async fn worker_spawn_scenario() {
             spawned_at: SystemTime::now(),
             spawned_by: SessionSlot::from_str_for_test("lead-test-session"),
             diagnostic: None,
+            heal_attempt: None,
+            heal_next_at: None,
             activity: Some(forge_primitives::SessionLifecycleState::Idle),
         }],
     );
