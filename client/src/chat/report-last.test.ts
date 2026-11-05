@@ -7,7 +7,8 @@ import { fold, turnFold, type InboundLeaf, type PeerCard, type Unit } from './un
  * assistant's last output (#2766).
  *
  * The transcript keeps a peer envelope in the turn it interrupted - a
- * bracket-led row opens no turn - so the fold is what says the turn ended: the
+ * bracket-led row the CLI presses in opens no turn - so the fold is what says
+ * the turn ended: the
  * closing line draws before the peer row, and a peer message with assistant
  * work after it was mid-turn and keeps the place it landed in.
  *

@@ -69,13 +69,18 @@
     border-bottom: 1px solid var(--line); background: var(--s2); }
   .fld { flex: 1; font: inherit; font-size: var(--fs-data); padding: 5px 10px;
     border: 1px solid var(--line); border-radius: 8px; background: var(--s1); color: var(--text); }
-  /* The feedback line's two controls are the dock's own, drawn as it draws
-     them: the mic dim, the send accent, both a 26px box for the glyph. */
-  .micb, .sendb { flex: none; width: 26px; height: 26px; border-radius: 8px;
-    background: none; display: grid; place-items: center; cursor: pointer; }
-  .micb { border: 1px solid var(--ctl); color: var(--dim); }
-  .sendb { border: 1px solid rgba(244,118,0,.45); color: var(--accent); }
-  .micb .ic, .sendb .ic { width: 15px; height: 15px; display: block; }
+  /* The note line's mic is the shared control the composer draws: a bare
+     glyph, no bespoke box. The answers are the bar's own row, not this line. */
+  .mic { flex: none; width: 24px; height: 24px; display: grid;
+    place-items: center; color: var(--dim); background: none; border: 0;
+    padding: 0; cursor: pointer; }
+  .mic .ic { width: 15px; height: 15px; display: block; }
+  /* The line's send appears only when the note has words, the same guard the
+     Enter key keeps. */
+  .sendb { flex: none; width: 26px; height: 26px; border-radius: 8px;
+    background: none; display: grid; place-items: center; cursor: pointer;
+    border: 1px solid rgba(244,118,0,.45); color: var(--accent); }
+  .sendb .ic { width: 15px; height: 15px; display: block; }
   /* The take's card is the dock's own, drawn as the composer draws it. */
   .tc { align-self: flex-start; display: flex; max-width: 100%;
     align-items: center; gap: 10px; padding: 5px 10px; margin-bottom: 8px;
@@ -200,11 +205,14 @@
         <span class="bacts">
           <span class="bt">take control</span>
           <span class="bt">Done</span>
-          <span class="bt d">something's wrong&hellip;</span>
           <span class="bt d">Not now</span>
         </span>
       </div>
       <div class="bask">The CV form is showing a CAPTCHA. Solve it, then pick Upload CV again.</div>
+      <div class="feedback">
+        <input class="fld" value="" placeholder="an optional note for the agent" aria-label="an optional note for the agent">
+        <span class="mic" aria-label="dictate"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="10" height="12" x="7" y="3" rx="5"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v3"/></svg></span>
+      </div>
       <div class="stage">
         <div class="pagetop">
           <div class="kicker">hiring cafe</div>
@@ -249,9 +257,13 @@
           <span class="bacts" style="margin-left:0; flex-basis:100%; flex-wrap:wrap; justify-content:flex-end;">
             <span class="bt">take control</span>
             <span class="bt">Done</span>
-            <span class="bt d">something's wrong&hellip;</span>
             <span class="bt d">Not now</span>
           </span>
+        </div>
+        <div class="bask">The CV form is showing a CAPTCHA. Solve it, then pick Upload CV again.</div>
+        <div class="feedback">
+          <input class="fld" value="" placeholder="an optional note for the agent">
+          <span class="mic" aria-label="dictate"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="10" height="12" x="7" y="3" rx="5"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v3"/></svg></span>
         </div>
         <div class="stage" style="min-height:400px;">
           <div class="pagetop" style="padding:20px 18px 0;">
@@ -267,7 +279,7 @@
     the page draws on a canvas. The picture keeps its own shape - a wide page in a portrait phone is
     letterboxed, and taking control lays it out at the phone's shape. The bar over it is the same
     bar, and a hand-off's row is wider than the phone in portrait: its actions wrap to a line of
-    their own, so <b>Done</b>, <b>something's wrong&hellip;</b> and <b>Not now</b> stay on screen
+    their own, so <b>Done</b>, <b>send feedback</b> once the note has words and <b>Not now</b> stay on screen
     and under the finger at the narrowest width. take control makes the phone the one viewer whose
     taps, keys and swipes reach the page, the bar clears the status band with its own safe-area
     padding, and the newest frame is kept for a canvas that mounts after it arrived.</div>
@@ -297,9 +309,13 @@
           <span class="bacts">
             <span class="bt">take control</span>
             <span class="bt">Done</span>
-            <span class="bt d">something's wrong&hellip;</span>
             <span class="bt d">Not now</span>
           </span>
+        </div>
+        <div class="bask">The CV form is showing a CAPTCHA. Solve it, then pick Upload CV again.</div>
+        <div class="feedback">
+          <input class="fld" value="" placeholder="an optional note for the agent">
+          <span class="mic" aria-label="dictate"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="10" height="12" x="7" y="3" rx="5"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v3"/></svg></span>
         </div>
         <div class="stage" style="min-height:300px;">
           <div class="pagetop" style="padding:20px 24px 0;">
@@ -321,7 +337,7 @@
 
   <h2>The bar's other two doors</h2>
   <div class="tile">
-    <div class="tcap"><b>feedback</b> - what did not work goes to the agent</div>
+    <div class="tcap"><b>the note line</b> - the words ride whichever answer is picked</div>
     <div class="takeover" style="min-height: 0;">
       <div class="bar">
         <span class="bt d">back to chat</span>
@@ -334,25 +350,26 @@
           <span class="car">&#9662;</span></span>
         <span class="bacts">
           <span class="bt">Done</span>
-          <span class="bt d">something's wrong&hellip;</span>
+          <span class="bt d">send feedback</span>
           <span class="bt d">Not now</span>
         </span>
       </div>
       <div class="bask">The CV form is showing a CAPTCHA. Solve it, then pick Upload CV again.</div>
       <div class="feedback">
-        <input class="fld" value="the upload form rejected the file" aria-label="feedback">
-        <span class="micb" aria-label="dictate the feedback"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="10" height="12" x="7" y="3" rx="5"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v3"/></svg></span>
-        <span class="sendb" aria-label="send the feedback and end the hand-off"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="m5 12 7-7 7 7"/></svg></span>
+        <input class="fld" value="the upload form rejected the file" placeholder="an optional note for the agent">
+        <span class="mic" aria-label="dictate"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="10" height="12" x="7" y="3" rx="5"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v3"/></svg></span>
+        <span class="sendb" aria-label="send feedback"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="m5 12 7-7 7 7"/></svg></span>
       </div>
     </div>
-    <div class="tnote">send files the words as a prompt and ends the hand-off as <b>feedback</b>,
-    so the session hears what went wrong and carries on without reading it as a decline. The mic
-    is the composer's own, so a take here is the same capture the dock draws. Back to chat closes
-    the takeover and leaves the hand-off parked, the session still waiting.</div>
+    <div class="tnote">the note rides whichever answer is picked: <b>Done</b> approves,
+    <b>send feedback</b> asks for a revision and <b>Not now</b> defers the ask. For feedback the
+    words go as a prompt and the session addresses them before handing the page off again. The
+    mic is the composer's own, so a take here is the same capture the dock draws. Back to chat
+    closes the takeover and leaves the hand-off parked, the session still waiting.</div>
   </div>
 
   <div class="tile">
-    <div class="tcap"><b>a take in the feedback line</b> - the field gives its line up to the card</div>
+    <div class="tcap"><b>a take in the note line</b> - the field gives its line up to the card</div>
     <div class="takeover" style="min-height: 0;">
       <div class="bar">
         <span class="bt d">back to chat</span>
@@ -363,11 +380,6 @@
         <span class="btitle">browser hand-off &middot; tab 2</span>
         <span class="bt bpick" title="the profile's tabs">2 &middot; Senior Rust engineer &middot; Busytools/forge/lead
           <span class="car">&#9662;</span></span>
-        <span class="bacts">
-          <span class="bt">Done</span>
-          <span class="bt d">something's wrong&hellip;</span>
-          <span class="bt d">Not now</span>
-        </span>
       </div>
       <div class="feedback">
         <span class="tc">
@@ -379,7 +391,7 @@
           <span class="pace">31 KB/s</span>
           <span class="x" aria-label="abandon the take">&#10005;</span>
         </span>
-        <span class="micb" aria-label="stop dictating"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="10" height="12" x="7" y="3" rx="5"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v3"/></svg></span>
+        <span class="mic" aria-label="stop dictating"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="10" height="12" x="7" y="3" rx="5"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v3"/></svg></span>
       </div>
     </div>
     <div class="tnote">a take replaces the field with the dock's own card, and the card takes
@@ -400,28 +412,21 @@
         <span class="btitle">browser hand-off &middot; tab 2</span>
         <span class="bt bpick" title="the profile's tabs">2 &middot; Senior Rust engineer &middot; Busytools/forge/lead
           <span class="car">&#9662;</span></span>
-        <span class="bacts">
-          <span class="bt">Done</span>
-          <span class="bt d">something's wrong&hellip;</span>
-          <span class="bt d">Not now</span>
-        </span>
       </div>
       <div class="tb-line opening"><span class="ring" aria-hidden="true"></span>opening the microphone&hellip;</div>
       <div class="feedback">
-        <input class="fld" value="the upload form rejected the file" aria-label="feedback">
-        <span class="micb" aria-label="dictate the feedback"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="10" height="12" x="7" y="3" rx="5"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v3"/></svg></span>
-        <span class="sendb" aria-label="send the feedback and end the hand-off"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="m5 12 7-7 7 7"/></svg></span>
+        <input class="fld" value="the upload form rejected the file" placeholder="an optional note for the agent">
+        <span class="mic" aria-label="dictate"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="10" height="12" x="7" y="3" rx="5"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v3"/></svg></span>
       </div>
     </div>
     <div class="tnote">the card draws from this page's own take, which exists only once the
-    capture has opened; until then the row keeps its field, mic and send, and nothing says the
-    take is running, so a slow open reads as a dead press. The line is drawn only once the open
-    outlasts a quick one - a fast press is not a state to flash - and it goes when the card
-    arrives.</div>
+    capture has opened; until then the row keeps its field and mic, and nothing says the take is
+    running, so a slow open reads as a dead press. The line is drawn only once the open outlasts
+    a quick one - a fast press is not a state to flash - and it goes when the card arrives.</div>
   </div>
 
   <div class="tile">
-    <div class="tcap"><b>a send that did not leave</b> - the words stay, and the bar says why</div>
+    <div class="tcap"><b>an answer that did not leave</b> - the words stay, and the bar says why</div>
     <div class="takeover" style="min-height: 0;">
       <div class="bar">
         <span class="bt d">back to chat</span>
@@ -434,20 +439,20 @@
           <span class="car">&#9662;</span></span>
         <span class="bacts">
           <span class="bt">Done</span>
-          <span class="bt d">something's wrong&hellip;</span>
+          <span class="bt d">send feedback</span>
           <span class="bt d">Not now</span>
         </span>
       </div>
       <div class="tb-line bad">Not sent - the connection is down.</div>
       <div class="feedback">
-        <input class="fld" value="the upload form rejected the file" aria-label="feedback">
-        <span class="micb" aria-label="dictate the feedback"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="10" height="12" x="7" y="3" rx="5"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v3"/></svg></span>
-        <span class="sendb" aria-label="send the feedback and end the hand-off"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="m5 12 7-7 7 7"/></svg></span>
+        <input class="fld" value="the upload form rejected the file" placeholder="an optional note for the agent">
+        <span class="mic" aria-label="dictate"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="10" height="12" x="7" y="3" rx="5"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v3"/></svg></span>
+        <span class="sendb" aria-label="send feedback"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="m5 12 7-7 7 7"/></svg></span>
       </div>
     </div>
     <div class="tnote">the socket was gone before the frame crossed, so the bar names the loss
-    in its own line and the field keeps the words: the hand-off is not answered, and the send
-    can be pressed again when the connection is back. A send that does leave clears no line
+    in its own line and the field keeps the words: the hand-off is not answered, and an answer
+    can be pressed again when the connection is back. An answer that does leave clears no line
     here and ends the park.</div>
   </div>
 
@@ -524,11 +529,10 @@
           <span class="bt arrow off" aria-label="forward"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg></span>
         </span>
         <span class="btitle">browser hand-off &middot; tab 2</span>
-        <span class="bacts">
-          <span class="bt">Done</span>
-          <span class="bt d">something's wrong&hellip;</span>
-          <span class="bt d">Not now</span>
-        </span>
+      </div>
+      <div class="feedback">
+        <input class="fld" value="" placeholder="an optional note for the agent" aria-label="an optional note for the agent">
+        <span class="mic" aria-label="dictate"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="10" height="12" x="7" y="3" rx="5"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v3"/></svg></span>
       </div>
       <div class="stage" style="display:flex;align-items:center;justify-content:center;background:var(--s1)">
         <span class="mono" style="color:var(--muted)">opening the browser&hellip;</span>
@@ -550,9 +554,12 @@
         <span class="bacts">
           <span class="bt">try again</span>
           <span class="bt">Done</span>
-          <span class="bt d">something's wrong&hellip;</span>
           <span class="bt d">Not now</span>
         </span>
+      </div>
+      <div class="feedback">
+        <input class="fld" value="" placeholder="an optional note for the agent" aria-label="an optional note for the agent">
+        <span class="mic" aria-label="dictate"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="10" height="12" x="7" y="3" rx="5"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v3"/></svg></span>
       </div>
       <div class="stage" style="display:flex;align-items:center;justify-content:center;background:var(--s1)">
         <span class="mono" style="color:var(--bad)">the browser did not start in time - try again</span>
@@ -560,8 +567,9 @@
     </div>
     <div class="tnote">a failure draws the shell's own sentence - the port, the profile, the
     framework, or a page area that could not be placed - and the hand-off stays parked until
-    Done, Not now or feedback; <b>try again</b> asks the shell for the surface once more. The tab picker
-    is drawn only when the last list it read or was pushed still has tabs.</div>
+    Done, Not now or send feedback once the note has words; <b>try again</b> asks the shell for
+    the surface once more. The tab picker is drawn only when the last list it read or was pushed
+    still has tabs.</div>
   </div>
 </div>
 </body>

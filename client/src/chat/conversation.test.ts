@@ -80,9 +80,12 @@ const stamped = (message: unknown, at: string): unknown => ({
 });
 
 /** The frame a turn ends on, which is what tells a page's copy of it settled. */
-const ended = (): unknown => ({
+const ended = (): unknown => endedAs('r-1');
+
+/** `ended` under an id of its own, for two turns in one conversation. */
+const endedAs = (uuid: string): unknown => ({
   type: 'result',
-  uuid: 'r-1',
+  uuid,
   subtype: 'success',
   is_error: false,
 });
@@ -1051,6 +1054,77 @@ describe('the conversation the chat draws', () => {
       'h1:hook_response',
       'u-one',
       'a-two',
+    ]);
+    stop();
+  });
+
+  /**
+   * **A page row that carries two exchanges must not move the older one.**
+   *
+   * A prompt no row opens used to let the merge hoist the older turn above the page.
+   */
+  it('keeps an earlier turn in place when a page row carries a later prompt', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(page([turn('t1', 'one'), turn('t2', 'two')], null));
+
+    // Two other clients' prompts, each announced and started, their rows drawn
+    // from the announcement because no row of their own arrives. A fold with
+    // no row opening either exchange joins both to the turn above it.
+    for (const [uuid, text] of [
+      ['p-remote', 'remote'],
+      ['p-later', 'later'],
+    ] as const) {
+      server.update({ prompt_queued: { key: LEAD, uuid, source: 'forge', text } });
+      server.update({ prompt_lifecycle: { key: LEAD, uuid, state: 'started' } });
+      server.update({ chat_appended: { key: LEAD, msg: said(`${text} answer`) } });
+      server.update({ chat_appended: { key: LEAD, msg: endedAs(`r-${text}`) } });
+    }
+
+    // The server's own fold has no row opening either remote turn - the
+    // announcement is the only carrier of those words - so its newest page
+    // carries the previous exchange and both remote ones as a single row. The
+    // counter above them belongs to no exchange: nothing this copy carries may
+    // be dropped, whichever piece the cut lands it in.
+    server.send(
+      page(
+        [
+          turn('t1', 'one'),
+          {
+            key: 'folded',
+            messages: [
+              counted(9),
+              typed('two'),
+              said('answer two'),
+              endedAs('r-two'),
+              said('remote answer'),
+              endedAs('r-remote'),
+              said('later answer'),
+              endedAs('r-later'),
+            ],
+          },
+        ],
+        null,
+      ),
+    );
+
+    expect(
+      get(chat.value).turns.map((held) => held.key),
+      'the settled turn did not move to the head',
+    ).toEqual(['t1', 't2', 'live:p-remote', 'live:p-later']);
+    expect(names(chat), 'every frame once, in its own exchange').toEqual([
+      'u-one',
+      'thinking-9',
+      'u-two',
+      'a-answer two',
+      'r-two',
+      'p-remote',
+      'a-remote answer',
+      'r-remote',
+      'p-later',
+      'a-later answer',
+      'r-later',
     ]);
     stop();
   });
@@ -4283,13 +4357,13 @@ describe('the conversation the chat draws', () => {
 
   /**
    * **The live fold and the page's fold can cut one turn at different rows.**
-   * A delivered prompt's result ends a CLI turn where the transcript fold keeps
-   * one - the delivery was pressed into the running turn - so the client holds
-   * two rows where the page has one. The page's first row then carries the
-   * frames between the two cuts itself, and the page row that opens at the
-   * later cut matches the held row whose own leading frames are those same
-   * ones. A merge that read each row's copy alone drew that stretch in both
-   * rows: one section of the conversation, twice.
+   * A delivered prompt the CLI pressed into the running turn ends a CLI turn
+   * where the transcript fold keeps one, so the client holds two rows where
+   * the page has one. The page's first row then carries the frames between the
+   * two cuts itself, and the page row that opens at the later cut matches the
+   * held row whose own leading frames are those same ones. A merge that read
+   * each row's copy alone drew that stretch in both rows: one section of the
+   * conversation, twice.
    */
   it('draws the stretch between two different cuts once', () => {
     const server = fakeConnection();
@@ -5970,9 +6044,9 @@ describe('the conversation the chat draws', () => {
     // The CLI's turn carries on before the read: the page cannot hold this.
     server.update({ chat_appended: { key: LEAD, msg: said('carried on') } });
 
-    // The page read that follows: the fold opens no turn at an envelope row,
-    // so its row rides the turn above, and the page's copy carries the
-    // prompt's id. A later turn rides below it.
+    // The page read that follows: the fold keeps a pressed-in row in the turn
+    // it was writing, so its row rides the turn above, and the page's copy
+    // carries the prompt's id. A later turn rides below it.
     server.send(
       page(
         [

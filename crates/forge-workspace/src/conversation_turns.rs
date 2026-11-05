@@ -16,6 +16,9 @@
 //! That miss is not only the prompt: the fold's turn opens there and resets the
 //! state the next turn opens under, so a frame the fold then draws as a head of
 //! its own - the continuation a compaction leaves - is left alone here too.
+//! `opens_for_debt` answers for it, because the counter debt read wants the
+//! fold's openings rather than the cut's: a missed one carries the previous
+//! turn's counters into the newest.
 //!
 //! And a row opening with a bracket is read as an envelope, because every
 //! envelope this workspace writes opens with one and the parser that tells an
@@ -23,7 +26,11 @@
 //! than the envelopes: a reader's own `[note] ...` row, and a bracket-led
 //! notice the parser rejects, are heads here that this leaves alone. The shapes
 //! read here are exempt from that, so an image note the fold opens a turn at is
-//! named.
+//! named. **A delivery's envelope row opens a turn in the fold unless the CLI
+//! pressed it into a running turn, and this side answers none for it** - the
+//! accepted cost a queued prompt pays above: a head the window cannot start
+//! on, never a cut inside a turn. The debt read answers for it too, on the
+//! row's bracket alone ([`is_envelope_row`]).
 //!
 //! And a forge-minted row arriving at an open call is a delivery the CLI
 //! pressed into the running turn - the fold keeps it there and opens no turn
@@ -183,15 +190,16 @@ pub fn forge_minted(uuid: Option<&str>) -> bool {
 }
 
 /// Whether a frame opens a turn for a reader that attributes counters to the
-/// newest turn: the scan's own openings plus a queued prompt, which the fold
-/// opens a turn at but the window cut deliberately does not name.
+/// newest turn: the scan's own openings plus the two shapes the fold opens at
+/// and the window cut deliberately cannot name - a queued prompt and a
+/// delivery's envelope row.
 ///
 /// **The cut's under-approximation is safe; the debt's is not.** A cut the
 /// scan cannot start on leaves a turn's head in place, while a debt
 /// attributed to the wrong turn adds another turn's counters to the figure.
 pub fn opens_for_debt(scan: &mut TurnScan, message: &Message) -> bool {
     let named = scan.opens(message);
-    named || is_queued_prompt(message)
+    named || is_queued_prompt(message) || is_envelope_row(message)
 }
 
 /// Whether a frame is the CLI's queued prompt, which the fold opens a turn at.
@@ -200,6 +208,26 @@ pub fn is_queued_prompt(message: &Message) -> bool {
         return false;
     };
     message.content.iter().any(|block| matches!(block, ContentBlock::QueuedCommand { .. }))
+}
+
+/// Whether a frame is a bracket-led row: the shape every envelope this
+/// workspace injects opens with - a delivery, a peer wrapper, a failure.
+///
+/// **The prefix alone, on purpose.** The parser that tells a real envelope
+/// from the reader's own `[note]` row lives above this crate, and the two
+/// readers want opposite answers about it: the cut must never start on a frame
+/// the fold opens nothing at, while the debt must not carry a previous turn's
+/// counters into the newest. So the cut leaves every bracket-led row alone and
+/// the debt counts every one as an opening - the debt's error is then a figure
+/// short of counters rather than one holding another turn's.
+pub fn is_envelope_row(message: &Message) -> bool {
+    let Message::User { message, .. } = message else {
+        return false;
+    };
+    message
+        .content
+        .iter()
+        .any(|block| matches!(block, ContentBlock::Text { text, .. } if text.starts_with('[')))
 }
 
 /// A frame a sub-agent produced. What it narrates and calls belongs to the
@@ -333,4 +361,37 @@ pub fn normalized_skill(name: &str) -> String {
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A delivery's envelope row answers the two readers differently: the cut
+    /// leaves it alone, and the debt counts it as an opening.
+    ///
+    /// The parser that tells a real envelope from the reader's own bracket row
+    /// lives above this crate, so the debt reads the prefix - broader than the
+    /// fold opens at, which is the safe side for a counter figure: a figure
+    /// short of counters is a smaller error than one carrying the previous
+    /// turn's.
+    #[test]
+    fn a_delivery_row_opens_for_the_debt_and_not_for_the_cut() {
+        let row: Message = serde_json::from_value(serde_json::json!({
+            "type": "user",
+            "uuid": "u1",
+            "message": {
+                "role": "user",
+                "content": "[Gotify - app 'ci', priority 9]\n\nbuild failed",
+            },
+            "session_id": "s",
+        }))
+        .expect("a user frame");
+
+        assert!(!TurnScan::default().opens(&row), "the cut cannot name a bracket-led row");
+        assert!(
+            opens_for_debt(&mut TurnScan::default(), &row),
+            "and the debt read must count the turn it opens",
+        );
+    }
 }

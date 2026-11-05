@@ -46,6 +46,31 @@ fn wait_event(host: &support::Host, wanted: impl Fn(&HostEvent) -> bool) -> Host
     }
 }
 
+/// How long the writer is given to encode its first frame. **Generous against
+/// load, bounded against a broken encoder**: a take that encodes nothing fails
+/// here by name rather than hanging to the suite's kill.
+const FIRST_FRAME: Duration = Duration::from_secs(10);
+
+/// Wait until the writer has encoded its first frame: the file opens empty, so
+/// bytes past zero are the first frame whatever the machine is doing. A fixed
+/// window is a guess at paint latency instead - under load the first frame
+/// arrived 1.4 s after the writer opened and a 1.2 s sleep stopped an empty
+/// take.
+fn wait_first_frame(path: &std::path::Path) {
+    let deadline = Instant::now() + FIRST_FRAME;
+    loop {
+        if std::fs::metadata(path).is_ok_and(|meta| meta.len() > 0) {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the writer encoded no frame within {FIRST_FRAME:?} ({})",
+            path.display()
+        );
+        std::thread::sleep(POLL);
+    }
+}
+
 /// **A take is a real MP4 of the recording's viewport.** The page is red at
 /// the file's size, the take runs for a moment, and the stop answers a file
 /// with an MP4 container and a finished movie atom.
@@ -107,8 +132,9 @@ async fn a_recording_writes_the_viewport_to_an_mp4() {
     };
     assert!(started, "the writer opened: {error:?}");
 
-    // A second of paint, so the file holds frames rather than a bare header.
-    tokio::time::sleep(Duration::from_millis(1200)).await;
+    // **The take runs until the writer has encoded a frame**, so the file
+    // holds content rather than a bare header whatever the host is doing.
+    wait_first_frame(&path);
     host.input(&host_line(&HostInput::RecordStop));
 
     let HostEvent::Recording { started, seconds, bytes, capped, error } =

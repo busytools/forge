@@ -17,6 +17,7 @@
   import { onDestroy, onMount } from 'svelte';
 
   import Composer from '../composer/Composer.svelte';
+  import TakeoverBar from '../composer/TakeoverBar.svelte';
   import Queue from '../chat/Queue.svelte';
   import { pinnedRow } from '../chat/pinnedRow.svelte';
   import { files } from '../chat/files.svelte';
@@ -38,6 +39,8 @@
   // The Queue specimen's own prop is the socket-shaped one, and the stand-in
   // above is the composer's narrower view of it.
   import type { Connection } from '../socket';
+  import type { Dictation, RowPhase } from '../composer/dictate.svelte';
+  import type { Take } from '../composer/wire';
   import type { SessionSlot } from '../wire/types';
 
   const SLOT: SessionSlot = { org: 'Busytools', project: 'forge', label: 'lead' };
@@ -46,6 +49,22 @@
    * seat, so a shared slot would put the figures on every specimen's row.
    */
   const LIVE_SLOT: SessionSlot = { org: 'Busytools', project: 'forge', label: 'live' };
+  /** The bar's mic is the composer's shared control; this fixture only needs
+   *  the parts the control reads. */
+  const barDictate = {
+    take: null,
+    held: false,
+    panel: false,
+    toggle: () => {},
+  } as unknown as Dictation;
+  const barTake: Take = {
+    phase: 'recording',
+    levels: [0.2, 0.4, 0.3],
+    peakDb: -18,
+    progress: { done: 0, total: null },
+    elapsedMs: 2400,
+    floorDb: -55,
+  };
   const running: TurnInfo = {
     running: true,
     failed: false,
@@ -528,6 +547,11 @@
     rising?: { draft: string; later: Partial<ComposerProps> };
     /** A specimen the line's own width is judged at: it takes the whole row. */
     wide?: boolean;
+    /** A specimen that draws the takeover's bar itself, with no shell to open. */
+    bar?: boolean;
+    barTakeline?: { tone: string; text: string } | null;
+    barPhase?: RowPhase | null;
+    barTake?: Take | null;
   }[] = [
     { label: 'idle', props: {} },
     {
@@ -784,6 +808,24 @@
       click: '.dock .chevb',
     },
     {
+      label: 'takeover · browser hand-off',
+      props: {},
+      bar: true,
+    },
+    {
+      label: 'takeover · browser hand-off · a refused take',
+      props: {},
+      bar: true,
+      barTakeline: { tone: 'bad', text: 'the microphone did not open' },
+    },
+    {
+      label: 'takeover · browser hand-off · a running take',
+      props: {},
+      bar: true,
+      barPhase: 'recording',
+      barTake,
+    },
+    {
       label: 'dock · the draft chip under a parked question',
       props: {},
       rising: {
@@ -832,6 +874,23 @@
         />
       {:else if specimen.click !== undefined}
         <Driven click={specimen.click} props={withDefaults(specimen.props)} />
+      {:else if specimen.bar === true}
+        <div class="comp">
+          <TakeoverBar
+            title="browser hand-off · tab 3"
+            reason="confirm the staging deploy page shows the new rate-limit chip"
+            notes="the staging chip is missing"
+            onback={() => {}}
+            ondone={() => {}}
+            onnotnow={() => {}}
+            onfeedback={() => {}}
+            dictate={barDictate}
+            dictation={true}
+            takeline={specimen.barTakeline ?? null}
+            phase={specimen.barPhase ?? null}
+            take={specimen.barTake ?? null}
+          />
+        </div>
       {:else}
         <div class="comp">
           <Composer {...withDefaults(specimen.props)} />

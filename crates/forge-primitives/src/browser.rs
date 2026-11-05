@@ -317,10 +317,11 @@ pub struct BrowserAudio {
 pub enum HandOffEnding {
     /// The person acted; the session carries on.
     Done,
-    /// The person declined; the session knows what to do instead.
+    /// The person said not now; the browser is unchanged, and the session
+    /// asks again later if it still needs them on the page.
     NotNow,
-    /// The person sent the session a message about the page and carried on:
-    /// nothing is declined, and the session reads what they said.
+    /// The person says something is off: their note is the message beside
+    /// the answer, and the session addresses it and hands the page off again.
     Feedback,
     /// The asking session went away before anyone answered.
     Abandoned,
@@ -340,8 +341,8 @@ pub enum HandOffSource {
     DockEscape,
     /// The takeover bar's Done or Not now.
     Takeover,
-    /// The takeover bar's feedback line: the person's words go to the session
-    /// as a prompt, and the ending says they spoke.
+    /// The takeover bar's note line: the person's words go to the session as
+    /// a prompt, and the ending says the person says something is off.
     Feedback,
     /// The asking session's waiter went away; the core's own ending.
     Abandoned,
