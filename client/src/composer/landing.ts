@@ -75,6 +75,10 @@ function lastTake(seat: string): number | null {
     const value = Number(raw);
     return Number.isFinite(value) ? value : null;
   } catch {
+    // A refused read looks the same as "this client never dictated", so a
+    // carried notice from this seat is refused. Say so rather than blaming
+    // the other client for words of ours.
+    console.warn('dictation: storage refused the read, so a carried take cannot be matched');
     return null;
   }
 }
