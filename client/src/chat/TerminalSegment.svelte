@@ -29,12 +29,18 @@
   /** Whether THIS page is showing the terminal. */
   const fronting = $derived(surface.phase !== 'closed' && live !== null && surface.id === live.id);
 
+  /** Whether this page holds the raised terminal's control. */
+  const mine = $derived(
+    fronting && surface.viewer !== null && surface.controller === surface.viewer,
+  );
+
   /** What the terminal is doing, in words rather than only a colour. */
   const stateText = $derived.by((): string => {
     const held = live;
     if (held === null) return 'off';
     if (!held.alive) return 'exited';
     if (held.held) return 'waiting for you';
+    if (mine) return 'you have control';
     if (held.state.input_expected?.kind === 'password') return 'a password is wanted';
     // **A `prompt` is the shell's own prompt, not a person's turn**: only a
     // password or a yes/no question is the terminal waiting for the person.

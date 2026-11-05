@@ -37,6 +37,10 @@ interface TerminalSurface {
   rows: number;
   /** The last sequence the surface's screen reflects. */
   seq: number;
+  /** This connection's viewer number for the attached terminal. */
+  viewer: number | null;
+  /** The viewer holding the person's control, or null for the agent. */
+  controller: number | null;
 }
 
 export const surface: TerminalSurface = $state({
@@ -47,6 +51,8 @@ export const surface: TerminalSurface = $state({
   cols: 80,
   rows: 24,
   seq: 0,
+  viewer: null,
+  controller: null,
 });
 
 /** Whether two slots name the same seat. */
@@ -85,6 +91,8 @@ export function onScreen(listener: (view: TerminalViewMessage) => void): () => v
       seq: surface.seq,
       screen,
       viewers: 1,
+      viewer: surface.viewer ?? 0,
+      controller: surface.controller,
     });
   }
   return () => {
@@ -153,6 +161,8 @@ export function installTerminalSurface(connection: Connection): () => void {
     surface.cols = view.cols;
     surface.rows = view.rows;
     surface.seq = view.seq;
+    surface.viewer = view.viewer;
+    surface.controller = view.controller;
     newestScreen = view.screen;
     for (const listener of views) {
       try {
@@ -191,6 +201,12 @@ export function installTerminalSurface(connection: Connection): () => void {
       }
     }
   });
+  const stopControl = link.onControl((state) => {
+    if (surface.phase === 'closed') return;
+    if (surface.seat !== null && !sameSeat(surface.seat, state.seat)) return;
+    if (surface.id !== null && state.id !== surface.id) return;
+    surface.controller = state.controller;
+  });
   // **A reconnect is a new connection, and the attach died with the old one.**
   // A live surface re-attaches and is repainted rather than left drawing a
   // frozen screen under a bar that still says live.
@@ -202,6 +218,7 @@ export function installTerminalSurface(connection: Connection): () => void {
   return () => {
     stopView();
     stopFrame();
+    stopControl();
     stopStatus();
     clearTerminalLink();
   };
@@ -245,6 +262,8 @@ export async function openTerminal(seat: SessionSlot, id: number | null): Promis
   surface.seat = seat;
   surface.id = id;
   surface.reason = null;
+  surface.viewer = null;
+  surface.controller = null;
   newestScreen = null;
   pending = [];
   pendingBytes = 0;
@@ -278,6 +297,8 @@ export async function closeTerminal(): Promise<string | null> {
   surface.seat = null;
   surface.id = null;
   surface.reason = null;
+  surface.viewer = null;
+  surface.controller = null;
   newestScreen = null;
   pending = [];
   pendingBytes = 0;
@@ -319,6 +340,24 @@ export async function lowerForOtherSeat(seat: SessionSlot): Promise<void> {
   if (surface.phase === 'closed' || at === null) return;
   if (sameSeat(at, seat)) return;
   await closeTerminal();
+}
+
+/** Whether this page holds the person's control of the raised terminal. */
+export function controlling(): boolean {
+  return (
+    surface.viewer !== null && surface.controller !== null && surface.controller === surface.viewer
+  );
+}
+
+/**
+ * Take the person's control of the raised terminal, or give it back. The
+ * agent's tools are refused while it is held, exactly as during a hand-off.
+ */
+export function controlTerminal(take: boolean): void {
+  const seat = surface.seat;
+  const id = surface.id;
+  if (seat === null || id === null) return;
+  terminalLink().control(seat, id, take);
 }
 
 /** Whether a terminal surface is up. */

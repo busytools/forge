@@ -555,6 +555,12 @@ enum Outbound {
     TerminalPause {
         paused: bool,
     },
+    /// Take the person's control of the attached terminal, or give it back.
+    TerminalControl {
+        seat: Value,
+        id: u16,
+        take: bool,
+    },
     /// The person's close door.
     TerminalClose {
         seat: Value,
@@ -868,6 +874,11 @@ impl Socket {
         let _ = self.tx.send(Outbound::TerminalPause { paused });
     }
 
+    /// Take the person's control of the attached terminal, or give it back.
+    pub fn terminal_control(&self, seat: Value, id: u16, take: bool) {
+        let _ = self.tx.send(Outbound::TerminalControl { seat, id, take });
+    }
+
     /// The person's close door.
     pub fn terminal_close(&self, seat: Value, id: u16) {
         let _ = self.tx.send(Outbound::TerminalClose { seat, id });
@@ -1029,6 +1040,7 @@ fn apply_offline(next: Outbound, held: &mut Vec<Held>, awaiting: &mut Vec<String
         | Outbound::TerminalDetach
         | Outbound::TerminalResize { .. }
         | Outbound::TerminalPause { .. }
+        | Outbound::TerminalControl { .. }
         | Outbound::TerminalClose { .. }
         | Outbound::TerminalInput { .. }
         | Outbound::StripAsk { replied: None, .. }
@@ -1641,6 +1653,20 @@ async fn run(
                                     json!({ "kind": "terminal_pause", "paused": paused })
                                         .to_string()
                                         .into(),
+                                ))
+                                .await;
+                        }
+                        Outbound::TerminalControl { seat, id, take } => {
+                            let _ = writer
+                                .send(Message::Text(
+                                    json!({
+                                        "kind": "terminal_control",
+                                        "seat": seat,
+                                        "id": id,
+                                        "take": take,
+                                    })
+                                    .to_string()
+                                    .into(),
                                 ))
                                 .await;
                         }

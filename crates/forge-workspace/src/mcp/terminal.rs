@@ -9,8 +9,8 @@
 //! **The family is any-caller and it is always on.** The terminal is one per
 //! seat on the machine, not a scope like reviews or crons, so every session
 //! may drive its own. No approval gate: Bash through the CLI already reaches
-//! the shell here. The one thing gated is the person's input, through the
-//! hand-off.
+//! the shell here. The one thing gated is the person's input, through a
+//! hand-off or their own take-control of the raised surface.
 
 use std::sync::Arc;
 
@@ -148,7 +148,10 @@ impl TerminalTool {
                  answer; if the surface is not up, the card's Open terminal button raises it. \
                  **You are blind while it is parked**: terminal__read and terminal__write are \
                  refused. Their keystrokes go to the PTY rather than to you, but the shell may \
-                 echo them, so a read after the hand-off can carry what was typed. `reason` is \
+                 echo them, so a read after the hand-off can carry what was typed. The person \
+                 can also take control of the terminal without asking; the same tools are \
+                 refused while they hold it, and it comes back when they release it or lower \
+                 the surface. `reason` is \
                  what they should do. The answer is the ending only - done means carry on; \
                  not_now means decide what to do instead; feedback means they sent you a message \
                  about it. Verify the outcome by reading the artifact or the terminal, never by \

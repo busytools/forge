@@ -23,19 +23,19 @@ no environment flag of its own: the agent types bytes and named keys through
 `terminal__write`, runs a command through `terminal__run`, reads the screen
 through `terminal__read`, and waits with `terminal__wait` (exact through the
 shell's OSC 133 marks, or the heuristic with `source: heuristic`). The
-person's own input is gated by the hand-off: while it is parked the terminal
-tools are refused and the
-agent gets the ending rather than the screen. The keystrokes themselves go
-from the client to the server to the PTY master, not into the agent's turn;
-the shell may echo them, so a read after the hand-off resolves can carry
-what was typed.
+person's own input is the hand-off's or their own **take control**: while
+either holds the terminal the tools are refused, and a hand-off hands the
+agent the ending rather than the screen. The keystrokes themselves go from
+the client to the server to the PTY master, not into the agent's turn; the
+shell may echo them, so a read after the hold resolves can carry what was
+typed.
 
 ## What it draws
 
 | Region | Shows | Read from |
 |---|---|---|
 | The hand-off's card | `terminal hand-off · terminal N`, the agent's reason, **Open terminal**, **Done** and **Not now** before the surface is up, and `typing is hidden: the program is reading a secret` when the PTY has ECHO off. While the surface is up the card leaves the actions to its bar | the `terminal_hand_off` ask, and the page's own surface state |
-| The surface's bar | **back to chat**, `terminal N · <shell> · <cwd>`, the state line - `the agent is running a command`, `waiting for you`, `the agent is waiting for input`, `the shell exited`, `the terminal closed`, `view only`, `opening the terminal`, or the server's sentence when it failed - and, while a hand-off is parked, its reason, `typing is hidden`, **Done** and **Not now**; then **read the screen** and **close** | the terminals state push, the record's `terminal`, the page's own surface state and the parked ask |
+| The surface's bar | **back to chat**, `terminal N · <shell> · <cwd>`, the state line - `the agent is running a command`, `waiting for you`, `the agent is waiting for input`, `the shell exited`, `the terminal closed`, `you have control`, `view only`, `opening the terminal`, or the server's sentence when it failed - and, while a hand-off is parked, its reason, `typing is hidden`, **Done** and **Not now**; then **read the screen**, **take control** / **release control** when no ask is parked, and **close** | the terminals state push, the record's `terminal`, the page's own surface state and the parked ask |
 | The surface | the terminal under the bar, filling the rest: the shell's screen, its colours and its cursor | the attach's `terminal_view` repaint, then the kind-4 output frames |
 | The strip's row | one pill, like the browser's: the terminal glyph, the state mark, `terminal`, the state in words - `a command is running`, `waiting for you`, `a password is wanted`, `exited`, `idle`, `off` - and **show** / **hide**, or **start** on a seat with no terminal. **The row is the person's door even before an agent opens one** | the session record's `terminal`, and the pushed `terminal_changed` update |
 | The touch key bar | under `pointer: coarse`: Esc, Tab, Ctrl-C, the four arrows, Enter, `/`, `-`, `\|` and `~`, each at a 44px target | the page's pointer capability |
@@ -56,13 +56,18 @@ clipboard (OSC 52) and image (Sixel and iTerm2 IIP) are loaded beside it.
 **Kitty graphics is not drawn**; that gap is named rather than hidden, and
 Sixel and iTerm2 IIP cover the larger share of CLI image use.
 
-**The keyboard is the terminal's only while the agent has handed it over.**
-Outside a parked hand-off the raised surface is a viewer: the key bar and the
-terminal's own input are inert, and the server refuses a keystroke that
-arrives anyway. Inside one, Ctrl-C, Ctrl-D, Ctrl-Z and Ctrl-L reach the PTY
-untouched; Cmd+J raises and lowers the surface, Cmd+W lowers it rather than the
-window, and a browser tab's Back lowers it, because the surface pushes one
-history entry. **A finger cannot produce Escape, Tab or an arrow**, so the
+**The keyboard is the terminal's only while the person holds it.** There are
+two doors to that hold, and they are the browser's controller role: **take
+control** on the bar, which the person uses without an agent asking, and a
+parked hand-off, which an agent asks for. One holder at a time across
+clients - another client's take overrides it - the agent's tools are refused
+while it is held, and lowering the surface or dropping the connection
+releases it. Outside both the raised surface is a viewer: the key bar and
+the terminal's own input are inert, and the server refuses a keystroke that
+arrives anyway, while the output frames keep it live. Inside the hold,
+Ctrl-C, Ctrl-D, Ctrl-Z and Ctrl-L reach the PTY untouched; Cmd+J raises and
+lowers the surface, Cmd+W lowers it rather than the window, and a browser
+tab's Back lowers it, because the surface pushes one history entry. **A finger cannot produce Escape, Tab or an arrow**, so the
 touch key bar is required rather than a fallback, every control it offers is
 44px, and Ctrl and Alt are sticky keys for the next character the soft
 keyboard types.

@@ -572,6 +572,14 @@ backgrounded stops being written to rather than being dropped. **A resume is
 answered with a fresh `terminal_view`**: the frames a pause missed are not
 replayed.
 
+**`terminal_control {seat, id, take}`** - take the person's control of the
+attached terminal (`take: true`) or give it back (`false`). **One controller
+at a time, like the browser's role**: a take always lands and the previous
+holder is told it lost the role, and a release by anyone else is not theirs
+to make. Every viewer hears the result as a `terminal_control` frame. While
+a client holds it the terminal tools are refused, exactly as during a
+hand-off; lowering the surface or dropping the connection releases it.
+
 **`terminal_close {seat, id}`** - the person's close door: the terminal's
 process group is killed and the seat's next open starts a fresh shell.
 
@@ -1018,12 +1026,18 @@ content_hash, threads, reviews}`** - in answer to `document_read`: the
 - **`browser_surface_failed {id, tab, reason}`** - the viewed tab's browser
   stopped. **Said out loud**, because a frozen last frame reads as a slow
   page and the person has no way to tell the two apart.
-- **`terminal_view {seat, id, cols, rows, seq, screen, viewers}`** - one
-  terminal's screen as a VT stream a client can draw, and where the byte
-  stream continues from: `seq` is the last sequence the repaint reflects, so
-  a chunk at or below it is one the screen already carries. Sent on attach
-  and on a resume, never as a reply: the attach's `reply` is its own
+- **`terminal_view {seat, id, cols, rows, seq, screen, viewers, viewer, controller}`**
+  - one terminal's screen as a VT stream a client can draw, and where the
+  byte stream continues from: `seq` is the last sequence the repaint
+  reflects, so a chunk at or below it is one the screen already carries;
+  `viewer` is this connection's own viewer number and `controller` the
+  viewer holding the person's control, `null` when the agent does. Sent on
+  attach and on a resume, never as a reply: the attach's `reply` is its own
   `{"ok": true, "id": ...}`.
+- **`terminal_control {seat, id, controller}`** - who holds the terminal's
+  input, pushed to every viewer on a take or a release: the controller's
+  viewer id, or `null` for the agent. Every bar draws the same truth about
+  whose keyboard it is.
 - **`terminal_changed {key, terminal}`** - a seat's terminal opened, changed
   or closed, as an `update` frame and not a message of its own: the summary
   carries the id, the shell, the cwd, the size, whether the shell is alive,

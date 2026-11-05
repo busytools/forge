@@ -263,6 +263,12 @@ struct TerminalViewing {
     id: u16,
     entry: std::sync::Arc<forge_workspace::terminal::TerminalEntry>,
     output: tokio::sync::broadcast::Receiver<forge_workspace::terminal::OutputChunk>,
+    /// The controller every viewer follows, so a take or a release reaches
+    /// all of a terminal's bars, not only the one that pressed.
+    control: tokio::sync::watch::Receiver<Option<u64>>,
+    /// This connection's own viewer number, which a bar compares against the
+    /// controller to say whether the role is its own.
+    viewer: u64,
     /// Set by `terminal_pause`: frames keep arriving from the terminal, and
     /// the loop drops them until a resume sends a fresh repaint.
     paused: bool,
@@ -293,6 +299,10 @@ impl Drop for TerminalViewing {
         // **The viewer count comes off however the attachment ends**: a
         // lowered surface, a dropped socket and a re-attach all pass here.
         self.entry.attached.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+        // **So does a control this viewer held**: a surface that goes away
+        // without releasing would leave the agent blind behind a role nobody
+        // is using.
+        self.entry.release_control(self.viewer);
     }
 }
 
@@ -319,6 +329,8 @@ where
                 viewing.entry.attached.load(std::sync::atomic::Ordering::Relaxed),
             )
             .unwrap_or(u32::MAX),
+            viewer: viewing.viewer,
+            controller: viewing.entry.controller(),
         },
     )
     .await
@@ -327,6 +339,8 @@ where
 /// What the terminal has for the loop.
 enum TerminalEvent {
     Chunk(forge_workspace::terminal::OutputChunk),
+    /// The person's control moved to or from a viewer.
+    Control(Option<u64>),
     /// The viewer fell further behind than the broadcast holds: the next
     /// thing it hears is a fresh screen, not a lossy byte stream.
     Resync,
@@ -348,6 +362,12 @@ async fn next_terminal_event(viewing: &mut Option<TerminalViewing>) -> Option<Te
         let chunk = tokio::select! {
             chunk = viewing.output.recv() => chunk,
             _ = exit.changed() => return Some(TerminalEvent::Gone),
+            changed = viewing.control.changed() => {
+                if changed.is_ok() {
+                    return Some(TerminalEvent::Control(*viewing.control.borrow()));
+                }
+                continue;
+            }
         };
         match chunk {
             Ok(chunk) => {
@@ -1480,6 +1500,18 @@ where
                         let mut transport = super::frame::SocketFrames { socket: &mut *socket };
                         transport.deliver_terminal(viewing.id, chunk.seq, &chunk.bytes).await?;
                     }
+                    TerminalEvent::Control(controller) => {
+                        let Some(viewing) = viewers.terminal.viewing.as_ref() else { continue };
+                        send(
+                            socket,
+                            ServerMessage::TerminalControl {
+                                seat: viewing.seat.clone(),
+                                id: viewing.id,
+                                controller,
+                            },
+                        )
+                        .await?;
+                    }
                     TerminalEvent::Resync => {
                         if let Some(viewing) = viewers.terminal.viewing.as_mut() {
                             let (repaint, seq) = viewing.entry.terminal.repaint_and_seq();
@@ -2038,6 +2070,7 @@ async fn attach_terminal<S>(
     socket: &mut ClientSocket<S>,
     state: &Arc<TransportState>,
     terminal: &mut TerminalViewingState,
+    me: u64,
     seat: forge_primitives::SessionSlot,
     id: Option<u16>,
     reply_to: Option<u64>,
@@ -2046,7 +2079,8 @@ where
     S: futures_util::Sink<Message, Error = axum::Error> + Unpin + Send,
 {
     // A re-attach replaces what this connection was viewing; the old
-    // attachment's drop takes its viewer count off.
+    // attachment's drop takes its viewer count off and gives back a control
+    // it held.
     terminal.viewing = None;
     match state.surface.terminal_attach_or_open(&seat, id) {
         Ok(entry) => {
@@ -2059,8 +2093,17 @@ where
             // The attach may have opened the terminal, so the id is the
             // entry's own; the answer names what was attached.
             let id = entry.id;
-            let viewing =
-                TerminalViewing { seat: seat.clone(), id, entry, output, paused: false, last_seq };
+            let control = entry.control_stream();
+            let viewing = TerminalViewing {
+                seat: seat.clone(),
+                id,
+                entry,
+                output,
+                control,
+                viewer: me,
+                paused: false,
+                last_seq,
+            };
             send_terminal_view(socket, &viewing, &repaint).await?;
             terminal.viewing = Some(viewing);
             match reply_to {
@@ -2784,11 +2827,12 @@ where
             attach_view(socket, state, viewing, me, seat, reply_to, None, Some(target)).await
         }
         ClientMessage::TerminalView { seat, id, reply_to } => {
-            attach_terminal(socket, state, terminal, seat, id, reply_to).await
+            attach_terminal(socket, state, terminal, me, seat, id, reply_to).await
         }
         ClientMessage::TerminalDetach => {
             // **Lowering is a detach**: the drop takes this viewer's count off
-            // the terminal, so the idle clock sees the truth.
+            // the terminal and gives back a control it held, so the idle
+            // clock and the agent both see the truth.
             terminal.viewing = None;
             Ok(())
         }
@@ -2819,6 +2863,35 @@ where
                     let (repaint, seq) = viewing.entry.terminal.repaint_and_seq();
                     viewing.last_seq = seq.saturating_sub(1);
                     send_terminal_view(socket, viewing, &repaint).await?;
+                }
+            }
+            Ok(())
+        }
+        ClientMessage::TerminalControl { seat, id, take } => {
+            let attached = terminal
+                .viewing
+                .as_ref()
+                .is_some_and(|viewing| viewing.seat == seat && viewing.id == id);
+            if !attached {
+                // **A take that does not land is answered.** The bar drew the
+                // role as the person's, and a silent drop would leave it
+                // claiming one the server never gave.
+                return send(
+                    socket,
+                    ServerMessage::Error {
+                        what: "terminal_control".to_owned(),
+                        why: "this connection is not viewing that terminal".to_owned(),
+                        seat: Some(seat),
+                        dispatch_id: None,
+                    },
+                )
+                .await;
+            }
+            if let Some(viewing) = terminal.viewing.as_ref() {
+                if take {
+                    viewing.entry.take_control(me);
+                } else {
+                    viewing.entry.release_control(me);
                 }
             }
             Ok(())
@@ -3596,16 +3669,19 @@ fn take_frame(
                 );
                 return;
             }
-            // **The person types only through the hand-off's door.** Outside
-            // one the surface is a viewer: the agent owns the terminal, and
-            // an observer's keystrokes would join a command they did not ask
-            // for.
-            if !answering || !surface.terminal_held(&viewing.seat) {
+            // **The keyboard is the controller's, whether a hand-off parked
+            // it there or the person took it.** Outside both, the surface is a
+            // viewer and the bytes are refused, so an observer's keystrokes
+            // never join a command they did not ask for.
+            let controlling = viewing.entry.controller() == Some(me);
+            let owns = controlling || (answering && surface.terminal_held(&viewing.seat));
+            if !owns {
                 tracing::debug!(
                     event_name = "terminal_input_outside_handoff",
                     id,
                     answering,
-                    "a terminal input frame arrived outside the hand-off that owns the keyboard",
+                    controlling,
+                    "a terminal input frame arrived outside the hand-off or controller that owns the keyboard",
                 );
                 return;
             }

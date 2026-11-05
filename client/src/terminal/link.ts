@@ -38,12 +38,16 @@ export interface TerminalLink {
   resize(seat: SessionSlot, id: number, cols: number, rows: number): void;
   /** Stop or resume the byte stream. */
   pause(paused: boolean): void;
+  /** Take the person's control, or give it back. */
+  control(seat: SessionSlot, id: number, take: boolean): void;
   /** The person's close door. */
   close(seat: SessionSlot, id: number): void;
   /** Every output frame, with the id it belongs to. */
   onFrame(listener: (frame: TerminalOutput) => void): () => void;
   /** Every attach snapshot: the screen as a VT stream and where it continues. */
   onView(listener: (view: TerminalViewMessage) => void): () => void;
+  /** Every controller change for the attached terminal. */
+  onControl(listener: (state: TerminalControlMessage) => void): () => void;
   /** Whether there is a link to call at all. */
   readonly attachable: boolean;
 }
@@ -57,6 +61,17 @@ export interface TerminalViewMessage {
   seq: number;
   screen: string;
   viewers: number;
+  /** This connection's own viewer number. */
+  viewer: number;
+  /** Who holds the person's control, or null for the agent. */
+  controller: number | null;
+}
+
+/** Who holds a terminal's input, as the server pushes it on a change. */
+export interface TerminalControlMessage {
+  seat: SessionSlot;
+  id: number;
+  controller: number | null;
 }
 
 function viewOf(value: unknown): TerminalViewMessage | null {
@@ -72,6 +87,20 @@ function viewOf(value: unknown): TerminalViewMessage | null {
     seq: held['seq'],
     screen: held['screen'],
     viewers: typeof held['viewers'] === 'number' ? held['viewers'] : 0,
+    viewer: typeof held['viewer'] === 'number' ? held['viewer'] : 0,
+    controller: typeof held['controller'] === 'number' ? held['controller'] : null,
+  };
+}
+
+/** One controller change, as the server writes it. */
+function controlOf(value: unknown): TerminalControlMessage | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const held = value as Record<string, unknown>;
+  if (typeof held['id'] !== 'number') return null;
+  return {
+    seat: held['seat'] as SessionSlot,
+    id: held['id'],
+    controller: typeof held['controller'] === 'number' ? held['controller'] : null,
   };
 }
 
@@ -120,6 +149,11 @@ function shellLink(): TerminalLink {
     pause(paused) {
       void invokeShell('client_terminal_pause', { paused }).catch((why) => {
         console.warn('the terminal stream was not paused', why);
+      });
+    },
+    control(seat, id, take) {
+      void invokeShell('client_terminal_control', { seat, id, take }).catch((why) => {
+        console.warn('the terminal control did not change', why);
       });
     },
     close(seat, id) {
@@ -175,6 +209,25 @@ function shellLink(): TerminalLink {
         stop?.();
       };
     },
+    onControl(listener) {
+      let stop: (() => void) | null = null;
+      let live = true;
+      void (async () => {
+        const { listen } = await import('@tauri-apps/api/event');
+        const off = await listen<unknown>('terminal_control', (event) => {
+          const state = controlOf(event.payload);
+          if (state !== null) listener(state);
+        });
+        if (live) stop = off;
+        else off();
+      })().catch((why) => {
+        console.warn('the terminal control listener could not start', why);
+      });
+      return () => {
+        live = false;
+        stop?.();
+      };
+    },
   };
 }
 
@@ -205,12 +258,23 @@ function wireLink(connection: Connection & TerminalWire): TerminalLink {
         console.warn('the terminal was not closed: the socket is not open');
       }
     },
+    control: (seat, id, take) => {
+      if (!connection.terminalControl(seat, id, take)) {
+        console.warn('the terminal control did not change: the socket is not open');
+      }
+    },
     onFrame: (listener) => connection.onTerminalFrame(listener),
     onView: (listener) =>
       connection.onMessage((message) => {
         if (message.kind !== 'terminal_view') return;
         const view = viewOf(message);
         if (view !== null) listener(view);
+      }),
+    onControl: (listener) =>
+      connection.onMessage((message) => {
+        if (message.kind !== 'terminal_control') return;
+        const state = controlOf(message);
+        if (state !== null) listener(state);
       }),
   };
 }
@@ -237,9 +301,11 @@ export function terminalLink(): TerminalLink {
       input: () => {},
       resize: () => {},
       pause: () => {},
+      control: () => {},
       close: () => {},
       onFrame: () => () => {},
       onView: () => () => {},
+      onControl: () => () => {},
     }
   );
 }

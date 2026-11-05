@@ -493,6 +493,17 @@ mod commands {
         bridge.terminal_pause(paused);
     }
 
+    /// Take the person's control of the attached terminal, or give it back.
+    #[tauri::command]
+    pub fn client_terminal_control(
+        bridge: tauri::State<'_, Arc<Bridge>>,
+        seat: Value,
+        id: u16,
+        take: bool,
+    ) {
+        bridge.terminal_control(seat, id, take);
+    }
+
     /// The person's close door.
     #[tauri::command]
     pub fn client_terminal_close(bridge: tauri::State<'_, Arc<Bridge>>, seat: Value, id: u16) {
@@ -654,6 +665,7 @@ pub fn run() -> u8 {
             commands::client_terminal_detach,
             commands::client_terminal_resize,
             commands::client_terminal_pause,
+            commands::client_terminal_control,
             commands::client_terminal_close,
             commands::client_terminal_input,
             check_update,
@@ -723,6 +735,7 @@ pub fn run() -> u8 {
             commands::client_terminal_detach,
             commands::client_terminal_resize,
             commands::client_terminal_pause,
+            commands::client_terminal_control,
             commands::client_terminal_close,
             commands::client_terminal_input,
             check_update,

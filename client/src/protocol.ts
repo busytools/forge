@@ -447,6 +447,12 @@ export type ClientMessage =
    * `terminal_view`; the frames a pause dropped are not replayed.
    */
   | { kind: 'terminal_pause'; paused: boolean }
+  /**
+   * Take the person's control of the attached terminal, or give it back. One
+   * controller at a time, like the browser's role: a take always lands, and
+   * the previous holder hears it lost the role.
+   */
+  | { kind: 'terminal_control'; seat: SessionSlot; id: number; take: boolean }
   /** The person's close door: end the terminal's process group. */
   | { kind: 'terminal_close'; seat: SessionSlot; id: number }
   /**
@@ -666,6 +672,20 @@ export type ServerMessage =
       seq: number;
       screen: string;
       viewers: number;
+      /** This connection's own viewer number, compared against the holder. */
+      viewer: number;
+      /** Who holds the person's control; null when the agent does. */
+      controller: number | null;
+    }
+  /**
+   * Who holds a terminal's input, pushed to every viewer of it on a take or
+   * a release.
+   */
+  | {
+      kind: 'terminal_control';
+      seat: SessionSlot;
+      id: number;
+      controller: number | null;
     }
   /** A settings save that wrote nothing, and why. */
   | {

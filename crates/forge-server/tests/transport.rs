@@ -12266,6 +12266,45 @@ async fn a_terminal_opens_types_and_closes_over_the_socket() {
         "input after the hand-off was answered is refused again",
     );
 
+    // **The person can take the keyboard without an agent asking.** The take
+    // is pushed to the viewer, the keystrokes land while they hold it, and a
+    // release hands the role back to the agent.
+    send(&mut socket, ClientMessage::TerminalControl { seat: seat.clone(), id, take: true }).await;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut taken = None;
+    while Instant::now() < deadline && taken.is_none() {
+        let Some(message) = next_server_within(&mut socket, 500).await else { continue };
+        if let ServerMessage::TerminalControl { controller, .. } = message {
+            taken = Some(controller);
+        }
+    }
+    assert!(
+        taken.expect("the take was pushed to the viewer").is_some(),
+        "the person holds the role"
+    );
+    assert!(fleet.workspace().terminal_controlled(&seat), "and the core says so");
+    send_terminal_input(&mut socket, id, b"echo THROUGH_CONTROL\r").await;
+    assert!(
+        binary_containing(&mut socket, b"THROUGH_CONTROL", 10_000).await,
+        "the controller's keystrokes reached the shell",
+    );
+    send(&mut socket, ClientMessage::TerminalControl { seat: seat.clone(), id, take: false }).await;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut released = false;
+    while Instant::now() < deadline && !released {
+        let Some(message) = next_server_within(&mut socket, 500).await else { continue };
+        if let ServerMessage::TerminalControl { controller: None, .. } = message {
+            released = true;
+        }
+    }
+    assert!(released, "the release was pushed to the viewer");
+    assert!(!fleet.workspace().terminal_controlled(&seat), "the agent owns it again");
+    send_terminal_input(&mut socket, id, b"echo AFTER_CONTROL\r").await;
+    assert!(
+        !binary_containing(&mut socket, b"AFTER_CONTROL", 700).await,
+        "input after the release is refused again",
+    );
+
     // Pause stops the stream; resume answers with a fresh repaint.
     send(&mut socket, ClientMessage::TerminalPause { paused: true }).await;
     send(&mut socket, ClientMessage::TerminalPause { paused: false }).await;

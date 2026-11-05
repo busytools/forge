@@ -595,6 +595,11 @@ export interface TerminalWire {
   terminalResize(seat: SessionSlot, id: number, cols: number, rows: number): boolean;
   /** Stop or resume the byte stream; a resume repaints. */
   terminalPause(paused: boolean): boolean;
+  /**
+   * Take the person's control of the attached terminal, or give it back.
+   * The change is pushed back to every viewer as a `terminal_control`.
+   */
+  terminalControl(seat: SessionSlot, id: number, take: boolean): boolean;
   /** The person's close door. */
   terminalClose(seat: SessionSlot, id: number): boolean;
   /** One client input frame: the keystrokes, as bytes. */
@@ -1061,6 +1066,7 @@ export function connect(
       // switch knows the frame so it is not reported as one the client cannot
       // draw - a false report on every attach and resume.
       case 'terminal_view':
+      case 'terminal_control':
         return;
       // A frame whose kind this client does not know is REPORTED rather than
       // dropped in silence: a message that arrived and drew nothing is
@@ -1667,6 +1673,7 @@ export function connect(
     terminalResize: (seat, id, cols, rows) =>
       sendClient({ kind: 'terminal_resize', seat, id, cols, rows }),
     terminalPause: (paused) => sendClient({ kind: 'terminal_pause', paused }),
+    terminalControl: (seat, id, take) => sendClient({ kind: 'terminal_control', seat, id, take }),
     terminalClose: (seat, id) => sendClient({ kind: 'terminal_close', seat, id }),
     terminalInput(id, bytes) {
       if (!isOpen()) return false;

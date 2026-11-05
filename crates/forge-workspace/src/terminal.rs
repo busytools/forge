@@ -9,11 +9,12 @@
 //!
 //! **No approval gate.** Bash through the CLI already reaches the shell here,
 //! so the terminal adds no capability a session does not have. The one thing
-//! that is gated is the person's own input, through the hand-off.
+//! that is gated is the person's own input, through the hand-off or through
+//! their own take-control of the raised surface.
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use forge_primitives::SessionSlot;
@@ -48,11 +49,54 @@ pub struct TerminalEntry {
     pub last_used: Mutex<Instant>,
     /// How many clients are attached.
     pub attached: AtomicUsize,
+    /// The connection holding the person's control, or 0 for the agent.
+    /// **One at a time**, like the browser's controller: another client can
+    /// take it over, and the holder always hears it lost the role.
+    controller: AtomicU64,
+    /// The holder every attached viewer follows, so a bar can say who has it.
+    control: tokio::sync::watch::Sender<Option<u64>>,
 }
 
 impl TerminalEntry {
     fn touch(&self) {
         *self.last_used.lock() = Instant::now();
+    }
+
+    /// The person's connection holding the terminal, when one does.
+    pub fn controller(&self) -> Option<u64> {
+        match self.controller.load(Ordering::Relaxed) {
+            0 => None,
+            id => Some(id),
+        }
+    }
+
+    /// Give one connection the person's control, telling every attached
+    /// viewer who holds it. A take always lands: like the browser's role, a
+    /// second client taking over is how the first one loses it.
+    pub fn take_control(&self, viewer: u64) {
+        if viewer == 0 {
+            return;
+        }
+        self.controller.store(viewer, Ordering::Relaxed);
+        self.touch();
+        let _ = self.control.send(Some(viewer));
+    }
+
+    /// Give control back when its holder releases it; another connection's
+    /// release is not this one's to take.
+    pub fn release_control(&self, viewer: u64) -> bool {
+        if self.controller() != Some(viewer) {
+            return false;
+        }
+        self.controller.store(0, Ordering::Relaxed);
+        self.touch();
+        let _ = self.control.send(None);
+        true
+    }
+
+    /// Follow the controller: the latest holder, and every change.
+    pub fn control_stream(&self) -> tokio::sync::watch::Receiver<Option<u64>> {
+        self.control.subscribe()
     }
 
     fn idle_for(&self) -> Duration {
@@ -184,6 +228,12 @@ impl Workspace {
     /// Whether a terminal hand-off is parked on the seat.
     pub fn terminal_held(&self, slot: &SessionSlot) -> bool {
         self.terminal_handoffs.lock().values().any(|(owner, _, _)| owner == slot)
+    }
+
+    /// Whether the person holds the seat's terminal through a client's
+    /// take-control, rather than through an agent's hand-off.
+    pub fn terminal_controlled(&self, slot: &SessionSlot) -> bool {
+        self.terminal_if_any(slot).is_some_and(|entry| entry.controller().is_some())
     }
 
     /// Close the seat's terminal, if it has one.
@@ -383,11 +433,14 @@ impl Workspace {
         })
         .map_err(|error| format!("the terminal could not start: {error}"))?;
         let id = self.next_terminal_id.fetch_add(1, Ordering::Relaxed);
+        let (control, _) = tokio::sync::watch::channel(None);
         Ok(Arc::new(TerminalEntry {
             id,
             terminal: Arc::new(terminal),
             last_used: Mutex::new(Instant::now()),
             attached: AtomicUsize::new(0),
+            controller: AtomicU64::new(0),
+            control,
         }))
     }
 
@@ -518,6 +571,36 @@ mod tests {
             refused.write(&slot, entry.id, Some("x".to_owned()), Vec::new()).await.is_err(),
             "a write while parked is refused",
         );
+        workspace.close_terminal(&slot);
+    }
+
+    /// **The person can take the terminal without an agent asking.** While a
+    /// client holds the role the tools are refused, another client's take
+    /// overrides the holder, and a release hands the agent the input back.
+    #[tokio::test]
+    async fn a_client_take_control_blinds_the_agent_until_release() {
+        let (workspace, _rx) = Workspace::testing_stub();
+        workspace.seed_test_project("proj", "/tmp");
+        let slot = SessionSlot::lead("TestOrg", "proj");
+        let entry = workspace.terminal_for(&slot).expect("a terminal");
+        entry.take_control(7);
+        assert!(workspace.terminal_controlled(&slot), "the person holds the terminal");
+        assert!(!workspace.terminal_held(&slot), "which is not a hand-off");
+        let facade = crate::mcp::terminal::facade::ProdTerminalFacade::from_workspace(&workspace);
+        assert!(
+            facade.read(&slot, entry.id, None, 10, 1024).await.is_err(),
+            "a read while the person controls is refused",
+        );
+        assert!(
+            facade.write(&slot, entry.id, Some("x".to_owned()), Vec::new()).await.is_err(),
+            "a write while the person controls is refused",
+        );
+        entry.take_control(8);
+        assert_eq!(entry.controller(), Some(8), "another client's take overrides the holder");
+        assert!(!entry.release_control(7), "the old holder's release does not land");
+        assert!(entry.release_control(8), "the holder releases it");
+        assert!(!workspace.terminal_controlled(&slot), "the agent owns the input again");
+        assert!(facade.read(&slot, entry.id, None, 10, 1024).await.is_ok(), "and reads again");
         workspace.close_terminal(&slot);
     }
 

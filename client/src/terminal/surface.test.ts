@@ -15,10 +15,17 @@ const pushed: {
     seq: number;
     screen: string;
     viewers: number;
+    viewer?: number;
+    controller?: number | null;
   }> | null;
   frame: Listener<{ id: number; seq: number; bytes: Uint8Array }> | null;
+  control: Listener<{
+    seat: { org: string; project: string; label: string };
+    id: number;
+    controller: number | null;
+  }> | null;
   state: Listener<{ seat: unknown; terminal: unknown }> | null;
-} = { view: null, frame: null, state: null };
+} = { view: null, frame: null, control: null, state: null };
 
 const link = {
   attachable: true,
@@ -27,6 +34,7 @@ const link = {
   input: vi.fn(),
   resize: vi.fn(),
   pause: vi.fn(),
+  control: vi.fn(),
   close: vi.fn(),
   onFrame: (fn: Listener<{ id: number; seq: number; bytes: Uint8Array }>) => {
     pushed.frame = fn;
@@ -50,6 +58,18 @@ const link = {
       pushed.view = null;
     };
   },
+  onControl: (
+    fn: Listener<{
+      seat: { org: string; project: string; label: string };
+      id: number;
+      controller: number | null;
+    }>,
+  ) => {
+    pushed.control = fn;
+    return () => {
+      pushed.control = null;
+    };
+  },
   onState: (fn: Listener<{ seat: unknown; terminal: unknown }>) => {
     pushed.state = fn;
     return () => {
@@ -66,6 +86,8 @@ vi.mock('./link', () => ({
 
 import {
   closeTerminal,
+  controlTerminal,
+  controlling,
   installTerminalSurface,
   lowerForOtherSeat,
   onOutput,
@@ -256,6 +278,34 @@ describe('the terminal surface store', () => {
       expect(link.show).toHaveBeenCalledWith(seat, 4);
     });
     expect(surface.phase).toBe('live');
+    stop();
+  });
+
+  it("takes and gives back the person's control", async () => {
+    const stop = installTerminalSurface(stillConnection());
+    await openTerminal(seat, 4);
+    pushed.view?.({
+      seat,
+      id: 4,
+      cols: 80,
+      rows: 24,
+      seq: 1,
+      screen: '$ ',
+      viewers: 1,
+      viewer: 9,
+      controller: null,
+    });
+    expect(controlling()).toBe(false);
+
+    controlTerminal(true);
+    expect(link.control).toHaveBeenCalledWith(seat, 4, true);
+    pushed.control?.({ seat, id: 4, controller: 9 });
+    expect(controlling(), 'this page holds the role').toBe(true);
+
+    controlTerminal(false);
+    expect(link.control).toHaveBeenCalledWith(seat, 4, false);
+    pushed.control?.({ seat, id: 4, controller: null });
+    expect(controlling(), 'released, and the agent owns it again').toBe(false);
     stop();
   });
 });

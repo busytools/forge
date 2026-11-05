@@ -19,6 +19,7 @@
     "SettingsRefused": "settings_refused",
     "SettingsSaved": "settings_saved",
     "Snapshot": "snapshot",
+    "TerminalControl": "terminal_control",
     "TerminalView": "terminal_view",
     "Update": "update"
   },
@@ -199,6 +200,7 @@
     "Showing": "showing",
     "Subscribe": "subscribe",
     "TerminalClose": "terminal_close",
+    "TerminalControl": "terminal_control",
     "TerminalDetach": "terminal_detach",
     "TerminalPause": "terminal_pause",
     "TerminalResize": "terminal_resize",

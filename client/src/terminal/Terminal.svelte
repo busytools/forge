@@ -10,6 +10,8 @@
   import { terminalLink } from './link';
   import {
     closeTerminal,
+    controlTerminal,
+    controlling,
     handOff,
     onOutput,
     onScreen,
@@ -82,6 +84,7 @@
     if (held === null) return 'the terminal closed';
     if (!held.alive) return 'the shell exited';
     if (held.held) return 'waiting for you';
+    if (controlling()) return 'you have control';
     if (held.state.running) return 'the agent is running a command';
     if (
       held.state.input_expected?.kind === 'password' ||
@@ -101,10 +104,11 @@
   });
 
   function send(bytes: Uint8Array): void {
-    // **The person's input is the hand-off's.** Outside one this surface is a
-    // viewer: the agent owns the terminal, the server refuses the bytes, and
-    // sending them here would say the keyboard worked when it did not.
-    if (handOff.current === null) return;
+    // **The person's input is the hand-off's or their own control.** Outside
+    // both this surface is a viewer: the agent owns the terminal, the server
+    // refuses the bytes, and sending them here would say the keyboard worked
+    // when it did not.
+    if (handOff.current === null && !controlling()) return;
     const id = surface.id;
     if (id === null) return;
     terminalLink().input(id, bytes);
@@ -253,7 +257,7 @@
   // keyboard does nothing rather than feeding a command the person did not
   // ask to join.
   $effect(() => {
-    if (term !== null) term.options.disableStdin = handOff.current === null;
+    if (term !== null) term.options.disableStdin = handOff.current === null && !controlling();
   });
 
   // **The byte stream stops while the tab is hidden.** A page that cannot draw
@@ -334,7 +338,12 @@
       back to chat
     </button>
     <span class="tn-title" {title}>{title}</span>
-    <span class="tn-state" class:bad={phase === 'failed'} class:held={summary?.held ?? false}>
+    <span
+      class="tn-state"
+      class:bad={phase === 'failed'}
+      class:held={summary?.held ?? false}
+      class:mine={controlling()}
+    >
       {stateLine}
     </span>
     {#if handOff.current !== null}
@@ -359,6 +368,19 @@
     >
       read the screen
     </button>
+    {#if handOff.current === null && phase === 'live'}
+      <!-- **The person can take the keyboard without an agent asking**: the
+           same role the browser has, and the agent's tools are refused while
+           it is held. -->
+      <button
+        type="button"
+        class="tn-act"
+        aria-pressed={controlling()}
+        onclick={() => controlTerminal(!controlling())}
+      >
+        {controlling() ? 'release control' : 'take control'}
+      </button>
+    {/if}
     {#if handOff.current !== null}
       <!-- **The parked ask's answer lives here while the surface is up**: the
            dock is behind this layer, and a hand-off with no reachable Done
@@ -511,6 +533,9 @@
   }
   .tn-state.held {
     color: var(--warn);
+  }
+  .tn-state.mine {
+    color: var(--accent);
   }
   .tn-state.bad {
     color: var(--bad);

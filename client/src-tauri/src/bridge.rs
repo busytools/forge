@@ -708,6 +708,13 @@ impl Bridge {
         }
     }
 
+    /// Take the person's control of the attached terminal, or give it back.
+    pub fn terminal_control(&self, seat: Value, id: u16, take: bool) {
+        if let Some(socket) = self.socket() {
+            socket.terminal_control(seat, id, take);
+        }
+    }
+
     /// The person's close door.
     pub fn terminal_close(&self, seat: Value, id: u16) {
         if let Some(socket) = self.socket() {
@@ -1582,6 +1589,15 @@ impl Bridge {
             "terminal_view" => {
                 if let Some(app) = &self.app {
                     let _ = app.emit("terminal_view", message.clone());
+                }
+                self.forward(message, None);
+            }
+            // **A controller change reaches every bar as its own event**, the
+            // way the attach snapshot does: the page's surface store listens
+            // for `terminal_control`.
+            "terminal_control" => {
+                if let Some(app) = &self.app {
+                    let _ = app.emit("terminal_control", message.clone());
                 }
                 self.forward(message, None);
             }

@@ -352,6 +352,14 @@ pub enum ClientMessage {
     TerminalPause {
         paused: bool,
     },
+    /// Take the person's control of an attached terminal, or give it back.
+    /// **One controller at a time, like the browser's role**: a take always
+    /// lands, and the previous holder hears it lost the role.
+    TerminalControl {
+        seat: SessionSlot,
+        id: u16,
+        take: bool,
+    },
     /// The person's close door: end the terminal's process group.
     TerminalClose {
         seat: SessionSlot,
@@ -633,6 +641,19 @@ pub enum ServerMessage {
         screen: String,
         /// How many clients are attached.
         viewers: u32,
+        /// This connection's own viewer number, so a control change can say
+        /// whether the holder is this viewer.
+        viewer: u64,
+        /// The connection holding the person's control, `None` when the agent
+        /// does.
+        controller: Option<u64>,
+    },
+    /// Who holds a terminal's input, pushed to every viewer of it on a take
+    /// or a release.
+    TerminalControl {
+        seat: SessionSlot,
+        id: u16,
+        controller: Option<u64>,
     },
     /// Where the viewed tab's history sits: what the bar's arrows may do.
     BrowserNavState {

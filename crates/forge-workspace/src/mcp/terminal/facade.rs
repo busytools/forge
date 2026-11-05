@@ -307,6 +307,9 @@ impl TerminalFacade for ProdTerminalFacade {
         if workspace.terminal_held(seat) {
             return Err("a hand-off is already parked on this terminal".to_owned());
         }
+        if workspace.terminal_controlled(seat) {
+            return Err(controlled_error());
+        }
         let (parked, answer) = workspace.register_terminal_hand_off(seat, id, reason)?;
         let guard =
             ResolveOnDrop { workspace: Arc::clone(&workspace), id: parked, caller: seat.clone() };
@@ -362,6 +365,9 @@ fn refuse_when_held(workspace: &Workspace, seat: &SessionSlot) -> Result<(), Str
     if workspace.terminal_held(seat) {
         return Err(held_error());
     }
+    if workspace.terminal_controlled(seat) {
+        return Err(controlled_error());
+    }
     Ok(())
 }
 
@@ -370,12 +376,26 @@ fn held_error() -> String {
         .to_owned()
 }
 
-/// The seat a wait is polling, while it may be taken by the person. A wait
-/// that sees it held stops rather than reading what they type.
+fn controlled_error() -> String {
+    "the person has taken control of this terminal: its screen and input are theirs until they \
+     release it"
+        .to_owned()
+}
+
+/// The seat a wait is polling, while it may be taken by the person - through
+/// a parked hand-off or through a client's take-control. A wait that sees it
+/// owned stops rather than reading what they type.
 type Blind<'a> = Option<(&'a Workspace, &'a SessionSlot)>;
 
-fn held_now(blind: Blind<'_>) -> bool {
-    blind.is_some_and(|(workspace, seat)| workspace.terminal_held(seat))
+fn refusal_now(blind: Blind<'_>) -> Option<String> {
+    let (workspace, seat) = blind?;
+    if workspace.terminal_held(seat) {
+        return Some(held_error());
+    }
+    if workspace.terminal_controlled(seat) {
+        return Some(controlled_error());
+    }
+    None
 }
 
 /// Resolves a parked hand-off when the awaiting handler goes - a session that
@@ -437,8 +457,8 @@ async fn wait_exit(
 ) -> Result<bool, String> {
     let mut states = entry.terminal.state_stream();
     loop {
-        if held_now(blind) {
-            return Err(held_error());
+        if let Some(why) = refusal_now(blind) {
+            return Err(why);
         }
         if !entry.terminal.is_alive() {
             return Ok(true);
@@ -473,8 +493,8 @@ async fn wait_quiet(
 ) -> Result<bool, String> {
     let mut output = entry.terminal.subscribe();
     loop {
-        if held_now(blind) {
-            return Err(held_error());
+        if let Some(why) = refusal_now(blind) {
+            return Err(why);
         }
         let left = deadline.saturating_duration_since(Instant::now());
         if left.is_zero() {
@@ -499,8 +519,8 @@ async fn wait_pattern(
 ) -> Result<bool, String> {
     let mut output = entry.terminal.subscribe();
     loop {
-        if held_now(blind) {
-            return Err(held_error());
+        if let Some(why) = refusal_now(blind) {
+            return Err(why);
         }
         if entry.terminal.screen().text.contains(pattern) {
             return Ok(true);
