@@ -64,9 +64,10 @@ client attached never parks at all: the tool answers that nothing can open.
 
 **The loop is the shipped text's.** The tool description and the session
 conduct block both state it: feedback means revise the document and hand it
-off again, approval is the one signal to proceed, and an agent never
-proceeds on feedback. The page needs no board link for it - the answer
-itself drives the loop, and the agent raises the next hand-off when ready.
+off again, and the agent keeps handing it off until the reader approves;
+approval is the one signal to proceed, and an agent never proceeds on
+feedback. The page needs no board link for it - the answer itself drives the
+loop, and the agent raises the next hand-off after every feedback.
 
 **The answer is matched by seat AND document.** A client holding two seats
 can have two viewers' reads in flight; the answer names both back, and a
