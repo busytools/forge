@@ -291,7 +291,7 @@
       workspace: 'Trust Machines',
       conversation_label: '#granite-staging-alerts',
       thread_ts: null,
-      text: 'The staging deploy is green. Rolling to production once the 14:30 window closes.',
+      text: 'The staging deploy is green, <@U2> and <@U3>. Rolling to production once the 14:30 window closes.',
       operation: 'post',
       thread: null,
       tagged: [

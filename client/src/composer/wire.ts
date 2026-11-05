@@ -193,7 +193,7 @@ export interface SlackDraft {
   operation: SlackOperation;
   /**
    * The thread named for the card. Null on a root message, and null when the
-   * core could not read the parent: the card then draws `threadTs`.
+   * core could not read the parent: the card then names it only as a thread.
    */
   thread: SlackThreadName | null;
   /** Every person the text tags, in order; an unresolved name keeps its id. */

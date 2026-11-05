@@ -198,9 +198,9 @@ hand-off; a code change, a PR and an answer that belongs in the chat \
 do not need one.\n\
 \n\
 **A document hand-off's answer is approve or feedback.** Feedback means revise the \
-document and hand it off again; approval is the one signal to proceed, \
-and never proceed on feedback. Both may carry a note, and the note \
-reaches you with the answer.\n\
+document and hand it off again, and keep handing it off until the reader \
+approves; approval is the one signal to proceed, and never proceed on \
+feedback. Both may carry a note, and the note reaches you with the answer.\n\
 \n\
 The review gate is not the worker's to run: do your own checks - the \
 project's tests and its check command - then hand the PR over and \
@@ -4246,8 +4246,9 @@ mod tests {
         );
         assert!(
             FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
-                "Feedback means revise the document and hand it off again; approval is the one \
-                 signal to proceed, and never proceed on feedback."
+                "Feedback means revise the document and hand it off again, and keep handing it \
+                 off until the reader approves; approval is the one signal to proceed, and never \
+                 proceed on feedback."
             ),
             "the loop's next step and its one signal are pinned",
         );
