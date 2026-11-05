@@ -78,9 +78,11 @@ one of the project's `document_roots` in `forge.toml`. Set `reviewable` \
 when you want review comments back: the reader opens it, comments on \
 lines and answers, and their review then arrives filed under the \
 document's own scope. A PDF always opens read-only. **The answer is \
-approve or something is off**: feedback means revise the document and \
-hand it off again, approval is the one signal to proceed, and neither \
-may be read as the other; both carry an optional note that reaches you. \
+approve or send feedback**: feedback means revise the document, hand it \
+off again, and keep handing it off until the reader approves; approval \
+is the one signal to proceed, and neither may be read as the other; the \
+one feedback box reaches you with either \
+answer, though approve may leave it empty and send feedback may not. \
 The reader is asked to open it or not, and **this call waits for them**: \
 it answers when they approve, send feedback or say not now.";
 
@@ -104,9 +106,11 @@ and answer, and their review is filed under the document's own scope. \
 This session was spawned without the `review` MCP family, so you cannot \
 read it back; the answer names the review's id and scope, which your lead \
 reads with review__get. A PDF always opens read-only. **The answer is \
-approve or something is off**: feedback means revise the document and \
-hand it off again, approval is the one signal to proceed, and neither \
-may be read as the other; both carry an optional note that reaches you. \
+approve or send feedback**: feedback means revise the document, hand it \
+off again, and keep handing it off until the reader approves; approval \
+is the one signal to proceed, and neither may be read as the other; the \
+one feedback box reaches you with either \
+answer, though approve may leave it empty and send feedback may not. \
 The reader is asked to open it or not, and **this call waits for them**: \
 it answers when they approve, send feedback or say not now.";
 
@@ -204,8 +208,9 @@ impl HandOffTool {
             }
             DocumentHandOffEnding::Feedback { review_id, note } => {
                 let refused = format!(
-                    "The reader says something is off at {resolved}. This is not approval: \
-                     revise the document and hand it off again for another answer."
+                    "The reader sent feedback at {resolved}. This is not approval: \
+                     revise the document and hand it off again, and keep handing it \
+                     off until the reader approves."
                 );
                 return Err(format!(
                     "{refused}{}{}",
@@ -392,11 +397,15 @@ mod tests {
             .await;
         assert!(refused.is_error, "feedback is not a hand-off success: {:?}", refused.blocks);
         let text = crate::mcp::test_support::block_text(&refused.blocks[0]);
-        assert!(text.contains("something is off"), "the reader's answer is named: {text}");
+        assert!(text.contains("sent feedback"), "the reader's answer is named: {text}");
         assert!(text.contains("the table is wrong"), "the note reaches the agent: {text}");
         assert!(
             text.contains("revise the document and hand it off again"),
             "and the loop's next step is stated: {text}",
+        );
+        assert!(
+            text.contains("keep handing it off until the reader approves"),
+            "and the loop is until approval: {text}",
         );
         assert!(text.contains("not approval"), "never read as done: {text}");
     }
@@ -559,20 +568,24 @@ mod tests {
             let tool = tool_with_review(MockDocumentFacade::new().into_arc(), review_available);
             let description = tool.description();
             assert!(
-                description.contains("The answer is approve or something is off"),
+                description.contains("The answer is approve or send feedback"),
                 "the two outcomes are named (review_available: {review_available}): {description}",
             );
             assert!(
                 description.contains(
-                    "feedback means revise the document and hand it off again, approval is the \
-                     one signal to proceed, and neither may be read as the other"
+                    "feedback means revise the document, hand it off again, and keep handing it \
+                     off until the reader approves; approval is the one signal to proceed, and \
+                     neither may be read as the other"
                 ),
                 "feedback's next step and approval's exclusivity are stated \
                  (review_available: {review_available}): {description}",
             );
             assert!(
-                description.contains("both carry an optional note that reaches you"),
-                "the note's delivery is stated (review_available: {review_available}): {description}",
+                description.contains(
+                    "the one feedback box reaches you with either answer, though approve may \
+                     leave it empty and send feedback may not"
+                ),
+                "the box's delivery is stated (review_available: {review_available}): {description}",
             );
         }
     }

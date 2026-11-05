@@ -188,8 +188,8 @@ describe('the document viewer', () => {
  * answers what the DOCUMENT is: a readable markdown or text document is
  * reviewable, so the page draws its blocks and the comments it already
  * carries exactly as a hand-off's Open does. The parked call is the only
- * thing a hand-off adds, and it is the answer row - approve or something is
- * off - that releases it; a cold open keeps the one done.
+ * thing a hand-off adds, and it is the answer row - approve or send feedback
+ * - that releases it; a cold open keeps the one done.
  */
 describe('the cold open', () => {
   /** A comment the document already carries, and where the read put it. */
@@ -336,15 +336,315 @@ describe('the reviewable document', () => {
       [...blocks].every((block) => block.classList.contains('prose')),
       'each block carries the chat prose rules, so its marks draw as the chat draws them',
     ).toBe(true);
-    // The source-line gutter: one numbered target per line the document
-    // carries, each named for the line it comments on.
-    const numbers = [...document.querySelectorAll('button.doc-lnum')];
-    expect(numbers.map((number) => number.textContent?.trim())).toEqual(['1', '2', '3']);
-    expect(numbers.map((number) => number.getAttribute('aria-label'))).toEqual([
+    // The hover target: one `+` per block, aligned with the block's own
+    // source line and named for it.
+    const adds = [...document.querySelectorAll<HTMLButtonElement>('button.doc-add')];
+    expect(adds.map((add) => add.getAttribute('aria-label'))).toEqual([
       'comment on line 1',
       'comment on line 2',
-      'comment on line 3',
     ]);
+    // The always-visible source-line numbers are gone.
+    expect(document.querySelectorAll('button.doc-lnum')).toHaveLength(0);
+    expect(document.querySelectorAll('.doc-lines')).toHaveLength(0);
+  });
+
+  /**
+   * **A list is one target per item.** A markdown chunk that draws ten
+   * bullets is ten things a reader may comment on, so each item renders on
+   * its own line and anchors at its own source line.
+   */
+  it('draws one target per list item, each anchored at its own line', () => {
+    const page = drawReviewable({
+      kind: 'landed',
+      document_kind: 'markdown',
+      bytes: enc('# hi\n\n- one\n- two\n- three\n'),
+      reviewable: true,
+      content_hash: '42',
+    });
+
+    const items = [...document.querySelectorAll<HTMLElement>('.doc-block')].filter(
+      (block) => block.querySelector('.doc-block-body > ul') !== null,
+    );
+    expect(
+      items.map((item) => item.querySelector('.doc-block-body')?.textContent?.trim()),
+      'one row per bullet',
+    ).toEqual(['one', 'two', 'three']);
+    expect(
+      items.map((item) => item.querySelector('.doc-add')?.getAttribute('aria-label')),
+      'each item carries its own line target',
+    ).toEqual(['comment on line 3', 'comment on line 4', 'comment on line 5']);
+
+    items[1]?.click();
+    flushSync();
+    const composer = document.querySelector<HTMLTextAreaElement>('.doc-compose textarea');
+    if (composer === null) throw new Error('no composer');
+    composer.value = 'on the second bullet';
+    composer.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    buttonByText('comment').click();
+    flushSync();
+
+    const sent = (page.sent as Record<string, Record<string, Record<string, unknown>>>[])[0];
+    const anchor = sent?.['upsert_review_thread']?.['thread'] as
+      { anchor?: { line?: number } } | undefined;
+    expect(anchor?.anchor?.line, 'the second bullet anchors at line 4').toBe(4);
+  });
+
+  /** **A quote's paragraphs are targets too**, not one target for the whole
+   *  quote. */
+  it('splits a quote into one target per paragraph', () => {
+    drawReviewable({
+      kind: 'landed',
+      document_kind: 'markdown',
+      bytes: enc('> one\n>\n> two\n'),
+      reviewable: true,
+      content_hash: '42',
+    });
+
+    const quotes = [...document.querySelectorAll('.doc-block')].filter(
+      (block) => block.querySelector('.doc-block-body > blockquote') !== null,
+    );
+    expect(
+      quotes.map((quote) => quote.querySelector('.doc-block-body')?.textContent?.trim()),
+    ).toEqual(['one', 'two']);
+    expect(
+      quotes.map((quote) => quote.querySelector('.doc-add')?.getAttribute('aria-label')),
+    ).toEqual(['comment on line 1', 'comment on line 3']);
+  });
+
+  /** **A leaf inside a quote is a target of its own.** A fence opens
+   *  nothing, so it must not be run through the closer search - a quote
+   *  ending in a fence would drop it and draw the raw markers. */
+  it('draws a fenced code block at the end of a quote', () => {
+    drawReviewable({
+      kind: 'landed',
+      document_kind: 'markdown',
+      bytes: enc('> intro\n>\n> ```\n> const x = 1;\n> ```\n'),
+      reviewable: true,
+      content_hash: '42',
+    });
+
+    const quotes = [...document.querySelectorAll('.doc-block')].filter(
+      (block) => block.querySelector('.doc-block-body > blockquote') !== null,
+    );
+    expect(quotes).toHaveLength(2);
+    const code = quotes[1]?.querySelector('.doc-block-body .code pre');
+    expect(code?.textContent, 'the fence is rendered as code').toContain('const x = 1;');
+    expect(
+      document.querySelector('.doc-body')?.textContent,
+      'no raw markdown markers reach the page',
+    ).not.toContain('```');
+    expect(
+      quotes[1]?.querySelector('.doc-add')?.getAttribute('aria-label'),
+      'and the fence keeps its own line',
+    ).toBe('comment on line 3');
+  });
+
+  /** **A quote's fence does not swallow the paragraph after it.** The leaf
+   *  is one target and the paragraph another, each anchored at its own line. */
+  it('keeps a quoted fence and its following paragraph as separate targets', () => {
+    drawReviewable({
+      kind: 'landed',
+      document_kind: 'markdown',
+      bytes: enc('> ```\n> const x = 1;\n> ```\n>\n> after the code\n'),
+      reviewable: true,
+      content_hash: '42',
+    });
+
+    const quotes = [...document.querySelectorAll('.doc-block')].filter(
+      (block) => block.querySelector('.doc-block-body > blockquote') !== null,
+    );
+    expect(quotes).toHaveLength(2);
+    const code = quotes[0]?.querySelector('.doc-block-body .code pre');
+    expect(code?.textContent, 'the fence renders first').toContain('const x = 1;');
+    const after = quotes[1]?.querySelector('.doc-block-body');
+    expect(after?.textContent?.trim(), 'the paragraph is its own target').toBe('after the code');
+    expect(
+      quotes[1]?.querySelector('.doc-add')?.getAttribute('aria-label'),
+      'and anchors at its own line',
+    ).toBe('comment on line 5');
+  });
+
+  /**
+   * **The hover target and the block are two anchors.** A press on the
+   * rendered block is a comment on the section; a press on its `+` is a
+   * comment on the block's own source line, the line first in its captured
+   * context.
+   */
+  it('opens the composer at a block and at its line', () => {
+    drawReviewable();
+
+    blockTarget('line two').click();
+    flushSync();
+    expect(
+      document.querySelector('.doc-compose textarea')?.getAttribute('aria-label'),
+      'the block press anchors at the section',
+    ).toBe('comment on this part of the document');
+    buttonByText('cancel').click();
+    flushSync();
+
+    const line = blockTarget('line two').querySelector<HTMLButtonElement>('button.doc-add');
+    expect(line, "the block's own line carries the `+`").not.toBeNull();
+    line?.click();
+    flushSync();
+    expect(
+      document.querySelector('.doc-compose textarea')?.getAttribute('aria-label'),
+      "the `+` anchors at the block's line",
+    ).toBe('comment on line 2');
+  });
+
+  /**
+   * **One feedback box.** The answer's note and the round's description are
+   * the same words in the same box - no separate summary field beside it -
+   * and both the submit and the answer carry them.
+   */
+  it('draws one feedback box for the note and the round description', async () => {
+    const page = drawReviewable();
+
+    blockTarget('line two').click();
+    flushSync();
+    const composer = document.querySelector('textarea');
+    if (!(composer instanceof HTMLTextAreaElement)) throw new Error('no composer');
+    composer.value = 'hello';
+    composer.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    buttonByText('comment').click();
+    flushSync();
+
+    expect(
+      document.querySelectorAll('textarea[placeholder^="feedback on the document"]').length,
+      'exactly one feedback box',
+    ).toBe(1);
+    expect(
+      document.querySelector('textarea[placeholder="summary (optional)"]'),
+      'no separate summary box',
+    ).toBeNull();
+    expect(
+      document.querySelector('textarea[placeholder="note (optional)"]'),
+      'no separate note box',
+    ).toBeNull();
+    const box = document.querySelector<HTMLTextAreaElement>(
+      'textarea[placeholder="feedback on the document..."]',
+    );
+    expect(box, 'the one box is the feedback box').not.toBeNull();
+    if (box === null) return;
+    box.value = 'the one: the second paragraph';
+    box.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+
+    page.submitAnswer = { body: { id: 'r9', number: 4, summary: null, created_at: 'x' } };
+    buttonByText('approve').click();
+    await vi.waitFor(() => {
+      expect(document.querySelector('.doc-left')?.textContent).toContain('approved');
+    });
+
+    const submit = (page.sent as Record<string, unknown>[]).find(
+      (command) => 'submit_review' in command,
+    ) as { submit_review: { summary: string | null } } | undefined;
+    expect(submit?.submit_review.summary, 'the box describes the round').toBe(
+      'the one: the second paragraph',
+    );
+    const answered = (page.sent as Record<string, unknown>[]).find(
+      (command) => 'answer_document_hand_off' in command,
+    )?.['answer_document_hand_off'] as
+      { answer?: { approve?: { note: string | null } } } | undefined;
+    expect(answered?.answer?.approve?.note, 'and the note rides the answer').toBe(
+      'the one: the second paragraph',
+    );
+  });
+
+  /**
+   * **The second answer is "send feedback", and it needs words.** The
+   * requirement is said in the row rather than by disabling the button: a
+   * disabled control leaves the tab order and explains nothing, so an empty
+   * press draws the requirement and sends nothing.
+   */
+  it('names the second answer send feedback and says what it needs', () => {
+    const page = drawReviewable();
+
+    expect(
+      [...document.querySelectorAll('button')].some(
+        (button) => button.textContent?.trim() === 'something is off',
+      ),
+      'the old wording is gone',
+    ).toBe(false);
+    const send = buttonByText('send feedback');
+    expect(send.disabled, 'the button stays in the tab order').toBe(false);
+    expect(
+      document.querySelector('.doc-exit .doc-hint')?.textContent,
+      'the requirement is visible before the press',
+    ).toContain('send feedback needs words');
+
+    send.click();
+    flushSync();
+    expect(
+      document.querySelector('.doc-hint.warn')?.textContent,
+      'an empty press draws the requirement',
+    ).toContain('write what is off');
+    expect(
+      (page.sent as Record<string, unknown>[]).some(
+        (command) => 'answer_document_hand_off' in command,
+      ),
+      'and answers nothing',
+    ).toBe(false);
+
+    const box = document.querySelector<HTMLTextAreaElement>(
+      'textarea[placeholder="feedback on the document..."]',
+    );
+    if (box === null) throw new Error('no feedback box');
+    box.value = 'the second paragraph is stale';
+    box.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+
+    expect(document.querySelector('.doc-hint.warn'), 'words clear the warning').toBeNull();
+    expect(buttonByText('approve').disabled, 'approve never needed them').toBe(false);
+  });
+
+  /**
+   * **The reader resolves a thread; the agent never does.** Every open
+   * thread carries a resolve control beside its delete, and the write is the
+   * same status command every surface's resolve rides.
+   */
+  it('resolves an open thread, writing Resolved', () => {
+    const page = drawReviewable({
+      kind: 'landed',
+      document_kind: 'markdown',
+      bytes: enc('# hi\nline two\nline three'),
+      reviewable: true,
+      content_hash: '42',
+      threads: [
+        {
+          ...placedThread('d9', 2, { state: 'placed', line: 2, moved_from: null }, ['line two']),
+          comments: [
+            { author: 'User', text: 'from before', at: 'x', review_id: null },
+            {
+              author: { Agent: { label: 'implementer' } },
+              text: 'addressed it',
+              at: 'x',
+              review_id: null,
+            },
+          ],
+        },
+      ],
+    });
+
+    const resolve = [...document.querySelectorAll<HTMLButtonElement>('.doc-note .rv-a')].find(
+      (button) => button.textContent?.trim() === 'resolve',
+    );
+    expect(resolve, 'an open thread draws the resolve act').toBeDefined();
+    resolve?.click();
+    flushSync();
+
+    const status = (page.sent as Record<string, Record<string, unknown>>[])
+      .filter((command) => 'set_review_thread_status' in command)
+      .map((command) => command['set_review_thread_status']);
+    expect(status).toEqual([
+      { project: SLOT.project, branch: `doc:${PATH}`, thread_id: 'd9', status: 'Resolved' },
+    ]);
+    expect(
+      document.querySelector('.doc-note')?.textContent,
+      "the agent's reply stays a reply",
+    ).toContain('addressed it');
   });
 
   it('comments on a block: the upsert carries the block anchor', () => {
@@ -377,7 +677,7 @@ describe('the reviewable document', () => {
   });
 
   /**
-   * **A press on a source line comments on THAT line**, with the line first
+   * **A press on a block's `+` comments on THAT line**, with the line first
    * in its captured context - the line a revision re-finds the thread by.
    * The block's own press still captures the whole section, so both kinds
    * of comment are one store shape with a different anchor.
@@ -386,15 +686,14 @@ describe('the reviewable document', () => {
     const page = drawReviewable({
       kind: 'landed',
       document_kind: 'markdown',
-      bytes: enc('one\ntwo\nthree\n'),
+      // The paragraph's own line is 3, after the heading and the blank.
+      bytes: enc('# one\n\ntwo\nthree\n'),
       reviewable: true,
       content_hash: '42',
     });
 
-    const second = [...document.querySelectorAll<HTMLButtonElement>('button.doc-lnum')].find(
-      (number) => number.textContent?.trim() === '2',
-    );
-    expect(second, 'the gutter draws a target for line 2').toBeDefined();
+    const second = blockTarget('two').querySelector<HTMLButtonElement>('button.doc-add');
+    expect(second, "the block draws its line's hover target").toBeDefined();
     second?.click();
     flushSync();
 
@@ -411,7 +710,7 @@ describe('the reviewable document', () => {
     expect(thread['anchor']).toEqual({
       path: PATH,
       side: 'New',
-      line: 2,
+      line: 3,
       content_hash: anchorHash('two').toString(),
       context: ['two', 'three'],
       base_ref: `doc:${PATH}`,
@@ -420,7 +719,7 @@ describe('the reviewable document', () => {
     // line it will file against.
     const draft = document.querySelector('.doc-draft');
     expect(draft?.textContent, 'the draft draws').toContain('on this line');
-    expect(draft?.textContent, 'and says which line it is on').toContain('line 2');
+    expect(draft?.textContent, 'and says which line it is on').toContain('line 3');
   });
 
   /** **Cancel closes the box.** A line composer cancelled at the block's
@@ -435,10 +734,7 @@ describe('the reviewable document', () => {
       content_hash: '42',
     });
 
-    const second = [...document.querySelectorAll<HTMLButtonElement>('button.doc-lnum')].find(
-      (number) => number.textContent?.trim() === '2',
-    );
-    second?.click();
+    blockTarget('two').querySelector<HTMLButtonElement>('button.doc-add')?.click();
     flushSync();
     const box = document.querySelector('textarea');
     if (!(box instanceof HTMLTextAreaElement)) throw new Error('no composer');
@@ -472,13 +768,14 @@ describe('the reviewable document', () => {
     buttonByText('comment').click();
     flushSync();
 
-    // The round's description, written above the door, rides the submit.
-    const summary = document.querySelector<HTMLTextAreaElement>(
-      'textarea[placeholder="summary (optional)"]',
+    // The one box above the door is the round's description and the answer's
+    // note, so the same words ride both.
+    const feedback = document.querySelector<HTMLTextAreaElement>(
+      'textarea[placeholder="feedback on the document..."]',
     );
-    if (summary === null) throw new Error('no summary box');
-    summary.value = 'the doc reads well, one note';
-    summary.dispatchEvent(new Event('input', { bubbles: true }));
+    if (feedback === null) throw new Error('no feedback box');
+    feedback.value = 'the doc reads well, one note';
+    feedback.dispatchEvent(new Event('input', { bubbles: true }));
     flushSync();
 
     page.submitAnswer = { body: { id: 'r9', number: 4, summary: null, created_at: 'x' } };
@@ -513,10 +810,9 @@ describe('the reviewable document', () => {
       answered?.answer_document_hand_off.answer.approve.review_id,
       'the answer carries the review the finish minted',
     ).toBe('r9');
-    expect(
-      answered?.answer_document_hand_off.answer.approve.note,
-      'no note written is no note sent',
-    ).toBeNull();
+    expect(answered?.answer_document_hand_off.answer.approve.note, 'the box is the note too').toBe(
+      'the doc reads well, one note',
+    );
     expect(document.querySelector('.doc-left')?.textContent, 'approved, not merely done').toContain(
       'approved',
     );
@@ -874,10 +1170,10 @@ describe('the reviewable document', () => {
 
     expect(document.querySelector('embed'), 'the PDF itself is drawn').not.toBeNull();
     expect(buttonByText('approve'), 'a PDF answers the parked hand-off').toBeDefined();
-    expect(buttonByText('something is off'), 'with the explicit other answer').toBeDefined();
+    expect(buttonByText('send feedback'), 'with the explicit other answer').toBeDefined();
     expect(
-      document.querySelector('textarea[placeholder="note (optional)"]'),
-      'and the optional note rides with either',
+      document.querySelector('textarea[placeholder="feedback on the document..."]'),
+      'and the one feedback box rides with either',
     ).not.toBeNull();
     expect(
       document.querySelector('button.doc-comment-btn'),
@@ -905,7 +1201,15 @@ describe('the reviewable document', () => {
       'no document at',
     );
 
-    buttonByText('something is off').click();
+    const box = document.querySelector<HTMLTextAreaElement>(
+      'textarea[placeholder="feedback on the document..."]',
+    );
+    if (box === null) throw new Error('no feedback box');
+    box.value = 'the document is gone, re-hand it';
+    box.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+
+    buttonByText('send feedback').click();
     await vi.waitFor(() => {
       expect(document.querySelector('.doc-left')).not.toBeNull();
     });
@@ -914,7 +1218,7 @@ describe('the reviewable document', () => {
     )?.['answer_document_hand_off'] as { id?: unknown; answer?: unknown } | undefined;
     expect(answered?.id, 'the parked call is answered, not left held').toBe('h-1');
     expect(answered?.answer, 'with the explicit feedback ending').toEqual({
-      feedback: { review_id: null, note: null },
+      feedback: { review_id: null, note: 'the document is gone, re-hand it' },
     });
     await vi.waitFor(
       () => {
@@ -922,6 +1226,46 @@ describe('the reviewable document', () => {
       },
       { timeout: 3000 },
     );
+  });
+
+  /** **The feedback box draws only when it has a job.** A parked call always
+   *  carries it as the answer note; a deep link has no call, so the box is
+   *  the review's description and appears only once a draft needs one. */
+  it('draws the feedback box on a deep link only when there is a review to describe', () => {
+    const fake = fakeDoc({
+      kind: 'landed',
+      document_kind: 'markdown',
+      bytes: enc('# hi\nline two\nline three'),
+      content_hash: '42',
+    });
+    app = mount(Document, {
+      target: document.body,
+      props: { slot: SLOT, path: PATH, reviewable: false, connection: fake.connection },
+    });
+    flushSync();
+    expect(
+      document.querySelector('textarea[placeholder^="feedback on the document"]'),
+      'a bare deep link has no box',
+    ).toBeNull();
+
+    blockTarget('line two').click();
+    flushSync();
+    const composer = document.querySelector('textarea');
+    if (!(composer instanceof HTMLTextAreaElement)) throw new Error('no composer');
+    composer.value = 'hello';
+    composer.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    buttonByText('comment').click();
+    flushSync();
+
+    expect(
+      document.querySelector('textarea[placeholder^="feedback on the document"]'),
+      'a draft gives the description a box',
+    ).not.toBeNull();
+    expect(
+      document.querySelector('.doc-hint'),
+      'a deep link has no send feedback to require words',
+    ).toBeNull();
   });
 
   /** Nothing to release (a deep link): the one door is still the way back,
@@ -1074,6 +1418,58 @@ describe('the reviewable document', () => {
       'line 42 is past this version',
     );
     expect(document.querySelector('.doc-note:not(.doc-quoted)'), 'nothing draws inline').toBeNull();
+  });
+
+  /** **A thread with no place is still the reader's to resolve.** The
+   *  bottom section draws the same act as the inline cards. */
+  it('resolves a thread with no place in this version', () => {
+    const page = revision([
+      placedThread('d9', 42, { state: 'outdated', reason: 'gone' }, ['^ old line']),
+    ]);
+
+    const resolve = [...document.querySelectorAll<HTMLButtonElement>('.doc-quoted .rv-a')].find(
+      (button) => button.textContent?.trim() === 'resolve',
+    );
+    expect(resolve, 'the bottom section draws the resolve act').toBeDefined();
+    resolve?.click();
+    flushSync();
+
+    const status = (page.sent as Record<string, Record<string, unknown>>[])
+      .filter((command) => 'set_review_thread_status' in command)
+      .map((command) => command['set_review_thread_status']);
+    // The drift ages the thread to Outdated on the way in; the press is the
+    // write this test is about.
+    expect(status.at(-1)).toEqual({
+      project: SLOT.project,
+      branch: `doc:${PATH}`,
+      thread_id: 'd9',
+      status: 'Resolved',
+    });
+  });
+
+  /** **A resolved thread with no place keeps a reopen**: the bottom section
+   *  must not be a one-way door. */
+  it('reopens a resolved thread with no place in this version', () => {
+    const page = revision([
+      {
+        ...placedThread('d9', 42, { state: 'outdated', reason: 'gone' }, ['^ old line']),
+        status: 'Resolved',
+      },
+    ]);
+
+    const reopen = [...document.querySelectorAll<HTMLButtonElement>('.doc-quoted .rv-a')].find(
+      (button) => button.textContent?.trim() === 'reopen',
+    );
+    expect(reopen, 'a resolved bottom-section thread draws reopen').toBeDefined();
+    reopen?.click();
+    flushSync();
+
+    const wrote = (page.sent as Record<string, Record<string, unknown>>[])
+      .filter((command) => 'set_review_thread_status' in command)
+      .map((command) => command['set_review_thread_status']);
+    expect(wrote).toEqual([
+      { project: SLOT.project, branch: `doc:${PATH}`, thread_id: 'd9', status: 'Open' },
+    ]);
   });
 
   /** **The blank lines before the first block are rows too.** A thread placed
@@ -1240,31 +1636,31 @@ describe('the reviewable document', () => {
 });
 
 /**
- * The two answers a parked hand-off takes: approve, or something is off.
- * Each draws idle, sending and its refusal in place, and the optional note
- * reaches the agent verbatim with whichever one is chosen. Neither leaves
- * the call answered until the review has landed.
+ * The two answers a parked hand-off takes: approve, or send feedback.
+ * Each draws idle, sending and its refusal in place, and the one feedback
+ * box reaches the agent verbatim with whichever one is chosen. Neither
+ * leaves the call answered until the review has landed.
  */
 describe('the hand-off answers', () => {
-  const noteBox = (): HTMLTextAreaElement => {
+  const feedbackBox = (): HTMLTextAreaElement => {
     const found = document.querySelector<HTMLTextAreaElement>(
-      'textarea[placeholder="note (optional)"]',
+      'textarea[placeholder="feedback on the document..."]',
     );
-    if (found === null) throw new Error('no note box');
+    if (found === null) throw new Error('no feedback box');
     return found;
   };
 
-  it('sends feedback with its note verbatim and draws sending, then sent back', async () => {
+  it('sends feedback with its words verbatim and draws sending, then sent back', async () => {
     const page = drawReviewable();
 
-    expect(noteBox().getAttribute('aria-label'), 'the note box is named').toBe(
-      'a note to carry with your answer',
+    expect(feedbackBox().getAttribute('aria-label'), 'the feedback box is named').toBe(
+      'feedback on the document',
     );
-    noteBox().value = 'the second paragraph is stale';
-    noteBox().dispatchEvent(new Event('input', { bubbles: true }));
+    feedbackBox().value = 'the second paragraph is stale';
+    feedbackBox().dispatchEvent(new Event('input', { bubbles: true }));
     flushSync();
 
-    buttonByText('something is off').click();
+    buttonByText('send feedback').click();
     flushSync();
     expect(
       buttonByText('sending...'),
@@ -1298,8 +1694,8 @@ describe('the hand-off answers', () => {
     buttonByText('comment').click();
     flushSync();
 
-    noteBox().value = 'the measure is clear now';
-    noteBox().dispatchEvent(new Event('input', { bubbles: true }));
+    feedbackBox().value = 'the measure is clear now';
+    feedbackBox().dispatchEvent(new Event('input', { bubbles: true }));
     flushSync();
 
     page.submitAnswer = { body: { id: 'r9', number: 4, summary: null, created_at: 'x' } };
@@ -1400,7 +1796,7 @@ describe('the hand-off answers', () => {
     );
     expect(answered, 'the call is still parked').toBeUndefined();
     expect(buttonByText('approve'), 'both answers are still drawn').toBeDefined();
-    expect(buttonByText('something is off')).toBeDefined();
+    expect(buttonByText('send feedback')).toBeDefined();
   });
 
   /** **The pressed button says what it is doing**, and a refusal draws where
@@ -1418,6 +1814,10 @@ describe('the hand-off answers', () => {
     buttonByText('comment').click();
     flushSync();
 
+    feedbackBox().value = 'a word to send';
+    feedbackBox().dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+
     page.submitAnswer = { reject: 'the store is not open' };
     buttonByText('approve').click();
     flushSync();
@@ -1427,7 +1827,7 @@ describe('the hand-off answers', () => {
       expect(document.querySelector('.doc-said')?.textContent).toContain('the store is not open');
     });
     expect(buttonByText('approve').disabled, 'approve is live again').toBe(false);
-    expect(buttonByText('something is off').disabled, 'and so is the other answer').toBe(false);
+    expect(buttonByText('send feedback').disabled, 'and so is the other answer').toBe(false);
   });
 });
 
@@ -1547,18 +1947,18 @@ describe("the block's own take", () => {
     ).toBe('the second line reads well');
   });
 
-  /** **The answer's note takes dictation too.** Its mic is the note box's
-   *  own, and the words land there and ride the answer the reader sends. */
-  it('lands the words in the note box and carries them with the answer', async () => {
+  /** **The feedback box takes dictation too.** Its mic is the box's own,
+   *  and the words land there and ride the answer the reader sends. */
+  it('lands the words in the feedback box and carries them with the answer', async () => {
     const page = drawWithDictation();
     push(seatRecord(IDLE));
 
-    const noteMic = (): HTMLButtonElement => {
+    const feedbackMic = (): HTMLButtonElement => {
       const found = document.querySelector<HTMLButtonElement>('.doc-exit .mic');
-      if (found === null) throw new Error('the note box drew no mic');
+      if (found === null) throw new Error('the feedback box drew no mic');
       return found;
     };
-    noteMic().click();
+    feedbackMic().click();
     await vi.waitFor(
       () => {
         expect(document.querySelector('.doc-exit .takeline'), "the take's bar").not.toBeNull();
@@ -1569,7 +1969,7 @@ describe("the block's own take", () => {
     flushSync();
     push(seatRecord(LANDED));
     flushSync();
-    noteMic().click();
+    feedbackMic().click();
     await vi.waitFor(
       () => {
         expect(document.querySelector('.doc-exit .takeline'), 'the bar goes').toBeNull();
@@ -1577,10 +1977,12 @@ describe("the block's own take", () => {
       { timeout: 2000 },
     );
 
-    const note = document.querySelector<HTMLTextAreaElement>(
-      'textarea[placeholder="note (optional)"]',
+    const feedback = document.querySelector<HTMLTextAreaElement>(
+      'textarea[placeholder="feedback on the document..."]',
     );
-    expect(note?.value, 'the words land in the note box').toBe('the second line reads well');
+    expect(feedback?.value, 'the words land in the feedback box').toBe(
+      'the second line reads well',
+    );
 
     buttonByText('approve').click();
     await vi.waitFor(() => {
@@ -1823,21 +2225,22 @@ describe("the block's own take", () => {
   });
 
   /** **A press on another line is another box.** The take goes with the
-   *  exact target it began on, not merely the row: the gutter is live while
-   *  it runs, and words aimed at line 2 must not land in line 3's composer. */
+   *  exact target it began on, not merely the row: the hover target is live
+   *  while it runs, and words aimed at line 2 must not land in line 1's
+   *  composer. */
   it('cancels the take when the reader moves to another line mid-take', async () => {
     drawWithDictation();
     push(seatRecord(IDLE));
 
-    const gutter = (line: string): HTMLButtonElement => {
-      const found = [...document.querySelectorAll<HTMLButtonElement>('button.doc-lnum')].find(
-        (number) => number.textContent?.trim() === line,
+    const add = (line: string): HTMLButtonElement => {
+      const found = [...document.querySelectorAll<HTMLButtonElement>('button.doc-add')].find(
+        (button) => button.getAttribute('aria-label') === `comment on line ${line}`,
       );
-      if (found === undefined) throw new Error(`no gutter for line ${line}`);
+      if (found === undefined) throw new Error(`no hover target for line ${line}`);
       return found;
     };
 
-    gutter('2').click();
+    add('2').click();
     flushSync();
     composeMic().click();
     await vi.waitFor(
@@ -1849,7 +2252,7 @@ describe("the block's own take", () => {
     push(seatRecord(TAKE));
     flushSync();
 
-    gutter('3').click();
+    add('1').click();
     flushSync();
     // The server ends the cancelled take, as it does on the wire; the bar is
     // the record's, so the record is what says the take is over.
@@ -1865,7 +2268,7 @@ describe("the block's own take", () => {
         .querySelector<HTMLTextAreaElement>('.doc-compose textarea')
         ?.getAttribute('aria-label'),
       'and the box is the line the reader pressed',
-    ).toBe('comment on line 3');
+    ).toBe('comment on line 1');
 
     push(seatRecord(LANDED));
     flushSync();
@@ -1882,10 +2285,7 @@ describe("the block's own take", () => {
     drawWithDictation();
     push(seatRecord(IDLE));
 
-    const second = [...document.querySelectorAll<HTMLButtonElement>('button.doc-lnum')].find(
-      (number) => number.textContent?.trim() === '2',
-    );
-    second?.click();
+    blockTarget('line two').querySelector<HTMLButtonElement>('button.doc-add')?.click();
     flushSync();
 
     composeMic().click();
