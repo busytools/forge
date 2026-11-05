@@ -314,6 +314,8 @@ function agent(
     slot: { org, project, label },
     label,
     lifecycle,
+    heal_attempt: null,
+    heal_next_at: null,
     has_background_work: false,
     pending: null,
     pending_depth: 0,
@@ -1383,6 +1385,34 @@ describe('what a row says', () => {
     const unknown = { ...FLEET, agents: [{ ...FLEET_AGENT, lifecycle: 'Resting' as never }] };
     const lead = rowsOf(homeFrom(unknown)).lead;
     expect(lead?.state).toEqual({ kind: 'lifecycle', lifecycle: 'Idle' });
+  });
+
+  /**
+   * The restarting state and its two fields survive the read: a client that
+   * dropped them would draw a seat between attempts as a calm idle row.
+   */
+  it('narrows a restarting seat with its attempt and next stamp', () => {
+    const restarting = {
+      ...FLEET_AGENT,
+      lifecycle: 'Restarting' as const,
+      heal_attempt: 1,
+      heal_next_at: { secs_since_epoch: 1_790_000_000, nanos_since_epoch: 0 },
+    };
+    const row = homeFrom({ ...FLEET, agents: [restarting] }).agents[0];
+    expect(row?.lifecycle).toBe('Restarting');
+    expect(row?.heal_attempt).toBe(1);
+    expect(row?.heal_next_at?.secs_since_epoch).toBe(1_790_000_000);
+  });
+
+  /**
+   * A server older than the fields states neither, and they read as no
+   * attempt rather than as a definite one the row would count.
+   */
+  it('reads absent heal fields as no attempt', () => {
+    const old = { ...FLEET, agents: [{ ...FLEET_AGENT, heal_attempt: undefined }] };
+    const row = homeFrom(old as unknown as HomeWire).agents[0];
+    expect(row?.heal_attempt).toBe(null);
+    expect(row?.heal_next_at).toBe(null);
   });
 
   /**

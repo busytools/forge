@@ -460,6 +460,10 @@ export function seatMark(state: RowState): SeatMark {
       return mark('running', 'live', 'live');
     case 'Spawning':
       return mark('spawning', 'live', 'live');
+    // A seat between heal attempts is work in flight, not a person's to
+    // act on: forge is bringing it back by itself.
+    case 'Restarting':
+      return mark('spawning', 'live', 'live');
     case 'Idle':
       return mark('idle', 'live', 'idle');
     case 'Attention':

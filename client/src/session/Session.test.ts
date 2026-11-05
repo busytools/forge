@@ -216,6 +216,8 @@ describe('the session shell as it draws', () => {
       slot: { org: 'TestOrg', project: 'proj', label },
       label,
       lifecycle: 'Idle',
+      heal_attempt: null,
+      heal_next_at: null,
       has_background_work: false,
       pending: 'permission',
       pending_depth: 1,
