@@ -21,7 +21,7 @@ globalThis.localStorage = {
   get length() {
     return store.size;
   },
-} as Storage;
+};
 
 beforeEach(() => {
   store.clear();
