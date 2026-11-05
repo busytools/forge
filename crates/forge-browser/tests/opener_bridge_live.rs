@@ -930,9 +930,9 @@ async fn a_noopener_popup_whose_renderer_dies_is_reaped() {
     Ring::unlink(&ring_name);
 }
 
-/// **A `noopener` popup can close itself.** It carries the popup role so
-/// `window.close()` routes to the host, and no opener proxy; the tab goes the
-/// same way a bridged popup's does.
+/// **A `noopener` popup closes itself.** Its `window.close()` ends the tab
+/// and the host emits `TabClosed`; a page target that leaves while the tab
+/// stays behind is the dead row this test would catch.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_noopener_popup_closes_itself() {
     let scratch = tempfile::tempdir().expect("a temp dir");
