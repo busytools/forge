@@ -177,9 +177,16 @@
   let TerminalSurface = $state<Component | null>(null);
   $effect(() => {
     if (terminalSurface.phase === 'closed' || TerminalSurface !== null) return;
-    void import('../terminal/Terminal.svelte').then((module) => {
-      TerminalSurface = module.default;
-    });
+    void import('../terminal/Terminal.svelte')
+      .then((module) => {
+        TerminalSurface = module.default;
+      })
+      .catch((why: unknown) => {
+        // **A chunk that did not load is lowered, not left opening.** The
+        // terminal keeps running on the server, and the next show retries.
+        console.warn('the terminal surface did not load', why);
+        void closeTerminal();
+      });
   });
 
   /**

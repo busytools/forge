@@ -22,6 +22,7 @@ import {
   type TerminalOutput,
   type TerminalViewMessage,
 } from './link';
+import type { TerminalSummary } from '../wire/terminal';
 
 export type TerminalPhase = 'closed' | 'opening' | 'live' | 'failed';
 
@@ -41,6 +42,10 @@ interface TerminalSurface {
   viewer: number | null;
   /** The viewer holding the person's control, or null for the agent. */
   controller: number | null;
+  /** A take or release the person sent that the server has not answered yet. */
+  control_pending: boolean | null;
+  /** The server's sentence when a take or release was refused. */
+  control_reason: string | null;
 }
 
 export const surface: TerminalSurface = $state({
@@ -53,6 +58,8 @@ export const surface: TerminalSurface = $state({
   seq: 0,
   viewer: null,
   controller: null,
+  control_pending: null,
+  control_reason: null,
 });
 
 /** Whether two slots name the same seat. */
@@ -206,6 +213,18 @@ export function installTerminalSurface(connection: Connection): () => void {
     if (surface.seat !== null && !sameSeat(surface.seat, state.seat)) return;
     if (surface.id !== null && state.id !== surface.id) return;
     surface.controller = state.controller;
+    // The answer landed, whatever it was: the bar draws the role, not a wait.
+    surface.control_pending = null;
+    surface.control_reason = null;
+  });
+  // **A refused take or release is drawn.** The push is the success path;
+  // the server's own refusal names this operation, and a bar that showed
+  // neither would leave the press looking like it worked.
+  const stopErrors = connection.onMessage((message) => {
+    if (message.kind !== 'error' || message.what !== 'terminal_control') return;
+    if (surface.phase === 'closed') return;
+    surface.control_pending = null;
+    surface.control_reason = message.why;
   });
   // **A reconnect is a new connection, and the attach died with the old one.**
   // A live surface re-attaches and is repainted rather than left drawing a
@@ -219,6 +238,7 @@ export function installTerminalSurface(connection: Connection): () => void {
     stopView();
     stopFrame();
     stopControl();
+    stopErrors();
     stopStatus();
     clearTerminalLink();
   };
@@ -264,6 +284,8 @@ export async function openTerminal(seat: SessionSlot, id: number | null): Promis
   surface.reason = null;
   surface.viewer = null;
   surface.controller = null;
+  surface.control_pending = null;
+  surface.control_reason = null;
   newestScreen = null;
   pending = [];
   pendingBytes = 0;
@@ -299,6 +321,8 @@ export async function closeTerminal(): Promise<string | null> {
   surface.reason = null;
   surface.viewer = null;
   surface.controller = null;
+  surface.control_pending = null;
+  surface.control_reason = null;
   newestScreen = null;
   pending = [];
   pendingBytes = 0;
@@ -363,6 +387,42 @@ export function mayType(held: boolean): boolean {
 }
 
 /**
+ * The bar's state line, from the surface's own facts.
+ *
+ * **Who holds the keyboard comes first**, whether a hand-off parked it or
+ * another client took it through the bar: a client that lost the role reads
+ * that, not "view only" while another client types.
+ */
+export function terminalStateLine(input: {
+  phase: TerminalPhase;
+  reason: string | null;
+  terminal: TerminalSummary | null;
+  viewer: number | null;
+  controller: number | null;
+  controlReason: string | null;
+}): string {
+  if (input.phase === 'failed') return input.reason ?? 'the terminal stopped answering';
+  if (input.phase === 'opening') return 'opening the terminal';
+  if (input.controlReason !== null) return input.controlReason;
+  const held = input.terminal;
+  if (held === null) return 'the terminal closed';
+  if (!held.alive) return 'the shell exited';
+  if (input.viewer !== null && input.controller !== null && input.controller === input.viewer) {
+    return 'you have control';
+  }
+  if (input.controller !== null) return 'another client has the keyboard';
+  if (held.held) return 'waiting for you';
+  if (held.state.running) return 'the agent is running a command';
+  if (
+    held.state.input_expected?.kind === 'password' ||
+    held.state.input_expected?.kind === 'confirm'
+  ) {
+    return 'the agent is waiting for input';
+  }
+  return 'view only';
+}
+
+/**
  * Take the person's control of the raised terminal, or give it back. The
  * agent's tools are refused while it is held, exactly as during a hand-off.
  */
@@ -370,6 +430,10 @@ export function controlTerminal(take: boolean): void {
   const seat = surface.seat;
   const id = surface.id;
   if (seat === null || id === null) return;
+  // **The press is drawn while the server answers**, and a refusal replaces
+  // the wait with the server's sentence when it lands.
+  surface.control_pending = take;
+  surface.control_reason = null;
   terminalLink().control(seat, id, take);
 }
 

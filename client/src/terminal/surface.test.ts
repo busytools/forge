@@ -92,18 +92,51 @@ import {
   lowerForOtherSeat,
   mayType,
   onOutput,
+  terminalStateLine,
   onScreen,
   openTerminal,
   reconcileSurfaceSize,
   surface,
 } from './surface.svelte';
 import type { Connection } from '../socket';
+import type { TerminalSummary } from '../wire/terminal';
 
 const seat = { org: 'TestOrg', project: 'proj', label: 'lead' };
 
-/** A connection whose status never moves: the store only listens for one. */
+/** One terminal summary, as the record carries it. */
+function terminalSummary(over: Partial<TerminalSummary> = {}): TerminalSummary {
+  return {
+    id: 1,
+    shell: '/bin/zsh',
+    cwd: '/tmp',
+    cols: 80,
+    rows: 24,
+    alive: true,
+    state: { running: false, input_expected: null, exit: null, source: 'exact' },
+    title: '',
+    held: false,
+    ...over,
+  };
+}
+
+/** The messages the store listens for, so a test can push one. */
+const messageListeners = new Set<
+  (message: { kind: string; what?: string; why?: string }) => void
+>();
+
+/** A connection whose status never moves and whose messages a test pushes. */
 function stillConnection(): Connection {
-  return { onStatus: () => () => {} } as unknown as Connection;
+  return {
+    onStatus: () => () => {},
+    onMessage: (fn: (message: { kind: string; what?: string; why?: string }) => void) => {
+      messageListeners.add(fn);
+      return () => messageListeners.delete(fn);
+    },
+  } as unknown as Connection;
+}
+
+function pushError(what: string, why: string): void {
+  for (const fn of messageListeners) fn({ kind: 'error', what, why });
 }
 
 describe('the terminal surface store', () => {
@@ -270,6 +303,7 @@ describe('the terminal surface store', () => {
         statuses.push(fn);
         return () => {};
       },
+      onMessage: () => () => {},
     } as unknown as Connection;
     const stop = installTerminalSurface(connection);
     await openTerminal(seat, 4);
@@ -335,6 +369,77 @@ describe('the terminal surface store', () => {
     expect(mayType(true), 'the loser of the claim falls back to viewing').toBe(false);
     expect(mayType(false), 'and it cannot type outside a hand-off either').toBe(false);
     expect(controlling(), 'nor does it hold the role').toBe(false);
+    stop();
+  });
+
+  it('names the keyboard holder whichever door gave the role away', () => {
+    const line = (over: {
+      terminal?: TerminalSummary;
+      controller?: number | null;
+      controlReason?: string | null;
+    }) =>
+      terminalStateLine({
+        phase: 'live',
+        reason: null,
+        terminal: over.terminal ?? terminalSummary(),
+        viewer: 9,
+        controller: over.controller ?? null,
+        controlReason: over.controlReason ?? null,
+      });
+
+    // Another client took the bar's own door: the loser reads that, not
+    // "view only" while another client types.
+    expect(line({ controller: 12 }), "another client's take").toBe(
+      'another client has the keyboard',
+    );
+    // A take that landed for this client reads its own role.
+    expect(line({ controller: 9 }), 'this client holds it').toBe('you have control');
+    // Nobody holds it: the agent's run is what the bar says.
+    expect(
+      line({ terminal: terminalSummary({ state: { ...terminalSummary().state, running: true } }) }),
+      "the agent's run",
+    ).toBe('the agent is running a command');
+    // A parked hand-off nobody claimed waits for whoever takes it.
+    expect(line({ terminal: terminalSummary({ held: true }) }), 'the hand-off waits').toBe(
+      'waiting for you',
+    );
+    // A refusal replaces the line.
+    expect(
+      line({ controlReason: 'a terminal hand-off holds the keyboard; use the hand-off card' }),
+      'the refusal',
+    ).toContain('hand-off');
+  });
+
+  it('draws the take press until the server answers, and the refusal when it refuses', async () => {
+    const stop = installTerminalSurface(stillConnection());
+    await openTerminal(seat, 4);
+    pushed.view?.({
+      seat,
+      id: 4,
+      cols: 80,
+      rows: 24,
+      seq: 1,
+      screen: '$ ',
+      viewers: 1,
+      viewer: 9,
+      controller: null,
+    });
+
+    controlTerminal(true);
+    expect(link.control).toHaveBeenCalledWith(seat, 4, true);
+    expect(surface.control_pending, 'the press is drawn while the server answers').toBe(true);
+
+    // The refusal lands: the wait becomes the server's sentence.
+    pushError('terminal_control', 'a terminal hand-off holds the keyboard');
+    expect(surface.control_pending).toBeNull();
+    expect(surface.control_reason).toContain('hand-off');
+
+    // A take that lands clears both and hands the role over.
+    controlTerminal(true);
+    pushed.control?.({ seat, id: 4, controller: 9 });
+    expect(surface.control_pending).toBeNull();
+    expect(surface.control_reason).toBeNull();
+    expect(controlling()).toBe(true);
     stop();
   });
 });

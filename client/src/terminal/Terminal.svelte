@@ -18,6 +18,7 @@
     onScreen,
     reconcileSurfaceSize,
     surface,
+    terminalStateLine,
     type TerminalPhase,
   } from './surface.svelte';
 
@@ -77,35 +78,24 @@
   }
 
   /** The state line: what the terminal is doing, in words and not only colour. */
-  const stateLine = $derived.by((): string => {
-    if (phase === 'failed') return reason ?? 'the terminal stopped answering';
-    if (phase === 'opening') return 'opening the terminal';
-    const held = summary;
-    // The record no longer carries this terminal: it closed.
-    if (held === null) return 'the terminal closed';
-    if (!held.alive) return 'the shell exited';
-    // **A hand-off's keyboard is one client's.** Until the first client
-    // types it waits for whoever takes it; once claimed, the rest watch.
-    if (held.held && controlling()) return 'you have control';
-    if (held.held && surface.controller !== null) return 'another client has the keyboard';
-    if (held.held) return 'waiting for you';
-    if (controlling()) return 'you have control';
-    if (held.state.running) return 'the agent is running a command';
-    if (
-      held.state.input_expected?.kind === 'password' ||
-      held.state.input_expected?.kind === 'confirm'
-    ) {
-      return 'the agent is waiting for input';
-    }
-    return 'view only';
-  });
+  const stateLine = $derived(
+    terminalStateLine({
+      phase,
+      reason,
+      terminal: summary,
+      viewer: surface.viewer,
+      controller: surface.controller,
+      controlReason: surface.control_reason,
+    }),
+  );
 
-  /** The title the bar spells: the id, the shell and its cwd. */
+  /** The title the bar spells: the id, the shell and its cwd, once the attach names them. */
   const title = $derived.by((): string => {
     const held = summary;
-    const shell = held?.shell.split('/').pop() ?? 'shell';
-    const id = surface.id ?? 0;
-    return `terminal ${id} · ${shell}${held === null ? '' : ` · ${held.cwd}`}`;
+    const name = surface.id === null ? 'terminal' : `terminal ${surface.id}`;
+    if (held === null) return name;
+    const shell = held.shell.split('/').pop() ?? 'shell';
+    return `${name} · ${shell} · ${held.cwd}`;
   });
 
   /**
@@ -304,7 +294,10 @@
 
   /** Read the screen into a focusable region: a reader who cannot use a
    *  canvas terminal still gets the content, and anyone can copy it. */
-  function readScreen(): void {
+  /** The control that opened the read region, so focus can go back to it. */
+  let readReturn: HTMLElement | null = null;
+
+  function readScreen(from: EventTarget | null): void {
     if (term === null) return;
     const buffer = term.buffer.active;
     const lines: string[] = [];
@@ -313,10 +306,18 @@
       if (line !== undefined) lines.push(line.translateToString(true));
     }
     readText = lines.join('\n').trimEnd();
+    readReturn = from instanceof HTMLElement ? from : null;
     readOpen = true;
     // **The region takes focus**, so a reader who cannot use the canvas
     // arrives at the text they asked for rather than at the top of the page.
     void tick().then(() => readEl?.focus());
+  }
+
+  /** Close the read region and hand focus back to its door. */
+  function closeRead(): void {
+    readOpen = false;
+    readReturn?.focus();
+    readReturn = null;
   }
 
   /** The touch bar's sticky modifiers: the next character carries them. */
@@ -343,7 +344,7 @@
   });
 </script>
 
-<section class="tn" aria-label="the seat's terminal">
+<section class="tn" role="dialog" aria-modal="true" aria-label="the seat's terminal">
   <header class="tn-bar">
     <button type="button" class="tn-back" onclick={lower} aria-label="back to chat">
       back to chat
@@ -351,6 +352,7 @@
     <span class="tn-title" {title}>{title}</span>
     <span
       class="tn-state"
+      role="status"
       class:bad={phase === 'failed'}
       class:held={summary?.held ?? false}
       class:mine={controlling()}
@@ -369,11 +371,11 @@
       type="button"
       class="tn-act"
       aria-pressed={readOpen}
-      onclick={() => {
+      onclick={(event) => {
         if (readOpen) {
-          readOpen = false;
+          closeRead();
         } else {
-          readScreen();
+          readScreen(event.currentTarget);
         }
       }}
     >
@@ -382,14 +384,22 @@
     {#if handOff.current === null && phase === 'live'}
       <!-- **The person can take the keyboard without an agent asking**: the
            same role the browser has, and the agent's tools are refused while
-           it is held. -->
+           it is held. **The press is drawn** while the server answers, and a
+           refusal lands in the state line. -->
       <button
         type="button"
         class="tn-act"
         aria-pressed={controlling()}
+        disabled={surface.control_pending !== null}
         onclick={() => controlTerminal(!controlling())}
       >
-        {controlling() ? 'release control' : 'take control'}
+        {surface.control_pending === true
+          ? 'taking control...'
+          : surface.control_pending === false
+            ? 'releasing...'
+            : controlling()
+              ? 'release control'
+              : 'take control'}
       </button>
     {/if}
     {#if handOff.current !== null}
@@ -430,7 +440,7 @@
     </div>
   {/if}
 
-  {#if touch && phase !== 'failed'}
+  {#if touch && phase === 'live'}
     <div class="tn-keys" role="toolbar" aria-label="terminal keys" aria-disabled={!typing}>
       <button
         type="button"
@@ -585,6 +595,17 @@
     background: var(--s2);
     color: var(--text);
     font: inherit;
+  }
+  /* **An inert key is drawn inert**: the bar keeps its own colours, so the
+     state has to be said rather than left to the platform's default. */
+  .tn-keys button:disabled,
+  .tn-act:disabled {
+    opacity: 0.45;
+    cursor: default;
+  }
+  .tn-keys button:disabled:hover,
+  .tn-act:disabled:hover {
+    background: var(--s2);
   }
   .tn-read {
     max-height: 40vh;
