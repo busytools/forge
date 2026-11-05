@@ -205,8 +205,8 @@
    * field, and a destructive card must not call that a thread.
    *
    * **The thread is named core-side**, and a parent the core could not read
-   * falls back to the raw ts - never to an invented name. The tags are people
-   * the core resolved, and one it could not name keeps its id.
+   * still reads as a thread rather than as a ts. The tags are people the core
+   * resolved, and one it could not name keeps its id.
    */
   interface Dest {
     workspace: string;
@@ -231,6 +231,24 @@
     const noun = operation === 'post' || operation === 'upload' ? 'thread' : 'message';
     return { workspace, conversation: conversationLabel, noun, threadTs, thread, tagged };
   });
+
+  /**
+   * The draft's text as the card draws it: a mention the core named reads as
+   * its name, as Slack draws it, and one it could not name keeps its id.
+   */
+  function namedBody(text: string, tagged: SlackPerson[]): string {
+    const names = new Map(tagged.map((person) => [person.id, person.name]));
+    return text.replace(/<@([^>]*)>/g, (mention: string, inner: string) => {
+      const id = inner.split('|')[0] ?? '';
+      if (!/^[A-Za-z][A-Za-z0-9]*$/.test(id)) return mention;
+      const name = names.get(id);
+      return name === null || name === undefined ? id : `@${name}`;
+    });
+  }
+
+  const slackBody = $derived.by(() =>
+    ask.kind === 'slack_draft' ? namedBody(ask.request.text, ask.request.tagged) : '',
+  );
 
   /**
    * The two places the line yields are decided from MEASURED widths, because
@@ -1474,7 +1492,7 @@
             <span class="thr">
               <span class="lbl">{slackDest.noun}:</span>
               {#if slackDest.thread === null}
-                <span class="ex" title={slackDest.threadTs}>{slackDest.threadTs}</span>
+                <span class="ex">a {slackDest.noun}</span>
               {:else}
                 {@const thread = slackDest.thread}
                 <span class="who">@{thread.author}</span>
@@ -1505,17 +1523,14 @@
         <span class="q mono dest-verb">{slackVerbs.head}</span>
         {@render foldButton()}
       </div>
-      <!-- The body verbatim: this is what would go out, so the reader approves
-         the text itself rather than a summary of it. -->
+      <!-- The words the draft would send, with its mentions drawn as the names
+         the core resolved: this is what would go out and what the reader
+         approves, not a summary of it. -->
       <!-- The draft reads as an option's preview does, through the same
          markdown renderer and the same panel: Slack text IS markdown, the
          question kinds are already in hand, and one kind of block for both
          keeps the dock one system rather than two. -->
-      {@render previewRegion(
-        `the ${ask.request.operation} held for approval`,
-        ask.request.text,
-        false,
-      )}
+      {@render previewRegion(`the ${ask.request.operation} held for approval`, slackBody, false)}
     {:else if ask.kind === 'document_hand_off'}
       <div class="d-head">
         <span class="tag warn">&#9888; needs you</span>
