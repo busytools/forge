@@ -344,7 +344,7 @@
   });
 </script>
 
-<section class="tn" role="dialog" aria-modal="true" aria-label="the seat's terminal">
+<div class="tn" role="dialog" aria-modal="true" aria-label="the seat's terminal">
   <header class="tn-bar">
     <button type="button" class="tn-back" onclick={lower} aria-label="back to chat">
       back to chat
@@ -488,7 +488,7 @@
       <pre>{readText}</pre>
     </div>
   {/if}
-</section>
+</div>
 
 <style>
   .tn {

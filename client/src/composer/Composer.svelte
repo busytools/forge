@@ -6,7 +6,7 @@
   import { runningAt } from '../chat/conversation';
   import { drawsSurface, navigateBrowser } from '../browser/link';
   import { closeSurface, openSurface, surface } from '../browser/surface.svelte';
-  import { closeTerminal, handOff } from '../terminal/surface.svelte';
+  import { clearControlRefusal, closeTerminal, handOff } from '../terminal/surface.svelte';
   import Icon from '../components/Icon.svelte';
   import { slotOf, subjectKey } from '../protocol';
   import { variantOf } from '../session/apply';
@@ -539,10 +539,13 @@
    * surface while it is up, so a parked terminal hand-off with no reachable
    * Done would hold the session for ever; the bar reads this and draws them.
    */
+  /** The hand-off this page last drew, so its ending can be told from its absence. */
+  let drawnHandOff: string | null = null;
   $effect(() => {
     const held = ask;
     if (held !== null && held.kind === 'terminal_hand_off') {
       const id = held.request.id;
+      drawnHandOff = id;
       handOff.current = {
         id,
         reason: held.request.reason,
@@ -567,6 +570,12 @@
         },
       };
     } else {
+      // **The ask leaving the record is its ending**: a take's refusal that
+      // named it is not true any more.
+      if (drawnHandOff !== null) {
+        drawnHandOff = null;
+        clearControlRefusal();
+      }
       handOff.current = null;
     }
   });

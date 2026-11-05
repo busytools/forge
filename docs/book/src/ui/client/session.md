@@ -339,8 +339,9 @@ tab**, so a page that has never used the browser carries no browser row.
 
 **The terminal segment raises the seat's terminal** (see
 [terminal.md](./terminal.md)): show opens the full-window surface, hide lowers
-it, and the row draws for every seat - on one no agent has opened, its button
-is **start**, which is the person's own door.
+it, and the row draws for every seat that answers its read - on one no agent
+has opened, its button is **start**, the person's own door; a seat with no
+working tree draws the note that says why instead.
 
 **The files slip is the one mandatory segment** (Ved, 2026-10-17): every
 seat has a tree - a worker's own worktree, the lead's checkout - so it

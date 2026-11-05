@@ -138,8 +138,13 @@ impl ViewSurface {
     }
 
     /// The person's own take, refused while a hand-off holds the keyboard.
-    pub fn take_terminal_control(&self, seat: &SessionSlot, viewer: u64) -> Result<(), String> {
-        self.workspace.take_terminal_control(seat, viewer)
+    pub fn take_terminal_control(
+        &self,
+        seat: &SessionSlot,
+        id: u16,
+        viewer: u64,
+    ) -> Result<(), String> {
+        self.workspace.take_terminal_control(seat, id, viewer)
     }
 
     /// The person's close door: end the terminal's process group.

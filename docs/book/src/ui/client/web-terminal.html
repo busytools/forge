@@ -131,9 +131,10 @@
     <div class="tnote">the touch key bar is drawn under <span class="mono">pointer: coarse</span>: a
       finger cannot produce Escape, Tab or an arrow, and every key is a 44px target. Ctrl and Alt
       are sticky for the next character the soft keyboard types, and the whole bar is inert
-      outside a hand-off and on any client that is not its door - the surface is a viewer then,
-      and the server refuses a keystroke that arrives anyway. A parked hand-off's keyboard is one
-      client's: the first to type claims it, and any other client's bar reads
+      outside both holds - the person's own take control or a hand-off - and, once another client
+      has claimed a hand-off, on every other client: the surface is a viewer then, and the server
+      refuses a keystroke that arrives anyway. A parked hand-off's keyboard is one client's: the
+      first to type claims it, and any other client's bar reads
       <span class="mono">another client has the keyboard</span>.</div>
   </div>
 
@@ -154,6 +155,38 @@
   </div>
 
   <div class="tile">
+    <div class="tcap"><b>the bar while a take is answered</b> · the press, the refusal and the other holder</div>
+    <div class="term"><div class="bar">
+      <span class="back">back to chat</span>
+      <span class="title">terminal 1 · zsh · /Users/vedhavyas/Projects/forge</span>
+      <span class="state">view only</span>
+      <span class="act">read the screen</span>
+      <span class="act">taking control...</span>
+      <span class="act">close</span>
+    </div></div>
+    <div class="term"><div class="bar">
+      <span class="back">back to chat</span>
+      <span class="title">terminal 1 · zsh · /Users/vedhavyas/Projects/forge</span>
+      <span class="state">a terminal hand-off holds the keyboard; use the hand-off card</span>
+      <span class="act">read the screen</span>
+      <span class="act">take control</span>
+      <span class="act">close</span>
+    </div></div>
+    <div class="term"><div class="bar">
+      <span class="back">back to chat</span>
+      <span class="title">terminal 1 · zsh · /Users/vedhavyas/Projects/forge</span>
+      <span class="state">another client has the keyboard</span>
+      <span class="act">read the screen</span>
+      <span class="act">take control</span>
+      <span class="act">close</span>
+    </div></div>
+    <div class="tnote">a take or release is drawn while the server answers - <b>taking control...</b>,
+      <b>releasing...</b> - and a refusal replaces the state line in the server's own words, until the
+      ask ends or the push lands. A client that lost the keyboard to another client's take, or to a
+      hand-off's claim, reads <span class="mono">another client has the keyboard</span>.</div>
+  </div>
+
+  <div class="tile">
     <div class="tcap"><b>the strip's row</b> · drawn for every seat that holds a session</div>
     <div class="strip">
       <span class="seg"><svg class="glyph" viewBox="0 0 24 24" aria-hidden="true"><path d="m7 11 2-2-2-2"/><path d="M11 13h4"/><rect width="18" height="18" x="3" y="3" rx="2" ry="2"/></svg><span class="ring"></span>terminal <span class="dim">a command is running</span> <span class="go">show</span></span>
@@ -165,8 +198,8 @@
     </div>
     <div class="tnote">the states are words as well as colour: a running command, a person's input
       wanted, idle-but-the-agent's, an exited shell, or no terminal yet. <b>Start</b> is the
-      person's own door on a seat no agent has opened. A seat the server holds no session for
-      gets no door: the row says why instead.</div>
+      person's own door on a seat no agent has opened. A seat with no working tree - its read
+      refused - gets no door: the row says why instead.</div>
   </div>
 
   <div class="tile">

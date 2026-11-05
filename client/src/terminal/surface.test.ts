@@ -374,14 +374,14 @@ describe('the terminal surface store', () => {
 
   it('names the keyboard holder whichever door gave the role away', () => {
     const line = (over: {
-      terminal?: TerminalSummary;
+      terminal?: TerminalSummary | null;
       controller?: number | null;
       controlReason?: string | null;
     }) =>
       terminalStateLine({
         phase: 'live',
         reason: null,
-        terminal: over.terminal ?? terminalSummary(),
+        terminal: over.terminal === undefined ? terminalSummary() : over.terminal,
         viewer: 9,
         controller: over.controller ?? null,
         controlReason: over.controlReason ?? null,
@@ -412,6 +412,15 @@ describe('the terminal surface store', () => {
     // A refusal replaces the line, in the server's own words.
     const refused = 'a terminal hand-off holds the keyboard; use the hand-off card';
     expect(line({ controlReason: refused }), 'the refusal').toBe(refused);
+    // **Liveness outranks a refusal**: a sentence about a keyboard says
+    // nothing about a terminal that is gone or a shell that exited.
+    expect(line({ terminal: null, controlReason: refused }), 'a closed terminal').toBe(
+      'the terminal closed',
+    );
+    expect(
+      line({ terminal: terminalSummary({ alive: false }), controlReason: refused }),
+      'an exited shell',
+    ).toBe('the shell exited');
   });
 
   it('draws the take press until the server answers, and the refusal when it refuses', async () => {

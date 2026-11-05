@@ -16,7 +16,7 @@ use forge_primitives::terminal::{TerminalExit, TerminalState};
 use forge_terminal::Key;
 use tokio::time::{Instant, timeout};
 
-use crate::terminal::{TerminalEntry, wire_state};
+use crate::terminal::{TerminalEntry, controlled_error, wire_state};
 use crate::workspace::Workspace;
 
 /// What `terminal__open` asks for.
@@ -373,12 +373,6 @@ fn refuse_when_held(workspace: &Workspace, seat: &SessionSlot) -> Result<(), Str
 
 fn held_error() -> String {
     "a hand-off is parked on this terminal: the person owns its screen and input until they answer"
-        .to_owned()
-}
-
-fn controlled_error() -> String {
-    "the person has taken control of this terminal: its screen and input are theirs until they \
-     release it"
         .to_owned()
 }
 

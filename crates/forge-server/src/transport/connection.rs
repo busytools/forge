@@ -2892,7 +2892,7 @@ where
                 // take while one waits, and the refusal is checked under the
                 // park's own lock, so a take cannot race a park into place
                 // and hand out a role the person cannot see.
-                if let Err(why) = state.surface.take_terminal_control(&seat, me) {
+                if let Err(why) = state.surface.take_terminal_control(&seat, id, me) {
                     return send(
                         socket,
                         ServerMessage::Error {

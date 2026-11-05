@@ -407,10 +407,12 @@ export function terminalStateLine(input: {
 }): string {
   if (input.phase === 'failed') return input.reason ?? 'the terminal stopped answering';
   if (input.phase === 'opening') return 'opening the terminal';
-  if (input.controlReason !== null) return input.controlReason;
   const held = input.terminal;
+  // **Liveness outranks a refusal**: a sentence about a keyboard says
+  // nothing about a terminal that is gone.
   if (held === null) return 'the terminal closed';
   if (!held.alive) return 'the shell exited';
+  if (input.controlReason !== null) return input.controlReason;
   if (input.viewer !== null && input.controller !== null && input.controller === input.viewer) {
     return 'you have control';
   }
@@ -439,6 +441,17 @@ export function controlTerminal(take: boolean): void {
   surface.control_pending = take;
   surface.control_reason = null;
   terminalLink().control(seat, id, take);
+}
+
+/**
+ * The hand-off a refusal named has ended: the sentence stops being true.
+ *
+ * **The ask can resolve without this client pressing anything** - another
+ * client answers it, or the seat drops it - so a bar left carrying "a
+ * terminal hand-off holds the keyboard" would name an ask that is gone.
+ */
+export function clearControlRefusal(): void {
+  surface.control_reason = null;
 }
 
 /** Whether a terminal surface is up. */

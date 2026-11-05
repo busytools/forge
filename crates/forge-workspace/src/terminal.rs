@@ -155,6 +155,14 @@ impl TerminalEntry {
     }
 }
 
+/// The sentence a call gets when the person holds the terminal's keyboard,
+/// shared so the tool family and the park describe one fact one way.
+pub(crate) fn controlled_error() -> String {
+    "the person has taken control of this terminal: its screen and input are theirs until they \
+     release it"
+        .to_owned()
+}
+
 /// The wire state, from the crate's own.
 pub(crate) fn wire_state(state: forge_terminal::State) -> TerminalState {
     TerminalState {
@@ -312,15 +320,21 @@ impl Workspace {
     /// The person's own take, refused while a hand-off holds the keyboard.
     ///
     /// **Checked under the hand-off lock**: a take racing a park either lands
-    /// before the park exists or is refused, never half of each.
-    pub fn take_terminal_control(&self, slot: &SessionSlot, viewer: u64) -> Result<(), String> {
+    /// before the park exists or is refused, never half of each. **The id is
+    /// the terminal the caller is viewing**: a replaced shell has a new id,
+    /// and a take that landed on it would hand a role no push could reach.
+    pub fn take_terminal_control(
+        &self,
+        slot: &SessionSlot,
+        id: u16,
+        viewer: u64,
+    ) -> Result<(), String> {
         let parked = self.terminal_handoffs.lock();
         if parked.values().any(|(owner, _, _)| owner == slot) {
             return Err("a terminal hand-off holds the keyboard; use the hand-off card".to_owned());
         }
-        if let Some(entry) = self.terminal_if_any(slot) {
-            entry.take_control(viewer);
-        }
+        let entry = self.terminal_by_id(slot, id)?;
+        entry.take_control(viewer);
         Ok(())
     }
 
@@ -400,7 +414,17 @@ impl Workspace {
         let (sender, receiver) = oneshot::channel();
         let id = uuid::Uuid::new_v4();
         let handoff = TerminalHandOff { id, reason: reason.to_owned(), terminal, secret };
-        self.terminal_handoffs.lock().insert(id, (caller.clone(), handoff.clone(), sender));
+        {
+            // **The control check and the park share the lock**, so a take
+            // landing now cannot leave a hand-off parked on a terminal whose
+            // keyboard the person holds - the state in which a byte could
+            // land after the ask ends.
+            let mut parked = self.terminal_handoffs.lock();
+            if entry.controller().is_some() {
+                return Err(controlled_error());
+            }
+            parked.insert(id, (caller.clone(), handoff.clone(), sender));
+        }
         // **The strip says the input is the person's** while the ask waits,
         // so a row drawn beside the dock does not read as idle.
         self.announce_terminal(caller, Some(entry.summary(caller, true)));
@@ -965,7 +989,7 @@ mod tests {
             .expect("a hand-off parks");
 
         assert!(
-            workspace.take_terminal_control(&slot, 7).is_err(),
+            workspace.take_terminal_control(&slot, entry.id, 7).is_err(),
             "a take landed while a hand-off held the keyboard",
         );
         assert!(!workspace.terminal_controlled(&slot), "and no role was handed out");
@@ -980,10 +1004,60 @@ mod tests {
             },
         ));
         assert!(
-            workspace.take_terminal_control(&slot, 7).is_ok(),
+            workspace.take_terminal_control(&slot, entry.id, 7).is_ok(),
             "the person's own take is theirs again once the ask is answered",
         );
         assert!(workspace.terminal_controlled(&slot), "and they hold it");
+        entry.terminal.close();
+    }
+
+    /// **A take names the terminal it is viewing.** A replaced shell has a
+    /// new id; resolving the seat's current one would hand a role no push
+    /// could reach, and a seat with no terminal refuses rather than
+    /// pretending the press landed.
+    #[tokio::test]
+    async fn a_take_on_a_replaced_or_missing_terminal_is_refused() {
+        let (workspace, _rx) = Workspace::testing_stub();
+        workspace.seed_test_project("proj", "/tmp");
+        let slot = SessionSlot::lead("TestOrg", "proj");
+        let entry = workspace.terminal_for(&slot).expect("a terminal");
+        let stale = entry.id;
+        workspace.close_terminal(&slot);
+        let fresh = workspace.terminal_for(&slot).expect("a fresh terminal");
+        assert_ne!(fresh.id, stale, "the shell was replaced with a new id");
+        assert!(
+            workspace.take_terminal_control(&slot, stale, 7).is_err(),
+            "a take on a replaced terminal landed",
+        );
+        assert!(!workspace.terminal_controlled(&slot), "and no role was handed out");
+        assert!(
+            workspace.take_terminal_control(&slot, fresh.id, 7).is_ok(),
+            "the terminal this client is viewing takes the role",
+        );
+
+        let empty = SessionSlot::worker("TestOrg", "proj", "nobody");
+        assert!(
+            workspace.take_terminal_control(&empty, 1, 8).is_err(),
+            "a take with no terminal was answered as though it landed",
+        );
+        workspace.close_terminal(&slot);
+    }
+
+    /// **A park cannot land on a terminal the person holds**: the control
+    /// check shares the lock with the insert, so a take racing a hand-off
+    /// cannot leave one behind.
+    #[tokio::test]
+    async fn a_park_is_refused_while_the_person_holds_the_keyboard() {
+        let (workspace, _rx) = Workspace::testing_stub();
+        workspace.seed_test_project("proj", "/tmp");
+        let slot = SessionSlot::lead("TestOrg", "proj");
+        let entry = workspace.terminal_for(&slot).expect("a terminal");
+        entry.take_control(7);
+        assert!(
+            workspace.register_terminal_hand_off(&slot, entry.id, "the sudo password").is_err(),
+            "a hand-off parked on a terminal the person holds",
+        );
+        assert!(!workspace.terminal_held(&slot), "and no ask was registered");
         entry.terminal.close();
     }
 
