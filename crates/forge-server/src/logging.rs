@@ -111,11 +111,12 @@ impl LoggingRuntime {
 /// starts, so the pair is the only way a "tool not found" is traced to the
 /// side that actually lacked the name.
 ///
-/// `forge_connectors::slack` carries the sweep's per-pass throttle detail,
-/// which was demoted to `debug` once the warning moved to one per episode.
-/// A workspace Slack throttles is that workspace's own rate limit rather
-/// than forge's health, so the repeated numbers are `debug`; the directive
-/// is what keeps them readable under the default filter.
+/// `forge_connectors::slack::throttle` carries the sweep's per-pass throttle
+/// detail, which was demoted to `debug` once the warning moved to one per
+/// episode. A workspace Slack throttles is that workspace's own rate limit
+/// rather than forge's health, so the repeated numbers are `debug`; the
+/// dedicated target keeps the module's per-sweep chatter out of the default
+/// filter while these stay readable.
 pub const DEFAULT_LOG_DIRECTIVES: &str = "info,\
     app.input=debug,\
     app.lifecycle=debug,\
@@ -134,7 +135,7 @@ pub const DEFAULT_LOG_DIRECTIVES: &str = "info,\
     forge_workspace::dictate=debug,\
     forge_workspace::subagent_cards=debug,\
     forge_dictate=debug,\
-    forge_connectors::slack=debug,\
+    forge_connectors::slack::throttle=debug,\
     llama_cpp_2=error,\
     llama-cpp-2=error";
 
