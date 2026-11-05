@@ -6407,6 +6407,26 @@ describe('the dock', () => {
     );
   });
 
+  it('leaves a mention inside code as written, as Slack draws it', () => {
+    open({
+      record: record({
+        pending_asks: [
+          slackDraftAsk({
+            text: 'Raw is `<@U0442>` and fenced:\n```\n<@U0442>\n```\nConfirmed <@U0442>.',
+            tagged: [{ id: 'U0442', name: 'rena' }],
+          }),
+        ],
+      }),
+    });
+
+    const body = document.querySelector('.dock .preview')?.textContent ?? '';
+    expect(body, 'a mention outside code reads as its name').toContain('Confirmed @rena.');
+    expect(
+      body.match(/<@U0442>/g)?.length,
+      'both the inline span and the fence keep the raw mention',
+    ).toBe(2);
+  });
+
   /** The card's destination line, with its whitespace collapsed for a read. */
   function dest(): string {
     return (document.querySelector('.dock .dest')?.textContent ?? '').replace(/\s+/g, ' ').trim();
@@ -6488,6 +6508,10 @@ describe('the dock', () => {
       'Trust Machines · #granite-staging-alerts thread: a thread · tags: U3',
     );
     expect(dest(), 'and the raw stamp never reaches the reader').not.toContain(STAMP);
+    expect(
+      document.querySelector('.dock .dest .ex')?.getAttribute('title'),
+      'nor is it reachable from the line title',
+    ).toBeNull();
   });
 
   it('draws the server-cut excerpt with the same line in its title', () => {

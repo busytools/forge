@@ -234,16 +234,33 @@
 
   /**
    * The draft's text as the card draws it: a mention the core named reads as
-   * its name, as Slack draws it, and one it could not name keeps its id.
+   * its name, as Slack draws it, and one it could not name keeps its id. Code
+   * draws its own markup, so a mention inside a span or a fence stays as
+   * written.
    */
   function namedBody(text: string, tagged: SlackPerson[]): string {
     const names = new Map(tagged.map((person) => [person.id, person.name]));
-    return text.replace(/<@([^>]*)>/g, (mention: string, inner: string) => {
+    const named = (mention: string, inner: string): string => {
       const id = inner.split('|')[0] ?? '';
       if (!/^[A-Za-z][A-Za-z0-9]*$/.test(id)) return mention;
       const name = names.get(id);
       return name === null || name === undefined ? id : `@${name}`;
-    });
+    };
+    let fenced = false;
+    return text
+      .split('\n')
+      .map((line) => {
+        if (/^\s*(```|~~~)/.test(line)) {
+          fenced = !fenced;
+          return line;
+        }
+        if (fenced) return line;
+        return line
+          .split(/(`[^`]*`)/)
+          .map((part, at) => (at % 2 === 1 ? part : part.replace(/<@([^>]*)>/g, named)))
+          .join('');
+      })
+      .join('\n');
   }
 
   const slackBody = $derived.by(() =>
