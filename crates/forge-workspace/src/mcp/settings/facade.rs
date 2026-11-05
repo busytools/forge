@@ -28,8 +28,7 @@ pub(crate) enum SettingsError {
     ForeignProject { key: String, org: String, project: String },
     /// The key is one of another org's own keys, refused on the same terms.
     ForeignOrg { key: String, org: String, caller_org: String },
-    /// The catalogue refused the value, the key cannot be unset, or the
-    /// write would change nothing.
+    /// The key, value or batch was refused before any reader was asked.
     Wanted(String),
     /// No client is attached to answer the approval prompt.
     NoReader,
@@ -249,7 +248,10 @@ impl ProdSettingsFacade {
             | crate::workspace::SettingsSaveError::Refused { message, .. } => {
                 SettingsError::Wanted(message)
             }
-            crate::workspace::SettingsSaveError::Io(message) => SettingsError::Refused(message),
+            crate::workspace::SettingsSaveError::Io(message) => SettingsError::Wanted(format!(
+                "the configuration could not be read to validate this write, so nothing was \
+                 written: {message}"
+            )),
         })?;
 
         let ask = SettingsWriteAsk { id: Uuid::new_v4(), edits: changes };
@@ -936,6 +938,35 @@ provider = "anthropic"
         assert!(message.contains("email"), "the missing key is named: {message}");
         assert!(ws.settings_writes.lock().is_empty(), "no ask was minted");
         assert_eq!(read_config(&ws), CONFIG, "nothing was written");
+    }
+
+    /// A config that cannot be read to validate the batch refuses it before
+    /// the ask, and the words do not claim a reader approved anything.
+    #[tokio::test]
+    async fn an_unreadable_config_refuses_the_batch_before_the_ask() {
+        let (ws, _dir) = fixture();
+        let _answerer = ws.subscribe_answerer();
+        let facade = facade(&ws);
+        std::fs::remove_file(ws.config_path()).expect("remove forge.toml");
+
+        let error = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            facade.set(
+                &caller(),
+                vec![
+                    item("vault.url", json!("https://vault.test")),
+                    item("vault.email", json!("me@vault.test")),
+                ],
+            ),
+        )
+        .await
+        .expect("the refusal precedes the ask, so nothing waits on an approval")
+        .expect_err("an unreadable config refuses the write");
+
+        let message = error.message();
+        assert!(message.contains("could not be read"), "{message}");
+        assert!(!message.contains("approved"), "no reader was asked: {message}");
+        assert!(ws.settings_writes.lock().is_empty(), "no ask was minted");
     }
 
     /// **One bad key refuses the whole batch**: the good pair beside it is
