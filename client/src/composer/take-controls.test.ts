@@ -135,7 +135,7 @@ describe('the take row at a phone width under a finger', () => {
 
   /**
    * **The card is the ladder's container in every mount, not just the
-   * composer's.** The dock's words row, the takeover bar's feedback row, the
+   * composer's.** The dock's words row, the takeover bar's note row, the
    * review and document word lines all draw the same card; the review and
    * document rows are the `.line` shape the first case already covers, and
    * the other two measure their own rows here. The intended consequence at a

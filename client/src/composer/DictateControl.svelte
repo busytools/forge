@@ -24,6 +24,7 @@
     onpress = () => {},
     onhold = () => {},
     element = () => {},
+    holdable = true,
   }: {
     /** The take this surface's mic drives. */
     dictate: Dictation;
@@ -41,6 +42,10 @@
      * rather than a name to look up.
      */
     element?: (el: HTMLElement | null) => void;
+    /** Whether a hold or Shift+Enter opens the settings panel. A surface with
+     *  no panel of its own passes false, so the control takes no state it
+     *  cannot draw. */
+    holdable?: boolean;
   } = $props();
 
   /** A hold on the mic that opens the settings instead of firing a take. */
@@ -81,6 +86,7 @@
   function holdStart(event: PointerEvent): void {
     // Primary button only: a right-click hold is not a hold.
     if (event.button !== 0) return;
+    if (!holdable) return;
     heldAt = 0;
     holdTimer = setTimeout(() => {
       holdTimer = null;
@@ -107,7 +113,7 @@
   class="mic"
   type="button"
   bind:this={micEl}
-  title="press to dictate, hold or Shift+Enter for settings"
+  title={holdable ? 'press to dictate, hold or Shift+Enter for settings' : 'press to dictate'}
   aria-label={dictate.take === null && !dictate.held ? 'dictate' : 'stop dictating'}
   aria-expanded={dictate.panel}
   onpointerdown={holdStart}
@@ -118,6 +124,7 @@
     // own click; the settings need one modifier shape, said in the
     // title so it is discoverable rather than folklore.
     if (event.key === 'Enter' && event.shiftKey) {
+      if (!holdable) return;
       event.preventDefault();
       onhold();
       dictate.panel = true;

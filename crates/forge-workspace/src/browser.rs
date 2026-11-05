@@ -674,11 +674,10 @@ mod tests {
         );
     }
 
-    /// **A person who spoke is not a person who declined.** The feedback line
-    /// sends the session their words and ends the park, and the ending it
-    /// sends must say so: `NotNow` there told the session "the person
-    /// declined, decide what to do instead" while they were still working the
-    /// page (live, 2026-10-26, twice on one CAPTCHA).
+    /// **A person who says something is off is not a person who declined.**
+    /// The note line sends the session their words and ends the park as
+    /// `Feedback`, which the agent addresses before handing the page off
+    /// again; `NotNow` is the deferral, not this.
     #[tokio::test]
     async fn a_feedback_answer_reaches_the_waiter_as_feedback() {
         let (ws, _rx) = Workspace::testing_stub();
@@ -696,7 +695,7 @@ mod tests {
         assert_eq!(
             waiter.await.expect("the waiter is answered"),
             HandOffEnding::Feedback,
-            "the person spoke: the ending says feedback, never a decline",
+            "the person says something is off: the ending is feedback, not a deferral",
         );
     }
 

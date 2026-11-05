@@ -777,6 +777,70 @@ function outsidePage(merged: unknown[], here: Frames, fromPage: Frames): unknown
 }
 
 /**
+ * The held turns whose exchange starts inside this page row, before `match`'s.
+ *
+ * **A row the server joined two exchanges into is not evidence either is
+ * outside the page.** A prompt no row opens - a `prompt_under` from another
+ * client, a delivery - leaves the server's own fold with nothing to open its
+ * turn at, so its page carries that exchange inside the row above it. The
+ * exchange's frames put it in the row; the ids say whose, because two
+ * exchanges can say the same words.
+ *
+ * Only one that starts earlier counts: the row's order is the exchange order,
+ * so the earlier exchange is the row's front.
+ *
+ * **And only a row that cannot be the match's own.** A row carrying the
+ * frame the match opened on is that exchange's row, however many of its
+ * frames the page was read too early for; a turn the row does not carry the
+ * opening of is a row the server could not open, which is the shape this
+ * whole cut is for.
+ */
+function carriedBefore(
+  copy: unknown[],
+  turns: readonly Turn[],
+  match: Turn,
+  placed: ReadonlyMap<Turn, number>,
+): Turn[] {
+  const opening = match.messages[0] === undefined ? null : uuidOf(match.messages[0]);
+  if (opening !== null && copy.some((message) => uuidOf(message) === opening)) return [];
+  const matchFrames = new Frames(match.messages);
+  const matchAt = copy.findIndex((message) => matchFrames.carries(message, false));
+  if (matchAt <= 0) return [];
+  const picked: Turn[] = [];
+  for (const turn of turns) {
+    if (turn === match || placed.has(turn)) continue;
+    const frames = new Frames(turn.messages);
+    const at = copy.findIndex((message) => frames.carries(message, false));
+    if (at >= 0 && at < matchAt) picked.push(turn);
+  }
+  return picked;
+}
+
+/**
+ * The row's copy cut into the exchanges it carries, one piece per owner.
+ *
+ * Cut where each owner's first frame sits, in the row's own order; the frames
+ * above the first cut belong to the first piece, so nothing this copy carries
+ * is dropped. An owner with no frame in the copy takes no piece.
+ */
+function splitCarried(
+  copy: unknown[],
+  owners: readonly Turn[],
+): Array<{ turn: Turn; messages: unknown[] }> {
+  const starts = owners
+    .map((turn) => {
+      const frames = new Frames(turn.messages);
+      return { turn, at: copy.findIndex((message) => frames.carries(message, false)) };
+    })
+    .filter((held) => held.at >= 0)
+    .sort((one, other) => one.at - other.at);
+  return starts.map((held, index) => ({
+    turn: held.turn,
+    messages: copy.slice(index === 0 ? 0 : held.at, starts[index + 1]?.at ?? copy.length),
+  }));
+}
+
+/**
  * Where a list answers a frame: its id, a task ending's envelope, then its
  * words - the same three faces [`Frames`] carries a frame by.
  */
@@ -2642,13 +2706,32 @@ export class Chat {
                 };
           continue;
         }
-        placed.set(match, drawn.length);
         if (byName !== undefined) {
           // Reconciled against this turn above already: the name it matched
           // under is one `known` holds, so the row is ready as it stands.
+          placed.set(match, drawn.length);
           drawn.push(row);
           continue;
         }
+        // A page row can carry two exchanges; split it so the earlier turn
+        // keeps its place.
+        const borrowed = carriedBefore(copy, healed.turns, match, placed);
+        const pieces = borrowed.length === 0 ? [] : splitCarried(copy, [...borrowed, match]);
+        const own = pieces.find((piece) => piece.turn === match)?.messages ?? copy;
+        const ownFrames = borrowed.length === 0 ? carried : new Frames(own);
+        for (const piece of pieces) {
+          if (piece.turn === match) continue;
+          const segment = new Frames(piece.messages);
+          drawn.push({
+            ...piece.turn,
+            messages: outsidePage(
+              pairHookRuns(interleave(piece.messages, piece.turn.messages)),
+              segment,
+              fromPage,
+            ),
+          });
+        }
+        placed.set(match, drawn.length);
         // **The row keeps the name it already had.** A page that settles a
         // turn the frames built is an account of the SAME exchange, and a list
         // keys its rows by that name - so handing it the page's own unmounts
@@ -2667,8 +2750,8 @@ export class Chat {
           drawn.push({
             ...match,
             messages: outsidePage(
-              pairHookRuns(interleave(copy, match.messages)),
-              carried,
+              pairHookRuns(interleave(own, match.messages)),
+              ownFrames,
               fromPage,
             ),
             also,
@@ -2687,15 +2770,15 @@ export class Chat {
         // while the frames are still writing it. Dropping what the page does
         // not carry is what lost the question from its own row, and with it
         // the answer (#2458).
-        const grown = match.messages.filter((message) => !carried.carries(message));
+        const grown = match.messages.filter((message) => !ownFrames.carries(message));
         drawn.push(
-          settledRow(index) && grown.length === 0
+          settledRow(index) && grown.length === 0 && borrowed.length === 0
             ? { ...row, key: match.key, also }
             : {
                 key: match.key,
                 messages: outsidePage(
-                  pairHookRuns(interleave(copy, match.messages)),
-                  carried,
+                  pairHookRuns(interleave(own, match.messages)),
+                  ownFrames,
                   fromPage,
                 ),
                 live: !settledRow(index),
@@ -2824,13 +2907,13 @@ export class Chat {
       // under one key - which a keyed list throws on.
       //
       // **And a page can account for a live turn under a row that is not its
-      // own.** The fold opens no turn at a delivery's envelope row - the CLI
-      // pressed the prompt into the turn it was writing - while a frame that
-      // lands just after that turn's result builds one here. The page's row
-      // for the turn above carries the same message under the prompt's id and
-      // neither name finds the other, so the delivery drew twice: once in the
-      // turn carrying it and once below that turn's report (#2390). The frames
-      // the read came too early for join that row.
+      // own.** The fold opens no turn at an envelope row the CLI pressed into
+      // a running turn - it wrote the prompt into the turn it was writing -
+      // while a frame that lands just after that turn's result builds one
+      // here. The page's row for the turn above carries the same message under
+      // the prompt's id and neither name finds the other, so the delivery drew
+      // twice: once in the turn carrying it and once below that turn's report
+      // (#2390). The frames the read came too early for join that row.
       //
       // By the prompt's id, never by words: a delivery repeating earlier words
       // is still the reader's new row.

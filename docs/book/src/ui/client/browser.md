@@ -31,7 +31,7 @@ the page raises the phone's keyboard - its named keys, inserted text and IME
 compositions cross as the same key and text events the desktop overlay
 sends. **The bar wraps on a finger's screen**: a hand-off's row is wider than
 a portrait phone, so its actions take a line of their own and **Done**,
-**something's wrong…** and **Not now** stay reachable at 393 and 430 points.
+**send feedback** and **Not now** stay reachable at 393 and 430 points.
 **The web page is the same client with no shell at all**: its takeover is a
 fixed overlay the page owns, its canvas is the picture, and every call the
 desktop makes to the shell - attach, list, detach, control, navigate, resize -
@@ -43,15 +43,15 @@ in-process node any more.
 | Region | Shows | Read from |
 |---|---|---|
 | The hand-off's card | `browser hand-off · tab N`; **Open browser**, **Done** and **Not now** before the takeover; while it is up, the card says the browser is open over the window and leaves the actions to the bar. **Words a lowered takeover handed to the chat are named here**, since the composer is behind this card until the ask is answered | the `browser_hand_off` ask, and the page's own surface state |
-| The takeover's bar | **back to chat**, the page's **back** and **forward** arrows, the tab picker, the title (`the browser · <org>/<name>`, or `browser hand-off · tab N`), **the pane chord's hint** while the page holds the keyboard, **take control** / **release control**, **Done**, **something's wrong…** and **Not now**; **try again** while the surface is in its failed state | the page's surface state, the parked hand-off, and the pushed `browser_view` and `browser_tabs` frames |
-| The ask on the bar | this seat's parked hand-off: its own words under the bar row, with the tab its title names. Shown whenever the page is this seat's; **Done, Not now and the feedback line's send are offered only while that page is up on the tab the hand-off named** (live, or failed with its host gone), and **a page raised for another seat is lowered when that seat is left** | the `browser_hand_off` ask, and the page's own surface state |
-| The feedback line | a text field and the dock's own **mic** and **send**: the person's words go to the agent as a prompt and the hand-off ends as *feedback* - they spoke, so nothing is recorded as a decline. A take begun at the bar's mic, or by the push-to-talk key wherever the caret is while the line's own toggle is offered, lands in this line, and a take already running ends on that same key. **The line holds those words in every phase the takeover stands** - opening, failed, or showing another tab - and showing them is not answering, so only the send waits for the page. **Lowering the takeover hands them to the chat's draft**, and the hand-off's card says so; **a send does not** - the words left for the agent, so the line clears and the draft gets nothing. **A take replaces the field with the dock's own card**, and the card takes the line: it grows to everything the mic leaves, so its graph is the row's meter rather than a pill in an empty row. **A slow open says so in a line above the row**: one brief enough to be the press itself draws no line, and a longer one says the microphone is opening. **A send the connection never took says so in that same line**, in the refusal tone - `Not sent - the connection is down.` - and the words stay in the field: the bar does not clear what did not leave, and the hand-off stays parked for the retry. The card draws from this page's own take, which exists only once the capture has opened, and the composer's own band is behind the picture | the page's own state, and the take it is opening; the prompt rides the socket |
+| The takeover's bar | **back to chat**, the page's **back** and **forward** arrows, the tab picker, the title (`the browser · <org>/<name>`, or `browser hand-off · tab N`), **the pane chord's hint** while the page holds the keyboard, **take control** / **release control**, **Done**, **send feedback** once the note has words, and **Not now**; **try again** while the surface is in its failed state | the page's surface state, the parked hand-off, and the pushed `browser_view` and `browser_tabs` frames |
+| The ask on the bar | this seat's parked hand-off: its own words under the bar row, with the tab its title names. Shown whenever the page is this seat's; **Done and Not now are offered only while that page is up on the tab the hand-off named** (live, or failed with its host gone), **send feedback joins them once the note has words**, and the note line is drawn in every phase; **a page raised for another seat is lowered when that seat is left** | the `browser_hand_off` ask, and the page's own surface state |
+| The note line | a text field and the dock's own **mic**, open whenever the ask is parked: the note is optional for **Done** and **Not now**, and **send feedback** is offered once it has words, the words going to the agent as a prompt and the hand-off ending as *feedback* - they spoke, so nothing is recorded as a decline. A take begun at the bar's mic, or by the push-to-talk key wherever the caret is, lands in this line, and a take already running ends on that same key. **The line holds those words in every phase the takeover stands** - opening, failed, or showing another tab - and showing them is not answering, so only the answers wait for the page. **Lowering the takeover hands them to the chat's draft**, and the hand-off's card says so; **an answer does not** - the words left for the agent, so the line clears and the draft gets nothing. **A take replaces the field with the dock's own card**, and the card takes the line: it grows to everything the mic leaves, so its graph is the row's meter rather than a pill in an empty row. **A slow open says so in a line above the row**: one brief enough to be the press itself draws no line, and a longer one says the microphone is opening. **An answer whose note the connection never took says so in that same line**, in the refusal tone - `Not sent - the connection is down.` - and the words stay in the field: the bar does not clear what did not leave, and the hand-off stays parked for the retry. The card draws from this page's own take, which exists only once the capture has opened, and the composer's own band is behind the picture | the page's own state, and the take it is opening; the prompt rides the socket |
 | The surface | the viewed tab's page, filling the window under the bar: no window, no browser tab strip and no browser chrome | the server's relayed frames for that tab - drawn by the desktop's native overlay, or by the phone's and the web page's canvas |
 | The strip's row | `browser` with its tab count, a dot when the host is connected (an idle dot when only the host is up, a cross when nothing runs), and a hover naming the profile, the connection and `closing in Nm`; its panel lists the tabs with **show** / **hide**. **The row is drawn only while the profile has a tab**: a browser nothing has invoked is no row at all | the `browser_tabs` ask and its pushed frame |
 | A tab row | the host's number, the title (else its URL), the owner as `org/project/label`, and its state - **in use**, **idle** or **held** - with the mark that says which; a tab holding a page dialog adds `<kind> waiting` beside it, with the dialog's message on hover | the tab list's rows |
 | The engine line | the panel's own line when no close is scheduled: `the server's own Chromium`, on every client, or `nothing to run a page` | the tab list |
 | The states | `opening the browser…`, the server's sentence when it failed, the host's own death sentence - `the browser host exited (signal 9; pid 1234); the next call brings it back` - when a host dies under the surface (the cause is a signal or an exit code), and the page's own error page when a load fails | the page's surface state, and the server's failure frame |
-| A refusal | the server's own words: `tab N is not open`, the profile has no tab to show yet, the host is not answering, a page area that could not be placed, or - for a hand-off - `the page the hand-off named (X) is gone from profile ...` with the tabs open now, which its **try again** reaches too. **A take the bar's mic pressed and could not open says why above the feedback row**: the composer's own notice row is behind the picture while the takeover is up | the attach's answer, the surface's failure frame, and the take's own line |
+| A refusal | the server's own words: `tab N is not open`, the profile has no tab to show yet, the host is not answering, a page area that could not be placed, or - for a hand-off - `the page the hand-off named (X) is gone from profile ...` with the tabs open now, which its **try again** reaches too. **A take the bar's mic pressed and could not open says why above the note row**: the composer's own notice row is behind the picture while the takeover is up | the attach's answer, the surface's failure frame, and the take's own line |
 
 ## The rules
 
@@ -210,7 +210,7 @@ Cmd+A, X, C, V and Z (and Close Window on Cmd+W) even with the surface
 focused. So while the overlay holds first responder, those five go to the
 page - Cmd+V as the pasteboard's text - Cmd+W lowers the takeover the way
 back to chat does, and Cmd+[ and Cmd+] move through the page's history. With
-the bar's own feedback field focused, the menu keeps its editing as it does
+the bar's own note field focused, the menu keeps its editing as it does
 everywhere else, and every other Command chord belongs to the app.
 
 **The keyboard moves between the page and the bar on the pane chords.**
@@ -222,7 +222,7 @@ the region declares both chords as `aria-keyshortcuts`, so a keyboard reader
 can find the door it cannot see. The hint goes once the chord has been used.
 The bar is a document above the picture, not part of it, so with the keyboard
 there Tab stays inside the bar (it wraps at both ends), its buttons take
-Enter and Space, and the feedback field types as any field does. **The bar
+Enter and Space, and the note field types as any field does. **The bar
 holds the DOM focus only while it has the keys**: on open the native page
 keeps them, so no ring sits on a control the keyboard cannot reach, and
 clicking the picture takes them back the way the chord does. A focus that
@@ -306,20 +306,24 @@ frames per second at the surface's size; CPU was not profiled).
 
 **A failure is drawn where the person is looking.** The takeover's page area
 carries the server's sentence and the hand-off stays parked; the strip says
-what a refused show or hide said. **Done**, **Not now** and **feedback** are
-the hand-off's answers; the feedback line sends its words as a prompt and,
-once they leave, ends the park as **feedback**, saying the person spoke
-rather than that they declined. **A send that did not leave says so in the
-bar's own line and ends nothing**: the words stay in the field, and the park
-waits for the retry.
+what a refused show or hide said. The bar's note line is always open. **Done**
+is the only approval, and it takes the note with it when it has words; **Not
+now** defers the ask and takes the note too - the browser is as it was, and
+the agent asks again later if it still needs the person on the page. **send
+feedback** is offered once the note has words, sends them as a prompt and ends
+the park as **feedback**, which the agent reads as "something is off": it
+addresses the note and hands the page off again for another answer. **An
+answer whose note did not leave says so in the bar's own line and ends
+nothing**: the words stay in the field, and the park waits for the retry.
 
 **An answer belongs to the page it answers.** The takeover is one seat's page:
 leaving that seat lowers it, so it never sits over a seat whose ask is waiting.
-The bar carries the ask while the page is the asking seat's, and offers Done,
-Not now and the feedback line only while that page is up on the tab the
-hand-off named; a page moved to another tab names the ask and answers nothing.
-**A failed page stays answerable**: a host that died under a parked ask is what
-the feedback line is for.
+The bar carries the ask while the page is the asking seat's, and offers Done
+and Not now only while that page is up on the tab the hand-off named, with
+send feedback once the note has words; a page moved to another tab names the
+ask and answers nothing. The note line is drawn in every phase, with the
+words held. **A failed page stays answerable**: a host that died under a
+parked ask is what the note line is for.
 
 **A page's dialog is held until someone answers it.** A `confirm`, an `alert`
 or a `beforeunload` prompt takes the tab it was raised on: every call that
@@ -337,7 +341,7 @@ person can see why the page ignores input.
 The takeover is the whole window, under a bar that is one row at a mouse's
 width. **A narrow window or a finger's screen wraps the actions onto a line of
 their own** - a hand-off's row is wider than a 393-point phone - so **Done**,
-**something's wrong…** and **Not now** keep their 44px targets and stay on
+**send feedback** and **Not now** keep their 44px targets and stay on
 screen; the page area is the rest.
 
 **The takeover is a layer in the window the person already has**, so the
