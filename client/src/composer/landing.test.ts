@@ -4,10 +4,28 @@
  * notice handed over again differs from a take that spoke the same words.
  */
 
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 
-import { Landing } from './landing';
+import { Landing, rememberBoot } from './landing';
 import type { Notice } from './wire';
+
+// The storage the production code reads to tell its own re-hand from another
+// client's. A fresh map per test keeps one test's take out of the next.
+const store = new Map<string, string>();
+globalThis.localStorage = {
+  getItem: (key: string) => store.get(key) ?? null,
+  setItem: (key: string, value: string) => void store.set(key, value),
+  removeItem: (key: string) => void store.delete(key),
+  clear: () => store.clear(),
+  key: (index: number) => [...store.keys()][index] ?? null,
+  get length() {
+    return store.size;
+  },
+};
+
+beforeEach(() => {
+  store.clear();
+});
 
 const words: Notice = {
   kind: 'landed',
@@ -115,6 +133,9 @@ describe('a landing', () => {
    * have placed live - once, by identity, like any other landing.
    */
   it("places the seat's carried words without an arm of its own", () => {
+    // A reloaded page still holds the generation it dictated: the seed stands
+    // in for the write a prior page's live take left behind.
+    globalThis.localStorage?.setItem(`forge.dictate.take.${SEAT}`, '1');
     const carried: Notice = {
       kind: 'landed',
       text: 'this read is the whole input',
@@ -133,6 +154,70 @@ describe('a landing', () => {
       'and the re-hand places once, like any landing',
     ).toBeNull();
     expect(landing.holds(carried), 'the cut row still finds the words it took').toBe(true);
+  });
+
+  /**
+   * **A carried notice from another client places nothing.** The record
+   * re-hands the seat's landed words to every reader, so without this check a
+   * web dictation lands in the desktop's composer as well. The generation this
+   * client last dictated on the seat is what tells its own re-hand from
+   * another client's.
+   */
+  it('places nothing for a carried notice another client dictated', () => {
+    // This client's last take was generation 1; the re-handed notice is 2.
+    globalThis.localStorage?.setItem(`forge.dictate.take.${SEAT}`, '1');
+    const foreign: Notice = {
+      kind: 'landed',
+      text: 'spoken on the web',
+      truncated: false,
+      generation: 2,
+      carried: true,
+    };
+    const landing = new Landing('composer');
+    expect(
+      landing.place(SEAT, foreign),
+      "another client's carried words are not this page's to place",
+    ).toBeNull();
+    expect(landing.holds(foreign), 'and the box holds none of them').toBe(false);
+  });
+
+  /**
+   * **The same rejection when this client has never dictated on the seat.**
+   * A second client attaches to a seat with no storage of its own, and the
+   * record hands it the first client's carried words: it must place nothing.
+   */
+  it('places nothing for a carried notice on a seat this client never dictated', () => {
+    const foreign: Notice = {
+      kind: 'landed',
+      text: 'spoken on the desktop',
+      truncated: false,
+      generation: 4,
+      carried: true,
+    };
+    const landing = new Landing('composer');
+    expect(
+      landing.place(SEAT, foreign),
+      'a seat this client never dictated on has no generation to match',
+    ).toBeNull();
+  });
+
+  /**
+   * **A carried notice places for a server older than the generation field.**
+   * An older server cannot route per client, so its re-hand places as it
+   * always did - the guard is skipped when no generation arrives.
+   */
+  it('places carried words a server older than the generation field re-hands', () => {
+    const olderCarried: Notice = {
+      kind: 'landed',
+      text: 'old server words',
+      truncated: false,
+      carried: true,
+    };
+    const landing = new Landing('composer');
+    expect(
+      landing.place(SEAT, olderCarried),
+      'the old server cannot route per client, so its re-hand places',
+    ).toBe('old server words');
   });
 
   /**
@@ -247,14 +332,64 @@ describe('a landing', () => {
   it("places its own surface's landing, live and carried", () => {
     const live = new Landing('review');
     live.arm(SEAT, null);
-    expect(live.place(SEAT, { ...words, surface: 'review' }), 'live').toBe(
+    expect(live.place(SEAT, { ...words, surface: 'review' }, 1), 'live').toBe(
       'this read is the whole input',
     );
+    expect(
+      globalThis.localStorage?.getItem(`forge.dictate.take.${SEAT}`),
+      'the live take leaves the generation a reload reads',
+    ).toBe('1');
     const carried = new Landing('review');
     expect(
       carried.place(SEAT, { ...words, surface: 'review', carried: true }),
       'and a re-hand of its own words after a reload',
     ).toBe('this read is the whole input');
+  });
+
+  /**
+   * **A fold take's landing seeds the generation a reload reads** (#2896). The
+   * record is written once per painted frame, so a quick take arrives as a
+   * landing with no take in flight. It places via the arm, and the generation
+   * it carries must be stored: without it, a reload finds nothing to match and
+   * drops the words the server re-hands.
+   */
+  it("seeds the generation when a fold take's landing arrives with no take in flight", () => {
+    const landing = new Landing('composer');
+    landing.arm(SEAT, null);
+    expect(landing.place(SEAT, words), "the fold take's words place").toBe(
+      'this read is the whole input',
+    );
+    expect(
+      globalThis.localStorage?.getItem(`forge.dictate.take.${SEAT}`),
+      'the landing seeds the generation a reload reads',
+    ).toBe('1');
+    landing.placed(words);
+    const reloaded = new Landing('composer');
+    expect(
+      reloaded.place(SEAT, { ...words, carried: true }),
+      'so a reload after it places the re-handed words',
+    ).toBe('this read is the whole input');
+  });
+
+  /**
+   * **A new server run drops the takes the last one left.** Generations start
+   * at 1 again on a restart, so a generation kept from the last run would
+   * match a fresh take's number and let another client's carried words land
+   * here. The boot id is what tells the runs apart.
+   */
+  it('drops the stored takes when the server run changes', () => {
+    rememberBoot('run-a');
+    globalThis.localStorage?.setItem(`forge.dictate.take.${SEAT}`, '3');
+    rememberBoot('run-a');
+    expect(
+      globalThis.localStorage?.getItem(`forge.dictate.take.${SEAT}`),
+      'the same run keeps the take',
+    ).toBe('3');
+    rememberBoot('run-b');
+    expect(
+      globalThis.localStorage?.getItem(`forge.dictate.take.${SEAT}`),
+      'a new run drops the take',
+    ).toBeNull();
   });
 
   it('places only for the seat its arm was set on, and keeps that arm', () => {
