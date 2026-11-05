@@ -5410,6 +5410,11 @@ details[open] > summary .arw { opacity: 1; }
 .doc-page .doc-add:hover, .doc-page .doc-add:focus-visible {
   color: var(--text); outline: none; }
 .doc-page .doc-block-body { min-width: 0; }
+/* **A table's first column names the row, so it keeps room to read as a
+   name.** Auto layout squeezes it to its longest word while the prose
+   columns take the width, which ribbons a long first-column entry (Ved,
+   2026-11-05: "the first column looks very bad"). */
+.doc-page .doc-block :is(th, td):first-child { width: 20%; min-width: 11rem; }
 /* **A list or a quote is one target per child.** Each item renders in its own
    list wrapper (and each quote paragraph in its own quote), so the wrapper's
    block margins must not space the targets apart: the rows carry the list's

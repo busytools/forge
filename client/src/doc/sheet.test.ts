@@ -163,6 +163,17 @@ describe('the document sheet', () => {
     );
   });
 
+  /** **A table's first column keeps room to read as a name.** Auto layout
+   *  otherwise ribbons it while the prose columns take the width. */
+  it("gives a table's first column a name-width floor", () => {
+    const cells = rulesFor('.doc-page .doc-block :is(th, td):first-child').find((rule) =>
+      rule.selector.includes(':first-child'),
+    );
+    expect(cells, 'the first-column rule exists').toBeDefined();
+    expect(cells?.body, 'a minimum width').toMatch(/min-width:\s*11rem/);
+    expect(cells?.body, 'and a share of the table').toMatch(/width:\s*20%/);
+  });
+
   /** **The answer row sits in the same column as the sheet.** Its width and
    *  padding follow the sheet's, the phone inset follows the sheet's own
    *  padding, and a refusal draws where the buttons are. */
