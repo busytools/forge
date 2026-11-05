@@ -937,6 +937,49 @@ fn load_models(asr_path: &Path, cfg: &Config) -> Result<Loaded, (PathBuf, String
     Ok(Loaded { model, session, normalizer, model_load })
 }
 
+/// What one window's run outcome tells the take to do next.
+///
+/// Extracted from the window loop so the decisions can be tested without a
+/// loaded model: the loop owns the timings, the records and the reply, while
+/// this owns what each outcome means.
+#[derive(Debug, PartialEq)]
+enum WindowAction {
+    /// Append this text and keep going.
+    Continue(String),
+    /// Append this partial text and keep going; the take is truncated.
+    Truncated(String),
+    /// Stop the take: the user cancelled.
+    Cancelled,
+    /// Stop the take: this window failed, but earlier windows produced words.
+    /// The take finalizes what it has and carries the error into diagnostics.
+    FinalizeWithError { message: String },
+    /// Stop the take: this window failed and nothing was transcribed, so the
+    /// take fails.
+    Failed { message: String },
+}
+
+fn window_action(
+    result: Result<transcribe_cpp::Transcript, transcribe_cpp::Error>,
+    has_prior_text: bool,
+) -> WindowAction {
+    match result {
+        Ok(out) => WindowAction::Continue(out.text),
+        Err(transcribe_cpp::Error::Aborted { .. }) => WindowAction::Cancelled,
+        Err(
+            transcribe_cpp::Error::OutputTruncated { partial: Some(partial), .. }
+            | transcribe_cpp::Error::OutputRepetition { partial: Some(partial), .. },
+        ) => WindowAction::Truncated(partial.text),
+        Err(source) => {
+            let message = source.to_string();
+            if has_prior_text {
+                WindowAction::FinalizeWithError { message }
+            } else {
+                WindowAction::Failed { message }
+            }
+        }
+    }
+}
+
 /// Owns the weights and drains the queue.
 fn worker(
     asr_path: &Path,
@@ -1037,48 +1080,57 @@ fn worker(
         } else {
             let windows = window_bounds(&job.pcm);
             for (k, &(start, end)) in windows.iter().enumerate() {
-                match session.run(&job.pcm[start..end], &options) {
-                    Ok(out) => {
-                        stages.mel = stages.mel.saturating_add(Duration::from_secs_f64(
-                            f64::from(out.timings.mel_ms) / 1000.0,
-                        ));
-                        stages.encode = stages.encode.saturating_add(Duration::from_secs_f64(
-                            f64::from(out.timings.encode_ms) / 1000.0,
-                        ));
-                        stages.decode = stages.decode.saturating_add(Duration::from_secs_f64(
-                            f64::from(out.timings.decode_ms) / 1000.0,
-                        ));
+                let result = session.run(&job.pcm[start..end], &options);
+                if let Ok(out) = &result {
+                    stages.mel = stages.mel.saturating_add(Duration::from_secs_f64(
+                        f64::from(out.timings.mel_ms) / 1000.0,
+                    ));
+                    stages.encode = stages.encode.saturating_add(Duration::from_secs_f64(
+                        f64::from(out.timings.encode_ms) / 1000.0,
+                    ));
+                    stages.decode = stages.decode.saturating_add(Duration::from_secs_f64(
+                        f64::from(out.timings.decode_ms) / 1000.0,
+                    ));
+                }
+                // Whether any earlier window produced words: the one fact that
+                // decides whether a failed window discards the take or only
+                // stops it.
+                let has_prior_text = asr_parts.iter().any(|part| !part.trim().is_empty());
+                // Discriminated on the ERROR VARIANT rather than on
+                // `was_aborted`/`was_truncated`. Those report "the most
+                // recent run", and `run` has early returns that never reach
+                // native at all - an interior NUL in the language string, an
+                // oversized buffer, a busy session - on which the flags still
+                // hold the PREVIOUS job's value. Per-error state cannot go
+                // stale.
+                match window_action(result, has_prior_text) {
+                    WindowAction::Continue(text) => {
                         window_records.push(diagnostics::WindowRecord {
                             start_ms: window_ms(start),
                             end_ms: window_ms(end),
-                            raw: out.text.clone(),
+                            raw: text.clone(),
                         });
-                        asr_parts.push(out.text);
+                        asr_parts.push(text);
                     }
-                    // Discriminated on the ERROR VARIANT rather than on
-                    // `was_aborted`/`was_truncated`. Those report "the most
-                    // recent run", and `run` has early returns that never reach
-                    // native at all - an interior NUL in the language string, an
-                    // oversized buffer, a busy session - on which the flags still
-                    // hold the PREVIOUS job's value. Per-error state cannot go
-                    // stale.
-                    Err(transcribe_cpp::Error::Aborted { .. }) => {
+                    WindowAction::Truncated(text) => {
+                        window_records.push(diagnostics::WindowRecord {
+                            start_ms: window_ms(start),
+                            end_ms: window_ms(end),
+                            raw: text.clone(),
+                        });
+                        asr_parts.push(text);
+                        truncated = true;
+                    }
+                    WindowAction::Cancelled => {
                         failure = Some(Error::Cancelled);
                         break;
                     }
-                    Err(transcribe_cpp::Error::OutputTruncated {
-                        partial: Some(partial), ..
-                    }) => {
-                        window_records.push(diagnostics::WindowRecord {
-                            start_ms: window_ms(start),
-                            end_ms: window_ms(end),
-                            raw: partial.text.clone(),
-                        });
-                        asr_parts.push(partial.text);
+                    WindowAction::FinalizeWithError { message } => {
                         truncated = true;
+                        recognition_error = Some((k, message));
+                        break;
                     }
-                    Err(source) => {
-                        let message = source.to_string();
+                    WindowAction::Failed { message } => {
                         failure = Some(Error::Recognition { message: message.clone() });
                         recognition_error = Some((k, message));
                         break;
@@ -2224,6 +2276,60 @@ mod tests_windowing {
         assert_eq!(
             live, offline,
             "deciding cuts as the buffer grows must land exactly where whole-buffer windowing does"
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests_window_outcomes {
+    use super::*;
+
+    fn words(text: &str) -> transcribe_cpp::Transcript {
+        transcribe_cpp::Transcript { text: text.to_owned(), ..Default::default() }
+    }
+
+    fn repetition(text: &str) -> transcribe_cpp::Error {
+        transcribe_cpp::Error::OutputRepetition {
+            message: "output began repeating".to_owned(),
+            partial: Some(Box::new(words(text))),
+        }
+    }
+
+    fn failure() -> transcribe_cpp::Error {
+        transcribe_cpp::Error::Other("decode failed".to_owned())
+    }
+
+    /// A repetition stop still carries the words the recognizer kept. Dropping
+    /// them into the generic error arm fails the whole take and loses every
+    /// window already transcribed.
+    #[test]
+    fn an_output_repetition_with_a_partial_keeps_the_text() {
+        assert_eq!(
+            window_action(Err(repetition("the words so far")), false),
+            WindowAction::Truncated("the words so far".to_owned()),
+            "repetition with a partial must keep the text and mark the take truncated, not fail it"
+        );
+    }
+
+    /// A window that fails after earlier windows produced words must not
+    /// discard them: the take finalizes what it has and carries the error.
+    #[test]
+    fn a_generic_error_after_good_windows_keeps_the_prior_text() {
+        assert_eq!(
+            window_action(Err(failure()), true),
+            WindowAction::FinalizeWithError { message: "decode failed".to_owned() },
+            "a window failure after good windows must finalize what was transcribed, not discard it"
+        );
+    }
+
+    /// With nothing to finalize, the take fails - and a failure is what the
+    /// client draws on the status row.
+    #[test]
+    fn a_first_window_error_fails_visibly() {
+        assert_eq!(
+            window_action(Err(failure()), false),
+            WindowAction::Failed { message: "decode failed".to_owned() },
+            "with no text to keep, the take must fail so the client draws the failure notice"
         );
     }
 }
