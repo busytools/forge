@@ -1319,17 +1319,24 @@ fn fold_stages(parts: &[Part]) -> (Stages, Duration, bool) {
     (stages, audio, truncated)
 }
 
-/// Fold a take's parts in submission order. A recognition failure fails the
-/// take only when no part produced words; when earlier parts did, the take
-/// keeps them and carries the first failure to the caller, which marks the
-/// transcript truncated. Any recognized part sends the take down the join
-/// path, and only a take with nothing above the floor anywhere reads as
-/// silence.
+/// Whether a take that kept some words is still incomplete: a segment's own
+/// truncation, the capture cap, or a failed segment.
+fn take_is_truncated(folded_truncated: bool, finish_truncated: bool, failed: bool) -> bool {
+    folded_truncated || finish_truncated || failed
+}
+
+/// Fold a take's parts in submission order. A failure fails the take only
+/// when no part produced words; when any part did, the take keeps them and
+/// carries the first failure to the caller, which marks the transcript
+/// truncated. A cancel is the one exception: an abandoned take keeps
+/// nothing. Any recognized part sends the take down the join path, and only
+/// a take with nothing above the floor anywhere reads as silence.
 fn aggregate_parts(parts: Vec<Part>) -> Aggregate {
     let mut raws = Vec::new();
     let mut peak = f32::NEG_INFINITY;
     let mut audio = Duration::ZERO;
     let mut failed = None;
+    let mut cancelled = false;
     let mut saw_transcript = false;
     for part in parts {
         match part {
@@ -1342,14 +1349,24 @@ fn aggregate_parts(parts: Vec<Part>) -> Aggregate {
                 audio += a;
             }
             Part::Failed(error) => {
+                if matches!(&error, Error::Cancelled) {
+                    cancelled = true;
+                }
                 if failed.is_none() {
                     failed = Some(error);
                 }
             }
         }
     }
+    if cancelled {
+        // A cancel anywhere in the take outranks every other failure: the
+        // user abandoned it, and an abandoned take persists nothing.
+        return Aggregate::Failed(Error::Cancelled);
+    }
     let has_text = raws.iter().any(|raw| !raw.trim().is_empty());
     if let Some(error) = failed {
+        // Any other failure keeps the words already transcribed, including
+        // a stopped engine: the person did not ask to abandon the take.
         if !has_text {
             return Aggregate::Failed(error);
         }
@@ -1581,7 +1598,7 @@ impl TakeSegmenter {
                         transcript.stages.normalize = normalize;
                         transcript.stages.audio = audio;
                         transcript.truncated |=
-                            folded_truncated | finish.truncated | failed.is_some();
+                            take_is_truncated(folded_truncated, finish.truncated, failed.is_some());
                         Ok(Outcome::Transcript(transcript))
                     }
                     Ok(other) => Ok(other),
@@ -1633,7 +1650,11 @@ impl TakeSegmenter {
                 models: &self.models,
                 start_lag_ms,
                 processing_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
-                truncated: folded_truncated || finish.truncated || failed_before_join,
+                truncated: take_is_truncated(
+                    folded_truncated,
+                    finish.truncated,
+                    failed_before_join,
+                ),
                 outcome,
                 recognition_error: self.failed,
             };
@@ -1967,6 +1988,125 @@ mod tests_engine {
         match aggregate_parts(parts) {
             Aggregate::Failed(Error::Recognition { message }) => assert_eq!(message, "one"),
             other => panic!("whitespace is not words, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_cancelled_take_never_keeps_words() {
+        let parts = vec![
+            Part::Transcript { raw: "early".into(), stages: Stages::default(), truncated: false },
+            Part::Failed(Error::Cancelled),
+        ];
+        match aggregate_parts(parts) {
+            Aggregate::Failed(Error::Cancelled) => {}
+            other => panic!("an abandoned take must keep nothing, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_cancel_after_another_failure_still_discards() {
+        let parts = vec![
+            Part::Transcript { raw: "early".into(), stages: Stages::default(), truncated: false },
+            Part::Failed(Error::Recognition { message: "one".into() }),
+            Part::Failed(Error::Cancelled),
+        ];
+        match aggregate_parts(parts) {
+            Aggregate::Failed(Error::Cancelled) => {}
+            other => panic!("a cancel anywhere must discard the take, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_engine_stopped_take_keeps_prior_words() {
+        let parts = vec![
+            Part::Transcript { raw: "early".into(), stages: Stages::default(), truncated: false },
+            Part::Failed(Error::EngineStopped),
+        ];
+        match aggregate_parts(parts) {
+            Aggregate::Join { raws, failed: Some(Error::EngineStopped) } => {
+                assert_eq!(raws, ["early"], "a lost worker keeps the words already transcribed");
+            }
+            other => panic!("a lost worker must keep the words, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn words_after_a_failed_segment_are_kept() {
+        let parts = vec![
+            Part::Failed(Error::Recognition { message: "one".into() }),
+            Part::Transcript { raw: "later".into(), stages: Stages::default(), truncated: false },
+        ];
+        match aggregate_parts(parts) {
+            Aggregate::Join { raws, failed: Some(Error::Recognition { .. }) } => {
+                assert_eq!(raws, ["later"], "later segments' words are kept too");
+            }
+            other => panic!("words after a failed segment must be kept, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_failed_segment_makes_the_take_truncated() {
+        assert!(take_is_truncated(false, false, true), "a failed segment leaves a gap");
+        assert!(take_is_truncated(true, false, false), "a segment's own truncation carries");
+        assert!(take_is_truncated(false, true, false), "the capture cap carries");
+        assert!(!take_is_truncated(false, false, false));
+    }
+
+    /// The live path itself must mark the take truncated when a segment
+    /// failed after words landed: the client's "part of the take is
+    /// missing" copy depends on it, and dropping the flag would render a
+    /// mid-take gap as complete.
+    #[test]
+    fn a_failed_segment_marks_the_live_transcript_truncated() {
+        let (jobs, answers) = channel::<Job>();
+        std::thread::spawn(move || {
+            let Ok(job) = answers.recv() else { return };
+            let transcript = Transcript {
+                text: "early".to_owned(),
+                asr: "early".to_owned(),
+                stages: Stages::default(),
+                truncated: false,
+            };
+            let _ = job.reply.send(Ok(Outcome::Transcript(transcript)));
+        });
+        let (answer_tx, answer_rx) = channel();
+        let (progress_tx, _progress_rx) = channel();
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = ConfigBuilder::new().models_dir(dir.path()).normalizer(None).build();
+        let segmenter = TakeSegmenter {
+            recording: Arc::new(crate::capture::Recording::new(16)),
+            jobs,
+            silence_floor: -50.0,
+            diagnostics_dir: None,
+            models: Arc::new(diagnostics::TakeModels::from_config(&cfg)),
+            take: TakeShared {
+                cancel: CancelToken::new(),
+                answer: answer_tx,
+                progress: progress_tx,
+            },
+            last_cut: 0,
+            cuts: Vec::new(),
+            parts: vec![
+                Part::Transcript {
+                    raw: "early".into(),
+                    stages: Stages::default(),
+                    truncated: false,
+                },
+                Part::Failed(Error::Recognition { message: "one".into() }),
+            ],
+            pending: Vec::new(),
+            settled: 0,
+            first_queued_at: None,
+            first_settled_at: None,
+            failed: Some((1, "recognition failed".to_owned())),
+        };
+        segmenter.finish(FinishTake { options: NormalizeOptions::default(), truncated: false });
+        match answer_rx.recv().expect("the take must answer") {
+            Ok(Outcome::Transcript(transcript)) => {
+                assert!(transcript.truncated, "a failed segment leaves a gap");
+                assert_eq!(transcript.text, "early", "the words are kept");
+            }
+            other => panic!("a take with words and a failed segment must finalize, got {other:?}"),
         }
     }
 
@@ -2430,10 +2570,46 @@ mod tests_window_outcomes {
             state.apply(WindowAction::Failed { message: "decode failed".to_owned() }, 0, 0, 1000);
         assert!(!keep_going);
         assert!(
-            matches!(state.failure, Some(Error::Recognition { .. })),
-            "a failed window must fail the take"
+            matches!(
+                state.failure,
+                Some(Error::Recognition { ref message }) if message == "decode failed"
+            ),
+            "a failed window must fail the take with its own error"
+        );
+        assert_eq!(
+            state.recognition_error,
+            Some((0, "decode failed".to_owned())),
+            "the failure carries its window and message to diagnostics"
         );
         assert!(!state.truncated, "a failed first window is not truncated");
+    }
+
+    #[test]
+    fn a_truncated_window_keeps_its_partial_and_keeps_going() {
+        let mut state = TakeState::new(false);
+        assert!(state.apply(WindowAction::Continue("early".to_owned()), 0, 0, 1000));
+        assert!(state.apply(WindowAction::Truncated("so far".to_owned()), 1, 1000, 2000));
+        assert_eq!(state.asr_parts, ["early", "so far"]);
+        assert!(state.truncated, "a truncated window marks the take truncated");
+        assert!(state.failure.is_none(), "a truncated window does not fail the take");
+        assert_eq!(state.window_records.len(), 2);
+    }
+
+    #[test]
+    fn whitespace_is_not_prior_text() {
+        let mut state = TakeState::new(false);
+        state.asr_parts.push(" ".to_owned());
+        assert!(!state.has_prior_text(), "whitespace is not words");
+        state.asr_parts.push("word".to_owned());
+        assert!(state.has_prior_text());
+    }
+
+    #[test]
+    fn a_cancelled_action_stops_without_words() {
+        let mut state = TakeState::new(false);
+        assert!(!state.apply(WindowAction::Cancelled, 0, 0, 1000));
+        assert!(matches!(state.failure, Some(Error::Cancelled)));
+        assert!(state.asr_parts.is_empty(), "a cancel adds no words");
     }
 }
 

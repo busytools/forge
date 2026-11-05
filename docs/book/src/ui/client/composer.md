@@ -250,7 +250,7 @@ just landed, and a refusal is logged at debug.
 | Not running | `not running` and the seat's own reason: a worker's seat has no spawn coming, and says so |
 | Reading | `Reading the conversation...` while the seat's first page is still out, with the sweep, no field |
 | A take that does not come up | the body stays, with the line above it: the microphone did not come up, or the device layer's own named failure |
-| A take that failed | the take's row stays, with the notice above it naming the failure: the take produced no words, so the reader is told to re-speak rather than discover it |
+| A take that failed | the field comes back with the notice above it, no recording band and no stop control: the take produced no words, so the reader is told to re-speak rather than discover it |
 | Voice on | the voice switch beside the mic in the accent: a plain speaker, with a mark beside it while a reply is sounding |
 | Voice off | the same switch, a struck-through speaker and dim, meaning this client is not listening to this seat |
 | Failed | `Input disabled due to error` and what to do: quit and start forge again |
