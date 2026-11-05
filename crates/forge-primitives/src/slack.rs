@@ -396,8 +396,7 @@ pub struct SlackDraft {
     /// must not say "post" for either.
     pub operation: SlackDraftOperation,
     /// The thread named for the card. `None` on a root message, and `None`
-    /// when the parent could not be read: the card then names it only as a
-    /// thread, never as a ts.
+    /// when the parent could not be read: nothing is named that was not read.
     #[serde(default)]
     pub thread: Option<SlackThreadName>,
     /// Every person the draft's text tags, in order of first appearance. A
