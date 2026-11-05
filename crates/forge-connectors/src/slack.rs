@@ -2340,7 +2340,7 @@ pub(crate) async fn sweep_mentions(
 }
 
 /// The wait before the next sweep: never shorter than the configured
-/// interval, and at least a rate limit's delay when one was reported.
+/// interval, and at least the clamped Retry-After when one was reported.
 pub(crate) fn next_interval(configured: Duration, rate_limited: Option<Duration>) -> Duration {
     rate_limited.map_or(configured, |delay| configured.max(delay.min(RETRY_CAP)))
 }
@@ -2370,7 +2370,7 @@ impl ThrottleEpisode {
                     event_name = "slack_sweep_throttled",
                     retry_after_secs = delay.as_secs(),
                     configured_secs = configured.as_secs(),
-                    "slack throttled the sweep; backing off",
+                    "slack throttled the sweep",
                 );
             }
             (Some(delay), true) => {
@@ -2381,7 +2381,7 @@ impl ThrottleEpisode {
                     event_name = "slack_sweep_throttled",
                     retry_after_secs = delay.as_secs(),
                     configured_secs = configured.as_secs(),
-                    "slack sweep still throttled; backing off",
+                    "slack sweep still throttled",
                 );
             }
             (None, true) => {
@@ -2396,6 +2396,23 @@ impl ThrottleEpisode {
             }
             (None, false) => {}
         }
+    }
+}
+
+/// The pump's throttle reporter, for another crate's log-filter test.
+#[cfg(feature = "testing")]
+pub mod testing {
+    use super::ThrottleEpisode;
+    use std::time::Duration;
+
+    /// Reports two throttled passes, so the second is the demoted per-pass
+    /// record under the pump's own target and event name.
+    pub fn emit_a_repeated_throttle_pass() {
+        let mut episode = ThrottleEpisode::default();
+        let throttled = Some(Duration::from_secs(7));
+        let configured = Duration::from_secs(30);
+        episode.note_pass("acme", "conversation", configured, throttled);
+        episode.note_pass("acme", "conversation", configured, throttled);
     }
 }
 
@@ -4042,10 +4059,10 @@ mod tests {
         history: std::sync::Mutex<HashMap<String, Vec<Vec<SlackHistoryMessage>>>>,
         /// Seeded failures: channel -> the error history returns.
         history_errors: std::sync::Mutex<HashMap<String, SlackError>>,
-        /// The first this many `conversations.history` calls answer 429 with
-        /// a 1 s Retry-After, then the fake recovers. A pump test needs an
-        /// episode that starts, spans passes and ends.
-        history_rate_limited_passes: std::sync::Mutex<usize>,
+        /// Per channel, the next this many `conversations.history` calls
+        /// answer 429 with a 1 s Retry-After. Keyed per channel so each
+        /// pump's episode does not depend on how the two interleave.
+        history_rate_limited_passes: std::sync::Mutex<HashMap<String, usize>>,
         /// Display names the fake's `users.info` answers with, and how many
         /// times it was asked - a lookup is a call.
         user_names: std::sync::Mutex<HashMap<String, String>>,
@@ -4197,9 +4214,13 @@ mod tests {
             self.rate_limited = Some(retry_after);
         }
 
-        /// Throttle the next `passes` history reads, then answer normally.
-        fn rate_limit_history_passes(&self, passes: usize) {
-            *self.history_rate_limited_passes.lock().expect("lock") = passes;
+        /// Throttle the channel's next `passes` history reads, then answer
+        /// normally.
+        fn rate_limit_history_passes(&self, channel: &str, passes: usize) {
+            self.history_rate_limited_passes
+                .lock()
+                .expect("lock")
+                .insert(channel.to_owned(), passes);
         }
 
         /// Make the nth (0-based) `conversations.replies` call answer 429.
@@ -4718,8 +4739,10 @@ mod tests {
             *self.history_calls.lock().expect("lock") += 1;
             {
                 let mut passes = self.history_rate_limited_passes.lock().expect("lock");
-                if *passes > 0 {
-                    *passes -= 1;
+                if let Some(left) = passes.get_mut(channel)
+                    && *left > 0
+                {
+                    *left -= 1;
                     return Err(SlackError::RateLimited {
                         method: "conversations.history".to_owned(),
                         retry_after: Duration::from_secs(1),
@@ -8147,7 +8170,8 @@ mod tests {
         ]));
         FakeHost::set_api_self(&host);
         // Each window reaches back past its cursor, so one pass costs one
-        // history read and the four throttles below split two per pump.
+        // history read. Each channel is throttled for two of its own passes,
+        // so the episode does not depend on how the two pumps interleave.
         host.set_watermark("acme", "C1", "050.0");
         host.seed_history(
             "C1",
@@ -8158,7 +8182,8 @@ mod tests {
             "D1",
             vec![history_message("200.0", "U9", "a dm"), history_message("050.0", "U9", "old")],
         );
-        host.rate_limit_history_passes(4);
+        host.rate_limit_history_passes("C1", 2);
+        host.rate_limit_history_passes("D1", 2);
 
         let capture = LogCapture::default();
         let subscriber = tracing_subscriber::fmt()
@@ -8188,12 +8213,12 @@ mod tests {
         let log = String::from_utf8_lossy(&capture.0.lock().expect("lock")).into_owned();
         for sweep in ["conversation", "dm"] {
             assert_eq!(
-                throttle_lines(&log, "slack throttled the sweep; backing off", sweep),
+                throttle_lines(&log, "slack throttled the sweep", sweep),
                 1,
                 "{sweep}: one warning per throttled episode: {log}",
             );
             assert!(
-                throttle_lines(&log, "slack sweep still throttled; backing off", sweep) >= 1,
+                throttle_lines(&log, "slack sweep still throttled", sweep) >= 1,
                 "{sweep}: the passes inside the episode are still reported, at debug: {log}",
             );
             assert_eq!(
@@ -8225,12 +8250,12 @@ mod tests {
 
         let log = String::from_utf8_lossy(&capture.0.lock().expect("lock")).into_owned();
         assert_eq!(
-            throttle_lines(&log, "slack throttled the sweep; backing off", "conversation"),
+            throttle_lines(&log, "slack throttled the sweep", "conversation"),
             1,
             "the episode announces itself once: {log}",
         );
         assert_eq!(
-            throttle_lines(&log, "slack sweep still throttled; backing off", "conversation"),
+            throttle_lines(&log, "slack sweep still throttled", "conversation"),
             0,
             "the repeated passes are debug: {log}",
         );
