@@ -1061,7 +1061,8 @@ pub struct Workspace {
     /// spend the once-per-author line the sweep relies on.
     pub(crate) slack_draft_user_failures: Mutex<std::collections::HashSet<(String, String)>>,
     /// `(workspace, conversation, parent ts)` whose failed thread read has
-    /// been reported: a raw ts on the card is the only other symptom.
+    /// been reported, so a persistent failure says so once rather than on
+    /// every park.
     pub(crate) slack_thread_failures: Mutex<std::collections::HashSet<(String, String, String)>>,
     /// When each followed thread was last read whole, keyed
     /// `(workspace, conversation, parent ts)`. In memory: a restart costs one
