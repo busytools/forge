@@ -5,10 +5,11 @@
 // created there would be CEF's and would share this frame's renderer with
 // it, the wedge the bridge exists to avoid.
 //
-// A same-origin subframe can read the top's origin and is handled like the
-// top frame. **A cross-origin subframe cannot**, and every web address it
-// could open is either its own or the top's, so it refuses them all rather
-// than guess at the one that would become a CEF popup.
+// **A subframe never bridges.** A same-origin subframe can read the top's
+// origin, so an http(s) address on that origin falls through to the engine's
+// own popup path and anything else answers null; a cross-origin subframe
+// cannot read the top's origin, so every http(s) address answers null. The
+// other schemes are left to the engine either way.
 (function () {
   'use strict';
   if (window === window.top) return;
