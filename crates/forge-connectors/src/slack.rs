@@ -2339,10 +2339,64 @@ pub(crate) async fn sweep_mentions(
     Ok(SweepOutcome { delivered, ..Default::default() })
 }
 
-/// The wait before the next sweep: the configured interval, or a rate
-/// limit's delay when one was reported.
+/// The wait before the next sweep: never shorter than the configured
+/// interval, and at least a rate limit's delay when one was reported.
 pub(crate) fn next_interval(configured: Duration, rate_limited: Option<Duration>) -> Duration {
-    rate_limited.map_or(configured, |delay| delay.min(RETRY_CAP))
+    rate_limited.map_or(configured, |delay| configured.max(delay.min(RETRY_CAP)))
+}
+
+/// Reports throttling once per episode: warn on entry, debug inside it,
+/// warn again on the first clean pass.
+#[derive(Default)]
+struct ThrottleEpisode {
+    active: bool,
+}
+
+impl ThrottleEpisode {
+    fn note_pass(
+        &mut self,
+        workspace: &str,
+        sweep: &'static str,
+        configured: Duration,
+        rate_limited: Option<Duration>,
+    ) {
+        match (rate_limited, self.active) {
+            (Some(delay), false) => {
+                self.active = true;
+                tracing::warn!(
+                    target: "forge_connectors::slack",
+                    workspace = %workspace,
+                    sweep = %sweep,
+                    event_name = "slack_sweep_throttled",
+                    retry_after_secs = delay.as_secs(),
+                    configured_secs = configured.as_secs(),
+                    "slack throttled the sweep; backing off",
+                );
+            }
+            (Some(delay), true) => {
+                tracing::debug!(
+                    target: "forge_connectors::slack",
+                    workspace = %workspace,
+                    sweep = %sweep,
+                    event_name = "slack_sweep_throttled",
+                    retry_after_secs = delay.as_secs(),
+                    configured_secs = configured.as_secs(),
+                    "slack sweep still throttled; backing off",
+                );
+            }
+            (None, true) => {
+                self.active = false;
+                tracing::warn!(
+                    target: "forge_connectors::slack",
+                    workspace = %workspace,
+                    sweep = %sweep,
+                    event_name = "slack_sweep_recovered",
+                    "slack sweep recovered from throttling",
+                );
+            }
+            (None, false) => {}
+        }
+    }
 }
 
 /// Sweep one workspace forever, until `shutdown` fires. The first sweep is
@@ -2377,6 +2431,7 @@ pub async fn run_workspace_pump(
         dm_shutdown_rx,
     ));
 
+    let mut throttle = ThrottleEpisode::default();
     let mut wait = interval;
     loop {
         tokio::select! {
@@ -2398,16 +2453,9 @@ pub async fn run_workspace_pump(
                     delivered = outcome.delivered,
                     "slack sweep finished",
                 );
-                if let Some(delay) = outcome.rate_limited {
-                    // Said out loud: a throttled sweep otherwise reads as
-                    // messages arriving late from a connected row.
-                    tracing::warn!(
-                        target: "forge_connectors::slack",
-                        workspace = %workspace,
-                        retry_after_secs = delay.as_secs(),
-                        "slack throttled the conversation sweep; backing off",
-                    );
-                }
+                // A throttled sweep otherwise reads as messages arriving
+                // late from a connected row.
+                throttle.note_pass(&workspace, "conversation", interval, outcome.rate_limited);
                 wait = next_interval(interval, outcome.rate_limited);
             }
             Err(error) => {
@@ -2470,6 +2518,7 @@ async fn run_dm_pump(
     interval: Duration,
     mut shutdown: oneshot::Receiver<()>,
 ) {
+    let mut throttle = ThrottleEpisode::default();
     let mut wait = Duration::ZERO;
     loop {
         tokio::select! {
@@ -2486,14 +2535,7 @@ async fn run_dm_pump(
                     delivered = outcome.delivered,
                     "slack DM sweep finished",
                 );
-                if let Some(delay) = outcome.rate_limited {
-                    tracing::warn!(
-                        target: "forge_connectors::slack",
-                        workspace = %workspace,
-                        retry_after_secs = delay.as_secs(),
-                        "slack throttled the DM sweep; backing off",
-                    );
-                }
+                throttle.note_pass(&workspace, "dm", interval, outcome.rate_limited);
                 wait = next_interval(interval, outcome.rate_limited);
             }
             Err(error) => {
@@ -4000,6 +4042,10 @@ mod tests {
         history: std::sync::Mutex<HashMap<String, Vec<Vec<SlackHistoryMessage>>>>,
         /// Seeded failures: channel -> the error history returns.
         history_errors: std::sync::Mutex<HashMap<String, SlackError>>,
+        /// The first this many `conversations.history` calls answer 429 with
+        /// a 1 s Retry-After, then the fake recovers. A pump test needs an
+        /// episode that starts, spans passes and ends.
+        history_rate_limited_passes: std::sync::Mutex<usize>,
         /// Display names the fake's `users.info` answers with, and how many
         /// times it was asked - a lookup is a call.
         user_names: std::sync::Mutex<HashMap<String, String>>,
@@ -4149,6 +4195,11 @@ mod tests {
 
         fn fail_with_rate_limit(&mut self, retry_after: Duration) {
             self.rate_limited = Some(retry_after);
+        }
+
+        /// Throttle the next `passes` history reads, then answer normally.
+        fn rate_limit_history_passes(&self, passes: usize) {
+            *self.history_rate_limited_passes.lock().expect("lock") = passes;
         }
 
         /// Make the nth (0-based) `conversations.replies` call answer 429.
@@ -4665,6 +4716,16 @@ mod tests {
             cursor: Option<&str>,
         ) -> Result<MessagePage, SlackError> {
             *self.history_calls.lock().expect("lock") += 1;
+            {
+                let mut passes = self.history_rate_limited_passes.lock().expect("lock");
+                if *passes > 0 {
+                    *passes -= 1;
+                    return Err(SlackError::RateLimited {
+                        method: "conversations.history".to_owned(),
+                        retry_after: Duration::from_secs(1),
+                    });
+                }
+            }
             if let Some(retry_after) = self.rate_limited {
                 return Err(SlackError::RateLimited {
                     method: "conversations.history".to_owned(),
@@ -8069,6 +8130,117 @@ mod tests {
         assert!(log.contains("withholds this DM's history"), "the skip states its reason: {log}");
     }
 
+    /// Counts the throttle lines a sweep emitted: the message plus the
+    /// `sweep` field, which is how the two pumps' episodes stay distinct.
+    fn throttle_lines(log: &str, message: &str, sweep: &str) -> usize {
+        let field = format!("sweep={sweep}");
+        log.lines().filter(|line| line.contains(message) && line.contains(&field)).count()
+    }
+
+    /// A throttled workspace warns once when the episode starts, not once
+    /// per pass, and says when it recovers. Both pumps carry the rule.
+    #[tokio::test]
+    async fn a_throttled_sweep_warns_once_per_episode_and_says_when_it_recovers() {
+        let host = Arc::new(FakeHost::with_subscriptions(vec![
+            sub_channel("acme", "C1", SlackWatchMode::All),
+            sub_dm("acme"),
+        ]));
+        FakeHost::set_api_self(&host);
+        // Each window reaches back past its cursor, so one pass costs one
+        // history read and the four throttles below split two per pump.
+        host.set_watermark("acme", "C1", "050.0");
+        host.seed_history(
+            "C1",
+            vec![history_message("200.0", "U9", "news"), history_message("050.0", "U9", "old")],
+        );
+        host.set_watermark("acme", "D1", "050.0");
+        host.seed_history(
+            "D1",
+            vec![history_message("200.0", "U9", "a dm"), history_message("050.0", "U9", "old")],
+        );
+        host.rate_limit_history_passes(4);
+
+        let capture = LogCapture::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(capture.clone())
+            .with_max_level(tracing::Level::DEBUG)
+            .with_ansi(false)
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let (tx, rx) = oneshot::channel();
+        let pump = tokio::spawn(run_workspace_pump(host.clone(), "acme".to_owned(), 1, 1, rx));
+        for _ in 0..160 {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            let seen = String::from_utf8_lossy(&capture.0.lock().expect("lock")).into_owned();
+            if throttle_lines(&seen, "slack sweep recovered from throttling", "conversation") == 1
+                && throttle_lines(&seen, "slack sweep recovered from throttling", "dm") == 1
+            {
+                break;
+            }
+        }
+        tx.send(()).expect("signal shutdown");
+        tokio::time::timeout(Duration::from_secs(2), pump)
+            .await
+            .expect("the pump must not outlive its shutdown")
+            .expect("no panic");
+
+        let log = String::from_utf8_lossy(&capture.0.lock().expect("lock")).into_owned();
+        for sweep in ["conversation", "dm"] {
+            assert_eq!(
+                throttle_lines(&log, "slack throttled the sweep; backing off", sweep),
+                1,
+                "{sweep}: one warning per throttled episode: {log}",
+            );
+            assert!(
+                throttle_lines(&log, "slack sweep still throttled; backing off", sweep) >= 1,
+                "{sweep}: the passes inside the episode are still reported, at debug: {log}",
+            );
+            assert_eq!(
+                throttle_lines(&log, "slack sweep recovered from throttling", sweep),
+                1,
+                "{sweep}: one recovery line per episode: {log}",
+            );
+        }
+    }
+
+    /// The per-pass detail sits below the default log floor, so a workspace
+    /// throttled for hours costs one warning, not one per sweep.
+    #[test]
+    fn the_per_pass_throttle_detail_stays_below_info() {
+        let capture = LogCapture::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(capture.clone())
+            .with_max_level(tracing::Level::INFO)
+            .with_ansi(false)
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let mut episode = ThrottleEpisode::default();
+        let throttled = Some(Duration::from_secs(7));
+        let configured = Duration::from_secs(30);
+        episode.note_pass("acme", "conversation", configured, throttled);
+        episode.note_pass("acme", "conversation", configured, throttled);
+        episode.note_pass("acme", "conversation", configured, None);
+
+        let log = String::from_utf8_lossy(&capture.0.lock().expect("lock")).into_owned();
+        assert_eq!(
+            throttle_lines(&log, "slack throttled the sweep; backing off", "conversation"),
+            1,
+            "the episode announces itself once: {log}",
+        );
+        assert_eq!(
+            throttle_lines(&log, "slack sweep still throttled; backing off", "conversation"),
+            0,
+            "the repeated passes are debug: {log}",
+        );
+        assert_eq!(
+            throttle_lines(&log, "slack sweep recovered from throttling", "conversation"),
+            1,
+            "and the end of the episode is announced: {log}",
+        );
+    }
+
     /// The headline mention case: a mention from a public channel the
     /// user has not joined auto-subscribes it, and users.conversations
     /// (membership-scoped) never lists it - the sweep must still fetch
@@ -8291,16 +8463,22 @@ mod tests {
     }
 
     #[test]
-    fn next_interval_takes_the_rate_limit_delay_when_one_was_reported() {
+    fn next_interval_never_sweeps_faster_than_the_configured_cadence() {
         assert_eq!(
             next_interval(Duration::from_secs(30), Some(Duration::from_secs(7))),
-            Duration::from_secs(7),
+            Duration::from_secs(30),
+            "a short Retry-After must not shorten the cadence",
         );
         assert_eq!(next_interval(Duration::from_secs(30), None), Duration::from_secs(30));
         assert_eq!(
             next_interval(Duration::from_secs(30), Some(Duration::from_secs(600))),
             Duration::from_secs(60),
             "a hostile Retry-After is capped",
+        );
+        assert_eq!(
+            next_interval(Duration::from_secs(90), Some(Duration::from_secs(600))),
+            Duration::from_secs(90),
+            "the cap bounds the Retry-After, not the configured cadence",
         );
     }
 
