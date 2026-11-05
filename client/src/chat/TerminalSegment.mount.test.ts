@@ -75,4 +75,21 @@ describe('the terminal strip row', () => {
     expect(text).toContain('off');
     expect(text).toContain('start');
   });
+
+  it('is one pill with the terminal glyph, the state dot and its door', () => {
+    host = document.createElement('div');
+    document.body.appendChild(host);
+    instance = mount(TerminalSegment, { target: host, props: { slot: seat, terminal: summary() } });
+    flushSync();
+    const pill = host.querySelector('button.tm-tog');
+    expect(pill, 'the row is one button').not.toBeNull();
+    expect(host.querySelectorAll('button').length, 'and not a second button inside it').toBe(1);
+    expect(pill?.querySelector('use')?.getAttribute('href'), 'the terminal glyph').toBe(
+      '#i-square-terminal',
+    );
+    expect(pill?.querySelector('.dot.idle'), 'the state mark').not.toBeNull();
+    expect(pill?.textContent, 'the word, the state and the door').toContain('terminal');
+    expect(pill?.textContent).toContain('idle');
+    expect(pill?.textContent).toContain('show');
+  });
 });

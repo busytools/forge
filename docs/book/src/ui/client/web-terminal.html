@@ -70,9 +70,12 @@
 
   /* The strip row and the ask card. */
   .strip { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 14px; }
-  .seg { display: inline-flex; align-items: center; gap: 8px; padding: 3px 9px;
-    border: 1px solid var(--line); border-radius: 6px; background: var(--s1);
-    font-family: var(--mono); font-size: var(--fs-label); }
+  .seg { display: inline-flex; align-items: center; gap: 6px; padding: 3px 8px;
+    border: 1px solid transparent; border-radius: 999px; background: none;
+    color: var(--dim); font-family: var(--mono); font-size: var(--fs-label); }
+  .seg .go { color: var(--muted); }
+  .glyph { width: 15px; height: 15px; flex: none; fill: none; stroke: currentColor;
+    stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
   .dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
   .dot.idle { background: var(--accent); }
   .dot.warn { width: 9px; height: 9px; background: var(--warn);
@@ -135,11 +138,11 @@
   <div class="tile">
     <div class="tcap"><b>the strip's row</b> · drawn for every seat</div>
     <div class="strip">
-      <span class="seg"><span class="ring"></span>terminal <span class="dim">a command is running</span> <span class="btn">show</span></span>
-      <span class="seg"><span class="dot warn"></span>terminal <span class="dim">waiting for you</span> <span class="btn">hide</span></span>
-      <span class="seg"><span class="dot idle"></span>terminal <span class="dim">idle</span> <span class="btn">show</span></span>
-      <span class="seg"><span class="x">x</span>terminal <span class="dim">exited</span> <span class="btn">show</span></span>
-      <span class="seg"><span class="dot idle"></span>terminal <span class="dim">off</span> <span class="btn">start</span></span>
+      <span class="seg"><svg class="glyph" viewBox="0 0 24 24" aria-hidden="true"><path d="m7 11 2-2-2-2"/><path d="M11 13h4"/><rect width="18" height="18" x="3" y="3" rx="2" ry="2"/></svg><span class="ring"></span>terminal <span class="dim">a command is running</span> <span class="go">show</span></span>
+      <span class="seg"><svg class="glyph" viewBox="0 0 24 24" aria-hidden="true"><path d="m7 11 2-2-2-2"/><path d="M11 13h4"/><rect width="18" height="18" x="3" y="3" rx="2" ry="2"/></svg><span class="dot warn"></span>terminal <span class="dim">waiting for you</span> <span class="go">hide</span></span>
+      <span class="seg"><svg class="glyph" viewBox="0 0 24 24" aria-hidden="true"><path d="m7 11 2-2-2-2"/><path d="M11 13h4"/><rect width="18" height="18" x="3" y="3" rx="2" ry="2"/></svg><span class="dot idle"></span>terminal <span class="dim">idle</span> <span class="go">show</span></span>
+      <span class="seg"><svg class="glyph" viewBox="0 0 24 24" aria-hidden="true"><path d="m7 11 2-2-2-2"/><path d="M11 13h4"/><rect width="18" height="18" x="3" y="3" rx="2" ry="2"/></svg><span class="x">x</span>terminal <span class="dim">exited</span> <span class="go">show</span></span>
+      <span class="seg"><svg class="glyph" viewBox="0 0 24 24" aria-hidden="true"><path d="m7 11 2-2-2-2"/><path d="M11 13h4"/><rect width="18" height="18" x="3" y="3" rx="2" ry="2"/></svg><span class="dot idle"></span>terminal <span class="dim">off</span> <span class="go">start</span></span>
     </div>
     <div class="tnote">the states are words as well as colour: a running command, a person's input
       wanted, idle-but-the-agent's, an exited shell, or no terminal yet. <b>Start</b> is the

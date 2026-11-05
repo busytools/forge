@@ -76,66 +76,64 @@
   }
 </script>
 
-<span class="tm-seg">
-  <span class="tm-state">
-    {#if mark === 'running'}
-      <span class="ring" title="a command is running"></span>
-    {:else if mark === 'held'}
-      <span class="dot warn" title="the terminal is waiting for you"></span>
-    {:else if mark === 'bad'}
-      <Icon name="x" class="bad" />
-    {:else}
-      <span class="dot idle" title="the terminal is idle"></span>
-    {/if}
-    terminal
-    <span class="tx">{stateText}</span>
-  </span>
-  <button
-    type="button"
-    class="tm-show"
-    aria-pressed={fronting}
-    aria-keyshortcuts="Meta+J Control+J"
-    aria-label={fronting
-      ? 'hide the terminal'
-      : live === null
-        ? 'start a terminal'
-        : 'show the terminal'}
-    onclick={toggle}
-  >
-    {fronting ? 'hide' : live === null ? 'start' : 'show'}
-  </button>
-</span>
+<button
+  type="button"
+  class="tm-tog"
+  aria-pressed={fronting}
+  aria-keyshortcuts="Meta+J Control+J"
+  aria-label={fronting
+    ? 'hide the terminal'
+    : live === null
+      ? 'start a terminal'
+      : 'show the terminal'}
+  onclick={toggle}
+>
+  <Icon name="square-terminal" />
+  {#if mark === 'running'}
+    <span class="ring" title="a command is running"></span>
+  {:else if mark === 'held'}
+    <span class="dot warn" title="the terminal is waiting for you"></span>
+  {:else if mark === 'bad'}
+    <Icon name="x" class="bad" />
+  {:else}
+    <span class="dot idle" title="the terminal is idle"></span>
+  {/if}
+  terminal
+  <span class="tx">{stateText}</span>
+  <span class="go">{fronting ? 'hide' : live === null ? 'start' : 'show'}</span>
+</button>
 
 <style>
-  .tm-seg {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    padding: 2px 8px;
-    border: 1px solid var(--line);
-    border-radius: 6px;
-    background: var(--s1);
-    color: var(--text);
-    font-size: 12.5px;
-  }
-  .tm-state {
-    display: inline-flex;
+  /* The browser chip's dress: one borderless pill, glyph, state dot, word,
+     state and door - never a bordered chip with a second bordered button
+     inside it. */
+  .tm-tog {
+    display: flex;
     align-items: center;
     gap: 6px;
+    padding: 3px 8px;
+    border: 1px solid transparent;
+    border-radius: 999px;
+    background: none;
+    color: var(--dim);
+    font: inherit;
     white-space: nowrap;
+    cursor: pointer;
+  }
+  .tm-tog:hover,
+  .tm-tog:focus-visible {
+    background: var(--s3);
+    color: var(--text);
   }
   .tx {
+    color: var(--dim);
+  }
+  .go {
     color: var(--muted);
   }
-  .tm-show {
-    min-height: 28px;
-    padding: 2px 10px;
-    border: 1px solid var(--line);
-    border-radius: 6px;
-    background: var(--s2);
+  .tm-tog:hover .go,
+  .tm-tog:focus-visible .go {
     color: var(--text);
-    font: inherit;
-    cursor: pointer;
   }
   .ring {
     width: 8px;
@@ -144,7 +142,7 @@
     border-radius: 50%;
   }
   @media (pointer: coarse) {
-    .tm-show {
+    .tm-tog {
       min-height: 44px;
     }
   }
