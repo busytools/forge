@@ -12208,6 +12208,8 @@ async fn a_terminal_opens_types_and_closes_over_the_socket() {
     let dir = tempfile::tempdir().expect("a config dir");
     std::fs::create_dir_all(dir.path().join("proj")).expect("the project's directory");
     let fleet = Fleet::in_dir(dir.path(), &[("TestOrg", &["proj"])]).expect("the fleet builds");
+    // A live session, because a seat with none holds no terminal.
+    fleet.install_agent("TestOrg", "proj", "lead");
     let (url, _state) = serve_fleet(&fleet, Heartbeat::default()).await;
     let seat = lead_seat();
     let mut socket = connect(&url).await;
@@ -12326,4 +12328,109 @@ async fn a_terminal_opens_types_and_closes_over_the_socket() {
         fleet.workspace().terminal_if_any(&seat).is_none(),
         "close removed the seat's terminal",
     );
+}
+
+/// Attach one answering client to a seat's terminal, opening it when `id` is
+/// none. Answers the terminal's id and this connection's viewer number.
+async fn attach_answering(url: &str, seat: &SessionSlot, id: Option<u16>) -> (Client, u16, u64) {
+    let mut socket = connect(url).await;
+    send(
+        &mut socket,
+        ClientMessage::Subscribe {
+            what: Subject::Session(seat.clone()),
+            answering: true,
+            review: false,
+        },
+    )
+    .await;
+    send(
+        &mut socket,
+        ClientMessage::TerminalView { seat: seat.clone(), id, reply_to: Some(41) },
+    )
+    .await;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut attached = None;
+    while Instant::now() < deadline && attached.is_none() {
+        let Some(message) = next_server_within(&mut socket, 500).await else { continue };
+        if let ServerMessage::TerminalView { id, viewer, .. } = message {
+            attached = Some((id, viewer));
+        }
+    }
+    let (id, viewer) = attached.expect("the attach answered with a repaint");
+    (socket, id, viewer)
+}
+
+/// **A parked hand-off's keyboard is one client's.** Two answering clients
+/// watch the same terminal: the first to type claims the keyboard, the second
+/// is refused and told who holds it, a take is refused while the ask waits,
+/// and the ending gives the keyboard back to the agent.
+#[tokio::test]
+async fn a_parked_handoff_gives_the_keyboard_to_one_client() {
+    let dir = tempfile::tempdir().expect("a config dir");
+    std::fs::create_dir_all(dir.path().join("proj")).expect("the project's directory");
+    let fleet = Fleet::in_dir(dir.path(), &[("TestOrg", &["proj"])]).expect("the fleet builds");
+    fleet.install_agent("TestOrg", "proj", "lead");
+    let (url, _state) = serve_fleet(&fleet, Heartbeat::default()).await;
+    let seat = lead_seat();
+
+    let (mut first, id, first_viewer) = attach_answering(&url, &seat, None).await;
+    let (mut second, second_id, second_viewer) = attach_answering(&url, &seat, Some(id)).await;
+    assert_eq!(second_id, id, "both clients view the one terminal");
+
+    let parked = fleet.park_terminal_hand_off(&seat, id).expect("a hand-off parks");
+
+    // **A take cannot land while the ask holds the keyboard.**
+    send(&mut first, ClientMessage::TerminalControl { seat: seat.clone(), id, take: true }).await;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut refused = false;
+    while Instant::now() < deadline && !refused {
+        let Some(message) = next_server_within(&mut first, 500).await else { continue };
+        if let ServerMessage::Error { what, .. } = message {
+            refused = what == "terminal_control";
+        }
+    }
+    assert!(refused, "a take was refused while the hand-off held the keyboard");
+    assert!(!fleet.workspace().terminal_controlled(&seat), "and nothing was granted");
+
+    // The first client to type owns the keyboard.
+    send_terminal_input(&mut first, id, b"echo FIRST_HAND\r").await;
+    assert!(
+        binary_containing(&mut first, b"FIRST_HAND", 10_000).await,
+        "the first client's keystrokes reached the shell",
+    );
+    assert!(fleet.workspace().terminal_controlled(&seat), "the first client holds it");
+
+    // The second is told the keyboard went to the first, and its own bytes
+    // are refused.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut told = None;
+    while Instant::now() < deadline && told.is_none() {
+        let Some(message) = next_server_within(&mut second, 500).await else { continue };
+        if let ServerMessage::TerminalControl { controller, .. } = message {
+            told = Some(controller);
+        }
+    }
+    assert_eq!(
+        told,
+        Some(Some(first_viewer)),
+        "viewer {second_viewer} was told the keyboard is viewer {first_viewer}'s",
+    );
+    send_terminal_input(&mut second, id, b"echo SECOND_HAND\r").await;
+    assert!(
+        !binary_containing(&mut second, b"SECOND_HAND", 700).await,
+        "a second client's keystrokes reached a parked hand-off",
+    );
+
+    // The ending returns the keyboard to the agent.
+    fleet.answer_terminal_hand_off(&parked, &seat);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut released = false;
+    while Instant::now() < deadline && !released {
+        let Some(message) = next_server_within(&mut first, 500).await else { continue };
+        if let ServerMessage::TerminalControl { controller: None, .. } = message {
+            released = true;
+        }
+    }
+    assert!(released, "the ending released the hand-off's keyboard");
+    assert!(!fleet.workspace().terminal_controlled(&seat), "the agent owns it again");
 }

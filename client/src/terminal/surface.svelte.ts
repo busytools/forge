@@ -350,6 +350,19 @@ export function controlling(): boolean {
 }
 
 /**
+ * Whether this client may type into the raised terminal: the controller, or a
+ * hand-off's door while no client has claimed it.
+ *
+ * **A hand-off's keyboard is one client's.** The first client to type claims
+ * it; once the claim is pushed, every other client falls back to viewing, so
+ * two hands never join one prompt.
+ */
+export function mayType(held: boolean): boolean {
+  if (controlling()) return true;
+  return held && surface.controller === null;
+}
+
+/**
  * Take the person's control of the raised terminal, or give it back. The
  * agent's tools are refused while it is held, exactly as during a hand-off.
  */

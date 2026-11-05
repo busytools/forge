@@ -82,6 +82,36 @@ impl TerminalEntry {
         let _ = self.control.send(Some(viewer));
     }
 
+    /// Claim the control only where nobody holds it, telling every attached
+    /// viewer when the claim lands. **The hand-off's door**: the first client
+    /// to type during a parked hand-off owns the keyboard, and a client that
+    /// loses the race is a viewer rather than a second hand on the secret.
+    pub fn claim_control(&self, viewer: u64) -> bool {
+        if viewer == 0 {
+            return false;
+        }
+        if self
+            .controller
+            .compare_exchange(0, viewer, Ordering::Relaxed, Ordering::Relaxed)
+            .is_err()
+        {
+            return false;
+        }
+        self.touch();
+        let _ = self.control.send(Some(viewer));
+        true
+    }
+
+    /// Give the person's control back to the agent whatever connection holds
+    /// it, which is what the end of a hand-off owes: the ask parked the
+    /// keyboard, and the ending takes it back.
+    pub fn clear_control(&self) {
+        if self.controller.swap(0, Ordering::Relaxed) != 0 {
+            self.touch();
+            let _ = self.control.send(None);
+        }
+    }
+
     /// Give control back when its holder releases it; another connection's
     /// release is not this one's to take.
     pub fn release_control(&self, viewer: u64) -> bool {
@@ -183,10 +213,21 @@ impl Workspace {
 
     /// The seat's terminal, spawned on first use. **The person's door**: a
     /// view can open one on a seat no agent has touched.
+    ///
+    /// **A seat with no session holds no terminal.** The page cannot see one
+    /// - its record is refused - so a door that opened one anyway would run a
+    /// shell nobody could draw or answer for, and the person would be shown a
+    /// terminal that reads as closed.
     pub fn open_terminal(
         self: &Arc<Self>,
         slot: &SessionSlot,
     ) -> Result<Arc<TerminalEntry>, String> {
+        if self.domain_session_for(slot).is_none() {
+            return Err(format!(
+                "forge holds no session for {}; start it first",
+                slot.display()
+            ));
+        }
         self.terminal_for(slot)
     }
 
@@ -362,8 +403,10 @@ impl Workspace {
             id,
             answer,
         });
-        // The input is the agent's again: the strip stops saying it waits.
+        // The input is the agent's again: the strip stops saying it waits,
+        // and the keyboard the ask parked goes back with it.
         if let Some(entry) = self.terminal_if_any(&owner) {
+            entry.clear_control();
             self.announce_terminal(&owner, Some(entry.summary(&owner, false)));
         }
         true
@@ -794,6 +837,18 @@ mod tests {
             "the seat ended, so its terminal left the registry with it",
         );
         entry.terminal.close();
+    }
+
+    /// **A seat with no session holds no terminal.** Its page is refused, so
+    /// a shell there would run with no record to draw and no way to answer;
+    /// the person's door refuses instead of opening one.
+    #[tokio::test]
+    async fn opening_a_terminal_on_a_sessionless_seat_is_refused() {
+        let (workspace, _rx) = Workspace::testing_stub();
+        workspace.seed_test_project("proj", "/tmp");
+        let slot = SessionSlot::worker("TestOrg", "proj", "nobody");
+        assert!(workspace.open_terminal(&slot).is_err(), "a sessionless seat opened a terminal");
+        assert!(workspace.terminal_if_any(&slot).is_none(), "and none was registered");
     }
 
     /// The crate's state crosses to the wire unchanged, so a model reading the

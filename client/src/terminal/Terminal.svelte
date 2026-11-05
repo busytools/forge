@@ -13,6 +13,7 @@
     controlTerminal,
     controlling,
     handOff,
+    mayType,
     onOutput,
     onScreen,
     reconcileSurfaceSize,
@@ -83,6 +84,10 @@
     // The record no longer carries this terminal: it closed.
     if (held === null) return 'the terminal closed';
     if (!held.alive) return 'the shell exited';
+    // **A hand-off's keyboard is one client's.** Until the first client
+    // types it waits for whoever takes it; once claimed, the rest watch.
+    if (held.held && controlling()) return 'you have control';
+    if (held.held && surface.controller !== null) return 'another client has the keyboard';
     if (held.held) return 'waiting for you';
     if (controlling()) return 'you have control';
     if (held.state.running) return 'the agent is running a command';
@@ -103,12 +108,18 @@
     return `terminal ${id} · ${shell}${held === null ? '' : ` · ${held.cwd}`}`;
   });
 
+  /**
+   * Whether this client may type: the controller, or the hand-off's door
+   * while nobody has claimed it.
+   */
+  const typing = $derived(mayType(handOff.current !== null));
+
   function send(bytes: Uint8Array): void {
     // **The person's input is the hand-off's or their own control.** Outside
     // both this surface is a viewer: the agent owns the terminal, the server
     // refuses the bytes, and sending them here would say the keyboard worked
     // when it did not.
-    if (handOff.current === null && !controlling()) return;
+    if (!typing) return;
     const id = surface.id;
     if (id === null) return;
     terminalLink().input(id, bytes);
@@ -257,7 +268,7 @@
   // keyboard does nothing rather than feeding a command the person did not
   // ask to join.
   $effect(() => {
-    if (term !== null) term.options.disableStdin = handOff.current === null && !controlling();
+    if (term !== null) term.options.disableStdin = !typing;
   });
 
   // **The byte stream stops while the tab is hidden.** A page that cannot draw

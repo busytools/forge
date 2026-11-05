@@ -90,6 +90,7 @@ import {
   controlling,
   installTerminalSurface,
   lowerForOtherSeat,
+  mayType,
   onOutput,
   onScreen,
   openTerminal,
@@ -306,6 +307,34 @@ describe('the terminal surface store', () => {
     expect(link.control).toHaveBeenCalledWith(seat, 4, false);
     pushed.control?.({ seat, id: 4, controller: null });
     expect(controlling(), 'released, and the agent owns it again').toBe(false);
+    stop();
+  });
+
+  it("gives a hand-off's keyboard to the one client that claimed it", async () => {
+    const stop = installTerminalSurface(stillConnection());
+    await openTerminal(seat, 4);
+    pushed.view?.({
+      seat,
+      id: 4,
+      cols: 80,
+      rows: 24,
+      seq: 1,
+      screen: '$ ',
+      viewers: 2,
+      viewer: 9,
+      controller: null,
+    });
+    expect(mayType(true), 'the first client to type may claim the keyboard').toBe(true);
+
+    // The claim lands: this client typed first and holds it.
+    pushed.control?.({ seat, id: 4, controller: 9 });
+    expect(mayType(true), 'the claimer keeps typing').toBe(true);
+
+    // Another client typed first: this one falls back to viewing.
+    pushed.control?.({ seat, id: 4, controller: 12 });
+    expect(mayType(true), 'the loser of the claim falls back to viewing').toBe(false);
+    expect(mayType(false), 'and it cannot type outside a hand-off either').toBe(false);
+    expect(controlling(), 'nor does it hold the role').toBe(false);
     stop();
   });
 });
