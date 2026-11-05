@@ -8,14 +8,15 @@ the browser takeover's sibling. The drawing it is held against is
 [web-terminal.html](./web-terminal.html), beside this page.
 
 **The terminal belongs to the seat, not the occupant.** It is created lazily
-on first use and carries the seat's own cwd and environment - a git worker's
-terminal runs in its worktree, a worker on a non-git project and the lead in
-the project directory - and `/new`,
+on first use and carries the seat's own cwd and environment - a worker in a
+git tree runs in its worktree under the tree it was spawned on, a worker in
+a non-git tree in that tree; the lead in the project directory - and `/new`,
 `/resume` and a handoff leave the PTY, its shell and its scrollback
 untouched. It lives as long as the seat: releasing the seat ends it, and an
 explicit close, the shell exiting, an idle close or forge exiting also ends
-it. `[terminal] idle_minutes` closes one nobody is attached to or has called
-after that long, and the strip's row goes back to **off**. **A raised surface
+it. `[terminal] idle_minutes` closes one nobody is attached to, no hand-off
+is waiting on, and nothing has called after that long, and the strip's row
+goes back to **off**. **A raised surface
 belongs to the seat it was opened on**: switching seats lowers it, and the
 old terminal keeps running.
 
@@ -23,7 +24,8 @@ old terminal keeps running.
 no environment flag of its own: the agent types bytes and named keys through
 `terminal__write`, runs a command through `terminal__run`, reads the screen
 through `terminal__read`, and waits with `terminal__wait` (exact through the
-shell's OSC 133 marks, or the heuristic with `source: heuristic`). The
+shell's OSC 133 marks, or by the quiet-screen heuristic, which the answer
+labels `state.source: heuristic`). The
 person's own input is the hand-off's or their own **take control**: while
 either holds the terminal the tools are refused, and a hand-off hands the
 agent the ending rather than the screen. The keystrokes themselves go from
@@ -55,8 +57,7 @@ a fresh repaint instead of drawing a fragment. The DOM renderer is the default;
 `@xterm/addon-webgl` is loaded behind a try so a renderer that will not paint
 never draws an empty terminal over a live shell. Fit, unicode11, search,
 clipboard (OSC 52) and image (Sixel and iTerm2 IIP) are loaded beside it.
-**Kitty graphics is not drawn**; that gap is named rather than hidden, and
-Sixel and iTerm2 IIP cover the larger share of CLI image use.
+**Kitty graphics is not drawn**; that gap is named rather than hidden.
 
 **The keyboard is the terminal's only while the person holds it.** There are
 two doors to that hold, and they are the browser's controller role: **take
@@ -73,11 +74,13 @@ surface is a viewer: the key bar and the terminal's own input are inert, and
 the server refuses a keystroke that arrives anyway, while the output frames
 keep it live. Inside the hold,
 Ctrl-C, Ctrl-D, Ctrl-Z and Ctrl-L reach the PTY untouched. **Cmd+J raises and
-lowers the surface on the desktop app**, where the page handles it; a browser
-tab keeps that chord for itself, so there the Back gesture lowers the
-surface, as it does on the desktop, because the surface pushes one history
-entry. Cmd+W belongs to the window and to the tab, not to the terminal: it
-lowers nothing and is never sent to the shell. **A finger cannot produce Escape, Tab or an arrow**, so the
+lowers the surface on the desktop app**, on a seat whose read answers, where
+the page handles it; a browser tab keeps that chord for itself, so there the
+browser's Back lowers the surface, as the hardware Back does on the phone,
+because the surface pushes one history entry. **Cmd+W is the window's on the
+desktop and the tab's in a browser**; on the phone's hardware keyboard,
+where neither takes it, it lowers the surface. It is never sent to the
+shell. **A finger cannot produce Escape, Tab or an arrow**, so the
 touch key bar is required rather than a fallback, every control it offers is
 44px, and Ctrl and Alt are sticky keys for the next character the soft
 keyboard types.

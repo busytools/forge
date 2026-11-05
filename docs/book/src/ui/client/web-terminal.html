@@ -169,7 +169,8 @@
       <span class="title">terminal 1 · zsh · /Users/vedhavyas/Projects/forge</span>
       <span class="state">a terminal hand-off holds the keyboard; use the hand-off card</span>
       <span class="act">read the screen</span>
-      <span class="act">take control</span>
+      <span class="act">Done</span>
+      <span class="act">Not now</span>
       <span class="act">close</span>
     </div></div>
     <div class="term"><div class="bar">
@@ -182,12 +183,14 @@
     </div></div>
     <div class="tnote">a take or release is drawn while the server answers - <b>taking control...</b>,
       <b>releasing...</b> - and a refusal replaces the state line in the server's own words, until the
-      ask ends or the push lands. A client that lost the keyboard to another client's take, or to a
-      hand-off's claim, reads <span class="mono">another client has the keyboard</span>.</div>
+      ask ends, the control push lands or a fresh repaint arrives; the bar carries the parked ask's
+      <b>Done</b> and <b>Not now</b> while it waits. A client that lost the keyboard to another
+      client's take, or to a hand-off's claim, reads
+      <span class="mono">another client has the keyboard</span>.</div>
   </div>
 
   <div class="tile">
-    <div class="tcap"><b>the strip's row</b> · drawn for every seat that holds a session</div>
+    <div class="tcap"><b>the strip's row</b> · drawn for every seat; a refused read draws the note</div>
     <div class="strip">
       <span class="seg"><svg class="glyph" viewBox="0 0 24 24" aria-hidden="true"><path d="m7 11 2-2-2-2"/><path d="M11 13h4"/><rect width="18" height="18" x="3" y="3" rx="2" ry="2"/></svg><span class="ring"></span>terminal <span class="dim">a command is running</span> <span class="go">show</span></span>
       <span class="seg"><svg class="glyph" viewBox="0 0 24 24" aria-hidden="true"><path d="m7 11 2-2-2-2"/><path d="M11 13h4"/><rect width="18" height="18" x="3" y="3" rx="2" ry="2"/></svg><span class="dot warn"></span>terminal <span class="dim">waiting for you</span> <span class="go">hide</span></span>
