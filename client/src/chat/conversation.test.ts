@@ -80,9 +80,12 @@ const stamped = (message: unknown, at: string): unknown => ({
 });
 
 /** The frame a turn ends on, which is what tells a page's copy of it settled. */
-const ended = (): unknown => ({
+const ended = (): unknown => endedAs('r-1');
+
+/** [`ended`] under an id of its own, for two turns in one conversation. */
+const endedAs = (uuid: string): unknown => ({
   type: 'result',
-  uuid: 'r-1',
+  uuid,
   subtype: 'success',
   is_error: false,
 });
@@ -1051,6 +1054,69 @@ describe('the conversation the chat draws', () => {
       'h1:hook_response',
       'u-one',
       'a-two',
+    ]);
+    stop();
+  });
+
+  /**
+   * **A page row that carries two exchanges must not move the older one.**
+   *
+   * A prompt no row opens - a `prompt_under` from another client, a
+   * delivery - leaves the server's copy with nothing to open its turn at, so
+   * its fold joins that exchange to the turn above it. The row then shares
+   * frames with BOTH held turns, and the merge claims it for the newest: the
+   * older turn is in no page, so it is placed above the page - at the head of
+   * the conversation, and drawn a second time inside the row that claimed it.
+   */
+  it('keeps an earlier turn in place when a page row carries a later prompt', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(page([turn('t1', 'one'), turn('t2', 'two')], null));
+
+    // Another client's prompt: announced and started, its row drawn from the
+    // announcement because no row of its own arrives.
+    server.update({
+      prompt_queued: { key: LEAD, uuid: 'p-remote', source: 'forge', text: 'remote' },
+    });
+    server.update({ prompt_lifecycle: { key: LEAD, uuid: 'p-remote', state: 'started' } });
+    server.update({ chat_appended: { key: LEAD, msg: said('remote answer') } });
+    server.update({ chat_appended: { key: LEAD, msg: endedAs('r-remote') } });
+
+    // The server's own fold has no row opening the remote turn - the reader's
+    // prompt is the only carrier of those words - so its newest page carries
+    // the previous exchange and the remote one as a single row.
+    server.send(
+      page(
+        [
+          turn('t1', 'one'),
+          {
+            key: 'folded',
+            messages: [
+              typed('two'),
+              said('answer two'),
+              endedAs('r-two'),
+              said('remote answer'),
+              endedAs('r-remote'),
+            ],
+          },
+        ],
+        null,
+      ),
+    );
+
+    expect(
+      get(chat.value).turns.map((held) => held.key),
+      'the settled turn did not move to the head',
+    ).toEqual(['t1', 't2', 'live:p-remote']);
+    expect(names(chat), 'and nothing is drawn twice or dropped').toEqual([
+      'u-one',
+      'u-two',
+      'a-answer two',
+      'r-two',
+      'p-remote',
+      'a-remote answer',
+      'r-remote',
     ]);
     stop();
   });
