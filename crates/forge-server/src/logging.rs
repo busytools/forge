@@ -110,6 +110,13 @@ impl LoggingRuntime {
 /// CLI's boot init frame says it received. The list is fixed once the child
 /// starts, so the pair is the only way a "tool not found" is traced to the
 /// side that actually lacked the name.
+///
+/// `forge_connectors::slack::throttle` carries the sweep's per-pass throttle
+/// detail, which was demoted to `debug` once the warning moved to one per
+/// episode. A workspace Slack throttles is that workspace's own rate limit
+/// rather than forge's health, so the repeated numbers are `debug`; the
+/// dedicated target keeps the module's per-sweep chatter out of the default
+/// filter while these stay readable.
 pub const DEFAULT_LOG_DIRECTIVES: &str = "info,\
     app.input=debug,\
     app.lifecycle=debug,\
@@ -128,6 +135,7 @@ pub const DEFAULT_LOG_DIRECTIVES: &str = "info,\
     forge_workspace::dictate=debug,\
     forge_workspace::subagent_cards=debug,\
     forge_dictate=debug,\
+    forge_connectors::slack::throttle=debug,\
     llama_cpp_2=error,\
     llama-cpp-2=error";
 
@@ -619,6 +627,20 @@ mod tests {
 
         assert!(
             caught.contains("output_tail_line_unreadable"),
+            "the demoted record must land under the default directives: {caught}",
+        );
+    }
+
+    /// The Slack sweep's per-pass detail was demoted out of WARN, so the
+    /// default directives are the only thing that keeps it readable. Driven
+    /// through the pump's own throttle reporter, not a target written here.
+    #[test]
+    fn the_demoted_slack_throttle_detail_emits_under_the_default_directives() {
+        let caught =
+            emitted_under_defaults(forge_connectors::slack::testing::emit_a_repeated_throttle_pass);
+
+        assert!(
+            caught.contains("slack sweep still throttled"),
             "the demoted record must land under the default directives: {caught}",
         );
     }

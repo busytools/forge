@@ -12,6 +12,11 @@ publish = false
 [lints]
 workspace = true
 
+[features]
+# Lets another crate's log-filter test drive the Slack pump's throttle
+# reporter through its real site.
+testing = []
+
 [dependencies]
 forge-primitives = { workspace = true }
 anyhow = { workspace = true }
