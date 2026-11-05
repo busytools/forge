@@ -403,11 +403,15 @@ describe('the terminal surface store', () => {
     expect(line({ terminal: terminalSummary({ held: true }) }), 'the hand-off waits').toBe(
       'waiting for you',
     );
-    // A refusal replaces the line.
+    // **A parked hand-off another client claimed is not "waiting for you"**:
+    // the holder wins the line.
     expect(
-      line({ controlReason: 'a terminal hand-off holds the keyboard; use the hand-off card' }),
-      'the refusal',
-    ).toContain('hand-off');
+      line({ terminal: terminalSummary({ held: true }), controller: 12 }),
+      'a hand-off held elsewhere',
+    ).toBe('another client has the keyboard');
+    // A refusal replaces the line, in the server's own words.
+    const refused = 'a terminal hand-off holds the keyboard; use the hand-off card';
+    expect(line({ controlReason: refused }), 'the refusal').toBe(refused);
   });
 
   it('draws the take press until the server answers, and the refusal when it refuses', async () => {
@@ -425,21 +429,51 @@ describe('the terminal surface store', () => {
       controller: null,
     });
 
+    // **A take press is drawn while the server answers.**
     controlTerminal(true);
     expect(link.control).toHaveBeenCalledWith(seat, 4, true);
-    expect(surface.control_pending, 'the press is drawn while the server answers').toBe(true);
+    expect(surface.control_pending, 'the take press is drawn').toBe(true);
 
-    // The refusal lands: the wait becomes the server's sentence.
-    pushError('terminal_control', 'a terminal hand-off holds the keyboard');
-    expect(surface.control_pending).toBeNull();
-    expect(surface.control_reason).toContain('hand-off');
+    // **A fresh repaint is the server's truth**: a press the replaced attach
+    // was waiting on is not still waiting.
+    pushed.view?.({
+      seat,
+      id: 4,
+      cols: 80,
+      rows: 24,
+      seq: 2,
+      screen: '$ ',
+      viewers: 1,
+      viewer: 9,
+      controller: null,
+    });
+    expect(surface.control_pending, 'a repaint clears the wait').toBeNull();
 
-    // A take that lands clears both and hands the role over.
+    // **The release half is drawn too.**
+    controlTerminal(false);
+    expect(link.control).toHaveBeenCalledWith(seat, 4, false);
+    expect(surface.control_pending, 'the release press is drawn').toBe(false);
+
+    // **Another operation's refusal is not this one's.**
+    pushError('terminal_resize', 'the terminal is not that size');
+    expect(surface.control_pending, 'an unrelated refusal leaves the wait').toBe(false);
+    expect(surface.control_reason, 'and draws nothing').toBeNull();
+
+    // The release lands.
+    pushed.control?.({ seat, id: 4, controller: null });
+    expect(surface.control_pending, 'the push clears it').toBeNull();
+
+    // **A refusal lands in the state line, in the server's own words.**
+    const refused = 'a terminal hand-off holds the keyboard; use the hand-off card';
     controlTerminal(true);
-    pushed.control?.({ seat, id: 4, controller: 9 });
+    pushError('terminal_control', refused);
     expect(surface.control_pending).toBeNull();
-    expect(surface.control_reason).toBeNull();
-    expect(controlling()).toBe(true);
+    expect(surface.control_reason, 'the refusal is drawn as the server said it').toBe(refused);
+
+    // **The control push clears the refusal without a second press.**
+    pushed.control?.({ seat, id: 4, controller: 9 });
+    expect(surface.control_reason, 'the push clears the refusal').toBeNull();
+    expect(controlling(), 'and hands the role over').toBe(true);
     stop();
   });
 });

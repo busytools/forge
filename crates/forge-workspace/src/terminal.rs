@@ -11,6 +11,11 @@
 //! so the terminal adds no capability a session does not have. The one thing
 //! that is gated is the person's own input, through the hand-off or through
 //! their own take-control of the raised surface.
+//!
+//! **Lock order: `terminal_handoffs` before `terminals`.** Every path that
+//! needs both takes them in that order, so a claim, an answer, a typed byte
+//! and the idle sweep can never deadlock against each other. A path that
+//! needed the other order has to drop one guard before taking the other.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -225,7 +230,9 @@ impl Workspace {
         slot: &SessionSlot,
     ) -> Result<Arc<TerminalEntry>, String> {
         if self.cwd_for_session(slot).is_none() {
-            return Err(format!("forge holds no session for {}; start it first", slot.display()));
+            // **The seat read's own sentence**: a door that refused with
+            // different words would be a second answer to one fact.
+            return Err(format!("forge holds no session for {}", slot.display()));
         }
         self.terminal_for(slot)
     }
@@ -335,17 +342,22 @@ impl Workspace {
             return;
         }
         let idle = Duration::from_secs(idle_minutes.saturating_mul(60));
-        let victims: Vec<SessionSlot> = self
+        // **The idle set is taken under `terminals` alone.** `terminal_held`
+        // takes `terminal_handoffs`, and the module's order is hand-offs
+        // before terminals; holding `terminals` across the held check would
+        // be the one path taking them the other way, which deadlocks against
+        // a take, an answer or a typed byte.
+        let idle_slots: Vec<SessionSlot> = self
             .terminals
             .lock()
             .iter()
-            .filter(|(slot, entry)| {
-                entry.attached.load(Ordering::Relaxed) == 0
-                    && !self.terminal_held(slot)
-                    && entry.idle_for() >= idle
+            .filter(|(_, entry)| {
+                entry.attached.load(Ordering::Relaxed) == 0 && entry.idle_for() >= idle
             })
             .map(|(slot, _)| slot.clone())
             .collect();
+        let victims: Vec<SessionSlot> =
+            idle_slots.into_iter().filter(|slot| !self.terminal_held(slot)).collect();
         for slot in victims {
             tracing::debug!(
                 event_name = "terminal_idle_closed",
