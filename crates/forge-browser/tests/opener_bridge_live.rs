@@ -946,7 +946,108 @@ async fn a_noopener_popup_closes_itself() {
     let (provider_port, _provider) = serve_on(
         "::1",
         "<!doctype html><meta charset=utf-8><title>provider</title>\
+         <script>\
+         setTimeout(function () {{\
+           document.title = 'state:' + (typeof window.__forgeBridgePopup) + ':' + \
+             (window.opener === null);\
+         }}, 300);\
+         setTimeout(function () {{ window.close(); }}, 3000);\
+         </script>",
+    );
+    let provider_url = format!("http://[::1]:{provider_port}/");
+    let app = format!(
+        "<!doctype html><meta charset=utf-8>\
+         <style>html,body{{margin:0;padding:0}}\
+         button{{width:300px;height:120px;font-size:24px}}</style>\
+         <button id=signin>Sign in</button>\
+         <script>\
+         document.getElementById('signin').onclick=function() {{\
+           if (window.__opened) return;\
+           window.__opened = true;\
+           var w = window.open('{provider_url}', 'signin', 'noopener');\
+           document.title = w === null ? 'noopener-null' : 'noopener-object';\
+         }};\
+         document.title='ready';\
+         </script>"
+    );
+    let (app_port, _app) = serve_on("127.0.0.1", &app);
+
+    let mut host =
+        support::Host::start_with_events(&exe, &profile, port, &ring_name, "800x600", &[], &log);
+    let opener = support::wait_for_page(port, &log, BOUND);
+    let (mut cdp, _events) = connect(port, &format!("/devtools/page/{opener}"))
+        .await
+        .expect("the page's devtools endpoint accepts");
+    cdp.call("Page.navigate", json!({ "url": format!("http://127.0.0.1:{app_port}/") }), None)
+        .await
+        .expect("the app navigates");
+    wait_for_title(&mut cdp, &["ready"], BOUND).await;
+
+    let tab = click_until_popup(&mut host, BOUND).await;
+    let listed = wait_for_pages(port, 2, BOUND).await;
+    let popup = listed
+        .into_iter()
+        .find(|page| page != &opener)
+        .expect("the popup's page is listed beside the opener");
+    let (mut popup_cdp, _popup_events) = connect(port, &format!("/devtools/page/{popup}"))
+        .await
+        .expect("the popup's devtools endpoint accepts");
+    // **The popup carries no bridge role**: `__forgeBridgePopup` is undefined
+    // and its opener is null. A regression that gave it the role would fail
+    // here rather than hiding behind the same end state.
+    wait_for_title(&mut popup_cdp, &["state:undefined:true"], BOUND).await;
+
+    // **The popup closes itself and its tab ends**: a page target that leaves
+    // while the tab stays behind is the dead row this test exists to catch.
+    let deadline = Instant::now() + BOUND;
+    loop {
+        let closed = host.events().iter().any(|line| {
+            matches!(parse(line), Some(HostEvent::TabClosed { tab: closed }) if closed == tab)
+        });
+        if closed && pages(port).len() == 1 {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the noopener popup never closed itself (tab {tab}, log: {})",
+            host.log_tail(),
+        );
+        tokio::time::sleep(POLL).await;
+    }
+
+    assert!(host.terminate(Duration::from_secs(10)).success(), "the host ends on SIGTERM");
+    Ring::unlink(&ring_name);
+}
+
+/// **A noopener popup that takes the shim's role through `window.name` can
+/// still close itself.** Its second document sees the marker, installs the
+/// close routing, and the host ends the tab from its own record because a
+/// noopener popup has no channel.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_noopener_popup_that_takes_the_name_marker_closes_itself() {
+    let scratch = tempfile::tempdir().expect("a temp dir");
+    let exe = support::host_executable(scratch.path());
+    let profile = scratch.path().join("profile");
+    std::fs::create_dir_all(&profile).expect("the profile dir");
+    let port = support::free_port();
+    let ring_name = format!("/forge-ob-noop-mark-{}", std::process::id());
+    let log = scratch.path().join("host.log");
+
+    let (second_port, _second) = serve_on(
+        "::1",
+        "<!doctype html><meta charset=utf-8><title>second</title>\
          <script>setTimeout(function () { window.close(); }, 1200);</script>",
+    );
+    let second_url = format!("http://[::1]:{second_port}/");
+    let (provider_port, _provider) = serve_on(
+        "::1",
+        &format!(
+            "<!doctype html><meta charset=utf-8><title>provider</title>\
+             <script>\
+             window.name = 'forge-opener-bridge';\
+             location.href = '{second_url}';\
+             </script>"
+        ),
     );
     let provider_url = format!("http://[::1]:{provider_port}/");
     let app = format!(
@@ -980,8 +1081,8 @@ async fn a_noopener_popup_closes_itself() {
     let tab = click_until_popup(&mut host, BOUND).await;
     wait_for_pages(port, 2, BOUND).await;
 
-    // **The popup closes itself and its tab ends**: a page target that leaves
-    // while the tab stays behind is the dead row this test exists to catch.
+    // **The tab ends**: the marker routes the close to the host, and the
+    // host's record of the noopener tab is what finishes it.
     let deadline = Instant::now() + BOUND;
     loop {
         let closed = host.events().iter().any(|line| {
@@ -992,7 +1093,7 @@ async fn a_noopener_popup_closes_itself() {
         }
         assert!(
             Instant::now() < deadline,
-            "the noopener popup never closed itself (tab {tab}, log: {})",
+            "the name-marker popup never closed itself (tab {tab}, log: {})",
             host.log_tail(),
         );
         tokio::time::sleep(POLL).await;
