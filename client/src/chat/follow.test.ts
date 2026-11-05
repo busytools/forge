@@ -1970,6 +1970,111 @@ describe('whether the column follows the newest end', () => {
     expect(pinned(), 'a return to a seat left at its foot lands there too').toEqual([PIN]);
   });
 
+  it('stands the scroll handler aside while a return is placing its reader', async () => {
+    // **A return's own scroll events are not the reader's.** The list reports
+    // its position as the kept conversation is swapped in, before its rows
+    // measure - and a short element reads as the foot. Without the guard the
+    // handler re-arms the follow over the place being restored and deletes it
+    // before the restore's first frame runs, so the reader lands at the foot
+    // instead of the row they left.
+    const seat = writable(LEAD);
+    const server = stub();
+    clear();
+    clearObservers();
+    setMeasured(TOTAL, VIEWPORT);
+    app = mount(Seats, {
+      target: document.body,
+      props: { seat, connection: server.connection },
+    });
+    flushSync();
+    server.page([spoken('t1'), spoken('t2')]);
+    await settle();
+    layOut(40);
+
+    readerAt(50);
+    await settle();
+    expect(element.offset, 'precondition: the reader parked').toBe(50);
+    clear();
+
+    seat.set(OTHER);
+    flushSync();
+    server.page([turn('o1'), turn('o2')], OTHER);
+    await settle();
+    clear();
+
+    seat.set(LEAD);
+    flushSync();
+    // The transient the returning mount reports: a short element at its start,
+    // which the foot arithmetic reads as the end. Its rows then measure and
+    // the element takes its real height before the restore's frame runs.
+    setElement(VIEWPORT, VIEWPORT);
+    list()?.scrolledTo(0, VIEWPORT, VIEWPORT);
+    flushSync();
+    setElement(TOTAL, VIEWPORT);
+    layOut(40);
+    await settle();
+    await settle();
+
+    expect(element.offset, 'the return kept the place the reader left').toBe(50);
+    expect(
+      pinned().filter((pin) => pin.landed === 0),
+      'the mount event did not pin the foot',
+    ).toEqual([]);
+  });
+
+  it('keeps the place when a return writes against a short element', async () => {
+    // **The restore's own write comes back as an event too.** A returning
+    // mount can be short while its big turn has not measured - the element
+    // reports the viewport's height, not the transcript's - so the write to
+    // the saved row clamps to the element's end and the event it fires reads
+    // as the foot. Without the write's own token the handler re-arms the
+    // follow over the place being restored and deletes it, and the reader is
+    // carried down to the foot as the turn measures: "it starts somewhere up
+    // and then it scrolls down to the bottom" (Ved, 2026-11-05).
+    const seat = writable(LEAD);
+    const server = stub();
+    clear();
+    clearObservers();
+    setMeasured(TOTAL, VIEWPORT);
+    app = mount(Seats, {
+      target: document.body,
+      props: { seat, connection: server.connection },
+    });
+    flushSync();
+    server.page([spoken('t1'), spoken('t2')]);
+    await settle();
+    layOut(40);
+
+    readerAt(50);
+    await settle();
+    expect(element.offset, 'precondition: the reader parked').toBe(50);
+    clear();
+
+    seat.set(OTHER);
+    flushSync();
+    server.page([turn('o1'), turn('o2')], OTHER);
+    await settle();
+    clear();
+
+    // The way back, short: the element reports only its viewport while the
+    // restore's frame runs, so the write to the saved row clamps.
+    setElement(VIEWPORT, VIEWPORT);
+    seat.set(LEAD);
+    flushSync();
+    await settle();
+
+    // The element then measures to its real height.
+    setElement(TOTAL, VIEWPORT);
+    layOut(40);
+    await settle();
+    await settle();
+
+    // The short element has nowhere to scroll, so the restore's write lands at
+    // its start and is recorded as a pin; what matters is that its own echo was
+    // consumed and the place survived to the full measurement.
+    expect(element.offset, 'the return kept the place the reader left').toBe(50);
+  });
+
   it('re-arms at the foot the element clamps to while the model reads long', async () => {
     const server = stub();
     await draw(server);
@@ -3712,7 +3817,7 @@ describe('a saved place outliving the connection', () => {
     await settle();
     await settle();
 
-    expect(element.offset, 'the reconnect dropped the reader at the foot').toBe(50);
+    expect(element.offset, 'the reconnect reopened the place the reader left').toBe(50);
   });
 
   it('opens a different claude session at the latest, whatever the slot was left holding', async () => {

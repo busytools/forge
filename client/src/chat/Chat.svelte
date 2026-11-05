@@ -1211,7 +1211,22 @@
     // and scrolls in fractions, so a half-pixel drift is a real move of the
     // words under the reader's eye; the guard is only what stops a write of
     // the value the element already holds.
-    if (Math.abs(want - viewport.scrollTop) > 0.001) viewport.scrollTop = want;
+    if (Math.abs(want - viewport.scrollTop) > 0.001) {
+      const was = viewport.scrollTop;
+      viewport.scrollTop = want;
+      // **The write's own echo is the place's, not the reader's.** A short
+      // element - a returning mount before its big turn measures - clamps the
+      // write to its end, and that offset reads as the foot; without the
+      // token the handler re-arms the follow over the place being restored and
+      // deletes it. The land path arms this the same way, from the read-back
+      // because a write can clamp and only the read-back knows where it landed.
+      if (viewport.scrollTop !== was) {
+        pinEcho = {
+          at: viewport.scrollTop,
+          foot: viewport.scrollTop >= viewport.scrollHeight - viewport.clientHeight - FOOT_NEAR,
+        };
+      }
+    }
     owedUnplaced = false;
     return true;
   }
@@ -2393,7 +2408,11 @@
   // exactly where they are - the state is the reader's own, and the two
   // transitions that set it are the two below.
   $effect(() => {
-    if (follows === null || !held.loaded || !held.following) return;
+    // **A restore in flight owns the placement.** A return re-arms the hold
+    // while `restoring` still names the row to place; a follow pass there
+    // lands the short element's foot, writes the offset with no anchor and
+    // deletes the place the reader left. The restore's own frame places them.
+    if (restoring !== null || follows === null || !held.loaded || !held.following) return;
     land();
     // A landing while the reader is at the latest can take the held set over
     // the window, and this is the place that knows what is on screen: the
@@ -2641,6 +2660,17 @@
 
   /** Where the reader is, and whether they have reached the top. */
   function scrolled(offset: number): void {
+    // **A return's own placer owns the scroll until its row is drawn**, the
+    // same reason the hold pass stands aside. The mount's own events are not
+    // the reader's: a fresh list reports its start at zero, and a returning
+    // one reports its pre-place position, which can read as the foot and
+    // re-arm the follow over the place being restored. The tracker still
+    // moves, so the reader's first gesture after the landing reads its own
+    // direction.
+    if (restoring !== null) {
+      movedFrom = offset;
+      return;
+    }
     // The event's own direction, read before any branch moves on: a scroll
     // that came down toward the foot is the reader's return, and it arms no
     // up-capable wheel token at all - Ved's own gesture is "scroll up and
