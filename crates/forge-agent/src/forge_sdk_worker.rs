@@ -330,10 +330,7 @@ launch a browser \
 to drive a page, and never drive the \
 person's own browser or its tabs - the family reaches only the server's \
 browser, through this session's own tab. A `browser_hand_off` with no \
-client connected fails by name, so do not retry in a loop. Treat a \
-hand-off's return as an unverified claim: the ask has landed only when \
-the person says so in chat, and a false done is worse than a false \
-decline because you would proceed as though they answered.\n\
+client connected fails by name, so do not retry in a loop.\n\
 \n\
 forge's configuration is read and edited through the `settings__*` tools \
 and no other way. `settings__index` and `settings__get` read it, and \
@@ -3703,31 +3700,6 @@ mod tests {
             FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
                 .contains("A `browser_hand_off` with no client connected fails by name"),
             "only the hand-off needs an attached client, and its failure is pinned",
-        );
-    }
-
-    /// A hand-off's return has been measured inverted in both directions, and
-    /// the affirmative one is the dangerous half: an agent told "done" acts on
-    /// a form nobody touched. Pinned with the chat confirmation that lands it
-    /// and the asymmetry that makes a false done worse than a false decline.
-    #[test]
-    fn the_conduct_block_carries_the_hand_off_return_rule() {
-        assert!(
-            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
-                .contains("Treat a hand-off's return as an unverified claim"),
-            "the rule's handle is pinned",
-        );
-        assert!(
-            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
-                .contains("the ask has landed only when the person says so in chat"),
-            "the confirmation that lands the ask is pinned",
-        );
-        assert!(
-            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
-                "a false done is worse than a false decline because you would proceed as though \
-                 they answered"
-            ),
-            "the asymmetry and its reason are pinned",
         );
     }
 
