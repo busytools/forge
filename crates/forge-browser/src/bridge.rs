@@ -192,9 +192,18 @@ pub(crate) fn target_allows(target: &str, recipient: &str) -> bool {
 }
 
 /// Whether a URL may be navigated to from a cross-origin window. The platform
-/// allows a web navigation; `javascript:` and friends are refused.
+/// allows a web navigation and `about:blank`; every other scheme, and the
+/// other `about:` pages a page has no business steering a window to, are
+/// refused.
 pub(crate) fn navigable(url: &str) -> bool {
-    matches!(Url::parse(url).map(|url| url.scheme().to_owned()), Ok(scheme) if scheme == "http" || scheme == "https" || scheme == "about")
+    match Url::parse(url) {
+        Ok(parsed) => match parsed.scheme() {
+            "http" | "https" => true,
+            "about" => url == "about:blank",
+            _ => false,
+        },
+        Err(_) => false,
+    }
 }
 
 #[cfg(test)]
@@ -334,11 +343,13 @@ mod tests {
     }
 
     /// **A window may be navigated to a web page or `about:blank`**, and not
-    /// to a script URL from a cross-origin proxy.
+    /// to a script URL or another `about:` page from a cross-origin proxy.
     #[test]
     fn navigation_is_web_only() {
         assert!(navigable("https://accounts.test/"));
         assert!(navigable("about:blank"));
+        assert!(!navigable("about:config"));
+        assert!(!navigable("about:srcdoc"));
         assert!(!navigable("javascript:alert(1)"));
         assert!(!navigable("file:///etc/passwd"));
         assert!(!navigable("not a url"));
