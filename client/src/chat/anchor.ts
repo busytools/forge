@@ -52,6 +52,26 @@ export function anchorAt(rows: Iterable<RowBox>, viewportTop: number): Anchor | 
 }
 
 /**
+ * The row the reader's place can be: one whose own box holds the top edge, or
+ * the nearest one still on screen below a small gap.
+ *
+ * **The list draws a WINDOW of turns, and a jump can outrun it.** A scrollbar
+ * drag or a programmatic move fires its event before the window has
+ * re-rendered: every drawn row then sits below the top edge, and the first of
+ * them can be thousands of pixels from where the reader's eye is. That row is
+ * no place - recording it restores the reader far from where they stopped -
+ * so a gap wider than the column's own room answers null and the capture
+ * keeps the place it had. A gap narrower than the room is another matter: a
+ * turn's margin, or the column's own top padding, puts the first row a few
+ * pixels below the edge, and the reader is looking at that row.
+ */
+export function heldRow(rows: Iterable<RowBox>, viewportTop: number, room: number): Anchor | null {
+  const at = anchorAt(rows, viewportTop);
+  if (at === null) return null;
+  return at.into >= -room ? at : null;
+}
+
+/**
  * Where the column has to scroll to hold the anchored row where it was.
  *
  * `top` is the row's own top within the column's content, and the answer is

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { anchoredScroll, anchorAt, type RowBox } from './anchor';
+import { anchoredScroll, anchorAt, heldRow, type RowBox } from './anchor';
 
 const row = (key: string, top: number, bottom: number): RowBox => ({ key, top, bottom });
 
@@ -54,6 +54,23 @@ describe("the reader's anchor", () => {
     // the layout, which is the whole point of taking an iterable.
     expect(anchorAt(rows(), 50), 'the row under the edge').toEqual({ key: 'r1', into: 10 });
     expect(asked, 'the scan stopped at the edge').toBe(2);
+  });
+
+  /**
+   * **A row below the top edge is a place only when it is still on screen.**
+   * A jump can fire its event before the list has re-windowed: every drawn row
+   * then sits below the edge, and the first of them is thousands of pixels
+   * from the reader's eye - a place that would restore them to a stranger's
+   * row. A gap narrower than the room is the column's own margin, and the row
+   * below it is what the reader is looking at.
+   */
+  it('holds a row under the edge, or the nearest one still on screen', () => {
+    const rows = [row('a', 0, 40), row('b', 40, 90)];
+
+    expect(heldRow(rows, 60, 300), 'the edge inside a row').toEqual({ key: 'b', into: 20 });
+    expect(heldRow(rows, -20, 300), 'a gap inside the room').toEqual({ key: 'a', into: -20 });
+    expect(heldRow(rows, -400, 300), 'a window that has not caught up').toBeNull();
+    expect(heldRow([], 10, 300), 'no rows drawn at all').toBeNull();
   });
 
   /**

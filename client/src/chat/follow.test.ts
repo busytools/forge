@@ -3720,6 +3720,73 @@ describe('a saved place outliving the connection', () => {
     expect(element.offset, 'the return reopened the place it kept').toBe(50);
   });
 
+  it('restores the same row and offset after a live turn grows while the reader is away', async () => {
+    // **The reported defect's shape.** The reader parks mid-history while the
+    // newest turn is still being written, leaves the seat, and the turn keeps
+    // growing under them. The return owes the row they stopped on, at the
+    // offset they held - the growing turn is below it and may not move them.
+    const server = stub();
+    clear();
+    clearObservers();
+    setMeasured(TOTAL, VIEWPORT);
+    app = mount(Chat, {
+      target: document.body,
+      props: { slot: LEAD, connection: server.connection },
+    });
+    flushSync();
+    server.page([spoken('t1'), spoken('t2'), spoken('t3')]);
+    await settle();
+    layOut(40);
+
+    // A live turn opens and streams, so the newest row is being written.
+    server.forged('stream');
+    server.frame();
+    await settle();
+    layOut(40);
+
+    // The reader parks on a page row, five pixels into it.
+    readerAt(50);
+    await settle();
+    const which = subjectKey({ session: LEAD });
+    const place = places.of(which);
+    expect(place, 'the park recorded a place').toBeDefined();
+    if (place === undefined) return;
+    expect(place.anchor.into, 'the place is the row under the edge').toBe(10);
+    clear();
+
+    // The document goes; the live turn keeps growing while the reader is away.
+    if (app !== null) await unmount(app);
+    app = null;
+    document.body.innerHTML = '';
+    element.offset = 0;
+    clear();
+    server.frame();
+    server.frame();
+    server.frame();
+    await settle();
+
+    // The return puts them on the same row, at the same offset.
+    app = mount(Chat, {
+      target: document.body,
+      props: { slot: LEAD, connection: server.connection },
+    });
+    flushSync();
+    layOut(40);
+    await settle();
+    await settle();
+
+    expect(element.offset, 'the return moved the reader off their row').toBe(50);
+    const row = document.querySelector(`[data-k="${CSS.escape(place.anchor.key)}"]`);
+    expect(row, 'the row the place names is on screen').not.toBeNull();
+    if (row !== null) {
+      const box = document.querySelector('.conv')?.getBoundingClientRect();
+      expect(
+        Math.round(((row.getBoundingClientRect().top ?? 0) - (box?.top ?? 0)) * 100) / 100,
+        'the row sits where the reader left it',
+      ).toBe(-10);
+    }
+  });
+
   it('keeps a place when a reconnect names the same claude session', async () => {
     const first = stub();
     await parkedWith(first, 's1');

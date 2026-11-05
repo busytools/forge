@@ -17,7 +17,7 @@
   import type { Connection } from '../socket';
   import { mintPromptId } from '../wire/ids';
   import type { SessionSlot } from '../wire/types';
-  import { anchoredScroll, anchorAt, type Anchor, type RowBox } from './anchor';
+  import { anchoredScroll, heldRow, type Anchor, type RowBox } from './anchor';
   import { latestCompaction } from './compaction-jump';
   import {
     Chat,
@@ -107,6 +107,17 @@
   const HOLD_MAX_MS = 250;
   /** How many frames a restored place waits for its row to draw before giving it up. */
   const RESTORE_TRIES = 3;
+  /** How many frames a capture after a jump waits for the layout to settle. */
+  const CAPTURE_FRAMES = 6;
+  /**
+   * How long a restore keeps asking the list for a turn it has not drawn yet.
+   *
+   * The row's panel is the list's ONE item, and a large one - a long turn or a
+   * live one - moves when the list measures it after a jump. Frames are the
+   * unit the row is re-drawn on and milliseconds are the unit a mount is slow
+   * in, so this is the budget for the second, not a retry of the first.
+   */
+  const RESTORE_MS = 1200;
   /** How far above the last pin counts as the reader when no input preceded it. */
   const DISARM_SLACK = 48;
   /** How far above the very end still counts as standing at the foot. */
@@ -230,6 +241,8 @@
   let shownSession: string | null = null;
   /** How many frames a restored place has waited for its row to draw. */
   let restoreTries = 0;
+  /** When the restore being placed began, against [`RESTORE_MS`]. */
+  let restoreStarted = 0;
   let working: Chat | null = null;
   /**
    * The conversation built for one seat over one connection.
@@ -1094,7 +1107,14 @@
       owedUnplaced = true;
       return false;
     }
-    const landed = anchorAt(drawnRows(), viewport.getBoundingClientRect().top);
+    // **The row under the edge, not merely one below it.** A jump can outrun
+    // the list's window: every drawn row then sits below the top edge, and
+    // the first of them is no place at all (`heldRow` carries the rule).
+    const landed = heldRow(
+      drawnRows(),
+      viewport.getBoundingClientRect().top,
+      viewport.clientHeight,
+    );
     if (landed === null) {
       owedUnplaced = true;
       return false;
@@ -1103,6 +1123,49 @@
     owedUnplaced = false;
     rememberPlace();
     return true;
+  }
+
+  /**
+   * Take the reader's place again once the list has re-windowed for a jump.
+   *
+   * **The layout has to agree with itself before the place is written.** A
+   * jump's first frames are the list correcting its estimates: a row under the
+   * top edge for one frame and gone the next was never the reader's place.
+   * Bounded, and only while the reader is still parked - a capture that never
+   * settles leaves the anchor it had rather than writing one from rows the
+   * jump left behind.
+   */
+  let captureFrame: number | null = null;
+  function retryCapture(): void {
+    if (captureFrame !== null) return;
+    let tries = 0;
+    /** The row the last frame held, waiting for the next to agree with it. */
+    let pending: Anchor | null = null;
+    const step = (): void => {
+      captureFrame = null;
+      if (tries >= CAPTURE_FRAMES || held.following || restoring !== null) return;
+      tries += 1;
+      const view = viewport;
+      if (view === null) return;
+      const at = heldRow(drawnRows(), view.getBoundingClientRect().top, view.clientHeight);
+      if (at === null) {
+        pending = null;
+      } else if (
+        pending !== null &&
+        pending.key === at.key &&
+        Math.abs(pending.into - at.into) <= 1
+      ) {
+        anchor = at;
+        owedUnplaced = false;
+        rememberPlace();
+        owed = null;
+        return;
+      } else {
+        pending = at;
+      }
+      captureFrame = requestAnimationFrame(step);
+    };
+    captureFrame = requestAnimationFrame(step);
   }
 
   /**
@@ -1317,6 +1380,11 @@
         cancelAnimationFrame(restoreFrame);
         restoreFrame = null;
       }
+      // And so does a capture still waiting for the layout to settle.
+      if (captureFrame !== null) {
+        cancelAnimationFrame(captureFrame);
+        captureFrame = null;
+      }
       restoring = null;
       restoreTries = 0;
       // A glide aimed at the seat that is going is the same debt.
@@ -1524,6 +1592,7 @@
       giveUpRestore();
       return;
     }
+    restoreStarted = Date.now();
     restoreFrame = requestAnimationFrame(() => {
       // **The turn is read again in the frame it is scrolled in**: a prepend
       // can land between this schedule and its frame, and an index from the
@@ -1547,19 +1616,45 @@
       giveUpRestore();
       return;
     }
-    if (viewport.querySelector(`[data-k="${CSS.escape(place.anchor.key)}"]`) === null) {
-      restoreTries += 1;
-      restoreFrame = restoreTries < RESTORE_TRIES ? requestAnimationFrame(placeRestored) : null;
-      if (restoreFrame === null) giveUpRestore();
+    if (viewport.querySelector(`[data-k="${CSS.escape(place.anchor.key)}"]`) !== null) {
+      restoring = null;
+      restoreTries = 0;
+      anchor = place.anchor;
+      // **The place is taken in the frame its row is drawn.** A switch back
+      // has no landing behind it to wake the parked pass, so waiting for the
+      // next publish would leave the reader at the turn's start until one
+      // came.
+      restoreAnchor();
       return;
     }
-    restoring = null;
-    restoreTries = 0;
-    anchor = place.anchor;
-    // **The place is taken in the frame its row is drawn.** A switch back has
-    // no landing behind it to wake the parked pass, so waiting for the next
-    // publish would leave the reader at the turn's start until one came.
-    restoreAnchor();
+    const turn = held.turns.find((one) => place.anchor.key.startsWith(`${one.key}:`));
+    /** Whether the row's TURN is drawn, whatever the row is doing. */
+    const drawn =
+      turn !== undefined && viewport.querySelector(`[data-t="${CSS.escape(turn.key)}"]`) !== null;
+    // **The turn not being drawn is not the row being gone.** A huge live turn
+    // is the list's one item: after a jump the list lands on its estimate,
+    // measures it, and re-places it, so the turn can be outside the window for
+    // more than a couple of frames. The row is not re-keyed or taken - the
+    // window has not reached it - and giving up here drops the reader to the
+    // foot for a merely slow mount. The list is asked again, within a budget;
+    // past the budget the reader goes to the foot rather than waiting on a
+    // mount that never comes.
+    if (!drawn) {
+      const handle = list;
+      if (Date.now() - restoreStarted >= RESTORE_MS || turn === undefined || handle === null) {
+        giveUpRestore();
+        return;
+      }
+      const at = held.turns.findIndex((one) => one.key === turn.key);
+      if (at >= 0) handle.scrollToIndex(at, { align: 'start' });
+      restoreFrame = requestAnimationFrame(placeRestored);
+      return;
+    }
+    // The turn is here and the row is not: the row was re-keyed or taken, and
+    // the place goes the way the rules say - to the latest.
+    restoreTries += 1;
+    restoreFrame = restoreTries < RESTORE_TRIES ? requestAnimationFrame(placeRestored) : null;
+    if (restoreFrame === null) giveUpRestore();
   }
 
   /**
@@ -1580,6 +1675,8 @@
   $effect(() => () => {
     if (restoreFrame !== null) cancelAnimationFrame(restoreFrame);
     restoreFrame = null;
+    if (captureFrame !== null) cancelAnimationFrame(captureFrame);
+    captureFrame = null;
   });
 
   /**
@@ -2776,7 +2873,13 @@
     // and a STREAM fold that engages the follow - a prompt frame - lands a
     // painted frame later - so a capture that read the record would depend on
     // which side of that timing it caught.
-    if (!foot && captureAnchor()) owed = null;
+    if (!foot) {
+      if (captureAnchor()) owed = null;
+      // **A jump can outrun the list's window.** The capture reads the rows
+      // the last window left drawn, finds none under the edge, and asks again
+      // once the list has re-windowed.
+      else retryCapture();
+    }
     if (offset < REACH) loadOlder(pageTurns());
   }
 
