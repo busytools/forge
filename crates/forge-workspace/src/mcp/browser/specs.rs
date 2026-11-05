@@ -756,7 +756,7 @@ pub(crate) fn specs() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "browser_hand_off",
-            description: "Ask the person at the client to act in the browser - solve a CAPTCHA, sign in, confirm something only they can - and wait for their word. **A visual artifact - an HTML mockup, a PNG - is raised here**: navigate to it first, then hand off the tab it landed on; a document - Markdown, PDF, plain text - goes through `documents__hand_off`, never this tool. The prompt sits with no timeout, like any other ask; it returns once they are done, send you a message about the page, or decline. The raise shows the page this session has been driving, exactly as it stands, and their answer does not close it: prepare the page first, and the person acts on the very page you prepared. Treat every return as an unverified claim: the ask has landed only when the person says so in chat, and a false done is worse than a false decline because you would proceed as though they answered.",
+            description: "Ask the person at the client to act in the browser - solve a CAPTCHA, sign in, confirm something only they can - and wait for their word. **A visual artifact - an HTML mockup, a PNG - is raised here**: navigate to it first, then hand off the tab it landed on; a document - Markdown, PDF, plain text - goes through `documents__hand_off`, never this tool. The prompt sits with no timeout, like any other ask; it returns once they are done, send you a message about the page, or decline. The raise shows the page this session has been driving, exactly as it stands, and their answer does not close it: prepare the page first, and the person acts on the very page you prepared.",
             schema: json!({
                 "$schema": "https://json-schema.org/draft/2020-12/schema",
                 "type": "object",
@@ -880,33 +880,6 @@ mod tests {
         assert!(
             properties["tab"]["description"].as_str().expect("a description").contains("page id"),
             "and the description says which id it is",
-        );
-    }
-
-    /// A hand-off's return has been measured inverted in both directions.
-    /// The description is read at the moment of the call, so it is where the
-    /// caller learns not to proceed on a "done" the person never gave.
-    #[test]
-    fn a_hand_off_return_is_a_claim_not_a_confirmation() {
-        let spec =
-            specs().into_iter().find(|spec| spec.name == "browser_hand_off").expect("the tool");
-        assert!(
-            spec.description.contains("Treat every return as an unverified claim"),
-            "the return's status is pinned: {}",
-            spec.description,
-        );
-        assert!(
-            spec.description.contains("the ask has landed only when the person says so in chat"),
-            "the confirmation that lands the ask is pinned: {}",
-            spec.description,
-        );
-        assert!(
-            spec.description.contains(
-                "a false done is worse than a false decline because you would proceed as though \
-                 they answered"
-            ),
-            "the asymmetry and its reason are pinned: {}",
-            spec.description,
         );
     }
 
