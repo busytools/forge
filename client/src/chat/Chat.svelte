@@ -876,6 +876,15 @@
     // paid for says nothing about this one, so a parked reader is owed a pass.
     owed = null;
     owedUnplaced = anchor !== null;
+    // **The offset a pin last wrote belonged to the element that is gone.**
+    // `land()` reads a non-null `placed` as "a following column, hold at the
+    // model's foot"; on a mount that is the wrong answer - the model lags the
+    // rows already in the new element, and holding there lands the reader
+    // above the conversation and walks them down as the measurement catches
+    // up (Ved's "starts somewhere up and then scrolls down"). A same-id
+    // re-spawn reloads the record and mounts a new list without a switch, so
+    // the open's own write is the one that must place the reader.
+    placed = null;
     // The sizes and the last event belong to the element a previous conversation scrolled.
     lastSeen = { content: 0, room: 0 };
     movedFrom = 0;
@@ -902,7 +911,10 @@
     };
     const aim = () => {
       stopGlide();
-      if (viewport !== null) placed = viewport.scrollTop;
+      // **The down gesture leaves `placed` alone.** Only an upward event can
+      // disarm, and every one of those is an up gesture that runs `arm`
+      // first - so a write here decided nothing a test could see, and the
+      // disarm's own comparison stays the one the last gesture or pin set.
       aimedAt = performance.now();
     };
     const onWheel = (event: WheelEvent) => {
@@ -1150,7 +1162,35 @@
     let pending: Anchor | null = null;
     const step = (): void => {
       captureFrame = null;
-      if (tries >= CAPTURE_FRAMES || held.following || restoring !== null) return;
+      if (held.following || restoring !== null) return;
+      if (tries >= CAPTURE_FRAMES) {
+        // **A capture that never settled is given up, not left standing.**
+        // The anchor it still holds names the rows the jump left behind, and
+        // the next parked pass would restore the reader to it - undoing the
+        // jump they made. Clearing it makes their next move capture afresh;
+        // the log carries the give-up because a stale anchor is otherwise
+        // silent.
+        const view = viewport;
+        anchor = null;
+        owedUnplaced = false;
+        owed = null;
+        rememberPlace();
+        noteScrollMove({
+          from: view?.scrollTop ?? 0,
+          to: view?.scrollTop ?? 0,
+          height: view?.scrollHeight ?? 0,
+          room: view?.clientHeight ?? 0,
+          shrank: false,
+          rose: false,
+          foot: false,
+          reader: false,
+          aimed: false,
+          restore_owed: false,
+          pin: false,
+          name: 'capture-gave-up',
+        });
+        return;
+      }
       tries += 1;
       const view = viewport;
       if (view === null) return;
@@ -1173,6 +1213,26 @@
       captureFrame = requestAnimationFrame(step);
     };
     captureFrame = requestAnimationFrame(step);
+  }
+
+  /**
+   * Whether `key` is a row of `turn`, by the turn's own name or one the fold
+   * kept beside it.
+   *
+   * **A live turn is renamed when a page settles it, and the page's own name
+   * is kept in `also`.** A place recorded on the frame-built row names the
+   * old key, so a rebuild that keeps the row under the page's name still
+   * holds the reader's turn - and a lookup that read `turn.key` alone lost
+   * the place on every reconnect or re-spawn.
+   */
+  function turnNames(turn: HeldTurn, key: string): boolean {
+    if (key.startsWith(`${turn.key}:`)) return true;
+    return (turn.also ?? []).some((alias) => key === alias || key.startsWith(`${alias}:`));
+  }
+
+  /** The held turn a row key belongs to, through [`turnNames`]. */
+  function turnFor(key: string): HeldTurn | undefined {
+    return held.turns.find((turn) => turnNames(turn, key));
   }
 
   /**
@@ -1362,12 +1422,12 @@
     // on the switch into the giant seat: the reader left 175,859px above the
     // foot).
     //
-    // **A third way one goes is deliberately not named here**: an occupant swap
-    // on the same seat and connection (`session_replaced`) keeps the placement,
-    // and that is benign only because the swap empties the conversation, so the
-    // list unmounts and the new landing re-pins before any event can read the
-    // old value. A swap that kept the list mounted across it would make this
-    // stale.
+    // **A third way one goes is an occupant swap** (`session_replaced`). A
+    // changed id resets the offset a successor's first pin must not inherit;
+    // a same-id reload arms the reader's restore. Either way the swap empties
+    // the conversation, so the list unmounts and the new landing re-measures
+    // before any event can read the old placement. A swap that kept the list
+    // mounted across it would make this stale.
     // **The same predicate is what a conversation OPEN is** (#2374): a first
     // visit, a seat reopened on another connection, or a kept seat coming
     // back on screen. Every way into a seat - a click, a deep link, a reload,
@@ -1380,6 +1440,12 @@
       arrived = {};
       seenTurn = {};
       placed = null;
+      // **The badge belongs to the column, not the seat.** Its marker is a
+      // turn key of the conversation that is going; reset here, so the
+      // arriving seat arms its own marker before any of its turns land rather
+      // than counting them from the first arrival.
+      badgeFrom = null;
+      badge = 0;
       // The painted mark belongs to the open that just started, not the one
       // that is going, so the column takes it again with the seat.
       paintNoted = false;
@@ -1434,8 +1500,7 @@
       const place = places.of(which) ?? null;
       // **A conversation still loading may hold the row in the page on its
       // way**, so only a loaded one that lacks it is a stale place.
-      const holdsRow =
-        place !== null && turning.some((turn) => place.anchor.key.startsWith(`${turn.key}:`));
+      const holdsRow = place !== null && turning.some((turn) => turnNames(turn, place.anchor.key));
       const reopen = place !== null && (holdsRow || arriving === undefined || !arriving.loaded);
       if (reopen && place !== null) {
         // A returning reader is parked where they left, not at the foot, so
@@ -1444,6 +1509,7 @@
         // the place was recorded.
         footHeld = false;
         restoring = place;
+        restoreStarted = 0;
         working?.following(false);
       } else {
         // **A fresh open and a place the conversation has outlived land at the
@@ -1540,7 +1606,24 @@
     if (id === null) return;
     const before = shownSession;
     shownSession = id;
-    if (before === null || before === id) return;
+    if (before === null) return;
+    if (before === id) {
+      // **A replacement naming the same id is the conversation reloading**:
+      // the record empties, the list remounts, and the reader is owed the row
+      // they were parked on. That row can be an older turn the new list's
+      // first window does not draw, so the restore is armed here - without
+      // it the column opens at the top of the reloaded page while the stored
+      // place says otherwise. A reader at the foot has no place, and the
+      // mount's own foot pin lands them.
+      const place = untrack(() => places.of(seat));
+      if (place !== undefined) {
+        restoring = place;
+        restoreStarted = 0;
+        footHeld = false;
+        working?.following(false);
+      }
+      return;
+    }
     restoring = null;
     anchor = null;
     rememberPlace();
@@ -1582,7 +1665,7 @@
     // scroll within the same one. Untracked, because a caller is an effect
     // whose pin must not re-run on the dependency this read would add.
     if (places.of(seat)?.anchor.key !== here.key) {
-      const mine = untrack(() => held.turns.some((turn) => here.key.startsWith(`${turn.key}:`)));
+      const mine = untrack(() => held.turns.some((turn) => turnNames(turn, here.key)));
       if (!mine) return;
     }
     places.keep(
@@ -1616,8 +1699,24 @@
       giveUpRestore();
       return;
     }
-    if (!turns.some((turn) => place.anchor.key.startsWith(`${turn.key}:`))) {
-      giveUpRestore();
+    if (turnFor(place.anchor.key) === undefined) {
+      // **A row outside the loaded window is not a row the conversation has
+      // lost.** `cursor` says older turns are still loadable, so ask for the
+      // page above and wait for the landing that re-runs this effect: the
+      // row is in it, and the reconnect that rebuilt the record is not the
+      // conversation outliving the reader's place.
+      if (held.cursor !== null && held.loaded) {
+        if (restoreStarted === 0) restoreStarted = Date.now();
+        if (Date.now() - restoreStarted < RESTORE_MS) {
+          loadOlder(MORE_TURNS);
+          return;
+        }
+      }
+      // **A place the window merely has not reached is not deleted**: the
+      // reader goes to the latest, and the stored place stays for a later
+      // return. Only a conversation with nothing left above has outlived the
+      // row - and only that one's place goes.
+      giveUpRestore(held.cursor !== null);
       return;
     }
     restoreStarted = Date.now();
@@ -1625,7 +1724,7 @@
       // **The turn is read again in the frame it is scrolled in**: a prepend
       // can land between this schedule and its frame, and an index from the
       // earlier read would name a different turn.
-      const at = held.turns.findIndex((turn) => place.anchor.key.startsWith(`${turn.key}:`));
+      const at = held.turns.findIndex((turn) => turnNames(turn, place.anchor.key));
       if (at < 0) {
         giveUpRestore();
         return;
@@ -1655,7 +1754,7 @@
       restoreAnchor();
       return;
     }
-    const turn = held.turns.find((one) => place.anchor.key.startsWith(`${one.key}:`));
+    const turn = held.turns.find((one) => turnNames(one, place.anchor.key));
     /** Whether the row's TURN is drawn, whatever the row is doing. */
     const drawn =
       turn !== undefined && viewport.querySelector(`[data-t="${CSS.escape(turn.key)}"]`) !== null;
@@ -1688,12 +1787,19 @@
   /**
    * The old entry when a restore cannot land: the reader goes to the foot,
    * following, rather than staying at the turn's start with the follow off.
+   *
+   * **`keepPlace` is the row the loaded window has not reached.** A place the
+   * conversation still has history under is not one it has outlived: the
+   * reader is carried to the latest, and the stored place stays for the next
+   * return rather than being deleted by a page that merely had not been read
+   * yet.
    */
-  function giveUpRestore(): void {
+  function giveUpRestore(keepPlace = false): void {
     restoring = null;
     restoreTries = 0;
+    restoreStarted = 0;
     anchor = null;
-    rememberPlace();
+    if (!keepPlace) rememberPlace();
     footHeld = true;
     working?.following(true);
     land();
@@ -2455,9 +2561,11 @@
     }
     const at = turns.findIndex((turn) => turn.key === badgeFrom);
     if (at < 0) {
-      // The turn the reader parked after is no longer held, so the stretch
-      // they missed cannot be counted from it; the next park starts fresh.
-      badgeFrom = null;
+      // **The marker's turn is gone, so the count re-arms where the reader
+      // is now.** Leaving it null for the next run costs the first turn after
+      // a seat switch: that run would arm on the arriving turn and report 0,
+      // so the very turn that woke it was never counted.
+      badgeFrom = turns[turns.length - 1]?.key ?? null;
       badge = 0;
       return;
     }
@@ -2600,11 +2708,14 @@
     // replacement empties the record until its successor's page arrives, and
     // that transient is not rows gone - a re-spawn onto the same claude
     // session must keep the place it is about to draw again.
-    if (
-      park.loaded &&
-      anchor !== null &&
-      !park.turns.some((turn) => anchor !== null && anchor.key.startsWith(`${turn.key}:`))
-    ) {
+    const heldBy = anchor;
+    if (park.loaded && heldBy !== null && !park.turns.some((turn) => turnNames(turn, heldBy.key))) {
+      // **A row the loaded conversation no longer holds goes to the latest.**
+      // The trim and the compaction drop whole pages, and a place naming a
+      // row nothing draws is a place the pass would retry forever. **A row a
+      // window has merely not read yet is the restore's**: it owns the
+      // placement while it pages toward the turn (`restoring`), so a parked
+      // pass here is looking at a record that has already outlived the row.
       anchor = null;
       rememberPlace();
       footHeld = true;
@@ -2681,6 +2792,23 @@
     // moves, so the reader's first gesture after the landing reads its own
     // direction.
     if (restoring !== null) {
+      // **A move the return owns is still written.** Its placement is a
+      // machine move like any other, and "every move is written" is how a
+      // reader of the log tells a jump from a scroll - skipping these frames
+      // made a return the one stretch with no record at all.
+      noteScrollMove({
+        from: movedFrom,
+        to: offset,
+        height: viewport?.scrollHeight ?? 0,
+        room: viewport?.clientHeight ?? 0,
+        shrank: false,
+        rose: false,
+        foot: atFoot(),
+        reader: false,
+        aimed: false,
+        restore_owed: true,
+        pin: false,
+      });
       movedFrom = offset;
       return;
     }

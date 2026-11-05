@@ -33,6 +33,7 @@
   import { mintPromptId } from '../wire/ids';
   import { goTo } from '../routes';
   import Prose from '../chat/Prose.svelte';
+  import { echoes } from '../chat/echoes.svelte';
   import { subjectKey, type DocumentKind, type ServerMessage } from '../protocol';
   import { boxKey } from '../composer/box.svelte';
   import {
@@ -798,13 +799,18 @@
       // following answer can be promised, and it names no review tool.
       if (number !== null) {
         try {
+          // The filed review's nudge is this client's own send, so the id is
+          // remembered before it leaves: a parked reader is carried to the
+          // line rather than counting it in the badge.
+          const uuid = mintPromptId();
+          echoes.remember(boxKey(slot), uuid);
           void connection.dispatch(
             {
               prompt_under: {
                 key: slot,
                 text: `Review #${number} ready on the document - scope ${scope}. Read it back under that scope, or hand the scope to your lead if you do not have the review tools.`,
                 attachments: [],
-                uuid: mintPromptId(),
+                uuid,
                 source: 'you',
               },
             },

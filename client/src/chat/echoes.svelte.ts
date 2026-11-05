@@ -164,6 +164,31 @@ class Echoes {
   clear(key: string): void {
     this.#held.delete(key);
   }
+
+  /**
+   * The prompt ids this client minted for `key`, whether or not they still
+   * carry an echo.
+   *
+   * **A send can leave from a surface that draws no row of its own** - an
+   * answer to a takeover, a palette command, a review or document nudge - and
+   * those post no echo: the id is the only thing that says the words are this
+   * client's, and a parked reader's own send must carry them to the foot
+   * instead of counting in the badge. Bounded, because a long session mints
+   * one per send and only the newest can still be in flight.
+   */
+  #minted = new Map<string, string[]>();
+  remember(key: string, id: string): void {
+    const held = this.#minted.get(key) ?? [];
+    if (held.includes(id)) return;
+    held.push(id);
+    if (held.length > 64) held.shift();
+    this.#minted.set(key, held);
+  }
+
+  /** Whether `id` is a prompt this client minted for `key`. */
+  owns(key: string, id: string): boolean {
+    return this.#minted.get(key)?.includes(id) ?? false;
+  }
 }
 
 /** One per client, as the seat records are: a seat's pending send outlives the page drawing it. */

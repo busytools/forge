@@ -128,6 +128,11 @@ export interface ScrollMove {
   restore_owed: boolean;
   /** The pin's own echo: a write the column made, not anything the reader did. */
   pin: boolean;
+  /**
+   * Why a record that is not a reader's move is in the log: `capture-gave-up`
+   * is a capture that never settled, so the place it held was cleared.
+   */
+  name?: string;
 }
 
 /** One line of the perf log, as the shell writes it. */

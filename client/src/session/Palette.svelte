@@ -2,6 +2,8 @@
   import { untrack } from 'svelte';
 
   import Icon from '../components/Icon.svelte';
+  import { echoes } from '../chat/echoes.svelte';
+  import { subjectKey } from '../protocol';
   import { goTo, parseRoute } from '../routes';
   import { report, type Connection } from '../socket';
   import type { HomeWire } from '../wire/home';
@@ -120,13 +122,17 @@
     if (row.text !== undefined) {
       // Exactly what the composer sends for a typed command, id included:
       // the CLI emits that prompt's lifecycle frames only under our uuid.
+      const uuid = mintPromptId();
+      // A command from the palette is this client's own send, so it carries
+      // the column to the foot rather than counting in the badge.
+      echoes.remember(subjectKey({ session: slot }), uuid);
       void connection.dispatch(
         {
           prompt_under: {
             key: slot,
             text: row.text,
             attachments: [],
-            uuid: mintPromptId(),
+            uuid,
             source: 'you',
           },
         },

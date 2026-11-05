@@ -23,6 +23,8 @@
  * file a lie the reviewer never sees.
  */
 
+import { echoes } from '../chat/echoes.svelte';
+import { subjectKey } from '../protocol';
 import type { DiffLineRecord, ReviewStatusRecord, ReviewThreadRecord } from '../session/wire';
 import { mintPromptId } from '../wire/ids';
 import type { SessionSlot } from '../wire/types';
@@ -363,12 +365,17 @@ function filedNumber(body: unknown): number | null {
 /** A nudge as the socket carries it: a prompt into the seat's own chat, so
  *  the worker reads the line the view this client replaced sent. */
 function nudge(slot: SessionSlot, text: string) {
+  const uuid = mintPromptId();
+  // **A nudge is this client's own send.** The id is remembered so a parked
+  // reader's chat carries them to the line the review filed rather than
+  // counting it in the badge.
+  echoes.remember(subjectKey({ session: slot }), uuid);
   return {
     prompt_under: {
       key: slot,
       text,
       attachments: [],
-      uuid: mintPromptId(),
+      uuid,
       source: 'you',
     },
   };

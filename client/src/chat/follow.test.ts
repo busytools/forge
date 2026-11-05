@@ -320,6 +320,46 @@ function stub() {
       flushSync();
     },
     /**
+     * A frame this client's own press put on the wire, by the id it minted.
+     *
+     * No echo is posted: the surfaces that answer a takeover or send from the
+     * palette carry no row of their own, and the id is what says the words are
+     * this client's.
+     */
+    ownFrame(uuid: string, text: string, seat: SessionSlot = LEAD): void {
+      send({
+        kind: 'update',
+        update: {
+          chat_appended: {
+            key: seat,
+            source: 'you',
+            msg: {
+              type: 'user',
+              uuid,
+              message: { role: 'user', content: [{ type: 'text', text }] },
+            },
+          },
+        },
+      });
+    },
+    /** A prose turn on another seat, as the one connection carries the fleet. */
+    forgedOn(seat: SessionSlot, source = 'cron'): void {
+      send({
+        kind: 'update',
+        update: {
+          chat_appended: {
+            key: seat,
+            source,
+            msg: {
+              type: 'user',
+              uuid: `forged-${source}-${seat.label}`,
+              message: { role: 'user', content: [{ type: 'text', text: 'keep going' }] },
+            },
+          },
+        },
+      });
+    },
+    /**
      * A prose turn the core forged for words that are nobody's send: forge's
      * own machinery writing as a user row - an auto-continue, a worker kick,
      * a board notice. It rides the frame a person's own send does, and the
@@ -466,6 +506,18 @@ async function settle(): Promise<void> {
   // update publishes the record on the painted frame after it arrives; the
   // effects that respond run behind that publish; and the passes they defer -
   // the pin's second measure, the observer's restore - are the next paint's.
+  await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
+  flushSync();
+}
+
+/**
+ * One animation frame, exactly.
+ *
+ * `settle` pumps until the landing has stopped; a test about what a frame
+ * SAW - the capture's two-frame agreement - needs each frame's layout to be
+ * the one the test set, so it pumps one at a time.
+ */
+async function frame(): Promise<void> {
   await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
   flushSync();
 }
@@ -2283,21 +2335,43 @@ describe('whether the column follows the newest end', () => {
         toJSON: () => ({}),
       });
     });
+    const placeRow = (index: number, top: number): void => {
+      const row = rows[index];
+      if (row === undefined) return;
+      row.getBoundingClientRect = () => ({
+        top,
+        bottom: top + 40,
+        height: 40,
+        width: 0,
+        left: 0,
+        right: 0,
+        x: 0,
+        y: 0,
+        toJSON: () => ({}),
+      });
+    };
     readerAt(50);
-    await settle();
     expect(
       places.of(subjectKey({ session: LEAD })),
       'no row under the edge is no place',
     ).toBeUndefined();
 
-    // The list re-windows: the rows are back under the edge, and the retry
-    // takes the place once two frames agree.
-    layOut(40);
-    await settle();
+    // **Two frames have to agree, and this gives them different answers.**
+    // The layout is a jump's own correction: row A takes the edge for one
+    // frame and row B the next two, and only B - the row two frames kept - is
+    // the reader's place. A capture that took the first row it saw records A.
+    placeRow(0, 0);
+    await frame();
+    placeRow(0, -40);
+    placeRow(1, 0);
+    await frame();
+    // The second frame at B, which is the agreement.
+    await frame();
+
     expect(
-      places.of(subjectKey({ session: LEAD })),
-      'the retry took the place once the rows agreed',
-    ).toBeDefined();
+      places.of(subjectKey({ session: LEAD }))?.anchor.key,
+      'the retry took the row two frames agreed on, not the first it saw',
+    ).toBe(rows[1]?.getAttribute('data-k') ?? undefined);
   });
 
   it('restores the row of a reader whose follow is on but not pinning', async () => {
@@ -3882,15 +3956,36 @@ describe('a saved place outliving the connection', () => {
     await parkedColumn(server);
     const key = subjectKey({ session: LEAD });
     const held = conversationsFor(server.connection);
-    expect(held.live.get(key), 'precondition: the seat is live').toBeDefined();
+    const live = held.live.get(key);
+    expect(live, 'precondition: the seat is live').toBeDefined();
     expect(held.kept.get(key), 'precondition: the conversation is kept').toBeDefined();
     expect(places.of(key), 'precondition: the place is recorded').toBeDefined();
+    if (live === undefined) return;
+    const before = get(live.chat.value);
+
+    // **A second seat is the rest of the fleet.** The release must take only
+    // the one seat's entries: a clear of the whole map reads identically on a
+    // connection that held only this seat.
+    const other = subjectKey({ session: OTHER });
+    held.kept.set(other, get(live.chat.value));
+    held.live.set(other, { connection: server.connection, chat: live.chat, stop: () => undefined });
 
     releaseConversation(server.connection, key);
 
-    expect(held.live.get(key), "the seat's listeners stopped with it").toBeUndefined();
+    expect(held.live.get(key), "the released seat's entry is gone").toBeUndefined();
     expect(held.kept.get(key), 'the conversation went with the seat').toBeUndefined();
     expect(places.of(key), 'the place stays for a reconnect').toBeDefined();
+    expect(held.kept.get(other), "another seat's conversation stays").toBeDefined();
+    expect(held.live.get(other), 'and its open conversation too').toBeDefined();
+
+    // **The listeners stop with it, which is what `stop` is for.** A frame on
+    // the seat must not move the released conversation: without the call it
+    // keeps folding a successor's frames into an object nothing draws.
+    server.frame();
+    await settle();
+    expect(get(live.chat.value), 'the released conversation stopped folding the successor').toBe(
+      before,
+    );
   });
 
   it('opens a different claude session at the latest, whatever the slot was left holding', async () => {
@@ -3924,8 +4019,19 @@ describe('a saved place outliving the connection', () => {
     expect(places.of(subjectKey({ session: LEAD })), 'the place survived its own').toBeDefined();
 
     // The successor's page, then a document return: the row is owed back.
+    // **The element starts at the top**, or the offset the outgoing list left
+    // would read as the place whether or not the reload restored one.
+    element.offset = 0;
     server.page([spoken('t1'), spoken('t2'), spoken('t3')]);
+    layOut(40);
     await settle();
+    await settle();
+
+    // **The reload places the reader on the seat, not only on a later
+    // return.** The same-id replacement is the conversation reloading, so the
+    // row it draws first must be the place the reader left.
+    expect(element.offset, 'the re-spawn put the reader back on their row').toBe(50);
+
     if (app !== null) await unmount(app);
     app = null;
     document.body.innerHTML = '';
@@ -3941,6 +4047,47 @@ describe('a saved place outliving the connection', () => {
     await settle();
 
     expect(element.offset, 'the return reopened the place it kept').toBe(50);
+  });
+
+  it('opens a same-id reload at the element foot when the model lags', async () => {
+    // **The merge-holder.** A re-spawn that resumes the same claude session
+    // reloads the record and mounts a new list, and the model has not
+    // measured the rows already in the element. A first pin that holds at the
+    // model's short foot lands the reader above the conversation and walks
+    // them down as the measurement catches up - Ved's "starts somewhere up
+    // and then scrolls down". The open must write the element's own foot.
+    const server = stub();
+    clear();
+    clearObservers();
+    setMeasured(TOTAL, VIEWPORT);
+    app = mount(Chat, {
+      target: document.body,
+      props: { slot: LEAD, connection: server.connection },
+    });
+    flushSync();
+    server.session('s1');
+    server.page([spoken('t1'), spoken('t2'), spoken('t3')]);
+    await settle();
+    expect(element.offset, 'precondition: the reader is at the foot').toBe(FOOT);
+    clear();
+
+    // The element already counts the successor's rows; the list has not
+    // measured them.
+    setModel(TOTAL);
+    setElement(TOTAL + 2000, VIEWPORT);
+    server.replaced('s1');
+    await settle();
+    clear();
+
+    server.page([spoken('n1'), spoken('n2'), spoken('n3')]);
+    layOut(40);
+    await settle();
+
+    const grown = Math.floor(TOTAL + 2000);
+    expect(pinned(), "the reload placed the reader at the element's foot").toEqual([
+      { asked: grown, landed: grown - VIEWPORT },
+    ]);
+    expect(element.offset, 'and the reader is there').toBe(grown - VIEWPORT);
   });
 
   it('restores the same row and offset after a live turn grows while the reader is away', async () => {
@@ -4008,6 +4155,50 @@ describe('a saved place outliving the connection', () => {
         'the row sits where the reader left it',
       ).toBe(-10);
     }
+  });
+
+  it('pages above a new connection until it reaches the parked row', async () => {
+    // **A new connection's first page is the newest turns.** A reader parked
+    // deeper than that page is not a reader whose row is gone: the place is
+    // kept, the history above is asked for, and the page that carries the row
+    // places them on it. Deleting the place here was the silent loss the book
+    // now rules out.
+    const first = stub();
+    await parkedWith(first, 's1');
+    if (app !== null) await unmount(app);
+    app = null;
+    document.body.innerHTML = '';
+    element.offset = 0;
+    clear();
+
+    const second = stub();
+    setMeasured(TOTAL, VIEWPORT);
+    app = mount(Chat, {
+      target: document.body,
+      props: { slot: LEAD, connection: second.connection },
+    });
+    flushSync();
+    // The newest page starts above the row the reader held, and says there is
+    // more above it.
+    second.session('s1');
+    second.page([spoken('n1'), spoken('n2'), spoken('n3')], LEAD, 'cursor-above');
+    layOut(40);
+    await settle();
+    await settle();
+
+    expect(
+      second.asks,
+      'the restore asked for the page above instead of forgetting the place',
+    ).toContain('cursor-above');
+    expect(places.of(subjectKey({ session: LEAD })), 'and the place is still held').toBeDefined();
+
+    // The page above carries the row, and the reader is placed on it.
+    second.page([spoken('t1'), spoken('t2'), spoken('t3')], LEAD, null);
+    layOut(40);
+    await settle();
+    await settle();
+
+    expect(element.offset, 'the page that carried the row placed the reader on it').toBe(50);
   });
 
   it('keeps a place when a reconnect names the same claude session', async () => {
@@ -4150,6 +4341,64 @@ describe('the badge on the way back', () => {
 
     expect(badge(), "the phone's send is counted").toBe('1');
     expect(element.offset, 'and the reader stays where they are').toBe(50);
+  });
+
+  it('counts the first turn after a switch into a parked seat', async () => {
+    // **The marker is the column's, not the seat's.** Switching from a parked
+    // seat to another parked one, the arriving seat must arm its own marker
+    // before the first arrival - otherwise that arrival is the run that arms
+    // it, and the badge never counts the very turn that woke it.
+    const seat = writable(LEAD);
+    const server = stub();
+    clear();
+    clearObservers();
+    setMeasured(TOTAL, VIEWPORT);
+    app = mount(Seats, {
+      target: document.body,
+      props: { seat, connection: server.connection },
+    });
+    flushSync();
+    server.page([spoken('t1'), spoken('t2')]);
+    await settle();
+    layOut(40);
+    readerAt(0);
+    await settle();
+
+    seat.set(OTHER);
+    flushSync();
+    server.page([spoken('o1'), spoken('o2')], OTHER);
+    await settle();
+    layOut(40);
+    readerAt(0);
+    await settle();
+    expect(badge(), 'nothing has been appended on the arriving seat').toBeNull();
+
+    server.forgedOn(OTHER);
+    await settle();
+
+    expect(badge(), 'the first turn after the switch is counted').toBe('1');
+  });
+
+  it('carries the reader for a send whose echo it never held', async () => {
+    // **The id is the send's own, wherever it left from.** A takeover answer,
+    // a palette command and a review or document nudge carry no echo of their
+    // own, and the echo the composer posts can be cleared by a word match
+    // before its frame arrives. The minted id is what still says the words
+    // are this client's, so a parked reader is carried to the foot instead of
+    // counting their own send in the badge.
+    const server = stub();
+    await parkedColumn(server);
+    readerAt(0);
+    await settle();
+    expect(following(server), 'precondition: the reader is parked').toBe(false);
+    clear();
+
+    echoes.remember(subjectKey({ session: LEAD }), 'pressed-here');
+    server.ownFrame('pressed-here', 'what is this');
+    await settle();
+
+    expect(following(server), "the reader's own send carried them to the foot").toBe(true);
+    expect(element.offset, 'and the column is there').toBe(FOOT);
   });
 });
 

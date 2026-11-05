@@ -1791,7 +1791,8 @@ export class Chat {
    * the foot.
    */
   private ownSend(id: string | null): boolean {
-    return id !== null && echoes.of(this.key)?.id === id;
+    if (id === null) return false;
+    return echoes.of(this.key)?.id === id || echoes.owns(this.key, id);
   }
 
   /**
