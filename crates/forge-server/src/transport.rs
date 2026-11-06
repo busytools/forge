@@ -265,6 +265,13 @@ pub mod wire;
 /// `vault_ask_pending` update with a `vault_ask_resolved` ending that a v27
 /// client has no vocabulary for: it would read the parked call as nothing,
 /// and the agent's call would wait on a dock nobody draws.
+///
+/// **v28 also adds the terminal's binary kinds and commands.** A v27 client
+/// reads tag 4 as an unknown binary frame, reports it and drops it, which is
+/// a silent blank surface rather than a refusal - the same ground v4 named
+/// for dictation's binary kind. The attach, detach, resize, pause and close
+/// messages, the `respond_terminal_hand_off` command and the `terminal`
+/// field on the session record ride with it.
 /// `baselines/socket/28/` is the record a v28 server emitted.
 ///
 /// **v29 moves a held settings write to a batch.** `settings_write_pending`'s

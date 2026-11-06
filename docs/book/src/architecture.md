@@ -1,6 +1,6 @@
 # Architecture
 
-Thirteen crates, layered so the dependency graph stays acyclic.
+Fourteen crates, layered so the dependency graph stays acyclic.
 
 ```
 forge-primitives      leaf: pure data, no logic, no I/O, no async
@@ -8,11 +8,12 @@ forge-capture         leaf: microphone capture, depends on no forge-* crate
 forge-dictate     ->  capture
 forge-tts             leaf: speech synthesis, depends on no forge-* crate
 forge-system-one      leaf: decision-model client, depends on no forge-* crate
+forge-terminal        leaf: the PTY and screen model, depends on no forge-* crate
 forge-gateway     ->  primitives
 forge-connectors  ->  primitives
 forge-sdk         ->  primitives
 forge-agent       ->  primitives + sdk + gateway
-forge-workspace   ->  primitives + agent + sdk + dictate + tts + system-one + gateway + connectors
+forge-workspace   ->  primitives + agent + sdk + dictate + tts + system-one + terminal + gateway + connectors
 forge-browser     ->  primitives + sdk
 forge-server      ->  primitives + workspace + sdk + browser
 forge-test-harness->  primitives + sdk
@@ -25,6 +26,7 @@ forge-test-harness->  primitives + sdk
 | `forge-dictate`      | The dictation primitive: audio in, text out. Owns its model files, speech recognition and transcript normalization, and takes audio as mono frames a host pushes in. Its one forge-* dependency is the capture leaf, for the sample rate, and it knows nothing about the program embedding it.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | `forge-tts`          | The speech primitive: text in, audio chunks out. Owns the Kokoro-82M engine (ONNX Runtime in process, with Misaki and its bundled espeak-ng for G2P), the model files a speaking model is made of, sentence splitting and the utterance bound. A leaf: it depends on no forge-* crate and knows nothing about a seat, a tool or a wire. |
 | `forge-system-one`   | The System One decision-model client: the `[systemone]` config shape, the wire question/answer types and their validation, the HTTP call with its timeout and error mapping. A leaf: depends on no forge-* crate, and its types stay there for consumers to import.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `forge-terminal`     | One terminal per seat: the PTY, the screen model and the read loop, the OSC 133 scanner and the shell integration scripts, the text extractor, the attach repaint, and the state classifier. `alacritty_terminal` is its only terminal dependency; the event loop is forge's own because the client's stream is the raw bytes and that loop consumes them. A leaf: it depends on no forge-* crate and knows nothing about a seat, a socket or a session - the workspace keys it by the slot, the server carries its bytes, the client draws them. |
 | `forge-gateway`      | The account pool: one backend per provider token (credential resolution, the usage probe's HTTP and payload mapping, billing shape), plus account selection by declared models, account health, probe scheduling and backoff. Depends on forge-primitives only; the `claude --version` user agent and TLS-trust plumbing arrive through the host port forge-agent implements.                                                                                                                                                                                                                                                                                                                                                                                                          |
 | `forge-connectors`   | One module per external integration: the Gotify and Slack connectors and the outbound Vaultwarden client behind the vault family. Depends on forge-primitives only; Gotify's workspace state and message dispatch arrive through the host port forge-workspace implements, and the vault's session, tokens and unlocked account live there.                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | `forge-sdk`          | The `claude` subprocess. Stream-json codec, transport, control dispatch, the in-process MCP host, and the options builder.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
@@ -59,49 +61,53 @@ Work top-down; the first match wins.
    call) goes in `forge-system-one`. A leaf: it may not depend on any
    forge-* crate, and its own types stay there even once another crate
    reads them.
-3. **A type that crosses a crate boundary** (an envelope, a snapshot
+3. **A terminal's PTY, screen model, command marks or repaint** (the read
+   loop, the OSC 133 scanner and the shell scripts, the text extractor, the
+   state classifier) goes in `forge-terminal`. A leaf: it depends on no
+   forge-* crate and knows nothing about a seat, a socket or a session.
+4. **A type that crosses a crate boundary** (an envelope, a snapshot
    struct, a hook payload, anything sent over a channel or touched by
    more than one crate) goes in `forge-primitives`. Data shapes only.
-4. **Provider credential resolution, the usage probe, payload-to-snapshot
+5. **Provider credential resolution, the usage probe, payload-to-snapshot
    mapping, billing shape or repair policy** goes in `forge-gateway`,
    as one backend per provider token. **Account selection, account
    health, probe scheduling or backoff** goes there as well: the gateway
    owns the account pool, and the workspace drives it.
-5. **I/O for an external integration, inbound or outbound** (its stream
+6. **I/O for an external integration, inbound or outbound** (its stream
    client, REST lookups, subscription matching, a provider's client and
    crypto) goes in `forge-connectors`, one module per integration. The
    connector holds no workspace state; Gotify reaches the workspace
    through the `GotifyHost` port that forge-workspace implements, Slack
    holds only its Web API client, and the vault module carries no
    session or keys.
-6. **Anything that speaks stream-json to the subprocess** (a decoder, a
+7. **Anything that speaks stream-json to the subprocess** (a decoder, a
    new control-request subtype, transport, the MCP host, the options
    builder) goes in `forge-sdk`, and ships with a wire-conformance
    scenario.
-7. **Live state about the user's environment** (git watching, cwd
+8. **Live state about the user's environment** (git watching, cwd
    resolution, environment probes, OAuth, plugins, settings I/O,
    plugin catalog scans) goes in `forge-agent`.
-8. **The browser the sessions drive** (a host process, the driver, a tab, a
+9. **The browser the sessions drive** (a host process, the driver, a tab, a
    frame, an org profile, the idle clock) goes in `forge-browser`, which the
    server owns as a fleet and the workspace reaches through the `BrowserHost`
    port. A frame's wire shape is a `forge-primitives` type; a viewer's drawing
    is the client's.
-9. **Orchestration across projects, sessions, accounts, `forge.toml`
-   or the command bus** goes in `forge-workspace`. A read a VIEW needs
-   is a verb on the view surface below, not a bare method.
-10. **A session record as a view sees it, or a decision any view would
+10. **Orchestration across projects, sessions, accounts, `forge.toml`
+    or the command bus** goes in `forge-workspace`. A read a VIEW needs
+    is a verb on the view surface below, not a bare method.
+11. **A session record as a view sees it, or a decision any view would
     make over one** (the render-ready record, the reducer that derives
     it, the transcript fold that says where a conversation's turns sit, the
     peer envelope parsing) goes in `forge-server`. The
     test is "does this render?" - if it does, it is the view's.
-11. **A widget, screen, layout or per-view presentation state** goes in
+12. **A widget, screen, layout or per-view presentation state** goes in
     the client: draw it in `client/src/`, and take anything that needs
     the OS, a process or the socket to the shell behind the typed invoke
     surface. A further Rust view is a crate of its own, built against
     the socket in `forge-server` rather than against the core, and a
     read of the core goes through the view surface in `forge-server`,
     never through `forge-workspace`.
-12. **A wire-conformance scenario** goes in `forge-test-harness`.
+13. **A wire-conformance scenario** goes in `forge-test-harness`.
 
 **The view surface is built, reads and writes.** A view reads the core
 through named verbs by subject - `roster`, `session`, `agents`,
@@ -262,9 +268,9 @@ name. Do not read an isolation guarantee into it.
 forge exposes one MCP server, named `forge`, to every spawned session.
 It is not a subprocess: it is hosted inside forge and reached over the
 CLI's own MCP transport. Its tools are grouped by submodule and render
-to the model as `mcp__forge__<group>__<tool>`, with twelve groups today:
+to the model as `mcp__forge__<group>__<tool>`, with thirteen groups today:
 `agents`, `browser`, `documents`, `review`, `cron`, `tasks`, `gotify`,
-`slack`, `settings`, `systemone`, `voice` and `vault`.
+`slack`, `settings`, `systemone`, `terminal`, `voice` and `vault`.
 
 `browser` is the exception to the render pattern, crossing unprefixed:
 its tools are upstream `@playwright/mcp`'s own -
@@ -274,22 +280,26 @@ resolving here unchanged. Every other group renders in full, the
 document hand-off included: `documents__hand_off` crosses as
 `mcp__forge__documents__hand_off`.
 
-`browser`, `documents`, `review`, `cron`, `tasks`, `gotify`, `slack` and
-`settings` are registered for every session; `systemone` joins them when
-`[systemone]` is configured and enabled, `voice` joins them when `[tts]` is
-on, and `vault` joins them when `[vault]` is configured. Every `vault__*`
-call is held for the reader's approval, and the shared session asks for the
-master password in the dock's masked field on the first call after a start. A worker's families can be
+`browser`, `documents`, `review`, `cron`, `tasks`, `gotify`, `slack`,
+`settings` and `terminal` are registered for every session; `systemone`
+joins them when `[systemone]` is configured and enabled, `voice` joins them
+when `[tts]` is on, and `vault` joins them when `[vault]` is configured.
+Every `vault__*` call is held for the reader's approval, and the shared
+session asks for the master password in the dock's masked field on the
+first call after a start. A worker's families can be
 narrowed at spawn - `agents__spawn`'s `mcp_families` list, revised by
 `agents__update` and stored on the worker's durable record - and each
 withheld family is named in that worker's own prompt. The `agents` group
-is always on, and so are `browser`, `documents` and `settings`: the browser
+is always on, and so are `browser`, `documents`, `settings` and `terminal`:
+the browser
 is the server's own - a session drives a host the server runs, whether or
 not any client is watching - a hand-off reads the caller's own tree or its
 project's `document_roots`, so there is nothing a project could withhold of
 either, and the config is every session's own environment, read through the
 same document the settings page draws and written only through a held,
-catalogue-validated edit the reader approves. Two groups vary by session kind: inside `agents`, any session
+catalogue-validated edit the reader approves, and the terminal is the seat's
+own PTY - a shell the seat already reaches through Bash, so there is nothing
+a project could withhold of it that Bash does not already grant. Two groups vary by session kind: inside `agents`, any session
 may `list`, `tell`, `ask` and read its own identity, while the four verbs
 that act on the caller's own project - `spawn`, `despawn`, `update` and
 `capacity` - are lead-only; and inside `tasks`, `tasks__approve` is the

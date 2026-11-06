@@ -680,6 +680,54 @@ impl Bridge {
         socket.browser_tabs(seat).await
     }
 
+    /// Attach this connection to a seat's terminal, as a viewer; no id opens
+    /// the seat's terminal, creating it when there is none.
+    pub async fn terminal_view(
+        &self,
+        seat: Value,
+        id: Option<u16>,
+        cols: Option<u16>,
+        rows: Option<u16>,
+    ) -> Result<Value, String> {
+        let socket = self.socket().ok_or_else(|| "the socket is not open".to_owned())?;
+        socket.terminal_view(seat, id, cols, rows).await
+    }
+
+    /// Stop viewing the attached terminal.
+    pub fn terminal_detach(&self) {
+        if let Some(socket) = self.socket() {
+            socket.terminal_detach();
+        }
+    }
+
+    /// The attached surface changed size, in columns and rows.
+    pub fn terminal_resize(&self, seat: Value, id: u16, cols: u16, rows: u16) {
+        if let Some(socket) = self.socket() {
+            socket.terminal_resize(seat, id, cols, rows);
+        }
+    }
+
+    /// Stop or resume the byte stream.
+    pub fn terminal_pause(&self, paused: bool) {
+        if let Some(socket) = self.socket() {
+            socket.terminal_pause(paused);
+        }
+    }
+
+    /// Take the person's control of the attached terminal, or give it back.
+    pub fn terminal_control(&self, seat: Value, id: u16, take: bool) {
+        if let Some(socket) = self.socket() {
+            socket.terminal_control(seat, id, take);
+        }
+    }
+
+    /// One client input frame: the keystrokes, as bytes.
+    pub fn terminal_input(&self, id: u16, bytes: Vec<u8>) {
+        if let Some(socket) = self.socket() {
+            socket.terminal_input(id, bytes);
+        }
+    }
+
     /// Dial the server, replacing any connection this bridge had. Whatever
     /// the page already watches is re-asked on the new socket, so a
     /// reconnect from the connect screen lands the subscriptions it had.
@@ -695,6 +743,8 @@ impl Bridge {
                 let app = app.clone();
                 let bridge = Arc::clone(self);
                 Arc::new(move |bytes: &[u8]| {
+                    // The socket routes kind 1 here and kind 4 to the terminal
+                    // sink, so a chunk is never a malformed browser frame.
                     crate::browser::frame(&app, bytes);
                     bridge.browser_painted(bytes);
                 })
@@ -708,7 +758,14 @@ impl Bridge {
             }
             None => Arc::new(|_: &[u8]| {}),
         };
-        let socket = Socket::open_with_frames(url, tx, frames, sound);
+        let terminal: crate::socket::TerminalSink = match &self.app {
+            Some(app) => {
+                let app = app.clone();
+                Arc::new(move |bytes: &[u8]| crate::terminal::frame(&app, bytes))
+            }
+            None => Arc::new(|_: &[u8]| {}),
+        };
+        let socket = Socket::open_with_frames(url, tx, frames, sound, terminal);
         // **This socket's own identity.** The old socket is closed below, but
         // its task can still deliver a queued event after the swap; the id is
         // what keeps a stale `Status::Open` from bumping the page's
@@ -1521,6 +1578,25 @@ impl Bridge {
             "browser_tabs" => {
                 if let Some(app) = &self.app {
                     let _ = app.emit("browser_tabs", message.clone());
+                }
+                self.forward(message, None);
+            }
+            // **The terminal's attach snapshot reaches the page as its own
+            // event**, the same way the browser's view does: the page's link
+            // listens for `terminal_view`, and `client://inbound` alone would
+            // leave the raised surface dark.
+            "terminal_view" => {
+                if let Some(app) = &self.app {
+                    let _ = app.emit("terminal_view", message.clone());
+                }
+                self.forward(message, None);
+            }
+            // **A controller change reaches every bar as its own event**, the
+            // way the attach snapshot does: the page's surface store listens
+            // for `terminal_control`.
+            "terminal_control" => {
+                if let Some(app) = &self.app {
+                    let _ = app.emit("terminal_control", message.clone());
                 }
                 self.forward(message, None);
             }

@@ -4288,16 +4288,32 @@ describe('the strip lane', () => {
     pinnedRow.set('session:somebody-else', running);
     open({});
 
+    // The shown seat's terminal door is its own row; another seat's figures
+    // must not ride it.
     expect(
-      document.querySelector('.live-row'),
+      document.querySelector('.live-row')?.textContent ?? '',
       "another seat's pin drew on this surface",
-    ).toBeNull();
+    ).not.toContain('700');
+    expect(document.querySelector('.live-row')?.textContent ?? '').toContain('terminal');
   });
 
-  it('draws no lane at all when nothing is pinned and no rows hold anything', () => {
+  it('draws only the terminal door when nothing else has anything to say', () => {
     open({});
 
-    expect(document.querySelector('.live-row'), 'a lane drew with nothing to say').toBeNull();
+    const lane = document.querySelector('.live-row')?.textContent ?? '';
+    expect(lane, 'the person has no door to the seat terminal').toContain('terminal');
+    expect(lane).toContain('start');
+  });
+
+  it('draws no terminal door on a seat that holds no session', () => {
+    open({ refused: 'forge holds no session for Busytools/forge/lead' });
+
+    const lane = document.querySelector('.live-row')?.textContent ?? '';
+    expect(lane).toContain('the seat has no session yet - start it first');
+    expect(
+      document.querySelector('.live-row button.tm-tog'),
+      'a seat with no session gets no door',
+    ).toBeNull();
   });
 
   it('follows the seat when the page moves', () => {
@@ -10744,9 +10760,12 @@ describe('the dictation panel', () => {
         observed.length,
         'nothing watches the input row, so a box growing under the panel re-clips it',
       ).toBeGreaterThan(0);
-      expect(observed[0]?.classList.contains('line'), 'the input row is what is watched').toBe(
-        true,
-      );
+      // Any order: the live row's own width observer is another watcher, so
+      // the input row is found rather than indexed.
+      expect(
+        observed.some((el) => el.classList.contains('line')),
+        'the input row is what is watched',
+      ).toBe(true);
     } finally {
       Reflect.set(globalThis, 'ResizeObserver', original);
     }

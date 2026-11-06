@@ -133,6 +133,12 @@ export interface ComposerProps {
   connection: ComposerConnection;
   seat: SeatRead;
   /**
+   * The server's refusal of this seat's read, which for a seat means it holds
+   * no session. The terminal door reads it: a terminal opened there would run
+   * with no record for the page to draw.
+   */
+  refused: string | null;
+  /**
    * Whether this install can dictate at all.
    *
    * A home read rather than a session one - the engine is process-wide - so

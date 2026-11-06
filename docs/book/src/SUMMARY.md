@@ -28,6 +28,7 @@ each with the drawing it is held against beside it.
 - [Settings](./ui/client/settings.md)
 - [A document](./ui/client/document.md)
 - [The browser surface](./ui/client/browser.md)
+- [The terminal surface](./ui/client/terminal.md)
 
 # Contributor
 

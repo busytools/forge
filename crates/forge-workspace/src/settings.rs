@@ -55,7 +55,8 @@ pub const AREAS: &[AreaSpec] = &[
     AreaSpec {
         id: "server",
         name: "server",
-        note: "the socket a client reads through, and the browser the server hosts",
+        note: "the socket a client reads through, the browser the server hosts, and the \
+               seat's terminal",
     },
     AreaSpec { id: "client", name: "client", note: "the sets a client draws with" },
     AreaSpec {
@@ -203,6 +204,7 @@ fn edit_spec(path: &str) -> EditSpec {
         | "gotify.client_token"
         | "systemone.base_url"
         | "systemone.model"
+        | "terminal.shell"
         | "vault.url"
         | "vault.email"
         | "server.bind" => required(TEXT),
@@ -226,6 +228,8 @@ fn edit_spec(path: &str) -> EditSpec {
         | "browser.fps"
         | "browser.quality"
         | "browser.idle_minutes"
+        | "terminal.scrollback_lines"
+        | "terminal.idle_minutes"
         | "dictate.max_capture_minutes"
         | "tts.max_utterance_seconds"
         | "handoff.at_percent"
@@ -280,6 +284,7 @@ fn all_keys() -> impl Iterator<Item = &'static ConfigKey> {
         .chain(PROJECT_KEYS)
         .chain(CONNECTOR_KEYS)
         .chain(SERVER_KEYS)
+        .chain(TERMINAL_KEYS)
         .chain(CLIENT_KEYS)
         .chain(DICTATE_KEYS)
         .chain(TTS_KEYS)
@@ -984,6 +989,27 @@ const SERVER_KEYS: &[ConfigKey] = &[
         area: "server",
         class: EffectClass::Live,
         rows: |config| vec![number("browser.idle_minutes", config.browser.idle_minutes)],
+    },
+];
+
+const TERMINAL_KEYS: &[ConfigKey] = &[
+    ConfigKey {
+        path: "terminal.shell",
+        area: "server",
+        class: EffectClass::NextSession,
+        rows: |config| vec![text("terminal.shell", &config.terminal.shell)],
+    },
+    ConfigKey {
+        path: "terminal.scrollback_lines",
+        area: "server",
+        class: EffectClass::NextSession,
+        rows: |config| vec![number("terminal.scrollback_lines", config.terminal.scrollback_lines)],
+    },
+    ConfigKey {
+        path: "terminal.idle_minutes",
+        area: "server",
+        class: EffectClass::Live,
+        rows: |config| vec![number("terminal.idle_minutes", config.terminal.idle_minutes)],
     },
 ];
 
@@ -1944,6 +1970,11 @@ fps = 10
 quality = 50
 idle_minutes = 5
 
+[terminal]
+shell = "/bin/zsh"
+scrollback_lines = 1000
+idle_minutes = 15
+
 [documents]
 max_size_mib = 5
 
@@ -2091,6 +2122,7 @@ models = ["m"]
         let server = accepted_fields(&format!("{BASE}\n[server]\nzzz_unknown = 1\n"));
         let client = accepted_fields(&format!("{BASE}\n[client]\nzzz_unknown = 1\n"));
         let browser = accepted_fields(&format!("{BASE}\n[browser]\nzzz_unknown = 1\n"));
+        let terminal = accepted_fields(&format!("{BASE}\n[terminal]\nzzz_unknown = 1\n"));
         let documents = accepted_fields(&format!("{BASE}\n[documents]\nzzz_unknown = 1\n"));
         let usage = accepted_fields(&format!("{BASE}\n[usage]\nzzz_unknown = 1\n"));
         let sessions = accepted_fields(&format!("{BASE}\n[sessions]\nzzz_unknown = 1\n"));
@@ -2142,6 +2174,9 @@ models = ["m"]
                 "client" => accepted.extend(client.iter().map(|field| format!("client.{field}"))),
                 "browser" => {
                     accepted.extend(browser.iter().map(|field| format!("browser.{field}")));
+                }
+                "terminal" => {
+                    accepted.extend(terminal.iter().map(|field| format!("terminal.{field}")));
                 }
                 "documents" => {
                     accepted.extend(documents.iter().map(|field| format!("documents.{field}")));
@@ -2440,7 +2475,9 @@ models = ["m"]
             .replace("first_frame_cap_kb = 64", "first_frame_cap_kb = 128")
             .replace("port = 8790", "port = 8791")
             .replace("auto_update = true", "auto_update = false")
-            .replace("https://gotify.test", "https://gotify.example");
+            .replace("https://gotify.test", "https://gotify.example")
+            .replace("shell = \"/bin/zsh\"", "shell = \"/bin/bash\"")
+            .replace("idle_minutes = 15", "idle_minutes = 20");
         let next = load(&changed);
         let reload = diff(&previous, &next);
         assert!(
@@ -2466,6 +2503,21 @@ models = ["m"]
         assert!(
             !reload.changed.iter().any(|key| key.contains("plugins")),
             "a key nothing reads is not reported as applied: {reload:?}",
+        );
+        assert!(
+            reload.changed.iter().any(|key| key == "terminal.idle_minutes"),
+            "the idle clock reads live: {reload:?}",
+        );
+        assert!(
+            reload.changed.iter().any(|key| key == "terminal.shell"),
+            "a shell change applies at the next terminal spawn, not a restart: {reload:?}",
+        );
+        assert!(
+            matches!(
+                all_keys().find(|key| key.path == "terminal.shell").map(|key| key.class),
+                Some(EffectClass::NextSession)
+            ),
+            "the shell's class is next session",
         );
     }
 

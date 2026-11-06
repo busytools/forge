@@ -533,6 +533,43 @@ enum Outbound {
         height: u32,
         scale: f64,
     },
+    /// Attach this connection to a seat's terminal as a viewer. The server's
+    /// answer rides a reply: a raise it refused must fail the surface rather
+    /// than leave it dark.
+    TerminalView {
+        seat: Value,
+        id: Option<u16>,
+        /// The grid the page will draw on, sent with the attach.
+        cols: Option<u16>,
+        rows: Option<u16>,
+        reply: Option<u64>,
+        answered: Option<oneshot::Sender<Result<Value, String>>>,
+    },
+    /// Stop viewing the attached terminal: the surface lowered.
+    TerminalDetach,
+    /// The attached surface changed size, in columns and rows.
+    TerminalResize {
+        seat: Value,
+        id: u16,
+        cols: u16,
+        rows: u16,
+    },
+    /// Stop or resume the byte stream.
+    TerminalPause {
+        paused: bool,
+    },
+    /// Take the person's control of the attached terminal, or give it back.
+    TerminalControl {
+        seat: Value,
+        id: u16,
+        take: bool,
+    },
+    /// One client input frame: the terminal id and the keystrokes, already at
+    /// the wire's shape (the kind tag is prepended here).
+    TerminalInput {
+        id: u16,
+        bytes: Vec<u8>,
+    },
     /// One of the strip's asks - the profile's tab list - as the wire's own
     /// object with `reply_to` added. The answer is the reply body.
     StripAsk {
@@ -561,19 +598,27 @@ impl Socket {
     /// Dial `url` and keep the connection up for as long as this handle
     /// lives. Events land on `events`; the task ends on [`Socket::close`].
     pub fn open(url: String, events: mpsc::UnboundedSender<SocketEvent>) -> Self {
-        Self::open_with_reply_bound(url, events, Arc::new(|_| {}), Arc::new(|_| {}), REPLY_BOUND)
+        Self::open_with_reply_bound(
+            url,
+            events,
+            Arc::new(|_| {}),
+            Arc::new(|_| {}),
+            Arc::new(|_| {}),
+            REPLY_BOUND,
+        )
     }
 
-    /// [`Socket::open`] with the browser-frame and audio sinks given: every
-    /// relayed frame and each packet of the page's sound lands there, drawn
-    /// or dropped by the viewer.
+    /// [`Socket::open`] with the browser-frame, audio and terminal sinks
+    /// given: every relayed frame, each packet of the page's sound and each
+    /// terminal chunk lands there, drawn or dropped by the viewer.
     pub fn open_with_frames(
         url: String,
         events: mpsc::UnboundedSender<SocketEvent>,
         frames: FrameSink,
         audio: AudioSink,
+        terminal: TerminalSink,
     ) -> Self {
-        Self::open_with_reply_bound(url, events, frames, audio, REPLY_BOUND)
+        Self::open_with_reply_bound(url, events, frames, audio, terminal, REPLY_BOUND)
     }
 
     /// The same, with the reply bound stated: tests inject a short one rather
@@ -583,12 +628,13 @@ impl Socket {
         events: mpsc::UnboundedSender<SocketEvent>,
         frames: FrameSink,
         audio: AudioSink,
+        terminal: TerminalSink,
         reply_bound: Duration,
     ) -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
         let next_reply = Arc::new(AtomicU64::new(1));
         let socket = Self { tx: tx.clone(), next_reply: Arc::clone(&next_reply), reply_bound };
-        tokio::spawn(run(url, events, rx, frames, audio));
+        tokio::spawn(run(url, events, rx, frames, audio, terminal));
         socket
     }
 
@@ -794,6 +840,63 @@ impl Socket {
         let _ = self.tx.send(Outbound::BrowserResize { width, height, scale });
     }
 
+    /// Attach this connection to a seat's terminal, as a viewer. `cols` and
+    /// `rows` are the grid the page will draw on, so the repaint is laid out
+    /// for it.
+    pub async fn terminal_view(
+        &self,
+        seat: Value,
+        id: Option<u16>,
+        cols: Option<u16>,
+        rows: Option<u16>,
+    ) -> Result<Value, String> {
+        let reply = self.next_reply.fetch_add(1, Ordering::Relaxed);
+        let (answered, answer) = oneshot::channel();
+        self.tx
+            .send(Outbound::TerminalView {
+                seat,
+                id,
+                cols,
+                rows,
+                reply: Some(reply),
+                answered: Some(answered),
+            })
+            .map_err(|_| "the socket is closed".to_owned())?;
+        match tokio::time::timeout(ATTACH_BOUND, answer).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(_)) => Err("the socket dropped before answering the attach".to_owned()),
+            Err(_) => {
+                let _ = self.tx.send(Outbound::ForgetAttach { id: reply });
+                Err("the server did not answer the attach".to_owned())
+            }
+        }
+    }
+
+    /// Stop viewing the attached terminal: the surface lowered.
+    pub fn terminal_detach(&self) {
+        let _ = self.tx.send(Outbound::TerminalDetach);
+    }
+
+    /// The attached surface changed size, in columns and rows.
+    pub fn terminal_resize(&self, seat: Value, id: u16, cols: u16, rows: u16) {
+        let _ = self.tx.send(Outbound::TerminalResize { seat, id, cols, rows });
+    }
+
+    /// Stop or resume the byte stream.
+    pub fn terminal_pause(&self, paused: bool) {
+        let _ = self.tx.send(Outbound::TerminalPause { paused });
+    }
+
+    /// Take the person's control of the attached terminal, or give it back.
+    pub fn terminal_control(&self, seat: Value, id: u16, take: bool) {
+        let _ = self.tx.send(Outbound::TerminalControl { seat, id, take });
+    }
+
+    /// One client input frame: the keystrokes, as bytes.
+    pub fn terminal_input(&self, id: u16, bytes: Vec<u8>) {
+        let _ = self.tx.send(Outbound::TerminalInput { id, bytes });
+    }
+
     /// The tabs of this seat's profile, as the strip's rows: the reply body
     /// holds the [`forge_primitives::browser::BrowserTabList`] under `tabs`.
     pub async fn browser_tabs(&self, seat: Value) -> Result<Value, String> {
@@ -912,7 +1015,8 @@ fn apply_offline(next: Outbound, held: &mut Vec<Held>, awaiting: &mut Vec<String
         // A raise over a down socket fails by name rather than waiting out
         // its bound: no answer is coming. So does a strip ask.
         Outbound::BrowserView { answered: Some(answered), .. }
-        | Outbound::BrowserViewPage { answered: Some(answered), .. } => {
+        | Outbound::BrowserViewPage { answered: Some(answered), .. }
+        | Outbound::TerminalView { answered: Some(answered), .. } => {
             let _ = answered.send(Err("the socket is not open".to_owned()));
             false
         }
@@ -940,6 +1044,12 @@ fn apply_offline(next: Outbound, held: &mut Vec<Held>, awaiting: &mut Vec<String
         | Outbound::BrowserNav { .. }
         | Outbound::BrowserFileAnswer { .. }
         | Outbound::BrowserResize { .. }
+        | Outbound::TerminalView { .. }
+        | Outbound::TerminalDetach
+        | Outbound::TerminalResize { .. }
+        | Outbound::TerminalPause { .. }
+        | Outbound::TerminalControl { .. }
+        | Outbound::TerminalInput { .. }
         | Outbound::StripAsk { replied: None, .. }
         // Nothing to probe while there is no connection: the redial's own
         // open is what the page is waiting for.
@@ -957,6 +1067,11 @@ pub type FrameSink = Arc<dyn Fn(&[u8]) + Send + Sync>;
 /// to: the profile, sequence, rate and channels, then interleaved samples.
 pub type AudioSink = Arc<dyn Fn(&[u8]) + Send + Sync>;
 
+/// The terminal sink a connection hands every terminal output chunk to: the
+/// terminal id, its sequence and the shell's bytes, already stripped of the
+/// socket's kind tag.
+pub type TerminalSink = Arc<dyn Fn(&[u8]) + Send + Sync>;
+
 /// The owning task: connect, read, retry - for the life of the handle.
 async fn run(
     url: String,
@@ -964,6 +1079,7 @@ async fn run(
     mut outbound: mpsc::UnboundedReceiver<Outbound>,
     frames: FrameSink,
     audio: AudioSink,
+    terminal: TerminalSink,
 ) {
     // Declared once, on the address: every dial and every retry after it
     // carries the capability this half can read back.
@@ -1175,6 +1291,12 @@ async fn run(
                             }
                             Some(&1) => frames(&bytes[1..]),
                             Some(&2) => audio(&bytes[1..]),
+                            // **The terminal's own kind has its own sink.**
+                            // Handing it to the browser sink made a terminal
+                            // chunk a malformed browser frame, and the
+                            // browser's header could adopt a bogus profile
+                            // and tab from its bytes.
+                            Some(&4) => terminal(&bytes[1..]),
                             // **A binary frame of another kind is said**, not
                             // dropped in silence: a short one has no kind at
                             // all, and both leave a reader guessing what went
@@ -1483,6 +1605,93 @@ async fn run(
                                     .into(),
                                 ))
                                 .await;
+                        }
+                        Outbound::TerminalView { seat, id, cols, rows, reply, answered } => {
+                            let ok = writer
+                                .send(Message::Text(
+                                    json!({
+                                        "kind": "terminal_view",
+                                        "seat": seat,
+                                        "id": id,
+                                        "cols": cols,
+                                        "rows": rows,
+                                        "reply_to": reply,
+                                    })
+                                        .to_string()
+                                        .into(),
+                                ))
+                                .await
+                                .is_ok();
+                            match (ok, reply, answered) {
+                                (true, Some(id), Some(tx)) => {
+                                    attaches.insert(id, tx);
+                                }
+                                (_, _, Some(tx)) => {
+                                    let _ = tx.send(Err(
+                                        "the socket is open but the frame did not go".to_owned()
+                                    ));
+                                }
+                                (_, _, None) => {}
+                            }
+                        }
+                        Outbound::TerminalDetach => {
+                            let _ = writer
+                                .send(Message::Text(
+                                    json!({ "kind": "terminal_detach" }).to_string().into(),
+                                ))
+                                .await;
+                        }
+                        Outbound::TerminalResize { seat, id, cols, rows } => {
+                            let _ = writer
+                                .send(Message::Text(
+                                    json!({
+                                        "kind": "terminal_resize",
+                                        "seat": seat,
+                                        "id": id,
+                                        "cols": cols,
+                                        "rows": rows,
+                                    })
+                                    .to_string()
+                                    .into(),
+                                ))
+                                .await;
+                        }
+                        Outbound::TerminalPause { paused } => {
+                            let _ = writer
+                                .send(Message::Text(
+                                    json!({ "kind": "terminal_pause", "paused": paused })
+                                        .to_string()
+                                        .into(),
+                                ))
+                                .await;
+                        }
+                        Outbound::TerminalControl { seat, id, take } => {
+                            let _ = writer
+                                .send(Message::Text(
+                                    json!({
+                                        "kind": "terminal_control",
+                                        "seat": seat,
+                                        "id": id,
+                                        "take": take,
+                                    })
+                                    .to_string()
+                                    .into(),
+                                ))
+                                .await;
+                        }
+                        Outbound::TerminalInput { id, bytes } => {
+                            // **The keystrokes cross as their own binary kind**:
+                            // the tag, the terminal id, then the bytes.
+                            let mut frame =
+                                Vec::with_capacity(3 + bytes.len());
+                            frame.push(forge_primitives::terminal::TERMINAL_INPUT_TAG);
+                            frame.extend_from_slice(&id.to_le_bytes());
+                            frame.extend_from_slice(&bytes);
+                            if let Err(why) = writer.send(Message::Binary(frame.into())).await {
+                                tauri_plugin_log::log::debug!(
+                                    "terminal_input_not_sent: {why}"
+                                );
+                            }
                         }
                         Outbound::StripAsk { mut body, reply, replied } => {
                             if let Some(map) = body.as_object_mut() {
@@ -2206,6 +2415,60 @@ pub(crate) mod tests {
             other => panic!("a message expected, got {other:?}"),
         }
         let _ = socket;
+    }
+
+    /// **A kind-4 frame is the terminal's, and only its outer tag decides.**
+    /// The shell hands the tag-stripped header to the terminal sink; a
+    /// browser frame whose own payload begins with 4 stays the browser's.
+    #[tokio::test]
+    async fn a_terminal_frame_reaches_the_terminal_sink() {
+        let stub = stub().await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let terminal_bytes = std::sync::Arc::new(std::sync::Mutex::new(Vec::<Vec<u8>>::new()));
+        let browser_bytes = std::sync::Arc::new(std::sync::Mutex::new(Vec::<Vec<u8>>::new()));
+        let terminal_into = std::sync::Arc::clone(&terminal_bytes);
+        let browser_into = std::sync::Arc::clone(&browser_bytes);
+        let _socket = Socket::open_with_frames(
+            stub.url.clone(),
+            tx,
+            std::sync::Arc::new(move |bytes: &[u8]| {
+                browser_into.lock().expect("the browser sink").push(bytes.to_vec());
+            }),
+            std::sync::Arc::new(|_: &[u8]| {}),
+            std::sync::Arc::new(move |bytes: &[u8]| {
+                terminal_into.lock().expect("the terminal sink").push(bytes.to_vec());
+            }),
+        );
+        loop {
+            if let SocketEvent::Status(Status::Open) = next_event(&mut rx).await {
+                break;
+            }
+        }
+        // Kind 4: id 7, seq 3, then the shell's bytes.
+        let mut frame = vec![4u8];
+        frame.extend_from_slice(&7u16.to_le_bytes());
+        frame.extend_from_slice(&3u32.to_le_bytes());
+        frame.extend_from_slice(b"hi");
+        stub.say.send(json!({ "__binary": frame })).expect("the stub broadcasts");
+        // Kind 1 whose payload's first byte is 4: the browser's own tab id.
+        stub.say.send(json!({ "__binary": [1u8, 4, 0, 0, 0, 0] })).expect("the stub broadcasts");
+        let deadline = std::time::Instant::now() + PAUSED_WAIT;
+        while std::time::Instant::now() < deadline
+            && (terminal_bytes.lock().expect("the terminal sink").is_empty()
+                || browser_bytes.lock().expect("the browser sink").is_empty())
+        {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(
+            terminal_bytes.lock().expect("the terminal sink").as_slice(),
+            [vec![7, 0, 3, 0, 0, 0, b'h', b'i']],
+            "the terminal sink got the header with its kind stripped",
+        );
+        assert_eq!(
+            browser_bytes.lock().expect("the browser sink").as_slice(),
+            [vec![4, 0, 0, 0, 0]],
+            "the browser sink got its own frame, untouched by the terminal's kind",
+        );
     }
 
     /// The pessimistic rate a debug build's frame crosses at on a loaded
@@ -2950,6 +3213,7 @@ pub(crate) mod tests {
             tx,
             Arc::new(|_| {}),
             Arc::new(|_| {}),
+            Arc::new(|_| {}),
             Duration::from_millis(50),
         );
         loop {
@@ -3000,6 +3264,7 @@ pub(crate) mod tests {
         let socket = Socket::open_with_reply_bound(
             stub.url.clone(),
             tx,
+            Arc::new(|_| {}),
             Arc::new(|_| {}),
             Arc::new(|_| {}),
             Duration::from_millis(50),

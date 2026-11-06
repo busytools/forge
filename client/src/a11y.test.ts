@@ -50,6 +50,10 @@ import ModelsBody from './models/ModelsBody.svelte';
 import { modelsWire } from './models/testing';
 import Palette from './session/Palette.svelte';
 import Session from './session/Session.svelte';
+import TerminalSegment from './chat/TerminalSegment.svelte';
+import Terminal from './terminal/Terminal.svelte';
+import { setTerminalRecord } from './terminal/record.svelte';
+import { handOff, surface as terminalSurface } from './terminal/surface.svelte';
 import { PROTOCOL_VERSION } from './protocol';
 import type { Connection } from './socket';
 import { violationsOf } from './testing/axe';
@@ -275,6 +279,7 @@ describe('axe over the rendered pages', () => {
             record: held,
             slot: SLOT,
             seat: seatRead(),
+            refused: null,
             connection: wire().connection,
             dictation,
             voice,
@@ -389,6 +394,7 @@ describe('axe over the rendered pages', () => {
             record: record({ pending_asks: [browserHandOffAsk()] }),
             slot: SLOT,
             seat: seatRead(),
+            refused: null,
             connection: wire().connection,
             dictation: false,
             voice: false,
@@ -639,6 +645,57 @@ describe('axe over the rendered pages', () => {
       },
     }).body;
     expect(await idsOf(html)).toEqual([]);
+  });
+
+  /**
+   * **The terminal's own markup is drawn and checked**: the bar, the state in
+   * words, the read region and the parked hand-off's reason on the raised
+   * surface, and the strip's row with and without a terminal.
+   */
+  it('draws the terminal surface and its strip row with no violations', async () => {
+    const summary = {
+      id: 1,
+      shell: '/bin/zsh',
+      cwd: '/tmp',
+      cols: 80,
+      rows: 24,
+      alive: true,
+      state: { running: false, input_expected: null, exit: null, source: 'exact' as const },
+      title: '',
+      held: true,
+    };
+    setTerminalRecord(SLOT, summary);
+    terminalSurface.phase = 'live';
+    terminalSurface.seat = SLOT;
+    terminalSurface.id = 1;
+    terminalSurface.cols = 80;
+    terminalSurface.rows = 24;
+    terminalSurface.seq = 0;
+    handOff.current = {
+      id: 'ask-1',
+      reason: 'the sudo password',
+      secret: true,
+      respond: () => {},
+    };
+    const surfaceHtml = render(Terminal, {}).body;
+    expect(await idsOf(surfaceHtml)).toEqual([]);
+    expect(surfaceHtml).toContain('typing is hidden');
+
+    // The row lives inside the session page's own landmarks; the fragment is
+    // wrapped in one so the check is the row's markup, not its page.
+    const row = render(TerminalSegment, { props: { slot: SLOT } }).body;
+    expect(await idsOf(`<main>${row}</main>`)).toEqual([]);
+
+    // A seat with no terminal still draws its start door.
+    setTerminalRecord(SLOT, null);
+    const start = render(TerminalSegment, { props: { slot: SLOT } }).body;
+    expect(await idsOf(`<main>${start}</main>`)).toEqual([]);
+    expect(start).toContain('start');
+
+    handOff.current = null;
+    terminalSurface.phase = 'closed';
+    terminalSurface.seat = null;
+    terminalSurface.id = null;
   });
 
   /**

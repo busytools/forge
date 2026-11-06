@@ -492,7 +492,9 @@ export function forgeCardOf(
                   ? documentsCard(verbOf(name), input)
                   : family === 'handoff'
                     ? handoffCard(input, answer)
-                    : agentsCard(verbOf(name), input, answer);
+                    : family === 'terminal'
+                      ? terminalCard(verbOf(name), input, answer)
+                      : agentsCard(verbOf(name), input, answer);
   // A result that said more than the one block the card reads draws the rest
   // beside the card: the card replaces the body, and a block it swallowed
   // would be the one thing a reader could not find.
@@ -521,6 +523,7 @@ const FAMILY_NOUN: Record<ForgeFamily, string> = {
   settings: 'settings',
   agents: 'workers',
   handoff: 'handoff',
+  terminal: 'terminal',
   voice: 'speech',
 };
 
@@ -584,6 +587,17 @@ export function forgeRowTitle(
  */
 function pendingCard(family: ForgeFamily, verb: string, input: unknown): ForgeCard | null {
   const held = obj(input);
+  // **A terminal hand-off waits on the person, and that wait is the row's
+  // point**: the ask's reason rides it while it is parked.
+  if (family === 'terminal' && verb === 'hand_off') {
+    const reason = str(held, 'reason');
+    return {
+      title: 'handing the terminal to the person',
+      chips: [{ text: 'waiting for the person', tone: 'warn' }],
+      figure: null,
+      pieces: reason === null || reason.trim() === '' ? [] : [{ kind: 'quote', text: reason }],
+    };
+  }
   // What the call says it is doing, where its input states it: a create or an
   // update names the state it is writing, and the row says it while it waits.
   const chips: ForgeChip[] = [];
@@ -951,6 +965,109 @@ function voiceCard(input: unknown, answer: string | null): ForgeCard | null {
     figure: null,
     pieces: [{ kind: 'quote', text: said }],
   };
+}
+
+/** The last `lines` of a screen or a read, which is what a terminal row can
+ *  show without swallowing the whole buffer. */
+function screenTail(text: string | null, lines = 12): string | null {
+  if (text === null) return null;
+  const trimmed = text.replace(/\s+$/, '');
+  if (trimmed === '') return null;
+  const all = trimmed.split('\n');
+  return all.slice(Math.max(0, all.length - lines)).join('\n');
+}
+
+/** The shell's state in words: what it is doing, and how it ended. */
+function terminalChips(state: unknown): ForgeChip[] {
+  const held = obj(state);
+  const chips: ForgeChip[] = [];
+  if (held['running'] === true) chips.push({ text: 'running', tone: 'info' });
+  const expected = obj(held['input_expected']);
+  const kind = str(expected, 'kind');
+  if (kind === 'password' || kind === 'confirm') {
+    chips.push({ text: 'waiting for input', tone: 'warn' });
+  }
+  const exit = obj(held['exit']);
+  const code = exit['code'];
+  if (typeof code === 'number') {
+    chips.push({ text: `exit ${code}`, tone: code === 0 ? 'plain' : 'bad' });
+  }
+  return chips;
+}
+
+/**
+ * The terminal family's card: the terminal a call acted on, with the shell's
+ * state in words, and the screen or the command's own text as its body.
+ */
+function terminalCard(verb: string, input: unknown, answer: unknown): ForgeCard | null {
+  const asked = obj(input);
+  const held = obj(answer);
+  const id =
+    typeof held['id'] === 'number'
+      ? held['id']
+      : typeof asked['id'] === 'number'
+        ? asked['id']
+        : null;
+  const name = id === null ? 'the terminal' : `terminal ${id}`;
+  const chips = terminalChips(held['state']);
+  const pieces: ForgePiece[] = [];
+  switch (verb) {
+    case 'open': {
+      const shell = str(held, 'shell');
+      const cwd = str(held, 'cwd');
+      const where = [shell, cwd].filter((part): part is string => part !== null && part !== '');
+      if (where.length > 0) pieces.push({ kind: 'tag', text: where.join(' · ') });
+      const tail = screenTail(str(held, 'screen'));
+      if (tail !== null) pieces.push({ kind: 'quote', text: tail });
+      return { title: `opened ${name}`, chips, figure: null, pieces };
+    }
+    case 'write':
+      return { title: `typed into ${name}`, chips, figure: null, pieces };
+    case 'read': {
+      const tail = screenTail(str(held, 'text'));
+      if (tail !== null) pieces.push({ kind: 'quote', text: tail });
+      if (held['truncated'] === true) chips.push({ text: 'truncated', tone: 'dim' });
+      return { title: `read ${name}`, chips, figure: null, pieces };
+    }
+    case 'wait': {
+      const tail = screenTail(str(held, 'text'));
+      if (tail !== null) pieces.push({ kind: 'quote', text: tail });
+      if (held['matched'] === true) chips.push({ text: 'matched', tone: 'ok' });
+      return { title: `waited on ${name}`, chips, figure: null, pieces };
+    }
+    case 'run': {
+      const tail = screenTail(str(held, 'text'));
+      if (tail !== null) pieces.push({ kind: 'quote', text: tail });
+      if (held['truncated'] === true) chips.push({ text: 'truncated', tone: 'dim' });
+      const exit = obj(held['exit']);
+      const code = exit['code'];
+      if (typeof code === 'number') {
+        chips.push({ text: `exit ${code}`, tone: code === 0 ? 'ok' : 'bad' });
+      }
+      return { title: 'ran a command in a terminal', chips, figure: null, pieces };
+    }
+    case 'resize': {
+      const cols = typeof asked['cols'] === 'number' ? asked['cols'] : null;
+      const rows = typeof asked['rows'] === 'number' ? asked['rows'] : null;
+      if (cols !== null && rows !== null) pieces.push({ kind: 'tag', text: `${cols}×${rows}` });
+      return { title: `resized ${name}`, chips, figure: null, pieces };
+    }
+    case 'close': {
+      const exit = obj(held['exit']);
+      const code = exit['code'];
+      if (typeof code === 'number') chips.push({ text: `exit ${code}`, tone: 'plain' });
+      return { title: `closed ${name}`, chips, figure: null, pieces };
+    }
+    case 'hand_off': {
+      const ending = str(held, 'ending');
+      if (ending !== null && ending.trim() !== '') {
+        chips.push({ text: ending, tone: 'ok' });
+      }
+      return { title: `handed ${name} to the person`, chips, figure: null, pieces };
+    }
+    default:
+      return null;
+  }
 }
 
 /**

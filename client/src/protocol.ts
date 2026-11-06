@@ -423,6 +423,46 @@ export type ClientMessage =
    */
   | { kind: 'browser_resize'; width: number; height: number; scale: number }
   /**
+   * Attach this connection to one of a seat's terminals, as a viewer. The
+   * answer is a `terminal_view` carrying the screen as a VT stream, then
+   * output frames as the shell writes them.
+   */
+  | {
+      kind: 'terminal_view';
+      seat: SessionSlot;
+      /**
+       * The terminal to attach to, or null to open the seat's terminal - the
+       * person's door on a seat no agent has touched.
+       */
+      id: number | null;
+      /**
+       * The grid the client will draw on, so the repaint is laid out for it.
+       * Null for an attach with no surface behind it.
+       */
+      cols: number | null;
+      rows: number | null;
+      /** Answers the attach when the sender waits; the surface's open does. */
+      reply_to?: number | null;
+    }
+  /** Stop viewing the attached terminal: the surface lowered. */
+  | { kind: 'terminal_detach' }
+  /**
+   * The attached surface changed size, in columns and rows. The PTY and the
+   * model resize.
+   */
+  | { kind: 'terminal_resize'; seat: SessionSlot; id: number; cols: number; rows: number }
+  /**
+   * Client-driven flow control. A resume is answered with a fresh
+   * `terminal_view`; the frames a pause dropped are not replayed.
+   */
+  | { kind: 'terminal_pause'; paused: boolean }
+  /**
+   * Take the person's control of the attached terminal, or give it back. One
+   * controller at a time, like the browser's role: a take always lands, and
+   * the previous holder hears it lost the role.
+   */
+  | { kind: 'terminal_control'; seat: SessionSlot; id: number; take: boolean }
+  /**
    * One page's own perf records, for a client with no shell to write them.
    *
    * **The records stay as the page serialised them**: the server's part is
@@ -625,6 +665,35 @@ export type ServerMessage =
    * `browser_tabs` and then once per change.
    */
   | ({ kind: 'browser_tabs' } & BrowserTabList)
+  /**
+   * One terminal's screen, as a VT stream a client can draw, and where the
+   * byte stream continues from. `seq` is the last sequence the repaint
+   * reflects, so a chunk at or below it is one the screen already carries.
+   */
+  | {
+      kind: 'terminal_view';
+      seat: SessionSlot;
+      id: number;
+      cols: number;
+      rows: number;
+      seq: number;
+      screen: string;
+      viewers: number;
+      /** This connection's own viewer number, compared against the holder. */
+      viewer: number;
+      /** Who holds the person's control; null when the agent does. */
+      controller: number | null;
+    }
+  /**
+   * Who holds a terminal's input, pushed to every viewer of it on a take or
+   * a release.
+   */
+  | {
+      kind: 'terminal_control';
+      seat: SessionSlot;
+      id: number;
+      controller: number | null;
+    }
   /** A settings save that wrote nothing, and why. */
   | {
       kind: 'settings_refused';

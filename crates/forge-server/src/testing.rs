@@ -441,6 +441,21 @@ impl Fleet {
         self.workspace.install_testing_stub(&slot)
     }
 
+    /// Park a terminal hand-off on `slot` as a blocked `terminal__hand_off`
+    /// call would, so a socket test can type through the hand-off's door.
+    pub fn park_terminal_hand_off(
+        &self,
+        slot: &SessionSlot,
+        terminal: u16,
+    ) -> Result<String, String> {
+        self.workspace.park_terminal_hand_off(slot, terminal)
+    }
+
+    /// Answer that parked hand-off with Done, as the dock's button would.
+    pub fn answer_terminal_hand_off(&self, id: &str, slot: &SessionSlot) {
+        self.workspace.answer_terminal_hand_off(id, slot);
+    }
+
     /// Put a prompt in a seat's queue exactly as a dispatch leaves it: the row
     /// a client attaching mid-queue reads, with no dispatch to drive.
     pub fn seed_queued_prompt(
