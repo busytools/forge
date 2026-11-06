@@ -546,10 +546,11 @@ impl Workspace {
                     })
                 })
                 .unwrap_or_default();
-        let env = crate::config::session_env(&project, &account_env);
+        let mut env = crate::config::seat_env(&project, &account_env);
         let cwd = cwd
             .or_else(|| self.cwd_for_session(slot).map(PathBuf::from))
             .unwrap_or_else(|| project.path.clone());
+        env.insert("PWD".to_owned(), cwd.display().to_string());
         let config = self.config_arc();
         let terminal = forge_terminal::Terminal::spawn(&forge_terminal::TerminalConfig {
             shell: config.terminal.shell.clone(),

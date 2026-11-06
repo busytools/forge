@@ -1074,6 +1074,22 @@ pub(crate) fn session_env(
     env
 }
 
+/// A seat's children's environment: the server's own first, then the
+/// account and project tables over it.
+///
+/// **The `claude` child gets this by inheritance; a terminal's shell does
+/// not**, because its spawner hands it a map instead of inheriting and
+/// overriding. Without the server's own set the shell has no `HOME` and
+/// the shell integration reads the person's rc from nowhere.
+pub(crate) fn seat_env(
+    project: &LoadedProject,
+    account_env: &HashMap<String, String>,
+) -> HashMap<String, String> {
+    let mut env: HashMap<String, String> = std::env::vars().collect();
+    env.extend(session_env(project, account_env));
+    env
+}
+
 /// Sorted key NAMES a project contributes - never values; these tables
 /// hold tokens.
 pub(crate) fn applied_env_keys(project: &LoadedProject) -> String {
@@ -4215,6 +4231,26 @@ provider = "anthropic"
             env.get("GLOBAL_ONLY").map(String::as_str),
             Some("global"),
             "and the global layer still arrives, so the above are overrides not absences",
+        );
+    }
+
+    /// **A seat's children start from the server's own environment.** The
+    /// `claude` child inherits it; a terminal's shell is handed a map, so
+    /// without this set it has no `HOME` and the shell integration reads the
+    /// person's rc from nowhere. The config tables still win over it.
+    #[test]
+    fn seat_env_carries_the_servers_own_environment_below_the_config_tables() {
+        let dir = tempdir().expect("tempdir");
+        write_config(dir.path(), precedence_config());
+        let config = load_from_dir(dir.path()).expect("precedence fixture loads");
+        let account = &config.accounts[0];
+        let env = seat_env(named(&config, "forge"), &account.env);
+        let home = std::env::var("HOME").expect("the test process has a HOME");
+        assert_eq!(env.get("HOME"), Some(&home), "the server's own HOME survives");
+        assert_eq!(
+            env.get("ALL_THREE").map(String::as_str),
+            Some("project"),
+            "and the project's table still overrides it",
         );
     }
 
