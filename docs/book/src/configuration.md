@@ -105,7 +105,6 @@ and start that session again.
 | ------------ | ------ | -------- | ------- | ------------------------------------------------------------------------------------------------ |
 | `name`       | string | yes      |         | Must be unique across _all_ orgs, not just within one.                                           |
 | `path`       | string | yes      |         | A leading `~/` is expanded to the home directory. The un-expanded string is kept for display.    |
-| `resume_lead` | bool  | no       | `false` | When true, a launch with no project named spawns the project's lead session at forge launch, resuming the session forge stored for it unless `--new` is passed (which starts every boot session fresh). A lead the launch gives a stored id to is handed one restart note as its first turn, so you do not have to prompt it; a project added later by a config reload starts without one. Any number of projects may set it. |
 
 Project names are the argument `forge <PROJECT>` takes, and the key
 per-project settings hang off.
@@ -277,7 +276,7 @@ top level. Unknown keys inside a `[handoff]` table are rejected.
 ## Per-project keys (inside `[[orgs.projects]]`)
 
 The per-project settings live directly on each `[[orgs.projects]]`
-entry, beside `name`, `path` and `resume_lead`. The entry rejects
+entry, beside `name` and `path`. The entry rejects
 unknown fields, so a mistyped key fails the load loudly instead of
 quietly applying nothing.
 
@@ -440,9 +439,8 @@ client is served from, or that address being https or `localhost`.
 
 There is no `[ui]` section either: the spinner and repaint keys the
 terminal drew with retired with the terminal crate, and no key replaced
-them. A `forge.toml` still carrying the
-section loads and warns rather than failing, so the keys can be deleted
-at leisure; see the ghost list under "Unknown keys".
+them. A `forge.toml` still carrying the section fails the load as an
+unknown section; see the list under "Unknown keys".
 
 ## `[dictate]`
 
@@ -940,27 +938,16 @@ fallbacks". That covers the top level, `[[orgs]]`, `[[orgs.projects]]`,
 `[gateway]`, `[dictate]`, `[tts]`, `[huggingface]`, `[plugins]`, `[server]`,
 `[browser]`, `[client]` and `[sessions]`.
 
-A key forge itself retired is a declared ghost rather than an unknown
-key, so a stale `forge.toml` still boots and warns instead of failing:
-`[workers]`, `[projects.<name>]`, `[selection]`, `[ui]`, `[dictate] device`
-and `[tts] language`. In the tables above a stray key is a typo and is refused; a
-ghost is the exception,
-because its whole job is to accept what a live config still carries - so
-what a retired section holds is unconstrained and only the section
-itself warns.
+Two retired keys are declared ghosts rather than unknown keys, so a
+stale `forge.toml` still boots and warns instead of failing:
+`[dictate] device` and `[tts] language`.
 
-**`[web]` is the one retired section that fails the load.** It is a
-declared ghost too, but a hard stop rather than a warning
-(`WebSectionRenamed`): `[web] was renamed ... its listener keys
-(enabled, port, bind) are [server]'s and its drawing keys (mark, theme,
-font) are [client]'s`. There is no alias for the old name, and an ignored
-`bind` would quietly reset a server that was exposed on a network
-interface to loopback.
-
-`[ui]` is a ghost like the rest because dropping it as dead weight
-would refuse the boot of every config still carrying one - on a machine
-nobody is looking at, with a synced file. It holds nothing the server
-reads, so the section is ignored and warned about rather than obeyed.
+Every other retired key and section is refused like any unknown key,
+naming itself as the load fails: `resume_lead`, `[web]`, `[workers]`,
+`[projects.<name>]`, `[selection]` and `[ui]`. `[web]`'s listener keys
+(`enabled`, `port`, `bind`) are `[server]`'s and its drawing keys
+(`mark`, `theme`, `font`) are `[client]`'s; forge carries no alias for
+the old name.
 
 ## A complete example
 
@@ -977,7 +964,6 @@ accounts = ["Personal", "Scratch"]
   [[orgs.projects]]
   name = "forge"
   path = "~/Projects/forge"
-  resume_lead = true
 
   [[orgs.projects]]
   name = "notes"
@@ -1099,7 +1085,7 @@ accepts has no class.
 | --- | --- |
 | `[[orgs]]` - `name`, `accounts`, `fallback_accounts`, `browser_profile`; `[orgs.slack] workspace`, `[orgs.projects.slack] workspace` | Live. The roster, pins and the next tool call read the new values. A Slack binding to a label already in `[[slack]]` applies to the next tool call. |
 | `[[orgs.projects]]` - `name`, `path` | Live. The roster re-reads them; a removed project leaves it, and sessions already running keep running. |
-| `[[orgs.projects]]` - `resume_lead`, `model`, `permission_mode`, `max_workers`, `env`, `env_file`, `browser_profile` | Next session. The next spawn reads them; a running session keeps what it spawned with. Toggling `resume_lead` on a project that already exists applies the next time it starts, and an added project with `resume_lead = true` starts. |
+| `[[orgs.projects]]` - `model`, `permission_mode`, `max_workers`, `env`, `env_file`, `browser_profile` | Next session. The next spawn reads them; a running session keeps what it spawned with. A project added by an edit starts when you open it; an edit does not start anything by itself. |
 | `[[orgs.projects]]` - `document_roots` | Live. The next document read or hand-off consults the reloaded list. |
 | `[[accounts]]` - `display_name`, `provider`, `base_url`, `token`, `models`, `model_slugs`, `model_aliases` | Live. The pool gains or changes accounts, and retires a removed one: sessions bound to it keep working, new selections never see it, and usage probes follow the new set. A re-minted token reaches a bound session on its next request. |
 | `[[accounts]]` - `env` | Next session. Folded into each account's env at load, so the next spawn carries it; a running child keeps its own environment. |
@@ -1165,17 +1151,18 @@ clickable. Fix that account's auth, or remove its `[[accounts]]` block; the
 edit applies to new work, and an auth repair reaches a running session on its
 next request. The screen names both.
 
-On a launch with no project named, every project carrying
-`resume_lead = true` still spawns its lead session in the background,
-resuming the session forge stored for it unless the launch passed
-`--new`, but none of them is focused: you pick one from the picker to
-enter chat. A lead the launch gives a stored id to is handed one restart
-note as its first turn, telling it to read the project handoff and the
-task board and to continue where it left off; a lead with no stored id
-starts without one, a `--new` launch sends none, and a project added
-later by a config reload starts without one.
+On a launch with no project named, every project whose lead was left
+open still spawns its lead session in the background, resuming the
+session forge stored for it unless the launch passed `--new`, but none of
+them is focused: you pick one from the picker to enter chat. A project
+closed from the pane is not reopened, and a project whose lead never
+spawned has nothing to reopen. A lead whose last turn was cut off is
+handed one restart note as its first turn, telling it to read the project
+handoff and the task board and to continue where it left off; a lead that
+was parked is resumed with nothing, and a `--new` launch sends no note at
+all.
 
-`resume_lead` therefore controls what is warm when you arrive, not what
+What was open is therefore what is warm when you arrive; it is not what
 you land on.
 
 The socket comes up on `[server] bind:port` during the same boot, unless

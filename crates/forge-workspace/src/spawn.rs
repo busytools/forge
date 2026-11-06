@@ -3208,7 +3208,6 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "{project_path}"
-resume_lead = true
 model = "claude-sonnet-5"
 
 [[accounts]]
@@ -3671,12 +3670,10 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-resume_lead = true
 
 [[orgs.projects]]
 name = "gateway-backend"
 path = "~/Projects/gateway-backend"
-resume_lead = false
 
 [[accounts]]
 display_name = "Stargate"
@@ -4105,6 +4102,7 @@ provider = "anthropic"
                     kick: None,
                     resume_kick: None,
                     interactive: None,
+                    seat_state: None,
                     is_git_repo: seeded_is_git,
                     mcp_families: None,
                     cwd: None,
@@ -4756,6 +4754,7 @@ provider = "anthropic"
                 kick: None,
                 resume_kick: None,
                 interactive: None,
+                seat_state: None,
                 is_git_repo: None,
                 mcp_families: None,
                 cwd: None,
@@ -5125,7 +5124,6 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "{project_path}"
-resume_lead = true
 model = "claude-sonnet-5"
 
 [[accounts]]
@@ -8672,6 +8670,7 @@ provider = "anthropic"
                     kick: None,
                     resume_kick: None,
                     interactive: None,
+                    seat_state: None,
                     // The shape `migrate_from_dynamic_workers` writes.
                     is_git_repo: None,
                     mcp_families: None,
@@ -9549,7 +9548,6 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "{project_path}"
-resume_lead = true
 
 [[accounts]]
 display_name = "Stargate"
@@ -9688,7 +9686,6 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "{project_path}"
-resume_lead = true
 
 [[accounts]]
 display_name = "Stargate"

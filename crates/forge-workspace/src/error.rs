@@ -160,12 +160,6 @@ pub enum WorkspaceError {
     ClientNameUnknown { path: PathBuf, key: &'static str, value: String },
 
     #[error(
-        "[web] was renamed in forge.toml at {}: its listener keys (enabled, port, bind) are [server]'s and its drawing keys (mark, theme, font) are [client]'s",
-        path.display()
-    )]
-    WebSectionRenamed { path: PathBuf },
-
-    #[error(
         "account '{name}' in forge.toml at {} declares a base-url provider but has no base_url key",
         path.display()
     )]

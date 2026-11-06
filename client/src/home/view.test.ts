@@ -545,7 +545,7 @@ describe('the fleet the snapshot describes', () => {
       // A project with no seat left holds its age in its own catalog: a seat
       // exists only while a session does, so the seats alone would word
       // `never` over a project that wrote ten minutes ago - which every
-      // non-`resume_lead` project is, after a restart.
+      // project the boot left shut is, after a restart.
       projects: [
         project('Busytools', 'forge'),
         withSessions(project('Busytools', 'notes'), at(2_500)),
@@ -606,8 +606,8 @@ describe('the fleet the snapshot describes', () => {
   });
 
   it('marks a seatless project asleep when the catalog remembers a session', () => {
-    // After a forge restart only resume_lead projects get seats, so the fleet
-    // is mostly seatless with history. The rail's dormant row already reads
+    // After a forge restart only projects the boot reopened get seats, so the
+    // fleet is mostly seatless with history. The rail's dormant row already reads
     // that history and draws Sleeping; the home used to seed the same project
     // never-started, so one surface said `never` while the other said asleep
     // - and the home's own age cell read `2h` beside the mark.

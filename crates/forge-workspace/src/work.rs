@@ -1343,7 +1343,6 @@ accounts = ["acct-a"]
 [[orgs.projects]]
 name = "forge"
 path = "{}"
-resume_lead = true
 {project_env}
 [[accounts]]
 display_name = "acct-a"

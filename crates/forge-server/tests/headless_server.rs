@@ -407,7 +407,7 @@ fn write_session_fixture(
         }
         let _ = write!(
             blocks,
-            "\n[[orgs.projects]]\nname = \"{name}\"\npath = \"{}\"\nresume_lead = true\n\
+            "\n[[orgs.projects]]\nname = \"{name}\"\npath = \"{}\"\n\
              model = \"claude-sonnet-5\"\nenv = {{ {env} }}\n",
             path.display(),
         );
@@ -444,6 +444,38 @@ port = {gateway_port}
         ),
     )
     .expect("write forge.toml");
+    // **The boot derives its wave from the store**, and a scratch store
+    // starts empty, so each project's lead is seeded open here. The row
+    // carries no id: the boot mints one, which is what a first open does.
+    #[cfg(target_os = "macos")]
+    let app_support = home.join("Library").join("Application Support").join("forge");
+    #[cfg(not(target_os = "macos"))]
+    let app_support = home.join(".local").join("share").join("forge");
+    std::fs::create_dir_all(app_support.join("stores")).expect("stores dir");
+    let db =
+        forge_workspace::store::Db::open(&forge_workspace::store::path_for(&app_support, &config))
+            .expect("open the scratch store");
+    for (name, _, _) in projects {
+        forge_workspace::store::sessions::put(
+            &db,
+            &forge_workspace::store::sessions::SessionRecord {
+                org: "Default".to_owned(),
+                project: (*name).to_owned(),
+                label: forge_workspace::store::sessions::LEAD_LABEL.to_owned(),
+                session_id: None,
+                charter: None,
+                kick: None,
+                resume_kick: None,
+                interactive: None,
+                seat_state: Some(forge_workspace::store::sessions::SeatState::Idle),
+                is_git_repo: None,
+                mcp_families: None,
+                cwd: None,
+            },
+        )
+        .expect("seed the project's open lead");
+    }
+    drop(db);
     (home, config, bin)
 }
 

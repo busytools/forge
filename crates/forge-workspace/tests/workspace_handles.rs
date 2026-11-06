@@ -38,7 +38,6 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-resume_lead = true
 model = "claude-sonnet-5"
 
 [[orgs.projects]]
@@ -100,8 +99,8 @@ provider = "anthropic"
 /// site passes every unit test. This asserts on what the handle
 /// actually carries.
 ///
-/// `Named` is the arm production takes - every `resume_lead = true`
-/// project and every `--project NAME` reaches it. It also covers
+/// `Named` is the arm production takes - every `--project NAME` and every
+/// boot-reopened seat reaches it. It also covers
 /// `[accounts.env]`, which had no end-to-end coverage of its own.
 #[tokio::test]
 async fn declared_env_reaches_the_spawned_handle() {
@@ -119,7 +118,6 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-resume_lead = true
 model = "claude-sonnet-5"
 env = { AIRMAIL_TOKEN = "forge-value" }
 
@@ -205,7 +203,6 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-resume_lead = true
 model = "deepseek-v4.1-flash"
 
 [[orgs.projects]]

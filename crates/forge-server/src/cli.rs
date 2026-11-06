@@ -43,15 +43,15 @@ impl DiagnosticsPreset {
 #[command(name = "forge", about = "The forge server for Claude Code", version)]
 pub struct Cli {
     /// Project to start, matching an `[[orgs.projects]]` `name` in
-    /// forge.toml exactly. When omitted, every `resume_lead = true`
-    /// project still spawns in the background and none is singled out;
-    /// naming one starts it whether or not it is pinned.
+    /// forge.toml exactly. When omitted, every project whose lead was left
+    /// open still spawns in the background and none is singled out; naming
+    /// one starts it whether it was open or closed.
     #[arg(value_name = "PROJECT")]
     pub project: Option<String>,
 
-    /// Start every boot session fresh: resume_lead projects and their
-    /// workers spawn as new sessions instead of resuming. Only affects
-    /// the startup wave - clicking a sleeping project later still resumes.
+    /// Start every boot session fresh: the seats the boot reopens and their
+    /// workers spawn as new sessions instead of resuming. Only affects the
+    /// startup wave - clicking a sleeping project later still resumes.
     #[arg(long)]
     pub new: bool,
 

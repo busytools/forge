@@ -623,8 +623,9 @@ async fn wait_for_accounts(workspace: &Arc<Workspace>, timeout: std::time::Durat
 
 /// The boot spawn, for a process with no view: hold until the accounts
 /// settle, then dispatch the wave a view's connect path dispatches -
-/// the named project's lead, or every `resume_lead` project, in forge.toml
-/// order.
+/// the named project's lead, or every project whose lead row was left
+/// open, in forge.toml order. A seat whose last turn was cut off carries
+/// the restart note; a parked one is resumed with nothing.
 ///
 /// Settling is terminal rather than `Ready` - a bailed account releases
 /// the spawn, because the walk skips it and the pollers keep re-probing
@@ -650,23 +651,23 @@ pub fn start_boot_wave(workspace: Arc<Workspace>, project: Option<String>, force
                  carries its own reason",
             );
         }
-        // Boot wave only: --new makes the boot leads start fresh instead
-        // of resuming (and cascades to their workers). A spawn that does
-        // resume takes the restart note as its first turn; a fresh one
-        // delivers nothing.
-        let launch_settings = forge_workspace::SessionLaunchSettings {
-            force_new,
-            resume_kick: Some(forge_workspace::LEAD_RESTART_NOTE.to_owned()),
-            ..Default::default()
-        };
-        let targets: Vec<String> = match project {
-            Some(name) => vec![name],
-            None => crate::surface::ViewSurface::new(Arc::clone(&workspace)).roster().resume_lead(),
-        };
-        for project_name in targets {
+        // **The derived open set is read before any spawn runs**, so the
+        // `idle` write each spawn lands cannot hide the state it replaced.
+        // `--new` makes these leads start fresh instead of resuming (and
+        // cascades to their workers); a spawn that does resume takes the
+        // restart note as its first turn only when the row said a turn was
+        // in flight.
+        let targets = workspace.boot_wave_targets(project.as_deref());
+        for target in targets {
+            let launch_settings = forge_workspace::SessionLaunchSettings {
+                force_new,
+                resume_kick: target.resume_kick.clone(),
+                ..Default::default()
+            };
+            let project_name = target.project_name.clone();
             let cmd = forge_workspace::Command::SpawnProject {
                 project_name: project_name.clone(),
-                launch_settings: launch_settings.clone(),
+                launch_settings,
             };
             if let Err(err) = workspace.dispatch(cmd) {
                 tracing::error!(
@@ -745,18 +746,19 @@ mod tests {
     /// then handed on - a busy box can take it in between, and the listener's
     /// failed bind is logged rather than read here.
     fn boot_fixture() -> (Arc<Workspace>, tempfile::TempDir) {
-        fixture(false, false)
+        fixture(false)
     }
 
     /// The same boot, with the socket serving on a port the OS hands out.
     fn socket_fixture() -> (Arc<Workspace>, tempfile::TempDir) {
-        fixture(true, false)
+        fixture(true)
     }
 
-    /// The bare boot, optionally with `notes`, the second-declared
-    /// project, pinned to resume its lead and the first-declared `forge`
-    /// left unpinned beside it, so a wave test can tell the two apart.
-    fn fixture(serve: bool, resume_lead: bool) -> (Arc<Workspace>, tempfile::TempDir) {
+    /// The bare boot over two projects, `forge` first and `notes` second,
+    /// so a wave test can tell a seat's state from its position: neither
+    /// carries a row until the test seeds one, so nothing spawns by
+    /// default.
+    fn fixture(serve: bool) -> (Arc<Workspace>, tempfile::TempDir) {
         let dir = tempfile::tempdir().expect("tempdir");
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a free port");
         let port = listener.local_addr().expect("the port the OS handed out").port();
@@ -766,11 +768,6 @@ mod tests {
         drop(socket);
         let forge = dir.path().join("forge");
         std::fs::create_dir_all(&forge).expect("forge/");
-        let pinned = if resume_lead {
-            "\n[[orgs.projects]]\nname = \"notes\"\npath = \"/tmp\"\nresume_lead = true\n"
-        } else {
-            ""
-        };
         std::fs::write(
             forge.join("forge.toml"),
             format!(
@@ -782,7 +779,11 @@ accounts = [\"Stub\"]
 [[orgs.projects]]
 name = \"forge\"
 path = \"/tmp\"
-{pinned}
+
+[[orgs.projects]]
+name = \"notes\"
+path = \"/tmp\"
+
 [[accounts]]
 display_name = \"Stub\"
 token = \"t\"
@@ -834,13 +835,15 @@ port = {port}
     }
 
     /// **The boot wave is the only production site that asks for the
-    /// restart note.** On a bare launch it is sent only for the projects
-    /// pinned to resume, so an unpinned project is not in the wave at
-    /// all. The intercept replaces the spawn, so what is read here is the
-    /// command the wave would send.
+    /// restart note, and only a seat that was mid-turn earns it.** The
+    /// intercept replaces the spawn, so what is read here is the command
+    /// the wave would send: both open seats are in the wave, in forge.toml
+    /// order, and only the interrupted one is kicked.
     #[tokio::test]
-    async fn the_boot_wave_pins_each_resume_lead_project_with_the_restart_note() {
-        let (workspace, _dir) = fixture(false, true);
+    async fn the_boot_wave_opens_the_seats_that_were_open() {
+        use forge_workspace::store::sessions::SeatState;
+
+        let (workspace, _dir) = fixture(false);
         workspace.enable_test_dispatch_intercept();
         workspace.seed_test_ready_account("Stub");
         workspace.seed_test_gateway_ready(true);
@@ -848,17 +851,85 @@ port = {port}
             wait_for_accounts(&workspace, Duration::from_secs(30)).await,
             "the fixture's accounts settle before the wave",
         );
+        workspace
+            .seed_seat_state_for_test("TestOrg", "forge", "lead", SeatState::Idle)
+            .expect("seed the parked seat");
+        workspace
+            .seed_seat_state_for_test("TestOrg", "notes", "lead", SeatState::InTurn)
+            .expect("seed the interrupted seat");
 
         start_boot_wave(Arc::clone(&workspace), None, false);
 
         let spawned = spawned_projects(&workspace).await;
-        assert_eq!(spawned.len(), 1, "only the pinned project is in the wave: {spawned:?}");
-        assert_eq!(spawned[0].0, "notes", "and it is the project that set the key");
+        assert_eq!(spawned.len(), 2, "both open projects are in the wave: {spawned:?}");
+        assert_eq!(spawned[0].0, "forge", "declaration order is the wave's order");
+        assert_eq!(spawned[1].0, "notes");
         assert!(!spawned[0].1.force_new, "a normal launch is not a --new one");
         assert_eq!(
-            spawned[0].1.resume_kick.as_deref(),
+            spawned[0].1.resume_kick, None,
+            "a seat that was parked is resumed with nothing to do",
+        );
+        assert_eq!(
+            spawned[1].1.resume_kick.as_deref(),
             Some(forge_workspace::LEAD_RESTART_NOTE),
-            "the wave asks for the restart note",
+            "the seat whose turn was cut off takes the restart note",
+        );
+    }
+
+    /// **The close door keeps a project out of the wave**, and its stored
+    /// workers ride the lead's Connected hook - which never runs for a
+    /// lead that is not spawned, so nothing of the project's comes back.
+    #[tokio::test]
+    async fn the_boot_wave_leaves_a_closed_project_shut() {
+        use forge_workspace::store::sessions::SeatState;
+
+        let (workspace, _dir) = fixture(false);
+        workspace.enable_test_dispatch_intercept();
+        workspace.seed_test_ready_account("Stub");
+        workspace.seed_test_gateway_ready(true);
+        assert!(
+            wait_for_accounts(&workspace, Duration::from_secs(30)).await,
+            "the fixture's accounts settle before the wave",
+        );
+        workspace
+            .seed_seat_state_for_test("TestOrg", "forge", "lead", SeatState::Idle)
+            .expect("seed the open seat");
+        workspace
+            .seed_seat_state_for_test("TestOrg", "notes", "lead", SeatState::Closed)
+            .expect("seed the closed seat");
+        workspace
+            .seed_seat_state_for_test("TestOrg", "notes", "steward", SeatState::Idle)
+            .expect("seed a worker row the closed lead would have brought back");
+
+        start_boot_wave(Arc::clone(&workspace), None, false);
+
+        let dispatched = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let drained = workspace.drain_test_dispatch_buffer();
+                if drained
+                    .iter()
+                    .any(|command| matches!(command, forge_workspace::Command::SpawnProject { .. }))
+                {
+                    return drained;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the boot wave dispatches its spawns");
+        let lead_spawns: Vec<&String> = dispatched
+            .iter()
+            .filter_map(|command| match command {
+                forge_workspace::Command::SpawnProject { project_name, .. } => Some(project_name),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(lead_spawns, vec!["forge"], "the closed project's lead is not spawned");
+        assert!(
+            !dispatched
+                .iter()
+                .any(|command| matches!(command, forge_workspace::Command::SpawnWorker { .. })),
+            "its stored worker comes back only through its lead's Connected hook",
         );
     }
 
@@ -866,7 +937,9 @@ port = {port}
     /// drops it, so the wave's own contract does not depend on the flag.
     #[tokio::test]
     async fn the_boot_wave_asks_for_the_restart_note_under_new_as_well() {
-        let (workspace, _dir) = fixture(false, true);
+        use forge_workspace::store::sessions::SeatState;
+
+        let (workspace, _dir) = fixture(false);
         workspace.enable_test_dispatch_intercept();
         workspace.seed_test_ready_account("Stub");
         workspace.seed_test_gateway_ready(true);
@@ -874,11 +947,14 @@ port = {port}
             wait_for_accounts(&workspace, Duration::from_secs(30)).await,
             "the fixture's accounts settle before the wave",
         );
+        workspace
+            .seed_seat_state_for_test("TestOrg", "notes", "lead", SeatState::InTurn)
+            .expect("seed the interrupted seat");
 
         start_boot_wave(Arc::clone(&workspace), None, true);
 
         let spawned = spawned_projects(&workspace).await;
-        assert_eq!(spawned.len(), 1, "only the pinned project is in the wave: {spawned:?}");
+        assert_eq!(spawned.len(), 1, "only the open project is in the wave: {spawned:?}");
         assert!(spawned[0].1.force_new, "--new reaches the command");
         assert_eq!(
             spawned[0].1.resume_kick.as_deref(),
@@ -888,11 +964,14 @@ port = {port}
     }
 
     /// **A project named on the command line starts whether or not it is
-    /// pinned**, and it takes the same note request, so a named unpinned
-    /// project with a stored id gets the note too.
+    /// closed**, because naming it is the user's own act and closing is not
+    /// forgetting. A closed seat has no interrupted turn to report, so it
+    /// is resumed with nothing.
     #[tokio::test]
-    async fn the_boot_wave_starts_a_named_project_even_when_unpinned() {
-        let (workspace, _dir) = fixture(false, true);
+    async fn the_boot_wave_starts_a_named_closed_project() {
+        use forge_workspace::store::sessions::SeatState;
+
+        let (workspace, _dir) = fixture(false);
         workspace.enable_test_dispatch_intercept();
         workspace.seed_test_ready_account("Stub");
         workspace.seed_test_gateway_ready(true);
@@ -900,16 +979,18 @@ port = {port}
             wait_for_accounts(&workspace, Duration::from_secs(30)).await,
             "the fixture's accounts settle before the wave",
         );
+        workspace
+            .seed_seat_state_for_test("TestOrg", "forge", "lead", SeatState::Closed)
+            .expect("seed the closed seat");
 
         start_boot_wave(Arc::clone(&workspace), Some("forge".to_owned()), false);
 
         let spawned = spawned_projects(&workspace).await;
         assert_eq!(spawned.len(), 1, "the named project alone: {spawned:?}");
-        assert_eq!(spawned[0].0, "forge", "the named project starts though it is unpinned");
+        assert_eq!(spawned[0].0, "forge", "the named project starts though it is closed");
         assert_eq!(
-            spawned[0].1.resume_kick.as_deref(),
-            Some(forge_workspace::LEAD_RESTART_NOTE),
-            "and a named project takes the same note request",
+            spawned[0].1.resume_kick, None,
+            "a closed seat has no interrupted turn to report",
         );
     }
 

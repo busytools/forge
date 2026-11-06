@@ -209,6 +209,7 @@ impl SessionTask {
         // lock is released before the handoff runs.
         let turn_completed;
         let turn_cancelled;
+        let turn_ended;
         let repo_nudge;
         let lost_prompts;
         {
@@ -218,6 +219,7 @@ impl SessionTask {
             repo_nudge = moved.repo_nudge;
             turn_completed = matches!(moved.turn_ended, Some(MovedTurnEnd::Complete { .. }));
             turn_cancelled = matches!(moved.turn_ended, Some(MovedTurnEnd::Cancelled));
+            turn_ended = moved.turn_ended.is_some();
             lost_prompts = moved.lost_prompts;
             // The two sets that move whole are announced from the scope the
             // fold wrote in, so what goes out is what the core now holds -
@@ -297,6 +299,12 @@ impl SessionTask {
         }
         if turn_cancelled {
             self.abort_cancelled_handoff();
+        }
+        // The turn settled - completed, failed or cancelled - so the seat
+        // is open with nothing in flight. Written from the same boundary
+        // the frames announce, so the row and the page agree on liveness.
+        if turn_ended && let Some(workspace) = self.workspace.upgrade() {
+            workspace.record_seat_state(&self.key, crate::store::sessions::SeatState::Idle);
         }
 
         // Mirror Connected into the project catalog so the Projects
@@ -1557,6 +1565,14 @@ impl SessionTask {
                     Command::ResumeSession { session_id, .. } => Some(session_id.clone()),
                     _ => None,
                 };
+                // **An occupant swap leaves the seat open with no turn in
+                // flight.** The successor starts parked; whichever prompt
+                // it is sent next is the turn that flips the row.
+                if respawn_id.is_some()
+                    && let Some(workspace) = self.workspace.upgrade()
+                {
+                    workspace.record_seat_state(&self.key, crate::store::sessions::SeatState::Idle);
+                }
                 // A worker's mission lives in its conversation, so a
                 // `/new` that emptied it would leave the worker running
                 // with no idea what it is for. The launch settings for a
@@ -4684,6 +4700,70 @@ mod tests {
         assert_eq!(
             notice.sender_name, "forge/handoff-cut",
             "and the notice names the seat that never took it",
+        );
+    }
+
+    /// **A settled turn leaves the seat open and parked.** The Result is
+    /// the boundary the page's TurnComplete frame announces, so the row and
+    /// the page cannot disagree about whether work is in flight.
+    #[tokio::test]
+    async fn a_result_settles_the_seat_to_idle() {
+        use crate::store::sessions::SeatState;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (workspace, _rx) =
+            crate::Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
+        workspace.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        let key = SessionSlot::worker("TestOrg", "forge", "settling");
+        workspace.record_session_id("TestOrg", "forge", "settling", "id-1");
+        workspace.record_seat_state(&key, SeatState::InTurn);
+        let (mut task, _agent_rx) = command_task_for(&workspace, &key);
+        task.domain.lock().commit_turn();
+
+        task.translate_event(AgentEvent::SdkMessage {
+            session_id: "id-1".to_owned(),
+            msg: result_message("success", false),
+        });
+
+        assert_eq!(
+            workspace.stored_seat_state(&key),
+            Some(SeatState::Idle),
+            "the turn settled, so the seat is open with nothing in flight",
+        );
+    }
+
+    /// **A `/resume` swap leaves the seat open with nothing in flight.**
+    /// The successor starts parked on the id it names, whatever the seat
+    /// it replaced was doing; the next prompt is the turn that flips it.
+    #[tokio::test]
+    async fn a_resume_swap_leaves_the_seat_idle() {
+        use crate::store::sessions::SeatState;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (workspace, _rx) =
+            crate::Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
+        workspace.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        let key = SessionSlot::lead("TestOrg", "forge");
+        workspace.record_session_id("TestOrg", "forge", "lead", "old-id");
+        workspace.record_seat_state(&key, SeatState::InTurn);
+        let (mut task, _agent_rx) = command_task_for(&workspace, &key);
+        task.domain.lock().session_id = Some(forge_primitives::SessionId::new("old-id".to_owned()));
+
+        task.execute_command(Command::ResumeSession {
+            key: key.clone(),
+            session_id: "successor-id".to_owned(),
+            cwd: "/tmp".to_owned(),
+            launch_settings: forge_agent::client::SessionLaunchSettings::default(),
+        });
+
+        assert_eq!(
+            workspace.stored_seat_state(&key),
+            Some(SeatState::Idle),
+            "the successor starts parked",
         );
     }
 
@@ -8680,6 +8760,7 @@ provider = "anthropic"
                     kick: None,
                     resume_kick: None,
                     interactive: None,
+                    seat_state: None,
                     is_git_repo: None,
                     mcp_families: None,
                     cwd: None,

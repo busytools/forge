@@ -127,8 +127,8 @@ pub use views::{
 #[cfg(any(test, feature = "testing"))]
 pub use workspace::testing::set_seat_ring_cap;
 pub use workspace::{
-    LEAD_RESTART_NOTE, PendingInteractionKind, PricingFetch, PricingFetcher, SessionChipInfo,
-    SessionChipState, SettingsSaveError, Workspace,
+    BootWaveTarget, LEAD_RESTART_NOTE, PendingInteractionKind, PricingFetch, PricingFetcher,
+    SessionChipInfo, SessionChipState, SettingsSaveError, Workspace,
 };
 
 // MCP (agents / peers / workers) public surface. The `mcp` module

@@ -93,8 +93,10 @@ history is the record.
        one where the config carries one** (an `openrouter` provider block) -
        a scratch must never spend the Anthropic pool; name which account in
        the worker's report.
-     - `[[orgs]]` + `[[orgs.projects]]` - the repo's path, `resume_lead = true`,
-       a `model`, `permission_mode = "auto"`.
+     - `[[orgs]]` + `[[orgs.projects]]` - the repo's path, a project `name`
+       the boot line passes, a `model`, `permission_mode = "auto"`. The boot
+       opens what the store says was open, and a fresh scratch store has no
+       rows, so the name on the command line is what starts it.
      - `[server] enabled = true, bind = "127.0.0.1", port = 8791` and
        `[gateway] port = 8788` - a distinct port pair per stack (8791+idx /
        8788+idx for parallel stacks).
@@ -116,8 +118,9 @@ history is the record.
    involved; `script(1)` keeps the launch shaped as it always was (tmux is not
    installed on this machine):
    - Write `$STACK/boot.sh`: `export HOME=$STACK/home`, `export
-     CLAUDE_CONFIG_DIR=$STACK/config`, then `exec <forge binary> --log-file
-     $STACK/forge.log`.
+     CLAUDE_CONFIG_DIR=$STACK/config`, then `exec <forge binary> <PROJECT>
+     --log-file $STACK/forge.log` - the positional is the scratch project's
+     `name`, and it is what opens the lead on an empty store.
    - `script -q /dev/null /bin/sh $STACK/boot.sh < /dev/null &`
    - **Launch it `nohup`-detached, never bare `&`**: a background job started
      inside a tool call can die with that call's process group (measured: a
