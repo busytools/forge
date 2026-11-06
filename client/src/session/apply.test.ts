@@ -238,29 +238,45 @@ describe('applyUpdate', () => {
         toolResult('call-stop', 'Successfully stopped task: t-launch'),
         taskFrame({ subtype: 'task_notification', tool_use_id: 'call-plain', status: 'failed' }),
       ];
+      const whole = outcomesFrom([{ messages: frames }]);
       let held = empty();
       for (const frame of frames) held = landed(held, frame);
+      expect(held.conversation.outcomes, 'the live fold drifted from the whole walk').toEqual(
+        whole,
+      );
 
-      expect(held.conversation.outcomes).toEqual(outcomesFrom([{ messages: frames }]));
+      // The same frames, arriving as a read: a fresh seat seeds the same join.
+      const read = sessionFrom({
+        slot: SLOT,
+        state: { scan_cwd: '/tmp' },
+        conversation: { turns: [{ key: null, messages: frames }], compaction_count: 0 },
+      });
+      expect(read.conversation.outcomes, "the read's join drifted from the whole walk").toEqual(
+        whole,
+      );
     });
 
     /**
      * The record keeps what the join reads and drops the frame it came from.
      * A body kept "for a reader" here is the leak this cut exists to close.
      */
-    it('keeps no frame it has folded: the facts stay and the body goes', () => {
-      const body = 'the-body-the-record-must-not-keep';
-      const held = landed(
-        applyUpdate(empty(), { chat_appended: { key: SLOT, msg: prompt('go', 'p-0') } }),
-        toolUse('call-launch', 'Bash'),
-      );
+    it('keeps no frame it has folded: the facts stay and the bodies go', () => {
+      // One body on the frame that opens the turn and one on a frame that
+      // joins it, so a record that keeps either is caught.
+      const opening = 'the-prompt-the-record-must-not-keep';
+      const body = 'the-result-the-record-must-not-keep';
+      let held = landed(empty(), prompt(opening, 'p-0'));
+      held = landed(held, toolUse('call-launch', 'Bash'));
       const next = landed(
         held,
         toolResult('call-launch', `Command running in background with ID: t-launch ${body}`),
       );
 
       const kept = JSON.stringify(next.conversation);
-      expect(kept, 'the record kept the body of a frame it had folded').not.toContain(body);
+      expect(kept, 'the record kept the body of the frame that opened its turn').not.toContain(
+        opening,
+      );
+      expect(kept, 'the record kept the body of a frame that joined its turn').not.toContain(body);
       // The fact the frame stated is still there, so the absence above is the
       // body going and not the frame never having been read.
       expect(kept, 'the fold kept no fact from the frame it read').toContain('t-launch');
