@@ -1943,7 +1943,7 @@ describe('whether the column follows the newest end', () => {
     // the element while the list measures them a pass later, so the pin after
     // the entry must write the element's foot again rather than hold at the
     // model's short one and walk the reader down as the measurement lands.
-    // The entry tests above see only the first pin, which the mount's own
+    // The entry tests above see only the first pin, which the switch's own
     // clear already explains; this is the pass after it.
     const seat = writable(LEAD);
     const server = stub();
@@ -1975,7 +1975,7 @@ describe('whether the column follows the newest end', () => {
     await settle();
     clear();
 
-    // One more frame, which moves no row the reader sees: what lands now can
+    // One more frame, which moves neither measured size: what lands now can
     // only be the settle re-measuring the same lagging model.
     server.frame();
     await settle();
