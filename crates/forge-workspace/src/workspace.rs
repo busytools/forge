@@ -9557,6 +9557,24 @@ impl Workspace {
                 return Err(LiveWorkerRefusal::AtCap { live, cap });
             }
         }
+        // **The heal's tombstone goes with the spawn that supersedes it.**
+        // The label gate admits a same-label spawn because a `Restarting`
+        // entry is not live, while the cap counts that entry; a push beside
+        // it would count the slot twice, and the heal's timer aborts on the
+        // now-live label, leaving a tombstone that holds a cap slot for the
+        // rest of the run. Cleared after the refusals above, so a refused
+        // spawn never frees the heal's slot.
+        // **The heal's tombstone goes with the spawn that supersedes it.**
+        // The label gate admits a same-label spawn because a `Restarting`
+        // entry is not live, while the cap counts that entry; a push beside
+        // it would count the slot twice, and the heal's timer aborts on the
+        // now-live label, leaving a tombstone that holds a cap slot for the
+        // rest of the run. Cleared after the refusals above, so a refused
+        // spawn never frees the heal's slot.
+        workers.entry(project_key.clone()).or_default().retain(|existing| {
+            existing.slot != entry.slot
+                || !matches!(existing.status, forge_primitives::WorkerLiveness::Restarting)
+        });
         workers.entry(project_key.clone()).or_default().push(entry);
         Ok(())
     }
@@ -17820,6 +17838,32 @@ mod workers_state_tests {
             "a Failed entry does not block a re-spawn of its label",
         );
         assert_eq!(ws.list_live_workers(&project).len(), 2);
+    }
+
+    /// **A spawn supersedes a heal's tombstone rather than sitting beside
+    /// it.** A same-label spawn is admitted because a `Restarting` entry is
+    /// not live while the cap still counts it; leaving the tombstone would
+    /// count the slot twice, and the heal's timer aborts on the live label,
+    /// so it would hold a cap slot for the rest of the run.
+    #[test]
+    fn insert_if_label_absent_supersedes_a_restarting_tombstone() {
+        let (ws, _rx) = Workspace::testing_stub();
+        let project = ProjectKey::new("forge");
+        let mut tombstone = fake_entry("reviewer", "w1");
+        tombstone.status = WorkerLiveness::Restarting;
+        ws.insert_live_worker(&project, tombstone);
+
+        ws.insert_live_worker_if_label_absent(&project, fake_entry("reviewer", "w1"), None)
+            .expect("a Restarting tombstone does not hold the label");
+
+        let entries = ws.list_live_workers(&project);
+        assert_eq!(entries.len(), 1, "the tombstone went with the spawn that superseded it");
+        assert_eq!(
+            entries[0].status,
+            WorkerLiveness::Running,
+            "the spawn's own entry is what remains",
+        );
+        assert_eq!(ws.count_live_workers(&project), 1, "and the cap counts the slot once");
     }
 
     #[test]
