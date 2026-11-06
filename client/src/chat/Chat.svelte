@@ -1456,10 +1456,11 @@
     //
     // **A third way one goes is an occupant swap** (`session_replaced`). A
     // changed id resets the offset a successor's first pin must not inherit;
-    // a same-id reload arms the reader's restore. Either way the swap empties
-    // the conversation, so the list unmounts and the new landing re-measures
-    // before any event can read the old placement. A swap that kept the list
-    // mounted across it would make this stale.
+    // a same-id reload arms the reader's restore. The record empties either
+    // way, and the landing that follows re-measures before any event reads
+    // the old placement - except when the successor's page lands before a
+    // render pass sees the emptied record, where the list stays mounted and
+    // the swap effect below clears `placed` and the settle itself.
     // **The same predicate is what a conversation OPEN is** (#2374): a first
     // visit, a seat reopened on another connection, or a kept seat coming
     // back on screen. Every way into a seat - a click, a deep link, a reload,
@@ -1656,14 +1657,6 @@
       // every frame. The emptied record has no loaded turns; an ordinary
       // publish has them.
       if (held.loaded || held.turns.length > 0) return;
-      // **The reload is an entry whether or not the list remounts.** The
-      // record empties, but a page that lands before a render pass sees the
-      // empty state leaves the old list in place - so the mount's own clear
-      // never runs, `placed` and the settle survive from the conversation
-      // that is going, and the follow glides the reader to the foot from
-      // wherever they were. Cleared here, where the swap is observed.
-      placed = null;
-      openPlaced = false;
       // **A replacement naming the same id is the conversation reloading**:
       // the record empties, the list remounts, and the reader is owed the row
       // they were parked on. That row can be an older turn the new list's
