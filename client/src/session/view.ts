@@ -28,6 +28,7 @@ import {
   placeOf,
   projectRows,
   rankOf,
+  restartLine,
   seatMark,
   stateOf,
   whenOf,
@@ -755,6 +756,11 @@ function permClass(mode: string): string {
  * sub-row at all and keeps the client's own words.
  */
 export function failedLine(row: Row): string | null {
+  // **The heal's live state outranks the death it is healing**, the same
+  // precedence the mark takes: while an attempt is scheduled the rail says
+  // what forge is doing, not the reason the seat died. The death's reason
+  // returns with the failure if the heal gives up.
+  if (row.heal !== null) return restartLine(row.heal.attempt, row.heal.attempts);
   // A failed turn states itself: the row carries no reason text for it -
   // the failure's own words are in the seat's conversation - so the line
   // is the word alone.
@@ -764,6 +770,9 @@ export function failedLine(row: Row): string | null {
   if (row.state.kind === 'died') return row.reason ?? 'the session ended';
   if (row.state.kind !== 'lifecycle') return null;
   const lifecycle = row.state.lifecycle;
+  // A restart with no attempt data (a server this client is older than)
+  // still says what is happening rather than leaving the seat wordless.
+  if (lifecycle === 'Restarting') return 'restarting';
   if (lifecycle !== 'Failed' && lifecycle !== 'AuthRequired') return null;
   return row.reason ?? (lifecycle === 'Failed' ? 'spawn failed' : 'not running');
 }
@@ -790,6 +799,15 @@ function whyOf(lead: Row, workers: Row[]): { line: string; bad: boolean } | null
         bad: false,
       };
     }
+  }
+  // **A heal in progress is not a failure.** The lead's line says what forge
+  // is doing, in the quiet tone the drawing gives it, rather than the project
+  // line wearing the failure colour for a seat that is coming back.
+  // **A heal in progress is not a failure.** The lead's line says what forge
+  // is doing, in the quiet tone the drawing gives it, rather than the project
+  // line wearing the failure colour for a seat that is coming back.
+  if (lead.heal !== null) {
+    return { line: restartLine(lead.heal.attempt, lead.heal.attempts), bad: false };
   }
   const failed = failedLine(lead);
   return failed === null ? null : { line: failed, bad: true };

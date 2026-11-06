@@ -69,6 +69,7 @@ mod error;
 pub mod file_index;
 mod gotify;
 mod handoff;
+mod healing;
 pub mod hub;
 pub mod install;
 pub mod launch_settings;

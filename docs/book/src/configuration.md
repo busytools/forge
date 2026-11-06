@@ -285,7 +285,7 @@ quietly applying nothing.
 | ----------------- | ------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `env`             | table   | `{}`    | Written as `[orgs.projects.env]` directly under the entry, or inline as `env = { ... }`. The block form attaches to the MOST RECENT `[[orgs.projects]]` header - place it directly under its own entry, before the next header, or it lands on a different project.                                                                                                                                                                                                                                                                                                            |
 | `env_file`        | string  | none    | Path to a `KEY=value` file whose entries join this project's env.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| `max_workers`     | integer | `2`     | Cap on this project's concurrently live dynamic workers. The count is per project: workers live in other projects neither consume this project's budget nor raise its cap. A spawn over the cap errors instead of queuing; despawning a worker frees its slot. Workers restored by the boot or lead-reconnect respawn of persisted rows are exempt, but still count toward the cap once live. `0` disables dynamic spawns for the project.                                                                                                                                     |
+| `max_workers`     | integer | `2`     | Cap on this project's concurrently live dynamic workers. The count is per project: workers live in other projects neither consume this project's budget nor raise its cap. A worker between heal attempts still holds its slot until its heal gives up. A spawn over the cap errors instead of queuing; despawning a worker frees its slot. Workers restored by the boot or lead-reconnect respawn of persisted rows are exempt, but still count toward the cap once live. `0` disables dynamic spawns for the project.                                                                                       |
 | `permission_mode` | string  | `auto`  | Stamps the CLI's permission mode onto every session this project spawns, overriding the session default. Absent means `auto`, not the session default, so a project's sessions run one mode however its org's accounts rotate.                                                                                                                                                                                                                                                                                                                                                 |
 | `model`           | string  |         | The project's model. Fills the CLI's model slots at spawn (`ANTHROPIC_DEFAULT_HAIKU_MODEL`, `_OPUS_MODEL`, `_SONNET_MODEL`, `ANTHROPIC_SMALL_FAST_MODEL`, `CLAUDE_CODE_SUBAGENT_MODEL` all carry it) and is the session default a `/model` change overrides. Must be declared by at least one account in the org, or the load fails - a model no account serves would otherwise stamp every slot and 503 each session's first request. Required: the walk that picks a session's account matches on the model an account serves, so a project without one is refused at spawn. |
 | `document_roots`  | array   | `[]`    | Extra roots the document read accepts beyond the session's own tree, so a project's documents can live outside its repo (a vault, a shared spec directory). Each entry is an absolute path, `~` or a `~/` path; a relative one fails the load. |
@@ -898,6 +898,37 @@ the default.
 | -------------- | ------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `poll_seconds` | integer | `60`    | The refresh interval, in seconds. The session page draws its 5h/7d utilization from the cache this fills, and the gateway's account selection reads it too, so the interval is an upper bound on how stale a "which account has more headroom" decision can be. `0` fails the load: a zero interval would probe continuously. |
 
+## `[sessions]`
+
+What happens when a durable seat - a project's own agent, or a worker with
+a stored row - loses its subprocess while it is supposed to be up. Absent
+means the defaults, which bring the seat back by itself.
+
+| Key             | Type              | Default                 | Notes                                                                                                                                                                                                                                                                                                                                                                           |
+| --------------- | ----------------- | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `heal`          | boolean           | `true`                  | Whether forge restarts a dead durable seat at all. `false` starts no new attempt: a death leaves the seat failed with its diagnostic, the way a failure always did, while an attempt already scheduled still runs.                                                                                                                                                                |
+| `heal_attempts` | integer           | `3`                     | How many restarts one run gets before the seat is left Failed with the last diagnostic and its project's agent is told. The minimum is `1`; `0` fails the load (`sessions.heal_attempts = 0 ... is not usable; it must name at least one restart`), because healing would be on with nothing to attempt.                                                                       |
+| `heal_backoff`  | list of durations | `["5s", "30s", "2m"]`   | How long forge waits before each restart, in order. A list shorter than `heal_attempts` repeats its last interval; an empty list fails the load. A duration is digits and one unit - `ms`, `s`, `m` or `h` - and a bare number fails the load naming the key.                                                                                                                  |
+| `heal_stable`   | duration          | `10m`                   | How long a restarted seat must stay up before its death count resets, so a seat that dies every few minutes still runs out of its restarts.                                                                                                                                                                                                                                    |
+
+A durable seat is a project's own agent or a worker with a stored row. An
+ad-hoc session has no row of its own, so opening its seat is what wakes it.
+A despawn, a close and a forge shutdown never heal: the stop owns the seat,
+and the boot re-spawn owns the return after a restart. `/exit` typed into a
+durable seat does heal - a durable seat is up until it is despawned.
+
+A worker death that heal answers is delivered to its project's agent as
+one peer message, whatever the attempt then does: the time in IST with UTC
+in parentheses, the diagnostic, the attempt and its outcome. A death the
+stop paths own - a despawn, a close, a shutdown, an ad-hoc seat - sends
+nothing. A delivery to a sleeping agent parks and lands when it wakes, like
+any peer message. A lead has no agent above it, so its project's row draws
+`restarting (N of M)` while it is between attempts, then the seat's own
+live state once it is back, or the failure with its diagnostic at the cap.
+
+`heal_attempts`, `heal_backoff` and `heal_stable` are read at each death,
+so an edit applies to the next seat that dies.
+
 ## Unknown keys
 
 Every table rejects unknown fields, so a mistyped key fails the load
@@ -907,7 +938,7 @@ fallbacks". That covers the top level, `[[orgs]]`, `[[orgs.projects]]`,
 `[[accounts]]`, `[models."<name>"]`, `[handoff]` and
 `[orgs.projects.handoff]`, `[[slack]]`, `[gotify]`, `[systemone]`,
 `[gateway]`, `[dictate]`, `[tts]`, `[huggingface]`, `[plugins]`, `[server]`,
-`[browser]` and `[client]`.
+`[browser]`, `[client]` and `[sessions]`.
 
 A key forge itself retired is a declared ghost rather than an unknown
 key, so a stale `forge.toml` still boots and warns instead of failing:
@@ -1087,6 +1118,7 @@ accepts has no class.
 | `[client] mark`, `theme`, `font` | Live. The server pushes the whole effective config on every applied reload, and an open client re-themes, re-fonts and re-marks itself from it without a reconnect. |
 | `[documents] max_size_mib` | Live. The next document read uses the new ceiling. |
 | `[usage] poll_seconds` | Live. The poller adopts the new interval on its next tick. |
+| `[sessions]` | Live. Each death reads the policy, so an edit applies to the next seat that dies. |
 | `[dictate]` `bind`, `mode` | Live. The server reads them on every key decision; a client's key handler holds the composer record it last read, so a new occupant or reconnect refreshes what it starts from. |
 | `[dictate]` `styling`, `structure`, `context` | Next session: applies to the next connection, which is when a client takes its capture axes. |
 | `[dictate]` `enabled`, `models_dir`, `language`, `normalizer`, `max_capture_minutes`, `transcribe_model`, `cleanup_model` | Restart-only. The preflight and the engine's own configuration are built once at boot; the log names it. |

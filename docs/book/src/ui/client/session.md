@@ -16,7 +16,7 @@ its connector sets. The drawing it is held against is
 
 | Region | Shows | Read from |
 |---|---|---|
-| Rail | every declared project grouped by the strongest state among its rows, the current seat marked, each project's and seat's decision waits marked with a glyph and a count, sleepers folded - a fold hiding a decision wait opens itself, so the mark is visible without expanding it; its footer carries the account and what it is costing | the home's snapshot, the board's snapshot for each row's task, and `accounts` |
+| Rail | every declared project grouped by the strongest state among its rows, the current seat marked, each project's and seat's decision waits marked with a glyph and a count, sleepers folded - a fold hiding a decision wait opens itself, so the mark is visible without expanding it; a seat row's own line names what happened to it - a turn failure, a death with its reason, a refused spawn, or `restarting (N of M)` while forge brings the seat back - and the footer carries the account and what it is costing | the home's snapshot, the board's snapshot for each row's task, and `accounts` |
 | Header | the chip, the seat's own mark, org and name, and the facts: session id, model with its effort, mode, context fill, and the compaction count | `header`, `conversation.compaction_count` |
 | Conversation | the turns and everything inside them, in the column's own scroll viewport | `conversation` |
 | Queue | the prompts waiting, drawn against what is running | `queue`, `queue_ended` |

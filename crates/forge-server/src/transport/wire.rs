@@ -269,6 +269,11 @@ pub struct AgentWire {
     pub slot: SessionSlot,
     pub label: String,
     pub lifecycle: forge_primitives::SessionLifecycleState,
+    /// Which heal attempt is next while the seat is `Restarting`; `None`
+    /// for every other lifecycle.
+    pub heal_attempt: Option<u32>,
+    /// How many restarts a heal may make, so the row can say "1 of 3".
+    pub heal_attempts: Option<u32>,
     pub has_background_work: bool,
     pub pending: Option<forge_workspace::PendingInteractionKind>,
     pub pending_depth: usize,
@@ -304,6 +309,8 @@ impl From<&AgentRow> for AgentWire {
             slot: row.slot.clone(),
             label: row.label.clone(),
             lifecycle: row.lifecycle,
+            heal_attempt: row.heal_attempt,
+            heal_attempts: row.heal_attempts,
             has_background_work: row.has_background_work,
             pending: row.pending,
             pending_depth: row.pending_depth,
@@ -4200,6 +4207,42 @@ mod tests {
             row.get("work").is_some(),
             "the seat's own tree crosses on the row, not the project's read: {row}"
         );
+    }
+
+    /// A seat between heal attempts crosses the home with its state and its
+    /// attempt, which is what a row draws `restarting (1 of 3)` from.
+    /// Catches a wire that spells `AgentRow`'s fields out and drops the two
+    /// new ones, which would draw the seat as something it is not.
+    #[tokio::test]
+    async fn a_home_agents_row_carries_the_heal_attempt() {
+        let fleet =
+            crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+        fleet.start("TestOrg", "proj").expect("the project starts");
+        let lead = forge_primitives::SessionSlot::lead("TestOrg", "proj");
+        let next_at =
+            std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_790_000_000);
+        fleet.workspace().set_heal_progress(&lead, 1, next_at);
+        let state = TransportState {
+            surface: fleet.surface(),
+            work: Arc::new(WorkCache::new()),
+            conversations: Arc::new(crate::transport::conversation::Conversations::new()),
+            live: Mutex::new(crate::live::Live::new()),
+            settings: crate::transport::settings_channel(),
+            browser_host: None,
+            heartbeat: Heartbeat::default(),
+        };
+
+        let encoded = encode_subject(&state, &Subject::Home).await.expect("encode");
+        let row = encoded["agents"]
+            .as_array()
+            .expect("agents is a list")
+            .iter()
+            .find(|row| row["slot"]["label"] == "lead")
+            .expect("the started project's lead is a row");
+
+        assert_eq!(row["lifecycle"], serde_json::json!("Restarting"), "the state the row draws");
+        assert_eq!(row["heal_attempt"], serde_json::json!(1), "the attempt it names");
+        assert_eq!(row["heal_attempts"], serde_json::json!(3), "the cap the row's 'of 3' reads");
     }
 
     /// **The home carries the fleet glance and the board carries the board**

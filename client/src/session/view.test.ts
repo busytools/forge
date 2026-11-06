@@ -476,6 +476,73 @@ describe('the rail', () => {
   });
 
   /**
+   * A seat between heal attempts says so on its own line, in the numbers
+   * forge is working with, and groups under working rather than needs-you:
+   * the reader has nothing to do while it comes back.
+   */
+  it('names a restarting seat and its attempt on the row', () => {
+    const restarting: AgentRow = {
+      ...lead(),
+      lifecycle: 'Restarting',
+      heal_attempt: 1,
+      heal_attempts: 3,
+      pending: null,
+    };
+    const home = withHome({ agents: [restarting] });
+
+    const groups = railGroups(home, LEAD);
+    const working = groups.find((group) => group.heading === 'working');
+    const block = working?.projects[0];
+    if (block === undefined) throw new Error('the rail drew no working block for the seat');
+    expect(failedLine(block.row), 'the row names the attempt').toBe('restarting (1 of 3)');
+    expect(
+      groups.find((group) => group.heading === 'needs you'),
+      "a restart is not a person's to act on",
+    ).toBeUndefined();
+  });
+
+  /**
+   * **The heal's line outranks the standing death on the rail too.** A seat
+   * forge is bringing back says which attempt is next, not the reason it
+   * died, so a reader is not sent chasing a failure nothing is waiting on
+   * them for. The name and the mark take the same precedence.
+   */
+  it('names the restart over the standing death on the row', () => {
+    const restarting: AgentRow = {
+      ...lead(),
+      lifecycle: 'Restarting',
+      died: true,
+      heal_attempt: 2,
+      heal_attempts: 3,
+      pending: null,
+    };
+    const home = withHome({ agents: [restarting] });
+
+    const groups = railGroups(home, LEAD);
+    const block = groups.find((group) => group.heading === 'working')?.projects[0];
+    if (block === undefined) throw new Error('the rail drew no working block for the seat');
+    expect(block.row.state, 'the heal outranks the death').toEqual({
+      kind: 'lifecycle',
+      lifecycle: 'Restarting',
+    });
+    expect(failedLine(block.row), 'the row names the attempt, not the death').toBe(
+      'restarting (2 of 3)',
+    );
+    // The ordering itself, independent of what `stateOf` promoted: a row
+    // still carrying its death state reads the restart while a heal stands.
+    const diedRow = {
+      ...block.row,
+      state: { kind: 'died' as const },
+      heal: { attempt: 2, attempts: 3 },
+    };
+    expect(failedLine(diedRow), 'the heal outranks the death state').toBe('restarting (2 of 3)');
+    expect(block.why, 'the project line is the restart, in the quiet tone').toEqual({
+      line: 'restarting (2 of 3)',
+      bad: false,
+    });
+  });
+
+  /**
    * **A failure line is the failing seat's own.** A worker's spawn diagnostic
    * searched onto the project's line put it under the lead's row, reading as
    * the lead having failed while the worker's own row said nothing.
@@ -1118,6 +1185,8 @@ describe('the projects chip', () => {
     slot: { org: 'TestOrg', project: 'proj', label },
     label,
     lifecycle: 'Idle',
+    heal_attempt: null,
+    heal_attempts: null,
     has_background_work: false,
     pending: null,
     pending_depth: 0,
@@ -1188,6 +1257,8 @@ describe("the palette's rows", () => {
     slot: { org: 'TestOrg', project: 'proj', label },
     label,
     lifecycle: 'Idle',
+    heal_attempt: null,
+    heal_attempts: null,
     has_background_work: false,
     pending: null,
     pending_depth: 0,

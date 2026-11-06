@@ -54,7 +54,9 @@ describe('the settings route', () => {
     expect(document.body.textContent, 'the header names the source file').toContain(
       '~/.claude/forge/forge.toml',
     );
-    expect(document.body.textContent, 'and the key total').toContain('17');
+    expect(document.body.textContent, 'and the key total').toContain(
+      String(settingsWire.totals.keys),
+    );
   });
 
   it('draws the edit door in the ready state and toggles editing', () => {

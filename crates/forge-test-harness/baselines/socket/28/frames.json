@@ -1205,6 +1205,8 @@
         "died",
         "failed_turn",
         "has_background_work",
+        "heal_attempt",
+        "heal_attempts",
         "label",
         "last_activity",
         "lifecycle",
