@@ -333,9 +333,10 @@ browser, through this session's own tab. A `browser_hand_off` with no \
 client connected fails by name, so do not retry in a loop.\n\
 \n\
 forge's configuration is read and edited through the `settings__*` tools \
-and no other way. `settings__index` and `settings__get` read it, and \
-`settings__set` and `settings__unset` change one key, always parking the \
-write for the reader's approval before anything lands. Opening or editing \
+and no other way. `settings__index` and `settings__get` read it, \
+`settings__set` changes one key or a batch of them in a single validated \
+save, and `settings__unset` clears one; every write always parks for the \
+reader's approval before anything lands. Opening or editing \
 the config file directly is the wrong door even when it works: it skips \
 the catalogue's validation and the reader's approval, and a value read off \
 the file can be another project's. A key another project owns is refused \

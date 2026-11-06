@@ -77,9 +77,11 @@ says so in the dock's refusal line at its foot, because the box's own notice row
 screen while a prompt holds the slot.
 
 **A held configuration write draws like a held post, with both values.** A `settings__set` or
-`settings__unset` call parks its key, what the key holds now and what the write would leave;
-the two verbs are `Write it` and `Don't write`, and the dock stands down on the answer the way
-a post's does. Every write is held, whether the key belongs to this project or another.
+`settings__unset` call parks every key it would change, what that key holds now and what the
+write would leave; one card carries a whole batch, because a section's mutually required keys
+cannot be approved apart. The two verbs are `Write it` and `Don't write`, and the dock stands
+down on the answer the way a post's does. Every write is held, whether the key belongs to this
+project or another.
 
 **A held vault call draws the act, never a secret.** The card leads with the tool's own name
 and the core's one-line summary, then names the item and its id, the field the call reveals or

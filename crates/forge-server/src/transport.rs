@@ -267,10 +267,16 @@ pub mod wire;
 /// and the agent's call would wait on a dock nobody draws.
 /// `baselines/socket/28/` is the record a v28 server emitted.
 ///
+/// **v29 moves a held settings write to a batch.** `settings_write_pending`'s
+/// `ask` carries `edits`, one entry per key, where a v28 client reads the
+/// flat `key`, `current`, `proposed` and `unset` and draws an empty card it
+/// could approve blind. `baselines/socket/29/` is the record a v29 server
+/// emitted.
+///
 /// **Additive fields do not bump.** `diff.base_error` is one, carried on the
 /// v16-era record: a client older than the field draws the vaguer line it
 /// always drew, and nothing it sends changes.
-pub const PROTOCOL_VERSION: u32 = 28;
+pub const PROTOCOL_VERSION: u32 = 29;
 
 /// The socket's keepalive: how often a connection is asked to prove it is
 /// still there, and how long it may stay silent before it is reaped.

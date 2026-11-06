@@ -1281,9 +1281,10 @@ fn frames_record() -> Value {
             span: 0,
         }),
     );
-    // **A held config write's own shape.** The dock draws the key and both
-    // values, and a rename inside this payload fails no census line while
-    // the write draws an empty key nobody can approve knowingly.
+    // **A held config write's own shape.** The dock draws every key in the
+    // save and both of its values, and a rename inside this payload fails no
+    // census line while the write draws an empty card nobody can approve
+    // knowingly.
     payload_sampled.insert(
         "SettingsWritePending".to_owned(),
         shape_of(&ServerMessage::Update {
@@ -1291,10 +1292,12 @@ fn frames_record() -> Value {
                 key: seat.clone(),
                 ask: forge_primitives::settings::SettingsWriteAsk {
                     id: uuid::Uuid::from_u128(11),
-                    key: "orgs.Default.projects.forge.max_workers".to_owned(),
-                    current: serde_json::json!(2),
-                    proposed: serde_json::json!(4),
-                    unset: false,
+                    edits: vec![forge_primitives::settings::SettingsWriteChange {
+                        key: "orgs.Default.projects.forge.max_workers".to_owned(),
+                        current: serde_json::json!(2),
+                        proposed: serde_json::json!(4),
+                        unset: false,
+                    }],
                 },
             }),
             seq: Some(9),
