@@ -909,6 +909,11 @@
     // re-spawn reloads the record and mounts a new list without a switch, so
     // the open's own write is the one that must place the reader.
     placed = null;
+    // **And the settle belongs to this mount, not the one that is gone.** A
+    // remount re-opens the walk `placed` above is cleared for, one pass
+    // later: the first pin places, and the next holds at the lagging model
+    // unless the settle is cleared with it.
+    openPlaced = false;
     // The sizes and the last event belong to the element a previous conversation scrolled.
     lastSeen = { content: 0, room: 0 };
     movedFrom = 0;
@@ -1557,9 +1562,9 @@
       }
       // **An entry places its reader; it does not travel to them.** The
       // mount's first passes correct the list's estimates, and holding or
-      // gliding there walks the reader down the conversation. Set for both
-      // entry shapes: a restore has its own placer, and an open's settle is a
-      // correction, not a follow.
+      // gliding there walks the reader down the conversation. A switch that
+      // keeps the list mounted runs no viewport attachment, so the settle is
+      // cleared here as well; the shapes that remount a list clear it there.
       openPlaced = false;
       // **And so were the asks this column is holding.** They belong to the
       // conversation that is going, and their pages are not coming here.
