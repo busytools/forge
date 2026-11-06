@@ -229,6 +229,14 @@ describe('what one arriving frame costs the page', () => {
     arrive(server.update);
     const event = counts.tally();
     const called = (name: string): number => event.find((row) => row.name === name)?.calls ?? 0;
+    // **A record-shaped argument counts its facts, not its frames.** Frames
+    // and facts are not commensurate, so this says only that the instrument
+    // saw something - a zero would make the count vacuous for the shape the
+    // page actually holds.
+    expect(
+      counts.rowsCarried('gitStrip'),
+      'the record-shaped builder counted none of the facts its record keeps',
+    ).toBeGreaterThan(0);
 
     counts.clear();
     arrive(server.other);
