@@ -77,6 +77,12 @@ impl From<crate::settings_write::WriteError> for SettingsSaveError {
     }
 }
 
+/// The state a spawn marks its seat with: open, no turn in flight. The
+/// rollback restores only while the row still holds it, so a close landing
+/// mid-spawn is never undone.
+const SPAWNED_SEAT_STATE: crate::store::sessions::SeatState =
+    crate::store::sessions::SeatState::Idle;
+
 /// Undo a spawn's own side effects when it is refused before the session is
 /// pooled: the id it recorded, the seat state it moved, and a domain handle
 /// it created. Armed from the id record to the pool insert; an unarmed guard
@@ -99,7 +105,7 @@ impl Drop for SpawnRollback {
             self.workspace.domain_handles.lock().remove(&self.slot);
         }
         self.workspace.forget_spawn_id(&self.slot, self.stored.as_deref());
-        self.workspace.restore_seat_state(&self.slot, self.prior_seat_state);
+        self.workspace.restore_seat_state(&self.slot, self.prior_seat_state, SPAWNED_SEAT_STATE);
     }
 }
 
@@ -5171,7 +5177,7 @@ impl Workspace {
     fn record_spawn_id(&self, slot: &SessionSlot, id: Option<String>, reopen: bool) -> String {
         let id = id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         self.record_session_id(slot.org(), slot.project(), slot.label(), &id);
-        self.write_seat_state(slot, crate::store::sessions::SeatState::Idle, reopen);
+        self.write_seat_state(slot, SPAWNED_SEAT_STATE, reopen);
         id
     }
 
@@ -5224,6 +5230,7 @@ impl Workspace {
         &self,
         slot: &SessionSlot,
         state: Option<crate::store::sessions::SeatState>,
+        expected: crate::store::sessions::SeatState,
     ) {
         let db = self.db.lock();
         let Some(db) = db.as_ref() else { return };
@@ -5233,6 +5240,7 @@ impl Workspace {
             slot.project(),
             slot.label(),
             state,
+            expected,
         ) {
             tracing::warn!(
                 target: "forge_workspace::sessions",
@@ -15438,6 +15446,45 @@ provider = "anthropic"
         );
     }
 
+    /// **A close that lands after the spawn's own write is not undone by
+    /// the rollback.** The restore only reverses the state the spawn wrote;
+    /// a newer decision - the reader closing the project mid-spawn - stands,
+    /// or the next heal attempt would reopen the project the reader shut.
+    #[test]
+    fn a_refused_spawn_does_not_undo_a_close_that_landed_after_its_write() {
+        use crate::store::sessions::SeatState;
+
+        let dir = tempdir().expect("tempdir");
+        let (workspace, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
+        workspace.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        let key = SessionSlot::lead("TestOrg", "forge");
+        workspace.record_session_id("TestOrg", "forge", "lead", "id-1");
+        workspace.record_seat_state(&key, SeatState::InTurn);
+
+        {
+            let _refused = SpawnRollback {
+                workspace: Arc::clone(&workspace),
+                slot: key.clone(),
+                stored: Some("id-1".to_owned()),
+                prior_seat_state: workspace.stored_seat_state(&key),
+                domain_created: false,
+                armed: true,
+            };
+            // The spawn's own write, then the reader's close landing while
+            // the spawn is still building.
+            workspace.write_seat_state(&key, SPAWNED_SEAT_STATE, true);
+            workspace.record_seat_state(&key, SeatState::Closed);
+        }
+
+        assert_eq!(
+            workspace.stored_seat_state(&key),
+            Some(SeatState::Closed),
+            "the close is newer than the spawn's write, so the rollback leaves it",
+        );
+    }
+
     /// A candidate the loader refuses writes nothing and carries the loader's
     /// own words, anchored at the key the save named.
     #[tokio::test]
@@ -17666,6 +17713,37 @@ provider = "anthropic"
             Some(SeatState::Idle),
             "a named spawn is an opening door",
         );
+        forge_agent::set_test_sdk_binary(None);
+    }
+
+    /// **A close that refuses the heal's spawn is the stop, not a spawn
+    /// failure.** It leaves no failure record and no Failed row for the
+    /// project the reader just shut.
+    #[tokio::test]
+    async fn a_close_refusing_a_heal_spawn_records_no_failure() {
+        use crate::store::sessions::SeatState;
+
+        let dir = tempdir().expect("tempdir");
+        let project = tempdir().expect("project");
+        let workspace = boot_lead_workspace(dir.path(), project.path());
+        let key = SessionSlot::lead("Default", "forge");
+        workspace.record_session_id(
+            "Default",
+            "forge",
+            "lead",
+            "11111111-2222-3333-4444-555555555555",
+        );
+        workspace.record_seat_state(&key, SeatState::Closed);
+
+        let outcome = crate::spawn::handle_heal_project_spawn(
+            &workspace,
+            "forge",
+            SessionLaunchSettings::default(),
+        );
+
+        assert!(outcome.is_ok(), "the close ends the heal quietly: {outcome:?}");
+        assert_eq!(workspace.stored_seat_state(&key), Some(SeatState::Closed), "the close stands");
+        assert_eq!(workspace.spawn_failure(&key), None, "a close is not a spawn failure");
         forge_agent::set_test_sdk_binary(None);
     }
 

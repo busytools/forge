@@ -379,8 +379,10 @@ impl SeatRestart for WorkspaceRestart {
         };
         if slot.is_lead() {
             let state = workspace.stored_seat_state(slot);
+            // **The close owns the seat**: this is the stop, not a failed
+            // attempt, so nothing is scheduled behind it.
             if matches!(state, Some(crate::store::sessions::SeatState::Closed)) {
-                return Err("the seat was closed; the stop stands".to_owned());
+                return Ok(None);
             }
             // **A death leaves the seat's state as it was.** The row's own
             // `in_turn` earns the restart note, the same rule the boot wave
@@ -1002,6 +1004,26 @@ mod tests {
         assert!(calls.lock().expect("recorder").is_empty(), "the close owns the seat");
         assert!(workspace.heal_progress(&lead).is_none(), "and the mark goes with it");
         assert!(notices.lock().expect("notices").is_empty(), "a close is not news");
+    }
+
+    /// **A close is the stop, not a failed attempt.** The restart reads the
+    /// row again because the close can land after the attempt was armed, so
+    /// a closed lead ends the attempt instead of burning the budget on a
+    /// seat the reader took down.
+    #[tokio::test]
+    async fn the_heal_restart_of_a_closed_seat_reports_the_stop() {
+        let (workspace, _worker) = seeded_worker();
+        let lead = SessionSlot::lead("TestOrg", "forge");
+        workspace.record_session_id(lead.org(), lead.project(), lead.label(), "lead-id");
+        workspace.record_seat_state(&lead, crate::store::sessions::SeatState::Closed);
+        let restart = WorkspaceRestart { workspace: Arc::downgrade(&workspace) };
+
+        let outcome = restart.restart(&lead).await;
+
+        assert!(
+            matches!(outcome, Ok(None)),
+            "the close ends the attempt without a failure: {outcome:?}",
+        );
     }
 
     /// The notice is a peer message to the project, sent as the worker, so

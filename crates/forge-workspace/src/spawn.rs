@@ -330,6 +330,22 @@ fn spawn_project_inner(
             Ok(())
         }
         Err(err) => {
+            // **A close that landed mid-spawn is the reader's stop, not a
+            // spawn failure.** Only the heal's non-opening spawn can be
+            // refused this way, and it must leave no failure record or
+            // Failed row for the project the reader just shut.
+            if matches!(
+                err.downcast_ref::<crate::error::WorkspaceError>(),
+                Some(crate::error::WorkspaceError::SeatClosedDuringSpawn { .. })
+            ) {
+                tracing::debug!(
+                    target: "forge_workspace::spawn",
+                    project = project_name,
+                    slot = %session_key.display(),
+                    "the seat was closed while its recovery spawn was in flight; the stop stands"
+                );
+                return Ok(());
+            }
             tracing::error!(
                 target: "forge_workspace::spawn",
                 project = project_name,
