@@ -155,20 +155,9 @@ fn a_before_unload_dialog_is_held_until_answered() {
             prompt: None,
         }));
         wait_for_dialog(host, "beforeunload", JsDialogState::Answered);
-        let still = tokio::time::timeout(
-            Duration::from_secs(5),
-            cdp.call(
-                "Runtime.evaluate",
-                json!({ "expression": "document.title", "returnByValue": true }),
-                None,
-            ),
-        )
-        .await
-        .expect("the page answers after the dismissal")
-        .expect("the page reads its title");
         assert_eq!(
-            still.pointer("/result/value").and_then(Value::as_str),
-            Some("ready"),
+            read_title_after_dismissal(cdp, host).await.as_str(),
+            "ready",
             "a dismissed beforeunload leaves the page where it was",
         );
     });
@@ -389,6 +378,41 @@ async fn wait_for_title(cdp: &mut Cdp, want: &str, bound: Duration) {
         assert!(
             Instant::now() < deadline,
             "the page never read '{want}'; its last reading was {value:?}"
+        );
+        tokio::time::sleep(POLL).await;
+    }
+}
+
+/// The page's title, once the renderer answers a read after the dismissal.
+/// **A loaded runner can leave renderer latency behind a dismissal** (#2905),
+/// and one evaluate against a fixed bound read that latency as a dead page.
+/// The read is retried until it answers, and only the deadline fails it.
+async fn read_title_after_dismissal(cdp: &mut Cdp, host: &support::Host) -> String {
+    let deadline = Instant::now() + BOUND;
+    loop {
+        let attempt = tokio::time::timeout(
+            Duration::from_secs(5),
+            cdp.call(
+                "Runtime.evaluate",
+                json!({ "expression": "document.title", "returnByValue": true }),
+                None,
+            ),
+        )
+        .await;
+        let title = match &attempt {
+            Ok(Ok(reading)) => {
+                reading.pointer("/result/value").and_then(Value::as_str).map(str::to_owned)
+            }
+            _ => None,
+        };
+        if let Some(title) = title {
+            return title;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the page never answered a title read after the dismissal; \
+             its last attempt was {attempt:?} (log: {})",
+            host.log_tail(),
         );
         tokio::time::sleep(POLL).await;
     }
