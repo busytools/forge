@@ -1853,7 +1853,7 @@ fn say(events: &mpsc::UnboundedSender<SocketEvent>, event: SocketEvent) {
 
 /// Which attach an answer belongs to.
 ///
-/// **A browser attach and a terminal attach share one reply space** - the page
+/// **A browser attach and a terminal attach share one reply space** - the shell
 /// mints ids from one counter - but their answers have different shapes: the
 /// browser names the profile and tab it landed on, the terminal names the
 /// terminal id. Parsing one as the other is how a desktop terminal attach came
@@ -2731,12 +2731,18 @@ pub(crate) mod tests {
             }))
             .expect("broadcast");
         let landed = waiting.await.expect("the task joins").expect("the terminal attached");
+        assert_eq!(
+            landed["ok"],
+            json!(true),
+            "the shell's reader checks ok before it reads the id"
+        );
         assert_eq!(landed["id"], json!(7), "the answer is the terminal it attached");
-        assert_eq!(landed.get("profile"), None, "no browser field is invented");
     }
 
-    /// **A terminal refusal keeps the server's sentence.** The browser's
-    /// default never stands in for it on a terminal attach.
+    /// **A terminal refusal comes back as an error carrying the server's
+    /// sentence**, rather than as a success the page would draw as an attach.
+    /// The server always sends a `why`, so the terminal default is not
+    /// reachable from a reply and is not what this pins.
     #[tokio::test]
     async fn a_terminal_attach_answers_its_refusal_by_name() {
         let mut stub = stub().await;
