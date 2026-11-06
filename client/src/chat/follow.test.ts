@@ -2039,6 +2039,36 @@ describe('whether the column follows the newest end', () => {
     expect(element.offset, 'and the reader stayed where the entry placed them').toBe(placedAt);
   });
 
+  it('places a first-ever entry at the foot instead of gliding down to it', async () => {
+    // **An empty column is not a settled one.** On the mount's first pass the
+    // element and the list both read zero, so "the model reached the
+    // element's end" was trivially true and the first content frame took the
+    // follow glide - a conversation opened for the first time travelled from
+    // the top of the column down to its foot.
+    vi.stubGlobal('matchMedia', () => ({ matches: false }));
+    const server = stub();
+    clear();
+    clearObservers();
+    setMeasured(0, VIEWPORT);
+    app = mount(Chat, {
+      target: document.body,
+      props: { slot: LEAD, connection: server.connection },
+    });
+    flushSync();
+    server.session('s1');
+    server.page([spoken('t1'), spoken('t2'), spoken('t3')]);
+    layOut(40);
+
+    // The rows draw before the list has measured them.
+    setElement(TOTAL, VIEWPORT);
+    server.frame();
+    await settle();
+
+    // One settle is ~32 ms, so a glide would still be in flight: the reader
+    // standing at the foot here is the placement, not a finished travel.
+    expect(element.offset, 'the first entry placed the reader at the foot').toBe(FOOT);
+  });
+
   it('opens a plain new conversation at the foot for a parked reader', async () => {
     // **A plain swap unmounts the list, and what mounts opens following.**
     // The rows are new and the reader has no place in them, so the column

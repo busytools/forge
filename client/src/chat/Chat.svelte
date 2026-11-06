@@ -2419,7 +2419,12 @@
     // **The mount has settled when the model reaches the element's own end.**
     // Until then every pass is the entry placing its reader - instantly - and
     // only the first growth after it is the column following.
-    if (!openPlaced && (model === null || max <= model)) openPlaced = true;
+    // **An empty column is not a settled one.** On the mount's first pass the
+    // element and the list both read zero, and `max <= model` is trivially
+    // true - so the first content frame took the follow glide and a
+    // conversation opened for the first time travelled down from the top of
+    // the column. Both sides have to have something to agree about.
+    if (!openPlaced && model !== null && max > 0 && max <= model) openPlaced = true;
     // **The pin leaves the reader at the end it could reach**: the browser's,
     // or the list's own while the browser counts a row it has not drawn. Both
     // are the foot for the next arrival's decision - give or take the fraction
