@@ -710,6 +710,13 @@ describe('the box', () => {
       typeof under['uuid'],
       "the id is the send's own, minted here so the CLI's lifecycle frames and the queued row carry it back",
     ).toBe('string');
+    // **The id is remembered beside the echo.** A parked reader's own send
+    // from any surface that draws the column carries them to the foot, and
+    // the mounted column reads that from the ids minted here.
+    expect(
+      echoes.owns(boxKey(SLOT), under['uuid'] as string),
+      "the send is remembered as this client's own",
+    ).toBe(true);
     expect(field().value, 'the box is empty once the words have gone').toBe('');
   });
 

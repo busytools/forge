@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { anchoredScroll, anchorAt, type RowBox } from './anchor';
+import { anchoredScroll, anchorAt, heldRow, type RowBox } from './anchor';
 
 const row = (key: string, top: number, bottom: number): RowBox => ({ key, top, bottom });
 
@@ -30,9 +30,9 @@ describe("the reader's anchor", () => {
     expect(anchoredScroll(held, 40), 'where the row was').toBe(60);
     expect(anchoredScroll(held, 140), 'a row pushed down 100').toBe(160);
     expect(anchoredScroll(held, 4), 'a row pulled up 36').toBe(24);
-    // Fractional rows are laid out by the browser; the answer is whole pixels,
-    // which is what a scroll offset is.
-    expect(anchoredScroll(held, 40.6), 'a fractional row top').toBe(61);
+    // Fractional rows are laid out by the browser, and a frozen column keeps
+    // the fraction: rounding it away moves the row under the reader's eye.
+    expect(anchoredScroll(held, 40.6), 'a fractional row top').toBe(60.6);
   });
 
   /**
@@ -57,6 +57,36 @@ describe("the reader's anchor", () => {
   });
 
   /**
+   * **A row below the top edge is a place only when it is still on screen.**
+   * A jump can fire its event before the list has re-windowed: every drawn row
+   * then sits below the edge, and the first of them is thousands of pixels
+   * from the reader's eye - a place that would restore them to a stranger's
+   * row. A gap narrower than the room is the column's own margin, and the row
+   * below it is what the reader is looking at.
+   */
+  it('holds a row under the edge, or the nearest one still on screen', () => {
+    const rows = [row('a', 0, 40), row('b', 40, 90)];
+
+    expect(heldRow(rows, 60, 300), 'the edge inside a row').toEqual({ key: 'b', into: 20 });
+    expect(heldRow(rows, -20, 300), 'a gap inside the room').toEqual({ key: 'a', into: -20 });
+    expect(heldRow(rows, -400, 300), 'a window that has not caught up').toBeNull();
+    expect(heldRow([], 10, 300), 'no rows drawn at all').toBeNull();
+  });
+
+  /**
+   * **The capture keeps the fraction too, not only the restore.** The pair's
+   * round trip comes out integral on whole rows, so a rounded capture and a
+   * rounded restore agree there; a fractional edge over a fractional row is
+   * where the capture's own rounding shows.
+   */
+  it('keeps the fraction of the distance into the row', () => {
+    expect(anchorAt([row('a', 40.5, 90)], 50.25), 'a fractional edge').toEqual({
+      key: 'a',
+      into: 9.75,
+    });
+  });
+
+  /**
    * **The pair is a capture and its inverse.** What `anchorAt` reads off a row
    * has to be put back by `anchoredScroll` exactly where it was: capture at a
    * viewport top, then ask where to scroll for the same row top, and the answer
@@ -78,7 +108,7 @@ describe("the reader's anchor", () => {
         expect(
           anchoredScroll(held, top),
           `the capture at ${viewTop} over a row at ${top} comes back`,
-        ).toBe(Math.round(viewTop));
+        ).toBe(viewTop);
       }
     }
   });

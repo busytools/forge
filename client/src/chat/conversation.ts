@@ -30,6 +30,7 @@ import { inFlightOf } from '../session/apply';
 import { takeReturn } from '../session/returns';
 import type { Connection } from '../socket';
 import type { SessionSlot } from '../wire/types';
+import { places } from './conversations';
 import { cronNames } from './cron-names.svelte';
 import { echoes } from './echoes.svelte';
 import { outputs } from './outputs.svelte';
@@ -286,6 +287,17 @@ export interface Conversation {
    */
   following: boolean;
   /**
+   * The claude session id this conversation runs as, once the wire says.
+   *
+   * **A saved place is the seat's AND the occupant's.** The id names the
+   * conversation behind the slot: a `/new` or a `/resume` swaps the occupant
+   * and leaves the slot alone, so a place recorded under the id that left is
+   * not the successor's - and a place recorded before any id was known is
+   * the arriving one's, which is why the id is carried here rather than
+   * assumed at the entry. `null` until a frame or a snapshot names it.
+   */
+  sessionId: string | null;
+  /**
    * Whether the reader's OWN send is what armed the follow.
    *
    * **The one arm that may move a reader who is not at the foot**: a send puts
@@ -333,6 +345,7 @@ export const NOTHING: Conversation = {
   pages: 0,
   refused: null,
   following: true,
+  sessionId: null,
   send_armed: false,
   prepends: 0,
   dropped: 0,
@@ -1491,11 +1504,18 @@ export class Chat {
    * prompt. The pile is upstream's own answer to where the words wait, so the
    * chat holds its copy until the prompt starts.
    *
-   * **The source is what the drain arms the follow on**, and it is the only
-   * copy of that fact the held row's own frame may not carry: the row can be
-   * built from these words alone, so whose they are has to be kept here.
+   * **`mine` is what the drain arms the follow on**: whether the announcement
+   * matched the prompt id this client minted and still holds as the echo.
+   * `source` says the words are a person's, and a send from the reader's phone
+   * is `you` too - so the source alone cannot tell the press this client made
+   * from the one another client made, and only the press under this reader's
+   * own eye carries them to the foot. The row can be built from these words
+   * alone, so the fact has to be kept here.
    */
-  private waiting = new Map<string, { since: number; text: string; source: string | null }>();
+  private waiting = new Map<
+    string,
+    { since: number; text: string; source: string | null; mine: boolean }
+  >();
   /**
    * Forged rows waiting for their prompt to start, by id - the core's own
    * user turn for words no view typed, held from arrival until the lifecycle
@@ -1743,6 +1763,39 @@ export class Chat {
   }
 
   /**
+   * The claude session id the conversation runs as, from whichever frame
+   * first names it.
+   *
+   * Three carriers - the snapshot's header on a subscribe, a `connected`
+   * update on a new process, and `session_replaced` - and **the newest naming
+   * wins**: they agree except at a replacement, where the announcement is the
+   * one that says which occupant is now on the seat. A frame with no id, or
+   * the id this record already holds, changes nothing, so this is a no-op on
+   * every frame that is not an occupant announcement.
+   */
+  private noteSession(id: unknown): void {
+    if (typeof id !== 'string' || id === '') return;
+    if (this.held.sessionId === id) return;
+    this.fold((held) => ({ ...held, sessionId: id }));
+  }
+
+  /**
+   * Whether a prompt id is the send THIS client pressed.
+   *
+   * **The prompt id is minted where the send left**, and the composer keeps it
+   * as the echo until the core's copy of the words lands. The wire's `source`
+   * says the words are a person's, which every client of the reader answers to
+   * - so a send from the phone is `you` here too, and only the id this client
+   * holds tells the two apart. A frame from the phone lands where the reader
+   * is parked and counts in the badge; this client's own press carries them to
+   * the foot.
+   */
+  private ownSend(id: string | null): boolean {
+    if (id === null) return false;
+    return echoes.of(this.key)?.id === id || echoes.owns(this.key, id);
+  }
+
+  /**
    * The seat's own store, which is how a seat already visited answers.
    *
    * A return subscribes nothing - the subscription is the client's, kept for
@@ -1778,7 +1831,8 @@ export class Chat {
       if (store.state().kind === 'refused') this.askedBySeed();
       return;
     }
-    const data = snapshot as { conversation?: unknown };
+    const data = snapshot as { header?: { session_id?: unknown }; conversation?: unknown };
+    this.noteSession(data.header?.session_id);
     const conversation = (data.conversation ?? {}) as {
       turns?: unknown;
       cursor?: unknown;
@@ -2329,6 +2383,8 @@ export class Chat {
           // (#2420). A reconnect asks a page for itself (the status handler),
           // so its snapshot cannot steal an older ask's in-flight bookkeeping.
           const fresh = !this.held.loaded;
+          const header = (message.data as { header?: { session_id?: unknown } } | null)?.header;
+          this.noteSession(header?.session_id);
           this.heard(runningOf(message.data));
           const data = (message.data ?? {}) as { conversation?: unknown };
           const conversation = (data.conversation ?? {}) as {
@@ -3112,13 +3168,21 @@ export class Chat {
   /**
    * Start over for the occupant that just arrived.
    *
-   * The turns go rather than being replaced in place, because a page that
-   * answered before the swap is the OLD occupant's and nothing in a page says
-   * which occupant it came from - so what is held has to be nothing, and the
-   * ask has to go out after the swap rather than before it. A handoff opens a
-   * new chat the same way: the successor's transcript is its own.
+   * **The occupant may be the same conversation.** A re-spawn that resumes
+   * the same claude session id keeps the transcript, and the reader's place
+   * with it; only an id that moved is a different conversation. The turns are
+   * dropped either way, because a page that answered before the announcement
+   * is the OLD occupant's and nothing in a page says which occupant it came
+   * from - so what is held is nothing, and the ask goes out after it.
    */
-  private replaced(): void {
+  private replaced(next: unknown): void {
+    // **A replacement is not proof the conversation changed.** A re-spawn that
+    // resumes the same claude session announces one with the SAME id, and the
+    // transcript the reader's place belongs to is still its own - so only an
+    // id that moved takes the place, and `settle` is what tells the two
+    // apart. (The column's entry and its restore compare the ids too, for a
+    // place taken before the record named one.)
+    places.settle(this.key, typeof next === 'string' && next !== '' ? next : null);
     const held = this.inFlight !== null;
     if (held) this.abandoned += 1;
     this.inFlight = null;
@@ -3218,13 +3282,19 @@ export class Chat {
       const words = textIn(update, 'prompt_queued', 'text');
       const from = textIn(update, 'prompt_queued', 'source');
       if (uuid !== null) {
-        this.waiting.set(uuid, { since: Date.now(), text: words ?? '', source: from });
+        // **The press this client made, not merely a person's words.** The
+        // echo carries the prompt id minted where the send left, so a queued
+        // prompt from the reader's phone is `you` and not this client's.
+        const mine = this.ownSend(uuid);
+        this.waiting.set(uuid, { since: Date.now(), text: words ?? '', source: from, mine });
         // **The card is what carries a waiting prompt's words, so the send's
         // own mark goes with them.** The mark stands in for the row the words
         // will occupy, and while the prompt waits the pile's card IS that row -
         // left up, the mark draws the words a second time, in the chat, saying
         // "sending" over a card already showing them (Ved, 2026-10-04). Ids
-        // only: two sends of the same text compare equal by words.
+        // only: two sends of the same text compare equal by words - and only
+        // the echo this announcement names, or a send from another surface
+        // would clear the composer's mark and take its refusal.
         if (echoes.of(this.key)?.id === uuid) echoes.clear(this.key);
         // **A row the seat already drew is pulled back into the hold.** A page
         // read can carry a prompt's own row while the queue still lists it -
@@ -3244,10 +3314,11 @@ export class Chat {
         // **But the same frame announces prompts that are nobody's send**: a
         // cron fire, a peer message, a gotify or slack delivery, forge's own
         // continuation. Those arrive while the reader is mid-read, and arming
-        // on one carries them to the bottom on the next pass (#1614). Only a
-        // person's own send may - `source` says who sent it, and the wire
-        // carries it on every queued row.
-        if (from === 'you') this.following(true, true);
+        // on one carries them to the bottom on the next pass (#1614). **And
+        // the reader's own press from ANOTHER client is nobody here's**: it is
+        // `you` on the wire, but the id is not the one this client minted, so
+        // it stays where the reader is parked and the badge counts it.
+        if (mine) this.following(true, true);
         this.retract(uuid);
       }
       return;
@@ -3289,13 +3360,21 @@ export class Chat {
       // follow's arm reads: forge's own machinery forges prose as the reader's
       // own row on this same frame, and only a person's send may carry them to
       // the foot (#1614, #2198).
-      this.append(message, !repaired && textIn(update, 'chat_appended', 'source') === 'you');
+      // **The press this client made, not merely a person's words**: the echo
+      // holds the prompt id this client minted, and a send from the reader's
+      // phone carries its own. Only the former carries them to the foot; the
+      // latter lands where they are parked and the badge counts it.
+      const mine =
+        !repaired && textIn(update, 'chat_appended', 'source') === 'you' && this.ownSend(id);
+      this.append(message, mine);
       return;
     }
     // The seat changed occupant under this column - a `/new`, a `/resume`, a
     // login or a logout - so what is drawn is another session's conversation.
     if (variant === 'session_replaced') {
-      this.replaced();
+      const next = textIn(update, 'session_replaced', 'session_id');
+      this.replaced(next);
+      this.noteSession(next);
       return;
     }
     // A process that is gone takes its queue with it: no lifecycle frame is
@@ -3311,6 +3390,7 @@ export class Chat {
       this.drained.clear();
       this.emptied.clear();
       this.plainDrawn.clear();
+      this.noteSession(textIn(update, 'connected', 'session_id'));
       return;
     }
     // The answer to the row's own ask, kept where the row reads it: by the
@@ -3523,9 +3603,10 @@ export class Chat {
       this.waiting.set(entry.uuid, {
         since: Date.now(),
         text: typeof entry.text === 'string' ? entry.text : '',
-        // The snapshot's queue rows carry the source the same way the live
-        // announcement does, so a drain that follows either arming arms alike.
         source: typeof entry.source === 'string' ? entry.source : null,
+        // The same id test the live announcement makes: a read that lands
+        // while this client's own send still waits keeps the press its own.
+        mine: this.ownSend(entry.uuid),
       });
       // A page asked before this snapshot landed draws the forged row
       // unfiltered; arming now pulls that copy back into the hold.
@@ -3703,11 +3784,11 @@ export class Chat {
     if (held === undefined) this.plainDrawn.add(uuid);
     const waited = entry === undefined ? 0 : Date.now() - entry.since;
     // **The drain is the append path's other arm, and it arms the same way**:
-    // the row draws whatever the sender, and only the reader's own prompt
-    // carries them to the foot. The sender is the announcement's, kept in the
-    // hold for this - the row it draws may be built from the announcement's
-    // words alone, with no frame to read a source off.
-    this.append(this.noted(row, waited), entry?.source === 'you', into);
+    // the row draws whatever the sender, and only the press THIS client made
+    // carries the reader to the foot. The fact is kept in the hold - the row
+    // it draws may be built from the announcement's words alone, with no
+    // frame to read an id off - and a phone's send is `you` without being it.
+    this.append(this.noted(row, waited), entry?.mine === true, into);
   }
 
   /**

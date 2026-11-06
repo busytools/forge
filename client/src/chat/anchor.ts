@@ -13,7 +13,13 @@
 export interface Anchor {
   /** The fold's own key for the row, which the row draws in `data-k`. */
   key: string;
-  /** How far into the row the viewport's top sits, in whole pixels. */
+  /**
+   * How far into the row the viewport's top sits, in pixels.
+   *
+   * **Not rounded.** A frozen column holds the row at the offset it had, and
+   * a device pixel ratio above 1 draws in fractions: rounding a half pixel
+   * away moves the words under the reader's eye on every layout pass.
+   */
   into: number;
 }
 
@@ -39,10 +45,30 @@ export interface RowBox {
 export function anchorAt(rows: Iterable<RowBox>, viewportTop: number): Anchor | null {
   for (const row of rows) {
     if (row.bottom > viewportTop) {
-      return { key: row.key, into: Math.round(viewportTop - row.top) };
+      return { key: row.key, into: viewportTop - row.top };
     }
   }
   return null;
+}
+
+/**
+ * The row the reader's place can be: one whose own box holds the top edge, or
+ * the nearest one still on screen below a small gap.
+ *
+ * **The list draws a WINDOW of turns, and a jump can outrun it.** A scrollbar
+ * drag or a programmatic move fires its event before the window has
+ * re-rendered: every drawn row then sits below the top edge, and the first of
+ * them can be thousands of pixels from where the reader's eye is. That row is
+ * no place - recording it restores the reader far from where they stopped -
+ * so a gap wider than the column's own room answers null and the capture
+ * keeps the place it had. A gap narrower than the room is another matter: a
+ * turn's margin, or the column's own top padding, puts the first row a few
+ * pixels below the edge, and the reader is looking at that row.
+ */
+export function heldRow(rows: Iterable<RowBox>, viewportTop: number, room: number): Anchor | null {
+  const at = anchorAt(rows, viewportTop);
+  if (at === null) return null;
+  return at.into >= -room ? at : null;
 }
 
 /**
@@ -57,5 +83,5 @@ export function anchorAt(rows: Iterable<RowBox>, viewportTop: number): Anchor | 
  * the column holds, the way it does for every other pin.
  */
 export function anchoredScroll(anchor: Anchor, top: number): number {
-  return Math.round(top + anchor.into);
+  return top + anchor.into;
 }

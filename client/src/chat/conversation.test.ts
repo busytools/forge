@@ -682,8 +682,10 @@ describe('the conversation the chat draws', () => {
 
     expect(get(chat.value).send_armed, 'a held send does not arm the follow').toBe(false);
 
-    // The control: the same kind of frame arriving live is the reader's own
-    // send, and only its new id keeps it from being the held copy again.
+    // The control: the same kind of frame arriving live, under the prompt id
+    // this client minted and still holds as the echo, is the reader's own
+    // send. (The id is what says so; `source: 'you'` alone is every client.)
+    echoes.post(subjectKey({ session: LEAD }), 'said now', false, 'live-send', echoes.mint());
     server.update({
       chat_appended: {
         key: LEAD,
@@ -7643,11 +7645,44 @@ describe('the chat holds a queued prompt until the CLI takes it', () => {
     chat.following(false);
     expect(get(chat.value).following, 'precondition: the reader is away from the foot').toBe(false);
 
+    // The press this client makes: the queue announcement carries the id it
+    // minted, which is what tells this send from one made on another client.
+    echoes.post(subjectKey({ session: LEAD }), 'the words', true, 'p1', echoes.mint());
     server.update({ prompt_queued: { key: LEAD, uuid: 'p1', source: 'you', text: 'the words' } });
 
     expect(get(chat.value).following, 'the queued send put the foot back under the reader').toBe(
       true,
     );
+    stop();
+  });
+
+  /**
+   * **`source: 'you'` is every client the reader owns.** A send from the phone
+   * is nobody's press here: the id is not the one this client minted, so the
+   * column stays where the reader parked and the badge counts the turn.
+   */
+  it("does not arm the follow for the reader's own send from another client", () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(page([turn('t1', 'kept')], null));
+    chat.following(false);
+
+    server.update({
+      chat_appended: {
+        key: LEAD,
+        source: 'you',
+        msg: {
+          type: 'user',
+          uuid: 'from-the-phone',
+          message: { role: 'user', content: [{ type: 'text', text: 'sent from the phone' }] },
+        },
+      },
+    });
+    expect(get(chat.value).following, "a phone's frame is not this press").toBe(false);
+
+    server.update({ prompt_queued: { key: LEAD, uuid: 'phone-queued', source: 'you', text: 'q' } });
+    expect(get(chat.value).following, "a phone's queued send is not this press either").toBe(false);
     stop();
   });
 

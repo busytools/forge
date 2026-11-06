@@ -282,16 +282,51 @@ through fresh history reads as moving content instead of a black column.
 The correction is the list's, and the column's foot and parked anchor
 absorb it, so the place the reader holds does not move under the reader.
 
-**A return to the seat the reader was last on puts them back where they
-were.** Any page that unmounts the session, such as a document, the review,
-the files, the home or the settings, leaves the connection keeping the
-conversation - so the mount that comes back to the seat it was last showing
-restores the row the reader held rather than landing at the foot. A place the
-reader gave up, by sending or by scrolling back to the latest, is not
-restored, and a restore that cannot land falls back to the foot. A seat
-switch, a fresh open and a `/new` still open at the latest: a place belongs
-to the visit that recorded it, and only a return to that visit takes it back
-(#1673, #2834).
+**A conversation with a saved place opens at it; everything else opens at
+the latest.** A place is the row the reader held and how far into it they
+were, kept per conversation - the seat plus the claude session id it runs as
+- in memory for the app run. Any page that unmounts the session, such as a
+document, the review, the files, the home or the settings, leaves the
+connection keeping the conversation, so the mount that comes back puts the
+reader on their row; switching away to another seat and back does the same,
+and so does a seat reopened on a new connection. A new connection's first
+page holds the newest turns, so it can start below the reader's row; the
+restore asks for the pages above it until the list reaches the row, and a
+page that never carries it inside the restore's budget of about a second
+leaves the reader at the latest with the place kept for the next visit. A
+place the conversation no longer holds - its row taken by a compaction or a
+trim, with nothing left to load - goes to the latest rather than clamping to
+whatever row is left. A replacement that names the SAME claude session id is
+that conversation reloading, so the place survives it - unless the place was
+recorded before any id was known, which goes with the first id announced. A
+place the reader gave up, by a send from this client while the column is
+drawn or by scrolling back to the latest, is not restored; a `/new` or a
+`/resume` to a different claude session id is a different conversation and
+opens at its latest (#1673, #2834).
+
+**A parked column is frozen.** The moment the reader scrolls up, the row
+under their eye holds its exact offset - sub-pixel included, so a reflow
+above does not move the words they are reading - while the scrollbar grows
+with what lands below. Coming back within the 48px notch of the bottom on a
+hand or a gesture aiming at the foot follows again; a layout move that
+happens to land inside the notch counts as standing at the foot and re-arms
+nothing. The circle in the corner is the instant jump there, and it is a
+44px target on every client, finger or pointer. **The
+circle counts what was missed**: the turns appended after the one the reader
+parked at ride a small badge that reads `9+` from nine, and following clears
+it. Sending from this client while the column is drawn - the composer, a
+takeover answer, the palette - is the reader asking for the latest, so it
+goes there and follows; a message the reader sends from another client lands
+where they are and joins the count, and a nudge from a page that does not
+draw the column, such as filing a review or answering a document, leaves
+their place to reopen.
+
+**A following column glides to the foot.** Every append - a row, a card,
+the reader's own message - lands the measured bottom over a short ease of
+about 160ms, a streamed line and a row that measures taller included, with
+the glide repeated until the content settles. A first pin, a switch's or a
+return's, lands at once, and so does the circle's jump;
+`prefers-reduced-motion: reduce` makes every landing instant.
 
 **The column's top edge says when it is fetching.** An older page is
 asked for as the reader nears the top and answered a moment later;

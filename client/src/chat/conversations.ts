@@ -1,5 +1,6 @@
 /**
- * The conversations one connection is holding, kept for its life.
+ * The conversations one connection is holding, kept for its life, and the
+ * places its readers parked at, kept for the app run.
  *
  * **Module state, not the column's.** The Chat column unmounts when the
  * reader leaves the session page, and the folded conversation must not go
@@ -7,9 +8,18 @@
  * the seat. Keyed by the connection because a held conversation belongs to
  * the socket whose frames fold into it - a new connection starts its own.
  *
+ * **A saved place outlives the connection as well as the column.** A place is
+ * a fact about a conversation rather than about a socket: a reconnect builds a
+ * new connection and a new Chat, and the reader is owed the row they left
+ * either way. The store is [`places`], keyed by the seat and tagged with the
+ * claude session id the place was recorded in, so a `/new` or a `/resume` to a
+ * different occupant is a different conversation and the old place is not
+ * its own.
+ *
  * **A released seat takes its conversation with it** ([`releaseConversation`]):
  * the column's listeners stop, so a same-slot successor's frames are not
- * folded into a conversation nothing draws.
+ * folded into a conversation nothing draws. Its place stays: the successor may
+ * be the same occupant reconnecting.
  */
 import { SvelteMap } from 'svelte/reactivity';
 
@@ -30,22 +40,82 @@ export interface Conversations {
   kept: SvelteMap<string, Conversation>;
   /** Each seat's open conversation, which keeps folding after the page leaves. */
   live: SvelteMap<string, HeldChat>;
-  /**
-   * Where each seat's reader was parked when the column was last on it.
-   *
-   * **A place outlives the column, the way the conversation does** (#2834):
-   * a document unmounts the page, and where the element was scrolled is not in
-   * the kept record. A seat with no entry was left at its foot, which needs no
-   * restoring.
-   */
-  places: Map<string, Anchor>;
-  /**
-   * The seat the column last drew for this connection, which is what tells a
-   * return to a seat from a seat switch: only a mount onto this seat takes its
-   * place back, and a switch to any other lands at the latest (#1673).
-   */
-  shown: string | null;
 }
+
+/**
+ * Where one conversation's reader was parked, and the occupant it belongs to.
+ *
+ * The row is `Anchor`'s - the row the reader's eye was on and how far into it
+ * they were - and `session` is the claude session id the conversation ran as
+ * when it was recorded. A place recorded before any id was known belongs to
+ * the seat until an occupant announcement names one, which [`settle`]s it: the
+ * same id keeps it, and a place with no id to match goes with the
+ * announcement. One whose id disagrees with the conversation now on the seat
+ * is not that conversation's.
+ */
+export interface Place {
+  session: string | null;
+  anchor: Anchor;
+}
+
+/**
+ * The saved place of every conversation the reader has parked on this run.
+ *
+ * **One entry per seat.** A slot has one occupant at a time, so the seat names
+ * the conversation and the session id beside it says whether the conversation
+ * is still the same one. Two entries for one seat would only ever be an old
+ * occupant's, which is exactly the place `/new` must not reopen.
+ */
+export class Places {
+  readonly #held = new Map<string, Place>();
+
+  /** Where the reader of `seat` was parked, or `undefined` for a foot. */
+  of(seat: string): Place | undefined {
+    return this.#held.get(seat);
+  }
+
+  /** Record where the reader of `seat` stopped, in the session it is running. */
+  keep(seat: string, session: string | null, anchor: Anchor): void {
+    this.#held.set(seat, { session, anchor });
+  }
+
+  /**
+   * The seat is at its foot, or holds no row its reader does: no place.
+   *
+   * **The occupant reset takes this path too**: [`settle`] decides whether
+   * the announced id is a different conversation, and the reset then drops the
+   * place through here.
+   */
+  forget(seat: string): void {
+    this.#held.delete(seat);
+  }
+
+  /**
+   * An occupant announcement, which is not proof the conversation changed.
+   *
+   * **A re-spawn that resumes the same claude session announces a
+   * replacement with the SAME id**, and its transcript is the very
+   * conversation the reader's place belongs to - so only an id that actually
+   * moved takes the place. An announcement that names no id cannot tell the
+   * two apart and keeps it; a place recorded before any id was known goes
+   * with the replacement, because the successor's transcript is then the only
+   * word either way.
+   *
+   * **A seat the reader is not drawing has no column to drop it**, which is
+   * why this lives on the store rather than only in the column's occupant
+   * effect: a background conversation still folds its own replacement, and
+   * this is that seat's only word on the place.
+   */
+  settle(seat: string, session: string | null): void {
+    if (session === null) return;
+    const held = this.#held.get(seat);
+    if (held === undefined) return;
+    if (held.session !== session) this.#held.delete(seat);
+  }
+}
+
+/** Every seat's saved place, for the life of the app run. */
+export const places = new Places();
 
 const HELD = new WeakMap<Connection, Conversations>();
 
@@ -56,8 +126,6 @@ export function conversationsFor(connection: Connection): Conversations {
   const fresh: Conversations = {
     kept: new SvelteMap(),
     live: new SvelteMap(),
-    places: new Map(),
-    shown: null,
   };
   HELD.set(connection, fresh);
   return fresh;
@@ -68,7 +136,9 @@ export function conversationsFor(connection: Connection): Conversations {
  * nothing is left to fold a successor's frames into.
  *
  * **Only that seat's entry goes.** The connection's others are the rest of
- * the fleet the reader has visited, and they stay current.
+ * the fleet the reader has visited, and they stay current. The saved place
+ * stays too: a reconnect is a new connection over the same conversation, and
+ * the reader is owed the row they left.
  */
 export function releaseConversation(connection: Connection, key: string): void {
   const held = HELD.get(connection);
@@ -76,6 +146,4 @@ export function releaseConversation(connection: Connection, key: string): void {
   held.live.get(key)?.stop();
   held.live.delete(key);
   held.kept.delete(key);
-  held.places.delete(key);
-  if (held.shown === key) held.shown = null;
 }

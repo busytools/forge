@@ -1221,6 +1221,10 @@
     // the queued row the core echoes back carries the same id - so this send,
     // its row and its frames are one thing by id, never by order or text.
     const uuid = mintPromptId();
+    // **Every surface that sends is this client's hand.** The id is remembered
+    // beside the echo: a parked reader's own send carries the column to the
+    // foot, and a send from the phone must only count in the badge.
+    echoes.remember(boxKey(slot), uuid);
     // **The press's own number, which a refusal echoes back** (#1583): it is
     // what tells this send from another seat's when the reason arrives.
     const dispatch = echoes.mint();
@@ -1707,6 +1711,9 @@
     answeredFor = answered;
     if (trimmed !== '') {
       const uuid = mintPromptId();
+      // The takeover answer is a send this client made, so it carries the
+      // column to the foot like the composer's own press.
+      echoes.remember(boxKey(slot), uuid);
       barRefused = null;
       try {
         // **The crossing, not the send.** The dispatch answers once the frame
