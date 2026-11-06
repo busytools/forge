@@ -366,9 +366,10 @@ function filedNumber(body: unknown): number | null {
  *  the worker reads the line the view this client replaced sent. */
 function nudge(slot: SessionSlot, text: string) {
   const uuid = mintPromptId();
-  // **A nudge is this client's own send.** The id is remembered so a parked
-  // reader's chat carries them to the line the review filed rather than
-  // counting it in the badge.
+  // **A nudge is this client's own send**, so the id is remembered. The chat
+  // column is not drawn on the review page, though: a parked reader's place
+  // is left to reopen rather than carried to the foot, which is the rule
+  // stated for the column's own surfaces in the book's session page.
   echoes.remember(subjectKey({ session: slot }), uuid);
   return {
     prompt_under: {

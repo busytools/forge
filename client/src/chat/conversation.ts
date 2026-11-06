@@ -3292,8 +3292,10 @@ export class Chat {
         // will occupy, and while the prompt waits the pile's card IS that row -
         // left up, the mark draws the words a second time, in the chat, saying
         // "sending" over a card already showing them (Ved, 2026-10-04). Ids
-        // only: two sends of the same text compare equal by words.
-        if (mine) echoes.clear(this.key);
+        // only: two sends of the same text compare equal by words - and only
+        // the echo this announcement names, or a send from another surface
+        // would clear the composer's mark and take its refusal.
+        if (echoes.of(this.key)?.id === uuid) echoes.clear(this.key);
         // **A row the seat already drew is pulled back into the hold.** A page
         // read can carry a prompt's own row while the queue still lists it -
         // the transcript gained it before this view heard the announcement -

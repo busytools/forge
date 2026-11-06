@@ -31,6 +31,13 @@ vi.mock('./conversation', async (importOriginal) => {
   return frozenConversation(await importOriginal<typeof import('./conversation')>());
 });
 
+// The perf surface, observed: the give-up's only record outside the column is
+// its scroll line, and the marker it writes is what the desktop log reads.
+vi.mock('../perf', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../perf')>();
+  return { ...actual, noteScrollMove: vi.fn() };
+});
+
 const {
   clear,
   element,
@@ -47,6 +54,7 @@ const {
 } = await import('./testing/records');
 const { conversationsFor, places, releaseConversation } = await import('./conversations');
 const { echoes } = await import('./echoes.svelte');
+const { noteScrollMove } = await import('../perf');
 const { subjectKey } = await import('../protocol');
 const { default: Chat } = await import('./Chat.svelte');
 const { default: Seats } = await import('./testing/Seats.svelte');
@@ -513,9 +521,10 @@ async function settle(): Promise<void> {
 /**
  * One animation frame, exactly.
  *
- * `settle` pumps until the landing has stopped; a test about what a frame
- * SAW - the capture's two-frame agreement - needs each frame's layout to be
- * the one the test set, so it pumps one at a time.
+ * `drained` waits for the landing's passes to stop by condition; a test about
+ * what a frame SAW - the capture's two-frame agreement, the give-up's budget
+ * - needs each frame's layout to be the one the test set, so it pumps one at
+ * a time.
  */
 async function frame(): Promise<void> {
   await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
@@ -2374,6 +2383,71 @@ describe('whether the column follows the newest end', () => {
     ).toBe(rows[1]?.getAttribute('data-k') ?? undefined);
   });
 
+  it('gives up a capture that never settled instead of restoring the old row', async () => {
+    // **A jump whose layout never settles.** Every drawn row sits below the
+    // top edge for longer than the capture's budget, so no row is the place.
+    // The anchor it still holds names the pre-jump row, and left standing the
+    // next pass would restore the reader back to it - undoing the jump.
+    const server = stub();
+    clear();
+    clearObservers();
+    setMeasured(TOTAL, VIEWPORT);
+    app = mount(Chat, {
+      target: document.body,
+      props: { slot: LEAD, connection: server.connection },
+    });
+    flushSync();
+    // Rows that draw, so the reader has a row to park on.
+    server.page([spoken('t1'), spoken('t2'), spoken('t3')]);
+    await settle();
+    layOut(40);
+    readerAt(50);
+    await settle();
+    expect(
+      places.of(subjectKey({ session: LEAD })),
+      'precondition: the reader parked on a row',
+    ).toBeDefined();
+    clear();
+
+    const root = document.querySelector('.conv');
+    const rows = [...(root?.querySelectorAll('.turn [data-k]') ?? [])];
+    rows.forEach((row) => {
+      row.getBoundingClientRect = () => ({
+        top: 2000,
+        bottom: 2040,
+        height: 40,
+        width: 0,
+        left: 0,
+        right: 0,
+        x: 0,
+        y: 0,
+        toJSON: () => ({}),
+      });
+    });
+    vi.mocked(noteScrollMove).mockClear();
+    readerAt(10);
+    for (let at = 0; at < 8; at += 1) await frame();
+
+    expect(
+      places.of(subjectKey({ session: LEAD })),
+      'the capture gave up rather than holding the old row',
+    ).toBeUndefined();
+    // **The log says which give-up it was.** The desktop shell names the
+    // record's `name`, so the marker crossing the page -> shell boundary is
+    // what a reader of the log has to see.
+    expect(noteScrollMove, 'the give-up is written to the log').toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'capture-gave-up' }),
+    );
+
+    // The layout comes back and reports itself: a stale anchor would restore
+    // the pre-jump row here.
+    layOut(40);
+    resized();
+    await settle();
+
+    expect(element.offset, 'the reader stays where they jumped to').toBe(10);
+  });
+
   it('restores the row of a reader whose follow is on but not pinning', async () => {
     // **The other half of the third state.** A follow can be on while the
     // column holds position; the observer's pass must not read that flag
@@ -4049,6 +4123,27 @@ describe('a saved place outliving the connection', () => {
     expect(element.offset, 'the return reopened the place it kept').toBe(50);
   });
 
+  it('arms the restore when a same-id reload lacks the parked row', async () => {
+    // **The reload's first page can start below the reader's row.** Arming the
+    // restore on the replacement is what asks for the page above; without it
+    // the column treats the row as gone and goes to the latest.
+    const server = stub();
+    await parkedWith(server, 's1');
+    element.offset = 0;
+    server.replaced('s1');
+    await settle();
+    clear();
+
+    server.page([spoken('n1'), spoken('n2'), spoken('n3')], LEAD, 'cursor-above');
+    layOut(40);
+    await settle();
+    await settle();
+
+    expect(server.asks, 'the reload asked for the page that carries the parked row').toContain(
+      'cursor-above',
+    );
+  });
+
   it('opens a same-id reload at the element foot when the model lags', async () => {
     // **The merge-holder.** A re-spawn that resumes the same claude session
     // reloads the record and mounts a new list, and the model has not
@@ -4201,6 +4296,53 @@ describe('a saved place outliving the connection', () => {
     expect(element.offset, 'the page that carried the row placed the reader on it').toBe(50);
   });
 
+  it('keeps the place when the restore budget runs out above the row', async () => {
+    // **A page that never carries the row inside the budget.** The history
+    // above is still loadable, so the place is not the conversation's to
+    // forget: the reader goes to the latest, and the stored place stays for
+    // the next return. The old entry forgot it through the landing's own pin.
+    const first = stub();
+    await parkedWith(first, 's1');
+    if (app !== null) await unmount(app);
+    app = null;
+    document.body.innerHTML = '';
+    element.offset = 0;
+    clear();
+
+    const second = stub();
+    setMeasured(TOTAL, VIEWPORT);
+    app = mount(Chat, {
+      target: document.body,
+      props: { slot: LEAD, connection: second.connection },
+    });
+    flushSync();
+    second.session('s1');
+    second.page([spoken('n1'), spoken('n2'), spoken('n3')], LEAD, 'cursor-above');
+    layOut(40);
+    await settle();
+    await settle();
+
+    // The budget is 1200ms; jump the clock past it and hand the restore a
+    // page that still does not carry the row.
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 2_000);
+    try {
+      second.page([spoken('n4'), spoken('n5')], LEAD, 'cursor-above');
+      layOut(40);
+      await settle();
+      await settle();
+    } finally {
+      clock.mockRestore();
+    }
+
+    expect(
+      places.of(subjectKey({ session: LEAD })),
+      'the give-up kept the place for the next return',
+    ).toBeDefined();
+    expect(element.offset, 'and carried the reader to the latest').toBe(
+      Math.floor(TOTAL) - VIEWPORT,
+    );
+  });
+
   it('keeps a place when a reconnect names the same claude session', async () => {
     const first = stub();
     await parkedWith(first, 's1');
@@ -4343,11 +4485,12 @@ describe('the badge on the way back', () => {
     expect(element.offset, 'and the reader stays where they are').toBe(50);
   });
 
-  it('counts the first turn after a switch into a parked seat', async () => {
-    // **The marker is the column's, not the seat's.** Switching from a parked
-    // seat to another parked one, the arriving seat must arm its own marker
-    // before the first arrival - otherwise that arrival is the run that arms
-    // it, and the badge never counts the very turn that woke it.
+  it('counts the first turn after a switch into a seat left parked', async () => {
+    // **The marker is the column's, not the seat's.** The arriving seat is
+    // already parked and keeps its turns, so the badge's `!parked` clear
+    // never runs on it: the switch's own run must arm its marker before the
+    // first arrival, or that arrival is the run that arms it and the badge
+    // never counts the turn that woke it.
     const seat = writable(LEAD);
     const server = stub();
     clear();
@@ -4361,9 +4504,9 @@ describe('the badge on the way back', () => {
     server.page([spoken('t1'), spoken('t2')]);
     await settle();
     layOut(40);
-    readerAt(0);
-    await settle();
 
+    // An earlier visit parks the other seat, so it is already parked when the
+    // reader comes back to it.
     seat.set(OTHER);
     flushSync();
     server.page([spoken('o1'), spoken('o2')], OTHER);
@@ -4371,12 +4514,41 @@ describe('the badge on the way back', () => {
     layOut(40);
     readerAt(0);
     await settle();
-    expect(badge(), 'nothing has been appended on the arriving seat').toBeNull();
 
+    // Back to the first seat, and park it: its marker is the one the next
+    // switch has to drop.
+    seat.set(LEAD);
+    flushSync();
+    await settle();
+    layOut(40);
+    readerAt(0);
+    await settle();
+    expect(badge(), 'nothing has been appended yet').toBeNull();
+
+    // The switch into the parked seat, and one arrival.
+    seat.set(OTHER);
+    flushSync();
     server.forgedOn(OTHER);
     await settle();
 
     expect(badge(), 'the first turn after the switch is counted').toBe('1');
+  });
+
+  it('keeps a parked reader where they scrolled when a frame lands', async () => {
+    // **The re-arm is the replacement's, not every publish's.** With an id
+    // known, a run on any publish would take the viewport back to the place
+    // the reader left: they scroll to 200 as a frame lands, and the return
+    // placer drags them to 50.
+    const server = stub();
+    await parkedWith(server, 's1');
+    clear();
+
+    readerAt(70);
+    server.frame();
+    await settle();
+
+    expect(element.offset, 'the reader keeps the row they scrolled to').toBe(70);
+    expect(following(server), 'and the follow stays off').toBe(false);
   });
 
   it('carries the reader for a send whose echo it never held', async () => {
@@ -4387,7 +4559,11 @@ describe('the badge on the way back', () => {
     // are this client's, so a parked reader is carried to the foot instead of
     // counting their own send in the badge.
     const server = stub();
-    await parkedColumn(server);
+    // **An id is known here on purpose.** A same-id re-arm that ran on every
+    // publish would switch the follow off and take the reader back to their
+    // old place as this send lands, which is how the bug hid behind the
+    // id-less parked fixtures.
+    await parkedWith(server, 's1');
     readerAt(0);
     await settle();
     expect(following(server), 'precondition: the reader is parked').toBe(false);

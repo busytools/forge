@@ -800,8 +800,10 @@
       if (number !== null) {
         try {
           // The filed review's nudge is this client's own send, so the id is
-          // remembered before it leaves: a parked reader is carried to the
-          // line rather than counting it in the badge.
+          // remembered before it leaves. The chat column is not drawn on this
+          // page, though: a parked reader's place is left to reopen rather
+          // than carried to the foot, which is the rule stated for the
+          // column's own surfaces in the book's session page.
           const uuid = mintPromptId();
           echoes.remember(boxKey(slot), uuid);
           void connection.dispatch(

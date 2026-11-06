@@ -212,6 +212,16 @@
    */
   let anchor: Anchor | null = null;
   /**
+   * A place a give-up kept because the loaded window had not reached its row.
+   *
+   * The give-up still lands the reader at the latest, and that landing's pin
+   * echoes back through the scroll handler with no anchor - a state that
+   * normally means the reader gave their place up. This is what tells the
+   * two apart, and it goes on the reader's own next move or return to the
+   * foot.
+   */
+  let placeKept = false;
+  /**
    * The place a returning reader is being put back on, until the list draws
    * the row it names.
    *
@@ -514,6 +524,10 @@
     // sent is dead, so the retry is a new prompt that happens to say the same
     // words - and the pile settles each by id, never by text.
     const id = mintPromptId();
+    // The retry is this client's own send like the press that failed: the id
+    // is remembered, so it carries a parked reader to the foot rather than
+    // counting in the badge.
+    echoes.remember(seat, id);
     // The press's own number, echoed by a refusal, exactly as the composer's
     // own send carries it (#1583): a reason arriving later names this send.
     const dispatch = echoes.mint();
@@ -901,6 +915,10 @@
     // the column moving on their behalf, and they are moving themselves now.
     const arm = () => {
       stopGlide();
+      // **The reader's own hand gives up a place a restore kept.** The latch
+      // exists so a give-up's landing does not delete the place; from the
+      // reader's next gesture on, the foot is theirs to give it up at.
+      placeKept = false;
       // **A gesture that stops a glide leaves the reader where it reached.**
       // `placed` is the offset the disarm compares against, and a glide's
       // completion is the only other write on that path; a stale foot from
@@ -911,6 +929,8 @@
     };
     const aim = () => {
       stopGlide();
+      // **The reader's own hand gives up a place a restore kept.**
+      placeKept = false;
       // **The down gesture leaves `placed` alone.** Only an upward event can
       // disarm, and every one of those is an up gesture that runs `arm`
       // first - so a write here decided nothing a test could see, and the
@@ -1182,7 +1202,7 @@
           room: view?.clientHeight ?? 0,
           shrank: false,
           rose: false,
-          foot: false,
+          foot: atFoot(),
           reader: false,
           aimed: false,
           restore_owed: false,
@@ -1216,23 +1236,20 @@
   }
 
   /**
-   * Whether `key` is a row of `turn`, by the turn's own name or one the fold
-   * kept beside it.
+   * Whether `key` is a row of `turn`.
    *
-   * **A live turn is renamed when a page settles it, and the page's own name
-   * is kept in `also`.** A place recorded on the frame-built row names the
-   * old key, so a rebuild that keeps the row under the page's name still
-   * holds the reader's turn - and a lookup that read `turn.key` alone lost
-   * the place on every reconnect or re-spawn.
+   * **The row's key is the turn's own.** Rows draw `data-k` from `turn.key`
+   * (`Turn.svelte`), and the page name the fold keeps in `also` belongs to a
+   * row it did NOT adopt - that name is never drawn, so it can never be a
+   * place's anchor. The match is the turn's own key alone.
    */
-  function turnNames(turn: HeldTurn, key: string): boolean {
-    if (key.startsWith(`${turn.key}:`)) return true;
-    return (turn.also ?? []).some((alias) => key === alias || key.startsWith(`${alias}:`));
+  function turnHasRow(turn: HeldTurn, key: string): boolean {
+    return key.startsWith(`${turn.key}:`);
   }
 
-  /** The held turn a row key belongs to, through [`turnNames`]. */
+  /** The held turn a row key belongs to, through [`turnHasRow`]. */
   function turnFor(key: string): HeldTurn | undefined {
-    return held.turns.find((turn) => turnNames(turn, key));
+    return held.turns.find((turn) => turnHasRow(turn, key));
   }
 
   /**
@@ -1262,7 +1279,7 @@
       // to whatever happens to be there - a capture from it would move the
       // reader's place to a row they never chose. Only a turn the list has
       // DRAWN but a row it no longer carries is the re-key a capture heals.
-      const turn = held.turns.find((one) => place.key.startsWith(`${one.key}:`));
+      const turn = held.turns.find((one) => turnHasRow(one, place.key));
       const drawn =
         turn !== undefined && viewport.querySelector(`[data-t="${CSS.escape(turn.key)}"]`) !== null;
       if (!drawn) {
@@ -1446,6 +1463,8 @@
       // than counting them from the first arrival.
       badgeFrom = null;
       badge = 0;
+      // A kept place belonged to the conversation that is going.
+      placeKept = false;
       // The painted mark belongs to the open that just started, not the one
       // that is going, so the column takes it again with the seat.
       paintNoted = false;
@@ -1500,7 +1519,7 @@
       const place = places.of(which) ?? null;
       // **A conversation still loading may hold the row in the page on its
       // way**, so only a loaded one that lacks it is a stale place.
-      const holdsRow = place !== null && turning.some((turn) => turnNames(turn, place.anchor.key));
+      const holdsRow = place !== null && turning.some((turn) => turnHasRow(turn, place.anchor.key));
       const reopen = place !== null && (holdsRow || arriving === undefined || !arriving.loaded);
       if (reopen && place !== null) {
         // A returning reader is parked where they left, not at the foot, so
@@ -1608,6 +1627,14 @@
     shownSession = id;
     if (before === null) return;
     if (before === id) {
+      // **`held` is reassigned on every publish, so this effect runs on every
+      // frame and page.** Only the publish a REPLACEMENT leaves is the
+      // record emptied: arming on any same-id run would re-open the return
+      // placer over a live seat - freezing a parked reader's own scroll,
+      // switching their own send off and resetting the restore's budget on
+      // every frame. The emptied record has no loaded turns; an ordinary
+      // publish has them.
+      if (held.loaded || held.turns.length > 0) return;
       // **A replacement naming the same id is the conversation reloading**:
       // the record empties, the list remounts, and the reader is owed the row
       // they were parked on. That row can be an older turn the new list's
@@ -1626,14 +1653,15 @@
     }
     restoring = null;
     anchor = null;
+    placeKept = false;
     rememberPlace();
     footHeld = true;
     // **A successor's first pin is a first pin.** `placed` is the offset the
     // glide branch compares against, and the previous conversation's foot is
     // not this one's: leaving it set slides the new conversation in from the
     // old offset instead of landing at once (the book's "a first pin, a
-    // switch's or a return's, lands at once").
-    placed = null;
+    // switch's or a return's, lands at once"). The mount's own clear is the
+    // copy that survives; this one is dropped so one place owns it.
     stopGlide();
     working?.following(true);
   });
@@ -1658,14 +1686,20 @@
   function rememberPlace(): void {
     const here = anchor;
     if (here === null) {
+      // **A give-up that keeps the place outlives its own landing.** The
+      // reader is carried to the latest, whose pin echoes back through here
+      // with no anchor; without this the landing deletes the very place the
+      // give-up kept for the next return.
+      if (placeKept) return;
       places.forget(seat);
       return;
     }
+    placeKept = false;
     // The membership scan runs when the row changes, not on every pixel of a
     // scroll within the same one. Untracked, because a caller is an effect
     // whose pin must not re-run on the dependency this read would add.
     if (places.of(seat)?.anchor.key !== here.key) {
-      const mine = untrack(() => held.turns.some((turn) => turnNames(turn, here.key)));
+      const mine = untrack(() => held.turns.some((turn) => turnHasRow(turn, here.key)));
       if (!mine) return;
     }
     places.keep(
@@ -1724,7 +1758,7 @@
       // **The turn is read again in the frame it is scrolled in**: a prepend
       // can land between this schedule and its frame, and an index from the
       // earlier read would name a different turn.
-      const at = held.turns.findIndex((turn) => turnNames(turn, place.anchor.key));
+      const at = held.turns.findIndex((turn) => turnHasRow(turn, place.anchor.key));
       if (at < 0) {
         giveUpRestore();
         return;
@@ -1754,7 +1788,7 @@
       restoreAnchor();
       return;
     }
-    const turn = held.turns.find((one) => turnNames(one, place.anchor.key));
+    const turn = held.turns.find((one) => turnHasRow(one, place.anchor.key));
     /** Whether the row's TURN is drawn, whatever the row is doing. */
     const drawn =
       turn !== undefined && viewport.querySelector(`[data-t="${CSS.escape(turn.key)}"]`) !== null;
@@ -1799,6 +1833,7 @@
     restoreTries = 0;
     restoreStarted = 0;
     anchor = null;
+    placeKept = keepPlace;
     if (!keepPlace) rememberPlace();
     footHeld = true;
     working?.following(true);
@@ -2363,6 +2398,10 @@
     // there, so the record has to be cleared here - a place left standing is a
     // row a later document return restores for a reader who moved on.
     if (landedAtFoot) {
+      // **A send is the reader asking for the latest**, so it gives up a place
+      // a restore gave up on and kept. A landing nobody asked for - the
+      // give-up's own pin, an append's - leaves it for the next return.
+      if (held.send_armed) placeKept = false;
       anchor = null;
       rememberPlace();
     }
@@ -2561,11 +2600,12 @@
     }
     const at = turns.findIndex((turn) => turn.key === badgeFrom);
     if (at < 0) {
-      // **The marker's turn is gone, so the count re-arms where the reader
-      // is now.** Leaving it null for the next run costs the first turn after
-      // a seat switch: that run would arm on the arriving turn and report 0,
-      // so the very turn that woke it was never counted.
-      badgeFrom = turns[turns.length - 1]?.key ?? null;
+      // The turn the reader parked after is no longer held, so the stretch
+      // they missed cannot be counted from it; the next park starts fresh.
+      // **A seat switch re-arms by resetting the marker**, so this branch is
+      // only a marker the record itself lost (a merge or a compaction) - and
+      // that one restarts the count rather than guessing at it.
+      badgeFrom = null;
       badge = 0;
       return;
     }
@@ -2709,7 +2749,11 @@
     // that transient is not rows gone - a re-spawn onto the same claude
     // session must keep the place it is about to draw again.
     const heldBy = anchor;
-    if (park.loaded && heldBy !== null && !park.turns.some((turn) => turnNames(turn, heldBy.key))) {
+    if (
+      park.loaded &&
+      heldBy !== null &&
+      !park.turns.some((turn) => turnHasRow(turn, heldBy.key))
+    ) {
       // **A row the loaded conversation no longer holds goes to the latest.**
       // The trim and the compaction drop whole pages, and a place naming a
       // row nothing draws is a place the pass would retry forever. **A row a
@@ -2717,6 +2761,7 @@
       // placement while it pages toward the turn (`restoring`), so a parked
       // pass here is looking at a record that has already outlived the row.
       anchor = null;
+      placeKept = false;
       rememberPlace();
       footHeld = true;
       working?.following(true);

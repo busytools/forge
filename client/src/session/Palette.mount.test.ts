@@ -2,7 +2,9 @@
 import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { echoes } from '../chat/echoes.svelte';
 import { homeWire } from '../dev/fixture.data';
+import { subjectKey } from '../protocol';
 import type { Connection } from '../socket';
 import type { SessionSlot } from '../wire/types';
 import Palette from './Palette.svelte';
@@ -123,6 +125,13 @@ describe('the command palette', () => {
       '/compact',
     );
     expect(typeof sent.prompt_under?.uuid, 'the prompt went without its id').toBe('string');
+    // **The id is remembered as this client's own send.** A command from the
+    // palette is this client's hand, so a parked reader is carried to the
+    // foot rather than the send counting in the badge.
+    expect(
+      echoes.owns(subjectKey({ session: LEAD }), sent.prompt_under?.uuid ?? ''),
+      "the palette send is remembered as this client's own",
+    ).toBe(true);
   });
 
   /** The doings run their own things: peek opens the rail, Escape closes. */

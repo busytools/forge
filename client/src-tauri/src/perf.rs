@@ -538,7 +538,7 @@ mod tests {
     /// fixture is a hand copy of the page's type, not a link to it.
     #[test]
     fn the_pages_scroll_record_survives_the_write() {
-        let line = r#"{"schema":"forge-perf/v1","kind":"scroll","run_id":"r","ts_ms":12,"from":1204.0,"to":1150.0,"height":9000.0,"room":812.0,"shrank":true,"rose":true,"foot":false,"reader":false,"aimed":false,"restore_owed":true,"pin":false,"surface":"session","session":"Busytools/forge/lead"}"#;
+        let line = r#"{"schema":"forge-perf/v1","kind":"scroll","run_id":"r","ts_ms":12,"from":1204.0,"to":1150.0,"height":9000.0,"room":812.0,"shrank":true,"rose":true,"foot":false,"reader":false,"aimed":false,"restore_owed":true,"pin":false,"name":"capture-gave-up","surface":"session","session":"Busytools/forge/lead"}"#;
         let parsed: ClientPerfRecord =
             serde_json::from_str(line).expect("the page's scroll record parses");
         let frame: ClientPerfRecord = serde_json::from_str(
@@ -563,6 +563,10 @@ mod tests {
         assert_eq!(written["aimed"], false, "and none was heading to the foot: {text}");
         assert_eq!(written["restore_owed"], true, "a place was owed: {text}");
         assert_eq!(written["pin"], false, "the pin did not write it: {text}");
+        assert_eq!(
+            written["name"], "capture-gave-up",
+            "a scroll record's own reason reaches the log: {text}"
+        );
         // A dropped `skip_serializing_if` on any one field writes nulls on
         // every kind, so each is checked rather than a sample.
         for key in [

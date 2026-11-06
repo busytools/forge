@@ -284,17 +284,19 @@ document, the review, the files, the home or the settings, leaves the
 connection keeping the conversation, so the mount that comes back puts the
 reader on their row; switching away to another seat and back does the same,
 and so does a seat reopened on a new connection. A new connection's first
-page can start above the reader's row; the restore asks for the pages above
-until the list reaches it, and a place the conversation no longer holds goes
-to the latest rather than being carried by a page that merely had not been
-read yet. A replacement that names the SAME claude session id is that
-conversation reloading, so the place survives it - unless the place was
+page holds the newest turns, so it can start below the reader's row; the
+restore asks for the pages above it until the list reaches the row, and a
+page that never carries it inside the restore's budget of about a second
+leaves the reader at the latest with the place kept for the next visit. A
+place the conversation no longer holds - its row taken by a compaction or a
+trim, with nothing left to load - goes to the latest rather than clamping to
+whatever row is left. A replacement that names the SAME claude session id is
+that conversation reloading, so the place survives it - unless the place was
 recorded before any id was known, which goes with the first id announced. A
-place the reader gave up, by sending from this client's composer or by
-scrolling back to the latest, is not restored; a `/new` or a `/resume` to a
-different claude session id is a different conversation and opens at its
-latest; and a place whose row a compaction or a trim has taken goes to the
-latest rather than clamping to whatever row is left (#1673, #2834).
+place the reader gave up, by a send from this client while the column is
+drawn or by scrolling back to the latest, is not restored; a `/new` or a
+`/resume` to a different claude session id is a different conversation and
+opens at its latest (#1673, #2834).
 
 **A parked column is frozen.** The moment the reader scrolls up, the row
 under their eye holds its exact offset - sub-pixel included, so a reflow
@@ -304,12 +306,14 @@ hand or a gesture aiming at the foot follows again; a layout move that
 happens to land inside the notch counts as standing at the foot and re-arms
 nothing. The circle in the corner is the instant jump there, and it is a
 44px target on every client, finger or pointer. **The
-circle counts what was missed**: the turns standing between the one the
-reader parked after and the newest ride a small badge that reads `9+` from
-nine, and following clears it. Sending from this client's composer while
-parked - or from any of this client's own send surfaces - is the reader
-asking for the latest, so it goes there and follows; a message the reader
-sends from another client lands where they are and joins the count.
+circle counts what was missed**: the turns appended after the one the reader
+parked at ride a small badge that reads `9+` from nine, and following clears
+it. Sending from this client while the column is drawn - the composer, a
+takeover answer, the palette - is the reader asking for the latest, so it
+goes there and follows; a message the reader sends from another client lands
+where they are and joins the count, and a nudge from a page that does not
+draw the column, such as filing a review or answering a document, leaves
+their place to reopen.
 
 **A following column glides to the foot.** Every append - a row, a card,
 the reader's own message - lands the measured bottom over a short ease of
