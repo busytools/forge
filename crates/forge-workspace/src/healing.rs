@@ -110,6 +110,18 @@ impl Healing {
             // when no attempt is coming.
             self.forget(slot);
             workspace.clear_heal_progress(slot);
+            if !slot.is_lead() {
+                // The entry a heal had marked Restarting would otherwise
+                // keep that word with nothing behind it. The progress is
+                // cleared above, so the transition is not skipped as an
+                // in-flight heal.
+                crate::workspace::transition_worker_to_failed(
+                    &workspace,
+                    &project_key,
+                    slot,
+                    Some(diagnostic.to_owned()),
+                );
+            }
             return;
         }
         self.schedule(&workspace, slot, &project_key, diagnostic, SystemTime::now());
@@ -743,6 +755,12 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn an_ineligible_death_clears_the_heal_progress() {
         let (workspace, slot) = seeded_worker();
+        let key = workspace.project_key_for_name("forge").expect("the fixture project");
+        // The registry entry a death leaves, marked the way the heal marks
+        // it between attempts.
+        let mut entry = worker_entry(&slot);
+        entry.status = forge_primitives::WorkerLiveness::Restarting;
+        workspace.insert_live_worker(&key, entry);
         let (restart, _calls) = recorder(Ok(None));
         let (notify, _notices) = notifier();
         let healing = Healing::new(Arc::downgrade(&workspace), restart, notify);
@@ -753,11 +771,43 @@ mod tests {
         // The row goes while the seat is healing, and the occupant the
         // attempt brings up dies before connecting: the seat is no longer
         // durable, so the death is refused.
-        let key = workspace.project_key_for_name("forge").expect("the fixture project");
         assert!(workspace.delete_worker_row(&key, "probe-heal").expect("the row is deleted"));
         healing.note_death(&slot, "the subprocess closed again");
 
         assert!(workspace.heal_progress(&slot).is_none(), "the row stops saying restarting");
+        let entry = workspace
+            .list_live_workers(&key)
+            .into_iter()
+            .find(|entry| entry.slot == slot)
+            .expect("the row entry is kept");
+        assert_eq!(
+            entry.status,
+            forge_primitives::WorkerLiveness::Failed,
+            "and the entry is repainted failed rather than left restarting",
+        );
+        assert_eq!(
+            entry.diagnostic.as_deref(),
+            Some("the subprocess closed again"),
+            "with the death's own reason",
+        );
+    }
+
+    /// The row entry a death leaves: not live, so a heal may take the label.
+    fn worker_entry(slot: &SessionSlot) -> crate::WorkerEntry {
+        crate::WorkerEntry {
+            label: slot.label().to_owned(),
+            charter: "charter".to_owned(),
+            slot: slot.clone(),
+            session_id: None,
+            status: forge_primitives::WorkerLiveness::Failed,
+            spawned_at: std::time::SystemTime::UNIX_EPOCH,
+            spawned_by: SessionSlot::lead(slot.org(), slot.project()),
+            needs_tag: false,
+            is_git_repo_at_spawn: false,
+            cwd: None,
+            diagnostic: None,
+            kick: None,
+        }
     }
 
     /// A seat with no durable row is not forge's to bring back: the death
