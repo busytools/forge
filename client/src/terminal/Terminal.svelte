@@ -356,7 +356,7 @@
              in the state line. -->
         <button
           type="button"
-          class="tb-btn"
+          class="tb-btn tn-control"
           aria-pressed={controlling()}
           disabled={surface.control_pending !== null}
           onclick={() => controlTerminal(!controlling())}
@@ -460,10 +460,19 @@
     background: var(--s1);
     color: var(--text);
   }
+  /* **A fixed slot, so taking or giving up the keyboard does not reflow the
+     bar**: 238px is the widest routine state (`another client has the
+     keyboard`); a refusal longer than that widens it for its own sentence. */
   .tn-state {
     color: var(--muted);
     font-size: 12.5px;
     white-space: nowrap;
+    min-width: 238px;
+  }
+  /* The same bytes, whichever way the role points: `release control` is the
+     wider label, so the acts keep one width through a take and a release. */
+  .tn-control {
+    min-width: 153px;
   }
   .tn-state.held {
     color: var(--warn);
