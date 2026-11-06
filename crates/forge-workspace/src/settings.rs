@@ -17,7 +17,7 @@ use serde_json::json;
 
 use crate::config::{
     ConfigReload, DEFAULT_HANDOFF_AFTER_COMPACTIONS, DEFAULT_HANDOFF_AT_PERCENT,
-    DEFAULT_MAX_WORKERS_PER_PROJECT, LoadedConfig, LoadedProject,
+    DEFAULT_MAX_WORKERS_PER_PROJECT, LoadedConfig, LoadedProject, format_session_duration,
 };
 
 /// One area's fixed identity: the id the page keys on, the name it draws,
@@ -41,6 +41,11 @@ pub const AREAS: &[AreaSpec] = &[
         id: "projects",
         name: "projects",
         note: "orgs, their projects, and every per-project setting",
+    },
+    AreaSpec {
+        id: "sessions",
+        name: "sessions",
+        note: "whether a dead lead or worker comes back, and how often it tries",
     },
     AreaSpec {
         id: "connectors",
@@ -214,7 +219,8 @@ fn edit_spec(path: &str) -> EditSpec {
         | "dictate.enabled"
         | "dictate.normalizer"
         | "tts.enabled"
-        | "handoff.enabled" => BOOLEAN,
+        | "handoff.enabled"
+        | "sessions.heal" => BOOLEAN,
         "systemone.timeout_ms"
         | "server.first_frame_cap_kb"
         | "server.more_page_cap_kb"
@@ -228,7 +234,7 @@ fn edit_spec(path: &str) -> EditSpec {
         | "tts.max_utterance_seconds"
         | "handoff.at_percent"
         | "handoff.after_compactions" => NUMBER,
-        "server.allowed_origins" => LIST,
+        "server.allowed_origins" | "sessions.heal_backoff" => LIST,
         // client
         "client.mark" => choice(forge_primitives::client::MARK_NAMES),
         "client.theme" => choice(forge_primitives::client::THEME_NAMES),
@@ -243,6 +249,7 @@ fn edit_spec(path: &str) -> EditSpec {
         "models.*.auto_compact_window" => named(NUMBER, "model"),
         "documents.max_size_mib"
         | "usage.poll_seconds"
+        | "sessions.heal_attempts"
         | "server.port"
         | "gateway.port"
         | "gateway.streak_count"
@@ -282,6 +289,7 @@ fn all_keys() -> impl Iterator<Item = &'static ConfigKey> {
         .chain(DICTATE_KEYS)
         .chain(TTS_KEYS)
         .chain(MODEL_KEYS)
+        .chain(SESSION_KEYS)
         .chain(HANDOFF_KEYS)
         .chain(DOCUMENT_KEYS)
         .chain(USAGE_KEYS)
@@ -1224,6 +1232,40 @@ const MODEL_KEYS: &[ConfigKey] = &[ConfigKey {
     },
 }];
 
+const SESSION_KEYS: &[ConfigKey] = &[
+    ConfigKey {
+        path: "sessions.heal",
+        area: "sessions",
+        class: EffectClass::Live,
+        rows: |config| vec![flag("sessions.heal", config.sessions.heal)],
+    },
+    ConfigKey {
+        path: "sessions.heal_attempts",
+        area: "sessions",
+        class: EffectClass::Live,
+        rows: |config| vec![number("sessions.heal_attempts", config.sessions.heal_attempts)],
+    },
+    ConfigKey {
+        path: "sessions.heal_backoff",
+        area: "sessions",
+        class: EffectClass::Live,
+        rows: |config| {
+            vec![list(
+                "sessions.heal_backoff",
+                config.sessions.heal_backoff.iter().copied().map(format_session_duration).collect(),
+            )]
+        },
+    },
+    ConfigKey {
+        path: "sessions.heal_stable",
+        area: "sessions",
+        class: EffectClass::Live,
+        rows: |config| {
+            vec![text("sessions.heal_stable", format_session_duration(config.sessions.heal_stable))]
+        },
+    },
+];
+
 const HANDOFF_KEYS: &[ConfigKey] = &[
     ConfigKey {
         path: "handoff.enabled",
@@ -1938,6 +1980,12 @@ max_size_mib = 5
 
 [usage]
 poll_seconds = 5
+
+[sessions]
+heal = false
+heal_attempts = 2
+heal_backoff = ["1s", "2s"]
+heal_stable = "1m"
 "#;
 
     /// Two orgs, one with dotted names, for the org-level rows and the
@@ -2077,6 +2125,7 @@ models = ["m"]
         let terminal = accepted_fields(&format!("{BASE}\n[terminal]\nzzz_unknown = 1\n"));
         let documents = accepted_fields(&format!("{BASE}\n[documents]\nzzz_unknown = 1\n"));
         let usage = accepted_fields(&format!("{BASE}\n[usage]\nzzz_unknown = 1\n"));
+        let sessions = accepted_fields(&format!("{BASE}\n[sessions]\nzzz_unknown = 1\n"));
 
         assert_eq!(
             models.iter().map(String::as_str).collect::<Vec<_>>(),
@@ -2133,6 +2182,9 @@ models = ["m"]
                     accepted.extend(documents.iter().map(|field| format!("documents.{field}")));
                 }
                 "usage" => accepted.extend(usage.iter().map(|field| format!("usage.{field}"))),
+                "sessions" => {
+                    accepted.extend(sessions.iter().map(|field| format!("sessions.{field}")));
+                }
                 "env" => {
                     accepted.insert("env.*".to_owned());
                 }
@@ -2365,13 +2417,13 @@ models = ["m"]
         }
     }
 
-    /// The document covers the twelve areas and counts what it draws.
+    /// The document covers the thirteen areas and counts what it draws.
     #[test]
     fn the_document_covers_every_area_and_counts_its_keys() {
         let config = load(EVERY_KEY);
         let document = document(&config, "1.2.3", Path::new("/tmp/forge.toml"));
         assert_eq!(document.areas.len(), AREAS.len(), "every area is drawn");
-        assert_eq!(document.areas.len(), 12, "the sub-nav's twelve areas");
+        assert_eq!(document.areas.len(), 13, "the sub-nav's thirteen areas");
         assert_eq!(
             document.totals.keys,
             document.areas.iter().map(|area| area.keys.len()).sum::<usize>(),

@@ -179,6 +179,10 @@ struct ForgeToml {
     /// interval. Absent section keeps the 60 s default.
     #[serde(default)]
     usage: UsageSettings,
+    /// Optional `[sessions]` section - whether a dead durable seat comes
+    /// back. Absent section keeps the defaults, which heal it.
+    #[serde(default)]
+    sessions: SessionsSection,
     /// Ghost of the renamed `[web]` section: read only so a stale
     /// forge.toml fails the load naming the rename instead of being
     /// refused as an unknown key. Not a warning like the other ghosts, and
@@ -242,6 +246,7 @@ impl std::fmt::Debug for ForgeToml {
             .field("terminal", &self.terminal)
             .field("documents", &self.documents)
             .field("usage", &self.usage)
+            .field("sessions", &self.sessions)
             .field("web", &ignored(&self.web))
             .field("workers", &ignored(&self.workers))
             .field("projects", &ignored(&self.projects))
@@ -269,6 +274,21 @@ pub const DOCUMENT_MAX_MIB_LIMIT: u64 = 190;
 /// while bounding how stale the account-usage cache can be.
 pub const DEFAULT_USAGE_POLL_SECONDS: u64 = 60;
 
+/// Whether a dead durable seat comes back when `[sessions] heal` is absent.
+pub const DEFAULT_HEAL: bool = true;
+
+/// The restart count when `[sessions] heal_attempts` is absent: three
+/// restarts, which caps what a deterministic fault can burn.
+pub const DEFAULT_HEAL_ATTEMPTS: usize = 3;
+
+/// The waits before each restart when `[sessions] heal_backoff` is absent,
+/// in seconds: 5 s, 30 s, then 2 min.
+pub const DEFAULT_HEAL_BACKOFF_SECONDS: [u64; 3] = [5, 30, 120];
+
+/// How long a restarted seat must stay up before its death count resets
+/// when `[sessions] heal_stable` is absent, in seconds.
+pub const DEFAULT_HEAL_STABLE_SECONDS: u64 = 600;
+
 /// One `[usage]` table. Unknown fields are rejected so a mistyped
 /// key fails the load instead of being ignored.
 #[derive(Debug, Default, Deserialize)]
@@ -290,6 +310,132 @@ impl UsageSettings {
             Some(0) => Err(WorkspaceError::UsagePollIntervalInvalid { path: path.to_path_buf() }),
             Some(seconds) => Ok(Duration::from_secs(seconds)),
         }
+    }
+}
+
+/// The validated `[sessions]` table: whether a dead durable seat comes
+/// back, how many restarts it gets, the wait before each, and how long a
+/// restarted seat must stay up before its count resets.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SessionsConfig {
+    pub heal: bool,
+    pub heal_attempts: usize,
+    pub heal_backoff: Vec<Duration>,
+    pub heal_stable: Duration,
+}
+
+impl Default for SessionsConfig {
+    fn default() -> Self {
+        Self {
+            heal: DEFAULT_HEAL,
+            heal_attempts: DEFAULT_HEAL_ATTEMPTS,
+            heal_backoff: DEFAULT_HEAL_BACKOFF_SECONDS
+                .iter()
+                .copied()
+                .map(Duration::from_secs)
+                .collect(),
+            heal_stable: Duration::from_secs(DEFAULT_HEAL_STABLE_SECONDS),
+        }
+    }
+}
+
+/// One `[sessions]` table. Unknown fields are rejected so a mistyped key
+/// fails the load instead of being ignored.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SessionsSection {
+    #[serde(default)]
+    heal: Option<bool>,
+    #[serde(default)]
+    heal_attempts: Option<usize>,
+    #[serde(default)]
+    heal_backoff: Option<Vec<String>>,
+    #[serde(default)]
+    heal_stable: Option<String>,
+}
+
+impl SessionsSection {
+    /// Resolve the section, refusing the counts and durations that would
+    /// silently mean something other than they say.
+    fn into_config(self, path: &Path) -> Result<SessionsConfig, WorkspaceError> {
+        let heal_attempts = match self.heal_attempts {
+            None => DEFAULT_HEAL_ATTEMPTS,
+            Some(0) => {
+                return Err(WorkspaceError::SessionsHealAttemptsInvalid {
+                    path: path.to_path_buf(),
+                });
+            }
+            Some(attempts) => attempts,
+        };
+        let mut heal_backoff = match &self.heal_backoff {
+            None => DEFAULT_HEAL_BACKOFF_SECONDS.iter().copied().map(Duration::from_secs).collect(),
+            Some(entries) if entries.is_empty() => {
+                return Err(WorkspaceError::SessionsBackoffEmpty { path: path.to_path_buf() });
+            }
+            Some(entries) => entries
+                .iter()
+                .map(|value| {
+                    parse_session_duration(value).map_err(|()| {
+                        WorkspaceError::SessionsDurationInvalid {
+                            path: path.to_path_buf(),
+                            key: "heal_backoff",
+                            value: value.clone(),
+                        }
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+        };
+        if let Some(last) = heal_backoff.last().copied() {
+            while heal_backoff.len() < heal_attempts {
+                heal_backoff.push(last);
+            }
+        }
+        let heal_stable = match &self.heal_stable {
+            None => Duration::from_secs(DEFAULT_HEAL_STABLE_SECONDS),
+            Some(value) => parse_session_duration(value).map_err(|()| {
+                WorkspaceError::SessionsDurationInvalid {
+                    path: path.to_path_buf(),
+                    key: "heal_stable",
+                    value: value.clone(),
+                }
+            })?,
+        };
+        Ok(SessionsConfig {
+            heal: self.heal.unwrap_or(DEFAULT_HEAL),
+            heal_attempts,
+            heal_backoff,
+            heal_stable,
+        })
+    }
+}
+
+/// A `[sessions]` duration as the file writes it: digits and one unit,
+/// `ms`, `s`, `m` or `h`. A bare number is refused rather than guessed.
+fn parse_session_duration(value: &str) -> Result<Duration, ()> {
+    let value = value.trim();
+    for (suffix, millis_per_unit) in [("ms", 1_u64), ("s", 1_000), ("m", 60_000), ("h", 3_600_000)]
+    {
+        if let Some(digits) = value.strip_suffix(suffix) {
+            let amount: u64 = digits.parse().map_err(|_| ())?;
+            let millis = amount.checked_mul(millis_per_unit).ok_or(())?;
+            return Ok(Duration::from_millis(millis));
+        }
+    }
+    Err(())
+}
+
+/// The file's spelling of a resolved `[sessions]` duration, for the
+/// settings page: the largest unit that divides it exactly.
+pub(crate) fn format_session_duration(duration: Duration) -> String {
+    let millis = duration.as_millis();
+    if millis > 0 && millis % 3_600_000 == 0 {
+        format!("{}h", millis / 3_600_000)
+    } else if millis > 0 && millis % 60_000 == 0 {
+        format!("{}m", millis / 60_000)
+    } else if millis % 1_000 == 0 {
+        format!("{}s", millis / 1_000)
+    } else {
+        format!("{millis}ms")
     }
 }
 
@@ -874,6 +1020,9 @@ pub(crate) struct LoadedConfig {
     /// resolved, 60 seconds when the key is absent. Bounds how stale the
     /// account-usage cache is.
     pub usage_poll_interval: Duration,
+    /// `[sessions]` section knobs, resolved. Absent section keeps the
+    /// defaults, which heal a dead durable seat.
+    pub sessions: SessionsConfig,
     /// The fingerprint of the raw file text this load read, which the
     /// settings document carries and a save compares against.
     pub raw_fingerprint: String,
@@ -910,6 +1059,7 @@ impl std::fmt::Debug for LoadedConfig {
             .field("terminal", &self.terminal)
             .field("document_max_bytes", &self.document_max_bytes)
             .field("usage_poll_interval", &self.usage_poll_interval)
+            .field("sessions", &self.sessions)
             .field("raw_fingerprint", &self.raw_fingerprint)
             .finish()
     }
@@ -1141,6 +1291,7 @@ impl LoadedConfig {
             terminal: TerminalSettings::default(),
             document_max_bytes: DEFAULT_DOCUMENT_MAX_MIB * 1024 * 1024,
             usage_poll_interval: Duration::from_secs(DEFAULT_USAGE_POLL_SECONDS),
+            sessions: SessionsConfig::default(),
             raw_fingerprint: String::new(),
         }
     }
@@ -1698,6 +1849,7 @@ pub(crate) fn load_from_text(path: PathBuf, raw: &str) -> Result<LoadedConfig, W
     let server = resolve_server(parsed.server, gateway_port, &path)?;
     let document_max_bytes = parsed.documents.resolved_max_bytes(&path)?;
     let usage_poll_interval = parsed.usage.resolved_poll_interval(&path)?;
+    let sessions = parsed.sessions.into_config(&path)?;
     // **A [browser] value outside its range is refused, not clamped**: a
     // quality of 140 is a typo, and silently encoding at 100 would hide it.
     let browser = parsed.browser;
@@ -1804,6 +1956,7 @@ pub(crate) fn load_from_text(path: PathBuf, raw: &str) -> Result<LoadedConfig, W
         terminal,
         document_max_bytes,
         usage_poll_interval,
+        sessions,
         raw_fingerprint: fingerprint_of(raw),
     })
 }
@@ -2240,6 +2393,89 @@ max_size_mib = 0
         assert!(
             err.to_string().contains("poll_second"),
             "the error names the offending key, got: {err}",
+        );
+    }
+
+    /// An absent `[sessions]` table takes the four settled defaults: healing
+    /// on, three restarts at 5 s, 30 s and 2 min, and a 10 min stable window.
+    #[test]
+    fn sessions_default_when_the_section_is_absent() {
+        let dir = tempdir().expect("tempdir");
+        write_config(dir.path(), minimal_config());
+        let config = load_from_dir(dir.path()).expect("absent section loads");
+        assert!(config.sessions.heal, "a durable seat heals unless it is turned off");
+        assert_eq!(config.sessions.heal_attempts, 3, "three restarts");
+        assert_eq!(
+            config.sessions.heal_backoff,
+            vec![Duration::from_secs(5), Duration::from_secs(30), Duration::from_secs(120)],
+            "5 s, 30 s then 2 min",
+        );
+        assert_eq!(config.sessions.heal_stable, Duration::from_secs(600), "10 minutes");
+    }
+
+    #[test]
+    fn sessions_section_reads_its_keys() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            &format!(
+                "{}\n[sessions]\nheal = false\nheal_attempts = 2\nheal_backoff = [\"1s\", \
+                 \"90s\"]\nheal_stable = \"30m\"\n",
+                minimal_config()
+            ),
+        );
+        let config = load_from_dir(dir.path()).expect("section loads");
+        assert!(!config.sessions.heal);
+        assert_eq!(config.sessions.heal_attempts, 2);
+        assert_eq!(
+            config.sessions.heal_backoff,
+            vec![Duration::from_secs(1), Duration::from_secs(90)],
+        );
+        assert_eq!(config.sessions.heal_stable, Duration::from_secs(1800));
+    }
+
+    /// A backoff list shorter than the attempt count repeats its last
+    /// interval, so one entry covers every restart.
+    #[test]
+    fn sessions_backoff_repeats_its_last_interval() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            &format!(
+                "{}\n[sessions]\nheal_attempts = 3\nheal_backoff = [\"7s\"]\n",
+                minimal_config()
+            ),
+        );
+        let config = load_from_dir(dir.path()).expect("section loads");
+        assert_eq!(config.sessions.heal_backoff, vec![Duration::from_secs(7); 3]);
+    }
+
+    /// Zero restart attempts would leave a dead seat dead while claiming
+    /// healing is on, so it is refused by name.
+    #[test]
+    fn sessions_heal_attempts_zero_is_refused_at_load() {
+        let dir = tempdir().expect("tempdir");
+        write_config(dir.path(), &format!("{}\n[sessions]\nheal_attempts = 0\n", minimal_config()));
+        let err = load_from_dir(dir.path()).expect_err("0 attempts must not load");
+        assert!(
+            err.to_string().contains("sessions.heal_attempts"),
+            "the error names the unusable key, got: {err}",
+        );
+    }
+
+    /// A duration with no unit is a typo, not seconds: reading "10" as 10 s
+    /// would silently heal slower or faster than the file says.
+    #[test]
+    fn sessions_duration_without_a_unit_is_refused_at_load() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            &format!("{}\n[sessions]\nheal_stable = \"10\"\n", minimal_config()),
+        );
+        let err = load_from_dir(dir.path()).expect_err("a bare number must not load");
+        assert!(
+            err.to_string().contains("sessions.heal_stable"),
+            "the error names the unusable key, got: {err}",
         );
     }
 

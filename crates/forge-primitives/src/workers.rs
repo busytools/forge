@@ -39,6 +39,9 @@ pub enum WorkerLiveness {
     Spawning,
     Running,
     Failed,
+    /// The worker's subprocess died while it was up and its supervisor is
+    /// bringing it back. Not live: the label is free for that resume.
+    Restarting,
 }
 
 /// Snapshot of one worker. Carried by `agents__list` and threaded
@@ -67,6 +70,13 @@ pub struct WorkerStatus {
     /// or terminal (e.g., spawn binary missing).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub diagnostic: Option<String>,
+    /// Which heal attempt is next when `status == Restarting`: 1 for the
+    /// first restart after the death. `None` for every other status.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub heal_attempt: Option<u32>,
+    /// When that attempt fires. `None` when no attempt is scheduled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub heal_next_at: Option<SystemTime>,
     /// What the worker's session is doing right now, on the axis
     /// `status` does not answer: `status` is the spawn outcome and
     /// stops moving once the worker connects, so a worker idle for an
@@ -135,6 +145,35 @@ mod tests {
         assert!(matches!(WorkerLiveness::Failed, WorkerLiveness::Failed));
     }
 
+    /// A restarting row carries the attempt and the instant the next one
+    /// fires, so a client can say "restarting, attempt 2 of 3" without
+    /// counting anything itself.
+    #[test]
+    fn a_restarting_status_carries_its_attempt_and_next_stamp() {
+        let next_at = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_790_000_000);
+        let status = WorkerStatus {
+            label: "reviewer".into(),
+            charter: "be sharp".into(),
+            status: WorkerLiveness::Restarting,
+            session_id: "uuid-1".into(),
+            slot: crate::SessionSlot::new("me", "forge", "reviewer"),
+            spawned_at: SystemTime::UNIX_EPOCH,
+            spawned_by: crate::SessionSlot::lead("me", "forge"),
+            diagnostic: None,
+            activity: None,
+            heal_attempt: Some(2),
+            heal_next_at: Some(next_at),
+        };
+        let json = serde_json::to_value(&status).expect("serialize");
+        assert_eq!(json["status"], serde_json::json!("Restarting"));
+        assert_eq!(json["heal_attempt"], serde_json::json!(2), "the attempt the row names");
+        assert_eq!(
+            json["heal_next_at"]["secs_since_epoch"],
+            serde_json::json!(1_790_000_000_u64),
+            "when the next attempt fires",
+        );
+    }
+
     #[test]
     fn worker_status_diagnostic_round_trips_through_serde() {
         let status = WorkerStatus {
@@ -147,6 +186,8 @@ mod tests {
             spawned_by: crate::SessionSlot::lead("me", "forge"),
             diagnostic: Some("No conversation found".into()),
             activity: Some(SessionLifecycleState::Attention),
+            heal_attempt: None,
+            heal_next_at: None,
         };
         let json = serde_json::to_string(&status).expect("serialize");
         let back: WorkerStatus = serde_json::from_str(&json).expect("deserialize");

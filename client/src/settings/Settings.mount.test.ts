@@ -79,6 +79,25 @@ describe('the settings page', () => {
     expect(empty?.textContent).toContain('0');
   });
 
+  /**
+   * **The sessions area draws the four controls `[sessions]` ships**, with
+   * the values the server resolved. The page holds no default of its own: a
+   * value it drew differently from the document would be a second source
+   * of truth.
+   */
+  it('draws the sessions controls with their resolved values', () => {
+    draw('sessions');
+    expect(document.querySelector('#settings-area-title')?.textContent).toBe('sessions');
+    expect(rowKeys()).toEqual(['heal', 'heal_attempts', 'heal_backoff', 'heal_stable']);
+    const rowText = (path: string): string =>
+      rows().find((row) => row.querySelector('code')?.getAttribute('title') === path)
+        ?.textContent ?? '';
+    expect(rowText('sessions.heal'), 'healing on').toContain('true');
+    expect(rowText('sessions.heal_attempts'), 'three restarts').toContain('3');
+    expect(rowText('sessions.heal_backoff'), 'the waits').toContain('5s');
+    expect(rowText('sessions.heal_stable'), 'the stable window').toContain('10m');
+  });
+
   it('draws each instance as a card and each key as one line in it', () => {
     draw('server');
     expect(document.querySelector('#settings-area-title')?.textContent).toBe('server');

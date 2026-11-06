@@ -31,7 +31,7 @@ const COOLING_REWARN_INTERVAL: Duration = Duration::from_secs(30 * 60);
 
 /// India Standard Time's offset from UTC, the clock a reader of the
 /// notice is on.
-const IST_OFFSET_MINUTES: i64 = 5 * 60 + 30;
+pub(crate) const IST_OFFSET_MINUTES: i64 = 5 * 60 + 30;
 
 /// A cron prompt buffered for a sleeping slot: the raw prompt plus whether
 /// this fire is overdue (delivered with a missed marker on drain), and the

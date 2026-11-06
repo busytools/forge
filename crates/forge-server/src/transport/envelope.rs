@@ -1718,6 +1718,8 @@ mod tests {
                     spawned_at: std::time::SystemTime::UNIX_EPOCH,
                     spawned_by: seat.clone(),
                     diagnostic: None,
+                    heal_attempt: None,
+                    heal_next_at: None,
                     activity: None,
                 },
                 worktree: forge_workspace::protocol::WorktreeDisposition::Absent,

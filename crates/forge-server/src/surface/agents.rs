@@ -18,6 +18,12 @@ pub struct AgentRow {
     /// The worker's own label, or `"lead"` for a project's own agent.
     pub label: String,
     pub lifecycle: SessionLifecycleState,
+    /// Which heal attempt is next while the seat is `Restarting`; `None`
+    /// for every other lifecycle.
+    pub heal_attempt: Option<u32>,
+    /// How many restarts a heal may make, so the row can say "1 of 3"
+    /// without the client holding a policy of its own.
+    pub heal_attempts: Option<u32>,
     pub has_background_work: bool,
     pub pending: Option<PendingKind>,
     /// How many prompts the session is holding. Zero when it holds none,
@@ -146,9 +152,13 @@ fn row_for(
     let lifecycle = match status {
         Some(WorkerLiveness::Spawning) => SessionLifecycleState::Spawning,
         Some(WorkerLiveness::Failed) => SessionLifecycleState::Failed,
+        Some(WorkerLiveness::Restarting) => SessionLifecycleState::Restarting,
         Some(WorkerLiveness::Running) | None => workspace.session_activity(&slot),
     };
+    let heal = workspace.heal_progress(&slot);
     AgentRow {
+        heal_attempt: heal.map(|progress| progress.attempt),
+        heal_attempts: heal.and_then(|_| workspace.heal_attempts()),
         has_background_work: workspace.has_background_work(&slot),
         last_activity: workspace.session_last_activity(&slot),
         failed_turn: workspace.session_failed_turn(&slot),
@@ -305,6 +315,46 @@ mod tests {
             SessionLifecycleState::Failed,
             "a dead spawn is failed, and is kept only so the reason can be read",
         );
+    }
+
+    /// A seat between heal attempts draws `Restarting` with its attempt and
+    /// cap, and a lead's row - which has no worker entry - carries the same
+    /// state from the workspace. Catches a row builder that maps the liveness
+    /// but drops the fields, and a lead path that reads the slot derivation
+    /// without the heal state.
+    #[test]
+    fn a_restarting_row_carries_its_attempt() {
+        let (workspace, _dir) = crate::surface::testing::workspace();
+        let surface = ViewSurface::new(Arc::clone(&workspace));
+        let project =
+            surface.roster().project_named("forge").expect("configured project").key.clone();
+        let lead = SessionSlot::lead("TestOrg", "forge");
+        workspace.register_domain_session(lead.clone(), None);
+        let worker = SessionSlot::worker("TestOrg", "forge", "probe-heal");
+        workspace.seed_test_worker_row(&project, "probe-heal");
+        workspace
+            .insert_live_worker(&project, worker_row("probe-heal", WorkerLiveness::Restarting));
+        let next_at = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_790_000_000);
+        workspace.set_heal_progress(&worker, 1, next_at);
+        workspace.set_heal_progress(&lead, 2, next_at);
+
+        let agents = surface.agents();
+        let rows = agents.for_project(&project);
+        let worker_row = rows.iter().find(|row| row.slot == worker).expect("the worker's row");
+        assert_eq!(
+            worker_row.lifecycle,
+            SessionLifecycleState::Restarting,
+            "a seat between attempts is restarting, not failed or asleep",
+        );
+        assert_eq!(worker_row.heal_attempt, Some(1), "the attempt the row names");
+
+        let lead_row = rows.iter().find(|row| row.slot == lead).expect("the lead's row");
+        assert_eq!(
+            lead_row.lifecycle,
+            SessionLifecycleState::Restarting,
+            "a lead has no worker entry, so its row reads the heal state from the workspace",
+        );
+        assert_eq!(lead_row.heal_attempt, Some(2));
     }
 
     /// A worker label with no live registry entry still gets a row, and

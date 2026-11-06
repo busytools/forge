@@ -108,6 +108,7 @@ as well as a colour, so the row reads without colour:
 |---|---|---|
 | Running | `running` | a turn is in flight, or background work is running |
 | Spawning | `spawning` | the subprocess is coming up |
+| Restarting | `restarting` | the subprocess died while it was up, and forge is between restarts |
 | Idle | `idle` | alive, nothing in flight |
 | Finished | `unseen` | a turn completed on a seat no client was showing |
 | Needs you | `needs` | a question, a permission prompt, a hand-off, a held configuration write or a held vault call is waiting |
@@ -126,7 +127,12 @@ truth about now, so a seat that came back is counted live by the fleet and
 the header and is somewhere the close walk can land while the mark and the
 line say what happened; the mark goes the moment the seat is opened. A
 failed TURN has no reason text of its own (the failure's words are in the
-seat's conversation), so its line is the words `a turn failed`.
+seat's conversation), so its line is the words `a turn failed`. A seat
+between heal attempts reads `restarting (N of M)` - the attempt forge is
+on and the cap from `[sessions] heal_attempts`, or `restarting (attempt N)`
+when the server names no cap - under the project's name, and beside the
+seat on the rail: the mark says the seat is working, the line says what is
+happening to it, and nothing about it is the reader's to act on.
 
 ## The states the page can be in
 
