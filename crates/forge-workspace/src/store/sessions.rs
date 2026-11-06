@@ -24,6 +24,32 @@ const SESSIONS: TableDefinition<(&str, &str, &str), &[u8]> = TableDefinition::ne
 /// label, so the label alone says which role holds the row.
 pub const LEAD_LABEL: &str = "lead";
 
+/// What a seat was doing when forge last had a say: whether it is open at
+/// all, and whether a turn was in flight. The boot wave reads it to reopen
+/// the seats that were open and kick only the ones whose turn was cut off.
+///
+/// A worker is never `closed` by this model; its row reading `closed` or
+/// absent is treated as `idle`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SeatState {
+    /// The seat is not open: the close door took it, and a bare boot
+    /// leaves it shut. Naming the project opens it again.
+    Closed,
+    /// Open with a turn in flight. A boot resumes this seat and hands it
+    /// the restart note.
+    InTurn,
+    /// Open with no turn in flight. A boot resumes it and hands it nothing.
+    Idle,
+}
+
+impl SeatState {
+    /// Whether a bare boot reopens this seat.
+    pub fn is_open(self) -> bool {
+        matches!(self, Self::Idle | Self::InTurn)
+    }
+}
+
 /// One session's identity, plus the worker fields a re-spawn needs.
 /// `session_id` is absent on a worker row the sweep creates, because
 /// `dynamic_workers` never stored one; every other field is worker-only,
@@ -51,6 +77,11 @@ pub struct SessionRecord {
     pub resume_kick: Option<String>,
     #[serde(default)]
     pub interactive: Option<bool>,
+    /// Whether the seat is open and whether a turn was in flight. `None`
+    /// is a row written before the field existed; the boot migration seeds
+    /// those `Idle` once, so from then on the state is explicit.
+    #[serde(default)]
+    pub seat_state: Option<SeatState>,
     /// Whether the worker runs in a worktree, which fixes the directory
     /// its session starts in: `worker_tag_dir` reads it to compose the
     /// path. Absent on a row written before the field existed, and the
@@ -227,6 +258,9 @@ pub fn migrate_from_dynamic_workers(
             kick: worker.kick.clone(),
             resume_kick: worker.resume_kick.clone(),
             interactive: Some(worker.interactive),
+            // The seat-state migration in the same boot seeds it; a newly
+            // moved row is idle until its worker's first turn.
+            seat_state: None,
             is_git_repo: None,
             // Nor a family selection; absent means every family.
             mcp_families: None,
@@ -390,6 +424,9 @@ pub fn update(db: &Db, fields: &SessionRecord) -> anyhow::Result<bool> {
     if fields.interactive.is_some() {
         row.interactive = fields.interactive;
     }
+    if fields.seat_state.is_some() {
+        row.seat_state = fields.seat_state;
+    }
     if fields.is_git_repo.is_some() {
         row.is_git_repo = fields.is_git_repo;
     }
@@ -402,6 +439,83 @@ pub fn update(db: &Db, fields: &SessionRecord) -> anyhow::Result<bool> {
     // nothing that merges onto a row moves it.
     put(db, &row)?;
     Ok(true)
+}
+
+/// Move the row at `(org, project, label)` to `state`, keeping every other
+/// field.
+///
+/// **`Closed` is authoritative.** Unless `reopen` states that an opening
+/// door asked for the seat, a write leaves a closed row closed: the task a
+/// close tore down can still drain a queued `/resume` or translate a
+/// `Result`, and one of those writes landing would reopen a project the
+/// user shut. Returns whether a row existed; a row that is not there is
+/// not created, because the state describes an occupant the row names.
+pub fn set_seat_state(
+    db: &Db,
+    org: &str,
+    project: &str,
+    label: &str,
+    state: SeatState,
+    reopen: bool,
+) -> anyhow::Result<bool> {
+    let Some(mut record) = get(db, org, project, label)? else { return Ok(false) };
+    if record.seat_state == Some(state) {
+        return Ok(true);
+    }
+    if !reopen && record.seat_state == Some(SeatState::Closed) {
+        return Ok(true);
+    }
+    record.seat_state = Some(state);
+    put(db, &record)?;
+    Ok(true)
+}
+
+/// Put a row's seat state back to what it held before a refused spawn,
+/// but only while the row still holds `expected` - the state that spawn
+/// wrote. A newer decision (a close landing mid-spawn) stands: the
+/// restore undoes the spawn's own write, never the reader's.
+pub fn restore_seat_state(
+    db: &Db,
+    org: &str,
+    project: &str,
+    label: &str,
+    state: Option<SeatState>,
+    expected: SeatState,
+) -> anyhow::Result<bool> {
+    let Some(mut record) = get(db, org, project, label)? else { return Ok(false) };
+    if record.seat_state != Some(expected) || record.seat_state == state {
+        return Ok(false);
+    }
+    record.seat_state = state;
+    put(db, &record)?;
+    Ok(true)
+}
+
+/// The state the row at `(org, project, label)` holds, or `None` when the
+/// row is absent or was written before the field existed.
+pub fn seat_state(
+    db: &Db,
+    org: &str,
+    project: &str,
+    label: &str,
+) -> anyhow::Result<Option<SeatState>> {
+    Ok(get(db, org, project, label)?.and_then(|row| row.seat_state))
+}
+
+/// Seed every row written before `seat_state` existed with `Idle`, so the
+/// first boot on this build reads an explicit state instead of absence.
+/// Returns how many rows it seeded; a second run writes nothing.
+pub fn seed_seat_state(db: &Db) -> anyhow::Result<usize> {
+    let mut seeded = 0;
+    for mut row in list_all(db)? {
+        if row.seat_state.is_some() {
+            continue;
+        }
+        row.seat_state = Some(SeatState::Idle);
+        put(db, &row)?;
+        seeded += 1;
+    }
+    Ok(seeded)
 }
 
 /// Drop the id a row pinned, keeping everything else it carries.
@@ -471,6 +585,7 @@ mod tests {
             kick: None,
             resume_kick: None,
             interactive: None,
+            seat_state: None,
             is_git_repo: None,
             mcp_families: None,
             cwd: None,
@@ -564,6 +679,136 @@ mod tests {
         );
     }
 
+    /// The seat's state survives the store with its own wire spelling, and
+    /// a row written before the field existed decodes as absent rather
+    /// than as an invented state.
+    #[test]
+    fn the_seat_state_round_trips_and_old_rows_stay_absent() {
+        let dir = tempdir().expect("tempdir");
+        let db = Db::open(&dir.path().join("db.redb")).expect("open db");
+
+        let mut row = record("Personal", "forge", "lead", Some("id-1"));
+        row.seat_state = Some(SeatState::InTurn);
+        put(&db, &row).expect("write");
+
+        let read = get(&db, "Personal", "forge", "lead").expect("read").expect("row");
+        assert_eq!(read.seat_state, Some(SeatState::InTurn), "the stored state reads back whole");
+        let body: serde_json::Value =
+            serde_json::from_slice(&raw_for_test(&db, "Personal", "forge", "lead").expect("raw"))
+                .expect("the body is json");
+        assert_eq!(
+            body.get("seat_state").and_then(serde_json::Value::as_str),
+            Some("in_turn"),
+            "the wire spelling is the state's own name: {body}",
+        );
+
+        let legacy = br#"{"session_id":null}"#;
+        let decoded =
+            decode("Personal", "forge", "old", legacy).expect("a legacy body still decodes");
+        assert_eq!(
+            decoded.seat_state, None,
+            "an absent state stays absent until the migration seeds it"
+        );
+    }
+
+    /// Only the state moves: a write that rebuilt the row from a partial
+    /// record would drop the id, the charter and the kick, and the next
+    /// boot would start a fresh session for a seat that had one.
+    #[test]
+    fn setting_the_seat_state_keeps_the_rows_other_fields() {
+        let dir = tempdir().expect("tempdir");
+        let db = Db::open(&dir.path().join("db.redb")).expect("open db");
+        let mut row = record("Personal", "forge", "steward", Some("id-1"));
+        row.charter = Some("charter".to_owned());
+        row.kick = Some("kick".to_owned());
+        put(&db, &row).expect("write");
+
+        assert!(
+            set_seat_state(&db, "Personal", "forge", "steward", SeatState::Closed, false)
+                .expect("set"),
+            "an existing row takes the state",
+        );
+        let read = get(&db, "Personal", "forge", "steward").expect("read").expect("row");
+        assert_eq!(read.seat_state, Some(SeatState::Closed));
+        assert_eq!(read.session_id.as_deref(), Some("id-1"), "the occupant survives");
+        assert_eq!(read.charter.as_deref(), Some("charter"), "and the charter");
+        assert_eq!(read.kick.as_deref(), Some("kick"), "and the kick");
+
+        assert!(
+            !set_seat_state(&db, "Personal", "forge", "ghost", SeatState::Idle, false)
+                .expect("set ghost"),
+            "a row that is not there is not created",
+        );
+    }
+
+    /// **A closed row stays closed against every write a torn-down task can
+    /// still land**, and only a spawn that states it is opening the seat
+    /// moves it. Without this, a buffered swap or a late settle reopens the
+    /// project the user just shut, and the next boot reopens it for real.
+    #[test]
+    fn a_closed_row_moves_only_for_an_explicit_reopen() {
+        let dir = tempdir().expect("tempdir");
+        let db = Db::open(&dir.path().join("db.redb")).expect("open db");
+        let mut row = record("Personal", "forge", "lead", Some("id-1"));
+        row.seat_state = Some(SeatState::Closed);
+        put(&db, &row).expect("write");
+
+        for state in [SeatState::Idle, SeatState::InTurn, SeatState::Closed] {
+            assert!(
+                set_seat_state(&db, "Personal", "forge", "lead", state, false).expect("write"),
+                "the row is there to write",
+            );
+            assert_eq!(
+                get(&db, "Personal", "forge", "lead").expect("read").expect("row").seat_state,
+                Some(SeatState::Closed),
+                "a non-reopening write leaves {state:?} off a closed row",
+            );
+        }
+
+        assert!(
+            set_seat_state(&db, "Personal", "forge", "lead", SeatState::Idle, true)
+                .expect("reopen"),
+            "the row is there to reopen",
+        );
+        assert_eq!(
+            get(&db, "Personal", "forge", "lead").expect("read").expect("row").seat_state,
+            Some(SeatState::Idle),
+            "an opening door reopens it",
+        );
+    }
+
+    /// The first boot on this build seeds every row written before the
+    /// field existed with `idle`, so the boot wave opens every project
+    /// whose lead ever spawned, once; explicit states are left alone and a
+    /// second boot writes nothing.
+    #[test]
+    fn the_seat_state_migration_seeds_old_rows_once() {
+        let dir = tempdir().expect("tempdir");
+        let db = Db::open(&dir.path().join("db.redb")).expect("open db");
+        put_raw_for_test(&db, "Personal", "forge", "lead", br#"{"session_id":"id-1"}"#)
+            .expect("plant a row of the shape the previous build wrote");
+        let mut explicit = record("Personal", "forge", "steward", Some("id-2"));
+        explicit.seat_state = Some(SeatState::InTurn);
+        put(&db, &explicit).expect("write");
+
+        assert_eq!(
+            seed_seat_state(&db).expect("migrate"),
+            1,
+            "only the row without a state is seeded",
+        );
+        assert_eq!(
+            get(&db, "Personal", "forge", "lead").expect("read").expect("row").seat_state,
+            Some(SeatState::Idle),
+            "an old row reads as an open seat",
+        );
+        assert_eq!(
+            get(&db, "Personal", "forge", "steward").expect("read").expect("row").seat_state,
+            Some(SeatState::InTurn),
+            "an explicit state is left alone",
+        );
+        assert_eq!(seed_seat_state(&db).expect("second boot"), 0, "the migration is idempotent");
+    }
+
     /// The first boot after this table exists is the migration: every
     /// persisted worker crosses over with its fields, and its id is left
     /// empty because `dynamic_workers` never stored one - so the session
@@ -594,6 +839,7 @@ mod tests {
                 kick: Some("kick for steward".to_owned()),
                 resume_kick: Some("resume kick for steward".to_owned()),
                 interactive: Some(true),
+                seat_state: None,
                 // The retired table never held it; the spawn probes and
                 // records it on the worker's next spawn.
                 is_git_repo: None,

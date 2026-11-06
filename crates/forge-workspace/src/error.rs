@@ -160,12 +160,6 @@ pub enum WorkspaceError {
     ClientNameUnknown { path: PathBuf, key: &'static str, value: String },
 
     #[error(
-        "[web] was renamed in forge.toml at {}: its listener keys (enabled, port, bind) are [server]'s and its drawing keys (mark, theme, font) are [client]'s",
-        path.display()
-    )]
-    WebSectionRenamed { path: PathBuf },
-
-    #[error(
         "account '{name}' in forge.toml at {} declares a base-url provider but has no base_url key",
         path.display()
     )]
@@ -257,6 +251,10 @@ pub enum WorkspaceError {
          project, or start the session from one that is configured"
     )]
     SpawnResolvesToNoProject { slot: String },
+    /// A recovery spawn found the seat closed: the reader stopped it while
+    /// the spawn was being prepared, and only an opening door may undo that.
+    #[error("session '{slot}' was closed while its recovery spawn was in flight; the close stands")]
+    SeatClosedDuringSpawn { slot: String },
     /// The stated spawn role and the target slot name different
     /// sessions. Both are caller statements, so a disagreement is a
     /// caller bug rather than something to resolve.

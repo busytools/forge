@@ -1545,14 +1545,11 @@ model = "a"
         let document = document(FIXTURE);
         let rename =
             set_edit(&document, "orgs.Acme.Corp.projects.api.v2.name", serde_json::json!("api.v3"));
-        let edit = set_edit(
-            &document,
-            "orgs.Acme.Corp.projects.api.v2.resume_lead",
-            serde_json::json!(true),
-        );
+        let edit =
+            set_edit(&document, "orgs.Acme.Corp.projects.api.v2.max_workers", serde_json::json!(4));
         let out = apply(FIXTURE, &[rename, edit], &document).expect("both apply");
         assert!(out.contains("name = \"api.v3\""), "the rename landed: {out}");
-        assert!(out.contains("resume_lead = true"), "the edit landed: {out}");
+        assert!(out.contains("max_workers = 4"), "the edit landed: {out}");
     }
 
     /// **An add cannot replace an existing entry.** A model table already in

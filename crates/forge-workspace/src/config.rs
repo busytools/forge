@@ -4,11 +4,11 @@
 //! Gateway, Personal, etc.). Each org carries the `accounts = [...]`
 //! pin shared by all its projects, replacing the per-project pin
 //! that lived here before. Projects within an org keep a flat list
-//! via `[[orgs.projects]]`. Multiple projects can carry
-//! `resume_lead = true`; a launch with no project named spawns all such
-//! projects, resuming the session forge stored for them unless `--new`
-//! is passed, and the first one (alphabetical) is the fallback target
-//! when no project is named and no picker chooses one.
+//! via `[[orgs.projects]]`. A launch with no project named opens every
+//! project whose seat the store records as open, resuming the session
+//! forge stored for each unless `--new` is passed; the alphabetically
+//! first project is the fallback target when no project is named and no
+//! picker chooses one.
 //!
 //! **Selection policy.** The gateway's declared-model walk: over the
 //! org's `accounts` primaries and `fallback_accounts`, the first
@@ -183,34 +183,6 @@ struct ForgeToml {
     /// back. Absent section keeps the defaults, which heal it.
     #[serde(default)]
     sessions: SessionsSection,
-    /// Ghost of the renamed `[web]` section: read only so a stale
-    /// forge.toml fails the load naming the rename instead of being
-    /// refused as an unknown key. Not a warning like the other ghosts, and
-    /// not a back-compat alias: an ignored bind would reset an exposed
-    /// server to loopback.
-    #[serde(default)]
-    web: Option<toml::Value>,
-    /// Ghost of the deleted `[workers]` section: read only so a stale
-    /// synced forge.toml still carrying it warns at load instead of
-    /// sitting there silently ignored.
-    #[serde(default)]
-    workers: Option<toml::Value>,
-    /// Ghost of the deleted `[projects.<name>]` side tables: read only
-    /// so a pre-colocation forge.toml still carrying them warns at load
-    /// instead of silently dropping every per-project key.
-    #[serde(default)]
-    projects: Option<toml::Value>,
-    /// Ghost of the deleted `[selection]` section, read for the same
-    /// reason: a stale synced forge.toml warns instead of failing.
-    #[serde(default)]
-    selection: Option<toml::Value>,
-    /// Ghost of the retired `[ui]` section, read for the same reason. It held
-    /// a client's presentation knobs - the spinner and the cadence - which the
-    /// server stopped reading entirely, and a synced forge.toml still carrying
-    /// it must warn at load rather than refuse a boot on a machine nobody is
-    /// looking at.
-    #[serde(default)]
-    ui: Option<toml::Value>,
     /// Optional top-level `[env]` table - the BASE every session
     /// starts from, overridden per key by `[accounts.env]` and then by
     /// the project's env. Merged into `LoadedAccount.env` at
@@ -219,13 +191,12 @@ struct ForgeToml {
     env: HashMap<String, String>,
 }
 
-/// Hand-written so the global env's values and a stale ignored section's
-/// contents stay out of it; the sections it holds redact themselves.
+/// Hand-written so the global env's values stay out of it; the sections it
+/// holds redact themselves.
 impl std::fmt::Debug for ForgeToml {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let env: BTreeMap<&str, &str> =
             self.env.keys().map(|key| (key.as_str(), "[redacted]")).collect();
-        let ignored = |section: &Option<toml::Value>| section.as_ref().map(|_| "[ignored]");
         f.debug_struct("ForgeToml")
             .field("orgs", &self.orgs)
             .field("accounts", &self.accounts)
@@ -247,11 +218,6 @@ impl std::fmt::Debug for ForgeToml {
             .field("documents", &self.documents)
             .field("usage", &self.usage)
             .field("sessions", &self.sessions)
-            .field("web", &ignored(&self.web))
-            .field("workers", &ignored(&self.workers))
-            .field("projects", &ignored(&self.projects))
-            .field("selection", &ignored(&self.selection))
-            .field("ui", &ignored(&self.ui))
             .field("env", &env)
             .finish()
     }
@@ -679,13 +645,6 @@ struct SlackBinding {
 struct ProjectEntry {
     name: String,
     path: String,
-    /// When `true`, a launch with no project named spawns the project's
-    /// lead session at forge launch, resuming the session forge stored
-    /// for it unless `--new` is passed. Multiple projects can carry
-    /// this; they all spawn in the background, and none of them is
-    /// focused until a view picks one. Defaults to `false`.
-    #[serde(default)]
-    resume_lead: bool,
     /// The project's model: fills the CLI's model slots at spawn
     /// (`ANTHROPIC_DEFAULT_*_MODEL`, `ANTHROPIC_SMALL_FAST_MODEL`,
     /// `CLAUDE_CODE_SUBAGENT_MODEL`). Required to be declared by at
@@ -740,7 +699,6 @@ impl std::fmt::Debug for ProjectEntry {
         f.debug_struct("ProjectEntry")
             .field("name", &self.name)
             .field("path", &self.path)
-            .field("resume_lead", &self.resume_lead)
             .field("model", &self.model)
             .field("permission_mode", &self.permission_mode)
             .field("max_workers", &self.max_workers)
@@ -958,10 +916,9 @@ pub(crate) struct LoadedConfig {
     /// may override it; the resolved per-project binding is on the project.
     pub org_slack: HashMap<String, String>,
     /// Index into `projects` for the fallback target: the
-    /// alphabetically-first project that carries `resume_lead = true`,
-    /// falling back to the alphabetically-first project overall when no
-    /// project opts in. Read only when no project is named and no picker
-    /// selects one; a named project and the picker both override it.
+    /// alphabetically-first project. Read only when no project is named and
+    /// no picker selects one; a named project and the picker both override
+    /// it.
     pub default_index: usize,
     pub accounts: Vec<LoadedAccount>,
     /// `[models."<name>"]` tables, keyed by the spelling a project's
@@ -1142,10 +1099,6 @@ pub(crate) struct LoadedProject {
     /// Cached fallback list from the project's org, alongside
     /// `accounts`. Absent key -> empty.
     pub fallback_accounts: Vec<String>,
-    /// `true` when a launch with no project named should spawn the
-    /// project's lead at forge launch, resuming the session forge stored
-    /// for it unless `--new` is passed.
-    pub resume_lead: bool,
     /// The project's model: fills the CLI's model slots at spawn
     /// (`ANTHROPIC_DEFAULT_*_MODEL`, `ANTHROPIC_SMALL_FAST_MODEL`,
     /// `CLAUDE_CODE_SUBAGENT_MODEL`) and is the model the walk matches
@@ -1196,7 +1149,6 @@ impl std::fmt::Debug for LoadedProject {
             .field("org", &self.org)
             .field("accounts", &self.accounts)
             .field("fallback_accounts", &self.fallback_accounts)
-            .field("resume_lead", &self.resume_lead)
             .field("model", &self.model)
             .field("env", &env)
             .field("env_file", &self.env_file)
@@ -1251,12 +1203,6 @@ pub(crate) fn applied_env_keys(project: &LoadedProject) -> String {
 impl LoadedConfig {
     pub(crate) fn default_project(&self) -> &LoadedProject {
         &self.projects[self.default_index]
-    }
-
-    /// Iterate every project that should spawn at forge launch
-    /// (`resume_lead = true`).
-    pub(crate) fn resume_lead_projects(&self) -> impl Iterator<Item = &LoadedProject> {
-        self.projects.iter().filter(|p| p.resume_lead)
     }
 
     /// Empty `LoadedConfig` for the `testing` feature's
@@ -1445,10 +1391,6 @@ pub(crate) fn load_from_text(path: PathBuf, raw: &str) -> Result<LoadedConfig, W
         path: path.clone(),
     })?;
 
-    if parsed.web.is_some() {
-        return Err(WorkspaceError::WebSectionRenamed { path });
-    }
-
     // The boot's SlackWorkspaces build runs these checks; a reload goes
     // through the same loader, so it must refuse the same file a restart
     // would.
@@ -1456,50 +1398,12 @@ pub(crate) fn load_from_text(path: PathBuf, raw: &str) -> Result<LoadedConfig, W
         WorkspaceError::ConfigInvalid { path: path.clone(), message: format!("slack: {message}") }
     })?;
 
-    if parsed.workers.is_some() {
-        tracing::warn!(
-            target: "forge_workspace::config",
-            event_name = "workers_section_ignored",
-            "[workers] is no longer read; set max_workers on the project's \
-             [[orgs.projects]] entry",
-        );
-    }
-
     if parsed.tts.language.is_some() {
         tracing::warn!(
             target: "forge_workspace::config",
             event_name = "tts_language_key_ignored",
             "[tts] language is no longer read; the voice id is the language choice and the 54 \
              voices cover eight languages, so the key and its value can be deleted",
-        );
-    }
-
-    if parsed.projects.is_some() {
-        tracing::warn!(
-            target: "forge_workspace::config",
-            event_name = "projects_section_ignored",
-            "[projects.<name>] is no longer read; move model, permission_mode, \
-             max_workers, env and env_file onto the project's \
-             [[orgs.projects]] entry - \
-             this config's per-project keys are being silently dropped",
-        );
-    }
-
-    if parsed.selection.is_some() {
-        tracing::warn!(
-            target: "forge_workspace::config",
-            event_name = "selection_section_ignored",
-            "[selection] is no longer read; the gateway walks an org's accounts \
-             and fallback_accounts in the order they are declared",
-        );
-    }
-
-    if parsed.ui.is_some() {
-        tracing::warn!(
-            target: "forge_workspace::config",
-            event_name = "ui_section_ignored",
-            "[ui] is no longer read; the spinner and its cadence retired with the \
-             terminal crate, so the section and its keys can be deleted",
         );
     }
 
@@ -1785,7 +1689,6 @@ pub(crate) fn load_from_text(path: PathBuf, raw: &str) -> Result<LoadedConfig, W
                 org: org_entry.name.clone(),
                 accounts: org_entry.accounts.clone(),
                 fallback_accounts: org_entry.fallback_accounts.clone(),
-                resume_lead: project_entry.resume_lead,
                 model: project_entry.model.clone(),
                 env,
                 env_file: project_entry.env_file.clone(),
@@ -1829,13 +1732,11 @@ pub(crate) fn load_from_text(path: PathBuf, raw: &str) -> Result<LoadedConfig, W
     // Default project resolution (used by `forge` without argv when
     // the launchpad picker isn't available - fixture tests, smoke
     // tests, etc.; the production path lands on the launchpad
-    // picker first):
-    // 1. Alphabetically-first `resume_lead = true` project.
-    // 2. Else alphabetically-first project overall.
+    // picker first): the alphabetically-first project.
     let default_index = {
         let mut alpha: Vec<usize> = (0..projects.len()).collect();
         alpha.sort_by(|a, b| projects[*a].name.cmp(&projects[*b].name));
-        alpha.iter().copied().find(|&i| projects[i].resume_lead).unwrap_or_else(|| alpha[0])
+        alpha[0]
     };
 
     let gateway_port = match &parsed.gateway {
@@ -2096,7 +1997,6 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-resume_lead = true
 
 [[accounts]]
 display_name = "Stargate"
@@ -2181,7 +2081,6 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-resume_lead = true
 
 [[accounts]]
 display_name = "Stargate"
@@ -2228,7 +2127,6 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-resume_lead = true
 
 [[accounts]]
 display_name = "Stargate"
@@ -2271,7 +2169,6 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-resume_lead = true
 
 [[accounts]]
 display_name = "Stargate"
@@ -2302,7 +2199,6 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-resume_lead = true
 
 [[accounts]]
 display_name = "Stargate"
@@ -2799,27 +2695,30 @@ browser_profile = "two words"
         }
     }
 
-    /// The retired section is not a ghost that merely warns: a stale `[web]`
-    /// in a hand-authored forge.toml must fail the load naming the rename,
-    /// because an ignored bind silently resets an exposed server to loopback.
+    /// **A retired section is an unknown key now.** The ghosts are gone, so
+    /// a stale synced forge.toml fails the load naming the section rather
+    /// than being accepted and silently ignored.
     #[test]
-    fn a_web_section_is_refused_naming_the_rename() {
-        let dir = tempdir().expect("tempdir");
-        write_config(
-            dir.path(),
-            &format!(
-                "{}\n[web]\nenabled = false\nport = 9100\nbind = \"10.0.0.5\"\n",
-                minimal_config()
+    fn retired_top_level_sections_are_refused() {
+        let cases = [
+            ("web", "\n[web]\nenabled = false\nport = 9100\n"),
+            ("workers", "\n[workers]\nmax_workers = 4\n"),
+            ("projects", "\n[projects.forge]\nmodel = \"claude-sonnet-5\"\n"),
+            ("selection", "\n[selection]\npolicy = \"round_robin\"\n"),
+            ("ui", "\n[ui]\nlaunchpad_spinner = \"braille\"\n"),
+            (
+                "resume_lead",
+                "\n[[orgs.projects]]\nname = \"notes\"\npath = \"/tmp\"\nresume_lead = true\n",
             ),
-        );
-        let err = load_from_dir(dir.path()).expect_err("the retired section must not load");
-        let message = err.to_string();
-        assert!(
-            message.contains("[web]")
-                && message.contains("[server]")
-                && message.contains("[client]"),
-            "the error names the retired section and both its replacements, got: {message}",
-        );
+        ];
+        for (label, stanza) in cases {
+            let dir = tempdir().expect("tempdir");
+            write_config(dir.path(), &format!("{}{stanza}", minimal_config()));
+            let error =
+                load_from_dir(dir.path()).expect_err("a retired key or section must not load");
+            let message = error.to_string();
+            assert!(message.contains(label), "the refusal names {label}, got: {message}");
+        }
     }
 
     #[test]
@@ -2845,7 +2744,6 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-resume_lead = true
 
 [[accounts]]
 display_name = "Stargate"
@@ -3254,7 +3152,6 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-resume_lead = true
 gatewy = true
 [[accounts]]
 display_name = "Stargate"
@@ -3688,8 +3585,7 @@ base_url = "http://localhost:18765"
 
     /// A `{:?}` on the loaded config or on the raw `ForgeToml` must
     /// print no credential: the global env, the accounts' env stamps and
-    /// flat token, a project's env values, the stale sections' values
-    /// (ignored or refused at load), the gotify client token and the
+    /// flat token, a project's env values, the gotify client token and the
     /// systemone api key all stay out of it.
     #[test]
     fn a_credential_never_reaches_the_config_debug_output() {
@@ -3704,7 +3600,6 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-resume_lead = true
 [orgs.projects.env]
 CLAUDE_CODE_OAUTH_TOKEN = "project-supersecret"
 
@@ -3724,19 +3619,6 @@ client_token = "gotify-supersecret"
 base_url = "https://api.typesafe.ai"
 api_key = "systemone-supersecret"
 model = "jev-latest"
-
-[projects.legacy]
-[projects.legacy.env]
-LEGACY_TOKEN = "legacy-supersecret"
-
-[workers]
-leftover = "workers-supersecret"
-
-[selection]
-leftover = "selection-supersecret"
-
-[ui]
-leftover = "ui-supersecret"
 "#;
         let dir = tempdir().expect("tempdir");
         write_config(dir.path(), toml);
@@ -3750,10 +3632,6 @@ leftover = "ui-supersecret"
                 ("a project env value", "project-supersecret"),
                 ("the gotify client token", "gotify-supersecret"),
                 ("the systemone api key", "systemone-supersecret"),
-                ("the stale projects section's value", "legacy-supersecret"),
-                ("the stale workers section's value", "workers-supersecret"),
-                ("the stale selection section's value", "selection-supersecret"),
-                ("the stale ui section's value", "ui-supersecret"),
             ] {
                 assert!(!rendered.contains(secret), "{carrier} leaked: {rendered}");
             }
@@ -3767,25 +3645,6 @@ leftover = "ui-supersecret"
                 assert!(rendered.contains(readable), "{carrier} must stay readable: {rendered}");
             }
         }
-        // Each loaded ghost must render as present, or a fixture stanza
-        // dropped tomorrow leaves its carrier assert above vacuous.
-        let raw = format!("{parsed:?}");
-        for section in ["workers", "projects", "selection", "ui"] {
-            assert!(
-                raw.contains(&format!("{section}: Some(\"[ignored]\")")),
-                "the stale {section} section must still render as present: {raw}",
-            );
-        }
-        // `[web]` is refused at load, so its rendering is checked
-        // through the raw parse alone.
-        let refused: ForgeToml = toml::from_str("[web]\nbind = \"web-supersecret\"\n")
-            .expect("the refused section still parses");
-        let rendered = format!("{refused:?}");
-        assert!(
-            !rendered.contains("web-supersecret"),
-            "the stale web section's value leaked: {rendered}",
-        );
-        assert!(rendered.contains("[ignored]"), "the section still reads as present: {rendered}");
     }
 
     #[test]
@@ -4880,7 +4739,6 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-resume_lead = true
 max_workers = 4
 
 [[accounts]]
@@ -4951,7 +4809,6 @@ provider = "anthropic"
         assert_eq!(config.default_project().name, "forge");
         assert_eq!(config.default_project().org, "Personal");
         assert_eq!(config.default_project().accounts, vec!["Stargate"]);
-        assert!(config.default_project().resume_lead);
     }
 
     #[test]
@@ -5274,42 +5131,7 @@ provider = "anthropic"
     }
 
     #[test]
-    fn default_project_picks_the_alphabetically_first_pinned_project() {
-        let dir = tempdir().expect("tempdir");
-        write_config(
-            dir.path(),
-            r#"
-[[orgs]]
-name = "Personal"
-accounts = ["Stargate"]
-[[orgs.projects]]
-name = "zebra"
-path = "~/Projects/zebra"
-resume_lead = true
-[[orgs.projects]]
-name = "alpha"
-path = "~/Projects/alpha"
-[[orgs.projects]]
-name = "middle"
-path = "~/Projects/middle"
-resume_lead = true
-[[accounts]]
-display_name = "Stargate"
-token = "t"
-models = ["claude-sonnet-5"]
-provider = "anthropic"
-"#,
-        );
-        let config = load_from_dir(dir.path()).expect("happy path");
-        // zebra is pinned first and middle last, with alpha unpinned
-        // between them: middle answers only when the pin is read AND the
-        // tie-break is alphabetical, so an ignored key (alpha) and a
-        // declaration-order pick (zebra) both fail here.
-        assert_eq!(config.default_project().name, "middle");
-    }
-
-    #[test]
-    fn default_project_falls_back_to_alpha_first_overall() {
+    fn default_project_picks_the_alphabetically_first_project() {
         let dir = tempdir().expect("tempdir");
         write_config(
             dir.path(),
@@ -5332,38 +5154,6 @@ provider = "anthropic"
         );
         let config = load_from_dir(dir.path()).expect("happy path");
         assert_eq!(config.default_project().name, "alpha");
-    }
-
-    #[test]
-    fn resume_lead_projects_iterator_returns_only_opted_in() {
-        let dir = tempdir().expect("tempdir");
-        write_config(
-            dir.path(),
-            r#"
-[[orgs]]
-name = "Personal"
-accounts = ["Stargate"]
-[[orgs.projects]]
-name = "alpha"
-path = "~/Projects/alpha"
-resume_lead = true
-[[orgs.projects]]
-name = "beta"
-path = "~/Projects/beta"
-[[orgs.projects]]
-name = "gamma"
-path = "~/Projects/gamma"
-resume_lead = true
-[[accounts]]
-display_name = "Stargate"
-token = "t"
-models = ["claude-sonnet-5"]
-provider = "anthropic"
-"#,
-        );
-        let config = load_from_dir(dir.path()).expect("happy path");
-        let names: Vec<&str> = config.resume_lead_projects().map(|p| p.name.as_str()).collect();
-        assert_eq!(names, vec!["alpha", "gamma"]);
     }
 
     /// The renamed key's predecessor is refused by name, so a stale config
@@ -5598,8 +5388,8 @@ at_percent = 95
         write_config(
             dir.path(),
             &minimal_config().replace(
-                "resume_lead = true",
-                "resume_lead = true\n[orgs.projects.handoff]\nafter_compactions = 0",
+                "[[accounts]]",
+                "[orgs.projects.handoff]\nafter_compactions = 0\n\n[[accounts]]",
             ),
         );
         let err = load_from_dir(dir.path()).expect_err("the backstop is refused");
@@ -5647,28 +5437,6 @@ provider = "anthropic"
         assert!(matches!(err, WorkspaceError::DuplicateAccount { name, .. } if name == "Stargate"));
     }
 
-    /// Every retired top-level section is a declared ghost, not an unknown
-    /// key: each still loads, so a stale synced forge.toml boots. The top
-    /// level denies unknown fields now, so each ghost is load-bearing -
-    /// dropping one as dead weight refuses the boot of every config still
-    /// carrying it. That the load also warns about them is
-    /// [`every_ignored_key_warns`]'s half.
-    #[test]
-    fn retired_top_level_sections_still_load() {
-        let cases = [
-            ("[selection]", "\n[selection]\npolicy = \"round_robin\"\n"),
-            ("[workers]", "\n[workers]\nmax_workers = 4\n"),
-            ("[projects.<name>]", "\n[projects.forge]\nmodel = \"claude-sonnet-5\"\n"),
-        ];
-        for (label, stanza) in cases {
-            let dir = tempdir().expect("tempdir");
-            write_config(dir.path(), &format!("{}{stanza}", minimal_config()));
-            let config = load_from_dir(dir.path())
-                .unwrap_or_else(|err| panic!("a retired {label} still loads: {err}"));
-            assert_eq!(config.default_project().name, "forge", "{label} left the load intact");
-        }
-    }
-
     /// Every key the load ignores is warned about, at WARN, by its own
     /// event name. A config that declares something forge no longer
     /// reads must not go quiet, and the level is half of that: these
@@ -5677,18 +5445,6 @@ provider = "anthropic"
     #[test]
     fn every_ignored_key_warns() {
         let cases = [
-            (
-                "[selection]",
-                "\n[selection]\npolicy = \"round_robin\"\n",
-                "selection_section_ignored",
-            ),
-            ("[workers]", "\n[workers]\nmax_workers = 4\n", "workers_section_ignored"),
-            (
-                "[projects.<name>]",
-                "\n[projects.forge]\nmodel = \"x\"\n",
-                "projects_section_ignored",
-            ),
-            ("[ui]", "\n[ui]\nlaunchpad_spinner = \"braille\"\nfps = 120\n", "ui_section_ignored"),
             (
                 "[dictate] device",
                 "\n[dictate]\ndevice = \"shure-id\"\n",

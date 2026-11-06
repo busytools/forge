@@ -35,11 +35,6 @@ impl Roster {
         self.workspace.project_name_for_path(cwd)
     }
 
-    /// The names of the projects pinned to spawn at launch.
-    pub fn resume_lead(&self) -> Vec<String> {
-        self.workspace.resume_lead_project_names()
-    }
-
     /// The account chip `project` renders beside its row, or `None`
     /// when no account would serve it.
     pub fn chip_for(&self, project: &ProjectKey) -> Option<SessionChipInfo> {

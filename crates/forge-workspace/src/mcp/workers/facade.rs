@@ -286,9 +286,10 @@ pub trait WorkerFacade: Send + Sync {
     /// Dispatch a `Command::SpawnWorker` and await its synchronous
     /// reply. Gating (lead-only, non-empty label, non-empty charter)
     /// happens before dispatch. `resume_kick` is persisted rather than
-    /// delivered now;
-    /// it replaces the generic restart note when this worker resumes
-    /// after a forge restart. `interactive` keeps the built-in
+    /// delivered now; it replaces the generic restart note when this
+    /// worker resumes after a forge restart with a turn that was cut off.
+    /// A worker that was idle when forge stopped resumes with nothing
+    /// delivered. `interactive` keeps the built-in
     /// `AskUserQuestion` tool, which every other worker is denied.
     /// `resume_session` resumes the label's most recent prior session
     /// instead of starting fresh. A label with none resolves to

@@ -224,7 +224,27 @@ fn try_emit(workspace: &Workspace, label: &'static str, update: SessionUpdate) {
 pub(crate) fn handle_spawn_project(
     workspace: &Arc<Workspace>,
     project_name: &str,
+    launch_settings: SessionLaunchSettings,
+) -> Result<(), String> {
+    spawn_project_inner(workspace, project_name, launch_settings, true)
+}
+
+/// The heal's resume: the same spawn as [`handle_spawn_project`], but it
+/// cannot open a seat the reader closed. A heal recovers a death; it is
+/// never an opening door.
+pub(crate) fn handle_heal_project_spawn(
+    workspace: &Arc<Workspace>,
+    project_name: &str,
+    launch_settings: SessionLaunchSettings,
+) -> Result<(), String> {
+    spawn_project_inner(workspace, project_name, launch_settings, false)
+}
+
+fn spawn_project_inner(
+    workspace: &Arc<Workspace>,
+    project_name: &str,
     mut launch_settings: SessionLaunchSettings,
+    reopen: bool,
 ) -> Result<(), String> {
     let Some(project) = workspace.find_project_view_by_name(project_name) else {
         tracing::warn!(
@@ -292,6 +312,7 @@ pub(crate) fn handle_spawn_project(
         launch_settings,
         Some(session_key.clone()),
         &crate::protocol::SpawnRole::Lead,
+        reopen,
     ) {
         Ok(_handle) => {
             tracing::info!(
@@ -309,6 +330,22 @@ pub(crate) fn handle_spawn_project(
             Ok(())
         }
         Err(err) => {
+            // **A close that landed mid-spawn is the reader's stop, not a
+            // spawn failure.** Only the heal's non-opening spawn can be
+            // refused this way, and it must leave no failure record or
+            // Failed row for the project the reader just shut.
+            if matches!(
+                err.downcast_ref::<crate::error::WorkspaceError>(),
+                Some(crate::error::WorkspaceError::SeatClosedDuringSpawn { .. })
+            ) {
+                tracing::debug!(
+                    target: "forge_workspace::spawn",
+                    project = project_name,
+                    slot = %session_key.display(),
+                    "the seat was closed while its recovery spawn was in flight; the stop stands"
+                );
+                return Ok(());
+            }
             tracing::error!(
                 target: "forge_workspace::spawn",
                 project = project_name,
@@ -1615,8 +1652,9 @@ pub(crate) fn handle_spawn_worker(
     // cap, bringing back a worker the caller was told does not exist.
     // The row's `kick` is the worker's first turn, which only a first
     // spawn states. A resume's live kick is the restart note (or the row's
-    // `resume_kick`), and writing that here would make it the worker's
-    // opening turn on every later `--new` re-spawn.
+    // `resume_kick`) when the seat's turn was cut off - decided upstream
+    // from the pre-spawn row - and writing that here would make it the
+    // worker's opening turn on every later `--new` re-spawn.
     let kick_field = if is_resume { None } else { entry.kick.as_deref() };
     // The stored-selection contract, mirrored exactly by `families`
     // below so the reply, the running surface and the row cannot
@@ -1742,6 +1780,9 @@ pub(crate) fn handle_spawn_worker(
             wrote_row: !is_resume && !from_boot_respawn,
             mcp_families: families.clone(),
         },
+        // A worker spawn is an opening door like the lead's: it starts the
+        // seat it names.
+        true,
     ) {
         Ok(handle) => {
             tracing::info!(
@@ -3208,7 +3249,6 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "{project_path}"
-resume_lead = true
 model = "claude-sonnet-5"
 
 [[accounts]]
@@ -3523,6 +3563,7 @@ provider = "anthropic"
                 SessionLaunchSettings::default(),
                 Some(key.clone()),
                 &crate::protocol::SpawnRole::Lead,
+                true,
             )
             .expect("the spawn rebuilds rather than handing back a dead handle");
 
@@ -3671,12 +3712,10 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-resume_lead = true
 
 [[orgs.projects]]
 name = "gateway-backend"
 path = "~/Projects/gateway-backend"
-resume_lead = false
 
 [[accounts]]
 display_name = "Stargate"
@@ -4105,6 +4144,7 @@ provider = "anthropic"
                     kick: None,
                     resume_kick: None,
                     interactive: None,
+                    seat_state: None,
                     is_git_repo: seeded_is_git,
                     mcp_families: None,
                     cwd: None,
@@ -4181,8 +4221,10 @@ provider = "anthropic"
         assert!(row.is_some(), "the boot re-spawn keeps the row a later restart re-spawns from");
     }
 
-    /// A resume delivers the restart note (or the row's `resume_kick`) as
-    /// this connection's kick, and that text must not land in the row's
+    /// A resume may deliver the restart note (or the row's `resume_kick`)
+    /// as this connection's kick - the re-spawn decider above hands one
+    /// only to a seat whose turn was cut off, and this test states one
+    /// directly to prove it - and that text must not land in the row's
     /// `kick`: that field is the worker's original first turn, and it is
     /// what a later `--new` re-spawn opens the worker with. Written, the
     /// resume text becomes the worker's opening turn for the rest of its
@@ -4756,6 +4798,7 @@ provider = "anthropic"
                 kick: None,
                 resume_kick: None,
                 interactive: None,
+                seat_state: None,
                 is_git_repo: None,
                 mcp_families: None,
                 cwd: None,
@@ -5125,7 +5168,6 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "{project_path}"
-resume_lead = true
 model = "claude-sonnet-5"
 
 [[accounts]]
@@ -5450,6 +5492,9 @@ heal_stable = "30s"
             |update| matches!(update, SessionUpdate::Connected { key, .. } if *key == slot),
         )
         .await;
+        // Mid-work when the tree goes, so the heal's resume carries the
+        // restart note this test waits on.
+        ws.record_seat_state(&slot, crate::store::sessions::SeatState::InTurn);
 
         // The tree the worker needs disappears while it is up; the resume
         // is what must put it back. The registration goes with it, so the
@@ -5592,6 +5637,10 @@ heal_stable = "30s"
         let lead = start_lead(&ws, &mut updates).await;
         let slot = SessionSlot::worker("Default", "forge", "probe-heal");
         spawn_mock_worker(&ws, &lead, "probe-heal").await;
+        // The worker is mid-work when its child dies, which is the state
+        // that earns the heal's restart note; a worker found parked comes
+        // back silent.
+        ws.record_seat_state(&slot, crate::store::sessions::SeatState::InTurn);
 
         // The first connect, then the child dies of its own accord 0.6 s in;
         // the supervisor's 150 ms wait brings the same seat back with the
@@ -6267,6 +6316,7 @@ heal_stable = "30s"
                 wrote_row: false,
                 mcp_families: None,
             },
+            true,
         );
 
         assert!(result.is_err(), "a target mapping to no project is refused");
@@ -8672,6 +8722,7 @@ provider = "anthropic"
                     kick: None,
                     resume_kick: None,
                     interactive: None,
+                    seat_state: None,
                     // The shape `migrate_from_dynamic_workers` writes.
                     is_git_repo: None,
                     mcp_families: None,
@@ -9549,7 +9600,6 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "{project_path}"
-resume_lead = true
 
 [[accounts]]
 display_name = "Stargate"
@@ -9688,7 +9738,6 @@ accounts = ["Stargate"]
 [[orgs.projects]]
 name = "forge"
 path = "{project_path}"
-resume_lead = true
 
 [[accounts]]
 display_name = "Stargate"

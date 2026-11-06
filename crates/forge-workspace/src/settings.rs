@@ -187,9 +187,7 @@ fn edit_spec(path: &str) -> EditSpec {
         "orgs[].projects[].name" | "orgs[].projects[].path" | "orgs[].projects[].model" => {
             named(required(TEXT), "project")
         }
-        "orgs[].projects[].resume_lead" | "orgs[].projects[].handoff.enabled" => {
-            named(BOOLEAN, "project")
-        }
+        "orgs[].projects[].handoff.enabled" => named(BOOLEAN, "project"),
         "orgs[].projects[].permission_mode" => named(choice(PERMISSION_MODES), "project"),
         "orgs[].projects[].max_workers"
         | "orgs[].projects[].handoff.at_percent"
@@ -539,18 +537,6 @@ const PROJECT_KEYS: &[ConfigKey] = &[
         class: EffectClass::Live,
         rows: |config| {
             config.projects.iter().map(|p| text(project_path(p, "path"), &p.display_path)).collect()
-        },
-    },
-    ConfigKey {
-        path: "orgs[].projects[].resume_lead",
-        area: "projects",
-        class: EffectClass::NextSession,
-        rows: |config| {
-            config
-                .projects
-                .iter()
-                .map(|p| flag(project_path(p, "resume_lead"), p.resume_lead))
-                .collect()
         },
     },
     ConfigKey {
@@ -1868,7 +1854,6 @@ workspace = "Test Slack"
 [[orgs.projects]]
 name = "proj"
 path = "/tmp/proj"
-resume_lead = true
 model = "glm-5.3-flash"
 permission_mode = "auto"
 max_workers = 3

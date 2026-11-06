@@ -37,7 +37,6 @@ export const ENTRY_FIELDS: Readonly<Record<string, EntryField[]>> = {
     { key: 'name', kind: 'string', required: true },
     { key: 'path', kind: 'string', required: true },
     { key: 'model', kind: 'string', required: true },
-    { key: 'resume_lead', kind: 'bool', required: false },
     {
       key: 'permission_mode',
       kind: 'enum',

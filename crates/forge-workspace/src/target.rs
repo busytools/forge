@@ -16,8 +16,7 @@ pub use forge_primitives::ProjectKey;
 #[derive(Clone, Debug)]
 pub enum SessionTarget {
     /// The lead of the fallback project: the alphabetically-first
-    /// project carrying `resume_lead = true`, else the
-    /// alphabetically-first project overall.
+    /// project overall.
     Default,
     /// Open the lead of the project whose `name` matches the given
     /// string in `forge.toml`. Errors with `ProjectNotFound` if no

@@ -268,7 +268,7 @@ export function fleetRows(wire: HomeWire): FleetViewRow[] {
     // so a closed project is seatless, and reading the seats alone would word
     // `never` over a project that wrote ten minutes ago. Every project
     // without a resumed seat is in that state after a forge restart, because
-    // only `resume_lead` ones come back on their own.
+    // only the seats that were left open come back on their own.
     const lastActivity = [
       ...agents.map((agent) => agent.last_activity),
       ...(project?.project.sessions.map((session) => session.last_activity) ?? []),

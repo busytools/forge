@@ -660,6 +660,34 @@ impl Workspace {
 
 #[cfg(any(test, feature = "testing"))]
 impl Workspace {
+    /// Plant a session row in the seat state a boot test derives from, so
+    /// the wave can be driven without running a real spawn first. Test-only.
+    pub fn seed_seat_state_for_test(
+        &self,
+        org: &str,
+        project: &str,
+        label: &str,
+        state: crate::store::sessions::SeatState,
+    ) -> anyhow::Result<()> {
+        let store = self.db.lock();
+        let db = store.as_ref().ok_or_else(|| anyhow::anyhow!("the fixture has no store"))?;
+        let record = crate::store::sessions::SessionRecord {
+            org: org.to_owned(),
+            project: project.to_owned(),
+            label: label.to_owned(),
+            session_id: Some(format!("{label}-id")),
+            charter: None,
+            kick: None,
+            resume_kick: None,
+            interactive: None,
+            seat_state: Some(state),
+            is_git_repo: None,
+            mcp_families: None,
+            cwd: None,
+        };
+        crate::store::sessions::put(db, &record)
+    }
+
     /// Park a terminal hand-off on `slot` as a blocked `terminal__hand_off`
     /// call would, so a transport test can type through the hand-off's door.
     /// Test-only.
@@ -722,7 +750,6 @@ impl Workspace {
             org: "TestOrg".to_owned(),
             accounts: vec!["acct-a".to_owned()],
             fallback_accounts: Vec::new(),
-            resume_lead: false,
             model: None,
             env: std::collections::HashMap::new(),
             env_file: None,
@@ -1095,6 +1122,7 @@ impl Workspace {
                 kick: None,
                 resume_kick: None,
                 interactive: Some(interactive),
+                seat_state: None,
                 is_git_repo: None,
                 mcp_families: None,
                 cwd: None,

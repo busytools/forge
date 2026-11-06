@@ -623,10 +623,12 @@ impl Tool for Spawn {
          shape agents__list draws for it), and the worktree it landed in \
          when the project is a git repo. A spawned worker is \
          DURABLE: it survives forge restarts and is automatically \
-         re-spawned, resuming where it left off (a restarted worker is \
-         told to continue, not start over), until you explicitly despawn \
-         it with agents__despawn (or close its row in the Projects \
-         pane). A worker whose worktree has gone is not re-spawned \
+         re-spawned, resuming where it left off. A worker whose turn was \
+         cut off by the restart is told to continue; one that was idle \
+         when forge stopped is resumed parked, with nothing delivered, so \
+         a job you did not want restarted does not restart itself. It \
+         comes back this way until you explicitly despawn it with \
+         agents__despawn (or close its row in the Projects pane). A worker whose worktree has gone is not re-spawned \
          automatically - its resume would have nowhere to start - so it \
          stops being offered until the worktree is back; passing \
          `resume_session` recreates that worktree and brings it back. \
@@ -638,8 +640,9 @@ impl Tool for Spawn {
          PASS `resume_kick` FOR A LONG-LIVED WORKER whose restart \
          needs specific steps - re-read a file, catch up a queue, check \
          what was mid-run - rather than that generic continue; it \
-         replaces the restart note on every resume. Omit it and the \
-         generic note is what a resumed worker gets. A worker cannot ask \
+         replaces the restart note for a worker whose turn was cut off. \
+         Omit it and the generic note is what an interrupted worker gets; \
+         a worker that was idle resumes with neither. A worker cannot ask \
          the user anything directly - it has no AskUserQuestion - and \
          reaches them through you instead; PASS `interactive` only for a \
          worker the user asked to talk to directly. Give the worker the \
@@ -708,7 +711,7 @@ impl Tool for Spawn {
                 },
                 "resume_kick": {
                     "type": "string",
-                    "description": "Optional re-orient message delivered every time this worker is RESUMED after a forge restart, in place of the generic 'continue where you left off' note. For a LONG-LIVED worker whose restart needs specific steps - re-read a file, catch up a queue, check whether something was mid-run before re-running it - rather than a generic continue. Stored at spawn rather than delivered now; the first turn of a fresh spawn is `kick`. Non-empty after trim when provided - to keep the generic restart note, OMIT the argument rather than passing an empty string, which is rejected.",
+                    "description": "Optional re-orient message delivered when this worker is RESUMED after a forge restart with a turn that was cut off, in place of the generic 'continue where you left off' note. A worker that was idle when forge stopped resumes with nothing delivered, so this is never handed to a seat that was not working. For a LONG-LIVED worker whose restart needs specific steps - re-read a file, catch up a queue, check whether something was mid-run before re-running it - rather than a generic continue. Stored at spawn rather than delivered now; the first turn of a fresh spawn is `kick`. Non-empty after trim when provided - to keep the generic restart note, OMIT the argument rather than passing an empty string, which is rejected.",
                 },
                 "interactive": {
                     "type": "boolean",
@@ -1047,7 +1050,7 @@ impl Tool for Update {
                 },
                 "resume_kick": {
                     "type": "string",
-                    "description": "Replacement re-orient message delivered when this worker is resumed after a forge restart, in place of the generic restart note. Omit to leave the stored value unchanged. Non-empty after trim when provided.",
+                    "description": "Replacement re-orient message delivered when this worker is resumed after a forge restart with a turn that was cut off, in place of the generic restart note. A worker that was idle when forge stopped resumes with nothing delivered. Omit to leave the stored value unchanged. Non-empty after trim when provided.",
                 },
                 "mcp_families": {
                     "type": "array",

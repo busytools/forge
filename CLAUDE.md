@@ -526,7 +526,7 @@ inspected.
     misleads, and has no triage view.
 14. **`forge.toml` is the source of truth. Never read project state or
     any other behaviour-shaping value from the launch directory.**
-    Project paths, names, accounts, resume_lead pins, log paths, settings
+    Project paths, names, accounts, log paths, settings
     paths, trust keys and file-index roots must come from `forge.toml`,
     the active session's `cwd_raw`, or other fixed values.
     `std::env::current_dir()` must not influence anything.

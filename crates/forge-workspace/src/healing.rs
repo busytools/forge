@@ -284,6 +284,20 @@ impl Healing {
             workspace.clear_heal_progress(slot);
             return;
         }
+        // **A closed seat is the reader's stop, not a crash.** The close's
+        // `note_stopped` bumps the generation, so an attempt firing after it
+        // returns above; this is the window where the attempt was already
+        // past that check when the close landed.
+        if slot.is_lead()
+            && matches!(
+                workspace.stored_seat_state(slot),
+                Some(crate::store::sessions::SeatState::Closed)
+            )
+        {
+            self.forget(slot);
+            workspace.clear_heal_progress(slot);
+            return;
+        }
         if !slot.is_lead() {
             let Some(project_key) = workspace.project_key_for_name(slot.project()) else {
                 self.forget(slot);
@@ -364,15 +378,30 @@ impl SeatRestart for WorkspaceRestart {
             return Err("the workspace is gone".to_owned());
         };
         if slot.is_lead() {
+            let state = workspace.stored_seat_state(slot);
+            // **The close owns the seat**: this is the stop, not a failed
+            // attempt, so nothing is scheduled behind it.
+            if matches!(state, Some(crate::store::sessions::SeatState::Closed)) {
+                return Ok(None);
+            }
+            // **A death leaves the seat's state as it was.** The row's own
+            // `in_turn` earns the restart note, the same rule the boot wave
+            // reads, and the spawn is told it may not open a closed seat.
+            let resume_kick = match state {
+                Some(crate::store::sessions::SeatState::InTurn) => {
+                    Some(crate::workspace::LEAD_RESTART_NOTE.to_owned())
+                }
+                _ => None,
+            };
             // The same handler `Command::SpawnProject` runs (the cron wake's
             // own), called directly because the command bus drops the
             // refusal and a failed attempt must count. It resumes the lead
             // under its stored session and re-spawns its workers on
             // connect.
-            crate::spawn::handle_spawn_project(
+            crate::spawn::handle_heal_project_spawn(
                 &workspace,
                 slot.project(),
-                forge_agent::client::SessionLaunchSettings::default(),
+                forge_agent::client::SessionLaunchSettings { resume_kick, ..Default::default() },
             )
             .map(|()| None)
         } else {
@@ -398,12 +427,13 @@ async fn restart_worker(
     };
     let lead = SessionSlot::lead(slot.org(), slot.project());
     let facade = crate::mcp::workers::facade::ProdWorkerFacade::from_arc(workspace);
+    let kick = heal_resume_kick(&row);
     facade
         .spawn_worker(
             &lead,
             slot.label().to_owned(),
             row.charter.unwrap_or_default(),
-            row.resume_kick.or_else(|| Some(DYNAMIC_WORKER_RESTART_NOTE.to_owned())),
+            kick,
             // The row's own resume kick stays the row's: this spawn only
             // delivers the live kick.
             None,
@@ -415,6 +445,19 @@ async fn restart_worker(
         .await
         .map(|reply| Some(reply.session_id))
         .map_err(|error| error.message())
+}
+
+/// The kick a heal's worker resume carries.
+///
+/// **Only a worker whose turn was cut off gets one.** A worker that was
+/// idle when its subprocess died is resumed parked, the same as at a boot
+/// re-spawn; a crash must not put a seat back to work that was not working.
+fn heal_resume_kick(row: &crate::store::sessions::SessionRecord) -> Option<String> {
+    if matches!(row.seat_state, Some(crate::store::sessions::SeatState::InTurn)) {
+        row.resume_kick.clone().or_else(|| Some(DYNAMIC_WORKER_RESTART_NOTE.to_owned()))
+    } else {
+        None
+    }
 }
 
 /// The notice one worker death earns: the instant, the diagnostic, the
@@ -497,6 +540,52 @@ mod tests {
 
     type Calls = Arc<Mutex<Vec<SessionSlot>>>;
     type Notices = Arc<Mutex<Vec<(SessionSlot, String)>>>;
+
+    /// **A heal kicks only the worker whose turn it interrupted.** A
+    /// worker that was parked when it died comes back parked; its own
+    /// `resume_kick` rides the kick only for a cut-off turn.
+    #[test]
+    fn a_heal_kicks_only_a_worker_left_mid_turn() {
+        use crate::store::sessions::{SeatState, SessionRecord};
+
+        let row = |state: Option<SeatState>| SessionRecord {
+            org: "Default".to_owned(),
+            project: "forge".to_owned(),
+            label: "steward".to_owned(),
+            session_id: Some("id-1".to_owned()),
+            charter: None,
+            kick: None,
+            resume_kick: Some("re-read the notes".to_owned()),
+            interactive: None,
+            seat_state: state,
+            is_git_repo: None,
+            mcp_families: None,
+            cwd: None,
+        };
+
+        assert_eq!(
+            heal_resume_kick(&row(Some(SeatState::InTurn))).as_deref(),
+            Some("re-read the notes"),
+            "an interrupted worker resumes with its own kick",
+        );
+        let mut bare = row(Some(SeatState::InTurn));
+        bare.resume_kick = None;
+        assert_eq!(
+            heal_resume_kick(&bare).as_deref(),
+            Some(DYNAMIC_WORKER_RESTART_NOTE),
+            "and falls back to the generic note",
+        );
+        assert_eq!(
+            heal_resume_kick(&row(Some(SeatState::Idle))),
+            None,
+            "a worker that was parked is resumed with nothing",
+        );
+        assert_eq!(
+            heal_resume_kick(&row(None)),
+            None,
+            "a row written before the field reads as parked, never as interrupted",
+        );
+    }
 
     /// Records each restart, so a test watches the decision without
     /// spawning a child, and answers every attempt with `outcome`.
@@ -888,6 +977,53 @@ mod tests {
 
         assert_eq!(calls.lock().expect("recorder").len(), 1, "the lead still restarts");
         assert!(notices.lock().expect("notices").is_empty(), "no peer message for a lead");
+    }
+
+    /// **A close that lands after the attempt was scheduled still stops
+    /// it.** The close bumps the generation, but an attempt already past
+    /// that check reads the row: a closed lead is the reader's stop, not a
+    /// crash, and the heal must not bring the project back.
+    #[tokio::test(start_paused = true)]
+    async fn a_closed_lead_is_not_healed() {
+        let (workspace, _worker) = seeded_worker();
+        let (restart, calls) = recorder(Ok(None));
+        let (notify, notices) = notifier();
+        let healing = Healing::new(Arc::downgrade(&workspace), restart, notify);
+        let lead = SessionSlot::lead("TestOrg", "forge");
+        workspace.record_session_id(lead.org(), lead.project(), lead.label(), "lead-id");
+        workspace.record_seat_state(&lead, crate::store::sessions::SeatState::Idle);
+
+        healing.note_death(&lead, "the subprocess closed");
+        tokio::task::yield_now().await;
+        // The close lands after the attempt was armed and past its own
+        // checks, which is the window the generation check cannot cover.
+        workspace.record_seat_state(&lead, crate::store::sessions::SeatState::Closed);
+        tokio::time::advance(Duration::from_secs(60)).await;
+        tokio::task::yield_now().await;
+
+        assert!(calls.lock().expect("recorder").is_empty(), "the close owns the seat");
+        assert!(workspace.heal_progress(&lead).is_none(), "and the mark goes with it");
+        assert!(notices.lock().expect("notices").is_empty(), "a close is not news");
+    }
+
+    /// **A close is the stop, not a failed attempt.** The restart reads the
+    /// row again because the close can land after the attempt was armed, so
+    /// a closed lead ends the attempt instead of burning the budget on a
+    /// seat the reader took down.
+    #[tokio::test]
+    async fn the_heal_restart_of_a_closed_seat_reports_the_stop() {
+        let (workspace, _worker) = seeded_worker();
+        let lead = SessionSlot::lead("TestOrg", "forge");
+        workspace.record_session_id(lead.org(), lead.project(), lead.label(), "lead-id");
+        workspace.record_seat_state(&lead, crate::store::sessions::SeatState::Closed);
+        let restart = WorkspaceRestart { workspace: Arc::downgrade(&workspace) };
+
+        let outcome = restart.restart(&lead).await;
+
+        assert!(
+            matches!(outcome, Ok(None)),
+            "the close ends the attempt without a failure: {outcome:?}",
+        );
     }
 
     /// The notice is a peer message to the project, sent as the worker, so
