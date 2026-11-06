@@ -417,6 +417,21 @@ export function orgOf(wire: HomeWire, project: string): string {
  * `unseen`, `failed_turn`, `died` and `pending` all cross on the snapshot.
  */
 export function stateOf(row: AgentRow, unseen: SessionSlot[]): RowState {
+  // **A heal in progress outranks the death it is healing.** The death stays
+  // on the row until the seat is shown, but a seat forge is actively bringing
+  // back draws as working: the mark says it is coming back and the line says
+  // which attempt, where a death's mark would send the reader to a failure
+  // nothing is waiting on them for. The trade is that the death's reason is
+  // not the row's line while an attempt is scheduled; it returns with the
+  // seat's failure if the heal gives up.
+  // **A heal in progress outranks the death it is healing.** The death stays
+  // on the row until the seat is shown, but a seat forge is actively bringing
+  // back draws as working: the mark says it is coming back and the line says
+  // which attempt, where a death's mark would send the reader to a failure
+  // nothing is waiting on them for. The trade is that the death's reason is
+  // not the row's line while an attempt is scheduled; it returns with the
+  // seat's failure if the heal gives up.
+  if (row.lifecycle === 'Restarting') return { kind: 'lifecycle', lifecycle: 'Restarting' };
   // **A death outranks a failed turn**, both drawing the one failure mark:
   // the session ended, which is the larger fact about the seat.
   if (row.died) return { kind: 'died' };

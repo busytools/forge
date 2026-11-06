@@ -1414,6 +1414,42 @@ describe('what a row says', () => {
     ).not.toContain('forge');
   });
 
+  /**
+   * **A heal in progress outranks the death it is healing.** Every heal
+   * starts from a death the reader has not been shown, so the row carries
+   * `died` while it restarts; the mark must be the dashed working one and
+   * the row must group under working, not draw a failed seat in needs-you.
+   */
+  it('draws a restarting row over the standing death it is healing', () => {
+    const restarting = {
+      ...agent('Busytools', 'forge', 'w1', 'Restarting'),
+      died: true,
+      heal_attempt: 2,
+      heal_attempts: 3,
+    };
+    const wire = homeFrom({
+      ...FLEET,
+      agents: [agent('Busytools', 'forge', 'lead', 'Idle'), restarting],
+    });
+    const rows = fleetRows(wire);
+    const forge = rows.find((row) => row.name === 'forge');
+    expect(forge?.state, 'the heal outranks the death').toEqual({
+      kind: 'lifecycle',
+      lifecycle: 'Restarting',
+    });
+    expect(markOf(forge?.state ?? { kind: 'never-started' })).toEqual({
+      class: 'restarting',
+      dot: 'restarting',
+    });
+    expect(forge?.restart, 'and the row still names the attempt').toBe('w1 restarting (2 of 3)');
+    expect(
+      fleetGroups(rows)
+        .find((group) => group.heading === 'working')
+        ?.rows.map((row) => row.name),
+      "a seat coming back is work, not a person's to act on",
+    ).toContain('forge');
+  });
+
   it('narrows a lifecycle it does not know as the snapshot is read', () => {
     const unknown = { ...FLEET, agents: [{ ...FLEET_AGENT, lifecycle: 'Resting' as never }] };
     const lead = rowsOf(homeFrom(unknown)).lead;
