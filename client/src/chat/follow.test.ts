@@ -1938,6 +1938,145 @@ describe('whether the column follows the newest end', () => {
     expect(element.offset, 'and the reader is there, not near the top').toBe(grown - VIEWPORT);
   });
 
+  it('keeps placing a switch entry on the pass after it, while the model still lags', async () => {
+    // **The settle is more than one pass.** A kept conversation's rows are in
+    // the element while the list measures them a pass later, so the pin after
+    // the entry must write the element's foot again rather than hold at the
+    // model's short one and walk the reader down as the measurement lands.
+    // The entry tests above see only the first pin, which the switch's own
+    // clear already explains; this is the pass after it.
+    const seat = writable(LEAD);
+    const server = stub();
+    clear();
+    clearObservers();
+    setMeasured(TOTAL, VIEWPORT);
+    app = mount(Seats, {
+      target: document.body,
+      props: { seat, connection: server.connection },
+    });
+    flushSync();
+    server.page([turn('t1'), turn('t2')]);
+    await settle();
+    readerAt(FOOT);
+    await settle();
+    clear();
+
+    seat.set(OTHER);
+    flushSync();
+    server.page([turn('o1'), turn('o2')], OTHER);
+    await settle();
+    clear();
+
+    // The way back: the element counts the kept conversation's rows before
+    // the list has measured them.
+    setElement(TOTAL + 2000, VIEWPORT);
+    seat.set(LEAD);
+    flushSync();
+    await settle();
+    clear();
+
+    // One more frame, which moves neither measured size: what lands now can
+    // only be the settle re-measuring the same lagging model.
+    server.frame();
+    await settle();
+
+    const grown = Math.floor(TOTAL + 2000);
+    expect(pinned(), "the settle places the reader at the element's foot again").toEqual([
+      { asked: grown, landed: grown - VIEWPORT },
+    ]);
+    expect(element.offset, 'and the reader never left it').toBe(grown - VIEWPORT);
+  });
+
+  it('never pulls the reader back to the model after an entry placed past it', async () => {
+    // **The hold is a ceiling on a forward write, not a drag.** An entry
+    // places at the element's foot while the model still lags, and rows
+    // arriving below grow the element further. Holding at the model's short
+    // foot would pull the reader up and then glide them back down as it
+    // measured - the entry walk again, one pass later.
+    const seat = writable(LEAD);
+    const server = stub();
+    clear();
+    clearObservers();
+    setMeasured(TOTAL, VIEWPORT);
+    app = mount(Seats, {
+      target: document.body,
+      props: { seat, connection: server.connection },
+    });
+    flushSync();
+    server.page([turn('t1'), turn('t2')]);
+    await settle();
+    readerAt(FOOT);
+    await settle();
+    clear();
+
+    seat.set(OTHER);
+    flushSync();
+    server.page([turn('o1'), turn('o2')], OTHER);
+    await settle();
+    clear();
+
+    // The model is AHEAD at the entry, which is what settles the mount and
+    // makes the column a follower from here on.
+    setModel(TOTAL + 3000);
+    setElement(TOTAL + 2000, VIEWPORT);
+    seat.set(LEAD);
+    flushSync();
+    await settle();
+    const placedAt = Math.floor(TOTAL + 2000) - VIEWPORT;
+    expect(element.offset, 'precondition: the entry placed the reader').toBe(placedAt);
+    clear();
+
+    // The model then measures a shorter end than the element already holds -
+    // the lag the hold is for. The reader is past the model's foot and stays.
+    setModel(TOTAL);
+    server.frame();
+    await settle();
+
+    expect(
+      pinned().filter((pin) => pin.landed < placedAt),
+      'the hold did not pull the reader up to the model',
+    ).toEqual([]);
+    expect(element.offset, 'and the reader stayed where the entry placed them').toBe(placedAt);
+  });
+
+  it('places a first-ever entry at the foot instead of gliding down to it', async () => {
+    // **An empty column is not a settled one.** On the mount's first pass the
+    // element and the list both read zero, so "the model reached the
+    // element's end" was trivially true and the first content frame took the
+    // follow glide - a conversation opened for the first time travelled from
+    // the top of the column down to its foot.
+    vi.stubGlobal('matchMedia', () => ({ matches: false }));
+    const server = stub();
+    clear();
+    clearObservers();
+    // A live empty column, not an absent one: the element cannot report less
+    // than its own height, so "nothing to scroll" is `max === 0`.
+    setMeasured(VIEWPORT, VIEWPORT);
+    app = mount(Chat, {
+      target: document.body,
+      props: { slot: LEAD, connection: server.connection },
+    });
+    flushSync();
+    server.session('s1');
+    server.page([spoken('t1'), spoken('t2'), spoken('t3')]);
+    layOut(40);
+
+    // The rows draw before the list has measured them.
+    setElement(TOTAL, VIEWPORT);
+    server.frame();
+    await settle();
+
+    // Under the old condition the empty pass settled, so this pass held at the
+    // model's foot and left the reader at the top of the column.
+    expect(element.offset, 'the first entry placed the reader at the foot').toBe(FOOT);
+
+    // And the list catching up ends the settle without moving them.
+    setModel(TOTAL);
+    server.frame();
+    await settle();
+    expect(element.offset, 'and the settle kept them at the foot').toBe(FOOT);
+  });
+
   it('opens a plain new conversation at the foot for a parked reader', async () => {
     // **A plain swap unmounts the list, and what mounts opens following.**
     // The rows are new and the reader has no place in them, so the column
@@ -4183,6 +4322,47 @@ describe('a saved place outliving the connection', () => {
       { asked: grown, landed: grown - VIEWPORT },
     ]);
     expect(element.offset, 'and the reader is there').toBe(grown - VIEWPORT);
+  });
+
+  it('keeps placing a same-id reload on the pass after it, while the model still lags', async () => {
+    // **A remount re-opens the walk one pass later.** The reload places its
+    // reader on the first pin; the pass after it is the settle's, and it must
+    // not hold at the model's short foot. Clearing the settle only on a seat
+    // switch is how this came back on `/resume` and on a re-spawn.
+    const server = stub();
+    clear();
+    clearObservers();
+    setMeasured(TOTAL, VIEWPORT);
+    app = mount(Chat, {
+      target: document.body,
+      props: { slot: LEAD, connection: server.connection },
+    });
+    flushSync();
+    server.session('s1');
+    server.page([spoken('t1'), spoken('t2'), spoken('t3')]);
+    await settle();
+    expect(element.offset, 'precondition: the reader is at the foot').toBe(FOOT);
+    clear();
+
+    setModel(TOTAL);
+    setElement(TOTAL + 2000, VIEWPORT);
+    server.replaced('s1');
+    await settle();
+    clear();
+
+    server.page([spoken('n1'), spoken('n2'), spoken('n3')]);
+    layOut(40);
+    await settle();
+    clear();
+
+    server.frame();
+    await settle();
+
+    const grown = Math.floor(TOTAL + 2000);
+    expect(pinned(), 'the settle after the reload places the reader again').toEqual([
+      { asked: grown, landed: grown - VIEWPORT },
+    ]);
+    expect(element.offset, 'and the reader never left it').toBe(grown - VIEWPORT);
   });
 
   it('restores the same row and offset after a live turn grows while the reader is away', async () => {

@@ -325,8 +325,9 @@ their place to reopen.
 the reader's own message - lands the measured bottom over a short ease of
 about 160ms, a streamed line and a row that measures taller included, with
 the glide repeated until the content settles. A first pin, a switch's or a
-return's, lands at once, and so does the circle's jump;
-`prefers-reduced-motion: reduce` makes every landing instant.
+return's, lands at once, and so does an entry's settle until the list has
+measured the rows already in the element. The circle's jump lands at once as
+well. `prefers-reduced-motion: reduce` makes every landing instant.
 
 **The column's top edge says when it is fetching.** An older page is
 asked for as the reader nears the top and answered a moment later;

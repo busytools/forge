@@ -253,6 +253,16 @@
   let restoreTries = 0;
   /** When the restore being placed began, against [`RESTORE_MS`]. */
   let restoreStarted = 0;
+  /**
+   * Whether the entry's placement has settled.
+   *
+   * **The open places its reader; only a settled column follows.** While the
+   * list's model is still catching up with the rows the mount drew, the foot
+   * moves under a reader who has just arrived - holding at the model or
+   * gliding to it walks them down the conversation. Every pass until the
+   * model reaches the element's own end is the placement.
+   */
+  let openPlaced = false;
   let working: Chat | null = null;
   /**
    * The conversation built for one seat over one connection.
@@ -899,6 +909,11 @@
     // re-spawn reloads the record and mounts a new list without a switch, so
     // the open's own write is the one that must place the reader.
     placed = null;
+    // **And the settle belongs to this mount, not the one that is gone.** A
+    // remount re-opens the walk `placed` above is cleared for, one pass
+    // later: the first pin places, and the next holds at the lagging model
+    // unless the settle is cleared with it.
+    openPlaced = false;
     // The sizes and the last event belong to the element a previous conversation scrolled.
     lastSeen = { content: 0, room: 0 };
     movedFrom = 0;
@@ -1441,10 +1456,14 @@
     //
     // **A third way one goes is an occupant swap** (`session_replaced`). A
     // changed id resets the offset a successor's first pin must not inherit;
-    // a same-id reload arms the reader's restore. Either way the swap empties
-    // the conversation, so the list unmounts and the new landing re-measures
-    // before any event can read the old placement. A swap that kept the list
-    // mounted across it would make this stale.
+    // a same-id reload arms the reader's restore. The record empties either
+    // way, and the landing that follows re-measures before any event reads
+    // the old placement - except when a CHANGED id's page lands before a
+    // render pass sees the emptied record, where the list stays mounted and
+    // the swap effect below clears `placed` and the settle itself. A
+    // same-id reload has no such signal: its page carries the same id, so a
+    // coalesced publish is indistinguishable from an ordinary one, and it
+    // relies on the mount clear alone.
     // **The same predicate is what a conversation OPEN is** (#2374): a first
     // visit, a seat reopened on another connection, or a kept seat coming
     // back on screen. Every way into a seat - a click, a deep link, a reload,
@@ -1545,6 +1564,12 @@
         working?.following(true);
         if (place !== null) places.forget(which);
       }
+      // **An entry places its reader; it does not travel to them.** The
+      // mount's first passes correct the list's estimates, and holding or
+      // gliding there walks the reader down the conversation. A switch that
+      // keeps the list mounted runs no viewport attachment, so the settle is
+      // cleared here as well; the shapes that remount a list clear it there.
+      openPlaced = false;
       // **And so were the asks this column is holding.** They belong to the
       // conversation that is going, and their pages are not coming here.
       outstanding = 0;
@@ -1660,8 +1685,12 @@
     // glide branch compares against, and the previous conversation's foot is
     // not this one's: leaving it set slides the new conversation in from the
     // old offset instead of landing at once (the book's "a first pin, a
-    // switch's or a return's, lands at once"). The mount's own clear is the
-    // copy that survives; this one is dropped so one place owns it.
+    // switch's or a return's, lands at once"). The mount's clear is not
+    // enough on its own - a page that lands before a render pass sees the
+    // emptied record leaves the old list mounted - so the swap clears here
+    // too, and the settle with it.
+    placed = null;
+    openPlaced = false;
     stopGlide();
     working?.following(true);
   });
@@ -2319,23 +2348,29 @@
     const max = foot - viewport.clientHeight;
     const model = modelFoot();
     let target = foot;
-    // **An open PLACES its reader; only a following column holds.** The hold
-    // stops the pin at the end the list has measured, so a row that grew in
-    // this update is not scrolled past before the measurement lands. That is
-    // the right answer while a turn is live and the reader is following it.
-    // It is the wrong answer on an open: a kept conversation's rows are
-    // already in the element while the list measures them a pass later, so
-    // the model's foot sits far ABOVE the element's - and holding there lands
-    // the reader near the top of the conversation and then walks them down as
-    // the measurement catches up. `placed` is null until an open's first pin
-    // has landed, so a null here is the open placing its reader: write the
-    // element's own foot and do not schedule the retries a hold would.
-    if (model !== null && max > model && placed !== null) {
+    // **An open PLACES its reader; only a settled following column holds.**
+    // The hold stops the pin at the end the list has measured, so a row that
+    // grew in this update is not scrolled past before the measurement lands.
+    // That is the right answer while a turn is live and the reader is
+    // following it. It is the wrong answer on an open: a kept conversation's
+    // rows are already in the element while the list measures them a pass
+    // later, so the model's foot sits far ABOVE the element's - and holding
+    // there lands the reader near the top of the conversation and then walks
+    // them down as the measurement catches up. `openPlaced` is false until
+    // the model reaches the element's own end, so it is the open placing its
+    // reader: write the element's own foot and do not schedule the retries a
+    // hold would.
+    if (model !== null && max > model && placed !== null && openPlaced) {
       // **The pin never passes the end the list has measured.** It holds
       // there and comes back for the growth on a later frame; the two-frame
       // budget bounds only the deferred retries, never the hold, so a stream
       // that grows the row every frame still cannot write past the model.
-      target = model;
+      // **And it never drags the reader back to that end.** The hold is a
+      // ceiling on a forward write; a reader already past the model's foot -
+      // an entry that placed at the element's, with rows arriving below it -
+      // would otherwise be pulled up to the model and glided back down as it
+      // measured, which is the entry walk this column is meant to have lost.
+      target = Math.max(model, viewport.scrollTop);
       if (repinTries < REPIN_TRIES) {
         repinTries += 1;
         repin();
@@ -2359,6 +2394,7 @@
     if (
       !force &&
       placed !== null &&
+      openPlaced &&
       wantsMotion() &&
       Math.abs(want - viewport.scrollTop) > FOOT_QUANTUM
     ) {
@@ -2383,6 +2419,20 @@
     // Where the column last left the reader, which is the foot the browser
     // clamped the pin to.
     placed = viewport.scrollTop;
+    // **The mount has settled when the model reaches the element's own end.**
+    // Until then every pass is the entry placing its reader - instantly - and
+    // only the first growth after it is the column following.
+    // **An empty column is not a settled one.** On the mount's first pass the
+    // element and the list both read zero, and `max <= model` is trivially
+    // true - so the first content frame took the follow glide and a
+    // conversation opened for the first time travelled down from the top of
+    // the column. Both sides have to have something to agree about.
+    // A browser floors the element's numbers and the list reports a fraction,
+    // so the two ends rarely agree exactly; the file's own foot comparisons
+    // carry the same quantum.
+    if (!openPlaced && model !== null && max > 0 && max - FOOT_QUANTUM <= model) {
+      openPlaced = true;
+    }
     // **The pin leaves the reader at the end it could reach**: the browser's,
     // or the list's own while the browser counts a row it has not drawn. Both
     // are the foot for the next arrival's decision - give or take the fraction
