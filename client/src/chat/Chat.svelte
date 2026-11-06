@@ -1656,6 +1656,14 @@
       // every frame. The emptied record has no loaded turns; an ordinary
       // publish has them.
       if (held.loaded || held.turns.length > 0) return;
+      // **The reload is an entry whether or not the list remounts.** The
+      // record empties, but a page that lands before a render pass sees the
+      // empty state leaves the old list in place - so the mount's own clear
+      // never runs, `placed` and the settle survive from the conversation
+      // that is going, and the follow glides the reader to the foot from
+      // wherever they were. Cleared here, where the swap is observed.
+      placed = null;
+      openPlaced = false;
       // **A replacement naming the same id is the conversation reloading**:
       // the record empties, the list remounts, and the reader is owed the row
       // they were parked on. That row can be an older turn the new list's
@@ -1681,8 +1689,12 @@
     // glide branch compares against, and the previous conversation's foot is
     // not this one's: leaving it set slides the new conversation in from the
     // old offset instead of landing at once (the book's "a first pin, a
-    // switch's or a return's, lands at once"). The mount's own clear is the
-    // copy that survives; this one is dropped so one place owns it.
+    // switch's or a return's, lands at once"). The mount's clear is not
+    // enough on its own - a page that lands before a render pass sees the
+    // emptied record leaves the old list mounted - so the swap clears here
+    // too, and the settle with it.
+    placed = null;
+    openPlaced = false;
     stopGlide();
     working?.following(true);
   });
