@@ -125,6 +125,10 @@ impl std::fmt::Debug for TokenResponse {
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Profile {
+    /// The account's user id. A write stamps it on `encryptedFor`, which
+    /// Vaultwarden 1.37 requires and compares against the token's own user.
+    #[serde(default)]
+    pub id: Option<String>,
     #[serde(default, rename = "key", alias = "Key")]
     pub key: Option<String>,
     #[serde(default, rename = "privateKey", alias = "PrivateKey")]
@@ -152,6 +156,16 @@ pub struct Organization {
 pub struct Folder {
     pub id: String,
     pub name: String,
+}
+
+/// The `GET /api/folders` list envelope. Vaultwarden sends every folder in
+/// `data` with a null `continuationToken`, so the rows never sit at the top
+/// level where a bare `Vec<Folder>` would find them.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FolderList {
+    #[serde(default)]
+    pub data: Vec<Folder>,
 }
 
 /// One attachment's metadata, as a cipher and the download route carry it.
@@ -262,6 +276,16 @@ mod tests {
             .expect_err("the access token is required");
 
         assert!(error.to_string().contains("access_token"), "{error}");
+    }
+
+    /// A create stamps `encryptedFor` from this id, and Vaultwarden refuses a
+    /// cipher whose value is not the account's own user id.
+    #[test]
+    fn the_profile_carries_the_account_user_id() {
+        let profile: Profile =
+            serde_json::from_str(r#"{"id":"user-1","key":"wrapped"}"#).expect("the profile");
+
+        assert_eq!(profile.id.as_deref(), Some("user-1"));
     }
 
     /// The signed URL carries its own token and the key is a wrapped

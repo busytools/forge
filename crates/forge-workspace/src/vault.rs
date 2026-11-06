@@ -238,12 +238,13 @@ impl VaultSession {
     /// A write must not run against keys the account rotated while the session
     /// stayed open: its ciphertext would be unreadable after the next unlock.
     /// The wrapped user key's fingerprint from unlock is compared with the
-    /// one a fresh sync carries.
+    /// one a fresh sync carries. The sync comes back so a write can stamp the
+    /// account id from the same read that verified the key.
     pub(crate) async fn ensure_keys_current(
         &self,
         caller: &SessionSlot,
         item: Option<&str>,
-    ) -> Result<(), VaultError> {
+    ) -> Result<SyncData, VaultError> {
         let keys = self.keys()?;
         let sync = self.sync().await?;
         let Some(profile_key) = sync.profile.key.as_deref().filter(|key| !key.is_empty()) else {
@@ -256,7 +257,7 @@ impl VaultSession {
             self.note_key_rotation(caller, item);
             return Err(VaultError::KeyRotated);
         }
-        Ok(())
+        Ok(sync)
     }
 
     /// Drop the keys when a sync cannot prove which user key the account

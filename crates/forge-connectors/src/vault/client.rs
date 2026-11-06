@@ -11,7 +11,7 @@ use zeroize::Zeroize;
 
 use crate::vault::VaultError;
 use crate::vault::models::{
-    AttachmentMeta, Folder, Prelogin, SyncData, TokenResponse, TwoFactorCode,
+    AttachmentMeta, Folder, FolderList, Prelogin, SyncData, TokenResponse, TwoFactorCode,
 };
 
 /// The client version every request carries. `GET /api/sync` omits SSH keys
@@ -244,7 +244,8 @@ impl VaultClient {
     pub async fn list_folders(&self, token: &str) -> Result<Vec<Folder>, VaultError> {
         let request = self.authed(reqwest::Method::GET, "/api/folders", token);
         let resp = send_request(request).await?;
-        self.send_typed(resp).await
+        let list: FolderList = self.send_typed(resp).await?;
+        Ok(list.data)
     }
 
     pub async fn create_folder(&self, token: &str, name: &str) -> Result<Value, VaultError> {
@@ -442,15 +443,18 @@ fn retry_after(resp: &reqwest::Response) -> Option<u64> {
         .and_then(|value| value.trim().parse::<u64>().ok())
 }
 
-/// The server's own error field and nothing else. A proxy that echoes the
+/// The server's own error text and nothing else. A proxy that echoes the
 /// request body must not put the master-password hash into a tool result or
-/// the audit file; the token endpoint is the reason this exists.
+/// the audit file; the token endpoint is the reason this exists. Vaultwarden
+/// states an API refusal in `message`, Rocket's catcher nests its reason under
+/// `error`, and the identity endpoint uses the OAuth `error` pair.
 fn safe_error(body: &str) -> String {
     let Ok(value) = serde_json::from_str::<Value>(body) else { return String::new() };
-    value
-        .get("error")
-        .and_then(Value::as_str)
-        .or_else(|| value.get("error_description").and_then(Value::as_str))
+    ["/error", "/error_description", "/message", "/error/description", "/error/reason"]
+        .into_iter()
+        .find_map(|pointer| {
+            value.pointer(pointer).and_then(Value::as_str).filter(|text| !text.is_empty())
+        })
         .unwrap_or_default()
         .to_owned()
 }
@@ -563,6 +567,26 @@ mod tests {
         assert!(text.contains("authorization: Bearer token"), "{text}");
     }
 
+    /// `GET /api/folders` answers a list envelope, not a bare array; parsing the
+    /// array shape fails every folder read, and folder delete names its card
+    /// from this list.
+    #[tokio::test]
+    async fn list_folders_parses_the_list_envelope() {
+        let body = r#"{"data":[{"id":"folder-1","name":"2.abc|def|ghi"}],"object":"list","continuationToken":null}"#;
+        let (address, server) = serve_once("200 OK", body, "").await;
+        let client = VaultClient::new(&format!("http://{address}")).unwrap();
+
+        let folders = client.list_folders("token").await.expect("the folder list");
+
+        assert_eq!(
+            folders,
+            vec![Folder { id: "folder-1".to_owned(), name: "2.abc|def|ghi".to_owned() }]
+        );
+        let request = server.await.unwrap();
+        let text = String::from_utf8_lossy(&request);
+        assert!(text.starts_with("GET /api/folders "), "{text}");
+    }
+
     #[tokio::test]
     async fn a_401_is_the_unauthorized_refresh_trigger() {
         let (address, server) = serve_once("401 Unauthorized", "{}", "").await;
@@ -590,6 +614,33 @@ mod tests {
         assert!(text.contains("invalid_grant"), "{text}");
         assert!(!text.contains("hunter2"), "the raw body reached the error: {text}");
         server.await.unwrap();
+    }
+
+    /// Vaultwarden states a refusal in `message`; Rocket's own catcher nests
+    /// its reason under `error`. Reading only the OAuth pair turns both into
+    /// an empty reason, and a 422 then cannot be told from any other.
+    #[tokio::test]
+    async fn an_error_body_keeps_the_reason_the_server_stated() {
+        let vaultwarden = r#"{"message":"Invalid user cipher","validationErrors":{"":["Invalid user cipher"]},"error":"","error_description":"","object":"error"}"#;
+        let (address, server) = serve_once("422 Unprocessable Entity", vaultwarden, "").await;
+        let client = VaultClient::new(&format!("http://{address}")).unwrap();
+        let error = client.sync("token").await.unwrap_err();
+        assert!(error.to_string().contains("Invalid user cipher"), "{error}");
+        server.await.unwrap();
+
+        let rocket = r#"{"error":{"code":422,"reason":"Unprocessable Entity","description":"The request was well-formed but was unable to be followed due to semantic errors."}}"#;
+        let (address, server) = serve_once("422 Unprocessable Entity", rocket, "").await;
+        let client = VaultClient::new(&format!("http://{address}")).unwrap();
+        let error = client.sync("token").await.unwrap_err();
+        assert!(error.to_string().contains("well-formed"), "{error}");
+        server.await.unwrap();
+    }
+
+    /// A body that echoes the request carries secrets in fields the client
+    /// never reads; none of them may reach a tool result or the audit.
+    #[test]
+    fn an_echoed_body_contributes_no_error_text() {
+        assert_eq!(safe_error(r#"{"password":"hunter2","username":"hi@example.com"}"#), "");
     }
 
     /// A relative download is the API route and takes the bearer; an absolute
