@@ -35,7 +35,22 @@ export function frozenConversation(
 /** Every object in a value, frozen, so a write into it throws in strict mode. */
 export function freeze<T>(value: T): T {
   if (value !== null && typeof value === 'object') {
-    for (const held of Object.values(value as Record<string, unknown>)) freeze(held);
+    // **A Map or a Set keeps its contents out of `Object.values`**, and
+    // freezing the object does not stop `set` or `add` - the write goes into
+    // the collection's own storage. The guard is the method itself.
+    if (value instanceof Map || value instanceof Set) {
+      const held = value instanceof Map ? [...value.keys(), ...value.values()] : [...value];
+      for (const entry of held) freeze(entry);
+      const refuse = (): never => {
+        throw new Error('a frozen collection was written');
+      };
+      if (value instanceof Map) value.set = refuse;
+      else value.add = refuse;
+      value.delete = refuse;
+      value.clear = refuse;
+      return Object.freeze(value);
+    }
+    for (const entry of Object.values(value as Record<string, unknown>)) freeze(entry);
     Object.freeze(value);
   }
   return value;

@@ -57,11 +57,13 @@ export function counting<F extends (...args: never[]) => unknown>(name: string, 
 
 /**
  * The rows one builder's first argument carried, or `null` for an argument
- * that is not a session record.
+ * that is not a conversation-carrying record.
  *
- * A record's conversation is turns of frames, so the count is the frames
- * flattened - the same volume the page used to walk when it scanned for a
- * dispatch, read here off the record instead of off the work.
+ * **A turn carries frames on the wire and their facts on a record**, so the
+ * count reads whichever the turn holds - a record-shaped argument counted by
+ * `messages` alone would read 0 and leave every number below vacuous. It is
+ * the volume the page used to walk when it scanned for a dispatch, read here
+ * off the record instead of off the work.
  */
 function carriedRows(first: unknown): number | null {
   if (first === null || typeof first !== 'object') return null;
@@ -70,8 +72,9 @@ function carriedRows(first: unknown): number | null {
   const turns = (conversation as { turns?: unknown }).turns;
   if (!Array.isArray(turns)) return null;
   return turns.reduce((total: number, turn: unknown) => {
-    const messages = (turn as { messages?: unknown } | null)?.messages;
-    return total + (Array.isArray(messages) ? messages.length : 0);
+    const held = (turn as { messages?: unknown; events?: unknown } | null) ?? {};
+    if (Array.isArray(held.messages)) return total + held.messages.length;
+    return total + (Array.isArray(held.events) ? held.events.length : 0);
   }, 0);
 }
 
