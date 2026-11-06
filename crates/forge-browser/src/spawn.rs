@@ -1546,7 +1546,16 @@ mod tests {
         };
         assert_eq!(named, gone, "the host names its server");
         assert!(orphaned(orphan.id()), "a host whose named server is gone is an orphan");
-        assert!(!orphaned(live.id()), "a host whose named server is alive is a peer's");
+        // An unreadable argv maps to an orphan, so one transient read must not
+        // fail the live case.
+        let live_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while orphaned(live.id()) {
+            assert!(
+                std::time::Instant::now() < live_deadline,
+                "a host whose named server is alive is a peer's",
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
         assert!(orphaned(unnamed.id()), "a host that names no parent is reaped like an orphan");
         for child in [&mut orphan, &mut live, &mut unnamed] {
             let _ = child.kill();
