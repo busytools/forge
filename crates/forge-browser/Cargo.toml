@@ -58,6 +58,9 @@ forge-sdk = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
+# Origin parsing for the opener bridge: scheme, host and port, never a
+# substring of a URL.
+url = "2"
 
 # The engine and everything that drives it. The server never links CEF into
 # its own process: this crate ships the executable that does.

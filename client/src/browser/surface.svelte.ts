@@ -727,7 +727,54 @@ function viewed(state: Record<string, unknown>): void {
  */
 function tabs(list: BrowserTabList): void {
   if (surface.attachedProfile !== null && list.profile !== surface.attachedProfile) return;
+  const before = surface.tabs;
+  const viewed = surface.tab;
+  const seat = surface.seat;
   surface.tabs = list;
+  if (seat === null || viewed === null || picking) return;
+
+  // **A popup born from the tab this surface shows moves it.** The platform
+  // puts the popup in front of its opener; so does this, on the one surface
+  // that already exists, and the ask stays parked on the opener's page.
+  //
+  // **Only a row NEW in this list moves it.** Lists republish on their own
+  // clock, so following every row that names the viewed tab as its opener
+  // would yank the person back each time they picked the opener. A popup
+  // that already existed when this surface opened is not followed either:
+  // the person chose the opener, and that choice stands.
+  if (surface.phase === 'live' && before !== null) {
+    const held = new Set(before.rows.map((row) => row.number));
+    const born = list.rows.find(
+      (row) =>
+        row.opener === viewed &&
+        row.number !== viewed &&
+        !held.has(row.number) &&
+        sameSlot(row.owner, seat),
+    );
+    if (born !== undefined) {
+      void selectTab(born.number);
+      return;
+    }
+  }
+
+  // **A popup that closed hands the surface back to the tab that opened it.**
+  // The registry hands the session back; this is the view following it. The
+  // failure for the old tab lands after this row removal and is refused as
+  // another pair's, so the hand-back is not a flash of "tab was closed".
+  if (surface.phase === 'live' || surface.phase === 'failed') {
+    if (!list.rows.some((row) => row.number === viewed)) {
+      const was = before?.rows.find((row) => row.number === viewed);
+      const opener = was?.opener ?? null;
+      if (opener !== null && list.rows.some((row) => row.number === opener)) {
+        void selectTab(opener);
+      }
+    }
+  }
+}
+
+/** Whether two seats name the same slot. */
+function sameSlot(one: SessionSlot, other: SessionSlot): boolean {
+  return one.org === other.org && one.project === other.project && one.label === other.label;
 }
 
 /**
