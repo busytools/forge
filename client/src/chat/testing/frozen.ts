@@ -34,24 +34,28 @@ export function frozenConversation(
 
 /** Every object in a value, frozen, so a write into it throws in strict mode. */
 export function freeze<T>(value: T): T {
-  if (value !== null && typeof value === 'object') {
-    // **A Map or a Set keeps its contents out of `Object.values`**, and
-    // freezing the object does not stop `set` or `add` - the write goes into
-    // the collection's own storage. The guard is the method itself.
-    if (value instanceof Map || value instanceof Set) {
-      const held = value instanceof Map ? [...value.keys(), ...value.values()] : [...value];
-      for (const entry of held) freeze(entry);
-      const refuse = (): never => {
-        throw new Error('a frozen collection was written');
-      };
-      if (value instanceof Map) value.set = refuse;
-      else value.add = refuse;
-      value.delete = refuse;
-      value.clear = refuse;
-      return Object.freeze(value);
-    }
-    for (const entry of Object.values(value as Record<string, unknown>)) freeze(entry);
+  if (value === null || typeof value !== 'object') return value;
+  // **A second pass is a no-op**, as `Object.freeze` itself is: a caller may
+  // freeze a value it was handed already frozen. The check is also what ends
+  // a cycle, because an object is frozen before its children are walked.
+  if (Object.isFrozen(value)) return value;
+  // **A Map or a Set keeps its contents out of `Object.values`**, and
+  // freezing the object does not stop `set` or `add` - the write goes into
+  // the collection's own storage. The guard is the method itself.
+  if (value instanceof Map || value instanceof Set) {
+    const held = value instanceof Map ? [...value.keys(), ...value.values()] : [...value];
+    const refuse = (): never => {
+      throw new Error('a frozen collection was written');
+    };
+    if (value instanceof Map) value.set = refuse;
+    else value.add = refuse;
+    value.delete = refuse;
+    value.clear = refuse;
     Object.freeze(value);
+    for (const entry of held) freeze(entry);
+    return value;
   }
+  Object.freeze(value);
+  for (const entry of Object.values(value as Record<string, unknown>)) freeze(entry);
   return value;
 }

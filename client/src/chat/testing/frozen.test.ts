@@ -17,4 +17,25 @@ describe('the freeze guard', () => {
     expect(() => held.stopped.add('u'), 'a frozen set took a write').toThrow('frozen');
     expect(() => held.stopped.delete('t'), 'a frozen set took a delete').toThrow('frozen');
   });
+
+  /**
+   * **A caller may freeze twice.** `Object.freeze` on a plain object is a
+   * no-op the second time, so a publish path that freezes a value it has
+   * already frozen is entitled to do so - the collection shims are what would
+   * throw on the second pass.
+   */
+  it('takes a second pass over a value it already froze', () => {
+    const held = { calls: new Map([['a', 1]]), stopped: new Set(['t']) };
+    freeze(held);
+
+    expect(() => freeze(held), 'a second freeze threw on the frozen collection').not.toThrow();
+  });
+
+  /** A value pointing at itself must not walk its own cycle to the stack's end. */
+  it('freezes a value that points at itself', () => {
+    const loop: { self?: unknown } = {};
+    loop.self = loop;
+
+    expect(() => freeze(loop), 'a value pointing at itself overflowed the guard').not.toThrow();
+  });
 });
