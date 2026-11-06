@@ -943,8 +943,9 @@ impl Tool for Capacity {
 
     fn description(&self) -> &'static str {
         "Report the worker capacity of YOUR project (lead-only): the \
-         configured cap, how many workers are live, and how many slots \
-         are free. Use it before spawning to see whether a spawn would \
+         configured cap, how many slots are taken, and how many are free. \
+         A worker between heal attempts still holds its slot until its heal \
+         gives up. Use it before spawning to see whether a spawn would \
          hit the limit. The cap is the project's max_workers in \
          forge.toml when set, else forge's default; cap_source names \
          which. Takes no arguments."

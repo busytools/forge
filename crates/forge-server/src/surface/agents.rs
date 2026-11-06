@@ -318,12 +318,12 @@ mod tests {
     }
 
     /// A seat between heal attempts draws `Restarting` with its attempt and
-    /// the instant the next attempt fires, and a lead's row - which has no
-    /// worker entry - carries the same state from the workspace. Catches a
-    /// row builder that maps the liveness but drops the two fields, and a
-    /// lead path that reads the slot derivation without the heal state.
+    /// cap, and a lead's row - which has no worker entry - carries the same
+    /// state from the workspace. Catches a row builder that maps the liveness
+    /// but drops the fields, and a lead path that reads the slot derivation
+    /// without the heal state.
     #[test]
-    fn a_restarting_row_carries_its_attempt_and_next_stamp() {
+    fn a_restarting_row_carries_its_attempt() {
         let (workspace, _dir) = crate::surface::testing::workspace();
         let surface = ViewSurface::new(Arc::clone(&workspace));
         let project =
