@@ -378,15 +378,28 @@ impl SeatRestart for WorkspaceRestart {
             return Err("the workspace is gone".to_owned());
         };
         if slot.is_lead() {
+            let state = workspace.stored_seat_state(slot);
+            if matches!(state, Some(crate::store::sessions::SeatState::Closed)) {
+                return Err("the seat was closed; the stop stands".to_owned());
+            }
+            // **A death leaves the seat's state as it was.** The row's own
+            // `in_turn` earns the restart note, the same rule the boot wave
+            // reads, and the spawn is told it may not open a closed seat.
+            let resume_kick = match state {
+                Some(crate::store::sessions::SeatState::InTurn) => {
+                    Some(crate::workspace::LEAD_RESTART_NOTE.to_owned())
+                }
+                _ => None,
+            };
             // The same handler `Command::SpawnProject` runs (the cron wake's
             // own), called directly because the command bus drops the
             // refusal and a failed attempt must count. It resumes the lead
             // under its stored session and re-spawns its workers on
             // connect.
-            crate::spawn::handle_spawn_project(
+            crate::spawn::handle_heal_project_spawn(
                 &workspace,
                 slot.project(),
-                forge_agent::client::SessionLaunchSettings::default(),
+                forge_agent::client::SessionLaunchSettings { resume_kick, ..Default::default() },
             )
             .map(|()| None)
         } else {
@@ -962,6 +975,33 @@ mod tests {
 
         assert_eq!(calls.lock().expect("recorder").len(), 1, "the lead still restarts");
         assert!(notices.lock().expect("notices").is_empty(), "no peer message for a lead");
+    }
+
+    /// **A close that lands after the attempt was scheduled still stops
+    /// it.** The close bumps the generation, but an attempt already past
+    /// that check reads the row: a closed lead is the reader's stop, not a
+    /// crash, and the heal must not bring the project back.
+    #[tokio::test(start_paused = true)]
+    async fn a_closed_lead_is_not_healed() {
+        let (workspace, _worker) = seeded_worker();
+        let (restart, calls) = recorder(Ok(None));
+        let (notify, notices) = notifier();
+        let healing = Healing::new(Arc::downgrade(&workspace), restart, notify);
+        let lead = SessionSlot::lead("TestOrg", "forge");
+        workspace.record_session_id(lead.org(), lead.project(), lead.label(), "lead-id");
+        workspace.record_seat_state(&lead, crate::store::sessions::SeatState::Idle);
+
+        healing.note_death(&lead, "the subprocess closed");
+        tokio::task::yield_now().await;
+        // The close lands after the attempt was armed and past its own
+        // checks, which is the window the generation check cannot cover.
+        workspace.record_seat_state(&lead, crate::store::sessions::SeatState::Closed);
+        tokio::time::advance(Duration::from_secs(60)).await;
+        tokio::task::yield_now().await;
+
+        assert!(calls.lock().expect("recorder").is_empty(), "the close owns the seat");
+        assert!(workspace.heal_progress(&lead).is_none(), "and the mark goes with it");
+        assert!(notices.lock().expect("notices").is_empty(), "a close is not news");
     }
 
     /// The notice is a peer message to the project, sent as the worker, so

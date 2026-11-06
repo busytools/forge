@@ -1155,11 +1155,15 @@ On a launch with no project named, every project whose lead was left
 open still spawns its lead session in the background, resuming the
 session forge stored for it unless the launch passed `--new`, but none of
 them is focused: you pick one from the picker to enter chat. A project
-closed from the pane is not reopened, and a project whose lead never
-spawned has nothing to reopen. The first launch on this build seeds the
-seats an earlier build left, so that once every project whose lead had
-ever spawned opens; from then on the state is explicit. A lead whose last turn was cut off is
-handed one restart note as its first turn, telling it to read the project
+closed from the pane stays shut, and a project whose lead never spawned
+has nothing to reopen.
+
+The first launch on a build that stores this state seeds every existing
+lead row as open, because rows written before it carry no state. That one
+launch therefore reopens every project whose lead had ever spawned,
+including a project that had been closed by an earlier build; from then
+on the state is explicit. A lead whose last turn was cut off is handed
+one restart note as its first turn, telling it to read the project
 handoff and the task board and to continue where it left off; a lead that
 was parked is resumed with nothing, and a `--new` launch sends no note at
 all.

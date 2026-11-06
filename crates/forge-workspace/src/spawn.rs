@@ -224,7 +224,27 @@ fn try_emit(workspace: &Workspace, label: &'static str, update: SessionUpdate) {
 pub(crate) fn handle_spawn_project(
     workspace: &Arc<Workspace>,
     project_name: &str,
+    launch_settings: SessionLaunchSettings,
+) -> Result<(), String> {
+    spawn_project_inner(workspace, project_name, launch_settings, true)
+}
+
+/// The heal's resume: the same spawn as [`handle_spawn_project`], but it
+/// cannot open a seat the reader closed. A heal recovers a death; it is
+/// never an opening door.
+pub(crate) fn handle_heal_project_spawn(
+    workspace: &Arc<Workspace>,
+    project_name: &str,
+    launch_settings: SessionLaunchSettings,
+) -> Result<(), String> {
+    spawn_project_inner(workspace, project_name, launch_settings, false)
+}
+
+fn spawn_project_inner(
+    workspace: &Arc<Workspace>,
+    project_name: &str,
     mut launch_settings: SessionLaunchSettings,
+    reopen: bool,
 ) -> Result<(), String> {
     let Some(project) = workspace.find_project_view_by_name(project_name) else {
         tracing::warn!(
@@ -292,6 +312,7 @@ pub(crate) fn handle_spawn_project(
         launch_settings,
         Some(session_key.clone()),
         &crate::protocol::SpawnRole::Lead,
+        reopen,
     ) {
         Ok(_handle) => {
             tracing::info!(
@@ -1743,6 +1764,9 @@ pub(crate) fn handle_spawn_worker(
             wrote_row: !is_resume && !from_boot_respawn,
             mcp_families: families.clone(),
         },
+        // A worker spawn is an opening door like the lead's: it starts the
+        // seat it names.
+        true,
     ) {
         Ok(handle) => {
             tracing::info!(
@@ -3523,6 +3547,7 @@ provider = "anthropic"
                 SessionLaunchSettings::default(),
                 Some(key.clone()),
                 &crate::protocol::SpawnRole::Lead,
+                true,
             )
             .expect("the spawn rebuilds rather than handing back a dead handle");
 
@@ -6275,6 +6300,7 @@ heal_stable = "30s"
                 wrote_row: false,
                 mcp_families: None,
             },
+            true,
         );
 
         assert!(result.is_err(), "a target mapping to no project is refused");

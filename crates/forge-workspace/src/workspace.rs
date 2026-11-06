@@ -78,13 +78,14 @@ impl From<crate::settings_write::WriteError> for SettingsSaveError {
 }
 
 /// Undo a spawn's own side effects when it is refused before the session is
-/// pooled: the id it recorded and a domain handle it created. Armed from the
-/// id record to the pool insert; an unarmed guard does nothing, so the
-/// pooled and refused paths both end in a plain drop.
+/// pooled: the id it recorded, the seat state it moved, and a domain handle
+/// it created. Armed from the id record to the pool insert; an unarmed guard
+/// does nothing, so the pooled and refused paths both end in a plain drop.
 struct SpawnRollback {
     workspace: Arc<Workspace>,
     slot: SessionSlot,
     stored: Option<String>,
+    prior_seat_state: Option<crate::store::sessions::SeatState>,
     domain_created: bool,
     armed: bool,
 }
@@ -98,6 +99,7 @@ impl Drop for SpawnRollback {
             self.workspace.domain_handles.lock().remove(&self.slot);
         }
         self.workspace.forget_spawn_id(&self.slot, self.stored.as_deref());
+        self.workspace.restore_seat_state(&self.slot, self.prior_seat_state);
     }
 }
 
@@ -3414,7 +3416,7 @@ impl Workspace {
         settings: SessionLaunchSettings,
         role: &crate::protocol::SpawnRole,
     ) -> Result<Arc<AgentHandle>> {
-        self.get_agent_handle_at_key(target, settings, None, role)
+        self.get_agent_handle_at_key(target, settings, None, role, true)
     }
 
     /// Like [`Self::get_agent_handle`] but takes the key the caller
@@ -3424,12 +3426,17 @@ impl Workspace {
     /// `role` is what the caller states this spawn to be. It is the one
     /// source for both the tool surface and the slot's label, so a worker
     /// cannot be handed a lead's tool surface or a lead's address.
+    ///
+    /// `reopen` is the opening door's word: a user's click, the boot wave
+    /// and a cron wake open the seat they name, while the heal's recovery
+    /// of a death must leave a seat the reader closed shut.
     pub(crate) fn get_agent_handle_at_key(
         self: &Arc<Self>,
         target: SessionTarget,
         mut settings: SessionLaunchSettings,
         resolved_key: Option<SessionSlot>,
         role: &crate::protocol::SpawnRole,
+        reopen: bool,
     ) -> Result<Arc<AgentHandle>> {
         // Every session forge launches passes through here, so the tools
         // forge has replaced are denied at this one point rather than at
@@ -3577,13 +3584,17 @@ impl Workspace {
             workspace: Arc::clone(self),
             slot: session_slot.clone(),
             stored: stored.clone(),
+            // Read before the spawn's own `idle` write, so a refusal puts
+            // back the state the row held rather than the one the spawn set.
+            prior_seat_state: self.stored_seat_state(&session_slot),
             domain_created: false,
             armed: true,
         };
-        // **The spawn is an opening door.** Naming a closed project, or a
-        // wake that names it, runs this path, and the seat it starts is
-        // open; every other seat-state write leaves a closed row closed.
-        let session_id = self.record_spawn_id(&session_slot, stored.clone(), true);
+        // **The opening door is the caller's word.** Naming a closed
+        // project, or a wake that names it, runs this path with `reopen`
+        // set and the seat it starts is open; every other seat-state write,
+        // the heal's included, leaves a closed row closed.
+        let session_id = self.record_spawn_id(&session_slot, stored.clone(), reopen);
         tracing::info!(
             target: "forge_workspace::account",
             slot = %session_slot.display(),
@@ -3884,6 +3895,24 @@ impl Workspace {
                 .into());
             }
             let mut pool = self.pool.lock();
+            // **A non-opening spawn stops at a close that landed after its
+            // own start.** The heal's `fire` reads `Closed` before it
+            // calls in, and the close can still land while the spawn
+            // resolves its account. Checked here, in the block that
+            // inserts the pool entry under the same lock the close's
+            // release takes: the close either writes `Closed` before this
+            // read (refused now) or removes the entry this spawn inserts.
+            if !reopen
+                && matches!(
+                    self.stored_seat_state(&session_slot),
+                    Some(crate::store::sessions::SeatState::Closed)
+                )
+            {
+                arc.kill_process_group();
+                return Err(
+                    WorkspaceError::SeatClosedDuringSpawn { slot: session_slot.display() }.into()
+                );
+            }
             if let Some(existing) = pool.get(&session_slot) {
                 // A concurrent spawn won the slot: its handle is the one to
                 // hand back, but only while a task consumes it. A handle
@@ -5189,6 +5218,33 @@ impl Workspace {
         }
     }
 
+    /// Put `slot`'s row back to the state it held before a refused spawn.
+    /// Not a transition: the value is written verbatim, `None` included.
+    fn restore_seat_state(
+        &self,
+        slot: &SessionSlot,
+        state: Option<crate::store::sessions::SeatState>,
+    ) {
+        let db = self.db.lock();
+        let Some(db) = db.as_ref() else { return };
+        if let Err(error) = crate::store::sessions::restore_seat_state(
+            db,
+            slot.org(),
+            slot.project(),
+            slot.label(),
+            state,
+        ) {
+            tracing::warn!(
+                target: "forge_workspace::sessions",
+                event_name = "seat_state_restore_failed",
+                slot = %slot.display(),
+                state = ?state,
+                %error,
+                "restoring the seat's state after a refused spawn failed; the next boot reads what the spawn wrote",
+            );
+        }
+    }
+
     /// The state `slot`'s row holds, or `None` when the row is absent, was
     /// written before the field existed, or could not be read.
     pub(crate) fn stored_seat_state(
@@ -6372,6 +6428,10 @@ impl Workspace {
             charter: row.charter.unwrap_or_default(),
             spawned_by: SessionSlot::lead(key.org(), key.project()),
             resume_existing: Some(session_id.to_owned()),
+            // **An explicit `/resume` is the reader's own act**, so it
+            // delivers the re-orient kick whatever the row says: unlike a
+            // boot re-spawn or a heal, the person is asking this seat to
+            // carry on.
             kick: row.resume_kick.or_else(|| Some(DYNAMIC_WORKER_RESTART_NOTE.to_owned())),
             resume_kick: None,
             interactive: row.interactive.unwrap_or(false),
@@ -9080,12 +9140,14 @@ impl Workspace {
         let Some(db) = guard.as_ref() else {
             anyhow::bail!("the session store is unavailable this session");
         };
-        // A re-spawn passes no re-orient message of its own - it hands
-        // the row's `resume_kick` to the child as the kick - so a `None`
-        // here carries the stored value forward rather than erasing the
-        // field its caller just read. Same for `kick`: only a first spawn
-        // states one, and a resume that wrote its own live kick here would
-        // replace the worker's original first turn with it.
+        // A boot re-spawn or a heal passes no re-orient message of its
+        // own - it hands the row's `resume_kick` to the child as the kick
+        // only when the row says a turn was cut off, and nothing when the
+        // worker was parked - so a `None` here carries the stored value
+        // forward rather than erasing the field its caller just read. Same
+        // for `kick`: only a first spawn states one, and a resume that
+        // wrote its own live kick here would replace the worker's original
+        // first turn with it.
         let existing = crate::store::sessions::get(db, &org, &project, label).ok().flatten();
         crate::store::sessions::put(
             db,
@@ -15316,6 +15378,7 @@ provider = "anthropic"
                 workspace: Arc::clone(&workspace),
                 slot: slot.clone(),
                 stored: previous.clone(),
+                prior_seat_state: None,
                 domain_created: true,
                 armed: true,
             };
@@ -15332,15 +15395,21 @@ provider = "anthropic"
     }
 
     /// **A real spawn refused by the loader between its id record and the
-    /// pool rolls both back.** The live config stays the valid one it loaded;
-    /// the file moves under it and no longer parses, so the bind's own re-read
-    /// refuses - the guarded return, not a hand-built guard.
+    /// pool rolls all of it back.** The live config stays the valid one it
+    /// loaded; the file moves under it and no longer parses, so the bind's
+    /// own re-read refuses - the guarded return, not a hand-built guard.
+    /// The seat state goes back too: a refusal must not turn a cut-off turn
+    /// into a parked seat, or reopen one the reader shut.
     #[tokio::test]
     async fn a_spawn_refused_by_a_changed_config_rolls_back_its_id_and_domain() {
+        use crate::store::sessions::SeatState;
+
         let dir = make_workspace_dir();
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         workspace.seed_test_ready_account("Stargate");
         let slot = SessionSlot::lead("Default", "forge");
+        workspace.record_session_id(slot.org(), slot.project(), slot.label(), "previous-id");
+        workspace.record_seat_state(&slot, SeatState::InTurn);
         let previous = workspace
             .stored_session_id(slot.org(), slot.project(), slot.label())
             .expect("the store reads");
@@ -15357,6 +15426,11 @@ provider = "anthropic"
             workspace.stored_session_id(slot.org(), slot.project(), slot.label()).expect("read"),
             previous,
             "the pinned id went back to the store's own",
+        );
+        assert_eq!(
+            workspace.stored_seat_state(&slot),
+            Some(SeatState::InTurn),
+            "the interrupted turn is still what the next boot reads",
         );
         assert!(
             !workspace.domain_handles.lock().contains_key(&slot),
@@ -17531,6 +17605,68 @@ provider = "anthropic"
                 "a late {late:?} write leaves the close as the last word",
             );
         }
+    }
+
+    /// **A `/new` a dying task drains after the close does not reopen the
+    /// row.** The mint is a swap, not an opening door: it records the id
+    /// the successor runs under and leaves the reader's close standing.
+    #[test]
+    fn a_fresh_id_for_a_closed_seat_leaves_it_closed() {
+        use crate::store::sessions::SeatState;
+
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
+        ws.install_db_for_test(crate::store::Db::open(&dir.path().join("db.redb")).expect("db"));
+        let key = SessionSlot::lead("TestOrg", "forge");
+        ws.record_session_id("TestOrg", "forge", "lead", "id-1");
+        ws.record_seat_state(&key, SeatState::Closed);
+
+        let minted = ws.fresh_session_id_for(&key);
+
+        assert_eq!(
+            ws.stored_seat_state(&key),
+            Some(SeatState::Closed),
+            "a swap leaves the close as the last word",
+        );
+        assert_eq!(
+            ws.stored_session_id(key.org(), key.project(), key.label()).expect("read"),
+            Some(minted),
+            "and the row still names the occupant the swap minted",
+        );
+    }
+
+    /// **Opening a closed project is the reader's act, and it reopens the
+    /// row.** Closing is not forgetting: the named spawn resumes the stored
+    /// occupant and marks the seat open, or the project could never be
+    /// opened again.
+    #[tokio::test]
+    async fn a_named_spawn_reopens_a_closed_lead() {
+        use crate::store::sessions::SeatState;
+
+        let dir = tempdir().expect("tempdir");
+        let project = tempdir().expect("project");
+        let workspace = boot_lead_workspace(dir.path(), project.path());
+        let key = SessionSlot::lead("Default", "forge");
+        workspace.record_session_id(
+            "Default",
+            "forge",
+            "lead",
+            "11111111-2222-3333-4444-555555555555",
+        );
+        workspace.record_seat_state(&key, SeatState::Closed);
+
+        let mut updates = workspace.subscribe_mirror();
+        spawn_lead(&workspace, false, None);
+        let (connected, _note) =
+            lead_boot_frames(&mut updates, &key, Duration::from_millis(200)).await;
+        assert!(connected, "the lead connects");
+
+        assert_eq!(
+            workspace.stored_seat_state(&key),
+            Some(SeatState::Idle),
+            "a named spawn is an opening door",
+        );
+        forge_agent::set_test_sdk_binary(None);
     }
 
     /// `/new` mints the successor's id, and a swap leaves the seat parked:

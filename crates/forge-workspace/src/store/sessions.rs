@@ -470,6 +470,26 @@ pub fn set_seat_state(
     Ok(true)
 }
 
+/// Put a row's seat state back to what it held before a refused spawn.
+/// A restore is not a transition: it writes the value verbatim, `None`
+/// included, and does not treat `Closed` as authoritative, because the
+/// write it undoes should never have landed.
+pub fn restore_seat_state(
+    db: &Db,
+    org: &str,
+    project: &str,
+    label: &str,
+    state: Option<SeatState>,
+) -> anyhow::Result<bool> {
+    let Some(mut record) = get(db, org, project, label)? else { return Ok(false) };
+    if record.seat_state == state {
+        return Ok(true);
+    }
+    record.seat_state = state;
+    put(db, &record)?;
+    Ok(true)
+}
+
 /// The state the row at `(org, project, label)` holds, or `None` when the
 /// row is absent or was written before the field existed.
 pub fn seat_state(

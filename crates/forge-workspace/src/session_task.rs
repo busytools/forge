@@ -1236,6 +1236,21 @@ impl SessionTask {
                             prompt.source,
                         );
                     }
+                    // **A queued prompt the CLI starts is a turn start like
+                    // any other.** `route` writes `in_turn` only when its
+                    // prompt commits a turn; one queued behind a running turn
+                    // does not, so this frame is the first moment the row can
+                    // learn that turn is running. Without it a crash in a
+                    // queued turn leaves `idle`, and the next boot sends no
+                    // note.
+                    if state == "started"
+                        && let Some(workspace) = self.workspace.upgrade()
+                    {
+                        workspace.record_seat_state(
+                            &self.key,
+                            crate::store::sessions::SeatState::InTurn,
+                        );
+                    }
                     self.emit(SessionUpdate::PromptLifecycle {
                         key: self.key.clone(),
                         uuid: command_uuid.clone(),
@@ -2243,6 +2258,12 @@ impl SessionTask {
             // of every later trigger at the idle gate.
             guard.serve_turn();
         }
+        // **The settle the domain just did is the row's too.** These paths
+        // produce no Result, so no turn end reaches the row; left `in_turn`,
+        // a restart would hand the seat a note for a turn nothing
+        // interrupted. Written before the held prompts are re-delivered:
+        // their `route` commits new turns and must have the last word.
+        workspace.record_seat_state(key, crate::store::sessions::SeatState::Idle);
         // **The seat takes input again.** Every abort lands here - a
         // cancelled judgment prompt, one the CLI refused or discarded, and the
         // deadline - and a composer left standing down for a handoff that
@@ -2804,6 +2825,13 @@ fn maybe_respawn_workers_on_connected(
     force_new: bool,
 ) {
     if !slot.is_lead() {
+        return;
+    }
+    // **A closed lead does not bring its workers back.** The boot wave
+    // never spawns a closed lead, so this hook should not fire for one;
+    // the check keeps the guarantee local rather than resting on that.
+    if matches!(workspace.stored_seat_state(slot), Some(crate::store::sessions::SeatState::Closed))
+    {
         return;
     }
     if workspace.find_project_view_by_name(slot.project()).is_none() {
@@ -4864,6 +4892,44 @@ mod tests {
         );
     }
 
+    /// **A queued prompt's start is a turn start too.** `route` writes
+    /// `in_turn` only for a prompt that commits a turn; one queued behind a
+    /// running turn gets its own Result, so the CLI's `started` frame is the
+    /// first moment the row can learn a turn is running. A crash in that
+    /// turn must not leave the row reading parked.
+    #[tokio::test]
+    async fn a_queued_prompt_start_marks_the_seat_in_turn() {
+        use crate::store::sessions::SeatState;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (workspace, _rx) =
+            crate::Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
+        workspace.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        let key = SessionSlot::worker("TestOrg", "forge", "queued-start");
+        workspace.record_session_id(key.org(), key.project(), key.label(), "id-1");
+        workspace.record_seat_state(&key, SeatState::Idle);
+        let (mut task, _agent_rx) = command_task_for(&workspace, &key);
+
+        task.translate_event(AgentEvent::SdkMessage {
+            session_id: "id-1".to_owned(),
+            msg: forge_primitives::Message::CommandLifecycle {
+                command_uuid: "queued-id".to_owned(),
+                state: "started".to_owned(),
+                uuid: "lifecycle-1".to_owned(),
+                session_id: "id-1".to_owned(),
+                extras: forge_primitives::messages::Extras::new(),
+            },
+        });
+
+        assert_eq!(
+            workspace.stored_seat_state(&key),
+            Some(SeatState::InTurn),
+            "the CLI starting a queued prompt is a turn start",
+        );
+    }
+
     /// A cancelled judgment turn ends the handoff rather than finishing it,
     /// and what the swap's gate held goes back to the session that stays.
     #[tokio::test]
@@ -5050,17 +5116,28 @@ mod tests {
     /// registered sender and cancels it before it starts.
     #[tokio::test]
     async fn a_cancelled_judgment_short_settles_the_committed_turn() {
+        use crate::store::sessions::SeatState;
+
         let dir = tempfile::tempdir().expect("tempdir");
         let (workspace, _rx) =
             crate::Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
+        workspace.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
         let slot = SessionSlot::worker("TestOrg", "forge", "handoff-cut");
         let (mut task, _agent_rx) = command_task_for(&workspace, &slot);
         task.domain.lock().session_id = Some(forge_primitives::SessionId::new("old-session-id"));
         workspace.domain_handles.lock().insert(slot.clone(), Arc::clone(&task.domain));
+        workspace.record_session_id(slot.org(), slot.project(), slot.label(), "old-session-id");
         let (commands, mut routed) = mpsc::unbounded_channel();
         workspace.command_senders.lock().insert(slot.clone(), commands);
 
         task.begin_handoff();
+        assert_eq!(
+            workspace.stored_seat_state(&slot),
+            Some(SeatState::InTurn),
+            "routing the judgment prompt commits its turn on the row",
+        );
 
         assert!(
             matches!(
@@ -5087,6 +5164,12 @@ mod tests {
         assert!(!domain.turn_pending, "the abort settles the judgment prompt's turn");
         assert!(domain.is_idle_for_handoff(), "so the seat is idle again");
         assert!(!domain.handoff.awaiting, "and the handoff is over");
+        drop(domain);
+        assert_eq!(
+            workspace.stored_seat_state(&slot),
+            Some(SeatState::Idle),
+            "and the row settles with it, so no boot kicks a turn nothing interrupted",
+        );
     }
 
     /// A judgment prompt the CLI refuses or discards without running is the
@@ -13855,6 +13938,27 @@ mod connected_hook_tests {
         let spawns: Vec<&Command> =
             dispatched.iter().filter(|c| matches!(c, Command::SpawnWorker { .. })).collect();
         assert_eq!(spawns.len(), 1, "one SpawnWorker per stored worker");
+    }
+
+    /// **A closed lead does not bring its workers back.** The boot wave
+    /// never spawns a closed lead, so its Connected never runs; this pins
+    /// the same guarantee at the hook, so it does not rest on that alone.
+    #[test]
+    fn a_closed_lead_does_not_respawn_its_workers() {
+        let (workspace, _update_rx) = Workspace::testing_stub();
+        let _db = seed_project_with_one_worker_row(&workspace, "implementer");
+        workspace.enable_test_dispatch_intercept();
+        let lead = lead_slot("proj-x");
+        workspace.record_session_id(lead.org(), lead.project(), lead.label(), "lead-id");
+        workspace.record_seat_state(&lead, crate::store::sessions::SeatState::Closed);
+
+        on_connected_for_test(&workspace, &lead, "lead-uuid");
+
+        let dispatched = workspace.drain_test_dispatch_buffer();
+        assert!(
+            !dispatched.iter().any(|command| matches!(command, Command::SpawnWorker { .. })),
+            "the stop stands: no worker comes back for a closed lead",
+        );
     }
 
     /// A lead Connected for a project with no persisted workers is
