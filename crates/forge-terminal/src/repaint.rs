@@ -42,6 +42,10 @@ pub fn repaint<T: EventListener>(term: &Term<T>) -> Vec<u8> {
     // App keypad is its own pair, not a private mode.
     out.extend_from_slice(if mode.contains(TermMode::APP_KEYPAD) { b"\x1b=" } else { b"\x1b>" });
     out.extend_from_slice(b"\x1b[H\x1b[2J");
+    // **Origin mode off for the draw**: every row below is an absolute
+    // position, and left on it would place them inside the app's scroll
+    // region instead.
+    toggle(&mut out, false, "?6");
     let mut current: Option<Style> = None;
     for row in 0..rows {
         // Position each row explicitly: a full-width row would otherwise
@@ -64,14 +68,16 @@ pub fn repaint<T: EventListener>(term: &Term<T>) -> Vec<u8> {
         }
     }
     out.extend_from_slice(b"\x1b[0m");
+    // **The app's origin mode is restored before the cursor, never after.**
+    // xterm.js homes the cursor when it reads the toggle, so a placement
+    // emitted before it is lost: the repaint ends at the top-left and the
+    // shell's next prompt redraw erases the screen from there.
+    toggle(&mut out, mode.contains(TermMode::ORIGIN), "?6");
     let point = grid.cursor.point;
     let last_row = i32::try_from(rows.saturating_sub(1)).unwrap_or(i32::MAX);
     let row = point.line.0.clamp(0, last_row) + 1;
     let col = point.column.0 + 1;
     out.extend_from_slice(format!("\x1b[{row};{col}H").as_bytes());
-    // Origin mode makes every later position relative to the scroll region,
-    // so it is set only once the screen is drawn and the cursor is placed.
-    toggle(&mut out, mode.contains(TermMode::ORIGIN), "?6");
     toggle(&mut out, mode.contains(TermMode::SHOW_CURSOR), "?25");
     out
 }
@@ -268,6 +274,24 @@ mod tests {
         assert!(mode.contains(TermMode::MOUSE_REPORT_CLICK), "mouse clicks: {mode:?}");
         assert!(mode.contains(TermMode::APP_CURSOR), "application cursor: {mode:?}");
         assert!(mode.contains(TermMode::INSERT), "insert mode: {mode:?}");
+    }
+
+    /// **Origin mode is set before the cursor, and cleared before the rows.**
+    /// xterm.js homes the cursor when it reads the toggle, so a placement
+    /// emitted before it is lost: the repaint ends at the top-left and the
+    /// shell's next prompt redraw erases the whole screen from there. And the
+    /// rows are absolute positions, which only hold with the mode off.
+    #[test]
+    fn the_repaint_sets_origin_mode_around_the_draw() {
+        let term = term_with(b"\x1b[?6hREADY", 20, 5);
+        let bytes = repaint(&term);
+        let text = String::from_utf8_lossy(&bytes);
+        let off = text.find("\x1b[?6l").expect("origin mode is cleared for the draw");
+        let first_row = text.find("\x1b[1;1H").expect("the first row is positioned");
+        assert!(off < first_row, "the rows are positioned with the mode off: {text:?}");
+        let on = text.rfind("\x1b[?6h").expect("the app's origin mode is restored");
+        let cursor = text.rfind("\x1b[1;6H").expect("the cursor is placed after the text");
+        assert!(on < cursor, "the cursor placement follows the origin toggle: {text:?}");
     }
 
     /// The repaint ends with the cursor where the program left it, so a
