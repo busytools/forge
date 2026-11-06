@@ -12261,11 +12261,27 @@ async fn a_terminal_opens_types_and_closes_over_the_socket() {
         "input outside a hand-off reached the shell",
     );
 
-    // Through the hand-off's door the keystrokes are the person's.
+    // **A parked hand-off raises the surface as a viewer**: typing alone
+    // claims nothing, and the person's take is what lets the keystrokes land.
     let parked = fleet.park_terminal_hand_off(&seat, id).expect("a hand-off parks");
-    send_terminal_input(&mut socket, id, b"echo THROUGH_THE_DOOR\r").await;
+    send_terminal_input(&mut socket, id, b"echo BEFORE_THE_TAKE\r").await;
     assert!(
-        binary_containing(&mut socket, b"THROUGH_THE_DOOR", 10_000).await,
+        !binary_containing(&mut socket, b"BEFORE_THE_TAKE", 700).await,
+        "a viewer's keystrokes reached a parked hand-off",
+    );
+    send(&mut socket, ClientMessage::TerminalControl { seat: seat.clone(), id, take: true }).await;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut taken = false;
+    while Instant::now() < deadline && !taken {
+        let Some(message) = next_server_within(&mut socket, 500).await else { continue };
+        if let ServerMessage::TerminalControl { controller: Some(_), .. } = message {
+            taken = true;
+        }
+    }
+    assert!(taken, "the take during the park was pushed");
+    send_terminal_input(&mut socket, id, b"echo THROUGH_THE_TAKE\r").await;
+    assert!(
+        binary_containing(&mut socket, b"THROUGH_THE_TAKE", 10_000).await,
         "the person's keystrokes reached the shell",
     );
     fleet.answer_terminal_hand_off(&parked, &seat);
@@ -12373,12 +12389,13 @@ async fn attach_answering(url: &str, seat: &SessionSlot, id: Option<u16>) -> (Cl
     (socket, id, viewer)
 }
 
-/// **A parked hand-off's keyboard is one client's.** Two answering clients
-/// watch the same terminal: the first to type claims the keyboard, the second
-/// is refused and told who holds it, a take is refused while the ask waits,
-/// and the ending gives the keyboard back to the agent.
+/// **A parked hand-off takes an explicit take, and that is the keyboard's
+/// only door.** Two answering clients watch the same terminal: the client that
+/// takes control types, the other is a viewer and is told who holds it, and
+/// the ending gives the keyboard back to the agent. Typing alone claims
+/// nothing.
 #[tokio::test]
-async fn a_parked_handoff_gives_the_keyboard_to_one_client() {
+async fn a_parked_handoff_takes_an_explicit_take() {
     let dir = tempfile::tempdir().expect("a config dir");
     std::fs::create_dir_all(dir.path().join("proj")).expect("the project's directory");
     let fleet = Fleet::in_dir(dir.path(), &[("TestOrg", &["proj"])]).expect("the fleet builds");
@@ -12392,26 +12409,25 @@ async fn a_parked_handoff_gives_the_keyboard_to_one_client() {
 
     let parked = fleet.park_terminal_hand_off(&seat, id).expect("a hand-off parks");
 
-    // **A take cannot land while the ask holds the keyboard.**
+    // **The take is the person's explicit door, and it lands while the ask
+    // waits**: the park raised the surface as a viewer.
     send(&mut first, ClientMessage::TerminalControl { seat: seat.clone(), id, take: true }).await;
     let deadline = Instant::now() + Duration::from_secs(5);
-    let mut refused = false;
-    while Instant::now() < deadline && !refused {
+    let mut taken = None;
+    while Instant::now() < deadline && taken.is_none() {
         let Some(message) = next_server_within(&mut first, 500).await else { continue };
-        if let ServerMessage::Error { what, .. } = message {
-            refused = what == "terminal_control";
+        if let ServerMessage::TerminalControl { controller, .. } = message {
+            taken = Some(controller);
         }
     }
-    assert!(refused, "a take was refused while the hand-off held the keyboard");
-    assert!(!fleet.workspace().terminal_controlled(&seat), "and nothing was granted");
+    assert_eq!(taken, Some(Some(first_viewer)), "the take landed and was pushed");
+    assert!(fleet.workspace().terminal_controlled(&seat), "the first client holds it");
 
-    // The first client to type owns the keyboard.
     send_terminal_input(&mut first, id, b"echo FIRST_HAND\r").await;
     assert!(
         binary_containing(&mut first, b"FIRST_HAND", 10_000).await,
-        "the first client's keystrokes reached the shell",
+        "the taker's keystrokes reached the shell",
     );
-    assert!(fleet.workspace().terminal_controlled(&seat), "the first client holds it");
 
     // The second is told the keyboard went to the first, and its own bytes
     // are refused.
@@ -12431,7 +12447,7 @@ async fn a_parked_handoff_gives_the_keyboard_to_one_client() {
     send_terminal_input(&mut second, id, b"echo SECOND_HAND\r").await;
     assert!(
         !binary_containing(&mut second, b"SECOND_HAND", 700).await,
-        "a second client's keystrokes reached a parked hand-off",
+        "a viewer's keystrokes reached a parked hand-off",
     );
 
     // The ending returns the keyboard to the agent.
