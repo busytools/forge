@@ -193,7 +193,7 @@ export interface SlackDraft {
   operation: SlackOperation;
   /**
    * The thread named for the card. Null on a root message, and null when the
-   * core could not read the parent: the card then draws `threadTs`.
+   * core could not read the parent: the card then names it only as a thread.
    */
   thread: SlackThreadName | null;
   /** Every person the text tags, in order; an unresolved name keeps its id. */
@@ -218,18 +218,28 @@ export interface BrowserHandOff {
   target: string | null;
 }
 
-/** A held configuration write: what it would change, and what the key holds now. */
-export interface SettingsWriteAsk {
-  /** The write's own id, which is what an answer is addressed by. */
-  id: string;
-  /** The concrete catalogue path the write names. */
+/** One key's change in a held configuration write. */
+export interface SettingsWriteChange {
+  /** The concrete catalogue path the change names. */
   key: string;
   /** The value the key stands at now; `null` when it is unset. */
   current: unknown;
-  /** The value the write would leave; `null` when it clears the key. */
+  /** The value the change would leave; `null` when it clears the key. */
   proposed: unknown;
-  /** Whether the write clears the key rather than setting it. */
+  /** Whether the change clears the key rather than setting it. */
   unset: boolean;
+}
+
+/**
+ * A held configuration write: every key it would change, and what each holds
+ * now. One card is one save - a section's mutually required keys ride it
+ * together, because neither half could land alone.
+ */
+export interface SettingsWriteAsk {
+  /** The write's own id, which is what an answer is addressed by. */
+  id: string;
+  /** The keys the one write changes, in the caller's order. */
+  edits: SettingsWriteChange[];
 }
 
 /**
@@ -538,18 +548,24 @@ function terminalHandOffFrom(value: unknown): Ask {
   };
 }
 
-/** A held configuration write: the id is what an answer names, the key and
- *  both values are what the reader decides on. */
+/** A held configuration write: the id is what an answer names, and every
+ *  key with both values is what the reader decides on. */
 function settingsWriteFrom(value: unknown): Ask {
   const held = record(value);
+  const edits = Array.isArray(held['edits']) ? held['edits'] : [];
   return {
     kind: 'settings_write',
     request: {
       id: text(held['id']) ?? '',
-      key: text(held['key']) ?? '',
-      current: held['current'],
-      proposed: held['proposed'],
-      unset: held['unset'] === true,
+      edits: edits.map((edit) => {
+        const row = record(edit);
+        return {
+          key: text(row['key']) ?? '',
+          current: row['current'],
+          proposed: row['proposed'],
+          unset: row['unset'] === true,
+        };
+      }),
     },
   };
 }

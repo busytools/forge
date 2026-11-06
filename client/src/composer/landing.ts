@@ -24,6 +24,76 @@
 
 import type { Notice, Surface } from './wire';
 
+/** The prefix every stored take shares, so a new server run can drop them all. */
+const LAST_TAKE_PREFIX = 'forge.dictate.take.';
+
+/** The server run the stored takes belong to. */
+const BOOT_KEY = 'forge.dictate.boot';
+
+/**
+ * The generation of the last take this client dictated on a seat, kept in the
+ * browser's own storage so a reload finds it. It is what tells a carried
+ * notice this client's own from another client's on the same seat: the record
+ * re-hands landed words to every reader of the seat, and without this a web
+ * dictation lands in the desktop's composer as well.
+ */
+function lastTakeKey(seat: string): string {
+  return `${LAST_TAKE_PREFIX}${seat}`;
+}
+
+/**
+ * Remember which server run the stored takes belong to, dropping the ones a
+ * previous run left.
+ *
+ * **A restart starts the take generations at 1 again**, while this browser's
+ * storage survives - so a generation kept from the last run can match a fresh
+ * take's number and let another client's carried words land here. A different
+ * boot id is what tells the two runs apart; its takes cannot be compared with
+ * the last one's, so they go before any comparison can happen.
+ */
+export function rememberBoot(bootId: string): void {
+  try {
+    const storage = globalThis.localStorage;
+    if (storage === null || storage === undefined) return;
+    if (storage.getItem(BOOT_KEY) === bootId) return;
+    const stale: string[] = [];
+    for (let index = 0; index < storage.length; index += 1) {
+      const key = storage.key(index);
+      if (key !== null && key.startsWith(LAST_TAKE_PREFIX)) stale.push(key);
+    }
+    for (const key of stale) storage.removeItem(key);
+    storage.setItem(BOOT_KEY, bootId);
+  } catch {
+    // Storage refused; the guard fails closed on its own.
+  }
+}
+
+function lastTake(seat: string): number | null {
+  try {
+    const raw = globalThis.localStorage?.getItem(lastTakeKey(seat));
+    if (raw === null || raw === undefined) return null;
+    const value = Number(raw);
+    return Number.isFinite(value) ? value : null;
+  } catch {
+    // A refused read looks the same as "this client never dictated", so a
+    // carried notice from this seat is refused. Say so rather than blaming
+    // the other client for words of ours.
+    console.warn('dictation: storage refused the read, so a carried take cannot be matched');
+    return null;
+  }
+}
+
+function keepTake(seat: string, generation: number): void {
+  try {
+    globalThis.localStorage?.setItem(lastTakeKey(seat), String(generation));
+  } catch {
+    // The arm guards this session, but a reload loses it: a refused write
+    // means the words will not be placed back. Say so rather than dropping
+    // them silently.
+    console.warn('dictation: storage refused the take, so a reload cannot place its words');
+  }
+}
+
 /**
  * What a notice IS, for a memory that has to tell one from another.
  *
@@ -182,6 +252,24 @@ export class Landing {
     // nothing (#1358's rule, and what keeps words already sent from coming
     // back).
     if (!armed && notice.carried !== true) return null;
+    // **A carried notice places only on the client that dictated it.** The
+    // record re-hands the seat's landed words to every reader, so without this
+    // check a web dictation lands in the desktop's composer as well, and the
+    // words pile up when the reader goes to the other client. The generation
+    // this client last dictated on the seat is what tells its own re-hand from
+    // another client's.
+    // A take in flight already proves the words are this client's own. Only
+    // the reload case - no take in flight - needs the stored generation. A
+    // server older than the generation field cannot route per client, so its
+    // re-hand places as it always did.
+    if (notice.carried === true && inFlight === null && notice.generation !== undefined) {
+      if (notice.generation !== lastTake(seat)) return null;
+    }
+    // **Every landing this page places seeds the generation a reload reads**,
+    // whether a take was in flight or the start and end folded into one write.
+    // Seeding only from `inFlight` leaves a fold take unrecorded, and a reload
+    // after it would find no generation to match and drop the re-handed words.
+    if (notice.generation !== undefined) keepTake(seat, notice.generation);
     return notice.text;
   }
 

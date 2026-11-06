@@ -353,15 +353,15 @@ export function blocked(
   return null;
 }
 
-/** What a take says when it hit its cap and landed only part of what was said. */
-export const TRUNCATED = 'this is what fitted · keep going from the end';
+/** What a take says when it landed only part of what was said. */
+export const TRUNCATED = 'this is what fitted · part of the take is missing';
 
 /**
  * The line a notice draws, or `null` when it draws words instead.
  *
  * A take that landed draws its words in the box rather than a line about them,
  * the same rule the view this client replaced applied: the words ARE the
- * notice. One that landed part of a capped take says so as well, because the
+ * notice. One that landed an incomplete take says so as well, because the
  * reader has to know the take was cut rather than that they stopped speaking -
  * but that row is owed only by the box the words went into, since anywhere
  * else it is a note about words that are not there. `holdsWords` is that box's

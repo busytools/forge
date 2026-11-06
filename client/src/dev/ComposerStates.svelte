@@ -292,7 +292,7 @@
       workspace: 'Trust Machines',
       conversation_label: '#granite-staging-alerts',
       thread_ts: null,
-      text: 'The staging deploy is green. Rolling to production once the 14:30 window closes.',
+      text: 'The staging deploy is green, <@U2> and <@U3>. Rolling to production once the 14:30 window closes.',
       operation: 'post',
       thread: null,
       tagged: [
@@ -516,10 +516,25 @@
     kind: 'settings_write',
     request: {
       id: '0192e1c0-0000-7000-8000-0000000000bb',
-      key: 'orgs.Busytools.projects.forge.max_workers',
-      current: 2,
-      proposed: 4,
-      unset: false,
+      edits: [
+        {
+          key: 'orgs.Busytools.projects.forge.max_workers',
+          current: 2,
+          proposed: 4,
+          unset: false,
+        },
+      ],
+    },
+  };
+
+  const settingsBatch = {
+    kind: 'settings_write',
+    request: {
+      id: '0192e1c0-0000-7000-8000-0000000000bb',
+      edits: [
+        { key: 'vault.url', current: null, proposed: 'https://vault.test', unset: false },
+        { key: 'vault.email', current: null, proposed: 'me@vault.test', unset: false },
+      ],
     },
   };
 
@@ -527,10 +542,14 @@
     kind: 'settings_write',
     request: {
       id: '0192e1c0-0000-7000-8000-0000000000cc',
-      key: 'orgs.Busytools.projects.forge.env_file',
-      current: '/tmp/forge.env',
-      proposed: null,
-      unset: true,
+      edits: [
+        {
+          key: 'orgs.Busytools.projects.forge.env_file',
+          current: '/tmp/forge.env',
+          proposed: null,
+          unset: true,
+        },
+      ],
     },
   };
 
@@ -794,6 +813,10 @@
     {
       label: 'dock · held config write',
       props: { record: { ...blank(), pending_asks: [settingsWrite] } },
+    },
+    {
+      label: 'dock · held config write · one batch',
+      props: { record: { ...blank(), pending_asks: [settingsBatch] } },
     },
     {
       label: 'dock · held config write · clearing a key',

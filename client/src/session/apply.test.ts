@@ -977,10 +977,14 @@ describe('applyUpdate', () => {
       });
       const ask = {
         id: 'w1',
-        key: 'orgs.Default.projects.forge.max_workers',
-        current: 2,
-        proposed: 4,
-        unset: false,
+        edits: [
+          {
+            key: 'orgs.Default.projects.forge.max_workers',
+            current: 2,
+            proposed: 4,
+            unset: false,
+          },
+        ],
       };
       const parked = applyUpdate(asked, { settings_write_pending: { key: SLOT, ask } });
 

@@ -43,8 +43,9 @@ without a stamp the CLI emits none.
 ## The ask's dock
 
 While a prompt holds the body it replaces the field with its own card. A held Slack draft shows
-where it would go and the words that would go out, verbatim, and its verbs follow what it would
-do: one wording for a post, an edit, a delete, a reaction, a reaction's removal and an upload
+where it would go and the words that would go out, with every mention drawn as the name the
+core resolved (its id when the lookup fails), as Slack draws it, and its verbs follow what it
+would do: one wording for a post, an edit, a delete, a reaction, a reaction's removal and an upload
 would ask the reader to approve the wrong act. A post draws `Post` and `Do not post`; an edit
 draws `Apply edit` and `Do not apply`; a delete draws `Delete` and `Keep it`; adding a reaction
 draws `React` and `Do not react`, and removing one draws `Unreact` and `Do not unreact`; an
@@ -53,12 +54,12 @@ carries the workspace and the conversation, and the segment beside it names the 
 an upload replies into, or the message every other operation acts on, by its author and its
 opening words, with a mention in the quote drawn as its name (its id when the lookup fails), a
 link as its label or address, and bold without its stars. The people the draft tags follow as
-their names. A quoted message the core could not read
-draws its raw `ts` and a tag it could not resolve draws its id, so a failed lookup is drawn as
-itself rather than as a missing segment. A message that itself sits inside a thread is not named:
-the read answers its thread's parent, so that card draws the raw `ts` rather than the wrong
-message. A root message draws no thread segment, and a draft that tags nobody draws no tags
-segment.
+their names. A quoted message the core could not read reads as `a thread` - `a message` for an
+operation whose stamp names a message - and a tag it could not resolve draws its id, so a failed
+lookup is drawn as itself rather than as a missing segment. A message that itself sits inside a
+thread is not named: the read answers its thread's parent, so that card reads as `a message`
+rather than naming the wrong one. A root message draws no thread segment, and a draft that tags
+nobody draws no tags segment.
 
 A third answer, send back with feedback, opens a field on the card. Enter sends, Shift+Enter is
 a newline, and Escape closes the field without sending. The words reach the agent as the blocked
@@ -77,9 +78,11 @@ says so in the dock's refusal line at its foot, because the box's own notice row
 screen while a prompt holds the slot.
 
 **A held configuration write draws like a held post, with both values.** A `settings__set` or
-`settings__unset` call parks its key, what the key holds now and what the write would leave;
-the two verbs are `Write it` and `Don't write`, and the dock stands down on the answer the way
-a post's does. Every write is held, whether the key belongs to this project or another.
+`settings__unset` call parks every key it would change, what that key holds now and what the
+write would leave; one card carries a whole batch, because a section's mutually required keys
+cannot be approved apart. The two verbs are `Write it` and `Don't write`, and the dock stands
+down on the answer the way a post's does. Every write is held, whether the key belongs to this
+project or another.
 
 **A held vault call draws the act, never a secret.** The card leads with the tool's own name
 and the core's one-line summary, then names the item and its id, the field the call reveals or
@@ -251,6 +254,7 @@ just landed, and a refusal is logged at debug.
 | Not running | `not running` and the seat's own reason: a worker's seat has no spawn coming, and says so |
 | Reading | `Reading the conversation...` while the seat's first page is still out, with the sweep, no field |
 | A take that does not come up | the body stays, with the line above it: the microphone did not come up, or the device layer's own named failure |
+| A take that failed | the field comes back with the notice above it, no recording band and no stop control: the take produced no words, so the reader is told to re-speak rather than discover it |
 | Voice on | the voice switch beside the mic in the accent: a plain speaker, with a mark beside it while a reply is sounding |
 | Voice off | the same switch, a struck-through speaker and dim, meaning this client is not listening to this seat |
 | Failed | `Input disabled due to error` and what to do: quit and start forge again |

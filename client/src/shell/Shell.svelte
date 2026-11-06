@@ -22,6 +22,7 @@
     waitRows,
     watchNotificationClicks,
   } from '../notify';
+  import { rememberBoot } from '../composer/landing';
   import { noteSeatClick, setPerfSocket } from '../perf';
   import { skewMessage, subjectKey, type Skew } from '../protocol';
   import { currentRoute, goTo, hrefFor, parseRoute, shownSeat, type Route } from '../routes';
@@ -267,6 +268,17 @@
       window.removeEventListener('focus', gained);
       document.removeEventListener('visibilitychange', visibility);
     };
+  });
+
+  /**
+   * **A server run's take generations start again at 1.** The stored takes a
+   * dictation leaves behind belong to one run; a new run's boot id drops them
+   * before any of its takes can be compared, so a restart cannot make another
+   * client's carried words match a generation this browser kept.
+   */
+  $effect(() => {
+    const wire = home.wire;
+    if (wire !== null) rememberBoot(wire.boot_id);
   });
 
   /**

@@ -641,7 +641,10 @@ live session gains the tools only from a new spawn.
 
 Both keys are mandatory once the section is present. A missing one refuses
 the load naming the key: ``[vault] `url` is required when `[vault]` is
-present`` (or the same sentence for `email`). An unknown key in the table
+present`` (or the same sentence for `email`). Setting the section from a
+session means sending both keys in one `settings__set` call: a single-key
+write leaves a half section the loader refuses, and that refusal comes back
+before the reader is asked to approve anything. An unknown key in the table
 refuses the load like every other section, and `url` must be an `https://`
 URL: an `http://` one refuses the load with ``[vault] `url` must be an
 https:// URL; http is refused``. There is no built-in default, because
