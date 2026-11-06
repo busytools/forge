@@ -82,5 +82,7 @@ export function outcomesOf(join: TaskJoin): Outcomes {
       stopped: true,
     });
   }
-  return { calls, owners: join.owners, stoppedTasks };
+  // A copy: the record retains the join this was built from, and a reader
+  // handed the same map could write into the join through it.
+  return { calls, owners: new Map(join.owners), stoppedTasks };
 }

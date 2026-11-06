@@ -769,9 +769,9 @@ function settled(held: SessionRecord): SessionRecord {
  */
 function appendFrame(conversation: Conversation, message: unknown): Conversation {
   // **A boundary moves the count**, the same rule the server's own copy keeps
-  // (`transport/conversation.rs`): the frame is appended like any other, and
-  // the header reads the count it increments rather than a figure only a read
-  // refreshes.
+  // (`transport/conversation.rs`): the frame is folded into its turn like any
+  // other, and the header reads the count it increments rather than a figure
+  // only a read refreshes.
   const held = isCompactBoundary(message)
     ? { ...conversation, compaction_count: conversation.compaction_count + 1 }
     : conversation;

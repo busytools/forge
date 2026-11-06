@@ -12,8 +12,8 @@
  * its project out.
  */
 
-import { eventsOf, type JoinEvent, type TaskJoin } from '../chat/join';
-import { joinFrom, outcomesOf, type Outcomes } from '../chat/outcomes';
+import { eventsOf, joinOfEvents, type JoinEvent, type TaskJoin } from '../chat/join';
+import { outcomesOf, type Outcomes } from '../chat/outcomes';
 import type { WireTime, WorkState } from '../wire/home';
 import { terminalSummaryFrom, type TerminalSummary } from '../wire/terminal';
 import type { SessionSlot } from '../wire/types';
@@ -571,17 +571,20 @@ function record(value: unknown): Record<string, unknown> {
 }
 
 /**
- * The read's conversation, with its join folded once for every frame it hands
- * over. A turn whose frames do not parse reads as none rather than as a shape
- * the rest of this would have to test for.
+ * The read's conversation, with its join folded from the facts its turns keep.
+ *
+ * **One extraction, so the stored facts ARE the join's input**: a second walk
+ * of the wire frames would let the two drift, and the read would then disagree
+ * with the replay of its own window. A frame that does not parse contributes
+ * none rather than a shape the rest of this would have to test for.
  */
 function conversationFrom(held: Record<string, unknown>): Conversation {
-  const read = list(held['turns']).map((turn) => list(record(turn)['messages']));
-  // The read's join is the whole walk, exactly what `outcomesFrom` builds over
-  // the same frames: a fresh read cannot disagree with the page's own fold.
-  const join = joinFrom(read.map((messages) => ({ messages })));
+  const turns = list(held['turns']).map((turn) => ({
+    events: list(record(turn)['messages']).flatMap(eventsOf),
+  }));
+  const join = joinOfEvents(turns);
   return {
-    turns: read.map((messages) => ({ events: messages.flatMap(eventsOf) })),
+    turns,
     compaction_count: number(held['compaction_count']) ?? 0,
     join,
     outcomes: outcomesOf(join),
