@@ -2049,7 +2049,9 @@ describe('whether the column follows the newest end', () => {
     const server = stub();
     clear();
     clearObservers();
-    setMeasured(0, VIEWPORT);
+    // A live empty column, not an absent one: the element cannot report less
+    // than its own height, so "nothing to scroll" is `max === 0`.
+    setMeasured(VIEWPORT, VIEWPORT);
     app = mount(Chat, {
       target: document.body,
       props: { slot: LEAD, connection: server.connection },
@@ -2064,9 +2066,15 @@ describe('whether the column follows the newest end', () => {
     server.frame();
     await settle();
 
-    // One settle is ~32 ms, so a glide would still be in flight: the reader
-    // standing at the foot here is the placement, not a finished travel.
+    // Under the old condition the empty pass settled, so this pass held at the
+    // model's foot and left the reader at the top of the column.
     expect(element.offset, 'the first entry placed the reader at the foot').toBe(FOOT);
+
+    // And the list catching up ends the settle without moving them.
+    setModel(TOTAL);
+    server.frame();
+    await settle();
+    expect(element.offset, 'and the settle kept them at the foot').toBe(FOOT);
   });
 
   it('opens a plain new conversation at the foot for a parked reader', async () => {

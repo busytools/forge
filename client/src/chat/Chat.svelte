@@ -1458,9 +1458,12 @@
     // changed id resets the offset a successor's first pin must not inherit;
     // a same-id reload arms the reader's restore. The record empties either
     // way, and the landing that follows re-measures before any event reads
-    // the old placement - except when the successor's page lands before a
+    // the old placement - except when a CHANGED id's page lands before a
     // render pass sees the emptied record, where the list stays mounted and
-    // the swap effect below clears `placed` and the settle itself.
+    // the swap effect below clears `placed` and the settle itself. A
+    // same-id reload has no such signal: its page carries the same id, so a
+    // coalesced publish is indistinguishable from an ordinary one, and it
+    // relies on the mount clear alone.
     // **The same predicate is what a conversation OPEN is** (#2374): a first
     // visit, a seat reopened on another connection, or a kept seat coming
     // back on screen. Every way into a seat - a click, a deep link, a reload,
@@ -2424,7 +2427,12 @@
     // true - so the first content frame took the follow glide and a
     // conversation opened for the first time travelled down from the top of
     // the column. Both sides have to have something to agree about.
-    if (!openPlaced && model !== null && max > 0 && max <= model) openPlaced = true;
+    // A browser floors the element's numbers and the list reports a fraction,
+    // so the two ends rarely agree exactly; the file's own foot comparisons
+    // carry the same quantum.
+    if (!openPlaced && model !== null && max > 0 && max - FOOT_QUANTUM <= model) {
+      openPlaced = true;
+    }
     // **The pin leaves the reader at the end it could reach**: the browser's,
     // or the list's own while the browser counts a row it has not drawn. Both
     // are the foot for the next arrival's decision - give or take the fraction
