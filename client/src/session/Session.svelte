@@ -35,7 +35,6 @@
   import { git } from '../chat/git.svelte';
   import { mcp } from '../chat/mcp.svelte';
   import { monitors } from '../chat/monitors.svelte';
-  import { outcomesFrom } from '../chat/outcomes';
   import { processes } from '../chat/processes.svelte';
   import { review } from '../chat/review.svelte';
   import { schedules } from '../chat/schedules.svelte';
@@ -204,7 +203,7 @@
    * both from the one store. The outcomes come from the conversation's own
    * task frames, joined by the call id the row already carries.
    */
-  const outcomes = $derived(outcomesFrom(record?.conversation.turns ?? []));
+  const outcomes = $derived(record?.conversation.outcomes);
   $effect(() => {
     processes.sync(
       record?.processes ?? null,

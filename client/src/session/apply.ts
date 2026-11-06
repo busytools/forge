@@ -16,6 +16,8 @@
  * the record.
  */
 
+import { eventsOf, joinOfEvents, withEvents } from '../chat/join';
+import { outcomesOf } from '../chat/outcomes';
 import { fold } from '../chat/units';
 import { FALLBACK_FLOOR_DB, fractionOf } from '../composer/meter';
 import { surfaceFrom } from '../composer/wire';
@@ -773,23 +775,42 @@ function appendFrame(conversation: Conversation, message: unknown): Conversation
   const held = isCompactBoundary(message)
     ? { ...conversation, compaction_count: conversation.compaction_count + 1 }
     : conversation;
+  const events = eventsOf(message);
   const last = held.turns[held.turns.length - 1];
   const opens =
     last === undefined || (fold([message]).length > 0 && !isSystem(message) && opensATurn(message));
   if (opens) {
-    return windowed({ ...held, turns: [...held.turns, { key: null, messages: [message] }] });
+    return windowed({
+      ...held,
+      turns: [...held.turns, { key: null, messages: [message], events }],
+      join: withEvents(held.join, events),
+    });
   }
   if (last === undefined) return held;
   return windowed({
     ...held,
-    turns: [...held.turns.slice(0, -1), { ...last, messages: [...last.messages, message] }],
+    turns: [
+      ...held.turns.slice(0, -1),
+      { ...last, messages: [...last.messages, message], events: [...last.events, ...events] },
+    ],
+    join: withEvents(held.join, events),
   });
 }
 
-/** The conversation cut to the newest whole turns, which never splits the live one. */
+/**
+ * The conversation cut to the newest whole turns, which never splits the live one.
+ *
+ * A dropped turn's facts cannot be un-folded in place - a stop's answer, a
+ * task frame's owner link, a latched failure all read what earlier turns wrote
+ * - so the surviving window is replayed rather than patched. That happens once
+ * per turn the window sheds, never per frame.
+ */
 function windowed(conversation: Conversation): Conversation {
   const over = conversation.turns.length - SUBSCRIBE_TURNS;
-  return over > 0 ? { ...conversation, turns: conversation.turns.slice(over) } : conversation;
+  if (over <= 0) return { ...conversation, outcomes: outcomesOf(conversation.join) };
+  const turns = conversation.turns.slice(over);
+  const join = joinOfEvents(turns);
+  return { ...conversation, turns, join, outcomes: outcomesOf(join) };
 }
 
 /** Whether a frame is a `system` frame, which is a report about a turn rather than part of one. */

@@ -76,6 +76,38 @@ function prompt(text: string, uuid = 'u1'): Record<string, unknown> {
   };
 }
 
+/** A tool call, as the assistant frame that carries it. */
+function toolUse(
+  id: string,
+  name: string,
+  input: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    type: 'assistant',
+    uuid: `a-${id}`,
+    message: { role: 'assistant', content: [{ type: 'tool_use', id, name, input }] },
+  };
+}
+
+/** A tool's own answer. */
+function toolResult(id: string, content: string): Record<string, unknown> {
+  return {
+    type: 'user',
+    uuid: `r-${id}`,
+    message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content }] },
+  };
+}
+
+/** A task frame of the CLI's own (`task_started`, `task_updated`, ...). */
+function taskFrame(fields: Record<string, unknown>): Record<string, unknown> {
+  return { type: 'system', ...fields };
+}
+
+/** Apply one frame as the live stream delivers it. */
+function landed(held: SessionRecord, msg: unknown): SessionRecord {
+  return applyUpdate(held, { chat_appended: { key: SLOT, msg } });
+}
+
 describe('applyUpdate', () => {
   describe('a parked prompt', () => {
     /** A round of a question batch: one tool call id, an advancing index. */
@@ -184,6 +216,34 @@ describe('applyUpdate', () => {
   });
 
   describe('the conversation', () => {
+    /**
+     * The join is materialised as frames land, so the strip never walks the
+     * conversation. The whole walk is still the authority: a fresh read builds
+     * it that way, and this is where the two must agree.
+     */
+    it('folds the task join the conversation states, as a whole walk of it would', () => {
+      const frames = [
+        prompt('go', 'p-0'),
+        toolUse('call-launch', 'Bash'),
+        toolResult('call-launch', 'Command running in background with ID: t-launch'),
+        // The next turn resolves the task through the launch above: the frame
+        // names only the task, which is the link the join exists for.
+        prompt('next', 'p-1'),
+        taskFrame({
+          subtype: 'task_updated',
+          task_id: 't-launch',
+          patch: { status: 'completed', end_time: 1_700 },
+        }),
+        toolUse('call-stop', 'TaskStop', { task_id: 't-launch' }),
+        toolResult('call-stop', 'Successfully stopped task: t-launch'),
+        taskFrame({ subtype: 'task_notification', tool_use_id: 'call-plain', status: 'failed' }),
+      ];
+      let held = empty();
+      for (const frame of frames) held = landed(held, frame);
+
+      expect(held.conversation.outcomes).toEqual(outcomesFrom([{ messages: frames }]));
+    });
+
     it('appends a chat_appended frame to the turn it belongs to', () => {
       const held = empty();
       const next = applyUpdate(held, {
@@ -336,9 +396,10 @@ describe('applyUpdate', () => {
     });
 
     /**
-     * The strip's outcomes read the record's own turns, so the window's risk
-     * is pinned here: an ending inside it still lands, one whose turn left is
-     * gone - the same loss a reload takes.
+     * The strip reads the record's materialised join, so the window's risk is
+     * pinned here: an ending inside it still lands, one whose turn left is
+     * gone - the same loss a reload takes. The whole walk stays the authority
+     * at both checkpoints, which is what makes the trim's replay exact.
      */
     it('loses an ending only when its turn leaves the window, as a reload does', () => {
       let held = applyUpdate(empty(), {
@@ -363,8 +424,12 @@ describe('applyUpdate', () => {
         });
       }
       expect(
-        outcomesFrom(held.conversation.turns).calls.get('call-window')?.failed,
-        'the newest ending did not reach outcomesFrom',
+        held.conversation.outcomes,
+        'the folded join drifted from a whole walk of the turns it holds',
+      ).toEqual(outcomesFrom(held.conversation.turns));
+      expect(
+        held.conversation.outcomes.calls.get('call-window')?.failed,
+        "the newest ending did not reach the strip's join",
       ).toBe(true);
 
       // One more turn and the ending's turn is the first the window drops.
@@ -372,7 +437,11 @@ describe('applyUpdate', () => {
         chat_appended: { key: SLOT, msg: prompt('turn-20', 'p-20') },
       });
       expect(
-        outcomesFrom(held.conversation.turns).calls.get('call-window'),
+        held.conversation.outcomes,
+        'the replay of the surviving window drifted from a whole walk of it',
+      ).toEqual(outcomesFrom(held.conversation.turns));
+      expect(
+        held.conversation.outcomes.calls.get('call-window'),
         'an ending older than the window outlived it',
       ).toBeUndefined();
     });

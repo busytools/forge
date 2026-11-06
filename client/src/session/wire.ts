@@ -12,6 +12,8 @@
  * its project out.
  */
 
+import { eventsOf, type JoinEvent, type TaskJoin } from '../chat/join';
+import { joinFrom, outcomesOf, type Outcomes } from '../chat/outcomes';
 import type { WireTime, WorkState } from '../wire/home';
 import { terminalSummaryFrom, type TerminalSummary } from '../wire/terminal';
 import type { SessionSlot } from '../wire/types';
@@ -183,7 +185,8 @@ export interface MonitorRecord {
 }
 
 /**
- * One turn of the transcript: what names it, and the frames it ran as.
+ * One turn of the transcript: what names it, the frames it ran as, and the
+ * task facts those frames state.
  *
  * `key` is `null` on every turn of a transcript-derived conversation - the name
  * comes from a `Result` frame and a transcript holds none - so it is carried
@@ -192,12 +195,21 @@ export interface MonitorRecord {
 export interface Turn {
   key: string | null;
   messages: unknown[];
+  events: JoinEvent[];
 }
 
-/** The transcript's whole turns, and how many times it has compacted. */
+/**
+ * The transcript's whole turns, and how many times it has compacted.
+ *
+ * **The join is folded as frames land, not walked when a page draws.** `join`
+ * is `turns` folded in order, and `outcomes` is what the process strip reads
+ * out of it; a trim replays the turns that survive from their own facts.
+ */
 export interface Conversation {
   turns: Turn[];
   compaction_count: number;
+  join: TaskJoin;
+  outcomes: Outcomes;
 }
 
 /**
@@ -563,9 +575,22 @@ function record(value: unknown): Record<string, unknown> {
 
 /** One turn, with the frames it fails to carry read as none rather than as a
  * shape the row below would have to test for. */
+/** The read's conversation, with its join folded once for every frame it hands over. */
+function conversationFrom(held: Record<string, unknown>): Conversation {
+  const turns = list(held['turns']).map(turnFrom);
+  const join = joinFrom(turns);
+  return {
+    turns,
+    compaction_count: number(held['compaction_count']) ?? 0,
+    join,
+    outcomes: outcomesOf(join),
+  };
+}
+
 function turnFrom(value: unknown): Turn {
   const held = record(value);
-  return { key: text(held['key']), messages: list(held['messages']) };
+  const messages = list(held['messages']);
+  return { key: text(held['key']), messages, events: messages.flatMap(eventsOf) };
 }
 
 function list(value: unknown): unknown[] {
@@ -654,10 +679,7 @@ export function sessionFrom(data: unknown): SessionRecord {
     resume_sessions: held['resume_sessions'] ?? null,
     composer: composerFrom(held['composer']),
     pending_asks: asksFrom(held['pending_asks'], held['pending_ask']),
-    conversation: {
-      turns: list(record(held['conversation'])['turns']).map(turnFrom),
-      compaction_count: number(record(held['conversation'])['compaction_count']) ?? 0,
-    },
+    conversation: conversationFrom(record(held['conversation'])),
     work: workFrom(held['work']),
     git: gitFrom(held['git']),
     pr: prFrom(held['pr']),
