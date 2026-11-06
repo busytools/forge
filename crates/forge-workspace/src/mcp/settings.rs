@@ -9,8 +9,9 @@
 //!   class per key, no values.
 //! - `settings__get` - one key's value; the caller's own project's keys and
 //!   the global keys read freely, another project's key is refused by name.
-//! - `settings__set` / `settings__unset` - one catalogue-validated edit,
-//!   always held for the reader's approval before anything is written.
+//! - `settings__set` - one catalogue-validated save of one key or a batch
+//!   of them, always held for the reader's approval before anything is
+//!   written; `settings__unset` clears one key on the same terms.
 //!
 //! - [`facade`] - the `SettingsFacade` seam (prod over `Weak<Workspace>` +
 //!   a mock for tool tests).
@@ -21,7 +22,9 @@ use forge_sdk::mcp::server::McpServerBuilder;
 use forge_sdk::mcp::tool::{Tool, ToolInput, ToolOutput};
 
 use crate::SessionSlot;
-use crate::mcp::settings::facade::{SettingsError, SettingsFacade, SettingsWriteOutcome};
+use crate::mcp::settings::facade::{
+    SettingsError, SettingsFacade, SettingsSetItem, SettingsWriteOutcome,
+};
 
 pub(crate) mod facade;
 
@@ -162,8 +165,11 @@ struct Set {
 
 #[derive(serde::Deserialize)]
 struct SetArgs {
-    key: String,
-    value: serde_json::Value,
+    edits: Vec<SettingsSetItem>,
+}
+
+fn effect_names(effects: &[forge_primitives::EffectClass]) -> String {
+    effects.iter().map(|effect| effect_name(*effect)).collect::<Vec<_>>().join(", ")
 }
 
 #[async_trait::async_trait]
@@ -173,32 +179,51 @@ impl Tool for Set {
     }
 
     fn description(&self) -> &'static str {
-        "Change one configuration key. `key` is a concrete catalogue path as settings__index \
-         lists it and `value` is in the key's own type. The edit is validated by the catalogue \
-         first - an unknown key, a wrong type or a value that changes nothing is refused \
-         naming the key before anything is asked - and then ALWAYS held for the reader's \
-         approval: the write parks in the dock with the key and the current and proposed \
-         value, applies through the same validated writer the settings page uses only when \
-         they approve, and this call returns which happened. There is no unparked write path, \
-         for your own project or any other. forge's configuration is read and edited through \
-         these settings tools, not by opening or editing a file: a direct filesystem read or \
-         edit of the config is the wrong door even when it works."
+        "Change one or more configuration keys. `edits` is a list of `{\"key\", \"value\"}` \
+         objects, each key a concrete catalogue path as settings__index lists it and each \
+         value in the key's own type. One call is one validated save, so a section whose keys \
+         are mutually required - the vault's `url` and `email`, say - is created by sending \
+         both in the same call. The whole batch is validated by the catalogue and the loader \
+         first - an unknown key, a wrong type, a save that changes nothing, or a result the \
+         loader would refuse is refused naming what failed before anything is asked - and \
+         then ALWAYS held for the reader's approval: the write parks in the dock with every \
+         key and its current and proposed value, applies through the same validated writer \
+         the settings page uses only when they approve, and this call returns which \
+         happened. There is no unparked write path, for your own project or any other. \
+         forge's configuration is read and edited through these settings tools, not by \
+         opening or editing a file: a direct filesystem read or edit of the config is the \
+         wrong door even when it works."
     }
 
     fn input_schema(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "key": {
-                    "type": "string",
-                    "description": "The concrete catalogue path, with its instance.",
-                },
-                "value": {
-                    "description": "The new value in the key's own type (string, number, \
-                                    boolean or list of strings). settings__index states it.",
+                "edits": {
+                    "type": "array",
+                    "minItems": 1,
+                    "description": "The keys and their new values, applied as one validated \
+                                    save and one held write. Send a section's mutually \
+                                    required keys together.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "key": {
+                                "type": "string",
+                                "description": "The concrete catalogue path, with its instance.",
+                            },
+                            "value": {
+                                "description": "The new value in the key's own type (string, \
+                                                number, boolean or list of strings). \
+                                                settings__index states it.",
+                            },
+                        },
+                        "required": ["key", "value"],
+                        "additionalProperties": false,
+                    },
                 },
             },
-            "required": ["key", "value"],
+            "required": ["edits"],
             "additionalProperties": false,
         })
     }
@@ -208,16 +233,39 @@ impl Tool for Set {
             Ok(args) => args,
             Err(err) => return ToolOutput::error(format!("invalid arguments: {err}")),
         };
-        match self.facade.set(&self.slot, &args.key, args.value).await {
-            Ok(SettingsWriteOutcome::Applied { effect }) => ToolOutput::text(format!(
-                "the reader approved; `{}` was written and takes effect {}",
-                args.key,
-                effect_name(effect),
-            )),
-            Ok(SettingsWriteOutcome::Declined) => ToolOutput::text(format!(
-                "the reader declined; `{}` is unchanged and nothing was written",
-                args.key,
-            )),
+        if args.edits.is_empty() {
+            return ToolOutput::error("a write needs at least one edit; nothing was written");
+        }
+        let keys: Vec<String> = args.edits.iter().map(|item| item.key.clone()).collect();
+        let named = keys.iter().map(|key| format!("`{key}`")).collect::<Vec<_>>().join(", ");
+        match self.facade.set(&self.slot, args.edits).await {
+            Ok(SettingsWriteOutcome::Applied { effects }) => {
+                if let [key] = keys.as_slice() {
+                    ToolOutput::text(format!(
+                        "the reader approved; `{key}` was written and takes effect {}",
+                        effect_names(&effects),
+                    ))
+                } else {
+                    ToolOutput::text(format!(
+                        "the reader approved; {} keys were written and take effect {}: {named}",
+                        keys.len(),
+                        effect_names(&effects),
+                    ))
+                }
+            }
+            Ok(SettingsWriteOutcome::Declined) => {
+                if let [key] = keys.as_slice() {
+                    ToolOutput::text(format!(
+                        "the reader declined; `{key}` is unchanged and nothing was written",
+                    ))
+                } else {
+                    ToolOutput::text(format!(
+                        "the reader declined; none of the {} keys changed and nothing was \
+                         written: {named}",
+                        keys.len(),
+                    ))
+                }
+            }
             Err(error) => tool_error(&error),
         }
     }
@@ -265,10 +313,10 @@ impl Tool for Unset {
             Err(err) => return ToolOutput::error(format!("invalid arguments: {err}")),
         };
         match self.facade.unset(&self.slot, &args.key).await {
-            Ok(SettingsWriteOutcome::Applied { effect }) => ToolOutput::text(format!(
+            Ok(SettingsWriteOutcome::Applied { effects }) => ToolOutput::text(format!(
                 "the reader approved; `{}` was cleared and takes effect {}",
                 args.key,
-                effect_name(effect),
+                effect_names(&effects),
             )),
             Ok(SettingsWriteOutcome::Declined) => ToolOutput::text(format!(
                 "the reader declined; `{}` is unchanged and nothing was written",
@@ -407,11 +455,13 @@ mod tests {
         assert!(text.contains("agents__send_message"), "the request path is named: {text}");
     }
 
+    /// One call carries the whole batch, the keys arrive in the order the
+    /// caller wrote them, and the result says which effects it lands with.
     #[tokio::test]
-    async fn set_passes_the_key_and_value_and_says_which_happened() {
+    async fn set_passes_the_batch_and_says_which_happened() {
         let mock = Arc::new(MockSettingsFacade::new());
         *mock.write_result.lock() = Some(Ok(SettingsWriteOutcome::Applied {
-            effect: forge_primitives::EffectClass::NextSession,
+            effects: vec![forge_primitives::EffectClass::Live, forge_primitives::EffectClass::Live],
         }));
         let facade: Arc<dyn SettingsFacade> = mock.clone();
         let server = server(facade);
@@ -419,19 +469,59 @@ mod tests {
         let (text, is_error) = call(
             &server,
             "settings__set",
-            serde_json::json!({ "key": "orgs.Default.projects.forge.max_workers", "value": 4 }),
+            serde_json::json!({
+                "edits": [
+                    { "key": "vault.url", "value": "https://vault.test" },
+                    { "key": "vault.email", "value": "me@vault.test" },
+                ],
+            }),
         )
         .await;
 
         assert!(!is_error, "{text}");
         assert!(text.contains("the reader approved"), "{text}");
-        assert!(text.contains("next session"), "the effect is stated: {text}");
+        assert!(text.contains("live"), "the effect is stated: {text}");
         let calls = mock.set_calls.lock();
-        assert_eq!(calls.len(), 1, "the tool handed the write through once");
-        let (caller, key, value) = &calls[0];
+        assert_eq!(calls.len(), 1, "the tool handed the batch through once");
+        let (caller, items) = &calls[0];
         assert_eq!(caller, &slot(), "the write is the caller's");
-        assert_eq!(key, "orgs.Default.projects.forge.max_workers");
-        assert_eq!(value, &serde_json::json!(4));
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].key, "vault.url");
+        assert_eq!(items[0].value, serde_json::json!("https://vault.test"));
+        assert_eq!(items[1].key, "vault.email");
+        assert_eq!(items[1].value, serde_json::json!("me@vault.test"));
+    }
+
+    /// An empty batch is refused by the tool itself, before the facade: a
+    /// save that changes nothing is not a write.
+    #[tokio::test]
+    async fn set_refuses_an_empty_batch() {
+        let mock = Arc::new(MockSettingsFacade::new());
+        let facade: Arc<dyn SettingsFacade> = mock.clone();
+        let server = server(facade);
+
+        let (text, is_error) =
+            call(&server, "settings__set", serde_json::json!({ "edits": [] })).await;
+
+        assert!(is_error, "{text}");
+        assert!(text.contains("at least one"), "{text}");
+        assert!(mock.set_calls.lock().is_empty(), "nothing reached the facade");
+    }
+
+    /// `settings__set` takes one argument - a list of edits - and says why a
+    /// batch exists: a section whose keys are mutually required is one save.
+    #[test]
+    fn set_states_the_batch_form() {
+        let set = Set { facade: MockSettingsFacade::new().into_arc(), slot: slot() };
+        let schema = set.input_schema();
+        assert_eq!(schema["properties"]["edits"]["type"], "array");
+        assert!(schema["properties"].get("key").is_none(), "one shape, not two");
+        assert_eq!(schema["required"], serde_json::json!(["edits"]));
+        let item = &schema["properties"]["edits"]["items"];
+        assert_eq!(item["required"], serde_json::json!(["key", "value"]));
+        let description = set.description();
+        assert!(description.contains("one validated save"), "{description}");
+        assert!(description.contains("mutually required"), "{description}");
     }
 
     #[tokio::test]

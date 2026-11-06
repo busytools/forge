@@ -2602,7 +2602,7 @@ impl std::fmt::Debug for SessionUpdate {
                 .debug_struct("SettingsWritePending")
                 .field("key", key)
                 .field("id", &ask.id)
-                .field("key_path", &ask.key)
+                .field("key_paths", &ask.edits.iter().map(|edit| &edit.key).collect::<Vec<_>>())
                 .finish_non_exhaustive(),
             Self::SettingsWriteResolved { key, id, ending } => f
                 .debug_struct("SettingsWriteResolved")

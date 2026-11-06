@@ -562,8 +562,8 @@ impl ProdSlackFacade {
     const THREAD_EXCERPT_CHARS: usize = 80;
 
     /// Name the draft's thread and the people its text tags, at the moment
-    /// it is parked. Never fails the park: whatever resolves rides the
-    /// draft, and what does not is drawn as its raw ts or id.
+    /// it is parked. Never fails the park: whatever resolves rides the draft,
+    /// and what does not stays unset.
     async fn name_draft(
         ws: &Arc<Workspace>,
         api: &Arc<dyn SlackApi>,
@@ -588,11 +588,12 @@ impl ProdSlackFacade {
                 // A read anchored at a message inside a thread answers the
                 // thread's parent instead. Naming it would label an edit or
                 // a delete with the wrong message, so only an exact ts is
-                // the message the card is about; anything else draws the ts.
+                // the message the card is about; anything else leaves the
+                // name unset.
                 Ok(Some(parent)) if parent.ts == ts => Some(parent),
                 Ok(_) => None,
                 Err(error) => {
-                    // A raw ts on the card is the only other symptom, so a
+                    // A missing thread name is the only other symptom, so a
                     // persistent failure must not live at debug, where no
                     // shipped directive reaches it.
                     let first = ws.slack_thread_failures.lock().insert((
@@ -608,7 +609,7 @@ impl ProdSlackFacade {
                             conversation,
                             parent = %ts,
                             %error,
-                            "reading a held draft's thread parent failed; the card draws the ts",
+                            "reading a held draft's thread parent failed",
                         );
                     } else {
                         tracing::debug!(
@@ -677,8 +678,7 @@ impl ProdSlackFacade {
     }
 
     /// The thread name drawn for `parent`: its author and one line of its
-    /// text flattened to prose. `None` when the parent names no author at
-    /// all, which leaves the raw ts as the honest thing to draw.
+    /// text flattened to prose. `None` when the parent names no author at all.
     fn thread_name(
         parent: &SlackHistoryMessage,
         names: &HashMap<String, String>,
@@ -2788,7 +2788,7 @@ token = "y"
     }
 
     /// A parent Slack no longer returns leaves the thread unnamed, and the
-    /// draft still parks: the card draws the raw ts rather than nothing.
+    /// draft still parks.
     #[tokio::test]
     async fn a_parent_slack_no_longer_returns_leaves_the_thread_unnamed() {
         let (facade, ws, api, _rx) = facade_with_recording_slack();
@@ -2922,7 +2922,7 @@ token = "y"
     }
 
     /// A parent with no author at all cannot be named without inventing one,
-    /// so the card keeps its raw ts.
+    /// so no name is set.
     #[tokio::test]
     async fn a_parent_with_no_author_leaves_the_thread_unnamed() {
         let (facade, ws, api, _rx) = facade_with_recording_slack();

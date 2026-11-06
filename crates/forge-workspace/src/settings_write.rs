@@ -30,6 +30,21 @@ pub(crate) fn apply(
     edits: &[SettingsEditRequest],
     document: &SettingsDocument,
 ) -> Result<String, WriteError> {
+    // **One path, one edit.** Two edits for one key have no defined winner,
+    // and the second would silently undo the first while the save reported a
+    // change; the batch is refused rather than guessed at.
+    let mut named = std::collections::HashSet::with_capacity(edits.len());
+    for edit in edits {
+        if !named.insert(edit.key_path.as_str()) {
+            return Err(invalid(
+                format!(
+                    "`{}` appears twice in one save; a batch names each key once",
+                    edit.key_path,
+                ),
+                Some(edit.key_path.clone()),
+            ));
+        }
+    }
     let mut doc: DocumentMut = current
         .parse()
         .map_err(|error| invalid(format!("the current file does not parse: {error}"), None))?;
@@ -1205,6 +1220,23 @@ token = "xoxp-example"
         let edit = set_edit(&document, "server.port", serde_json::json!("not a number"));
         let error = apply(FIXTURE, &[edit], &document).expect_err("a string is not a port");
         assert!(error.message.contains("want"), "the message names the shape: {error:?}");
+        assert_eq!(error.key_path.as_deref(), Some("server.port"));
+    }
+
+    /// **A batch naming one key twice is refused whole.** Two edits for one
+    /// path have no defined winner, and the second would silently undo the
+    /// first while the save still reported a change.
+    #[test]
+    fn a_batch_naming_one_key_twice_is_refused() {
+        let document = document(FIXTURE);
+        let first = set_edit(&document, "server.port", serde_json::json!(8791));
+        let second = set_edit(&document, "server.port", serde_json::json!(8792));
+
+        let error =
+            apply(FIXTURE, &[first, second], &document).expect_err("the duplicate is refused");
+
+        assert!(error.message.contains("server.port"), "{}", error.message);
+        assert!(error.message.contains("twice"), "{}", error.message);
         assert_eq!(error.key_path.as_deref(), Some("server.port"));
     }
 

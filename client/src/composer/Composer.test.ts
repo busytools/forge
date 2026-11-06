@@ -6373,6 +6373,60 @@ describe('the dock', () => {
     );
   });
 
+  it('names the people a held post mentions in the words it would send', () => {
+    open({
+      record: record({
+        pending_asks: [
+          slackDraftAsk({
+            text: 'Confirmed <@U0442|rena> and <@U0442> are on the deploy.',
+            tagged: [{ id: 'U0442', name: 'rena' }],
+          }),
+        ],
+      }),
+    });
+
+    const body = document.querySelector('.dock .preview')?.textContent ?? '';
+    expect(body, 'a mention reads as the name Slack itself draws').toContain(
+      'Confirmed @rena and @rena are on the deploy.',
+    );
+    expect(body, 'the raw mention markup never reaches the reader').not.toContain('<@');
+  });
+
+  it('keeps an unnamed mention as its id in the words it would send', () => {
+    open({
+      record: record({
+        pending_asks: [
+          slackDraftAsk({ text: 'Confirmed <@U9>.', tagged: [{ id: 'U9', name: null }] }),
+        ],
+      }),
+    });
+
+    const body = document.querySelector('.dock .preview')?.textContent ?? '';
+    expect(body, 'an unnamed mention keeps its id rather than being dropped').toContain(
+      'Confirmed U9.',
+    );
+  });
+
+  it('leaves a mention inside code as written, as Slack draws it', () => {
+    open({
+      record: record({
+        pending_asks: [
+          slackDraftAsk({
+            text: 'Raw is `<@U0442>` and fenced:\n```\n<@U0442>\n```\nConfirmed <@U0442>.',
+            tagged: [{ id: 'U0442', name: 'rena' }],
+          }),
+        ],
+      }),
+    });
+
+    const body = document.querySelector('.dock .preview')?.textContent ?? '';
+    expect(body, 'a mention outside code reads as its name').toContain('Confirmed @rena.');
+    expect(
+      body.match(/<@U0442>/g)?.length,
+      'both the inline span and the fence keep the raw mention',
+    ).toBe(2);
+  });
+
   /** The card's destination line, with its whitespace collapsed for a read. */
   function dest(): string {
     return (document.querySelector('.dock .dest')?.textContent ?? '').replace(/\s+/g, ' ').trim();
@@ -6437,7 +6491,7 @@ describe('the dock', () => {
     expect(dest()).not.toContain('tags:');
   });
 
-  it('draws an unresolved tag as its id and an unnamed thread as its stamp', () => {
+  it('draws an unresolved tag as its id and an unreadable thread as a thread', () => {
     open({
       record: record({
         pending_asks: [
@@ -6450,9 +6504,14 @@ describe('the dock', () => {
       }),
     });
 
-    expect(dest(), 'an id is drawn as the id, never dropped and never invented over').toBe(
-      `Trust Machines · #granite-staging-alerts thread: ${STAMP} · tags: U3`,
+    expect(dest(), 'a thread nobody could name is still named as a thread').toBe(
+      'Trust Machines · #granite-staging-alerts thread: a thread · tags: U3',
     );
+    expect(dest(), 'and the raw stamp never reaches the reader').not.toContain(STAMP);
+    expect(
+      document.querySelector('.dock .dest .ex')?.getAttribute('title'),
+      'nor is it reachable from the line title',
+    ).toBeNull();
   });
 
   it('draws the server-cut excerpt with the same line in its title', () => {
@@ -6638,10 +6697,43 @@ describe('the dock', () => {
     expect(drawn()).toContain("Don't write");
   });
 
+  it('draws every key of a batch in the one card that would write them', () => {
+    open({
+      record: record({
+        pending_asks: [
+          settingsWriteAsk({
+            edits: [
+              { key: 'vault.url', current: null, proposed: 'https://vault.test', unset: false },
+              { key: 'vault.email', current: null, proposed: 'me@vault.test', unset: false },
+            ],
+          }),
+        ],
+      }),
+    });
+
+    const text = drawn();
+    expect(text).toContain('vault.url');
+    expect(text).toContain('vault.email');
+    expect(text).toContain('https://vault.test');
+    expect(text).toContain('me@vault.test');
+    expect(text).toContain('Write it');
+  });
+
   it('draws an unset write as a removal, not as a null value', () => {
     open({
       record: record({
-        pending_asks: [settingsWriteAsk({ unset: true, proposed: null })],
+        pending_asks: [
+          settingsWriteAsk({
+            edits: [
+              {
+                key: 'orgs.Default.projects.forge.max_workers',
+                current: 2,
+                proposed: null,
+                unset: true,
+              },
+            ],
+          }),
+        ],
       }),
     });
 
@@ -6654,7 +6746,9 @@ describe('the dock', () => {
     open({
       record: record({
         pending_asks: [
-          settingsWriteAsk({ key: 'gotify.url', current: null, proposed: 'https://x' }),
+          settingsWriteAsk({
+            edits: [{ key: 'gotify.url', current: null, proposed: 'https://x', unset: false }],
+          }),
         ],
       }),
     });
@@ -7194,15 +7288,15 @@ describe('the dock', () => {
   // these rows carry the shape a real server sends, not a null.
   const OPERATION_CARDS: [string, string | null, string, string, string, string | null][] = [
     ['post', null, 'Post to Slack', 'Post', 'Do not post', null],
-    ['post', STAMP, 'Reply in Slack', 'Post', 'Do not post', `thread: ${STAMP}`],
-    ['edit', STAMP, 'Edit in Slack', 'Apply edit', 'Do not apply', `message: ${STAMP}`],
-    ['delete', STAMP, 'Delete in Slack', 'Delete', 'Keep it', `message: ${STAMP}`],
-    ['react', STAMP, 'React in Slack', 'React', 'Do not react', `message: ${STAMP}`],
-    ['unreact', STAMP, 'Unreact in Slack', 'Unreact', 'Do not unreact', `message: ${STAMP}`],
+    ['post', STAMP, 'Reply in Slack', 'Post', 'Do not post', 'thread: a thread'],
+    ['edit', STAMP, 'Edit in Slack', 'Apply edit', 'Do not apply', 'message: a message'],
+    ['delete', STAMP, 'Delete in Slack', 'Delete', 'Keep it', 'message: a message'],
+    ['react', STAMP, 'React in Slack', 'React', 'Do not react', 'message: a message'],
+    ['unreact', STAMP, 'Unreact in Slack', 'Unreact', 'Do not unreact', 'message: a message'],
     ['upload', null, 'Upload to Slack', 'Upload', 'Do not upload', null],
-    ['upload', STAMP, 'Upload to Slack', 'Upload', 'Do not upload', `thread: ${STAMP}`],
+    ['upload', STAMP, 'Upload to Slack', 'Upload', 'Do not upload', 'thread: a thread'],
     // A value from a newer server draws neutral words, never a post's.
-    ['unknown', STAMP, 'Slack draft', 'Approve', 'Do not send', `message: ${STAMP}`],
+    ['unknown', STAMP, 'Slack draft', 'Approve', 'Do not send', 'message: a message'],
   ];
 
   it.each(OPERATION_CARDS)(
