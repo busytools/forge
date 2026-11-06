@@ -7145,6 +7145,126 @@ describe('the dock', () => {
     expect(drawn(), 'never the Slack draft line').not.toContain('Slack');
   });
 
+  it("clears an ending line on the reader's next move in the field", () => {
+    const harness = open({ record: record({ pending_asks: [vaultAsk()] }) });
+    expect(document.querySelector('.dock'), 'precondition: the dock is up').not.toBeNull();
+
+    // Another view answered it: the ending is drawn where the dock stood.
+    harness.say({
+      kind: 'update',
+      update: {
+        vault_ask_resolved: {
+          key: SLOT,
+          id: '0192e1c0-0000-7000-8000-0000000000cc',
+          ending: 'approved',
+        },
+      },
+    });
+    harness.page.record = record();
+    flushSync();
+    expect(drawn(), 'the ending line is shown, not taken by the box regaining the field').toContain(
+      'The vault call was approved from another view.',
+    );
+
+    // A reader's focus in the field is the move.
+    field().blur();
+    field().focus();
+    flushSync();
+    expect(drawn(), "the ending line went with the reader's focus in the field").not.toContain(
+      'approved from another view',
+    );
+
+    // And so is a key - on another ending kind, because the lifetime is the
+    // class's rather than any one handler's.
+    harness.page.record = record({ pending_asks: [slackDraftAsk()] });
+    flushSync();
+    harness.say({
+      kind: 'update',
+      update: {
+        slack_draft_resolved: {
+          key: SLOT,
+          id: '0192e1c0-0000-7000-8000-000000000000',
+          ending: { answered: { approved: true } },
+        },
+      },
+    });
+    harness.page.record = record();
+    flushSync();
+    expect(drawn(), 'the next ending kind draws its own line').toContain(
+      'The Slack draft was posted from another view.',
+    );
+    field().dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'a', bubbles: true, cancelable: true }),
+    );
+    flushSync();
+    expect(drawn(), "the ending line went with the reader's first key").not.toContain(
+      'posted from another view',
+    );
+  });
+
+  it('clears an ending line when the reader moves to another seat', () => {
+    const harness = open({ record: record({ pending_asks: [vaultAsk()] }) });
+
+    harness.say({
+      kind: 'update',
+      update: {
+        vault_ask_resolved: {
+          key: SLOT,
+          id: '0192e1c0-0000-7000-8000-0000000000cc',
+          ending: 'approved',
+        },
+      },
+    });
+    harness.page.record = record();
+    flushSync();
+    expect(drawn(), 'the ending line is shown on its own seat').toContain(
+      'The vault call was approved from another view.',
+    );
+
+    harness.page.slot = ELSEWHERE;
+    harness.page.record = record({ slot: ELSEWHERE });
+    flushSync();
+    harness.page.slot = SLOT;
+    harness.page.record = record({ slot: SLOT });
+    flushSync();
+
+    expect(drawn(), 'the line went with the seat it was left on').not.toContain(
+      'approved from another view',
+    );
+  });
+
+  it('keeps an ending line while the seat is quiet', () => {
+    const harness = open({ record: record({ pending_asks: [vaultAsk()] }) });
+
+    harness.say({
+      kind: 'update',
+      update: {
+        vault_ask_resolved: {
+          key: SLOT,
+          id: '0192e1c0-0000-7000-8000-0000000000cc',
+          ending: 'approved',
+        },
+      },
+    });
+    harness.page.record = record();
+    flushSync();
+    expect(drawn(), 'the ending line is shown').toContain(
+      'The vault call was approved from another view.',
+    );
+
+    // No move of the reader's: a repaint of the record and an unrelated frame
+    // are state changes, not the reader doing something.
+    harness.page.record = record({ header: { turn_in_flight: true } });
+    flushSync();
+    harness.say({ kind: 'update', update: { chat_appended: { key: SLOT, msg: openTurn() } } });
+    harness.page.record = record({ header: { turn_in_flight: true } });
+    flushSync();
+
+    expect(drawn(), 'the line stays until the reader moves').toContain(
+      'The vault call was approved from another view.',
+    );
+  });
+
   it('says why an answer did not land when the draft left under the click', () => {
     const harness = open({ record: record({ pending_asks: [slackDraftAsk()] }) });
 

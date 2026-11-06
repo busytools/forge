@@ -61,6 +61,17 @@ export class Box {
    */
   ended = $state<{ tone: string; text: string } | null>(null);
   /**
+   * The reader has moved in this box, which is what an ending line's life is
+   * measured in: it shows once, and the first key, focus or seat change after
+   * it takes it away.
+   *
+   * Here rather than beside each ending kind, because the lifetime is the
+   * CLASS's rule: an ending added later must not have to remember to opt in.
+   */
+  moved(): void {
+    this.ended = null;
+  }
+  /**
    * The line a capture the SERVER never saw left behind: a microphone that
    * would not open, or a take released with no connection to send it on.
    *
